@@ -7,10 +7,118 @@ use std::fmt;
 pub struct Diagnostic {
     pub code: &'static str,
     pub kind: &'static str,
+    pub reason: DiagnosticReason,
     pub severity: Severity,
     pub message: String,
     pub help: Option<String>,
     pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiagnosticReason {
+    Lexer(LexerDiagnosticReason),
+    Parser(ParseDiagnosticReason),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LexerDiagnosticReason {
+    IndentationMismatch,
+    ObsoleteOperator(ObsoleteOperator),
+    ReservedTilde,
+    TabIndentation,
+    UnexpectedCharacter(char),
+    UnterminatedInterpolationExpression,
+    UnterminatedInterpolationString,
+    UnterminatedString,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObsoleteOperator {
+    AndAnd,
+    Bang,
+    Hash,
+    OrOr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParseDiagnosticReason {
+    ConstRequiresValue,
+    DocCommentBeforeParameter,
+    EmptyIndexArguments,
+    EmptyKeyParameters,
+    EnumMemberMustBeBareName,
+    EnumNeedsMember,
+    Expected(ExpectedSyntax),
+    IndexOutsideStoreBody,
+    InvalidVisibility,
+    KeywordExpression,
+    KeywordFieldName,
+    LateModuleDeclaration,
+    MatchArmMemberPath,
+    PositionalArgumentAfterNamed,
+    Reserved(ReservedSyntax),
+    ResourceMemberInStoreBody,
+    UnexpectedIndentation,
+    Unsupported(UnsupportedSyntax),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpectedSyntax {
+    ConstName,
+    ConstType,
+    Declaration,
+    DefaultValue,
+    EnumBody,
+    EnumHeader,
+    EnumName,
+    EvolveBody,
+    EvolveStep,
+    EvolveTargetPath,
+    Expression,
+    FieldType,
+    FunctionBody,
+    FunctionHeader,
+    FunctionName,
+    FunctionParameterList,
+    FunctionReturnType,
+    ImportName,
+    IndexArgumentList,
+    IndexFieldPath,
+    IndexName,
+    IndexTail,
+    KeyName,
+    KeyParameterList,
+    KeyType,
+    MatchBody,
+    ModuleName,
+    ParameterName,
+    ParameterType,
+    ResourceBody,
+    ResourceMemberName,
+    ResourceMemberSyntax,
+    ResourceName,
+    SavedRootBeginning,
+    SavedRootName,
+    Statement,
+    StoreRoot,
+    StoreResourceName,
+    TransformBody,
+    VariableName,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReservedSyntax {
+    LockStatement,
+    MergeStatement,
+    OutArgument,
+    OutParameter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnsupportedSyntax {
+    ParameterDefaults,
+    TypeAliases,
+    UserDefinedGenerics,
 }
 
 impl fmt::Display for Diagnostic {

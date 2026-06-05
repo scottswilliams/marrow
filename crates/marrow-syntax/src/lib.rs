@@ -23,7 +23,11 @@ pub use ast::{
     LiteralKind, MatchArm, ModuleDecl, ParamDecl, ParamMode, ParsedSource, ResourceDecl,
     ResourceMember, SavedRoot, SourceFile, Statement, StoreDecl, TypeRef, UnaryOp, UseDecl,
 };
-pub use diagnostic::{Diagnose, Diagnostic, Severity, SourceSpan, kind_for_code};
+pub use diagnostic::{
+    Diagnose, Diagnostic, DiagnosticReason, ExpectedSyntax, LexerDiagnosticReason,
+    ObsoleteOperator, ParseDiagnosticReason, ReservedSyntax, Severity, SourceSpan,
+    UnsupportedSyntax, kind_for_code,
+};
 pub use format::{format_declaration_normalized, format_expression, format_source};
 pub use lexer::lex_source;
 pub use literal::{StringLiteralError, decode_string_escapes, decode_string_literal};

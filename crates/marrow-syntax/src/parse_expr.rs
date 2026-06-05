@@ -4,8 +4,9 @@
 
 use crate::token::is_trivia;
 use crate::{
-    ArgMode, Argument, BinaryOp, Diagnostic, Expression, InterpolationPart, Keyword, LiteralKind,
-    PARSE_SYNTAX, Severity, SourceSpan, Token, TokenKind, UnaryOp,
+    ArgMode, Argument, BinaryOp, Diagnostic, DiagnosticReason, Expression, InterpolationPart,
+    Keyword, LiteralKind, PARSE_SYNTAX, ParseDiagnosticReason, ReservedSyntax, Severity,
+    SourceSpan, Token, TokenKind, UnaryOp,
 };
 
 /// Recursive-descent parser for a single Marrow expression over a token slice
@@ -51,10 +52,17 @@ impl<'a> ExprParser<'a> {
         (self.pos == self.tokens.len()).then_some(expr)
     }
 
-    fn error(&mut self, span: SourceSpan, message: String, help: Option<String>) {
+    fn error(
+        &mut self,
+        span: SourceSpan,
+        reason: ParseDiagnosticReason,
+        message: String,
+        help: Option<String>,
+    ) {
         self.diagnostics.push(Diagnostic {
             code: PARSE_SYNTAX,
             kind: "parse",
+            reason: DiagnosticReason::Parser(reason),
             severity: Severity::Error,
             message,
             help,
@@ -301,6 +309,7 @@ impl<'a> ExprParser<'a> {
                 let keyword = segment.text(self.source);
                 self.error(
                     join_spans(op.span, segment.span),
+                    ParseDiagnosticReason::KeywordFieldName,
                     format!("`{keyword}` is a keyword and cannot be used as a field name"),
                     Some(format!(
                         "quote the reserved word to use it as a data name: .\"{keyword}\""
@@ -334,6 +343,7 @@ impl<'a> ExprParser<'a> {
                 let span = arg.value.span();
                 self.error(
                     span,
+                    ParseDiagnosticReason::PositionalArgumentAfterNamed,
                     "a positional argument cannot follow a named argument".to_string(),
                     Some("name this argument or move it before the named arguments".to_string()),
                 );
@@ -360,6 +370,7 @@ impl<'a> ExprParser<'a> {
             let token = self.advance();
             self.error(
                 token.span,
+                ParseDiagnosticReason::Reserved(ReservedSyntax::OutArgument),
                 "`out` is reserved; return a value or use `inout` for local mutation".to_string(),
                 None,
             );
@@ -469,6 +480,7 @@ impl<'a> ExprParser<'a> {
                 let keyword = token.text(self.source);
                 self.error(
                     token.span,
+                    ParseDiagnosticReason::KeywordExpression,
                     format!("`{keyword}` is a keyword and cannot be used as an expression"),
                     Some("choose an identifier that is not reserved".to_string()),
                 );

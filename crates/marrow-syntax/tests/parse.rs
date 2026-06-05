@@ -1,7 +1,30 @@
 use marrow_syntax::{
-    ArgMode, BinaryOp, Declaration, Expression, InterpolationPart, LiteralKind, ResourceMember,
-    Statement, UnaryOp, format_expression, parse_source,
+    ArgMode, BinaryOp, Declaration, Diagnostic, DiagnosticReason, ExpectedSyntax, Expression,
+    InterpolationPart, LexerDiagnosticReason, LiteralKind, ObsoleteOperator, ParseDiagnosticReason,
+    ReservedSyntax, ResourceMember, Statement, UnaryOp, UnsupportedSyntax, format_expression,
+    parse_source,
 };
+
+fn parse_reason(reason: ParseDiagnosticReason) -> DiagnosticReason {
+    DiagnosticReason::Parser(reason)
+}
+
+fn lexer_reason(reason: LexerDiagnosticReason) -> DiagnosticReason {
+    DiagnosticReason::Lexer(reason)
+}
+
+fn has_reason(diagnostics: &[Diagnostic], reason: DiagnosticReason) -> bool {
+    diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.reason == reason)
+}
+
+fn reason_count(diagnostics: &[Diagnostic], reason: DiagnosticReason) -> usize {
+    diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.reason == reason)
+        .count()
+}
 
 fn member_names(decl: &marrow_syntax::EnumDecl) -> Vec<&str> {
     decl.members.iter().map(|m| m.name.as_str()).collect()
@@ -130,10 +153,10 @@ fn split_resource_body_rejects_index_members() {
 
     assert!(parsed.has_errors(), "expected parse rejection");
     assert!(
-        parsed
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("store body")),
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::IndexOutsideStoreBody)
+        ),
         "{:#?}",
         parsed.diagnostics
     );
@@ -391,6 +414,45 @@ fn keyed_var_rejects_a_non_type_key_like_the_resource_path() {
     assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
     let tally = parsed.file.function("tally").expect("tally function");
     assert!(tally.body.statements.is_empty(), "{tally:#?}");
+    assert!(
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::KeyType))
+        ),
+        "{:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
+fn keyed_var_key_list_errors_keep_key_specific_reasons() {
+    for (source, expected) in [
+        (
+            "fn f()\n    var counts(): int\n",
+            ParseDiagnosticReason::EmptyKeyParameters,
+        ),
+        (
+            "fn f()\n    var counts(name: 1): int\n",
+            ParseDiagnosticReason::Expected(ExpectedSyntax::KeyType),
+        ),
+    ] {
+        let parsed = parse_source(source);
+
+        assert!(parsed.has_errors(), "expected error for:\n{source}");
+        assert!(
+            has_reason(&parsed.diagnostics, parse_reason(expected)),
+            "expected keyed-var diagnostic for {source}: {:#?}",
+            parsed.diagnostics
+        );
+        assert!(
+            !has_reason(
+                &parsed.diagnostics,
+                parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement))
+            ),
+            "keyed-var errors should not fall back to statement recovery for {source}: {:#?}",
+            parsed.diagnostics
+        );
+    }
 }
 
 #[test]
@@ -555,17 +617,18 @@ fn rejects_lock_as_reserved_statement_and_consumes_its_block() {
     );
     assert!(parsed.has_errors(), "expected lock rejection");
     assert!(
-        parsed.diagnostics.iter().any(|diagnostic| {
-            diagnostic.code == "parse.syntax" && diagnostic.message.contains("`lock` is reserved")
-        }),
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Reserved(
+                ReservedSyntax::LockStatement
+            ))
+        ),
         "{:#?}",
         parsed.diagnostics
     );
     assert!(
-        !parsed
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("expected a statement")),
+        !parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+            == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement))),
         "{:#?}",
         parsed.diagnostics
     );
@@ -583,9 +646,12 @@ fn rejects_merge_as_reserved_statement() {
     );
     assert!(parsed.has_errors(), "expected merge rejection");
     assert!(
-        parsed.diagnostics.iter().any(|diagnostic| {
-            diagnostic.code == "parse.syntax" && diagnostic.message.contains("`merge` is reserved")
-        }),
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Reserved(
+                ReservedSyntax::MergeStatement
+            ))
+        ),
         "{:#?}",
         parsed.diagnostics
     );
@@ -959,12 +1025,14 @@ fn rejects_tabs_because_marrow_blocks_are_space_indented() {
     assert_eq!(parsed.diagnostics[0].code, "parse.syntax");
     assert_eq!(parsed.diagnostics[0].span.line, 2);
     assert_eq!(parsed.diagnostics[0].span.column, 1);
-    assert!(parsed.diagnostics[0].message.contains("tabs"));
-    let tab_reports = parsed
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.message.contains("tabs"))
-        .count();
+    assert_eq!(
+        parsed.diagnostics[0].reason,
+        lexer_reason(LexerDiagnosticReason::TabIndentation)
+    );
+    let tab_reports = reason_count(
+        &parsed.diagnostics,
+        lexer_reason(LexerDiagnosticReason::TabIndentation),
+    );
     assert_eq!(tab_reports, 1, "{:#?}", parsed.diagnostics);
 }
 
@@ -1011,7 +1079,7 @@ fn reports_unexpected_indentation_after_simple_statements() {
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.span.line == 4
-                && diagnostic.message.contains("unexpected indentation")),
+                && diagnostic.reason == parse_reason(ParseDiagnosticReason::UnexpectedIndentation)),
         "expected a line-4 indentation diagnostic: {:#?}",
         parsed.diagnostics
     );
@@ -1065,7 +1133,12 @@ fn surfaces_lexer_diagnostics_for_function_body_tokens() {
     let obsolete = parsed
         .diagnostics
         .iter()
-        .find(|diagnostic| diagnostic.message.contains("`&&`"))
+        .find(|diagnostic| {
+            diagnostic.reason
+                == lexer_reason(LexerDiagnosticReason::ObsoleteOperator(
+                    ObsoleteOperator::AndAnd,
+                ))
+        })
         .expect("expected obsolete operator diagnostic");
     assert_eq!(obsolete.code, "parse.syntax");
     assert_eq!(obsolete.kind, "parse");
@@ -1350,10 +1423,8 @@ fn unterminated_quoted_field_segment_does_not_panic() {
     let parsed = parse_source("const Bad = a.\"\n");
     assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
     assert!(
-        parsed
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("unterminated string")),
+        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+            == lexer_reason(LexerDiagnosticReason::UnterminatedString)),
         "expected an unterminated-string diagnostic: {:#?}",
         parsed.diagnostics
     );
@@ -1369,7 +1440,7 @@ fn keyword_field_name_reports_a_parse_error() {
     let diagnostic = parsed
         .diagnostics
         .iter()
-        .find(|d| d.message.contains("keyword") && d.message.contains("field name"))
+        .find(|d| d.reason == parse_reason(ParseDiagnosticReason::KeywordFieldName))
         .unwrap_or_else(|| {
             panic!(
                 "expected a keyword field-name diagnostic: {:#?}",
@@ -1401,7 +1472,7 @@ fn keyword_field_name_reports_once_not_also_expected_a_statement() {
         "the keyword-field line should report exactly once: {on_offending_line:#?}"
     );
     assert!(
-        on_offending_line[0].message.contains("field name"),
+        on_offending_line[0].reason == parse_reason(ParseDiagnosticReason::KeywordFieldName),
         "{:#?}",
         on_offending_line[0]
     );
@@ -1445,9 +1516,10 @@ fn rejects_out_call_argument_as_reserved_surface() {
     let parsed = parse_source("const Made = save(book: draft, out result)\n");
     assert!(parsed.has_errors(), "expected out call-argument rejection");
     assert!(
-        parsed.diagnostics.iter().any(|diagnostic| {
-            diagnostic.code == "parse.syntax" && diagnostic.message.contains("`out` is reserved")
-        }),
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Reserved(ReservedSyntax::OutArgument))
+        ),
         "{:#?}",
         parsed.diagnostics
     );
@@ -1463,10 +1535,7 @@ fn positional_argument_after_named_is_rejected() {
     let diagnostic = parsed
         .diagnostics
         .iter()
-        .find(|d| {
-            d.message
-                .contains("positional argument cannot follow a named argument")
-        })
+        .find(|d| d.reason == parse_reason(ParseDiagnosticReason::PositionalArgumentAfterNamed))
         .unwrap_or_else(|| {
             panic!(
                 "expected a positional-after-named diagnostic: {:#?}",
@@ -1493,9 +1562,9 @@ fn positional_argument_after_named_is_rejected() {
         parsed
             .diagnostics
             .iter()
-            .filter(|d| d
-                .message
-                .contains("positional argument cannot follow a named argument"))
+            .filter(|d| {
+                d.reason == parse_reason(ParseDiagnosticReason::PositionalArgumentAfterNamed)
+            })
             .count(),
         1
     );
@@ -1521,10 +1590,10 @@ fn positional_after_named_is_rejected_inside_function_bodies() {
     // whole tree, not just top-level values.
     let parsed = parse_source("fn run()\n    log(level: 1, 2)\n");
     assert!(
-        parsed.diagnostics.iter().any(|d| {
-            d.message
-                .contains("positional argument cannot follow a named argument")
-        }),
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::PositionalArgumentAfterNamed)
+        ),
         "{:#?}",
         parsed.diagnostics
     );
@@ -1536,10 +1605,10 @@ fn positional_after_named_is_rejected_in_nested_calls() {
     // reported even when the surrounding call is well-formed.
     let parsed = parse_source("const Made = outer(inner(b: 1, 2))\n");
     assert!(
-        parsed.diagnostics.iter().any(|d| {
-            d.message
-                .contains("positional argument cannot follow a named argument")
-        }),
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::PositionalArgumentAfterNamed)
+        ),
         "{:#?}",
         parsed.diagnostics
     );
@@ -1656,13 +1725,21 @@ fn rejects_parameter_defaults() {
     let diagnostic = parsed
         .diagnostics
         .iter()
-        .find(|diagnostic| diagnostic.message.contains("parameter defaults"))
+        .find(|diagnostic| {
+            diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Unsupported(
+                    UnsupportedSyntax::ParameterDefaults,
+                ))
+        })
         .expect("expected parameter-defaults diagnostic");
     assert_eq!(diagnostic.code, "parse.syntax");
     assert_eq!(diagnostic.kind, "parse");
     assert_eq!(diagnostic.span.line, 2);
     assert!(
-        !diagnostic.message.contains("expected"),
+        diagnostic.reason
+            != parse_reason(ParseDiagnosticReason::Expected(
+                ExpectedSyntax::ParameterType
+            )),
         "diagnostic should not fall back to a generic message, got {:?}",
         diagnostic.message
     );
@@ -1678,9 +1755,12 @@ fn rejects_out_parameter_as_reserved_surface() {
 
     assert!(parsed.has_errors(), "expected out parameter rejection");
     assert!(
-        parsed.diagnostics.iter().any(|diagnostic| {
-            diagnostic.code == "parse.syntax" && diagnostic.message.contains("`out` is reserved")
-        }),
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Reserved(
+                ReservedSyntax::OutParameter
+            ))
+        ),
         "{:#?}",
         parsed.diagnostics
     );
@@ -1694,7 +1774,12 @@ fn rejects_user_defined_generics_on_functions() {
     let diagnostic = parsed
         .diagnostics
         .iter()
-        .find(|diagnostic| diagnostic.message.contains("user-defined generics"))
+        .find(|diagnostic| {
+            diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Unsupported(
+                    UnsupportedSyntax::UserDefinedGenerics,
+                ))
+        })
         .expect("expected user-defined-generics diagnostic");
     assert_eq!(diagnostic.code, "parse.syntax");
     assert_eq!(diagnostic.span.line, 2);
@@ -1708,7 +1793,12 @@ fn rejects_top_level_type_aliases() {
     let diagnostic = parsed
         .diagnostics
         .iter()
-        .find(|diagnostic| diagnostic.message.contains("type aliases"))
+        .find(|diagnostic| {
+            diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Unsupported(
+                    UnsupportedSyntax::TypeAliases,
+                ))
+        })
         .expect("expected type-aliases diagnostic");
     assert_eq!(diagnostic.code, "parse.syntax");
     assert_eq!(diagnostic.span.line, 2);
@@ -1745,11 +1835,8 @@ fn rejects_internal_and_private_visibility() {
 
         assert!(parsed.has_errors(), "expected error for {visibility}");
         assert!(
-            parsed
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.message.contains("pub")
-                    && diagnostic.message.contains("module-private")),
+            parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::InvalidVisibility)),
             "diagnostics for {visibility}: {:#?}",
             parsed.diagnostics
         );
@@ -1766,18 +1853,14 @@ pub fn main()
     );
 
     assert_eq!(parsed.diagnostics.len(), 2, "{:#?}", parsed.diagnostics);
-    assert!(
-        parsed
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("resource body"))
-    );
-    assert!(
-        parsed
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("function body"))
-    );
+    assert!(parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+        == parse_reason(ParseDiagnosticReason::Expected(
+            ExpectedSyntax::ResourceBody
+        ))));
+    assert!(parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+        == parse_reason(ParseDiagnosticReason::Expected(
+            ExpectedSyntax::FunctionBody
+        ))));
 }
 
 #[test]
@@ -1792,10 +1875,8 @@ resource Book
 
     assert!(parsed.has_errors());
     assert!(
-        parsed
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("unexpected indentation")),
+        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+            == parse_reason(ParseDiagnosticReason::UnexpectedIndentation)),
         "{:#?}",
         parsed.diagnostics
     );
@@ -1816,9 +1897,7 @@ resource Book at ^books()
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "parse.syntax"
-                && diagnostic
-                    .message
-                    .contains("expected at least one key parameter")),
+                && diagnostic.reason == parse_reason(ParseDiagnosticReason::EmptyKeyParameters)),
         "{:#?}",
         parsed.diagnostics
     );
@@ -1836,13 +1915,64 @@ resource Book at ^books(id: int)
 
     assert!(parsed.has_errors());
     assert!(
-        parsed
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("index argument")),
+        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+            == parse_reason(ParseDiagnosticReason::EmptyIndexArguments)),
         "{:#?}",
         parsed.diagnostics
     );
+}
+
+#[test]
+fn header_helper_errors_report_specific_expected_parts() {
+    for (source, expected) in [
+        ("module app\nenum 123\n    One\n", ExpectedSyntax::EnumName),
+        (
+            "module app\nenum Status extra\n    One\n",
+            ExpectedSyntax::EnumHeader,
+        ),
+        (
+            "module app\nresource 123\n    title: string\n",
+            ExpectedSyntax::ResourceName,
+        ),
+        (
+            "module app\nresource Book where ^books\n    title: string\n",
+            ExpectedSyntax::SavedRootBeginning,
+        ),
+        (
+            "module app\nresource Book at books\n    title: string\n",
+            ExpectedSyntax::SavedRootBeginning,
+        ),
+        (
+            "module app\nresource Book at ^\n    title: string\n",
+            ExpectedSyntax::SavedRootName,
+        ),
+        ("module app\nstore books: Book\n", ExpectedSyntax::StoreRoot),
+        ("module app\nstore ^: Book\n", ExpectedSyntax::SavedRootName),
+        (
+            "module app\nstore ^books:\n",
+            ExpectedSyntax::StoreResourceName,
+        ),
+        (
+            "module app\nstore ^books: Book\n    index (title)\n",
+            ExpectedSyntax::IndexName,
+        ),
+        (
+            "module app\nstore ^books: Book\n    index byTitle(title) sparse\n",
+            ExpectedSyntax::IndexTail,
+        ),
+    ] {
+        let parsed = parse_source(source);
+
+        assert!(parsed.has_errors(), "expected error for:\n{source}");
+        assert!(
+            has_reason(
+                &parsed.diagnostics,
+                parse_reason(ParseDiagnosticReason::Expected(expected))
+            ),
+            "expected {expected:?} for {source}: {:#?}",
+            parsed.diagnostics
+        );
+    }
 }
 
 #[test]
@@ -1859,9 +1989,7 @@ const MaxLoans: int
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "parse.syntax"
-                && diagnostic
-                    .message
-                    .contains("const declarations require `=` and a value")),
+                && diagnostic.reason == parse_reason(ParseDiagnosticReason::ConstRequiresValue)),
         "{:#?}",
         parsed.diagnostics
     );
@@ -1873,10 +2001,8 @@ fn rejects_invalid_module_names() {
 
     assert!(parsed.has_errors());
     assert!(
-        parsed
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("module name")),
+        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+            == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::ModuleName))),
         "{:#?}",
         parsed.diagnostics
     );
@@ -1892,10 +2018,8 @@ use *
 
     assert!(parsed.has_errors());
     assert!(
-        parsed
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("import name")),
+        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+            == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::ImportName))),
         "{:#?}",
         parsed.diagnostics
     );
@@ -1911,10 +2035,8 @@ const : int = 1
 
     assert!(parsed.has_errors());
     assert!(
-        parsed
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("const name")),
+        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+            == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::ConstName))),
         "{:#?}",
         parsed.diagnostics
     );
@@ -1926,10 +2048,8 @@ fn reserved_word_as_const_name_is_rejected() {
     // so a reserved word (`at`) in any of those positions is a parse error.
     let parsed = parse_source("module app\nconst at = 5\n");
     assert!(
-        parsed
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("`at` is a keyword")),
+        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+            == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::ConstName))),
         "{:#?}",
         parsed.diagnostics
     );
@@ -1944,25 +2064,22 @@ fn reserved_word_as_var_name_reports_variable_name_diagnostic() {
 
     assert_eq!(parsed.diagnostics.len(), 2, "{:#?}", parsed.diagnostics);
     assert!(
-        parsed.diagnostics[0]
-            .message
-            .contains("expected variable name"),
+        parsed.diagnostics[0].reason
+            == parse_reason(ParseDiagnosticReason::Expected(
+                ExpectedSyntax::VariableName
+            )),
         "{:#?}",
         parsed.diagnostics[0]
     );
     assert_eq!(parsed.diagnostics[0].span.line, 3);
     assert!(
-        parsed.diagnostics[1]
-            .message
-            .contains("cannot be used as an expression"),
+        parsed.diagnostics[1].reason == parse_reason(ParseDiagnosticReason::KeywordExpression),
         "{:#?}",
         parsed.diagnostics[1]
     );
     assert!(
-        parsed
-            .diagnostics
-            .iter()
-            .all(|diagnostic| !diagnostic.message.contains("expected a statement")),
+        parsed.diagnostics.iter().all(|diagnostic| diagnostic.reason
+            != parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement))),
         "{:#?}",
         parsed.diagnostics
     );
@@ -1974,21 +2091,18 @@ fn rejects_malformed_type_annotations() {
     // source with its specific message selects the malformed-type error rather
     // than any diagnostic whose text happens to contain "type".
     for (source, expected) in [
-        (
-            "module app\nconst Max: = 1\n",
-            "expected const type annotation",
-        ),
+        ("module app\nconst Max: = 1\n", ExpectedSyntax::ConstType),
         (
             "module app\nfn main(value:)\n    return\n",
-            "expected parameter type annotation",
+            ExpectedSyntax::ParameterType,
         ),
         (
             "module app\nresource Book at ^books(id:)\n    title: string\n",
-            "expected key type annotation",
+            ExpectedSyntax::KeyType,
         ),
         (
             "module app\nresource Book\n    title: sequence[]\n",
-            "expected field type after `:`",
+            ExpectedSyntax::FieldType,
         ),
     ] {
         let parsed = parse_source(source);
@@ -1996,9 +2110,10 @@ fn rejects_malformed_type_annotations() {
         assert!(parsed.has_errors(), "expected error for:\n{source}");
         assert!(
             parsed.diagnostics.iter().any(|diagnostic| {
-                diagnostic.code == "parse.syntax" && diagnostic.message.contains(expected)
+                diagnostic.code == "parse.syntax"
+                    && diagnostic.reason == parse_reason(ParseDiagnosticReason::Expected(expected))
             }),
-            "expected a parse.syntax diagnostic containing {expected:?} for {source}: {:#?}",
+            "expected a parse.syntax diagnostic with {expected:?} for {source}: {:#?}",
             parsed.diagnostics
         );
     }
@@ -2015,10 +2130,10 @@ fn rejects_malformed_index_field_paths() {
 
         assert!(parsed.has_errors(), "expected error for:\n{source}");
         assert!(
-            parsed
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.message.contains("index field path")),
+            parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Expected(
+                    ExpectedSyntax::IndexFieldPath
+                ))),
             "diagnostics for {source}: {:#?}",
             parsed.diagnostics
         );
@@ -2037,10 +2152,8 @@ module later
 
     assert!(parsed.has_errors());
     assert!(
-        parsed
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("module declaration")),
+        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+            == parse_reason(ParseDiagnosticReason::LateModuleDeclaration)),
         "{:#?}",
         parsed.diagnostics
     );
@@ -2091,7 +2204,7 @@ fn const_value_keyword_field_reports_once_not_also_expected_an_expression() {
         parsed.diagnostics
     );
     assert!(
-        parsed.diagnostics[0].message.contains("field name"),
+        parsed.diagnostics[0].reason == parse_reason(ParseDiagnosticReason::KeywordFieldName),
         "{:#?}",
         parsed.diagnostics[0]
     );
@@ -2113,7 +2226,7 @@ fn if_condition_keyword_field_reports_once_not_also_expected_an_expression() {
         "the keyword-field `if` condition should report exactly once: {on_offending_line:#?}"
     );
     assert!(
-        on_offending_line[0].message.contains("field name"),
+        on_offending_line[0].reason == parse_reason(ParseDiagnosticReason::KeywordFieldName),
         "{:#?}",
         on_offending_line[0]
     );
@@ -2132,7 +2245,7 @@ fn empty_const_value_reports_the_single_generic_diagnostic() {
         parsed.diagnostics
     );
     assert!(
-        parsed.diagnostics[0].message.contains("require a value"),
+        parsed.diagnostics[0].reason == parse_reason(ParseDiagnosticReason::ConstRequiresValue),
         "{:#?}",
         parsed.diagnostics[0]
     );
@@ -2143,9 +2256,10 @@ fn reserved_word_as_parameter_name_is_rejected() {
     let parsed = parse_source("fn f(at: int)\n    return\n");
     assert_eq!(parsed.diagnostics.len(), 1, "{:#?}", parsed.diagnostics);
     assert!(
-        parsed.diagnostics[0]
-            .message
-            .contains("expected parameter name"),
+        parsed.diagnostics[0].reason
+            == parse_reason(ParseDiagnosticReason::Expected(
+                ExpectedSyntax::ParameterName
+            )),
         "{:#?}",
         parsed.diagnostics[0]
     );
@@ -2156,9 +2270,10 @@ fn reserved_word_as_resource_member_name_is_rejected() {
     let parsed = parse_source("resource R at ^r\n    at: int\n");
     assert_eq!(parsed.diagnostics.len(), 1, "{:#?}", parsed.diagnostics);
     assert!(
-        parsed.diagnostics[0]
-            .message
-            .contains("expected resource member name"),
+        parsed.diagnostics[0].reason
+            == parse_reason(ParseDiagnosticReason::Expected(
+                ExpectedSyntax::ResourceMemberName
+            )),
         "{:#?}",
         parsed.diagnostics[0]
     );
@@ -2168,8 +2283,11 @@ fn reserved_word_as_resource_member_name_is_rejected() {
 fn reserved_word_as_key_parameter_name_is_rejected() {
     let parsed = parse_source("resource R at ^r\n    e(at: string): int\n");
     assert!(
-        parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"),
-        "expected a parse error for the reserved-word key name: {:#?}",
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::KeyName))
+        ),
+        "expected a key-name parse error for the reserved-word key name: {:#?}",
         parsed.diagnostics
     );
 }
@@ -2340,7 +2458,7 @@ fn rejects_an_enum_with_no_members() {
         parsed
             .diagnostics
             .iter()
-            .any(|d| d.message.contains("at least one member")),
+            .any(|d| d.reason == parse_reason(ParseDiagnosticReason::EnumNeedsMember)),
         "{:#?}",
         parsed.diagnostics
     );
@@ -2354,7 +2472,7 @@ fn rejects_an_enum_member_with_a_type_annotation() {
         parsed
             .diagnostics
             .iter()
-            .any(|d| d.message.contains("bare name")),
+            .any(|d| d.reason == parse_reason(ParseDiagnosticReason::EnumMemberMustBeBareName)),
         "{:#?}",
         parsed.diagnostics
     );
@@ -2368,7 +2486,7 @@ fn rejects_an_enum_member_with_parameters() {
         parsed
             .diagnostics
             .iter()
-            .any(|d| d.message.contains("bare name")),
+            .any(|d| d.reason == parse_reason(ParseDiagnosticReason::EnumMemberMustBeBareName)),
         "{:#?}",
         parsed.diagnostics
     );
@@ -2474,7 +2592,7 @@ fn rejects_a_match_arm_that_is_not_a_member_path() {
         parsed
             .diagnostics
             .iter()
-            .any(|d| d.message.contains("member path")),
+            .any(|d| d.reason == parse_reason(ParseDiagnosticReason::MatchArmMemberPath)),
         "{:#?}",
         parsed.diagnostics
     );
@@ -2671,7 +2789,7 @@ fn trailing_doc_with_no_following_parameter_is_reported() {
     let diagnostic = parsed
         .diagnostics
         .iter()
-        .find(|d| d.message.contains("doc comment must precede a parameter"))
+        .find(|d| d.reason == parse_reason(ParseDiagnosticReason::DocCommentBeforeParameter))
         .expect("a diagnostic for the orphaned doc comment");
     assert_eq!(diagnostic.code, "parse.syntax");
 }
@@ -2753,10 +2871,9 @@ fn evolve_rename_without_arrow_is_reported() {
     let source = "module app\nevolve\n    rename Book.title Book.subtitle\n";
     let parsed = parse_source(source);
     assert!(
-        parsed
-            .diagnostics
-            .iter()
-            .any(|d| d.code == "parse.syntax" && d.message.contains("->")),
+        parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"
+            && d.reason
+                == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::EvolveStep))),
         "{:#?}",
         parsed.diagnostics
     );
@@ -2806,10 +2923,8 @@ fn evolve_indented_block_under_a_non_transform_step_is_reported() {
         \x20       stray body line\n";
     let parsed = parse_source(source);
     assert!(
-        parsed
-            .diagnostics
-            .iter()
-            .any(|d| d.code == "parse.syntax" && d.message.contains("indented block")),
+        parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"
+            && d.reason == parse_reason(ParseDiagnosticReason::UnexpectedIndentation)),
         "{:#?}",
         parsed.diagnostics
     );

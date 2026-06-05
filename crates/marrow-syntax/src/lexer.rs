@@ -5,7 +5,10 @@
 use crate::token::{
     duration_unit_seconds, is_identifier_continue_char, is_identifier_start_char, keyword,
 };
-use crate::{Diagnostic, LexedSource, PARSE_SYNTAX, Severity, SourceSpan, Token, TokenKind};
+use crate::{
+    Diagnostic, DiagnosticReason, LexedSource, LexerDiagnosticReason, ObsoleteOperator,
+    PARSE_SYNTAX, Severity, SourceSpan, Token, TokenKind,
+};
 
 pub fn lex_source(source: &str) -> LexedSource {
     Lexer::new(source).lex()
@@ -105,6 +108,7 @@ impl<'a> Lexer<'a> {
         if line.indent != *self.indents.last().expect("indent stack") {
             self.error_at(
                 self.empty_span(line, line.indent),
+                LexerDiagnosticReason::IndentationMismatch,
                 "indentation does not match an open block",
             );
         }
@@ -187,35 +191,49 @@ impl<'a> Lexer<'a> {
             }
 
             let end = index + ch.len_utf8();
-            let message = if ch == '~' {
-                "`~` is reserved for future typed ephemeral roots".to_string()
+            let (reason, message) = if ch == '~' {
+                (
+                    LexerDiagnosticReason::ReservedTilde,
+                    "`~` is reserved for future typed ephemeral roots".to_string(),
+                )
             } else {
-                format!("unexpected character `{ch}`")
+                (
+                    LexerDiagnosticReason::UnexpectedCharacter(ch),
+                    format!("unexpected character `{ch}`"),
+                )
             };
-            self.error_at(self.span(line, index, end), message);
+            self.error_at(self.span(line, index, end), reason, message);
             index = end;
         }
     }
 
     fn reject_obsolete_operator(&mut self, line: Line<'a>, index: usize) -> Option<usize> {
         let tail = &self.source[index..line.end_byte];
-        let (consumed, message, help) = if tail.starts_with("&&") {
+        let (consumed, reason, message, help) = if tail.starts_with("&&") {
             (
                 2,
+                ObsoleteOperator::AndAnd,
                 "`&&` is not used in Marrow",
                 "Use `and` for boolean and.",
             )
         } else if tail.starts_with("||") {
-            (2, "`||` is not used in Marrow", "Use `or` for boolean or.")
+            (
+                2,
+                ObsoleteOperator::OrOr,
+                "`||` is not used in Marrow",
+                "Use `or` for boolean or.",
+            )
         } else if tail.starts_with('!') && !tail.starts_with("!=") {
             (
                 1,
+                ObsoleteOperator::Bang,
                 "`!` is not used in Marrow",
                 "Use `not` for boolean negation.",
             )
         } else if tail.starts_with('#') {
             (
                 1,
+                ObsoleteOperator::Hash,
                 "`#` is not used in Marrow source",
                 "Marrow uses `;` for comments.",
             )
@@ -228,6 +246,7 @@ impl<'a> Lexer<'a> {
         self.diagnostics.push(Diagnostic {
             code: PARSE_SYNTAX,
             kind: "parse",
+            reason: DiagnosticReason::Lexer(LexerDiagnosticReason::ObsoleteOperator(reason)),
             severity: Severity::Error,
             message: message.to_string(),
             help: Some(help.to_string()),
@@ -283,6 +302,7 @@ impl<'a> Lexer<'a> {
                 let Some(expr_end) = self.find_interpolation_expr_end(line, expr_start_end) else {
                     self.error_at(
                         self.span(line, index, line.end_byte),
+                        LexerDiagnosticReason::UnterminatedInterpolationExpression,
                         "unterminated interpolation expression",
                     );
                     return line.end_byte;
@@ -304,6 +324,7 @@ impl<'a> Lexer<'a> {
         self.push_interpolation_text(line, text_start, line.end_byte);
         self.error_at(
             self.span(line, start, line.end_byte),
+            LexerDiagnosticReason::UnterminatedInterpolationString,
             "unterminated interpolation string",
         );
         line.end_byte
@@ -468,7 +489,11 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        self.error_at(self.span(line, start, line.end_byte), "unterminated string");
+        self.error_at(
+            self.span(line, start, line.end_byte),
+            LexerDiagnosticReason::UnterminatedString,
+            "unterminated string",
+        );
         self.push(kind, self.span(line, start, line.end_byte));
         line.end_byte
     }
@@ -564,6 +589,7 @@ impl<'a> Lexer<'a> {
                     line: line.number,
                     column: (tab + 1) as u32,
                 },
+                LexerDiagnosticReason::TabIndentation,
                 "tabs are not allowed in Marrow source; use spaces",
             );
         }
@@ -610,10 +636,16 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn error_at(&mut self, span: SourceSpan, message: impl Into<String>) {
+    fn error_at(
+        &mut self,
+        span: SourceSpan,
+        reason: LexerDiagnosticReason,
+        message: impl Into<String>,
+    ) {
         self.diagnostics.push(Diagnostic {
             code: PARSE_SYNTAX,
             kind: "parse",
+            reason: DiagnosticReason::Lexer(reason),
             severity: Severity::Error,
             message: message.into(),
             help: None,

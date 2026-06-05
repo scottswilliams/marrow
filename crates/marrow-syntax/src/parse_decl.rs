@@ -13,7 +13,10 @@ use crate::{
         ParsedSource, ResourceDecl, ResourceMember, SavedRoot, SourceFile, Statement, StoreDecl,
         TypeRef, UseDecl,
     },
-    diagnostic::{Diagnostic, Severity, SourceSpan},
+    diagnostic::{
+        Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, ReservedSyntax,
+        Severity, SourceSpan, UnsupportedSyntax,
+    },
     token::{
         Keyword, Token, TokenKind, is_identifier, is_qualified_name, is_type_text, keyword,
         tokens_in_range,
@@ -39,6 +42,20 @@ enum MemberHead {
         keys: Vec<KeyParam>,
     },
 }
+
+#[derive(Debug, Clone)]
+struct ParseError {
+    reason: ParseDiagnosticReason,
+    message: &'static str,
+}
+
+impl ParseError {
+    const fn new(reason: ParseDiagnosticReason, message: &'static str) -> Self {
+        Self { reason, message }
+    }
+}
+
+type ParseResult<T> = Result<T, ParseError>;
 
 /// Statement keywords that introduce one or more indented blocks. Most have
 /// dedicated parsers; this guards the fallback that swallows a block-introducing
@@ -190,7 +207,11 @@ impl<'a> StmtParser<'a> {
         // diagnostic already explains the failure, and a single line reports once.
         if statement.is_none() && self.diagnostics.len() == before {
             let span = line_span(&self.tokens[self.pos..content_end]);
-            self.error_span(span, "expected a statement");
+            self.error_span_reason(
+                span,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::Statement),
+                "expected a statement",
+            );
         }
         self.pos = (newline + 1).min(self.tokens.len());
         statement
@@ -277,7 +298,11 @@ impl<'a> StmtParser<'a> {
                 body,
             }),
             None => {
-                self.error_span(header_span, "expected `for <binding> in <iterable>`");
+                self.error_span_reason(
+                    header_span,
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::Statement),
+                    "expected `for <binding> in <iterable>`",
+                );
                 None
             }
         }
@@ -411,7 +436,11 @@ impl<'a> StmtParser<'a> {
                 }
             }
         } else {
-            self.error_span(start, "expected an indented match body");
+            self.error_span_reason(
+                start,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::MatchBody),
+                "expected an indented match body",
+            );
         }
         Statement::Match {
             scrutinee,
@@ -432,7 +461,11 @@ impl<'a> StmtParser<'a> {
         let header = &self.tokens[self.pos..content_end];
         let span = line_span(header);
         let Some(path) = arm_member_path(self.source, header) else {
-            self.error_span(span, "a match arm is a member path relative to the enum");
+            self.error_span_reason(
+                span,
+                ParseDiagnosticReason::MatchArmMemberPath,
+                "a match arm is a member path relative to the enum",
+            );
             self.pos = (newline + 1).min(self.tokens.len());
             self.skip_block_if_indented();
             return None;
@@ -468,8 +501,9 @@ impl<'a> StmtParser<'a> {
         // a keyword field name or another inline syntax-rule diagnostic already
         // explains the failure, so a single header reports once.
         if expr.is_none() && self.diagnostics.len() == before {
-            self.error_span(
+            self.error_span_reason(
                 line_span(&self.tokens[self.pos..content_end]),
+                ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
                 "expected an expression",
             );
         }
@@ -560,8 +594,9 @@ impl<'a> StmtParser<'a> {
 
     fn report_unexpected_indented_block(&mut self) {
         if let Some(span) = self.first_indented_content_span() {
-            self.error_span(
+            self.error_span_reason(
                 span,
+                ParseDiagnosticReason::UnexpectedIndentation,
                 "unexpected indentation; only compound statements introduce nested blocks",
             );
         }
@@ -621,7 +656,11 @@ impl<'a> StmtParser<'a> {
         if matches!(self.peek(), Some(TokenKind::Indent)) {
             end = self.skip_block();
         }
-        self.error_span(join_spans(start, end), "expected a statement");
+        self.error_span_reason(
+            join_spans(start, end),
+            ParseDiagnosticReason::Expected(ExpectedSyntax::Statement),
+            "expected a statement",
+        );
     }
 
     /// A reserved block-shaped word that is not part of the v0.1 statement
@@ -643,16 +682,23 @@ impl<'a> StmtParser<'a> {
         if matches!(self.peek(), Some(TokenKind::Indent)) {
             end = self.skip_block();
         }
-        self.error_span(
+        self.error_span_reason(
             join_spans(start, end),
+            ParseDiagnosticReason::Reserved(ReservedSyntax::LockStatement),
             format!("`{word}` is reserved and is not a v0.1 statement"),
         );
     }
 
-    fn error_span(&mut self, span: SourceSpan, message: impl Into<String>) {
+    fn error_span_reason(
+        &mut self,
+        span: SourceSpan,
+        reason: ParseDiagnosticReason,
+        message: impl Into<String>,
+    ) {
         self.diagnostics.push(Diagnostic {
             code: PARSE_SYNTAX,
             kind: "parse",
+            reason: DiagnosticReason::Parser(reason),
             severity: Severity::Error,
             message: message.into(),
             help: None,
@@ -719,6 +765,9 @@ fn parse_simple_statement(
             diagnostics.push(Diagnostic {
                 code: PARSE_SYNTAX,
                 kind: "parse",
+                reason: DiagnosticReason::Parser(ParseDiagnosticReason::Reserved(
+                    ReservedSyntax::MergeStatement,
+                )),
                 severity: Severity::Error,
                 message: "`merge` is reserved and is not a v0.1 statement".to_string(),
                 help: None,
@@ -847,13 +896,15 @@ impl<'a> DeclParser<'a> {
                 {
                     self.flush_docs_as_comments(&mut docs, &mut file.comments);
                     self.error_header(
-                    "type aliases are not used in Marrow; declare a resource or use a builtin type directly",
+                        ParseDiagnosticReason::Unsupported(UnsupportedSyntax::TypeAliases),
+                        "type aliases are not used in Marrow; declare a resource or use a builtin type directly",
                 );
                     saw_top_level_item = true;
                 }
                 _ => {
                     self.flush_docs_as_comments(&mut docs, &mut file.comments);
                     self.error_header(
+                        ParseDiagnosticReason::Expected(ExpectedSyntax::Declaration),
                         "expected module, use, const, resource, store, or fn declaration",
                     );
                     saw_top_level_item = true;
@@ -916,12 +967,17 @@ impl<'a> DeclParser<'a> {
         if saw_top_level_item {
             self.error_span(
                 span,
+                ParseDiagnosticReason::LateModuleDeclaration,
                 "module declaration must appear once at the start of the file",
             );
         } else if let Some(name) = name {
             file.module = Some(ModuleDecl { name, span });
         } else {
-            self.error_span(span, "expected qualified module name");
+            self.error_span(
+                span,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::ModuleName),
+                "expected qualified module name",
+            );
         }
     }
 
@@ -931,7 +987,11 @@ impl<'a> DeclParser<'a> {
         if let Some(name) = qualified_name(self.source, &header[1..]) {
             file.uses.push(UseDecl { name, span });
         } else {
-            self.error_span(span, "expected qualified import name");
+            self.error_span(
+                span,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::ImportName),
+                "expected qualified import name",
+            );
         }
     }
 
@@ -948,14 +1008,22 @@ impl<'a> DeclParser<'a> {
                 // A missing value is reported before checking the name and
                 // type, so its diagnostic sorts first on the line.
                 if value_tokens.is_empty() {
-                    self.error_span(span, "const declarations require a value after `=`");
+                    self.error_span(
+                        span,
+                        ParseDiagnosticReason::ConstRequiresValue,
+                        "const declarations require a value after `=`",
+                    );
                 }
                 let (name, ty) = self.const_name_type(span, head);
                 let value = self.value_expression(value_tokens);
                 (name, ty, value)
             }
             None => {
-                self.error_span(span, "const declarations require `=` and a value");
+                self.error_span(
+                    span,
+                    ParseDiagnosticReason::ConstRequiresValue,
+                    "const declarations require `=` and a value",
+                );
                 let (name, ty) = self.const_name_type(span, &header[1..]);
                 (name, ty, None)
             }
@@ -990,23 +1058,36 @@ impl<'a> DeclParser<'a> {
         if keyword(&name).is_some() {
             self.error_span(
                 span,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::ConstName),
                 format!("`{name}` is a keyword and cannot be used as a const name"),
             );
         } else if !is_identifier(&name) {
-            self.error_span(span, "expected const name before type annotation");
+            self.error_span(
+                span,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::ConstName),
+                "expected const name before type annotation",
+            );
         }
         let ty = match type_tokens {
             Some(tokens) if !tokens.is_empty() => {
                 let ty = type_ref_from_tokens(self.source, tokens);
                 if !is_type_text(&ty.text) {
-                    self.error_span(span, "expected const type annotation");
+                    self.error_span(
+                        span,
+                        ParseDiagnosticReason::Expected(ExpectedSyntax::ConstType),
+                        "expected const type annotation",
+                    );
                     None
                 } else {
                     Some(ty)
                 }
             }
             Some(_) => {
-                self.error_span(span, "expected const type annotation");
+                self.error_span(
+                    span,
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::ConstType),
+                    "expected const type annotation",
+                );
                 None
             }
             None => None,
@@ -1019,15 +1100,19 @@ impl<'a> DeclParser<'a> {
         let header = self.take_header_line();
         let (name, store) = match parse_resource_head(self.source, &header[1..]) {
             Ok(parsed) => parsed,
-            Err(message) => {
-                self.error_span(span, message);
+            Err(error) => {
+                self.error_span(span, error.reason, error.message);
                 (String::new(), None)
             }
         };
         let (members, indexes, comments) = if matches!(self.peek(), Some(TokenKind::Indent)) {
             self.parse_resource_members(store.is_some())
         } else {
-            self.error_span(span, "expected an indented resource body");
+            self.error_span(
+                span,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceBody),
+                "expected an indented resource body",
+            );
             (Vec::new(), Vec::new(), Vec::new())
         };
         let store_decl = store.clone().map(|root| StoreDecl {
@@ -1053,8 +1138,8 @@ impl<'a> DeclParser<'a> {
         let header = self.take_header_line();
         let (root, resource) = match parse_store_head(self.source, &header[1..]) {
             Ok(parsed) => parsed,
-            Err(message) => {
-                self.error_span(span, message);
+            Err(error) => {
+                self.error_span(span, error.reason, error.message);
                 (
                     SavedRoot {
                         root: String::new(),
@@ -1089,7 +1174,11 @@ impl<'a> DeclParser<'a> {
         let steps = if matches!(self.peek(), Some(TokenKind::Indent)) {
             self.parse_evolve_steps()
         } else {
-            self.error_span(span, "expected an indented evolve body");
+            self.error_span(
+                span,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::EvolveBody),
+                "expected an indented evolve body",
+            );
             Vec::new()
         };
         EvolveDecl { steps, span }
@@ -1120,6 +1209,7 @@ impl<'a> DeclParser<'a> {
                     let span = self.content_span();
                     self.error_span(
                         span,
+                        ParseDiagnosticReason::UnexpectedIndentation,
                         "unexpected indented block under an evolve step; only `transform` has a body",
                     );
                     self.advance();
@@ -1152,6 +1242,7 @@ impl<'a> DeclParser<'a> {
                 self.take_header_line();
                 self.error_span(
                     err,
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::EvolveStep),
                     "expected an evolve step: `rename`, `default`, `retire`, or `transform`",
                 );
                 None
@@ -1166,7 +1257,11 @@ impl<'a> DeclParser<'a> {
         let header = self.take_header_line();
         let body = &header[1..];
         let Some(arrow) = find_arrow(body) else {
-            self.error_span(err, "expected `rename <from> -> <to>`");
+            self.error_span(
+                err,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::EvolveStep),
+                "expected `rename <from> -> <to>`",
+            );
             return None;
         };
         let from = self.evolve_path(&body[..arrow], err)?;
@@ -1180,7 +1275,11 @@ impl<'a> DeclParser<'a> {
         let header = self.take_header_line();
         let body = &header[1..];
         let Some(equal) = find_top_level_equal(body) else {
-            self.error_span(err, "expected `default <target> = <value>`");
+            self.error_span(
+                err,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::EvolveStep),
+                "expected `default <target> = <value>`",
+            );
             return None;
         };
         let target = self.evolve_path(&body[..equal], err)?;
@@ -1208,7 +1307,11 @@ impl<'a> DeclParser<'a> {
         let body = if matches!(self.peek(), Some(TokenKind::Indent)) {
             self.parse_function_body()
         } else {
-            self.error_span(err, "expected an indented transform body");
+            self.error_span(
+                err,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::TransformBody),
+                "expected an indented transform body",
+            );
             Block::default()
         };
         let target = target?;
@@ -1219,13 +1322,21 @@ impl<'a> DeclParser<'a> {
     /// reporting a malformed path against `err`.
     fn evolve_path(&mut self, tokens: &[Token], err: SourceSpan) -> Option<Expression> {
         if tokens.is_empty() {
-            self.error_span(err, "expected an evolve target path");
+            self.error_span(
+                err,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::EvolveTargetPath),
+                "expected an evolve target path",
+            );
             return None;
         }
         let before = self.diagnostics.len();
         let parsed = ExprParser::new(self.source, tokens).parse_complete(&mut self.diagnostics);
         if parsed.is_none() && self.diagnostics.len() == before {
-            self.error_span(err, "expected an evolve target path");
+            self.error_span(
+                err,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::EvolveTargetPath),
+                "expected an evolve target path",
+            );
         }
         parsed
     }
@@ -1233,13 +1344,21 @@ impl<'a> DeclParser<'a> {
     /// Parse the value expression of a `default` step, reporting against `err`.
     fn evolve_value(&mut self, tokens: &[Token], err: SourceSpan) -> Option<Expression> {
         if tokens.is_empty() {
-            self.error_span(err, "expected a default value after `=`");
+            self.error_span(
+                err,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::DefaultValue),
+                "expected a default value after `=`",
+            );
             return None;
         }
         let before = self.diagnostics.len();
         let parsed = ExprParser::new(self.source, tokens).parse_complete(&mut self.diagnostics);
         if parsed.is_none() && self.diagnostics.len() == before {
-            self.error_span(err, "expected a default value expression");
+            self.error_span(
+                err,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::DefaultValue),
+                "expected a default value expression",
+            );
         }
         parsed
     }
@@ -1249,6 +1368,7 @@ impl<'a> DeclParser<'a> {
         for member in members {
             self.error_span(
                 resource_member_span(&member),
+                ParseDiagnosticReason::ResourceMemberInStoreBody,
                 "store bodies accept only index declarations",
             );
         }
@@ -1300,9 +1420,10 @@ impl<'a> DeclParser<'a> {
                     }) {
                         let err = self.content_span();
                         self.error_span(
-                        err,
-                        "unexpected indentation in resource body; only groups introduce nested resource members",
-                    );
+                            err,
+                            ParseDiagnosticReason::UnexpectedIndentation,
+                            "unexpected indentation in resource body; only groups introduce nested resource members",
+                        );
                     }
                     self.skip_to_block_end();
                 }
@@ -1325,11 +1446,12 @@ impl<'a> DeclParser<'a> {
                                 } else {
                                     self.error_span(
                                         err,
+                                        ParseDiagnosticReason::IndexOutsideStoreBody,
                                         "index declarations belong in a store body",
                                     );
                                 }
                             }
-                            Err(message) => self.error_span(err, message),
+                            Err(error) => self.error_span(err, error.reason, error.message),
                         }
                         continue;
                     }
@@ -1343,7 +1465,11 @@ impl<'a> DeclParser<'a> {
                             ty,
                         }) => {
                             if !is_type_text(&ty.text) {
-                                self.error_span(err, "expected field type annotation");
+                                self.error_span(
+                                    err,
+                                    ParseDiagnosticReason::Expected(ExpectedSyntax::FieldType),
+                                    "expected field type annotation",
+                                );
                             }
                             members.push(ResourceMember::Field(FieldDecl {
                                 docs: member_docs,
@@ -1361,6 +1487,9 @@ impl<'a> DeclParser<'a> {
                                 } else {
                                     self.error_span(
                                         err,
+                                        ParseDiagnosticReason::Expected(
+                                            ExpectedSyntax::ResourceBody,
+                                        ),
                                         "expected an indented resource group body",
                                     );
                                     (Vec::new(), Vec::new(), Vec::new())
@@ -1368,6 +1497,7 @@ impl<'a> DeclParser<'a> {
                             for index in child_indexes {
                                 self.error_span(
                                     index.span,
+                                    ParseDiagnosticReason::IndexOutsideStoreBody,
                                     "index declarations belong in a store body",
                                 );
                             }
@@ -1380,7 +1510,7 @@ impl<'a> DeclParser<'a> {
                                 span,
                             }));
                         }
-                        Err(message) => self.error_span(err, message),
+                        Err(error) => self.error_span(err, error.reason, error.message),
                     }
                 }
             }
@@ -1394,19 +1524,27 @@ impl<'a> DeclParser<'a> {
         let header = self.take_header_line();
         let (public, name) = match parse_enum_head(self.source, &header) {
             Ok(parsed) => parsed,
-            Err(message) => {
-                self.error_span(span, message);
+            Err(error) => {
+                self.error_span(span, error.reason, error.message);
                 (false, String::new())
             }
         };
         let (members, comments) = if matches!(self.peek(), Some(TokenKind::Indent)) {
             self.parse_enum_members()
         } else {
-            self.error_span(span, "expected an indented enum body");
+            self.error_span(
+                span,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::EnumBody),
+                "expected an indented enum body",
+            );
             (Vec::new(), Vec::new())
         };
         if members.is_empty() {
-            self.error_span(span, "an enum needs at least one member");
+            self.error_span(
+                span,
+                ParseDiagnosticReason::EnumNeedsMember,
+                "an enum needs at least one member",
+            );
         }
         EnumDecl {
             docs,
@@ -1461,7 +1599,11 @@ impl<'a> DeclParser<'a> {
                         )
                     }) {
                         let err = self.content_span();
-                        self.error_span(err, "an enum member has no nested body");
+                        self.error_span(
+                            err,
+                            ParseDiagnosticReason::EnumMemberMustBeBareName,
+                            "an enum member has no nested body",
+                        );
                     }
                     self.skip_to_block_end();
                 }
@@ -1490,7 +1632,7 @@ impl<'a> DeclParser<'a> {
                                 span,
                             });
                         }
-                        Err(message) => self.error_span(err, message),
+                        Err(error) => self.error_span(err, error.reason, error.message),
                     }
                 }
             }
@@ -1504,8 +1646,8 @@ impl<'a> DeclParser<'a> {
         let header = self.take_header_line();
         let head = match parse_function_head(self.source, &header) {
             Ok(head) => head,
-            Err(message) => {
-                self.error_span(span, message);
+            Err(error) => {
+                self.error_span(span, error.reason, error.message);
                 FunctionHead {
                     public: false,
                     name: String::new(),
@@ -1517,7 +1659,11 @@ impl<'a> DeclParser<'a> {
         let body = if matches!(self.peek(), Some(TokenKind::Indent)) {
             self.parse_function_body()
         } else {
-            self.error_span(span, "expected an indented function body");
+            self.error_span(
+                span,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionBody),
+                "expected an indented function body",
+            );
             Block {
                 statements: Vec::new(),
                 comments: Vec::new(),
@@ -1585,7 +1731,11 @@ impl<'a> DeclParser<'a> {
         // a keyword field name or another inline syntax-rule diagnostic already
         // explains the failure, so a single value reports once.
         if parsed.is_none() && self.diagnostics.len() == before {
-            self.error_span(value_span(tokens), "expected an expression");
+            self.error_span(
+                value_span(tokens),
+                ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
+                "expected an expression",
+            );
         }
         parsed
     }
@@ -1722,7 +1872,11 @@ impl<'a> DeclParser<'a> {
                             line: token.span.line,
                             column: token.span.column,
                         };
-                        self.error_span(span, "expected a top-level declaration");
+                        self.error_span(
+                            span,
+                            ParseDiagnosticReason::Expected(ExpectedSyntax::Declaration),
+                            "expected a top-level declaration",
+                        );
                     }
                     at_line_start = false;
                 }
@@ -1803,16 +1957,22 @@ impl<'a> DeclParser<'a> {
     }
 
     /// Report an error spanning the current header line.
-    fn error_header(&mut self, message: impl Into<String>) {
+    fn error_header(&mut self, reason: ParseDiagnosticReason, message: impl Into<String>) {
         let span = self.header_span();
         self.take_header_line();
-        self.error_span(span, message);
+        self.error_span(span, reason, message);
     }
 
-    fn error_span(&mut self, span: SourceSpan, message: impl Into<String>) {
+    fn error_span(
+        &mut self,
+        span: SourceSpan,
+        reason: ParseDiagnosticReason,
+        message: impl Into<String>,
+    ) {
         self.diagnostics.push(Diagnostic {
             code: PARSE_SYNTAX,
             kind: "parse",
+            reason: DiagnosticReason::Parser(reason),
             severity: Severity::Error,
             message: message.into(),
             help: None,
@@ -1877,7 +2037,7 @@ fn qualified_name(source: &str, tokens: &[Token]) -> Option<String> {
 /// Parse an enum header line: `[pub] enum Name`. Returns the visibility flag and
 /// the enum name. `pub` is recorded for consistency with `pub fn`; the body of
 /// the enum is parsed separately from its indented block.
-fn parse_enum_head(source: &str, tokens: &[Token]) -> Result<(bool, String), &'static str> {
+fn parse_enum_head(source: &str, tokens: &[Token]) -> ParseResult<(bool, String)> {
     let (public, rest) = if matches!(
         tokens.first().map(|token| token.kind),
         Some(TokenKind::Keyword(Keyword::Pub))
@@ -1890,15 +2050,26 @@ fn parse_enum_head(source: &str, tokens: &[Token]) -> Result<(bool, String), &'s
         rest.first().map(|token| token.kind),
         Some(TokenKind::Keyword(Keyword::Enum))
     ) {
-        return Err("expected enum declaration");
+        return Err(ParseError::new(
+            ParseDiagnosticReason::Expected(ExpectedSyntax::EnumHeader),
+            "expected enum declaration",
+        ));
     }
     let rest = &rest[1..];
     let name = match rest.first() {
         Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
-        _ => return Err("expected enum name"),
+        _ => {
+            return Err(ParseError::new(
+                ParseDiagnosticReason::Expected(ExpectedSyntax::EnumName),
+                "expected enum name",
+            ));
+        }
     };
     if rest.len() > 1 {
-        return Err("an enum header is just `enum Name`");
+        return Err(ParseError::new(
+            ParseDiagnosticReason::Expected(ExpectedSyntax::EnumHeader),
+            "an enum header is just `enum Name`",
+        ));
     }
     Ok((public, name))
 }
@@ -1909,7 +2080,7 @@ fn parse_enum_head(source: &str, tokens: &[Token]) -> Result<(bool, String), &'s
 /// never collides with `category` used as an ordinary identifier elsewhere.
 /// Anything else — a type annotation, key parameters, or extra tokens — is the
 /// resource-member surface, which an enum member does not have.
-fn enum_member_name(source: &str, tokens: &[Token]) -> Result<(String, bool), &'static str> {
+fn enum_member_name(source: &str, tokens: &[Token]) -> ParseResult<(String, bool)> {
     let (category, rest) = match tokens.first() {
         Some(token)
             if token.kind == TokenKind::Identifier
@@ -1925,8 +2096,14 @@ fn enum_member_name(source: &str, tokens: &[Token]) -> Result<(String, bool), &'
             Ok((token.text(source).to_string(), category))
         }
         // A single non-identifier token is a reserved word standing in for a name.
-        [_] => Err("expected an enum member name"),
-        _ => Err("an enum member is a bare name; it takes no type or parameters"),
+        [_] => Err(ParseError::new(
+            ParseDiagnosticReason::EnumMemberMustBeBareName,
+            "expected an enum member name",
+        )),
+        _ => Err(ParseError::new(
+            ParseDiagnosticReason::EnumMemberMustBeBareName,
+            "an enum member is a bare name; it takes no type or parameters",
+        )),
     }
 }
 
@@ -1959,13 +2136,15 @@ fn arm_member_path(source: &str, tokens: &[Token]) -> Option<Vec<String>> {
 
 /// Parse a resource header's tokens after the `resource` keyword:
 /// `Name [at ^root [(key: type, ...)]]`.
-fn parse_resource_head(
-    source: &str,
-    tokens: &[Token],
-) -> Result<(String, Option<SavedRoot>), &'static str> {
+fn parse_resource_head(source: &str, tokens: &[Token]) -> ParseResult<(String, Option<SavedRoot>)> {
     let name = match tokens.first() {
         Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
-        _ => return Err("expected resource name"),
+        _ => {
+            return Err(ParseError::new(
+                ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceName),
+                "expected resource name",
+            ));
+        }
     };
     let rest = &tokens[1..];
     if rest.is_empty() {
@@ -1975,15 +2154,26 @@ fn parse_resource_head(
         rest.first().map(|token| token.kind),
         Some(TokenKind::Keyword(Keyword::At))
     ) {
-        return Err("expected `at ^root` after resource name");
+        return Err(ParseError::new(
+            ParseDiagnosticReason::Expected(ExpectedSyntax::SavedRootBeginning),
+            "expected `at ^root` after resource name",
+        ));
     }
     let rest = &rest[1..];
     if !matches!(rest.first().map(|token| token.kind), Some(TokenKind::Caret)) {
-        return Err("expected saved root beginning with `^`");
+        return Err(ParseError::new(
+            ParseDiagnosticReason::Expected(ExpectedSyntax::SavedRootBeginning),
+            "expected saved root beginning with `^`",
+        ));
     }
     let root = match rest.get(1) {
         Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
-        _ => return Err("expected saved root name"),
+        _ => {
+            return Err(ParseError::new(
+                ParseDiagnosticReason::Expected(ExpectedSyntax::SavedRootName),
+                "expected saved root name",
+            ));
+        }
     };
     let rest = &rest[2..];
     let keys = if rest.is_empty() {
@@ -1996,16 +2186,24 @@ fn parse_resource_head(
 
 /// Parse a store header's tokens after the `store` keyword:
 /// `^root [(key: type, ...)]: Resource`.
-fn parse_store_head(source: &str, tokens: &[Token]) -> Result<(SavedRoot, String), &'static str> {
+fn parse_store_head(source: &str, tokens: &[Token]) -> ParseResult<(SavedRoot, String)> {
     if !matches!(
         tokens.first().map(|token| token.kind),
         Some(TokenKind::Caret)
     ) {
-        return Err("expected saved root beginning with `^`");
+        return Err(ParseError::new(
+            ParseDiagnosticReason::Expected(ExpectedSyntax::StoreRoot),
+            "expected saved root beginning with `^`",
+        ));
     }
     let root = match tokens.get(1) {
         Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
-        _ => return Err("expected saved root name"),
+        _ => {
+            return Err(ParseError::new(
+                ParseDiagnosticReason::Expected(ExpectedSyntax::SavedRootName),
+                "expected saved root name",
+            ));
+        }
     };
     let rest = &tokens[2..];
     let colon = rest
@@ -2020,7 +2218,10 @@ fn parse_store_head(source: &str, tokens: &[Token]) -> Result<(SavedRoot, String
             Some(top_level_colon)
         })
         .position(|top_level_colon| top_level_colon)
-        .ok_or("expected `: Resource` after store root")?;
+        .ok_or(ParseError::new(
+            ParseDiagnosticReason::Expected(ExpectedSyntax::StoreResourceName),
+            "expected `: Resource` after store root",
+        ))?;
     let keys = if colon == 0 {
         Vec::new()
     } else {
@@ -2029,7 +2230,12 @@ fn parse_store_head(source: &str, tokens: &[Token]) -> Result<(SavedRoot, String
     let resource_tokens = &rest[colon + 1..];
     let resource = match resource_tokens {
         [token] if token.kind == TokenKind::Identifier => token.text(source).to_string(),
-        _ => return Err("expected resource name after store root"),
+        _ => {
+            return Err(ParseError::new(
+                ParseDiagnosticReason::Expected(ExpectedSyntax::StoreResourceName),
+                "expected resource name after store root",
+            ));
+        }
     };
     Ok((SavedRoot { root, keys }, resource))
 }
@@ -2043,37 +2249,60 @@ fn resource_member_span(member: &ResourceMember) -> SourceSpan {
 
 /// Parse a parenthesized `(name: type, ...)` key parameter list spanning the
 /// whole token slice. Requires the parentheses to be the only content.
-fn parse_paren_key_params(source: &str, tokens: &[Token]) -> Result<Vec<KeyParam>, &'static str> {
+fn parse_paren_key_params(source: &str, tokens: &[Token]) -> ParseResult<Vec<KeyParam>> {
     if !matches!(
         tokens.first().map(|token| token.kind),
         Some(TokenKind::LeftParen)
     ) {
-        return Err("expected key parameter list");
+        return Err(ParseError::new(
+            ParseDiagnosticReason::Expected(ExpectedSyntax::KeyParameterList),
+            "expected key parameter list",
+        ));
     }
-    let close = match_paren(tokens).ok_or("expected key parameter list")?;
+    let close = match_paren(tokens).ok_or(ParseError::new(
+        ParseDiagnosticReason::Expected(ExpectedSyntax::KeyParameterList),
+        "expected key parameter list",
+    ))?;
     if close + 1 != tokens.len() {
-        return Err("unexpected text after key parameter list");
+        return Err(ParseError::new(
+            ParseDiagnosticReason::Expected(ExpectedSyntax::KeyParameterList),
+            "unexpected text after key parameter list",
+        ));
     }
     parse_key_params_tokens(source, &tokens[1..close])
 }
 
 /// Parse a comma-separated `name: type` key list. Requires at least one key.
-fn parse_key_params_tokens(source: &str, inner: &[Token]) -> Result<Vec<KeyParam>, &'static str> {
+fn parse_key_params_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<KeyParam>> {
     if inner.is_empty() {
-        return Err("expected at least one key parameter");
+        return Err(ParseError::new(
+            ParseDiagnosticReason::EmptyKeyParameters,
+            "expected at least one key parameter",
+        ));
     }
     let mut params = Vec::new();
     for part in split_top_level_commas(inner) {
         let name = match part.first() {
             Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
-            _ => return Err("expected key name"),
+            _ => {
+                return Err(ParseError::new(
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::KeyName),
+                    "expected key name",
+                ));
+            }
         };
         if part.get(1).map(|token| token.kind) != Some(TokenKind::Colon) || part.len() < 3 {
-            return Err("expected key type annotation");
+            return Err(ParseError::new(
+                ParseDiagnosticReason::Expected(ExpectedSyntax::KeyType),
+                "expected key type annotation",
+            ));
         }
         let ty = type_ref_from_tokens(source, &part[2..]);
         if !is_type_text(&ty.text) {
-            return Err("expected key type annotation");
+            return Err(ParseError::new(
+                ParseDiagnosticReason::Expected(ExpectedSyntax::KeyType),
+                "expected key type annotation",
+            ));
         }
         params.push(KeyParam { name, ty });
     }
@@ -2082,32 +2311,54 @@ fn parse_key_params_tokens(source: &str, inner: &[Token]) -> Result<Vec<KeyParam
 
 /// Parse an `index name(field, ...) [unique]` declaration from the tokens after
 /// the `index` keyword. The span is filled in by the caller.
-fn parse_index_tokens(source: &str, tokens: &[Token]) -> Result<IndexDecl, &'static str> {
+fn parse_index_tokens(source: &str, tokens: &[Token]) -> ParseResult<IndexDecl> {
     let name = match tokens.first() {
         Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
-        _ => return Err("expected index name"),
+        _ => {
+            return Err(ParseError::new(
+                ParseDiagnosticReason::Expected(ExpectedSyntax::IndexName),
+                "expected index name",
+            ));
+        }
     };
     let rest = &tokens[1..];
     if !matches!(
         rest.first().map(|token| token.kind),
         Some(TokenKind::LeftParen)
     ) {
-        return Err("expected index argument list");
+        return Err(ParseError::new(
+            ParseDiagnosticReason::Expected(ExpectedSyntax::IndexArgumentList),
+            "expected index argument list",
+        ));
     }
-    let close = match_paren(rest).ok_or("expected index argument list")?;
+    let close = match_paren(rest).ok_or(ParseError::new(
+        ParseDiagnosticReason::Expected(ExpectedSyntax::IndexArgumentList),
+        "expected index argument list",
+    ))?;
     let inner = &rest[1..close];
     if inner.is_empty() {
-        return Err("expected at least one index argument");
+        return Err(ParseError::new(
+            ParseDiagnosticReason::EmptyIndexArguments,
+            "expected at least one index argument",
+        ));
     }
     let mut args = Vec::new();
     for part in split_top_level_commas(inner) {
-        args.push(field_path_text(source, part).ok_or("expected index field path")?);
+        args.push(field_path_text(source, part).ok_or(ParseError::new(
+            ParseDiagnosticReason::Expected(ExpectedSyntax::IndexFieldPath),
+            "expected index field path",
+        ))?);
     }
     let tail = &rest[close + 1..];
     let unique = match tail {
         [] => false,
         [token] if token.kind == TokenKind::Keyword(Keyword::Unique) => true,
-        _ => return Err("expected `unique` or end of index declaration"),
+        _ => {
+            return Err(ParseError::new(
+                ParseDiagnosticReason::Expected(ExpectedSyntax::IndexTail),
+                "expected `unique` or end of index declaration",
+            ));
+        }
     };
     Ok(IndexDecl {
         docs: Vec::new(),
@@ -2144,7 +2395,7 @@ fn field_path_text(source: &str, tokens: &[Token]) -> Option<String> {
 
 /// Parse a `required? name (keys)? (: type)?` resource member head into a field
 /// or group, matching `parse_field_or_group_head`.
-fn parse_field_or_group_tokens(source: &str, tokens: &[Token]) -> Result<MemberHead, &'static str> {
+fn parse_field_or_group_tokens(source: &str, tokens: &[Token]) -> ParseResult<MemberHead> {
     let (required, rest) = if matches!(
         tokens.first().map(|token| token.kind),
         Some(TokenKind::Keyword(Keyword::Required))
@@ -2155,14 +2406,22 @@ fn parse_field_or_group_tokens(source: &str, tokens: &[Token]) -> Result<MemberH
     };
     let name = match rest.first() {
         Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
-        _ => return Err("expected resource member name"),
+        _ => {
+            return Err(ParseError::new(
+                ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceMemberName),
+                "expected resource member name",
+            ));
+        }
     };
     let mut rest = &rest[1..];
     let keys = if matches!(
         rest.first().map(|token| token.kind),
         Some(TokenKind::LeftParen)
     ) {
-        let close = match_paren(rest).ok_or("expected closing `)` in keyed resource member")?;
+        let close = match_paren(rest).ok_or(ParseError::new(
+            ParseDiagnosticReason::Expected(ExpectedSyntax::KeyParameterList),
+            "expected closing `)` in keyed resource member",
+        ))?;
         let inner = &rest[1..close];
         let keys = parse_key_params_tokens(source, inner)?;
         rest = &rest[close + 1..];
@@ -2173,11 +2432,17 @@ fn parse_field_or_group_tokens(source: &str, tokens: &[Token]) -> Result<MemberH
     if matches!(rest.first().map(|token| token.kind), Some(TokenKind::Colon)) {
         let ty_tokens = &rest[1..];
         if ty_tokens.is_empty() {
-            return Err("expected field type after `:`");
+            return Err(ParseError::new(
+                ParseDiagnosticReason::Expected(ExpectedSyntax::FieldType),
+                "expected field type after `:`",
+            ));
         }
         let ty = type_ref_from_tokens(source, ty_tokens);
         if !is_type_text(&ty.text) {
-            return Err("expected field type after `:`");
+            return Err(ParseError::new(
+                ParseDiagnosticReason::Expected(ExpectedSyntax::FieldType),
+                "expected field type after `:`",
+            ));
         }
         return Ok(MemberHead::Field {
             required,
@@ -2187,16 +2452,22 @@ fn parse_field_or_group_tokens(source: &str, tokens: &[Token]) -> Result<MemberH
         });
     }
     if required {
-        return Err("required resource members must declare a field type");
+        return Err(ParseError::new(
+            ParseDiagnosticReason::Expected(ExpectedSyntax::FieldType),
+            "required resource members must declare a field type",
+        ));
     }
     if rest.is_empty() {
         return Ok(MemberHead::Group { name, keys });
     }
-    Err("expected resource field, keyed field, group, or index")
+    Err(ParseError::new(
+        ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceMemberSyntax),
+        "expected resource field, keyed field, group, or index",
+    ))
 }
 
 /// Parse a function header's tokens: `pub? fn name(params) (: return)?`.
-fn parse_function_head(source: &str, tokens: &[Token]) -> Result<FunctionHead, &'static str> {
+fn parse_function_head(source: &str, tokens: &[Token]) -> ParseResult<FunctionHead> {
     let (public, rest) = if matches!(
         tokens.first().map(|token| token.kind),
         Some(TokenKind::Keyword(Keyword::Pub))
@@ -2210,10 +2481,16 @@ fn parse_function_head(source: &str, tokens: &[Token]) -> Result<FunctionHead, &
         // identifier; reject it with a pointed message.
         let word = tokens[0].text(source);
         if word == "internal" {
-            return Err("function visibility is only `pub` or module-private; remove `internal`");
+            return Err(ParseError::new(
+                ParseDiagnosticReason::InvalidVisibility,
+                "function visibility is only `pub` or module-private; remove `internal`",
+            ));
         }
         if word == "private" {
-            return Err("function visibility is only `pub` or module-private; remove `private`");
+            return Err(ParseError::new(
+                ParseDiagnosticReason::InvalidVisibility,
+                "function visibility is only `pub` or module-private; remove `private`",
+            ));
         }
         (false, tokens)
     } else {
@@ -2223,39 +2500,65 @@ fn parse_function_head(source: &str, tokens: &[Token]) -> Result<FunctionHead, &
         rest.first().map(|token| token.kind),
         Some(TokenKind::Keyword(Keyword::Fn))
     ) {
-        return Err("expected fn declaration");
+        return Err(ParseError::new(
+            ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionHeader),
+            "expected fn declaration",
+        ));
     }
     let rest = &rest[1..];
     let name = match rest.first() {
         Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
-        _ => return Err("expected function name"),
+        _ => {
+            return Err(ParseError::new(
+                ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionName),
+                "expected function name",
+            ));
+        }
     };
     let rest = &rest[1..];
     if matches!(rest.first().map(|token| token.kind), Some(TokenKind::Less)) {
-        return Err("user-defined generics are not used in Marrow");
+        return Err(ParseError::new(
+            ParseDiagnosticReason::Unsupported(UnsupportedSyntax::UserDefinedGenerics),
+            "user-defined generics are not used in Marrow",
+        ));
     }
     if !matches!(
         rest.first().map(|token| token.kind),
         Some(TokenKind::LeftParen)
     ) {
-        return Err("expected function parameter list");
+        return Err(ParseError::new(
+            ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionParameterList),
+            "expected function parameter list",
+        ));
     }
-    let close = match_paren(rest).ok_or("expected function parameter list")?;
+    let close = match_paren(rest).ok_or(ParseError::new(
+        ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionParameterList),
+        "expected function parameter list",
+    ))?;
     let params = parse_params_tokens(source, &rest[1..close])?;
     let after = &rest[close + 1..];
     let return_type = if after.is_empty() {
         None
     } else {
         if after[0].kind != TokenKind::Colon {
-            return Err("expected return type after `:`");
+            return Err(ParseError::new(
+                ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionReturnType),
+                "expected return type after `:`",
+            ));
         }
         let ty_tokens = &after[1..];
         if ty_tokens.is_empty() {
-            return Err("expected return type after `:`");
+            return Err(ParseError::new(
+                ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionReturnType),
+                "expected return type after `:`",
+            ));
         }
         let ty = type_ref_from_tokens(source, ty_tokens);
         if !is_type_text(&ty.text) {
-            return Err("expected return type annotation");
+            return Err(ParseError::new(
+                ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionReturnType),
+                "expected return type annotation",
+            ));
         }
         Some(ty)
     };
@@ -2272,7 +2575,7 @@ fn parse_function_head(source: &str, tokens: &[Token]) -> Result<FunctionHead, &
 /// as a comma does, so the list reads cleanly written with commas, without them,
 /// or mixed. A run of `;;` doc lines directly above a parameter is its
 /// documentation, captured in source order.
-fn parse_params_tokens(source: &str, inner: &[Token]) -> Result<Vec<ParamDecl>, &'static str> {
+fn parse_params_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<ParamDecl>> {
     if inner.is_empty() {
         return Ok(Vec::new());
     }
@@ -2281,7 +2584,10 @@ fn parse_params_tokens(source: &str, inner: &[Token]) -> Result<Vec<ParamDecl>, 
         // A doc run with no parameter after it documents nothing; report the
         // misplaced doc rather than dropping it.
         if group.body.is_empty() {
-            return Err("a doc comment must precede a parameter");
+            return Err(ParseError::new(
+                ParseDiagnosticReason::DocCommentBeforeParameter,
+                "a doc comment must precede a parameter",
+            ));
         }
         let docs = group
             .docs
@@ -2290,27 +2596,44 @@ fn parse_params_tokens(source: &str, inner: &[Token]) -> Result<Vec<ParamDecl>, 
             .collect();
         let (mode, rest) = match group.body.first().map(|token| token.kind) {
             Some(TokenKind::Keyword(Keyword::Out)) => {
-                return Err("`out` is reserved; return a value or use `inout` for local mutation");
+                return Err(ParseError::new(
+                    ParseDiagnosticReason::Reserved(ReservedSyntax::OutParameter),
+                    "`out` is reserved; return a value or use `inout` for local mutation",
+                ));
             }
             Some(TokenKind::Keyword(Keyword::InOut)) => (Some(ParamMode::InOut), &group.body[1..]),
             _ => (None, group.body),
         };
         let name = match rest.first() {
             Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
-            _ => return Err("expected parameter name"),
+            _ => {
+                return Err(ParseError::new(
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::ParameterName),
+                    "expected parameter name",
+                ));
+            }
         };
         if rest.get(1).map(|token| token.kind) != Some(TokenKind::Colon) || rest.len() < 3 {
-            return Err("expected parameter type annotation");
+            return Err(ParseError::new(
+                ParseDiagnosticReason::Expected(ExpectedSyntax::ParameterType),
+                "expected parameter type annotation",
+            ));
         }
         let ty_tokens = &rest[2..];
         // A default value (`name: type = expr`) is rejected; an `=` here means a
         // parameter default, which Marrow does not use.
         if ty_tokens.iter().any(|token| token.kind == TokenKind::Equal) {
-            return Err("parameter defaults are not used in Marrow");
+            return Err(ParseError::new(
+                ParseDiagnosticReason::Unsupported(UnsupportedSyntax::ParameterDefaults),
+                "parameter defaults are not used in Marrow",
+            ));
         }
         let ty = type_ref_from_tokens(source, ty_tokens);
         if !is_type_text(&ty.text) {
-            return Err("expected parameter type annotation");
+            return Err(ParseError::new(
+                ParseDiagnosticReason::Expected(ExpectedSyntax::ParameterType),
+                "expected parameter type annotation",
+            ));
         }
         params.push(ParamDecl {
             docs,
@@ -2448,6 +2771,11 @@ fn parse_const_or_var(
             diagnostics.push(Diagnostic {
                 code: PARSE_SYNTAX,
                 kind: "parse",
+                reason: DiagnosticReason::Parser(ParseDiagnosticReason::Expected(if is_var {
+                    ExpectedSyntax::VariableName
+                } else {
+                    ExpectedSyntax::ConstName
+                })),
                 severity: Severity::Error,
                 message: format!(
                     "expected {kind} name; `{}` is a keyword",
@@ -2469,9 +2797,16 @@ fn parse_const_or_var(
         if !is_var {
             return None;
         }
-        let (parsed_keys, after) = parse_var_keys(source, line, index)?;
-        keys = parsed_keys;
-        index = after;
+        match parse_var_keys(source, line, index) {
+            Ok((parsed_keys, after)) => {
+                keys = parsed_keys;
+                index = after;
+            }
+            Err(error) => {
+                push_parse_error(diagnostics, line_span(line), error);
+                return None;
+            }
+        }
     }
 
     let mut ty = None;
@@ -2527,7 +2862,7 @@ fn parse_var_keys(
     source: &str,
     line: &[Token],
     open_index: usize,
-) -> Option<(Vec<KeyParam>, usize)> {
+) -> ParseResult<(Vec<KeyParam>, usize)> {
     let mut depth = 0usize;
     let mut close = None;
     for (offset, token) in line[open_index..].iter().enumerate() {
@@ -2543,9 +2878,24 @@ fn parse_var_keys(
             _ => {}
         }
     }
-    let close = close?;
-    let keys = parse_key_params_tokens(source, &line[open_index + 1..close]).ok()?;
-    Some((keys, close + 1))
+    let close = close.ok_or(ParseError::new(
+        ParseDiagnosticReason::Expected(ExpectedSyntax::KeyParameterList),
+        "expected key parameter list",
+    ))?;
+    let keys = parse_key_params_tokens(source, &line[open_index + 1..close])?;
+    Ok((keys, close + 1))
+}
+
+fn push_parse_error(diagnostics: &mut Vec<Diagnostic>, span: SourceSpan, error: ParseError) {
+    diagnostics.push(Diagnostic {
+        code: PARSE_SYNTAX,
+        kind: "parse",
+        reason: DiagnosticReason::Parser(error.reason),
+        severity: Severity::Error,
+        message: error.message.to_string(),
+        help: None,
+        span,
+    });
 }
 
 /// Split tokens on top-level commas (depth 0), dropping a trailing empty group

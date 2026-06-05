@@ -1,4 +1,6 @@
-use marrow_syntax::{Keyword, TokenKind, lex_source};
+use marrow_syntax::{
+    DiagnosticReason, Keyword, LexerDiagnosticReason, ObsoleteOperator, TokenKind, lex_source,
+};
 use std::path::Path;
 
 fn kinds(source: &str) -> Vec<TokenKind> {
@@ -355,9 +357,18 @@ fn reports_lexical_errors_with_parse_syntax_diagnostics() {
             .iter()
             .all(|diagnostic| { diagnostic.code == "parse.syntax" && diagnostic.kind == "parse" })
     );
-    assert!(lexed.diagnostics[0].message.contains("tabs"));
-    assert!(lexed.diagnostics[1].message.contains("unterminated string"));
-    assert!(lexed.diagnostics[2].message.contains("reserved"));
+    assert_eq!(
+        lexed.diagnostics[0].reason,
+        DiagnosticReason::Lexer(LexerDiagnosticReason::TabIndentation)
+    );
+    assert_eq!(
+        lexed.diagnostics[1].reason,
+        DiagnosticReason::Lexer(LexerDiagnosticReason::UnterminatedString)
+    );
+    assert_eq!(
+        lexed.diagnostics[2].reason,
+        DiagnosticReason::Lexer(LexerDiagnosticReason::ReservedTilde)
+    );
     assert_eq!(lexed.diagnostics[0].span.line, 2);
     assert_eq!(lexed.diagnostics[0].span.column, 1);
 }
@@ -370,7 +381,9 @@ fn reserves_tilde_for_ephemeral_roots() {
     let diagnostic = lexed
         .diagnostics
         .iter()
-        .find(|diagnostic| diagnostic.message.contains("reserved"))
+        .find(|diagnostic| {
+            diagnostic.reason == DiagnosticReason::Lexer(LexerDiagnosticReason::ReservedTilde)
+        })
         .expect("reserved tilde diagnostic");
     assert_eq!(diagnostic.code, "parse.syntax");
     assert_eq!(diagnostic.span.line, 2);
@@ -378,36 +391,46 @@ fn reserves_tilde_for_ephemeral_roots() {
 
 #[test]
 fn rejects_obsolete_operators_with_marrow_guidance() {
-    let cases: &[(&str, &str, &str, usize)] = &[
-        ("a && b", "`&&`", "`and`", 2),
-        ("a || b", "`||`", "`or`", 2),
-        ("not_done = !ready", "`!`", "`not`", 1),
-        ("count # 1", "`#`", "Marrow uses `;` for comments", 1),
+    let cases: &[(&str, ObsoleteOperator, &str, usize)] = &[
+        ("a && b", ObsoleteOperator::AndAnd, "`and`", 2),
+        ("a || b", ObsoleteOperator::OrOr, "`or`", 2),
+        ("not_done = !ready", ObsoleteOperator::Bang, "`not`", 1),
+        (
+            "count # 1",
+            ObsoleteOperator::Hash,
+            "Marrow uses `;` for comments",
+            1,
+        ),
     ];
 
-    for (source, expected_token, expected_help, expected_len) in cases {
+    for (source, expected_operator, expected_help, expected_len) in cases {
         let lexed = lex_source(source);
         assert!(
             lexed.has_errors(),
-            "expected {expected_token} to be rejected by the lexer, got {:#?}",
+            "expected {expected_operator:?} to be rejected by the lexer, got {:#?}",
             lexed.diagnostics
         );
         let diagnostic = lexed
             .diagnostics
             .iter()
-            .find(|diagnostic| diagnostic.message.contains(expected_token))
-            .unwrap_or_else(|| panic!("expected diagnostic mentioning {expected_token}"));
+            .find(|diagnostic| {
+                diagnostic.reason
+                    == DiagnosticReason::Lexer(LexerDiagnosticReason::ObsoleteOperator(
+                        *expected_operator,
+                    ))
+            })
+            .unwrap_or_else(|| panic!("expected diagnostic for {expected_operator:?}"));
         assert_eq!(diagnostic.code, "parse.syntax");
         assert_eq!(diagnostic.kind, "parse");
         assert_eq!(
             diagnostic.span.end_byte - diagnostic.span.start_byte,
             *expected_len,
-            "diagnostic span for {expected_token} should cover the obsolete token"
+            "diagnostic span for {expected_operator:?} should cover the obsolete token"
         );
         let help = diagnostic
             .help
             .as_deref()
-            .unwrap_or_else(|| panic!("expected help text for {expected_token}"));
+            .unwrap_or_else(|| panic!("expected help text for {expected_operator:?}"));
         assert!(
             help.contains(expected_help),
             "expected help to suggest {expected_help}, got {help}"
@@ -494,10 +517,8 @@ fn rejects_a_bare_question_mark() {
     // only `?.` and `??` are recognized.
     let lexed = lex_source("write(a ? b)\n");
     assert!(
-        lexed
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("unexpected character `?`")),
+        lexed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+            == DiagnosticReason::Lexer(LexerDiagnosticReason::UnexpectedCharacter('?'))),
         "expected a bare `?` to be rejected, got {:#?}",
         lexed.diagnostics
     );
