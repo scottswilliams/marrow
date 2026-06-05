@@ -206,13 +206,96 @@ impl CellKey {
     }
 }
 
-pub(crate) fn decode_data_child_key(bytes: &[u8]) -> Result<Option<SavedKey>, ()> {
+/// A key-grammar byte run that did not parse under the v0 tree-cell profile. The
+/// caller owns turning this into a typed store error, since it holds the full
+/// physical key the malformed run came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MalformedKey;
+
+/// Decode the immediate data-family child key from the bytes that follow a
+/// data-path prefix. A key segment (`DATA_KEY_SEGMENT`) carries one scalar child;
+/// any other leading byte sits past the keyed-child run, so the scan yields no
+/// child here, and a key segment with an unparseable body is malformed.
+pub(crate) fn decode_data_child_key(bytes: &[u8]) -> Result<Option<SavedKey>, MalformedKey> {
     if bytes.first().copied() != Some(DATA_KEY_SEGMENT) {
         return Ok(None);
     }
-    decode_key_value(bytes.get(1..).ok_or(())?)
-        .map(|(key, _)| Some(key))
-        .ok_or(())
+    let body = bytes.get(1..).ok_or(MalformedKey)?;
+    let (key, _) = decode_key_value(body).ok_or(MalformedKey)?;
+    Ok(Some(key))
+}
+
+/// Decode the immediate record-family child key from the bytes that follow a
+/// record prefix. Identity keys run until the node terminator, so an empty tail
+/// or a leading `NODE_END` sits past the child run; a non-terminator byte begins
+/// one identity key whose body must parse.
+pub(crate) fn decode_record_child_key(bytes: &[u8]) -> Result<Option<SavedKey>, MalformedKey> {
+    if bytes.first().copied().is_none_or(|tag| tag == NODE_END) {
+        return Ok(None);
+    }
+    let (key, _) = decode_key_value(bytes).ok_or(MalformedKey)?;
+    Ok(Some(key))
+}
+
+/// Decode the immediate index-family child key from the bytes that follow an
+/// index key prefix. A non-zero leading byte begins the next index key; the
+/// `INDEX_IDENTITY` separator opens the identity run, whose first key is the child
+/// at that level, and a bare separator with no identity sits past the run.
+pub(crate) fn decode_index_child_key(bytes: &[u8]) -> Result<Option<SavedKey>, MalformedKey> {
+    let body = match bytes.split_first() {
+        None => return Ok(None),
+        Some((&INDEX_IDENTITY, [])) => return Ok(None),
+        Some((&INDEX_IDENTITY, rest)) => rest,
+        Some(_) => bytes,
+    };
+    let (key, _) = decode_key_value(body).ok_or(MalformedKey)?;
+    Ok(Some(key))
+}
+
+/// Split the bytes that follow an index key prefix into the stored index-key tuple
+/// and the record identity. The runs are separated by the `INDEX_IDENTITY` byte and
+/// the identity closes with `INDEX_ENTRY_END`.
+pub(crate) fn decode_index_entry_key(
+    bytes: &[u8],
+) -> Result<(Vec<SavedKey>, Vec<SavedKey>), MalformedKey> {
+    let mut rest = bytes;
+    let mut index_keys = Vec::new();
+    loop {
+        match rest.first().copied() {
+            None => return Err(MalformedKey),
+            Some(INDEX_IDENTITY) => {
+                rest = rest.get(1..).ok_or(MalformedKey)?;
+                break;
+            }
+            Some(_) => {
+                let (key, consumed) = decode_key_value(rest).ok_or(MalformedKey)?;
+                index_keys.push(key);
+                rest = rest.get(consumed..).ok_or(MalformedKey)?;
+            }
+        }
+    }
+    Ok((index_keys, decode_index_identity(rest)?))
+}
+
+/// Decode a stored index identity from the bytes that follow the `INDEX_IDENTITY`
+/// separator: a run of identity keys closed by the `INDEX_ENTRY_END` terminator.
+pub(crate) fn decode_index_identity(bytes: &[u8]) -> Result<Vec<SavedKey>, MalformedKey> {
+    let (&terminator, identity) = bytes.split_last().ok_or(MalformedKey)?;
+    if terminator != INDEX_ENTRY_END {
+        return Err(MalformedKey);
+    }
+    decode_saved_keys(identity)
+}
+
+/// Decode a run of scalar key-values that fills the whole slice.
+fn decode_saved_keys(mut bytes: &[u8]) -> Result<Vec<SavedKey>, MalformedKey> {
+    let mut keys = Vec::new();
+    while !bytes.is_empty() {
+        let (key, consumed) = decode_key_value(bytes).ok_or(MalformedKey)?;
+        keys.push(key);
+        bytes = bytes.get(consumed..).ok_or(MalformedKey)?;
+    }
+    Ok(keys)
 }
 
 /// Which kind of data-family tree cell a typed backup cell carries.
@@ -463,7 +546,8 @@ fn prefix_successor(prefix: &[u8]) -> Option<Vec<u8>> {
 mod tests {
     use super::{
         CatalogId, CellKey, DataCellKind, DataPathSegment, FAMILY_DATA, SequencePosition,
-        decode_data_cell_key, encode_id, family,
+        decode_data_cell_key, decode_index_child_key, decode_index_entry_key,
+        decode_index_identity, decode_record_child_key, encode_id, family,
     };
     use crate::key::SavedKey;
 
@@ -555,6 +639,79 @@ mod tests {
         assert!(decode_data_cell_key(&corrupt).is_none());
         // A non-cell key (wrong placement/profile) does not decode.
         assert!(decode_data_cell_key(&[0x01, 0x02, 0x03]).is_none());
+    }
+
+    fn after_prefix<'a>(prefix: &CellKey, key: &'a CellKey) -> &'a [u8] {
+        key.as_bytes()
+            .strip_prefix(prefix.as_bytes())
+            .expect("key extends the prefix")
+    }
+
+    #[test]
+    fn index_child_decode_reads_the_next_index_key_then_the_identity() {
+        let index = member_id();
+        let index_keys = [SavedKey::Str("title".into())];
+        let identity = [SavedKey::Int(7)];
+        let key = CellKey::index(&index, &index_keys, &identity);
+
+        let key_prefix = CellKey::index_key_prefix(&index, &[]);
+        assert_eq!(
+            decode_index_child_key(after_prefix(&key_prefix, &key)),
+            Ok(Some(index_keys[0].clone())),
+            "the child below the index id is the first index key",
+        );
+
+        let tuple_prefix = CellKey::index_key_prefix(&index, &index_keys);
+        assert_eq!(
+            decode_index_child_key(after_prefix(&tuple_prefix, &key)),
+            Ok(Some(identity[0].clone())),
+            "the child below the full key tuple is the first identity key",
+        );
+    }
+
+    #[test]
+    fn index_entry_decode_round_trips_the_stored_key_tuple_and_identity() {
+        let index = member_id();
+        let index_keys = vec![SavedKey::Str("title".into()), SavedKey::Int(2)];
+        let identity = vec![SavedKey::Int(7), SavedKey::Str("x".into())];
+        let key = CellKey::index(&index, &index_keys, &identity);
+
+        let prefix = CellKey::index_key_prefix(&index, &[]);
+        let decoded = decode_index_entry_key(after_prefix(&prefix, &key)).expect("entry decodes");
+        assert_eq!(decoded, (index_keys.clone(), identity.clone()));
+
+        let tuple_prefix = CellKey::index_tuple_prefix(&index, &index_keys);
+        let identity_bytes = after_prefix(&tuple_prefix, &key);
+        assert_eq!(
+            decode_index_identity(identity_bytes),
+            Ok(identity),
+            "the identity decodes from the bytes after the key-tuple separator",
+        );
+    }
+
+    #[test]
+    fn record_child_decode_reads_the_first_identity_key() {
+        let store = store_id("");
+        let identity = [SavedKey::Int(5)];
+        let node = CellKey::node(&store, &identity);
+        let prefix = CellKey::record_prefix(&store, &[]);
+        assert_eq!(
+            decode_record_child_key(after_prefix(&prefix, &node)),
+            Ok(Some(identity[0].clone())),
+        );
+    }
+
+    #[test]
+    fn child_decoders_stop_cleanly_past_their_run_and_reject_malformed_bytes() {
+        // A node terminator and an empty tail sit past the record/index child run.
+        assert_eq!(decode_record_child_key(&[0x00]), Ok(None));
+        assert_eq!(decode_record_child_key(&[]), Ok(None));
+        assert_eq!(decode_index_child_key(&[0x00]), Ok(None));
+        assert_eq!(decode_index_child_key(&[]), Ok(None));
+
+        // A child tag with an unparseable key body is malformed, not end-of-run.
+        assert!(decode_record_child_key(&[0xff]).is_err());
+        assert!(decode_index_child_key(&[0xff]).is_err());
     }
 
     // The int key tag begins a fixed 9-byte key; a tag with no body is truncated.

@@ -3,7 +3,10 @@
 use std::cell::RefCell;
 
 use crate::backend::{Backend, ScanPage, StoreError};
-use crate::cell::{CatalogId, CellKey, MetaCell, NODE_MARKER, SequencePosition};
+use crate::cell::{
+    CatalogId, CellKey, MetaCell, NODE_MARKER, SequencePosition, decode_data_child_key,
+    decode_index_child_key, decode_index_entry_key, decode_index_identity, decode_record_child_key,
+};
 use crate::key::{SavedKey, decode_key_value};
 use crate::metadata::{decode_commit_metadata, encode_commit_metadata};
 
@@ -1053,7 +1056,8 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
             cursor = page.entries.last().map(|(key, _)| key.clone());
             for (key, value) in page.entries {
                 let rest = key.get(prefix.as_bytes().len()..).unwrap_or_default();
-                let (index_keys, identity) = decode_index_entry_key(rest, &key)?;
+                let (index_keys, identity) =
+                    decode_index_entry_key(rest).map_err(|_| corrupt_cell(&key))?;
                 visit(&index_keys, &identity, &value)?;
             }
             if !page.truncated {
@@ -1103,7 +1107,8 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
                 continue;
             }
             last_key = Some(key.clone());
-            let identity = decode_index_identity(&key[prefix.as_bytes().len()..], &key)?;
+            let identity = decode_index_identity(&key[prefix.as_bytes().len()..])
+                .map_err(|_| corrupt_cell(&key))?;
             entries.push(IndexEntry { identity, value });
         }
         let cursor = if page.truncated {
@@ -1332,60 +1337,15 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
 }
 
 fn decode_record_child(bytes: &[u8]) -> Result<Option<SavedKey>, StoreError> {
-    if bytes.is_empty() || bytes.first().copied() == Some(0) {
-        return Ok(None);
-    }
-    decode_key_value(bytes)
-        .map(|(key, _)| Some(key))
-        .ok_or_else(|| corrupt_cell(bytes))
+    decode_record_child_key(bytes).map_err(|_| corrupt_cell(bytes))
 }
 
 fn decode_data_child(bytes: &[u8]) -> Result<Option<SavedKey>, StoreError> {
-    crate::cell::decode_data_child_key(bytes).map_err(|_| corrupt_cell(bytes))
+    decode_data_child_key(bytes).map_err(|_| corrupt_cell(bytes))
 }
 
 fn decode_index_child(bytes: &[u8]) -> Result<Option<SavedKey>, StoreError> {
-    if bytes.is_empty() {
-        return Ok(None);
-    }
-    if bytes.first().copied() == Some(0) {
-        let Some(rest) = bytes.get(1..) else {
-            return Ok(None);
-        };
-        if rest.is_empty() {
-            return Ok(None);
-        }
-        return decode_key_value(rest)
-            .map(|(key, _)| Some(key))
-            .ok_or_else(|| corrupt_cell(bytes));
-    }
-    decode_key_value(bytes)
-        .map(|(key, _)| Some(key))
-        .ok_or_else(|| corrupt_cell(bytes))
-}
-
-fn decode_index_entry_key(
-    mut bytes: &[u8],
-    full_key: &[u8],
-) -> Result<(Vec<SavedKey>, Vec<SavedKey>), StoreError> {
-    let mut index_keys = Vec::new();
-    loop {
-        match bytes.first().copied() {
-            Some(0) => {
-                bytes = bytes.get(1..).unwrap_or_default();
-                break;
-            }
-            Some(_) => {
-                let (key, consumed) =
-                    decode_key_value(bytes).ok_or_else(|| corrupt_cell(full_key))?;
-                index_keys.push(key);
-                bytes = bytes.get(consumed..).unwrap_or_default();
-            }
-            None => return Err(corrupt_cell(full_key)),
-        }
-    }
-    let identity = decode_index_identity(bytes, full_key)?;
-    Ok((index_keys, identity))
+    decode_index_child_key(bytes).map_err(|_| corrupt_cell(bytes))
 }
 
 pub fn encode_tree_reference(value: &TreeReference) -> Result<Vec<u8>, StoreError> {
@@ -1455,26 +1415,6 @@ fn decode_u64(bytes: &[u8]) -> Result<u64, StoreError> {
 
 fn decode_digest(bytes: &[u8]) -> Result<EngineProfileDigest, StoreError> {
     bytes.try_into().map_err(|_| corrupt_cell(bytes))
-}
-
-fn decode_index_identity(bytes: &[u8], full_key: &[u8]) -> Result<Vec<SavedKey>, StoreError> {
-    let Some((&terminator, identity)) = bytes.split_last() else {
-        return Err(corrupt_cell(full_key));
-    };
-    if terminator != 0x00 {
-        return Err(corrupt_cell(full_key));
-    }
-    decode_saved_keys(identity, full_key)
-}
-
-fn decode_saved_keys(mut bytes: &[u8], full_key: &[u8]) -> Result<Vec<SavedKey>, StoreError> {
-    let mut keys = Vec::new();
-    while !bytes.is_empty() {
-        let (key, consumed) = decode_key_value(bytes).ok_or_else(|| corrupt_cell(full_key))?;
-        keys.push(key);
-        bytes = &bytes[consumed..];
-    }
-    Ok(keys)
 }
 
 struct Cursor<'a> {
