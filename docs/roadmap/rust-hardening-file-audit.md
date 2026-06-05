@@ -17,7 +17,7 @@ This tracker is the operational source of truth for the Marrow rust-hardening au
 - Main status at audit start: clean, `## main...origin/main`, head `7435c7dbd6ae9817460d5d44ebaa0e54c0aa9b70`
 - Live main integration state is intentionally not frozen here. Re-run `git -C /Users/scottwilliams/Dev/marrow rev-parse HEAD` and `git -C /Users/scottwilliams/Dev/marrow status --short --branch` immediately before every integration, then record that fresh state in the lane evidence packet.
 - Tracked file count at audit start: 279
-- Current tracked file count after integrating this tracker on main: 277
+- Current tracked file count after L02 docs-meta integration: 274
 - `docs/roadmap/` did not exist at audit start; this file creates it.
 
 ## Status Values
@@ -134,7 +134,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 | Fallback branches and legacy modes | Term scan has test/doc hits; owner lanes must distinguish domain examples from compatibility glue. | needs-lane | all lanes |
 | Message-parsing logic | L03 syntax, L04 schema, and L05 project-model have no `message.contains` semantic assertions after integration; remaining areas still need lane-local migration. | needs-lane | L06-L14 |
 | Source-text architecture scans | Existing scans identified in architecture tests. | needs-lane | L08, L10, L14 |
-| Comment sediment | L03 syntax hits were triaged as durable `rename ... now spelled` semantics and `now` sample text; L04 schema hits were triaged as `clock.now` domain text and a pre-existing `string`/`Str` bridge comment; L05 project-model hits were triaged as durable store-key migration wording and a `SystemTime::now()` false positive. | needs-lane | L00-L02, L06-L14 |
+| Comment sediment | L02 removed empty future placeholder pages; remaining L02 hits were triaged as durable data-evolution compatibility/migration contracts, `std::clock::now`, old path aliases, bridge wording for host-system extensions, and protocol cursor text. L03 syntax hits were triaged as durable `rename ... now spelled` semantics and `now` sample text; L04 schema hits were triaged as `clock.now` domain text and a pre-existing `string`/`Str` bridge comment; L05 project-model hits were triaged as durable store-key migration wording and a `SystemTime::now()` false positive. | needs-lane | L00-L01, L06-L14 |
 | Cargo target isolation | Future lane commands must spell lane-specific `CARGO_TARGET_DIR`. | needs-lane | all lanes |
 | Cargo.lock churn | No lockfile change at audit start. | reviewed-clean | L00 |
 
@@ -144,7 +144,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 |---|---|---|---|---|---|---|---|---|---|---|
 | L00 tracker bootstrap | `/Users/scottwilliams/Dev/marrow-rust-hardening-tracker` | not needed for doc-only bootstrap | `7435c7dbd6ae9817460d5d44ebaa0e54c0aa9b70` | lane `7b04e4876c5927a1f5599d30bbb28f4f2ec4ce75`; main `9415b37635bfde9d42437bca3862f5db92d5fb9d` | complete | staged and post-cherry-pick diff checks clean; inventory checks clean | pass, no findings | pass, no findings | R001-R006 fixed and re-reviewed | integrated on main after live-main recheck |
 | L01 language-docs | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l01-language-docs` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
-| L02 docs-meta | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l02-docs-meta` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
+| L02 docs-meta | `/Users/scottwilliams/Dev/marrow-rust-hardening-l02-docs-meta` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l02-docs-meta`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l02-main-integration` | `3032e90a4e274fbcce91a3b3ebdd948643948e48` | lane `3dd44fa8989af9e5dc1599e22caadbb02b42d851`; main `fe34e8695dae03f2d9fb1e857a22482e63edb6ab` | complete | focused docs scans, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings | pass, no findings | no review findings | integrated on main after live-main recheck; tracker evidence recorded |
 | L03 syntax | `/Users/scottwilliams/Dev/marrow-rust-hardening-l03-syntax` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-syntax`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-main-integration` | `14bbe00fe0be30f741727b8a65da0ceb8bc4d403` | lane `2a961360cd428eb772b65fbf18f6b961b9230ef7`; main `0627dab32fd19a66edb14d0a960afd3fb36fb779` | complete | focused, package, workspace build/test, workspace clippy, and fmt gates passed | fail on typed reason probes, then pass after fixes | fail on broad reason/test-shape findings, then pass after fixes | L03-R001 through L03-R003 fixed and re-reviewed | integrated on main after live-main recheck; tracker evidence recorded |
 | L04 schema | `/Users/scottwilliams/Dev/marrow-rust-hardening-l04-schema` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l04-schema`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l04-main-integration` | `5ca2a691806d963c5b44cef8a1eb02ac1b5da7e4` | lane `8b651049860539650ca534820cd3ca03711dd03d`; main `ee5422fe7de568a874ed2b2b4aaee6f9a721a7d8` | complete | focused, package, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings | pass, no findings | L04-P001 fixed before review; no review findings | integrated on main after live-main recheck; tracker evidence recorded |
 | L05 project-model | `/Users/scottwilliams/Dev/marrow-rust-hardening-l05-project-model` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-project-model`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-main-integration` | `49556121dc4648dec8cd7e11692a4d85cdaf6d7e` | lane `5623e86632a0a62b29c02ad2d104ef1d5969d028`; main `aac2638f1430a3a85a4a7c98a1490b6b1ea7a28c` | complete | focused, package, workspace build/test, workspace clippy, and fmt gates passed | fail on object-shape probe, then pass after fix | pass, no findings; pass after re-review | L05-R001 fixed and re-reviewed | integrated on main after live-main recheck; tracker evidence recorded |
@@ -427,33 +427,33 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow/tests/v01_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 
 ### docs/root
-- `docs/README.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
-- `docs/backend-contract.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
-- `docs/cli.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
-- `docs/data-evolution.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
-- `docs/data-modeling.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
-- `docs/data-tools.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
-- `docs/error-codes.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
+- `docs/README.md` - status: complete; owner: L02 docs-meta; notes: future-docs pointer no longer implies a complete placeholder mirror.
+- `docs/backend-contract.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean by L02 docs scans and reviewer pass.
+- `docs/cli.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; deferred data-tool and restore references point to retained future pages.
+- `docs/data-evolution.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; migration, compatibility-window, old-alias, and bridge wording is durable evolution contract text.
+- `docs/data-modeling.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; `now` and old-key wording describes current saved-root and data-maintenance semantics.
+- `docs/data-tools.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; deferred `diff`/`load` references point to retained future page.
+- `docs/error-codes.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; `std::clock::now` and deferred-surface text are durable reference entries.
 
 ### docs/future
-- `docs/future/README.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
-- `docs/future/backend-contract.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
-- `docs/future/cli.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
-- `docs/future/data-evolution.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
-- `docs/future/data-modeling.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
-- `docs/future/data-tools.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
-- `docs/future/error-codes.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
-- `docs/future/implementation.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
-- `docs/future/language/builtins.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
-- `docs/future/language/control-flow-and-effects.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
-- `docs/future/language/modules-functions.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
-- `docs/future/language/resources-and-storage.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
-- `docs/future/language/standard-library.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
-- `docs/future/serve-protocol.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
+- `docs/future/README.md` - status: complete; owner: L02 docs-meta; notes: describes selected future surfaces instead of a complete mirror.
+- `docs/future/backend-contract.md` - status: deleted; owner: L02 docs-meta; notes: placeholder-only page removed; no in-scope links remained.
+- `docs/future/cli.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; records retained restore future surface.
+- `docs/future/data-evolution.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; compatibility-window and migration terms are durable future evolution contract text.
+- `docs/future/data-modeling.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; records retained custom identity allocation future surface.
+- `docs/future/data-tools.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; records retained `data diff` and `data load` future surface.
+- `docs/future/error-codes.md` - status: deleted; owner: L02 docs-meta; notes: placeholder-only page removed; no in-scope links remained.
+- `docs/future/implementation.md` - status: deleted; owner: L02 docs-meta; notes: placeholder-only page removed; no in-scope links remained.
+- `docs/future/language/builtins.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; records retained future builtins surfaces.
+- `docs/future/language/control-flow-and-effects.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; records retained future control-flow surface.
+- `docs/future/language/modules-functions.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; records retained visibility and parameter-doc future surfaces.
+- `docs/future/language/resources-and-storage.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; records retained future resources/storage surfaces.
+- `docs/future/language/standard-library.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; records retained future standard-library surfaces.
+- `docs/future/serve-protocol.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; records retained future read-surface protocol notes.
 
 ### docs/root continued
-- `docs/implementation.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
-- `docs/install.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
+- `docs/implementation.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; migration and bridge terms are durable implementation and extension boundary text.
+- `docs/install.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean by L02 docs scans and reviewer pass.
 
 ### docs/language
 - `docs/language/README.md` - status: unreviewed; owner: L01 language-docs; notes: initial inventory.
@@ -470,11 +470,11 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `docs/language/types.md` - status: unreviewed; owner: L01 language-docs; notes: initial inventory.
 
 ### docs/root continued
-- `docs/lsp.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
-- `docs/project-config.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
-- `docs/quickstart.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
-- `docs/serve-protocol.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
-- `docs/tooling-surfaces.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
+- `docs/lsp.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; future editor-feature boundaries are durable tooling surface text.
+- `docs/project-config.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; old path alias wording is durable catalog contract text.
+- `docs/quickstart.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; deferred data-tool references point to retained future page.
+- `docs/serve-protocol.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; compatibility and previously-returned cursor wording are durable protocol contract text.
+- `docs/tooling-surfaces.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; raw saved-path compatibility text is a durable non-production boundary.
 
 ### docs/roadmap
 - `docs/roadmap/rust-hardening-file-audit.md` - status: complete; owner: L00 tracker bootstrap; notes: creates the operational source of truth.
@@ -517,6 +517,46 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
   - `git diff --check HEAD^..HEAD` passed with no output.
   - Main bidirectional inventory check passed with no output.
   - `git status --short --branch` after cherry-pick reported clean main ahead by one commit.
+
+## L02 Docs-Meta Evidence
+
+- Changed files: `docs/README.md`, `docs/future/README.md`, `docs/future/backend-contract.md`, `docs/future/error-codes.md`, `docs/future/implementation.md`.
+- Deleted files: `docs/future/backend-contract.md`, `docs/future/error-codes.md`, `docs/future/implementation.md`.
+- Lane commit: `3dd44fa8989af9e5dc1599e22caadbb02b42d851`.
+- Main integration commit: `fe34e8695dae03f2d9fb1e857a22482e63edb6ab`.
+- Main integration base: `3032e90a4e274fbcce91a3b3ebdd948643948e48`.
+- Failing-or-focused checks:
+  - RED: `git grep -n 'designed-but-unimplemented surface is recorded here yet' HEAD -- docs/future` in the L02 worktree found exactly the three placeholder-only future docs later deleted.
+  - The initially proposed exact scan for `No designed-but-unimplemented surface is recorded here yet` missed because the sentence wrapped across lines; the base-tree `git grep` above was the effective failing check.
+- Focused gates:
+  - `rg -n 'No designed-but-unimplemented surface is recorded here yet|designed-but-unimplemented surface is recorded here yet' docs/future -g '*.md'` returned no matches after the cleanup.
+  - `rg -n 'docs/future/(backend-contract|error-codes|implementation)\.md|future/(backend-contract|error-codes|implementation)\.md' docs -g '*.md' -g '!docs/roadmap/**'` returned no matches.
+  - `git diff --name-only -- docs/language docs/roadmap` returned no output before tracker evidence updates.
+  - `git diff --check` passed with no output.
+- Full lane gates:
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l02-docs-meta cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l02-docs-meta/Cargo.toml --all --check` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l02-docs-meta cargo build --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l02-docs-meta/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l02-docs-meta cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l02-docs-meta/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l02-docs-meta cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l02-docs-meta/Cargo.toml --workspace --all-targets -- -D warnings` passed.
+- Soundness review: pass, no findings. Reviewer verified the deleted files were only heading/counterpart placeholders, found no in-scope links to deleted paths, confirmed no `docs/language` or `docs/roadmap` edits in the reviewed diff, and judged remaining sediment hits durable.
+- Idiom/spec review: pass, no findings. Reviewer verified wording no longer implies a complete mirror or schedule, the retained future pages record real selected surfaces, and no empty placeholder sediment remains.
+- Fixed review findings: none; re-review not required.
+- Absence and sibling scans:
+  - Placeholder text is absent from `docs/future`.
+  - In-scope docs contain no links to `future/backend-contract.md`, `future/error-codes.md`, or `future/implementation.md`.
+  - `git diff -- Cargo.lock Cargo.toml crates/*/Cargo.toml` returned no output.
+  - L02 sediment scan retained only durable data-evolution compatibility/migration contracts, `std::clock::now`, old path aliases, bridge wording for host-system extensions, and protocol cursor text.
+- Integration gates:
+  - `git -C /Users/scottwilliams/Dev/marrow fetch origin main` completed before integration; `HEAD`, `origin/main`, and `FETCH_HEAD` were all `3032e90a4e274fbcce91a3b3ebdd948643948e48`.
+  - `git -C /Users/scottwilliams/Dev/marrow status --short --branch` before cherry-pick showed main aligned with `origin/main` and an unrelated untracked `docs/roadmap/release-hardening-operating-plan.md`.
+  - `git cherry-pick -x 3dd44fa8989af9e5dc1599e22caadbb02b42d851` produced `fe34e8695dae03f2d9fb1e857a22482e63edb6ab`.
+  - `git diff --check HEAD^..HEAD` passed with no output.
+  - Main post-integration placeholder and deleted-path link scans matched the lane absence scans.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l02-main-integration cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --all --check` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l02-main-integration cargo build --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l02-main-integration cargo test --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l02-main-integration cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace --all-targets -- -D warnings` passed.
+  - `git -C /Users/scottwilliams/Dev/marrow status --short --branch` after the L02 cherry-pick showed main ahead by one commit with the unrelated untracked `docs/roadmap/release-hardening-operating-plan.md`.
 
 ## L03 Syntax Evidence
 
