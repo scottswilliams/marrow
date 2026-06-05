@@ -132,9 +132,9 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 | Duplicate semantic classifiers | Targeted scan found classifier families in checker/runtime; owner lanes must prove one semantic owner. | needs-lane | L06-L11 |
 | Public raw/string APIs | Raw/catalog/archive hits require production-boundary review. | needs-lane | L10, L12, L13, L14 |
 | Fallback branches and legacy modes | Term scan has test/doc hits; owner lanes must distinguish domain examples from compatibility glue. | needs-lane | all lanes |
-| Message-parsing logic | Prose assertion scan found a large family. | needs-lane | L03-L14 |
+| Message-parsing logic | L05 project-model has no `message.contains` semantic assertions after integration; remaining areas still need lane-local migration. | needs-lane | L03-L04, L06-L14 |
 | Source-text architecture scans | Existing scans identified in architecture tests. | needs-lane | L08, L10, L14 |
-| Comment sediment | Term scan has many hits. | needs-lane | all lanes |
+| Comment sediment | L05 project-model hits were triaged as durable store-key migration wording and a `SystemTime::now()` false positive; remaining areas still need lane-local review. | needs-lane | L00-L04, L06-L14 |
 | Cargo target isolation | Future lane commands must spell lane-specific `CARGO_TARGET_DIR`. | needs-lane | all lanes |
 | Cargo.lock churn | No lockfile change at audit start. | reviewed-clean | L00 |
 
@@ -147,7 +147,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 | L02 docs-meta | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l02-docs-meta` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L03 syntax | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-syntax` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L04 schema | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l04-schema` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
-| L05 project-model | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-project-model` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
+| L05 project-model | `/Users/scottwilliams/Dev/marrow-rust-hardening-l05-project-model` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-project-model`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-main-integration` | `49556121dc4648dec8cd7e11692a4d85cdaf6d7e` | lane `5623e86632a0a62b29c02ad2d104ef1d5969d028`; main `aac2638f1430a3a85a4a7c98a1490b6b1ea7a28c` | complete | focused, package, workspace build/test, workspace clippy, and fmt gates passed | fail on object-shape probe, then pass after fix | pass, no findings; pass after re-review | L05-R001 fixed and re-reviewed | integrated on main after live-main recheck; tracker evidence recorded |
 | L06 checker-core | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l06-checker-core` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L07 checker-evolution | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l07-checker-evolution` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L08 checker-presence | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l08-checker-presence` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
@@ -250,12 +250,12 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow-check/tests/v01_fixtures.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
 
 ### crates/marrow-project
-- `crates/marrow-project/Cargo.toml` - status: unreviewed; owner: L05 project-model; notes: initial inventory.
-- `crates/marrow-project/src/digest.rs` - status: unreviewed; owner: L05 project-model; notes: initial inventory.
-- `crates/marrow-project/src/lib.rs` - status: unreviewed; owner: L05 project-model; notes: initial inventory.
-- `crates/marrow-project/tests/config.rs` - status: unreviewed; owner: L05 project-model; notes: initial inventory.
-- `crates/marrow-project/tests/discovery.rs` - status: unreviewed; owner: L05 project-model; notes: initial inventory.
-- `crates/marrow-project/tests/modules.rs` - status: unreviewed; owner: L05 project-model; notes: initial inventory.
+- `crates/marrow-project/Cargo.toml` - status: complete; owner: L05 project-model; notes: reviewed-clean; no manifest churn.
+- `crates/marrow-project/src/digest.rs` - status: complete; owner: L05 project-model; notes: reviewed-clean by lane gates and absence scans.
+- `crates/marrow-project/src/lib.rs` - status: complete; owner: L05 project-model; notes: typed `ConfigErrorKind`, `ConfigPathField`, and `ConfigPathViolation` added; config object-shape hole fixed.
+- `crates/marrow-project/tests/config.rs` - status: complete; owner: L05 project-model; notes: semantic config diagnostics assert typed facts instead of `message.contains`; render-only unknown-field text remains exact.
+- `crates/marrow-project/tests/discovery.rs` - status: complete; owner: L05 project-model; notes: reviewed-clean; collection membership assertions are data-set assertions, not diagnostic prose parsing.
+- `crates/marrow-project/tests/modules.rs` - status: complete; owner: L05 project-model; notes: reviewed-clean by lane gates and absence scans.
 
 ### crates/marrow-run/core
 - `crates/marrow-run/Cargo.toml` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
@@ -517,3 +517,37 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
   - `git diff --check HEAD^..HEAD` passed with no output.
   - Main bidirectional inventory check passed with no output.
   - `git status --short --branch` after cherry-pick reported clean main ahead by one commit.
+
+## L05 Project Model Evidence
+
+- Changed files: `crates/marrow-project/src/lib.rs`, `crates/marrow-project/tests/config.rs`.
+- Lane commit: `5623e86632a0a62b29c02ad2d104ef1d5969d028`.
+- Main integration commit: `aac2638f1430a3a85a4a7c98a1490b6b1ea7a28c`.
+- Main integration base: `49556121dc4648dec8cd7e11692a4d85cdaf6d7e`.
+- Failing-or-focused checks:
+  - Initial RED: config tests failed on missing `ConfigErrorKind`, `ConfigPathField`, `ConfigPathViolation`, and `ConfigError.kind`.
+  - Review-fix RED: `rejects_non_object_config_shapes` failed because `parse_config("[]")` returned `MissingSourceRoots` instead of `InvalidJson`.
+- Focused gates:
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-project-model cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l05-project-model/Cargo.toml -p marrow-project --test config` passed with 12 tests.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-project-model cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l05-project-model/Cargo.toml -p marrow-project` passed with 33 tests.
+- Full lane gates:
+  - `cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l05-project-model/Cargo.toml --all --check` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-project-model cargo build --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l05-project-model/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-project-model cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l05-project-model/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-project-model cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l05-project-model/Cargo.toml --workspace --all-targets -- -D warnings` passed.
+- Soundness review: failed first review on top-level and nested `run`/`store` non-object JSON shapes; passed re-review after the family fix. External probe covered top-level null/scalar/array, `run`/`store` null/scalar/array, unknown fields, missing/empty `sourceRoots`, native `dataDir`, backend, and path violation cases.
+- Idiom/spec review: pass, no findings; pass after re-review.
+- Fixed review findings:
+  - L05-R001: Rejected non-object top-level config values and non-object present `run`/`store` values as `ConfigErrorKind::InvalidJson`, while keeping serde `deny_unknown_fields` as the unknown-key owner.
+- Absence and sibling scans:
+  - `rg -n 'error\.message\.contains|message\.contains|\.message\.contains|UnknownField|reject_unknown_fields|reject_unknown_object|unknown_field_message' crates/marrow-project -g '*.rs'` returned no matches.
+  - `rg -n '\bunsafe\b' -g '*.rs'` returned no matches.
+  - `git diff -- Cargo.lock Cargo.toml crates/marrow-project/Cargo.toml` returned no output.
+  - `rg -n '\bTODO\b|\bFIXME\b|\blegacy\b|\bprototype\b|\bmigration\b|\btemporary\b|\bcompatibility\b|\bshim\b|\bbridge\b|\bpreviously\b|\bnow\b' crates/marrow-project -g '*.rs' -g '*.toml'` found only durable store-key migration wording and a `SystemTime::now()` false positive.
+- Integration gates:
+  - `git -C /Users/scottwilliams/Dev/marrow status --short --branch` before cherry-pick showed main aligned with `origin/main` and an unrelated untracked `docs/roadmap/release-hardening-operating-plan.md`.
+  - `git cherry-pick -x 5623e86632a0a62b29c02ad2d104ef1d5969d028` produced `aac2638f1430a3a85a4a7c98a1490b6b1ea7a28c`.
+  - `cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --all --check` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-main-integration cargo build --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-main-integration cargo test --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-main-integration cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace --all-targets -- -D warnings` passed.
