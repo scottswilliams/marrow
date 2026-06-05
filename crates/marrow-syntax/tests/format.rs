@@ -525,6 +525,24 @@ fn comment_preservation_round_trips_and_is_idempotent() {
 }
 
 #[test]
+fn trailing_body_doc_comment_normalizes_to_an_ordinary_comment() {
+    // A documentation comment attaches to the next declaration or member; inside
+    // a function body there is nothing to document, so a `;;` is an ordinary
+    // comment. The trailing-comment path normalizes it to `;` just as the
+    // own-line path does, and the result is a fixed point.
+    let source = "module app\n\
+         fn run()\n\
+         \x20   const x: int = 1 ;; trailing doc\n";
+    let body = format_function_body(source);
+    assert_eq!(body, "    const x: int = 1 ; trailing doc");
+    let reformatted = format_function_body(&format!("module app\nfn run()\n{body}\n"));
+    assert_eq!(
+        body, reformatted,
+        "trailing body comment is not a fixed point"
+    );
+}
+
+#[test]
 fn documented_parameters_format_one_per_line() {
     let source = "module app\n\
          fn f(\n\
