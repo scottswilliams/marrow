@@ -611,7 +611,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
   - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-project-model cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l05-project-model/Cargo.toml -p marrow-project --test config` passed with 12 tests.
   - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-project-model cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l05-project-model/Cargo.toml -p marrow-project` passed with 33 tests.
 - Full lane gates:
-  - `cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l05-project-model/Cargo.toml --all --check` passed.
+  - Evidence addendum on 2026-06-05 reran the formatter gate at lane head `5623e86632a0a62b29c02ad2d104ef1d5969d028`: `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-project-model cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l05-project-model/Cargo.toml --all --check` passed with no output.
   - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-project-model cargo build --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l05-project-model/Cargo.toml --workspace` passed.
   - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-project-model cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l05-project-model/Cargo.toml --workspace` passed.
   - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-project-model cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l05-project-model/Cargo.toml --workspace --all-targets -- -D warnings` passed.
@@ -627,7 +627,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - Integration gates:
   - `git -C /Users/scottwilliams/Dev/marrow status --short --branch` before cherry-pick showed main aligned with `origin/main` and an unrelated untracked `docs/roadmap/release-hardening-operating-plan.md`.
   - `git cherry-pick -x 5623e86632a0a62b29c02ad2d104ef1d5969d028` produced `aac2638f1430a3a85a4a7c98a1490b6b1ea7a28c`.
-  - `cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --all --check` passed.
+  - Evidence addendum on 2026-06-05 reran the formatter gate at main integration commit `aac2638f1430a3a85a4a7c98a1490b6b1ea7a28c`: `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-main-integration cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l05-main-replay/Cargo.toml --all --check` passed with no output.
   - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-main-integration cargo build --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
   - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-main-integration cargo test --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
   - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-main-integration cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace --all-targets -- -D warnings` passed.
