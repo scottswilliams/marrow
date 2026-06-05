@@ -128,14 +128,14 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 | Pattern | Current Evidence | Status | Owner |
 |---|---|---|---|
 | `unsafe` Rust | `rg -n "\\bunsafe\\b" -g "*.rs"` returned no matches. | reviewed-clean | L00 |
-| Prototype paths | Completed L00-L05 and L12 lanes found no retained prototype paths in their owned areas; remaining hits require lane-local review. | needs-lane | L06-L11, L13-L14 |
+| Prototype paths | Completed L00-L05, L12, and L13 lanes found no retained prototype paths in their owned areas; remaining hits require lane-local review. | needs-lane | L06-L11, L14 |
 | Duplicate semantic classifiers | Targeted scan found classifier families in checker/runtime; owner lanes must prove one semantic owner. | needs-lane | L06-L11 |
-| Public raw/string APIs | L12 store raw archive constructors are `pub(crate)` typed backup boundaries or test-gated constructors; redb raw byte checks are native substrate tests. Other raw/catalog/archive hits require production-boundary review. | needs-lane | L10, L13, L14 |
-| Fallback branches and legacy modes | L00 root-fixtures hits are AGENTS policy prohibitions. L01 language-doc hits are v0.1/reserved boundary text rather than compatibility fallback behavior. L12 store hits are version-refusal and table-initialization comments or tests rejecting legacy manifest spellings. Other term scan hits require lane-local review. | needs-lane | L06-L11, L13-L14 |
-| Message-parsing logic | L03 syntax, L04 schema, L05 project-model, and L12 store have no `message.contains` semantic assertions after integration; remaining areas still need lane-local migration. | needs-lane | L06-L11, L13-L14 |
+| Public raw/string APIs | L12 store raw archive constructors are `pub(crate)` typed backup boundaries or test-gated constructors; redb raw byte checks are native substrate tests. L13 backup/restore raw cell helpers are test-only malformed-archive constructors; production archive errors now carry typed payloads. Other raw/catalog hits require production-boundary review. | needs-lane | L10, L14 |
+| Fallback branches and legacy modes | L00 root-fixtures hits are AGENTS policy prohibitions. L01 language-doc hits are v0.1/reserved boundary text rather than compatibility fallback behavior. L12 store hits are version-refusal and table-initialization comments or tests rejecting legacy manifest spellings. L13 legacy digest hits are rejection tests for old digest spelling, not compatibility behavior. Other term scan hits require lane-local review. | needs-lane | L06-L11, L14 |
+| Message-parsing logic | L03 syntax, L04 schema, L05 project-model, L12 store, and L13 backup/restore have no `message.contains` semantic assertions after integration; remaining areas still need lane-local migration. | needs-lane | L06-L11, L14 |
 | Source-text architecture scans | Existing scans identified in architecture tests. | needs-lane | L08, L10, L14 |
-| Comment sediment | L00 root-fixtures hits are durable AGENTS policy prohibitions and repository operating rules. L01 language-doc hits were triaged as durable `migration DSL` negative scope, `std::clock::now()` examples, and `rename ... now spelled` evolution wording. L02 removed empty future placeholder pages; remaining L02 hits were triaged as durable data-evolution compatibility/migration contracts, `std::clock::now`, old path aliases, bridge wording for host-system extensions, and protocol cursor text. L03 syntax hits were triaged as durable `rename ... now spelled` semantics and `now` sample text; L04 schema hits were triaged as `clock.now` domain text and a pre-existing `string`/`Str` bridge comment; L05 project-model hits were triaged as durable store-key migration wording and a `SystemTime::now()` false positive; L12 store hits were durable redb format/version comments, native substrate raw-byte tests, and internal byte-decoder variable names. | needs-lane | L06-L11, L13-L14 |
-| Cargo target isolation | Completed lanes spell lane-specific `CARGO_TARGET_DIR`; future lane commands must keep doing so. | needs-lane | L06-L11, L13-L14 |
+| Comment sediment | L00 root-fixtures hits are durable AGENTS policy prohibitions and repository operating rules. L01 language-doc hits were triaged as durable `migration DSL` negative scope, `std::clock::now()` examples, and `rename ... now spelled` evolution wording. L02 removed empty future placeholder pages; remaining L02 hits were triaged as durable data-evolution compatibility/migration contracts, `std::clock::now`, old path aliases, bridge wording for host-system extensions, and protocol cursor text. L03 syntax hits were triaged as durable `rename ... now spelled` semantics and `now` sample text; L04 schema hits were triaged as `clock.now` domain text and a pre-existing `string`/`Str` bridge comment; L05 project-model hits were triaged as durable store-key migration wording and a `SystemTime::now()` false positive; L12 store hits were durable redb format/version comments, native substrate raw-byte tests, and internal byte-decoder variable names; L13 backup/restore hits were durable legacy-digest rejection tests, raw-engine-copy contract docs, and test/output wording. | needs-lane | L06-L11, L14 |
+| Cargo target isolation | Completed lanes spell lane-specific `CARGO_TARGET_DIR`; future lane commands must keep doing so. | needs-lane | L06-L11, L14 |
 | Cargo.lock churn | No lockfile change at audit start. | reviewed-clean | L00 |
 
 ## Lane Status Ledger
@@ -155,7 +155,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 | L10 runtime-core | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-runtime-core` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L11 runtime-evolution | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l11-runtime-evolution` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L12 store | `/Users/scottwilliams/Dev/marrow-rust-hardening-l12-store` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-store`; review `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-review-soundness` and `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-review-idiom`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-main-integration` | `e3690d46d5cebb760728dfb20b49cd52d0806c2b` | no source commit; tracker evidence recorded | complete | focused store/default/native checks, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings | pass, no findings | no review findings | no source cherry-pick required; main integration gates passed |
-| L13 backup-restore | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-backup-restore` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
+| L13 backup-restore | `/Users/scottwilliams/Dev/marrow-rust-hardening-l13-backup-restore` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-backup-restore`; review `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-review-soundness` and `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-review-idiom`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-main-integration` | `2215296a4de471bf051e15990158e558b9d51bd6` | lane `fdbc324e025b5cd81b7bd97354544552c8e02bb5`; main `b1f0112ed36908535c0d4ef1dc09f198835134c1` | complete | focused backup tests, workspace build/test, workspace clippy, and fmt gates passed | fail on typed wrong-type manifest payload, then pass after fix | pass, then pass after re-review | L13-R001 fixed and re-reviewed | integrated on main after live-main recheck; tracker evidence recorded |
 | L14 cli-tools-server | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-cli-tools-server` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 
 ## File Inventory
@@ -381,11 +381,11 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 
 ### crates/marrow
 - `crates/marrow/Cargo.toml` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
-- `crates/marrow/src/backup/archive.rs` - status: unreviewed; owner: L13 backup-restore; notes: initial inventory.
-- `crates/marrow/src/backup/create.rs` - status: unreviewed; owner: L13 backup-restore; notes: initial inventory.
-- `crates/marrow/src/backup/mod.rs` - status: unreviewed; owner: L13 backup-restore; notes: initial inventory.
-- `crates/marrow/src/backup/restore.rs` - status: unreviewed; owner: L13 backup-restore; notes: initial inventory.
-- `crates/marrow/src/cmd_backup.rs` - status: unreviewed; owner: L13 backup-restore; notes: initial inventory.
+- `crates/marrow/src/backup/archive.rs` - status: complete; owner: L13 backup-restore; notes: typed archive format/corrupt error payloads added; present wrong-type manifest fields now differ from missing fields.
+- `crates/marrow/src/backup/create.rs` - status: complete; owner: L13 backup-restore; notes: manifest binding mismatch tests assert typed corrupt payloads.
+- `crates/marrow/src/backup/mod.rs` - status: complete; owner: L13 backup-restore; notes: `BackupError` carries typed `BackupFormatProblem` and `BackupCorruptProblem` payloads while preserving stable dotted codes.
+- `crates/marrow/src/backup/restore.rs` - status: complete; owner: L13 backup-restore; notes: checksum and trailing-byte failures carry typed corrupt payloads.
+- `crates/marrow/src/cmd_backup.rs` - status: complete; owner: L13 backup-restore; notes: reviewed-clean CLI render boundary; no source change.
 - `crates/marrow/src/cmd_check.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/src/cmd_data.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/src/cmd_data/get.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
@@ -395,7 +395,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow/src/cmd_evolve/render.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/src/cmd_evolve/store.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/src/cmd_fmt.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
-- `crates/marrow/src/cmd_restore.rs` - status: unreviewed; owner: L13 backup-restore; notes: initial inventory.
+- `crates/marrow/src/cmd_restore.rs` - status: complete; owner: L13 backup-restore; notes: reviewed-clean CLI render boundary; no source change.
 - `crates/marrow/src/cmd_run.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/src/cmd_test.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/src/dry_run.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
@@ -409,7 +409,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow/src/serve/protocol/tests.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/src/serve/protocol/walk.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/src/trace.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
-- `crates/marrow/tests/backup_cli.rs` - status: unreviewed; owner: L13 backup-restore; notes: initial inventory.
+- `crates/marrow/tests/backup_cli.rs` - status: complete; owner: L13 backup-restore; notes: semantic restore error-code assertions moved to JSON `code`; remaining `contains` checks are render/effect assertions.
 - `crates/marrow/tests/check_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/tests/check_project_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/tests/data_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
@@ -419,7 +419,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow/tests/lsp_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/tests/run_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/tests/serve_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
-- `crates/marrow/tests/support/mod.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: serialized shared CLI test support; L13 must sequence through L14 or split support before editing.
+- `crates/marrow/tests/support/mod.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: serialized shared CLI test support.
 - `crates/marrow/tests/test_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/tests/tooling_architecture.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/tests/trace_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
@@ -792,3 +792,68 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
   - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-main-integration cargo build --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
   - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-main-integration cargo test --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
   - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-main-integration cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace --all-targets -- -D warnings` passed.
+
+## L13 Backup/Restore Evidence
+
+- Worktree: `/Users/scottwilliams/Dev/marrow-rust-hardening-l13-backup-restore`.
+- Target dirs:
+  - Lane: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-backup-restore`.
+  - Soundness review: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-review-soundness`.
+  - Idiom/spec review: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-review-idiom`.
+  - Main integration: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-main-integration`.
+- Base/head:
+  - Lane base: `2215296a4de471bf051e15990158e558b9d51bd6`.
+  - Lane source commit: `fdbc324e025b5cd81b7bd97354544552c8e02bb5`.
+  - Main source integration commit: `b1f0112ed36908535c0d4ef1dc09f198835134c1`.
+- Changed files:
+  - `crates/marrow/src/backup/archive.rs`
+  - `crates/marrow/src/backup/create.rs`
+  - `crates/marrow/src/backup/mod.rs`
+  - `crates/marrow/src/backup/restore.rs`
+  - `crates/marrow/tests/backup_cli.rs`
+- Failing or focused checks:
+  - Initial RED: `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-backup-restore cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l13-backup-restore/Cargo.toml -p marrow backup::` failed because tests referenced new typed `BackupFormatProblem` and `BackupCorruptProblem` payloads before implementation.
+  - Review-fix RED: the same command failed because `BackupFormatProblem::FieldType` did not exist before separating present wrong-type manifest fields from missing fields.
+- Focused gates:
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-backup-restore cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l13-backup-restore/Cargo.toml -p marrow --check` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-backup-restore cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l13-backup-restore/Cargo.toml -p marrow backup::` passed with 16 backup tests after the review fix.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-backup-restore cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l13-backup-restore/Cargo.toml -p marrow --test backup_cli` passed with 10 tests.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-backup-restore cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l13-backup-restore/Cargo.toml -p marrow --all-targets -- -D warnings` passed.
+  - A concurrent `backup_cli`/clippy run against the same lane target dir was discarded as evidence; both commands above were rerun sequentially with the explicit target dir.
+- Backup/restore contracts inspected:
+  - Archive framing: magic header, format version, bounded manifest length, JSON manifest, and framed typed cell stream.
+  - Manifest binding: source digest, catalog epoch, engine layout/profile/value codec, commit binding, and digest spelling validation.
+  - Checksum and cell count: checksum over exact framed cell bytes, record-count-bounded replay, and trailing-byte rejection.
+  - Restore validation: schema/source/catalog/engine checks before replay and integrity verification before commit.
+  - Empty-target transaction rollback: non-empty targets fail before replay; replay, checksum, trailing-byte, and verify failures roll the transaction back.
+  - Index rebuild: backup carries data cells only; restore rebuilds generated indexes in the restore transaction.
+  - Commit metadata restamp: restored stores restamp engine profile, catalog epoch, and commit metadata after replay validation.
+- Source changes:
+  - Added `BackupFormatProblem` and `BackupCorruptProblem` typed payloads to `BackupError`.
+  - Replaced backup unit-test `Display` parsing with typed payload assertions.
+  - Added `BackupFormatProblem::FieldType { field, expected }` and a manifest wrong-type regression test.
+  - Moved semantic `backup_cli` error-code checks to `--format json` and JSON `code` assertions; retained text `contains` only for render/effect checks.
+- Full lane gates:
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-backup-restore cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l13-backup-restore/Cargo.toml --all --check` passed with no output.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-backup-restore cargo build --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l13-backup-restore/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-backup-restore cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l13-backup-restore/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-backup-restore cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l13-backup-restore/Cargo.toml --workspace --all-targets -- -D warnings` passed.
+- Soundness review: failed first review on L13-R001, then passed re-review. Reviewer reran backup unit and CLI tests, inspected sibling readers, and manually crafted wrong-type and missing-field archive manifests to verify distinct typed/rendered behavior.
+- Idiom/spec review: pass, no findings; passed re-review after `FieldType` landed. Reviewer inspected touched Rust for public type shape, duplicate classifiers, remaining `contains` checks, raw helpers, legacy hits, and warning-free production builds.
+- Fixed review findings:
+  - L13-R001: Present wrong-type manifest fields were classified as `MissingField`. Fixed with `BackupFormatProblem::FieldType { field, expected }`, object/number/string/array readers that distinguish missing from wrong type, and a regression test for `record_count: "1"`.
+- Absence and sibling scans:
+  - `rg -n 'to_string\(\)\.contains|message\.contains|\.message\.contains|error\.message\.contains' crates/marrow/src/backup crates/marrow/src/cmd_backup.rs crates/marrow/src/cmd_restore.rs crates/marrow/tests/backup_cli.rs -g '*.rs'` returned no matches.
+  - `rg -n '\bunsafe\b' crates/marrow/src/backup crates/marrow/src/cmd_backup.rs crates/marrow/src/cmd_restore.rs crates/marrow/tests/backup_cli.rs -g '*.rs'` returned no matches.
+  - `git diff -- Cargo.lock Cargo.toml crates/marrow/Cargo.toml` returned no output.
+  - `git diff --check` returned no output.
+  - Raw/helper/prototype/legacy scans found only test-only raw archive mutation helpers, legacy digest rejection tests, raw-engine-copy contract docs, and render/effect comments.
+- Integration gates:
+  - `git -C /Users/scottwilliams/Dev/marrow fetch origin` completed before integration; `git -C /Users/scottwilliams/Dev/marrow rev-parse HEAD` and `git -C /Users/scottwilliams/Dev/marrow rev-parse origin/main` both returned `2215296a4de471bf051e15990158e558b9d51bd6`.
+  - `git -C /Users/scottwilliams/Dev/marrow status --short --branch` showed `## main...origin/main` plus unrelated untracked `docs/roadmap/release-hardening-operating-plan.md`.
+  - `git -C /Users/scottwilliams/Dev/marrow cherry-pick -x fdbc324e025b5cd81b7bd97354544552c8e02bb5` produced `b1f0112ed36908535c0d4ef1dc09f198835134c1`.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-main-integration cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --all --check` passed with no output.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-main-integration cargo build --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-main-integration cargo test --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-main-integration cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace --all-targets -- -D warnings` passed.
+  - Post-tracker-evidence `git -C /Users/scottwilliams/Dev/marrow status --short --branch` showed main ahead of origin by the L13 source commit, modified `docs/roadmap/rust-hardening-file-audit.md`, and unrelated untracked `docs/roadmap/release-hardening-operating-plan.md`.
