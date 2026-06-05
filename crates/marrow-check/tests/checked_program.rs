@@ -1105,14 +1105,12 @@ fn a_file_with_a_parse_error_contributes_no_module() {
     assert!(program.modules.is_empty(), "{program:#?}");
 }
 
-// --- `Error` in a scalar position (regression for A08) -------------------------
+// --- `Error` in a scalar position ---------------------------------------------
 //
 // `MarrowType::Error` is a concrete type with no storage form: it is *not* an
 // untyped value. A `catch e: Error` clause binds `e` as `Error`, so using `e`
 // where a scalar is required must report the same diagnostic a wrong scalar
-// would, never `check.untyped_value` and never nothing. (A08 split `Error` into
-// its own arm; before that `Error` was a primitive that simply failed to match,
-// which is the behavior these tests pin back in place.) The dual is preserved:
+// would, never `check.untyped_value` and never nothing. The dual is preserved:
 // `Error` must still satisfy an `Error`-typed slot (`std::log::error`).
 
 /// Build a one-module project whose single function wraps `body` in a

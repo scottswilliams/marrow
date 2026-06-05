@@ -48,9 +48,8 @@ discards and rebuilds them by manifest match.
 Natural uses are fast computed structures that should not become durable
 B-tree indexes: full-text and inverted indexes, graph adjacency, vector indexes,
 parsed-import buffers, precomputed models, analytics cubes, and hot read models.
-Future waves may add manual process-private roots, derived roots with
-`derives from` and `build`, and warm or project-shared caches. Those are future
-features, not v1 gates.
+Future language features may include manual process-private roots, derived roots
+with `derives from` and `build`, and warm or project-shared caches.
 
 If future ephemeral roots gain identity values, `Id(~root)` is scoped to the
 ephemeral lifetime and must not be storable in `^` data.

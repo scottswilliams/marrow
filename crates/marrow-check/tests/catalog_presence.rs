@@ -65,7 +65,7 @@ fn fixture_id(label: &str) -> String {
     label.hash(&mut hasher);
     let first = hasher.finish();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    (label, "lane-13").hash(&mut hasher);
+    (label, "catalog-presence-fixture").hash(&mut hasher);
     let second = hasher.finish();
     format!("cat_{first:016x}{second:016x}")
 }

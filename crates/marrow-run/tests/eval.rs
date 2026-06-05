@@ -1906,8 +1906,7 @@ fn a_throw_from_a_callee_is_caught_by_the_caller() {
 fn an_expression_position_call_throw_is_caught_like_a_statement_throw() {
     // The throw rides one channel regardless of position: a throw from a call used
     // mid-expression (`var x = boom() + 1`) unwinds on the same `Err` channel a
-    // bare `throw` statement does, so the same `catch` binds it. This pins the A32
-    // goal that expression- and statement-position throws agree.
+    // bare `throw` statement does, so the same `catch` binds it.
     let program = checked_program(
         "fn boom(): int\n    throw Error(code: \"x.y\", message: \"mid\")\npub fn safe(): string\n    try\n        var total: int = boom() + 1\n    catch err: Error\n        return err.message\n    return \"none\"\n",
     );
@@ -5691,8 +5690,8 @@ fn the_reference_sample_runs_end_to_end() {
 
 #[test]
 fn the_reference_sample_runs_on_native_storage() {
-    // Step 9's done-criterion: the same sample runs unchanged on the native redb
-    // backend, with output identical to the in-memory run.
+    // The reference sample must run unchanged on the native redb backend, with
+    // output identical to the in-memory run.
     let program = checked_program(&sample_source());
     let dir = tempfile::tempdir().expect("create a temp dir");
     let store = TreeStore::open(&dir.path().join("sample.redb")).expect("open redb");

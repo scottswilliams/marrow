@@ -2043,7 +2043,7 @@ fn normalize(title: string): string
     assert_eq!(names, ["MaxLoans", "Book", "books", "normalize"]);
 }
 
-// --- Wave 6 findings: single-report guard and grammar tightenings (A21/A23) ---
+// --- Keyword-field diagnostics and grammar tightening ---
 
 #[test]
 fn const_value_keyword_field_reports_once_not_also_expected_an_expression() {
@@ -2150,8 +2150,7 @@ fn reserved_word_as_key_parameter_name_is_rejected() {
 #[test]
 fn malformed_while_condition_reports_a_parse_error() {
     // A `while` header that does not parse as a complete expression is a parse
-    // error (the A21 hole-close generalized): the grammar requires
-    // `while_stmt = "while" expression NEWLINE block`.
+    // error: the grammar requires `while_stmt = "while" expression NEWLINE block`.
     let parsed = parse_source("fn f()\n    while a == b == c\n        return\n");
     assert!(
         parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"),

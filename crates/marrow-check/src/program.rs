@@ -658,8 +658,9 @@ pub enum MarrowType {
     Unknown,
 }
 
-/// The module's enum names, used while resolving annotations. Resource names
-/// resolve through the checked module-aware resolver instead.
+/// The module's enum names, used while resolving annotations with module-owned
+/// enum identity. Resource names resolve through the checked module-aware
+/// resolver instead.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct TypeNames<'a> {
     /// The qualified name of the module these names belong to, so a bare enum

@@ -83,7 +83,7 @@ fn dry_run_leaves_the_store_byte_for_byte_unchanged() {
 #[test]
 fn dry_run_plan_matches_a_real_run() {
     // The dry run's planned writes are exactly the records a real run commits. Run
-    // the entry for real, dump the store, and assert each planned path appears in
+    // the entry for real, dump the store, and assert each expected path appears in
     // the real store's dump.
     let dry_project = native_project("dryrun-plan-dry");
     let real_project = native_project("dryrun-plan-real");

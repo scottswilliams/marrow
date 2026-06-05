@@ -14,8 +14,8 @@ directory. When implementation and documentation disagree, treat the
 disagreement as implementation work, not as a competing design.
 
 Implementation and tooling references live in concise `docs/` pages such as
-the backend, server, and roadmap references. Keep them simple, current, and
-organized like a real language/database reference. The code itself should be
+the backend and server references. Keep them simple, current, and organized
+like a real language/database reference. The code itself should be
 self-documenting where possible.
 
 Marrow is unreleased. Do not preserve stale names, old design formats,
@@ -25,12 +25,12 @@ beginning: simple, direct, and inspectable.
 
 Green tests or compile success are not reasons to keep legacy prototype paths.
 If a test or fixture depends on outdated behavior, update or delete it so it
-asserts the v0.1 contract. Runtime or CLI callers must migrate unless the
-lane's prototype-removal ledger names a live production bridge with caller,
-isolation boundary, absence test, and deletion lane, or the surface is
-explicitly debug/admin-only and excluded from production semantics. Do not keep
-fallback branches, mode flags, compatibility shims, test-only production entry
-points, or duplicate semantic models just to preserve old behavior.
+asserts the v0.1 contract. Runtime or CLI callers must migrate unless durable
+reference docs name a live production bridge with its caller, isolation
+boundary, absence test, and removal owner, or the surface is explicitly
+debug/admin-only and excluded from production semantics. Do not keep fallback
+branches, mode flags, compatibility shims, test-only production entry points,
+or duplicate semantic models just to preserve old behavior.
 
 Avoid agentic slop and documentation sediment at all costs, including in code.
 
@@ -62,8 +62,8 @@ Avoid agentic slop and documentation sediment at all costs, including in code.
 ## Worktrees
 
 Use an isolated worktree for multi-file changes, Rust changes, or cleanup
-batches. Keep lane worktrees under `/Users/scottwilliams/Dev` next to the main
-checkout, using names such as `/Users/scottwilliams/Dev/marrow-<lane>`.
+batches. Keep feature worktrees under `/Users/scottwilliams/Dev` next to the
+main checkout, using names such as `/Users/scottwilliams/Dev/marrow-<topic>`.
 
 Keep harness files, throwaway worktrees, cargo targets, trial artifacts,
 patches, reviews, logs, and leases outside the repository. The tracked repo
@@ -80,13 +80,13 @@ Use focused checks before broad ones:
 3. workspace checks: `cargo build --workspace` and `cargo test --workspace`
    for broad rename, runtime, or release-surface changes.
 
-Do not run broad Cargo gates in parallel against the same target directory. In
-a lane, spell `CARGO_TARGET_DIR` explicitly in every Cargo command, using an
-external target path:
+Do not run broad Cargo gates in parallel against the same target directory.
+Spell `CARGO_TARGET_DIR` explicitly in every Cargo command, using an external
+target path:
 
 ```sh
-CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/<lane> \
-    cargo test --manifest-path /Users/scottwilliams/Dev/marrow-<lane>/Cargo.toml ...
+CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/<topic> \
+    cargo test --manifest-path /Users/scottwilliams/Dev/marrow-<topic>/Cargo.toml ...
 ```
 
 Use `/Users/scottwilliams/Dev/.build/marrow-targets/integration` for broad
@@ -109,7 +109,7 @@ docs/language/ as the source of truth for language behavior.
 Integrate only from the live main checkout at `/Users/scottwilliams/Dev/marrow`.
 Prefer `git cherry-pick -x <reviewed-sha>` over merging a whole branch. If a
 conflict is not an obvious mechanical rename/import conflict, abort and send the
-branch back to the lane.
+branch back to the owner.
 
 Before pushing `main`, run the verification ladder through the workspace checks
 using `/Users/scottwilliams/Dev/.build/marrow-targets/integration`, then ask for
@@ -125,10 +125,8 @@ belong together.
 
 - `docs/language/` is the language reference.
 - `docs/implementation.md` is the implementation and backend reference.
-- `docs/roadmap/` is a status note: the implemented kernel, plus the deferrals
-  and non-goals that bound it.
-- Other durable language, database, implementation, backend, tooling, and
-  roadmap docs belong under `docs/`, not scattered elsewhere.
+- Other durable language, database, implementation, backend, and tooling docs
+  belong under `docs/`, not scattered elsewhere.
 - Public examples and demos exist only when they match `docs/language/` and
   the implementation. Otherwise remove them and keep coverage in tests or
   fixtures.
@@ -147,9 +145,9 @@ belong together.
 - Keep code concise and self-documenting. Prioritize readability and
   maintainability.
 - Write comments as a human engineer would: explain *why*, in plain prose. Do not
-  cite docs by filename or line, reference tickets, reviews, roadmap steps, or
-  wave/slice numbers, narrate edits ("previously", "now changed to"), or restate
-  what the code already says. State the rationale directly and trust the reader to
+  cite docs by filename or line, reference tickets, reviews, planning steps, or
+  batch names, narrate edits ("previously", "now changed to"), or restate what
+  the code already says. State the rationale directly and trust the reader to
   find the rest in `docs/`.
 - Follow the 80/20 rule: avoid large changes without proportionate impact.
 - Add tests near the behavior being changed.

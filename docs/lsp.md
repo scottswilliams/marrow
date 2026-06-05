@@ -19,7 +19,7 @@ framing and purpose.
 
 ## What It Does Today
 
-The current server is a first slice:
+The current server provides:
 
 - Lifecycle. Handles `initialize`, `shutdown`, and `exit`. `initialized`
   and other notifications are accepted and ignored.
@@ -119,19 +119,18 @@ These are not provided today:
 - formatting through the server (use [`marrow fmt`](cli.md#marrow-fmt) on the
   command line).
 
-## Planned Path
+## Future Editor Features
 
-The intended progression mirrors how the runtime is layered: from source-only
-parse facts to facts derived from a checked project.
+Editor features should keep using the same fact layers as the runtime: from
+source-only parse facts to facts derived from a checked project.
 
-1. Parse diagnostics. Per-buffer syntax errors and warnings with stable spans
-   and dotted codes.
-2. Checked-project diagnostics (today, when `rootUri` points at a valid Marrow
-   project). Resolve `marrow.json` and source roots, build the same checked
-   program artifact the runtime uses, and surface diagnostics for open
-   documents.
-3. Navigation and hover. Hover and go-to-definition driven by checked
-   facts, then broader services as the fact model proves out.
+- Parse diagnostics. Per-buffer syntax errors and warnings with stable spans
+  and dotted codes.
+- Checked-project diagnostics. Resolve `marrow.json` and source roots, build
+  the same checked program artifact the runtime uses, and surface diagnostics
+  for open documents.
+- Navigation and hover. Drive hover and go-to-definition from checked facts,
+  then add broader services as the fact model proves out.
 
 Each step reports what it actually does. For command-line diagnostics, use
 [`marrow check`](cli.md#marrow-check).

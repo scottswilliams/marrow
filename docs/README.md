@@ -41,7 +41,7 @@ point at the [language reference](language/) for the exact rules.
 - [Serve Protocol](serve-protocol.md) — the newline-delimited JSON protocol the
   `marrow serve` debug/admin loopback server speaks.
 - [Language Server](lsp.md) — the `marrow lsp` editor language server and its
-  planned path.
+  future editor feature boundaries.
 - [Errors](error-codes.md) — CLI exit codes, the machine-readable error
   envelope, and the stable dotted error codes.
 
@@ -55,8 +55,6 @@ point at the [language reference](language/) for the exact rules.
   native-store responsibilities a store backend must satisfy.
 - [Future](future/) — designed, normative surfaces that are not yet
   implemented, mirroring the pages above.
-- [Roadmap](roadmap/) — a status note for the implemented kernel and the
-  non-goals that bound it.
 
 Marrow is unreleased. If implementation and language references disagree,
 treat the disagreement as implementation work, not as a competing design.

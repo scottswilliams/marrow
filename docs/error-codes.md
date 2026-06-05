@@ -224,7 +224,7 @@ code, except `run.uncaught_error` — see "Typed Errors In Running Programs".
 | `run.no_value` | A call to a function that returns no value was used where a value is needed. Fatal runtime backstop for unchecked programs. |
 | `run.absent_element` | A required or total read found its saved cell missing — a data-attachment/corruption fault, fatal and not catchable. An ordinary maybe-present read never reaches the runtime: it is resolved at the read site (`??` / `if exists` / `?.`) or is a compile error. |
 | `run.store` | The store reported an error (e.g. corrupt tree-cell payload) during a read. Fatal storage/backend failure while evaluating a read. |
-| `run.unsupported` | A construct this slice of the runtime does not yet evaluate. Fatal runtime backstop. |
+| `run.unsupported` | A construct the runtime does not evaluate. Fatal runtime backstop. |
 | `run.capability` | A host capability a builtin needs (e.g. the clock for `std::clock::now`) was not provided to this run. Fatal host/tooling failure. |
 | `run.assertion` | A `std::assert::*` assertion did not hold. `marrow test` reports these as located test failures. |
 | `run.uncaught_error` | An `Error` raised by `throw` reached the top of a function with no `catch`. The original code travels in the message (e.g. `[io.read]`). |

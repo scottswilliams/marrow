@@ -27,8 +27,6 @@ can be local or saved, and `^` marks saved data.
 - [Implementation And Backends](docs/implementation.md) defines the
   language/database kernel, project configuration, saved paths, managed writes,
   native storage, tooling, and capability profiles.
-- [Roadmap](docs/roadmap/) records the deferrals and non-goals that bound the
-  implemented kernel.
 
 ## Shape
 
