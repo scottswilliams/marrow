@@ -99,6 +99,7 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
                 | DiagnosticPayload::DuplicateModule { .. }
                 | DiagnosticPayload::ModulePath { .. }
                 | DiagnosticPayload::DuplicateRootOwner { .. }
+                | DiagnosticPayload::RejectedSurface(_)
                 | DiagnosticPayload::None => true,
             });
     }

@@ -2,7 +2,9 @@ mod support;
 
 use std::path::Path;
 
-use marrow_check::{CheckDiagnostic, DiagnosticPayload, check_project, check_tests};
+use marrow_check::{
+    CheckDiagnostic, DiagnosticPayload, RejectedSurface, check_project, check_tests,
+};
 use marrow_project::parse_config;
 use marrow_schema::{SchemaErrorKind, SchemaKeyTarget, Type};
 use marrow_syntax::SourceSpan;
@@ -1583,7 +1585,11 @@ fn saved_inout_through_resource_reference_is_rejected() {
 
     let found = with_code(&report, "check.rejected_surface");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
-    assert!(found[0].message.contains("saved `inout`"), "{found:#?}");
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::RejectedSurface(RejectedSurface::SavedInout),
+        "{found:#?}"
+    );
 }
 
 #[test]
@@ -1598,7 +1604,11 @@ fn saved_inout_through_index_entry_is_rejected_surface() {
 
     let found = with_code(&report, "check.rejected_surface");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
-    assert!(found[0].message.contains("saved `inout`"), "{found:#?}");
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::RejectedSurface(RejectedSurface::SavedInout),
+        "{found:#?}"
+    );
 }
 
 #[test]
@@ -1613,7 +1623,11 @@ fn malformed_saved_inout_through_keyed_root_field_is_rejected() {
 
     let found = with_code(&report, "check.rejected_surface");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
-    assert!(found[0].message.contains("saved `inout`"), "{found:#?}");
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::RejectedSurface(RejectedSurface::SavedInout),
+        "{found:#?}"
+    );
 }
 
 #[test]
@@ -1628,7 +1642,11 @@ fn malformed_saved_inout_through_index_branch_is_rejected() {
 
     let found = with_code(&report, "check.rejected_surface");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
-    assert!(found[0].message.contains("saved `inout`"), "{found:#?}");
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::RejectedSurface(RejectedSurface::SavedInout),
+        "{found:#?}"
+    );
 }
 
 #[test]
@@ -1649,16 +1667,22 @@ fn old_saved_traversal_method_shapers_are_rejected() {
 
     let found = with_code(&report, "check.rejected_surface");
     assert_eq!(found.len(), 7, "{:#?}", report.diagnostics);
-    for name in [
-        "take", "window", "after", "from", "until", "resume", "reverse",
-    ] {
-        assert!(
-            found
-                .iter()
-                .any(|diagnostic| diagnostic.message.contains(name)),
-            "{name}: {found:#?}"
-        );
-    }
+    let methods: Vec<&str> = found
+        .iter()
+        .map(|diagnostic| match &diagnostic.payload {
+            DiagnosticPayload::RejectedSurface(RejectedSurface::SavedTraversalMethod {
+                method,
+            }) => method.as_str(),
+            payload => panic!("expected saved traversal method payload, found {payload:#?}"),
+        })
+        .collect();
+    assert_eq!(
+        methods,
+        [
+            "take", "window", "after", "from", "until", "resume", "reverse",
+        ],
+        "{found:#?}"
+    );
 }
 
 #[test]

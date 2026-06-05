@@ -7,7 +7,9 @@ use marrow_syntax::{
 
 use crate::infer::saved_layer_chain;
 use crate::resolve::resolve_store_by_root;
-use crate::{CHECK_REJECTED_SURFACE, CheckDiagnostic, CheckedProgram, DiagnosticPayload};
+use crate::{
+    CHECK_REJECTED_SURFACE, CheckDiagnostic, CheckedProgram, DiagnosticPayload, RejectedSurface,
+};
 
 pub(crate) fn check_rejected_surface(
     program: &CheckedProgram,
@@ -168,6 +170,9 @@ fn check_expr(
                     &format!(
                         "saved traversal method `.{method}(...)` is not a v0.1 source surface; stream durable iterables with ordinary `for` loops"
                     ),
+                    DiagnosticPayload::RejectedSurface(RejectedSurface::SavedTraversalMethod {
+                        method: method.to_string(),
+                    }),
                     diagnostics,
                 );
             }
@@ -178,6 +183,7 @@ fn check_expr(
                         file,
                         arg.value.span(),
                         "saved `inout` is not a v0.1 source surface; saved writes must be explicit checked effects",
+                        DiagnosticPayload::RejectedSurface(RejectedSurface::SavedInout),
                         diagnostics,
                     );
                 }
@@ -256,13 +262,19 @@ fn saved_path_like_syntax(expr: &Expression) -> bool {
     }
 }
 
-fn push(file: &Path, span: SourceSpan, message: &str, diagnostics: &mut Vec<CheckDiagnostic>) {
+fn push(
+    file: &Path,
+    span: SourceSpan,
+    message: &str,
+    payload: DiagnosticPayload,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
     diagnostics.push(CheckDiagnostic {
         code: CHECK_REJECTED_SURFACE,
         severity: Severity::Error,
         file: file.to_path_buf(),
         message: message.to_string(),
         span,
-        payload: DiagnosticPayload::None,
+        payload,
     });
 }

@@ -227,6 +227,16 @@ pub const IO_READ: &str = "io.read";
 /// project checker reports it rather than per-store schema compilation.
 pub const SCHEMA_DUPLICATE_ROOT_OWNER: &str = "schema.duplicate_root_owner";
 
+/// The rejected v0.1 source surface named by a `check.rejected_surface`
+/// diagnostic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RejectedSurface {
+    /// A saved place was passed through an `inout` argument.
+    SavedInout,
+    /// An old saved traversal method shaper was called.
+    SavedTraversalMethod { method: String },
+}
+
 /// Structured data attached to diagnostics whose consumers need more than the
 /// rendered message. Resolution-suppression branches on typed identities: an
 /// import names the module it failed to resolve, an unresolved call names the
@@ -235,7 +245,8 @@ pub const SCHEMA_DUPLICATE_ROOT_OWNER: &str = "schema.duplicate_root_owner";
 /// duplicated name and first declaration span. Duplicate modules carry the
 /// duplicated name and first source file. Module-path diagnostics carry the
 /// declared module name and expected path-derived name when one exists.
-/// Duplicate root ownership names the saved root and first owning file. Other
+/// Duplicate root ownership names the saved root and first owning file.
+/// Rejected-source-surface diagnostics name the rejected surface. Other
 /// diagnostics carry [`DiagnosticPayload::None`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DiagnosticPayload {
@@ -264,6 +275,8 @@ pub enum DiagnosticPayload {
     },
     /// `schema.duplicate_root_owner`: saved root and first owning source file.
     DuplicateRootOwner { root: String, first_owner: PathBuf },
+    /// `check.rejected_surface`: the rejected source surface.
+    RejectedSurface(RejectedSurface),
 }
 
 /// A problem found while checking a project, located in a specific file.
@@ -823,6 +836,7 @@ impl TestResolutionSuppression {
             | DiagnosticPayload::DuplicateModule { .. }
             | DiagnosticPayload::ModulePath { .. }
             | DiagnosticPayload::DuplicateRootOwner { .. }
+            | DiagnosticPayload::RejectedSurface(_)
             | DiagnosticPayload::None => false,
         }
     }
