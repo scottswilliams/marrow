@@ -17,7 +17,7 @@ This tracker is the operational source of truth for the Marrow rust-hardening au
 - Main status at audit start: clean, `## main...origin/main`, head `7435c7dbd6ae9817460d5d44ebaa0e54c0aa9b70`
 - Live main integration state is intentionally not frozen here. Re-run `git -C /Users/scottwilliams/Dev/marrow rev-parse HEAD` and `git -C /Users/scottwilliams/Dev/marrow status --short --branch` immediately before every integration, then record that fresh state in the lane evidence packet.
 - Tracked file count at audit start: 279
-- Current tracked file count after L02 docs-meta integration: 274
+- Current tracked file count after L01 language-docs audit: 274
 - `docs/roadmap/` did not exist at audit start; this file creates it.
 
 ## Status Values
@@ -128,13 +128,13 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 | Pattern | Current Evidence | Status | Owner |
 |---|---|---|---|
 | `unsafe` Rust | `rg -n "\\bunsafe\\b" -g "*.rs"` returned no matches. | reviewed-clean | L00 |
-| Prototype paths | Global term scan has docs/test hits; no production judgment yet. | needs-lane | all lanes |
+| Prototype paths | Completed L00-L05 and L01 lanes found no retained prototype paths in their owned areas; remaining hits require lane-local review. | needs-lane | L06-L14 |
 | Duplicate semantic classifiers | Targeted scan found classifier families in checker/runtime; owner lanes must prove one semantic owner. | needs-lane | L06-L11 |
 | Public raw/string APIs | Raw/catalog/archive hits require production-boundary review. | needs-lane | L10, L12, L13, L14 |
-| Fallback branches and legacy modes | L00 root-fixtures hits are AGENTS policy prohibitions. Other term scan hits require lane-local review. | needs-lane | L01, L06-L14 |
+| Fallback branches and legacy modes | L00 root-fixtures hits are AGENTS policy prohibitions. L01 language-doc hits are v0.1/reserved boundary text rather than compatibility fallback behavior. Other term scan hits require lane-local review. | needs-lane | L06-L14 |
 | Message-parsing logic | L03 syntax, L04 schema, and L05 project-model have no `message.contains` semantic assertions after integration; remaining areas still need lane-local migration. | needs-lane | L06-L14 |
 | Source-text architecture scans | Existing scans identified in architecture tests. | needs-lane | L08, L10, L14 |
-| Comment sediment | L00 root-fixtures hits are durable AGENTS policy prohibitions and repository operating rules. L02 removed empty future placeholder pages; remaining L02 hits were triaged as durable data-evolution compatibility/migration contracts, `std::clock::now`, old path aliases, bridge wording for host-system extensions, and protocol cursor text. L03 syntax hits were triaged as durable `rename ... now spelled` semantics and `now` sample text; L04 schema hits were triaged as `clock.now` domain text and a pre-existing `string`/`Str` bridge comment; L05 project-model hits were triaged as durable store-key migration wording and a `SystemTime::now()` false positive. | needs-lane | L01, L06-L14 |
+| Comment sediment | L00 root-fixtures hits are durable AGENTS policy prohibitions and repository operating rules. L01 language-doc hits were triaged as durable `migration DSL` negative scope, `std::clock::now()` examples, and `rename ... now spelled` evolution wording. L02 removed empty future placeholder pages; remaining L02 hits were triaged as durable data-evolution compatibility/migration contracts, `std::clock::now`, old path aliases, bridge wording for host-system extensions, and protocol cursor text. L03 syntax hits were triaged as durable `rename ... now spelled` semantics and `now` sample text; L04 schema hits were triaged as `clock.now` domain text and a pre-existing `string`/`Str` bridge comment; L05 project-model hits were triaged as durable store-key migration wording and a `SystemTime::now()` false positive. | needs-lane | L06-L14 |
 | Cargo target isolation | Future lane commands must spell lane-specific `CARGO_TARGET_DIR`. | needs-lane | all lanes |
 | Cargo.lock churn | No lockfile change at audit start. | reviewed-clean | L00 |
 
@@ -143,7 +143,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 | Lane | Worktree | Target Dir | Base | Head | Status | Gates | Soundness | Idiom/Spec | Findings/Fixes | Absence/Integration |
 |---|---|---|---|---|---|---|---|---|---|---|
 | L00 tracker/root-fixtures | tracker `/Users/scottwilliams/Dev/marrow-rust-hardening-tracker`; root `/Users/scottwilliams/Dev/marrow-rust-hardening-l00-root-fixtures` | root lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l00-root-fixtures` | tracker `7435c7dbd6ae9817460d5d44ebaa0e54c0aa9b70`; root `d528f5e9a9e281c8076145a2b734976de3d8a12e` | tracker lane `7b04e4876c5927a1f5599d30bbb28f4f2ec4ce75`; root no source commit; tracker main `9415b37635bfde9d42437bca3862f5db92d5fb9d` | complete | tracker bootstrap checks, root focused checks, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings | pass, no findings | R001-R006 fixed and re-reviewed; no root review findings | integrated on main after live-main recheck; root evidence recorded |
-| L01 language-docs | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l01-language-docs` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
+| L01 language-docs | `/Users/scottwilliams/Dev/marrow-rust-hardening-l01-language-docs` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l01-language-docs`; review `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l01-review-soundness` | `76fc2843238992766aa04be31d91596f82641964` | no source commit; tracker evidence recorded | complete | focused language-doc scans, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings | pass, no findings | no review findings; no semantic proposals | no source cherry-pick required; tracker evidence recorded |
 | L02 docs-meta | `/Users/scottwilliams/Dev/marrow-rust-hardening-l02-docs-meta` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l02-docs-meta`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l02-main-integration` | `3032e90a4e274fbcce91a3b3ebdd948643948e48` | lane `3dd44fa8989af9e5dc1599e22caadbb02b42d851`; main `fe34e8695dae03f2d9fb1e857a22482e63edb6ab` | complete | focused docs scans, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings | pass, no findings | no review findings | integrated on main after live-main recheck; tracker evidence recorded |
 | L03 syntax | `/Users/scottwilliams/Dev/marrow-rust-hardening-l03-syntax` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-syntax`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-main-integration` | `14bbe00fe0be30f741727b8a65da0ceb8bc4d403` | lane `2a961360cd428eb772b65fbf18f6b961b9230ef7`; main `0627dab32fd19a66edb14d0a960afd3fb36fb779` | complete | focused, package, workspace build/test, workspace clippy, and fmt gates passed | fail on typed reason probes, then pass after fixes | fail on broad reason/test-shape findings, then pass after fixes | L03-R001 through L03-R003 fixed and re-reviewed | integrated on main after live-main recheck; tracker evidence recorded |
 | L04 schema | `/Users/scottwilliams/Dev/marrow-rust-hardening-l04-schema` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l04-schema`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l04-main-integration` | `5ca2a691806d963c5b44cef8a1eb02ac1b5da7e4` | lane `8b651049860539650ca534820cd3ca03711dd03d`; main `ee5422fe7de568a874ed2b2b4aaee6f9a721a7d8` | complete | focused, package, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings | pass, no findings | L04-P001 fixed before review; no review findings | integrated on main after live-main recheck; tracker evidence recorded |
@@ -456,18 +456,18 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `docs/install.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean by L02 docs scans and reviewer pass.
 
 ### docs/language
-- `docs/language/README.md` - status: unreviewed; owner: L01 language-docs; notes: initial inventory.
-- `docs/language/builtins.md` - status: unreviewed; owner: L01 language-docs; notes: initial inventory.
-- `docs/language/control-flow-and-effects.md` - status: unreviewed; owner: L01 language-docs; notes: initial inventory.
-- `docs/language/cost-model.md` - status: unreviewed; owner: L01 language-docs; notes: initial inventory.
-- `docs/language/enums.md` - status: unreviewed; owner: L01 language-docs; notes: initial inventory.
-- `docs/language/grammar.md` - status: unreviewed; owner: L01 language-docs; notes: initial inventory.
-- `docs/language/modules-functions.md` - status: unreviewed; owner: L01 language-docs; notes: initial inventory.
-- `docs/language/resources-and-storage.md` - status: unreviewed; owner: L01 language-docs; notes: initial inventory.
-- `docs/language/sample.md` - status: unreviewed; owner: L01 language-docs; notes: initial inventory.
-- `docs/language/standard-library.md` - status: unreviewed; owner: L01 language-docs; notes: initial inventory.
-- `docs/language/syntax.md` - status: unreviewed; owner: L01 language-docs; notes: initial inventory.
-- `docs/language/types.md` - status: unreviewed; owner: L01 language-docs; notes: initial inventory.
+- `docs/language/README.md` - status: complete; owner: L01 language-docs; notes: reviewed-clean; `migration DSL` wording is durable negative scope.
+- `docs/language/builtins.md` - status: complete; owner: L01 language-docs; notes: reviewed-clean; placeholder/index wording describes durable collection semantics.
+- `docs/language/control-flow-and-effects.md` - status: complete; owner: L01 language-docs; notes: reviewed-clean; `not yet supported` temporal range wording is an explicit v0.1 boundary.
+- `docs/language/cost-model.md` - status: complete; owner: L01 language-docs; notes: reviewed-clean by language-doc scans and reviewer pass.
+- `docs/language/enums.md` - status: complete; owner: L01 language-docs; notes: reviewed-clean; reserved-word wording is accepted language contract text.
+- `docs/language/grammar.md` - status: complete; owner: L01 language-docs; notes: reviewed-clean; reserved and future-`~` wording is explicit v0.1 grammar boundary.
+- `docs/language/modules-functions.md` - status: complete; owner: L01 language-docs; notes: reviewed-clean; `clock::now` examples are durable standard-library usage.
+- `docs/language/resources-and-storage.md` - status: complete; owner: L01 language-docs; notes: reviewed-clean; merge/lock, placeholder, and rename wording are durable saved-data semantics.
+- `docs/language/sample.md` - status: complete; owner: L01 language-docs; notes: reviewed-clean; reference sample parses and language-doc examples lex.
+- `docs/language/standard-library.md` - status: complete; owner: L01 language-docs; notes: reviewed-clean; `std::clock::now()` examples are durable API examples.
+- `docs/language/syntax.md` - status: complete; owner: L01 language-docs; notes: reviewed-clean; reserved/planned wording describes intentional v0.1 syntax absence.
+- `docs/language/types.md` - status: complete; owner: L01 language-docs; notes: reviewed-clean; identity-typed-key wording is explicit current boundary.
 
 ### docs/root continued
 - `docs/lsp.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; future editor-feature boundaries are durable tooling surface text.
@@ -549,6 +549,43 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - Integration gates:
   - `git -C /Users/scottwilliams/Dev/marrow fetch origin main` completed before root-fixtures tracker integration; `HEAD`, `origin/main`, and `FETCH_HEAD` were all `d528f5e9a9e281c8076145a2b734976de3d8a12e`.
   - No source cherry-pick was required because the lane changed no root/manifests/fixture files.
+  - Tracker evidence was updated on main with the unrelated untracked `docs/roadmap/release-hardening-operating-plan.md` left untouched.
+  - `git -C /Users/scottwilliams/Dev/marrow status --short --branch` after the tracker evidence update showed main aligned with `origin/main`, this tracker file modified, and the unrelated untracked `docs/roadmap/release-hardening-operating-plan.md`.
+
+## L01 Language-Docs Evidence
+
+- Changed files: none; language reference files were reviewed-clean without source edits.
+- Lane source commit: none.
+- Main source integration commit: none; this evidence update records the reviewed-clean audit state.
+- Base/head: `/Users/scottwilliams/Dev/marrow-rust-hardening-l01-language-docs` at `76fc2843238992766aa04be31d91596f82641964`.
+- Failing-or-focused checks:
+  - No RED/edit cycle was run because the build worker and reviewers found no concrete cleanup to make and no semantic proposals requiring user approval.
+  - Baseline checks inspected all owned files under `docs/language/`.
+- Focused gates:
+  - `rg -n '\b(TODO|FIXME|legacy|prototype|migration|temporary|compatibility|shim|bridge|previously|now)\b' docs/language -g '*.md'` found only durable `migration DSL` negative scope, `std::clock::now()` examples, and `rename ... now spelled` evolution wording.
+  - `rg -n '\b(future|not yet|deferred|planned|placeholder|v0\.1|reserved)\b' docs/language -g '*.md'` found only explicit v0.1/reserved/current-boundary language.
+  - `rg -n 'docs/future|\.\./future|future/' docs/language -g '*.md'` returned no matches.
+  - Relative Markdown link verification reported all relative language-doc links resolved.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l01-language-docs cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l01-language-docs/Cargo.toml -p marrow-syntax --test lexer lexes_all_language_reference_mw_blocks_without_errors` passed with 1 test.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l01-language-docs cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l01-language-docs/Cargo.toml -p marrow-syntax --test parse parses_all_documented_module_files` passed with 1 test.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l01-language-docs cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l01-language-docs/Cargo.toml -p marrow-syntax --test parse parses_documented_reference_sample` passed with 1 test.
+  - `git diff --check`, `git diff --name-status`, and no-outside-scope diff checks returned no output.
+- Full lane gates:
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l01-language-docs cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l01-language-docs/Cargo.toml --all --check` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l01-language-docs cargo build --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l01-language-docs/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l01-language-docs cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l01-language-docs/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l01-language-docs cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l01-language-docs/Cargo.toml --workspace --all-targets -- -D warnings` passed.
+- Soundness review: pass, no findings and no semantic proposals. Reviewer verified links and anchors, fence inventory, language-reference example tests, and additional documented behavior tests: `the_reference_sample_checks_clean`, `supported_collection_wrappers_bind_their_documented_shapes`, `conversion_builtins_accept_documented_sources`, and `the_reference_sample_runs_end_to_end`, all with explicit `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l01-review-soundness`.
+- Idiom/spec review: pass, no findings and no semantic proposals. Reviewer inspected all language docs and confirmed future/reserved wording is framed as explicit v0.1 absence or negative scope, not stale roadmap promises.
+- Fixed review findings: none; re-review not required.
+- Absence and sibling scans:
+  - No `TODO`, `FIXME`, legacy/prototype/shim/bridge cleanup issue remained in `docs/language`.
+  - No language doc links to `docs/future`.
+  - No `Cargo.toml`, `Cargo.lock`, crate, fixture, roadmap, or non-language docs diff in the L01 worktree.
+  - The durable current-boundary hits were triaged as accepted grammar and v0.1 contract text: `merge`/`lock` reserved, `~` reserved, identity-typed keys not yet supported, descending temporal ranges not yet supported, and `assert` absent from accepted grammar.
+- Integration gates:
+  - `git -C /Users/scottwilliams/Dev/marrow fetch origin main` completed before tracker integration; `HEAD`, `origin/main`, and `FETCH_HEAD` were all `76fc2843238992766aa04be31d91596f82641964`.
+  - No source cherry-pick was required because the lane changed no language-doc files.
   - Tracker evidence was updated on main with the unrelated untracked `docs/roadmap/release-hardening-operating-plan.md` left untouched.
   - `git -C /Users/scottwilliams/Dev/marrow status --short --branch` after the tracker evidence update showed main aligned with `origin/main`, this tracker file modified, and the unrelated untracked `docs/roadmap/release-hardening-operating-plan.md`.
 
