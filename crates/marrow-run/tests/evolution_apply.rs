@@ -1476,9 +1476,8 @@ fn new_non_unique_index_rebuild_writes_entries() {
     let outcome = apply(&w, &program, &store, false, None).expect("apply");
     assert_eq!(outcome.indexes_rebuilt, 1, "the non-unique index rebuilds");
 
-    // Each record contributes one entry under its full `(genre, id)` tuple. Before the
-    // fix the index had no entries at all, so each tuple scan must now return its
-    // record identity.
+    // A non-unique index ends with the identity keys, so each record publishes exactly
+    // one entry under its full `(genre, id)` tuple.
     let index_id = CatalogId::new(index_catalog_id(&place, "byGenre")).unwrap();
     for id in [1, 2] {
         let scan = store
@@ -3072,13 +3071,15 @@ fn engine_profile_drift_fences_a_matching_epoch_store() {
     assert_eq!(error, FenceError::EngineProfileDrift);
 }
 
+/// A store that predates digest stamping carries only a layout epoch. A drifted
+/// layout epoch must fence even without a profile digest to compare.
 #[test]
-fn legacy_layout_epoch_drift_without_profile_digest_is_fenced() {
+fn layout_epoch_drift_without_profile_digest_is_fenced() {
     let store = TreeStore::memory();
     store.write_catalog_epoch(2).expect("epoch");
     store
         .write_layout_epoch(current_engine_profile().layout_epoch() + 1)
-        .expect("legacy layout epoch");
+        .expect("layout epoch stamp");
 
     let error = fence(
         Some(2),

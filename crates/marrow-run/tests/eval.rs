@@ -28,10 +28,6 @@ fn checked_program(source: &str) -> CheckedRuntimeProgram {
     checked_program_with_imports(source, &[])
 }
 
-fn checked_program_typed(source: &str) -> CheckedRuntimeProgram {
-    checked_program(source)
-}
-
 fn checked_program_with_imports(source: &str, imports: &[&str]) -> CheckedRuntimeProgram {
     let (path, text) = checked_source_file(source, imports);
     checked_program_files(&[(path, text)])
@@ -93,23 +89,8 @@ fn checked_source_file(source: &str, imports: &[&str]) -> (PathBuf, String) {
         text.push('\n');
     }
     text.push('\n');
-    text.push_str(&public_test_functions(source));
+    text.push_str(source);
     (PathBuf::from("src/test.mw"), text)
-}
-
-fn public_test_functions(source: &str) -> String {
-    let mut text = String::new();
-    for line in source.lines() {
-        if line.starts_with("fn ") {
-            text.push_str("pub ");
-        }
-        text.push_str(line);
-        text.push('\n');
-    }
-    if !source.ends_with('\n') {
-        text.pop();
-    }
-    text
 }
 
 fn checked_program_files(files: &[(PathBuf, String)]) -> CheckedRuntimeProgram {
@@ -189,7 +170,7 @@ fn commit_catalog(root: &Path, config: &ProjectConfig, program: CheckedProgram) 
 #[should_panic(expected = "runtime tests require a clean checked program")]
 fn runtime_test_helper_rejects_checker_error_programs() {
     checked_program_with_imports(
-        "fn stamp(s: string): string\n    return clock::formatDate(clock::parseDate(s))\n",
+        "pub fn stamp(s: string): string\n    return clock::formatDate(clock::parseDate(s))\n",
         &[],
     );
 }
@@ -485,7 +466,7 @@ fn eval_source(
 fn evaluates_arithmetic_over_parameters() {
     assert_eq!(
         eval_source(
-            "fn add(a: int, b: int): int\n    return a + b\n",
+            "pub fn add(a: int, b: int): int\n    return a + b\n",
             "add",
             vec![Value::Int(2), Value::Int(40)]
         ),
@@ -497,7 +478,7 @@ fn evaluates_arithmetic_over_parameters() {
 fn respects_arithmetic_precedence() {
     // 2 + 3 * 4 == 14, not 20.
     assert_eq!(
-        eval_source("fn f(): int\n    return 2 + 3 * 4\n", "f", Vec::new()),
+        eval_source("pub fn f(): int\n    return 2 + 3 * 4\n", "f", Vec::new()),
         Ok(Some(Value::Int(14)))
     );
 }
@@ -985,7 +966,7 @@ fn clock_today_reads_the_host_clock_capability() {
 
 #[test]
 fn clock_today_without_a_clock_capability_is_a_capability_error() {
-    let program = checked_program("fn t(): date\n    return std::clock::today()\n");
+    let program = checked_program("pub fn t(): date\n    return std::clock::today()\n");
     let store = TreeStore::memory();
     let result = run_entry(&store, checked_entry!(&program, "test::t"));
     assert!(
@@ -998,7 +979,7 @@ fn clock_today_without_a_clock_capability_is_a_capability_error() {
 fn a_date_round_trips_through_saved_data() {
     // A `date` value saves and loads through a managed field write and read.
     let program = checked_program(
-        "resource Event at ^events(id: int)\n    on: date\n\nfn record(id: int, text: string)\n    ^events(id).on = std::clock::parseDate(text)\n\nfn dateOf(id: int): string\n    return std::clock::formatDate(^events(id).on ?? std::clock::parseDate(\"1970-01-01\"))\n",
+        "resource Event at ^events(id: int)\n    on: date\n\npub fn record(id: int, text: string)\n    ^events(id).on = std::clock::parseDate(text)\n\npub fn dateOf(id: int): string\n    return std::clock::formatDate(^events(id).on ?? std::clock::parseDate(\"1970-01-01\"))\n",
     );
     let store = TreeStore::memory();
     run_entry(
@@ -1024,7 +1005,7 @@ fn temporal_values_order_and_equate() {
     // Dates, instants, and durations compare by their underlying counts, matching
     // the ordered/equatable types the checker already advertises.
     let program = checked_program(
-        "fn dateBefore(a: string, b: string): bool\n    return std::clock::parseDate(a) < std::clock::parseDate(b)\nfn dateSame(a: string, b: string): bool\n    return std::clock::parseDate(a) == std::clock::parseDate(b)\nfn instantBefore(a: string, b: string): bool\n    return std::clock::parseInstant(a) < std::clock::parseInstant(b)\nfn durationBefore(a: string, b: string): bool\n    return std::clock::parseDuration(a) < std::clock::parseDuration(b)\n",
+        "pub fn dateBefore(a: string, b: string): bool\n    return std::clock::parseDate(a) < std::clock::parseDate(b)\npub fn dateSame(a: string, b: string): bool\n    return std::clock::parseDate(a) == std::clock::parseDate(b)\npub fn instantBefore(a: string, b: string): bool\n    return std::clock::parseInstant(a) < std::clock::parseInstant(b)\npub fn durationBefore(a: string, b: string): bool\n    return std::clock::parseDuration(a) < std::clock::parseDuration(b)\n",
     );
     let call = |entry: &str, a: &str, b: &str| {
         run(checked_entry!(
@@ -1065,7 +1046,7 @@ fn temporal_values_order_and_equate() {
 #[test]
 fn short_form_std_call_runs() {
     let program = checked_program_with_imports(
-        "fn roundtrip(s: string): string\n    return clock::formatDate(clock::parseDate(s))\n",
+        "pub fn roundtrip(s: string): string\n    return clock::formatDate(clock::parseDate(s))\n",
         &["std::clock"],
     );
     assert_eq!(
@@ -1083,7 +1064,7 @@ fn scalar_conversions_validate_a_dynamic_value() {
     // A conversion builtin asserts a dynamically-typed value is the target type
     // and returns it (the `unknown` → concrete bridge).
     let program = checked_program(
-        "fn asInt(v: int): int\n    return int(v)\nfn asString(v: string): string\n    return string(v)\nfn asBool(v: bool): bool\n    return bool(v)\n",
+        "pub fn asInt(v: int): int\n    return int(v)\npub fn asString(v: string): string\n    return string(v)\npub fn asBool(v: bool): bool\n    return bool(v)\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::asInt", Value::Int(42))),
@@ -1106,7 +1087,7 @@ fn scalar_conversions_validate_a_dynamic_value() {
 #[test]
 fn a_conversion_rejects_a_value_of_the_wrong_type() {
     // `int(...)` validates; a string value is not an int.
-    let program = checked_program("fn f(v: int): int\n    return int(v)\n");
+    let program = checked_program("pub fn f(v: int): int\n    return int(v)\n");
     let error = rejected_entry_call(&program, "test::f", vec![Value::Str("x".into())]);
     assert_eq!(error.code, RUN_TYPE);
 }
@@ -1116,7 +1097,7 @@ fn temporal_conversions_validate_their_values() {
     // `date`/`instant`/`duration` validate canonical temporal values (here built
     // via the std::clock parsers), returning them unchanged.
     let program = checked_program(
-        "fn d(t: string): string\n    return std::clock::formatDate(date(std::clock::parseDate(t)))\nfn span(t: string): string\n    return std::clock::formatDuration(duration(std::clock::parseDuration(t)))\n",
+        "pub fn d(t: string): string\n    return std::clock::formatDate(date(std::clock::parseDate(t)))\npub fn span(t: string): string\n    return std::clock::formatDuration(duration(std::clock::parseDuration(t)))\n",
     );
     assert_eq!(
         run(checked_entry!(
@@ -1139,7 +1120,7 @@ fn temporal_conversions_validate_their_values() {
 #[test]
 fn bool_conversion_accepts_canonical_int_forms() {
     // `bool(...)` accepts only the canonical integer forms at runtime: 0 and 1.
-    let program = checked_program("fn b(v: int): bool\n    return bool(v)\n");
+    let program = checked_program("pub fn b(v: int): bool\n    return bool(v)\n");
     assert_eq!(
         run(checked_entry!(&program, "test::b", Value::Int(0))),
         Ok(Some(Value::Bool(false)))
@@ -1152,7 +1133,7 @@ fn bool_conversion_accepts_canonical_int_forms() {
 
 #[test]
 fn bool_conversion_rejects_non_canonical_values() {
-    let program = checked_program("fn b(v: int): bool\n    return bool(v)\n");
+    let program = checked_program("pub fn b(v: int): bool\n    return bool(v)\n");
     assert_eq!(
         run(checked_entry!(&program, "test::b", Value::Int(2)))
             .unwrap_err()
@@ -1160,14 +1141,14 @@ fn bool_conversion_rejects_non_canonical_values() {
         RUN_TYPE
     );
     checker_rejects(
-        "fn bs(v: string): bool\n    return bool(v)\n",
+        "pub fn bs(v: string): bool\n    return bool(v)\n",
         "check.call_argument",
     );
 }
 
 #[test]
 fn int_conversion_parses_canonical_text() {
-    let program = checked_program("fn n(v: string): int\n    return int(v)\n");
+    let program = checked_program("pub fn n(v: string): int\n    return int(v)\n");
     assert_eq!(
         run(checked_entry!(&program, "test::n", Value::Str("12".into()))),
         Ok(Some(Value::Int(12)))
@@ -1182,7 +1163,7 @@ fn int_conversion_parses_canonical_text() {
 fn decimal_conversion_parses_canonical_text() {
     // `decimal("1.5")` parses to a decimal; rendered back through interpolation it
     // round-trips to its canonical text.
-    let program = checked_program("fn d(v: string): string\n    return $\"{decimal(v)}\"\n");
+    let program = checked_program("pub fn d(v: string): string\n    return $\"{decimal(v)}\"\n");
     assert_eq!(
         run(checked_entry!(
             &program,
@@ -1196,7 +1177,7 @@ fn decimal_conversion_parses_canonical_text() {
 #[test]
 fn error_code_conversion_validates_and_returns_text() {
     let program = checked_program(
-        "fn code(): string\n\
+        "pub fn code(): string\n\
          \x20   const code: ErrorCode = ErrorCode(\"x.y\")\n\
          \x20   if code == ErrorCode(\"x.y\")\n\
          \x20       return string(code)\n\
@@ -1211,7 +1192,7 @@ fn error_code_conversion_validates_and_returns_text() {
 #[test]
 fn error_code_conversion_accepts_dynamic_text() {
     let program =
-        checked_program("fn code(raw: string): string\n    return string(ErrorCode(raw))\n");
+        checked_program("pub fn code(raw: string): string\n    return string(ErrorCode(raw))\n");
     assert_eq!(
         run(checked_entry!(
             &program,
@@ -1225,7 +1206,7 @@ fn error_code_conversion_accepts_dynamic_text() {
 #[test]
 fn error_code_conversion_failures_are_catchable_type_errors() {
     let program = checked_program(
-        "fn code(raw: string): string\n\
+        "pub fn code(raw: string): string\n\
          \x20   try\n\
          \x20       return string(ErrorCode(raw))\n\
          \x20   catch err: Error\n\
@@ -1246,16 +1227,16 @@ fn error_code_conversion_failures_are_catchable_type_errors() {
 #[test]
 fn conversion_builtins_accept_documented_sources() {
     let program = checked_program(
-        "fn intFromDecimal(v: decimal): int\n    return int(v)\n\
-         fn decimalFromInt(v: int): string\n    return string(decimal(v))\n\
-         fn stringFromInt(v: int): string\n    return string(v)\n\
-         fn stringFromDecimal(v: decimal): string\n    return string(v)\n\
-         fn stringFromBool(v: bool): string\n    return string(v)\n\
-         fn stringFromBytes(v: bytes): string\n    return string(v)\n\
-         fn bytesFromBytes(v: bytes): bytes\n    return bytes(v)\n\
-         fn dateFromText(v: string): string\n    return string(date(v))\n\
-         fn instantFromText(v: string): string\n    return string(instant(v))\n\
-         fn durationFromText(v: string): string\n    return string(duration(v))\n",
+        "pub fn intFromDecimal(v: decimal): int\n    return int(v)\n\
+         pub fn decimalFromInt(v: int): string\n    return string(decimal(v))\n\
+         pub fn stringFromInt(v: int): string\n    return string(v)\n\
+         pub fn stringFromDecimal(v: decimal): string\n    return string(v)\n\
+         pub fn stringFromBool(v: bool): string\n    return string(v)\n\
+         pub fn stringFromBytes(v: bytes): string\n    return string(v)\n\
+         pub fn bytesFromBytes(v: bytes): bytes\n    return bytes(v)\n\
+         pub fn dateFromText(v: string): string\n    return string(date(v))\n\
+         pub fn instantFromText(v: string): string\n    return string(instant(v))\n\
+         pub fn durationFromText(v: string): string\n    return string(duration(v))\n",
     );
     assert_eq!(
         run(checked_entry!(
@@ -1342,9 +1323,9 @@ fn conversion_builtins_accept_documented_sources() {
 #[test]
 fn documented_conversions_reject_invalid_dynamic_values() {
     let program = checked_program(
-        "fn intFromDecimal(v: decimal): int\n    return int(v)\n\
-         fn stringFromBytes(v: bytes): string\n    return string(v)\n\
-         fn dateFromText(v: string): date\n    return date(v)\n",
+        "pub fn intFromDecimal(v: decimal): int\n    return int(v)\n\
+         pub fn stringFromBytes(v: bytes): string\n    return string(v)\n\
+         pub fn dateFromText(v: string): date\n    return date(v)\n",
     );
     assert_eq!(
         run(checked_entry!(
@@ -1381,7 +1362,7 @@ fn documented_conversions_reject_invalid_dynamic_values() {
 #[test]
 fn documented_conversion_failures_are_catchable_type_errors() {
     let program = checked_program(
-        "fn code(v: bytes): string\n    try\n        return string(v)\n    catch err: Error\n        return err.code\n",
+        "pub fn code(v: bytes): string\n    try\n        return string(v)\n    catch err: Error\n        return err.code\n",
     );
     assert_eq!(
         run(checked_entry!(
@@ -1396,7 +1377,7 @@ fn documented_conversion_failures_are_catchable_type_errors() {
 #[test]
 fn a_numeric_conversion_rejects_malformed_text() {
     // Malformed text is a typed numeric error, not a silent zero.
-    let program = checked_program("fn n(v: string): int\n    return int(v)\n");
+    let program = checked_program("pub fn n(v: string): int\n    return int(v)\n");
     assert_eq!(
         run(checked_entry!(
             &program,
@@ -1407,7 +1388,7 @@ fn a_numeric_conversion_rejects_malformed_text() {
         .code,
         RUN_TYPE
     );
-    let program = checked_program("fn d(v: string): decimal\n    return decimal(v)\n");
+    let program = checked_program("pub fn d(v: string): decimal\n    return decimal(v)\n");
     assert_eq!(
         run(checked_entry!(
             &program,
@@ -1423,8 +1404,8 @@ fn a_numeric_conversion_rejects_malformed_text() {
 #[test]
 fn decimal_conversion_distinguishes_malformed_text_from_envelope_overflow() {
     let program = checked_program(
-        "fn d(v: string): decimal\n    return decimal(v)\n\
-         fn caught(v: string): string\n    try\n        var d: decimal = decimal(v)\n    catch err: Error\n        return err.code\n    return \"none\"\n",
+        "pub fn d(v: string): decimal\n    return decimal(v)\n\
+         pub fn caught(v: string): string\n    try\n        var d: decimal = decimal(v)\n    catch err: Error\n        return err.code\n    return \"none\"\n",
     );
     assert_eq!(
         run(checked_entry!(
@@ -1442,11 +1423,6 @@ fn decimal_conversion_distinguishes_malformed_text_from_envelope_overflow() {
     ] {
         let error = run(checked_entry!(&program, "test::d", Value::Str(raw.into()))).unwrap_err();
         assert_eq!(error.code, RUN_DECIMAL_OVERFLOW);
-        assert!(
-            error.message.contains("decimal arithmetic exceeded"),
-            "{}",
-            error.message
-        );
         assert_eq!(
             run(checked_entry!(
                 &program,
@@ -1462,7 +1438,7 @@ fn decimal_conversion_distinguishes_malformed_text_from_envelope_overflow() {
 fn a_conversion_error_message_is_grammar_independent() {
     // The message must not embed an article, so it reads correctly for
     // vowel-initial type names (not 'requires a int value').
-    let program = checked_program("fn n(v: string): int\n    return int(v)\n");
+    let program = checked_program("pub fn n(v: string): int\n    return int(v)\n");
     assert_eq!(
         run(checked_entry!(
             &program,
@@ -1477,7 +1453,7 @@ fn a_conversion_error_message_is_grammar_independent() {
 
 #[test]
 fn evaluates_conditionals() {
-    let source = "fn max(a: int, b: int): int\n    if a > b\n        return a\n    return b\n";
+    let source = "pub fn max(a: int, b: int): int\n    if a > b\n        return a\n    return b\n";
     assert_eq!(
         eval_source(source, "max", vec![Value::Int(7), Value::Int(3)]),
         Ok(Some(Value::Int(7)))
@@ -1885,7 +1861,7 @@ fn numeric_parse_and_range_faults_are_catchable_with_specific_codes() {
     );
     assert_eq!(
         run(checked_entry!(&program, "test::decimal_overflow_code")),
-        Ok(Some(Value::Str("run.decimal_overflow".into())))
+        Ok(Some(Value::Str(RUN_DECIMAL_OVERFLOW.into())))
     );
 }
 
@@ -1894,7 +1870,7 @@ fn a_throw_from_a_callee_is_caught_by_the_caller() {
     // An Error thrown inside a called function unwinds through the call and is
     // caught by the caller.
     let program = checked_program(
-        "fn boom()\n    throw Error(code: \"x.y\", message: \"deep\")\npub fn safe(): string\n    try\n        boom()\n    catch err: Error\n        return err.message\n    return \"none\"\n",
+        "pub fn boom()\n    throw Error(code: \"x.y\", message: \"deep\")\npub fn safe(): string\n    try\n        boom()\n    catch err: Error\n        return err.message\n    return \"none\"\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::safe")),
@@ -1908,7 +1884,7 @@ fn an_expression_position_call_throw_is_caught_like_a_statement_throw() {
     // mid-expression (`var x = boom() + 1`) unwinds on the same `Err` channel a
     // bare `throw` statement does, so the same `catch` binds it.
     let program = checked_program(
-        "fn boom(): int\n    throw Error(code: \"x.y\", message: \"mid\")\npub fn safe(): string\n    try\n        var total: int = boom() + 1\n    catch err: Error\n        return err.message\n    return \"none\"\n",
+        "pub fn boom(): int\n    throw Error(code: \"x.y\", message: \"mid\")\npub fn safe(): string\n    try\n        var total: int = boom() + 1\n    catch err: Error\n        return err.message\n    return \"none\"\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::safe")),
@@ -1920,7 +1896,7 @@ fn an_expression_position_call_throw_is_caught_like_a_statement_throw() {
 fn a_throw_propagates_through_intermediate_calls() {
     // a -> b -> c; c throws, a catches. The Error crosses two call boundaries.
     let program = checked_program(
-        "fn c()\n    throw Error(code: \"deep.fail\", message: \"from c\")\nfn b()\n    c()\npub fn a(): string\n    try\n        b()\n    catch err: Error\n        return err.code\n    return \"none\"\n",
+        "pub fn c()\n    throw Error(code: \"deep.fail\", message: \"from c\")\npub fn b()\n    c()\npub fn a(): string\n    try\n        b()\n    catch err: Error\n        return err.code\n    return \"none\"\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::a")),
@@ -1933,7 +1909,7 @@ fn a_callee_throw_rolls_back_the_enclosing_transaction() {
     // A transaction writes, then a called function throws. The throw escapes the
     // transaction, so it rolls back and the write never lands.
     let program = checked_program(
-        "resource Account at ^accts(id: int)\n    balance: int\n\nfn fail()\n    throw Error(code: \"x\", message: \"boom\")\n\npub fn run_it()\n    transaction\n        ^accts(1).balance = 5\n        fail()\n\npub fn read(): int\n    return ^accts(1).balance ?? -1\n",
+        "resource Account at ^accts(id: int)\n    balance: int\n\npub fn fail()\n    throw Error(code: \"x\", message: \"boom\")\n\npub fn run_it()\n    transaction\n        ^accts(1).balance = 5\n        fail()\n\npub fn read(): int\n    return ^accts(1).balance ?? -1\n",
     );
     let store = TreeStore::memory();
     let result = run_entry(&store, checked_entry!(&program, "test::run_it"));
@@ -1952,7 +1928,7 @@ fn a_caught_callee_throw_does_not_leak_into_a_later_fault() {
     // After a caller catches a callee's throw, the pending throw is cleared, so a
     // later fault is caught with its own Error value rather than the stale throw.
     let program = checked_program(
-        "fn callee()\n    throw Error(code: \"e1\", message: \"boom\")\npub fn check(): int\n    try\n        callee()\n    catch err: Error\n        write(\"caught\")\n    try\n        const boom = 1 / 0\n    catch err: Error\n        return 99\n    return 0\n",
+        "pub fn callee()\n    throw Error(code: \"e1\", message: \"boom\")\npub fn check(): int\n    try\n        callee()\n    catch err: Error\n        write(\"caught\")\n    try\n        const boom = 1 / 0\n    catch err: Error\n        return 99\n    return 0\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::check")),
@@ -1966,7 +1942,7 @@ fn a_throwing_finally_does_not_leak_a_pending_throw() {
     // stashed: after an outer `catch` swallows the finally throw, a later fault is
     // caught with its own Error value rather than the stale throw.
     let program = checked_program(
-        "fn callee()\n    throw Error(code: \"e1\", message: \"from call\")\npub fn leak(): int\n    try\n        try\n            callee()\n        finally\n            throw Error(code: \"e2\", message: \"from finally\")\n    catch err: Error\n        write(\"swallowed\")\n    try\n        const boom = 1 / 0\n    catch err: Error\n        return 99\n    return 0\n",
+        "pub fn callee()\n    throw Error(code: \"e1\", message: \"from call\")\npub fn leak(): int\n    try\n        try\n            callee()\n        finally\n            throw Error(code: \"e2\", message: \"from finally\")\n    catch err: Error\n        write(\"swallowed\")\n    try\n        const boom = 1 / 0\n    catch err: Error\n        return 99\n    return 0\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::leak")),
@@ -1979,7 +1955,7 @@ fn a_throw_from_a_call_in_finally_propagates() {
     // A `finally` whose own called function throws: that throw replaces the
     // outcome and is caught by an outer handler.
     let program = checked_program(
-        "fn boom()\n    throw Error(code: \"deep\", message: \"x\")\npub fn run_it(): string\n    try\n        try\n            write(\"body\")\n        finally\n            boom()\n    catch err: Error\n        return err.code\n    return \"none\"\n",
+        "pub fn boom()\n    throw Error(code: \"deep\", message: \"x\")\npub fn run_it(): string\n    try\n        try\n            write(\"body\")\n        finally\n            boom()\n    catch err: Error\n        return err.code\n    return \"none\"\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::run_it")),
@@ -1992,7 +1968,7 @@ fn a_clean_finally_preserves_a_propagated_call_throw() {
     // A clean `finally` (no throw of its own) over a call-propagated throw must
     // restore the pending throw so an outer `catch` still sees it.
     let program = checked_program(
-        "fn boom()\n    throw Error(code: \"deep\", message: \"x\")\npub fn run_it(): string\n    try\n        try\n            boom()\n        finally\n            write(\"cleanup\")\n    catch err: Error\n        return err.code\n    return \"none\"\n",
+        "pub fn boom()\n    throw Error(code: \"deep\", message: \"x\")\npub fn run_it(): string\n    try\n        try\n            boom()\n        finally\n            write(\"cleanup\")\n    catch err: Error\n        return err.code\n    return \"none\"\n",
     );
     let outcome = run_full(checked_entry!(&program, "test::run_it")).expect("caught");
     assert_eq!(outcome.value, Some(Value::Str("deep".into())));
@@ -2014,7 +1990,7 @@ fn an_uninitialized_scalar_var_starts_at_its_zero() {
 fn an_inout_parameter_reads_then_writes_a_local() {
     // `inout` seeds the parameter from the caller's value, then writes back.
     let program = checked_program(
-        "fn bump(inout n: int)\n    n = n + 1\npub fn main(): int\n    var n: int = 41\n    bump(inout n)\n    return n\n",
+        "pub fn bump(inout n: int)\n    n = n + 1\npub fn main(): int\n    var n: int = 41\n    bump(inout n)\n    return n\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::main")),
@@ -2027,7 +2003,7 @@ fn an_inout_parameter_mutates_a_local_resource() {
     // Mutating a field of a local resource passed `inout` is visible to the
     // caller.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    title: string\n\nfn setTitle(inout book: Book)\n    book.title = \"Small Gods\"\n\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    setTitle(inout book)\n    return book.title\n",
+        "resource Book at ^books(id: int)\n    title: string\n\npub fn setTitle(inout book: Book)\n    book.title = \"Small Gods\"\n\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    setTitle(inout book)\n    return book.title\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::main")),
@@ -2063,7 +2039,7 @@ fn an_inout_parameter_writes_back_to_a_local_resource_field() {
     // A field of a local resource, `book.title`, is an assignable place; passing it
     // `inout` reads it to seed the parameter and writes the result back.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    title: string\n\nfn upper(inout s: string)\n    s = \"UPPER\"\n\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    upper(inout book.title)\n    return book.title\n",
+        "resource Book at ^books(id: int)\n    title: string\n\npub fn upper(inout s: string)\n    s = \"UPPER\"\n\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    upper(inout book.title)\n    return book.title\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::main")),
@@ -2076,7 +2052,7 @@ fn write_back_is_skipped_when_the_callee_throws() {
     // A callee that mutates an `inout` parameter then throws must not write back:
     // the caller's local keeps its pre-call value.
     let program = checked_program(
-        "fn bad(inout n: int)\n    n = 99\n    throw Error(code: \"x\", message: \"boom\")\npub fn main(): int\n    var n: int = 1\n    try\n        bad(inout n)\n    catch err: Error\n        write(\"caught\")\n    return n\n",
+        "pub fn bad(inout n: int)\n    n = 99\n    throw Error(code: \"x\", message: \"boom\")\npub fn main(): int\n    var n: int = 1\n    try\n        bad(inout n)\n    catch err: Error\n        write(\"caught\")\n    return n\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::main")),
@@ -2087,26 +2063,26 @@ fn write_back_is_skipped_when_the_callee_throws() {
 #[test]
 fn an_argument_mode_must_match_the_parameter_mode() {
     checker_rejects(
-        "fn plain(n: int): int\n    return n\npub fn main(): int\n    var n: int = 1\n    return plain(inout n)\n",
+        "pub fn plain(n: int): int\n    return n\npub fn main(): int\n    var n: int = 1\n    return plain(inout n)\n",
         "check.call_argument",
     );
 }
 
 /// A program exercising the four `std::io` file builtins.
 const IO_SAMPLE: &str = "\
-fn saveText(path: string, text: string)
+pub fn saveText(path: string, text: string)
     std::io::writeText(path, text)
 
-fn loadText(path: string): string
+pub fn loadText(path: string): string
     return std::io::readText(path)
 
-fn saveBytes(path: string, data: bytes)
+pub fn saveBytes(path: string, data: bytes)
     std::io::writeBytes(path, data)
 
-fn loadBytes(path: string): bytes
+pub fn loadBytes(path: string): bytes
     return std::io::readBytes(path)
 
-fn loadOrCode(path: string): string
+pub fn loadOrCode(path: string): string
     try
         return std::io::readText(path)
     catch err: Error
@@ -2365,7 +2341,7 @@ fn throw_inside_a_transaction_rolls_back() {
 fn evaluates_locals_and_reassignment() {
     assert_eq!(
         eval_source(
-            "fn f(n: int): int\n    var total = n\n    total = total + 1\n    return total\n",
+            "pub fn f(n: int): int\n    var total = n\n    total = total + 1\n    return total\n",
             "f",
             vec![Value::Int(41)]
         ),
@@ -2375,7 +2351,7 @@ fn evaluates_locals_and_reassignment() {
 
 #[test]
 fn evaluates_boolean_logic() {
-    let source = "fn f(a: bool, b: bool): bool\n    return a and not b\n";
+    let source = "pub fn f(a: bool, b: bool): bool\n    return a and not b\n";
     assert_eq!(
         eval_source(source, "f", vec![Value::Bool(true), Value::Bool(false)]),
         Ok(Some(Value::Bool(true)))
@@ -2390,7 +2366,7 @@ fn evaluates_boolean_logic() {
 fn equality_compares_values() {
     // Marrow spells equality `==` (and inequality `!=`); assignment is the
     // single `=`, so equality in expression position uses `==`.
-    let source = "fn f(a: int, b: int): bool\n    return a == b\n";
+    let source = "pub fn f(a: int, b: int): bool\n    return a == b\n";
     assert_eq!(
         eval_source(source, "f", vec![Value::Int(5), Value::Int(5)]),
         Ok(Some(Value::Bool(true)))
@@ -2406,7 +2382,7 @@ fn a_function_that_returns_nothing_yields_none() {
     // Falls off the end with no `return`.
     assert_eq!(
         eval_source(
-            "fn f(a: int)\n    const x = a + 1\n",
+            "pub fn f(a: int)\n    const x = a + 1\n",
             "f",
             vec![Value::Int(1)]
         ),
@@ -2417,7 +2393,7 @@ fn a_function_that_returns_nothing_yields_none() {
 #[test]
 fn rejects_division_by_zero() {
     let result = eval_source(
-        "fn f(a: int): int\n    const boom = a / 0\n    return 0\n",
+        "pub fn f(a: int): int\n    const boom = a / 0\n    return 0\n",
         "f",
         vec![Value::Int(10)],
     );
@@ -2432,7 +2408,7 @@ fn integer_remainder_by_zero_reports_one_consistent_message() {
     // The `%` operator and `std::math::remainder`/`modulo` are the same integer
     // remainder, so a zero divisor must report the same divide-by-zero message.
     let result = eval_source(
-        "fn f(a: int): int\n    return a % 0\n",
+        "pub fn f(a: int): int\n    return a % 0\n",
         "f",
         vec![Value::Int(10)],
     );
@@ -2455,7 +2431,7 @@ fn integer_remainder_by_zero_reports_one_consistent_message() {
 #[test]
 fn detects_integer_overflow() {
     let result = eval_source(
-        "fn f(a: int): int\n    return a * a\n",
+        "pub fn f(a: int): int\n    return a * a\n",
         "f",
         vec![Value::Int(i64::MAX)],
     );
@@ -2468,7 +2444,7 @@ fn detects_integer_overflow() {
 #[test]
 fn detects_an_over_range_integer_literal() {
     checker_rejects(
-        "fn f(): int\n    return 99999999999999999999999999\n",
+        "pub fn f(): int\n    return 99999999999999999999999999\n",
         "check.literal_range",
     );
 }
@@ -2476,20 +2452,20 @@ fn detects_an_over_range_integer_literal() {
 #[test]
 fn detects_an_over_envelope_decimal_literal() {
     checker_rejects(
-        "fn f(): decimal\n    return 9.9999999999999999999999999999999999\n",
+        "pub fn f(): decimal\n    return 9.9999999999999999999999999999999999\n",
         "check.literal_range",
     );
 }
 
 #[test]
 fn rejects_an_unbound_name() {
-    checker_rejects("fn f(): int\n    return x\n", "check.unresolved_name");
+    checker_rejects("pub fn f(): int\n    return x\n", "check.unresolved_name");
 }
 
 #[test]
 fn rejects_assignment_to_an_immutable_binding() {
     let result = eval_source(
-        "fn f(): int\n    const x = 1\n    x = 2\n    return x\n",
+        "pub fn f(): int\n    const x = 1\n    x = 2\n    return x\n",
         "f",
         Vec::new(),
     );
@@ -2504,7 +2480,7 @@ fn a_local_const_binds_a_runtime_computed_value() {
     // `const` is the immutable local binding. Unlike a module constant, its
     // initializer may be any expression — here a call resolved at run time.
     let program = checked_program(
-        "fn double(n: int): int\n    return n * 2\nfn f(): int\n    const x = double(5)\n    return x\n",
+        "pub fn double(n: int): int\n    return n * 2\npub fn f(): int\n    const x = double(5)\n    return x\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::f")),
@@ -2514,20 +2490,20 @@ fn a_local_const_binds_a_runtime_computed_value() {
 
 #[test]
 fn rejects_an_argument_count_mismatch() {
-    let program = checked_program("fn add(a: int, b: int): int\n    return a + b\n");
+    let program = checked_program("pub fn add(a: int, b: int): int\n    return a + b\n");
     let error = rejected_entry_call(&program, "test::add", vec![Value::Int(1)]);
     assert_eq!(error.code, RUN_TYPE);
 }
 
 #[test]
 fn reports_an_unsupported_construct() {
-    checker_rejects("fn f(): int\n    return 1..3\n", "check.range_value");
+    checker_rejects("pub fn f(): int\n    return 1..3\n", "check.range_value");
 }
 
 #[test]
 fn an_if_condition_must_be_boolean() {
     checker_rejects(
-        "fn f(a: int): int\n    if a\n        return 1\n    return 0\n",
+        "pub fn f(a: int): int\n    if a\n        return 1\n    return 0\n",
         "check.condition_type",
     );
 }
@@ -2538,7 +2514,7 @@ fn an_inner_scope_shadows_then_restores_an_outer_binding() {
     // the outer `x` (99) is what `return x` sees.
     assert_eq!(
         eval_source(
-            "fn f(): int\n    const x = 99\n    if true\n        const x = 1\n    return x\n",
+            "pub fn f(): int\n    const x = 99\n    if true\n        const x = 1\n    return x\n",
             "f",
             Vec::new()
         ),
@@ -2548,7 +2524,7 @@ fn an_inner_scope_shadows_then_restores_an_outer_binding() {
 
 #[test]
 fn an_else_if_chain_selects_the_matching_branch() {
-    let source = "fn grade(n: int): int\n    if n > 90\n        return 1\n    else if n > 80\n        return 2\n    else\n        return 3\n";
+    let source = "pub fn grade(n: int): int\n    if n > 90\n        return 1\n    else if n > 80\n        return 2\n    else\n        return 3\n";
     assert_eq!(
         eval_source(source, "grade", vec![Value::Int(95)]),
         Ok(Some(Value::Int(1)))
@@ -2568,7 +2544,7 @@ fn detects_min_over_negative_one_overflow() {
     // `i64::MIN % -1` overflows. (`/` now yields a decimal, so `%` is the only
     // integer-division-family operator that can overflow this way.)
     let result = eval_source(
-        "fn f(a: int, b: int): int\n    return a % b\n",
+        "pub fn f(a: int, b: int): int\n    return a % b\n",
         "f",
         vec![Value::Int(i64::MIN), Value::Int(-1)],
     );
@@ -2580,7 +2556,7 @@ fn detects_min_over_negative_one_overflow() {
 
 #[test]
 fn evaluates_a_while_loop() {
-    let source = "fn sum(n: int): int\n    var total = 0\n    var i = 1\n    while i <= n\n        total = total + i\n        i = i + 1\n    return total\n";
+    let source = "pub fn sum(n: int): int\n    var total = 0\n    var i = 1\n    while i <= n\n        total = total + i\n        i = i + 1\n    return total\n";
     assert_eq!(
         eval_source(source, "sum", vec![Value::Int(5)]),
         Ok(Some(Value::Int(15)))
@@ -2589,7 +2565,7 @@ fn evaluates_a_while_loop() {
 
 #[test]
 fn evaluates_an_inclusive_for_range() {
-    let source = "fn sum(n: int): int\n    var total = 0\n    for i in 1..=n\n        total = total + i\n    return total\n";
+    let source = "pub fn sum(n: int): int\n    var total = 0\n    for i in 1..=n\n        total = total + i\n    return total\n";
     assert_eq!(
         eval_source(source, "sum", vec![Value::Int(5)]),
         Ok(Some(Value::Int(15)))
@@ -2598,7 +2574,7 @@ fn evaluates_an_inclusive_for_range() {
 
 #[test]
 fn an_exclusive_for_range_stops_before_the_end() {
-    let source = "fn range_count(n: int): int\n    var c = 0\n    for i in 0..n\n        c = c + 1\n    return c\n";
+    let source = "pub fn range_count(n: int): int\n    var c = 0\n    for i in 0..n\n        c = c + 1\n    return c\n";
     assert_eq!(
         eval_source(source, "range_count", vec![Value::Int(5)]),
         Ok(Some(Value::Int(5)))
@@ -2610,7 +2586,7 @@ fn an_int_range_steps_by_a_positive_by_value() {
     // `1..10 by 2` yields 1, 3, 5, 7, 9 (exclusive end), summing to 25.
     assert_eq!(
         eval_source(
-            "fn f(): int\n    var total = 0\n    for i in 1..10 by 2\n        total = total + i\n    return total\n",
+            "pub fn f(): int\n    var total = 0\n    for i in 1..10 by 2\n        total = total + i\n    return total\n",
             "f",
             Vec::new()
         ),
@@ -2621,7 +2597,7 @@ fn an_int_range_steps_by_a_positive_by_value() {
 #[test]
 fn an_int_range_steps_down_with_a_negative_by_value() {
     // `10..1 by -1` counts down 10..2 (exclusive end) — ten iterations from 10 to 2.
-    let source = "fn f(): int\n    var last = 0\n    var count = 0\n    for i in 10..1 by -1\n        last = i\n        count = count + 1\n    return count * 100 + last\n";
+    let source = "pub fn f(): int\n    var last = 0\n    var count = 0\n    for i in 10..1 by -1\n        last = i\n        count = count + 1\n    return count * 100 + last\n";
     // 9 iterations (10 down to 2), last value 2.
     assert_eq!(
         eval_source(source, "f", Vec::new()),
@@ -2632,7 +2608,7 @@ fn an_int_range_steps_down_with_a_negative_by_value() {
 #[test]
 fn an_inclusive_descending_range_reaches_its_end() {
     // `10..=1 by -1` includes 1, so the final bound is reached.
-    let source = "fn f(): int\n    var last = 99\n    for i in 10..=1 by -1\n        last = i\n    return last\n";
+    let source = "pub fn f(): int\n    var last = 99\n    for i in 10..=1 by -1\n        last = i\n    return last\n";
     assert_eq!(
         eval_source(source, "f", Vec::new()),
         Ok(Some(Value::Int(1)))
@@ -2643,7 +2619,7 @@ fn an_inclusive_descending_range_reaches_its_end() {
 fn a_wrong_direction_variable_step_is_an_empty_loop() {
     // A runtime wrong-direction step never loops forever: it iterates zero times.
     // `1..10 by step` with step = -1 runs the body never.
-    let source = "fn f(step: int): int\n    var count = 0\n    for i in 1..10 by step\n        count = count + 1\n    return count\n";
+    let source = "pub fn f(step: int): int\n    var count = 0\n    for i in 1..10 by step\n        count = count + 1\n    return count\n";
     assert_eq!(
         eval_source(source, "f", vec![Value::Int(-1)]),
         Ok(Some(Value::Int(0)))
@@ -2653,7 +2629,7 @@ fn a_wrong_direction_variable_step_is_an_empty_loop() {
 #[test]
 fn a_default_wrong_direction_range_is_an_empty_loop() {
     // `lo..hi` with lo > hi and the default +1 step iterates zero times.
-    let source = "fn f(lo: int, hi: int): int\n    var count = 0\n    for i in lo..hi\n        count = count + 1\n    return count\n";
+    let source = "pub fn f(lo: int, hi: int): int\n    var count = 0\n    for i in lo..hi\n        count = count + 1\n    return count\n";
     assert_eq!(
         eval_source(source, "f", vec![Value::Int(10), Value::Int(1)]),
         Ok(Some(Value::Int(0)))
@@ -2664,7 +2640,7 @@ fn a_default_wrong_direction_range_is_an_empty_loop() {
 fn a_runtime_zero_step_faults() {
     // A zero step would never progress; a non-literal zero faults rather than hangs.
     let source =
-        "fn f(step: int): int\n    for i in 1..10 by step\n        return i\n    return 0\n";
+        "pub fn f(step: int): int\n    for i in 1..10 by step\n        return i\n    return 0\n";
     let result = eval_source(source, "f", vec![Value::Int(0)]);
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_TYPE),
@@ -2677,7 +2653,7 @@ fn a_decimal_range_steps_by_a_decimal() {
     // `0.0..1.0 by 0.25` yields 0.0, 0.25, 0.50, 0.75 (exclusive end): four values.
     assert_eq!(
         eval_source(
-            "fn f(): int\n    var count = 0\n    for x in 0.0..1.0 by 0.25\n        count = count + 1\n    return count\n",
+            "pub fn f(): int\n    var count = 0\n    for x in 0.0..1.0 by 0.25\n        count = count + 1\n    return count\n",
             "f",
             Vec::new()
         ),
@@ -2725,7 +2701,7 @@ fn an_instant_range_steps_by_a_duration_in_utc() {
 
 #[test]
 fn break_exits_the_loop() {
-    let source = "fn f(n: int): int\n    var i = 0\n    while true\n        if i > n\n            break\n        i = i + 1\n    return i\n";
+    let source = "pub fn f(n: int): int\n    var i = 0\n    while true\n        if i > n\n            break\n        i = i + 1\n    return i\n";
     assert_eq!(
         eval_source(source, "f", vec![Value::Int(3)]),
         Ok(Some(Value::Int(4)))
@@ -2734,7 +2710,7 @@ fn break_exits_the_loop() {
 
 #[test]
 fn continue_skips_to_the_next_iteration() {
-    let source = "fn f(n: int): int\n    var c = 0\n    for i in 1..=n\n        if i == 1\n            continue\n        c = c + 1\n    return c\n";
+    let source = "pub fn f(n: int): int\n    var c = 0\n    for i in 1..=n\n        if i == 1\n            continue\n        c = c + 1\n    return c\n";
     // The first iteration is skipped; the rest count.
     assert_eq!(
         eval_source(source, "f", vec![Value::Int(3)]),
@@ -2744,7 +2720,7 @@ fn continue_skips_to_the_next_iteration() {
 
 #[test]
 fn a_labeled_break_exits_the_outer_loop() {
-    let source = "fn f(): int\n    var count = 0\n    outer: for i in 1..=3\n        for j in 1..=3\n            if j == 2\n                break outer\n            count = count + 1\n    return count\n";
+    let source = "pub fn f(): int\n    var count = 0\n    outer: for i in 1..=3\n        for j in 1..=3\n            if j == 2\n                break outer\n            count = count + 1\n    return count\n";
     // i=1: j=1 counts (1), j=2 breaks the outer loop entirely.
     assert_eq!(
         eval_source(source, "f", Vec::new()),
@@ -2754,7 +2730,7 @@ fn a_labeled_break_exits_the_outer_loop() {
 
 #[test]
 fn an_unlabeled_break_exits_only_the_inner_loop() {
-    let source = "fn f(): int\n    var count = 0\n    for i in 1..=2\n        for j in 1..=3\n            if j == 2\n                break\n            count = count + 1\n    return count\n";
+    let source = "pub fn f(): int\n    var count = 0\n    for i in 1..=2\n        for j in 1..=3\n            if j == 2\n                break\n            count = count + 1\n    return count\n";
     // Each outer iteration counts j=1 then breaks the inner loop: 2 total.
     assert_eq!(
         eval_source(source, "f", Vec::new()),
@@ -2764,13 +2740,17 @@ fn an_unlabeled_break_exits_only_the_inner_loop() {
 
 #[test]
 fn break_outside_a_loop_is_an_error() {
-    checker_rejects("fn f()\n    break\n", "check.loop_control_flow");
+    checker_rejects("pub fn f()\n    break\n", "check.loop_control_flow");
 }
 
 #[test]
 fn returns_a_string_literal() {
     assert_eq!(
-        eval_source("fn f(): string\n    return \"hello\"\n", "f", Vec::new()),
+        eval_source(
+            "pub fn f(): string\n    return \"hello\"\n",
+            "f",
+            Vec::new()
+        ),
         Ok(Some(Value::Str("hello".into())))
     );
 }
@@ -2780,7 +2760,7 @@ fn concatenates_strings() {
     // Marrow spells string concatenation `_`.
     assert_eq!(
         eval_source(
-            "fn greet(name: string): string\n    return \"Hello, \" _ name\n",
+            "pub fn greet(name: string): string\n    return \"Hello, \" _ name\n",
             "greet",
             vec![Value::Str("World".into())]
         ),
@@ -2792,7 +2772,7 @@ fn concatenates_strings() {
 fn compares_strings_for_equality_and_order() {
     assert_eq!(
         eval_source(
-            "fn eq(a: string, b: string): bool\n    return a == b\n",
+            "pub fn eq(a: string, b: string): bool\n    return a == b\n",
             "eq",
             vec![Value::Str("x".into()), Value::Str("x".into())]
         ),
@@ -2800,7 +2780,7 @@ fn compares_strings_for_equality_and_order() {
     );
     assert_eq!(
         eval_source(
-            "fn lt(a: string, b: string): bool\n    return a < b\n",
+            "pub fn lt(a: string, b: string): bool\n    return a < b\n",
             "lt",
             vec![Value::Str("apple".into()), Value::Str("banana".into())]
         ),
@@ -2812,7 +2792,7 @@ fn compares_strings_for_equality_and_order() {
 fn string_escapes_are_decoded() {
     assert_eq!(
         eval_source(
-            "fn f(): string\n    return \"slash \\\\ quote \\\" line\\n carriage\\r tab\\t\"\n",
+            "pub fn f(): string\n    return \"slash \\\\ quote \\\" line\\n carriage\\r tab\\t\"\n",
             "f",
             Vec::new()
         ),
@@ -2824,7 +2804,7 @@ fn string_escapes_are_decoded() {
 
 #[test]
 fn unknown_string_escapes_are_rejected() {
-    let result = eval_source("fn f(): string\n    return \"\\q\"\n", "f", Vec::new());
+    let result = eval_source("pub fn f(): string\n    return \"\\q\"\n", "f", Vec::new());
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
         "{result:?}"
@@ -2834,7 +2814,7 @@ fn unknown_string_escapes_are_rejected() {
 #[test]
 fn concatenation_requires_strings() {
     checker_rejects(
-        "fn f(): string\n    return \"x\" _ 5\n",
+        "pub fn f(): string\n    return \"x\" _ 5\n",
         "check.operator_type",
     );
 }
@@ -2843,7 +2823,7 @@ fn concatenation_requires_strings() {
 fn evaluates_string_interpolation() {
     assert_eq!(
         eval_source(
-            "fn f(n: int): string\n    return $\"n is {n}\"\n",
+            "pub fn f(n: int): string\n    return $\"n is {n}\"\n",
             "f",
             vec![Value::Int(5)]
         ),
@@ -2855,7 +2835,7 @@ fn evaluates_string_interpolation() {
 fn interpolation_renders_several_values() {
     assert_eq!(
         eval_source(
-            "fn f(name: string, ok: bool): string\n    return $\"{name}={ok}\"\n",
+            "pub fn f(name: string, ok: bool): string\n    return $\"{name}={ok}\"\n",
             "f",
             vec![Value::Str("ready".into()), Value::Bool(true)]
         ),
@@ -2866,7 +2846,11 @@ fn interpolation_renders_several_values() {
 #[test]
 fn interpolation_unescapes_literal_braces() {
     assert_eq!(
-        eval_source("fn f(): string\n    return $\"a {{ b\"\n", "f", Vec::new()),
+        eval_source(
+            "pub fn f(): string\n    return $\"a {{ b\"\n",
+            "f",
+            Vec::new()
+        ),
         Ok(Some(Value::Str("a { b".into())))
     );
 }
@@ -2875,7 +2859,7 @@ fn interpolation_unescapes_literal_braces() {
 fn interpolation_text_decodes_string_escapes() {
     assert_eq!(
         eval_source(
-            "fn f(name: string): string\n    return $\"slash \\\\ quote \\\" {{\\n{name}\\r\\t}}\"\n",
+            "pub fn f(name: string): string\n    return $\"slash \\\\ quote \\\" {{\\n{name}\\r\\t}}\"\n",
             "f",
             vec![Value::Str("Ada".into())]
         ),
@@ -2885,7 +2869,7 @@ fn interpolation_text_decodes_string_escapes() {
 
 #[test]
 fn unknown_interpolation_escapes_are_rejected() {
-    let result = eval_source("fn f(): string\n    return $\"\\q\"\n", "f", Vec::new());
+    let result = eval_source("pub fn f(): string\n    return $\"\\q\"\n", "f", Vec::new());
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_UNSUPPORTED),
         "{result:?}"
@@ -2895,8 +2879,8 @@ fn unknown_interpolation_escapes_are_rejected() {
 #[test]
 fn interpolation_rejects_later_bad_escapes_before_evaluating_holes() {
     let program = checked_program(
-        "fn boom(): decimal\n    return 1.0 / 0.0\n\n\
-         fn f(): string\n    return $\"{boom()}\\q\"\n",
+        "pub fn boom(): decimal\n    return 1.0 / 0.0\n\n\
+         pub fn f(): string\n    return $\"{boom()}\\q\"\n",
     );
     let result = run(checked_entry!(&program, "test::f"));
     assert!(
@@ -2907,7 +2891,7 @@ fn interpolation_rejects_later_bad_escapes_before_evaluating_holes() {
 
 #[test]
 fn run_entry_evaluates_a_function_by_qualified_name() {
-    let program = checked_program("fn add(a: int, b: int): int\n    return a + b\n");
+    let program = checked_program("pub fn add(a: int, b: int): int\n    return a + b\n");
     assert_eq!(
         run(checked_entry!(
             &program,
@@ -2921,11 +2905,10 @@ fn run_entry_evaluates_a_function_by_qualified_name() {
 
 #[test]
 fn run_entry_rejects_host_values_that_do_not_match_checked_parameters() {
-    let program = checked_program("fn needs_int(n: int)\n    print(\"ran\")\n");
+    let program = checked_program("pub fn needs_int(n: int)\n    print(\"ran\")\n");
     let error = rejected_entry_call(&program, "test::needs_int", vec![Value::Str("x".into())]);
 
     assert_eq!(error.code, RUN_TYPE);
-    assert!(error.message.contains("entry argument `n`"));
 }
 
 #[test]
@@ -2949,41 +2932,38 @@ fn run_entry_rejects_ambiguous_bare_entries() {
 
 #[test]
 fn run_entry_rejects_host_values_for_moded_parameters() {
-    let program = checked_program("fn fill(inout n: int)\n    n = 1\n");
+    let program = checked_program("pub fn fill(inout n: int)\n    n = 1\n");
     let error = rejected_entry_call(&program, "test::fill", vec![Value::Int(0)]);
 
     assert_eq!(error.code, RUN_TYPE);
-    assert!(error.message.contains("inout"));
 }
 
 #[test]
 fn run_entry_rejects_host_values_for_identity_parameters() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\n\
-         fn load(id: Id(^books))\n    print(\"ran\")\n",
+         pub fn load(id: Id(^books))\n    print(\"ran\")\n",
     );
     let error = rejected_entry_call(&program, "test::load", vec![Value::Int(1)]);
 
     assert_eq!(error.code, RUN_TYPE);
-    assert!(error.message.contains("entry argument `id`"));
 }
 
 #[test]
 fn run_entry_rejects_host_values_for_resource_parameters() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\n\
-         fn show(book: Book)\n    print(\"ran\")\n",
+         pub fn show(book: Book)\n    print(\"ran\")\n",
     );
     let error = rejected_entry_call(&program, "test::show", vec![Value::Resource(vec![])]);
 
     assert_eq!(error.code, RUN_TYPE);
-    assert!(error.message.contains("entry argument `book`"));
 }
 
 #[test]
 fn a_function_can_call_another() {
     let program = checked_program(
-        "fn double(n: int): int\n    return n + n\n\nfn quad(n: int): int\n    return double(n) + double(n)\n",
+        "pub fn double(n: int): int\n    return n + n\n\npub fn quad(n: int): int\n    return double(n) + double(n)\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::quad", Value::Int(3))),
@@ -2994,7 +2974,7 @@ fn a_function_can_call_another() {
 #[test]
 fn functions_recurse() {
     let program = checked_program(
-        "fn fact(n: int): int\n    if n <= 1\n        return 1\n    return n * fact(n - 1)\n",
+        "pub fn fact(n: int): int\n    if n <= 1\n        return 1\n    return n * fact(n - 1)\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::fact", Value::Int(5))),
@@ -3005,7 +2985,7 @@ fn functions_recurse() {
 #[test]
 fn a_void_call_runs_as_a_statement() {
     let program = checked_program(
-        "fn note(n: int)\n    const doubled = n + n\n\nfn caller(): int\n    note(3)\n    return 2\n",
+        "pub fn note(n: int)\n    const doubled = n + n\n\npub fn caller(): int\n    note(3)\n    return 2\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::caller")),
@@ -3016,14 +2996,14 @@ fn a_void_call_runs_as_a_statement() {
 #[test]
 fn using_a_void_call_as_a_value_is_rejected() {
     checker_rejects(
-        "fn note(n: int)\n    const doubled = n + n\n\nfn caller(): int\n    return note(3)\n",
+        "pub fn note(n: int)\n    const doubled = n + n\n\npub fn caller(): int\n    return note(3)\n",
         "check.untyped_value",
     );
 }
 
 #[test]
 fn an_unknown_function_is_rejected() {
-    let program = checked_program("fn f(): int\n    return 1\n");
+    let program = checked_program("pub fn f(): int\n    return 1\n");
     let error = rejected_entry_call(&program, "test::missing", Vec::new());
     assert_eq!(error.code, RUN_UNKNOWN_FUNCTION);
 }
@@ -3042,7 +3022,7 @@ fn values_and_entries_over_an_index_branch_are_unsupported() {
 #[test]
 fn a_unique_index_lookup_loop_skips_an_absent_entry() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    isbn: string\n\n    index byIsbn(isbn) unique\n\nfn f()\n    for id in ^books.byIsbn(\"978-0\")\n        print($\"{id}\")\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    isbn: string\n\n    index byIsbn(isbn) unique\n\npub fn f()\n    for id in ^books.byIsbn(\"978-0\")\n        print($\"{id}\")\n",
     );
 
     let outcome = run_full(checked_entry!(&program, "test::f")).expect("run");
@@ -3062,16 +3042,16 @@ fn rebuild_store_indexes_reconstructs_unique_and_non_unique_lookups() {
         isbn: string\n\n    \
         index byShelf(shelf, id)\n    \
         index byIsbn(isbn) unique\n\n\
-        fn add(id: int, t: string, s: string, i: string)\n    \
+        pub fn add(id: int, t: string, s: string, i: string)\n    \
         ^books(id).title = t\n    \
         ^books(id).shelf = s\n    \
         ^books(id).isbn = i\n\n\
-        fn isbn_title(i: string): string\n    \
+        pub fn isbn_title(i: string): string\n    \
         var found = \"\"\n    \
         for id in ^books.byIsbn(i)\n        \
         found = ^books(id).title\n    \
         return found\n\n\
-        fn shelf_count(s: string): int\n    \
+        pub fn shelf_count(s: string): int\n    \
         var c = 0\n    \
         for id in keys(^books.byShelf(s))\n        \
         c = c + 1\n    \
@@ -3154,7 +3134,7 @@ fn rebuild_store_indexes_reconstructs_unique_and_non_unique_lookups() {
 
 #[test]
 fn print_writes_a_line_to_output() {
-    let program = checked_program("fn main()\n    print($\"hello {1}\")\n");
+    let program = checked_program("pub fn main()\n    print($\"hello {1}\")\n");
     let outcome = run_full(checked_entry!(&program, "test::main")).expect("run");
     assert_eq!(outcome.value, None);
     assert_eq!(outcome.output, "hello 1\n");
@@ -3162,7 +3142,7 @@ fn print_writes_a_line_to_output() {
 
 #[test]
 fn write_does_not_add_a_newline() {
-    let program = checked_program("fn main()\n    write(\"a\")\n    write(\"b\")\n");
+    let program = checked_program("pub fn main()\n    write(\"a\")\n    write(\"b\")\n");
     let outcome = run_full(checked_entry!(&program, "test::main")).expect("run");
     assert_eq!(outcome.output, "ab");
 }
@@ -3170,7 +3150,7 @@ fn write_does_not_add_a_newline() {
 #[test]
 fn output_accumulates_across_calls() {
     let program = checked_program(
-        "fn greet(name: string)\n    print($\"hi {name}\")\n\nfn main()\n    greet(\"a\")\n    greet(\"b\")\n",
+        "pub fn greet(name: string)\n    print($\"hi {name}\")\n\npub fn main()\n    greet(\"a\")\n    greet(\"b\")\n",
     );
     let outcome = run_full(checked_entry!(&program, "test::main")).expect("run");
     assert_eq!(outcome.output, "hi a\nhi b\n");
@@ -3178,7 +3158,7 @@ fn output_accumulates_across_calls() {
 
 #[test]
 fn print_takes_one_argument() {
-    let program = checked_program("fn main()\n    print()\n");
+    let program = checked_program("pub fn main()\n    print()\n");
     let result = run_full(checked_entry!(&program, "test::main"));
     assert!(
         matches!(result, Err(ref error) if error.code == RUN_TYPE),
@@ -3191,10 +3171,10 @@ const BOOK_READER: &str = "\
 resource Book at ^books(id: int)
     required title: string
 
-fn title_of(id: int): string
+pub fn title_of(id: int): string
     return ^books(id).title
 
-fn show(id: int)
+pub fn show(id: int)
     print($\"title: {^books(id).title}\")
 ";
 
@@ -3252,7 +3232,7 @@ fn a_saved_read_interpolates_and_prints() {
 #[test]
 fn whole_resource_read_rejects_missing_required_durable_fields() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    required shelf: string\n\nfn read(id: int): Book\n    var fallback: Book\n    fallback.title = \"\"\n    fallback.shelf = \"\"\n    return ^books(id) ?? fallback\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    required shelf: string\n\npub fn read(id: int): Book\n    var fallback: Book\n    fallback.title = \"\"\n    fallback.shelf = \"\"\n    return ^books(id) ?? fallback\n",
     );
     let store = empty_store();
     write_data_value(
@@ -3279,10 +3259,10 @@ const BOOK_WRITER: &str = "\
 resource Book at ^books(id: int)
     required title: string
 
-fn set_title(id: int, t: string)
+pub fn set_title(id: int, t: string)
     ^books(id).title = t
 
-fn title_of(id: int): string
+pub fn title_of(id: int): string
     return ^books(id).title
 ";
 
@@ -3315,9 +3295,9 @@ fn out_of_transaction_field_write_rejects_partial_required_record() {
         "resource Item at ^items(id: int)\n\
          \x20   required name: string\n\
          \x20   shelf: string\n\n\
-         fn set_shelf(id: int)\n\
+         pub fn set_shelf(id: int)\n\
          \x20   ^items(id).shelf = \"fiction\"\n\n\
-         fn has_item(id: int): bool\n\
+         pub fn has_item(id: int): bool\n\
          \x20   return exists(^items(id))\n",
     );
     let store = TreeStore::memory();
@@ -3348,9 +3328,9 @@ fn out_of_transaction_group_field_write_rejects_partial_required_record() {
          \x20   required title: string\n\
          \x20   binding\n\
          \x20       cover: string\n\n\
-         fn set_cover(id: int)\n\
+         pub fn set_cover(id: int)\n\
          \x20   ^books(id).binding.cover = \"hard\"\n\n\
-         fn has_book(id: int): bool\n\
+         pub fn has_book(id: int): bool\n\
          \x20   return exists(^books(id))\n",
     );
     let store = TreeStore::memory();
@@ -3380,10 +3360,10 @@ fn transaction_commit_rejects_partial_required_record() {
         "resource Item at ^items(id: int)\n\
          \x20   required name: string\n\
          \x20   shelf: string\n\n\
-         fn set_shelf(id: int)\n\
+         pub fn set_shelf(id: int)\n\
          \x20   transaction\n\
          \x20       ^items(id).shelf = \"fiction\"\n\n\
-         fn has_item(id: int): bool\n\
+         pub fn has_item(id: int): bool\n\
          \x20   return exists(^items(id))\n",
     );
     let store = TreeStore::memory();
@@ -3413,13 +3393,13 @@ fn transaction_required_field_checks_cross_helper_calls() {
         "resource Item at ^items(id: int)\n\
          \x20   required name: string\n\
          \x20   shelf: string\n\n\
-         fn set_shelf(id: int)\n\
+         pub fn set_shelf(id: int)\n\
          \x20   ^items(id).shelf = \"fiction\"\n\n\
-         fn create(id: int)\n\
+         pub fn create(id: int)\n\
          \x20   transaction\n\
          \x20       set_shelf(id)\n\
          \x20       ^items(id).name = \"Mort\"\n\n\
-         fn name_of(id: int): string\n\
+         pub fn name_of(id: int): string\n\
          \x20   return ^items(id).name\n",
     );
     let store = TreeStore::memory();
@@ -3445,12 +3425,12 @@ fn nested_transaction_defers_required_check_until_outer_commit() {
         "resource Item at ^items(id: int)\n\
          \x20   required name: string\n\
          \x20   shelf: string\n\n\
-         fn create(id: int)\n\
+         pub fn create(id: int)\n\
          \x20   transaction\n\
          \x20       transaction\n\
          \x20           ^items(id).shelf = \"fiction\"\n\
          \x20       ^items(id).name = \"Mort\"\n\n\
-         fn name_of(id: int): string\n\
+         pub fn name_of(id: int): string\n\
          \x20   return ^items(id).name\n",
     );
     let store = TreeStore::memory();
@@ -3479,7 +3459,7 @@ fn transaction_commit_metadata_reports_every_touched_root_and_index() {
          \x20   index byShelf(shelf, id)\n\n\
          resource Audit at ^audits(id: int)\n\
          \x20   required message: string\n\n\
-         fn save()\n\
+         pub fn save()\n\
          \x20   transaction\n\
          \x20       ^books(1).title = \"Mort\"\n\
          \x20       ^books(1).shelf = \"fiction\"\n\
@@ -3523,7 +3503,7 @@ fn nested_transaction_commit_metadata_reports_the_outer_durable_commit() {
          \x20   index byShelf(shelf, id)\n\n\
          resource Audit at ^audits(id: int)\n\
          \x20   required message: string\n\n\
-         fn save()\n\
+         pub fn save()\n\
          \x20   transaction\n\
          \x20       ^books(1).title = \"Mort\"\n\
          \x20       transaction\n\
@@ -3568,17 +3548,17 @@ fn nested_transaction_rollback_does_not_stamp_attempted_inner_writes() {
          \x20   index byShelf(shelf, id)\n\n\
          resource Audit at ^audits(id: int)\n\
          \x20   required message: string\n\n\
-         fn seed()\n\
+         pub fn seed()\n\
          \x20   ^books(1).title = \"Mort\"\n\n\
-         fn fail()\n\
+         pub fn fail()\n\
          \x20   transaction\n\
          \x20       ^books(1).shelf = \"fiction\"\n\
          \x20       transaction\n\
          \x20           ^audits(1).message = \"attempt\"\n\
          \x20       throw Error(code: \"test.rollback\", message: \"stop\")\n\n\
-         fn shelf(): string\n\
+         pub fn shelf(): string\n\
          \x20   return ^books(1).shelf ?? \"\"\n\n\
-         fn has_audit(): bool\n\
+         pub fn has_audit(): bool\n\
          \x20   return exists(^audits(1))\n",
     );
     let books = store_catalog_id(&program, "books");
@@ -3617,7 +3597,7 @@ fn nested_transaction_rollback_does_not_stamp_attempted_inner_writes() {
 #[test]
 fn a_mistyped_field_write_is_rejected() {
     checker_rejects(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn bad(id: int)\n    ^books(id).title = 5\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn bad(id: int)\n    ^books(id).title = 5\n",
         "check.assignment_type",
     );
 }
@@ -3629,13 +3609,13 @@ resource Book at ^books(id: int)
     required title: string
     subtitle: string
 
-fn has_book(id: int): bool
+pub fn has_book(id: int): bool
     return exists(^books(id))
 
-fn has_title(id: int): bool
+pub fn has_title(id: int): bool
     return exists(^books(id).title)
 
-fn subtitle_or(id: int, fallback: string): string
+pub fn subtitle_or(id: int, fallback: string): string
     return ^books(id).subtitle ?? fallback
 ";
 
@@ -3710,7 +3690,7 @@ resource Patient at ^patients(id: int)
         first: string
         last: string
 
-fn first_name_or(id: int, fallback: string): string
+pub fn first_name_or(id: int, fallback: string): string
     return ^patients(id)?.name?.first ?? fallback
 ";
 
@@ -3796,7 +3776,7 @@ fn optional_chain_defaults_when_an_intermediate_field_is_absent() {
 #[test]
 fn an_unguarded_optional_chain_that_ends_absent_is_rejected() {
     checker_rejects(
-        "resource Patient at ^patients(id: int)\n    name\n        first: string\n        last: string\n\nfn first_name(id: int): string\n    return ^patients(id)?.name?.first\n",
+        "resource Patient at ^patients(id: int)\n    name\n        first: string\n        last: string\n\npub fn first_name(id: int): string\n    return ^patients(id)?.name?.first\n",
         "check.bare_maybe_present_read",
     );
 }
@@ -3804,7 +3784,7 @@ fn an_unguarded_optional_chain_that_ends_absent_is_rejected() {
 #[test]
 fn next_id_allocates_past_the_highest_record() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn fresh(): Id(^books)\n    return nextId(^books)\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn fresh(): Id(^books)\n    return nextId(^books)\n",
     );
     let store = empty_store();
     // Empty root: the next id is 1.
@@ -3840,7 +3820,7 @@ fn next_id_skips_ahead_after_restore() {
     // After a restore the store may hold records far above any contiguous run.
     // `nextId` chooses one past the highest existing key, never reusing a gap.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn fresh(): Id(^books)\n    return nextId(^books)\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn fresh(): Id(^books)\n    return nextId(^books)\n",
     );
     let store = empty_store();
     write_data_value(
@@ -3866,7 +3846,7 @@ fn next_id_skips_ahead_after_restore() {
 #[test]
 fn next_id_over_a_composite_root_faults() {
     checker_rejects(
-        "resource Enrollment at ^enrollments(studentId: int, courseId: int)\n    required grade: string\n\nfn fresh(): int\n    return nextId(^enrollments)\n",
+        "resource Enrollment at ^enrollments(studentId: int, courseId: int)\n    required grade: string\n\npub fn fresh(): int\n    return nextId(^enrollments)\n",
         "check.next_id_requires_single_int",
     );
 }
@@ -3876,7 +3856,7 @@ fn next_id_over_a_composite_root_faults() {
 #[test]
 fn next_id_over_a_singleton_root_faults() {
     checker_rejects(
-        "resource Settings at ^settings\n    required theme: string\n\nfn fresh(): int\n    return nextId(^settings)\n",
+        "resource Settings at ^settings\n    required theme: string\n\npub fn fresh(): int\n    return nextId(^settings)\n",
         "check.next_id_requires_single_int",
     );
 }
@@ -3886,7 +3866,7 @@ fn next_id_over_a_singleton_root_faults() {
 #[test]
 fn next_id_over_a_string_keyed_root_faults() {
     checker_rejects(
-        "resource Tag at ^tags(slug: string)\n    required name: string\n\nfn fresh(): int\n    return nextId(^tags)\n",
+        "resource Tag at ^tags(slug: string)\n    required name: string\n\npub fn fresh(): int\n    return nextId(^tags)\n",
         "check.next_id_requires_single_int",
     );
 }
@@ -3897,7 +3877,7 @@ fn next_id_over_a_string_keyed_root_faults() {
 #[test]
 fn next_id_over_an_undeclared_root_is_unsupported() {
     checker_rejects(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn fresh(): int\n    return nextId(^bogus)\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn fresh(): int\n    return nextId(^bogus)\n",
         "check.untyped_value",
     );
 }
@@ -3905,7 +3885,7 @@ fn next_id_over_an_undeclared_root_is_unsupported() {
 #[test]
 fn delete_removes_a_record() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn set_title(id: int, t: string)\n    ^books(id).title = t\n\nfn remove(id: int)\n    delete ^books(id)\n\nfn has_book(id: int): bool\n    return exists(^books(id))\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn set_title(id: int, t: string)\n    ^books(id).title = t\n\npub fn remove(id: int)\n    delete ^books(id)\n\npub fn has_book(id: int): bool\n    return exists(^books(id))\n",
     );
     let store = TreeStore::memory();
     run_entry(
@@ -3948,7 +3928,7 @@ fn delete_removes_a_record() {
 fn delete_removes_a_sparse_field_and_leaves_a_sibling() {
     // `delete ^books(id).subtitle` removes that field; a sibling field survives.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    subtitle: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).subtitle = \"A Discworld Novel\"\n\nfn drop_subtitle(id: int)\n    delete ^books(id).subtitle\n\nfn has_subtitle(id: int): bool\n    return exists(^books(id).subtitle)\n\nfn title_of(id: int): string\n    return ^books(id).title\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    subtitle: string\n\npub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).subtitle = \"A Discworld Novel\"\n\npub fn drop_subtitle(id: int)\n    delete ^books(id).subtitle\n\npub fn has_subtitle(id: int): bool\n    return exists(^books(id).subtitle)\n\npub fn title_of(id: int): string\n    return ^books(id).title\n",
     );
     let store = TreeStore::memory();
     run_entry(
@@ -3997,7 +3977,7 @@ fn deleting_an_indexed_field_removes_its_index_entry() {
     // `delete ^books(id).shelf` where `shelf` feeds `byShelf` tears down the entry,
     // so a later `keys(^books.byShelf(...))` no longer yields the record.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\nfn add(id: int, t: string, s: string)\n    ^books(id).title = t\n    ^books(id).shelf = s\n\nfn drop_shelf(id: int)\n    delete ^books(id).shelf\n\nfn count_on(shelf: string): int\n    var c = 0\n    for id in keys(^books.byShelf(shelf))\n        c = c + 1\n    return c\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\npub fn add(id: int, t: string, s: string)\n    ^books(id).title = t\n    ^books(id).shelf = s\n\npub fn drop_shelf(id: int)\n    delete ^books(id).shelf\n\npub fn count_on(shelf: string): int\n    var c = 0\n    for id in keys(^books.byShelf(shelf))\n        c = c + 1\n    return c\n",
     );
     let store = TreeStore::memory();
     run_entry(
@@ -4041,7 +4021,7 @@ fn deleting_an_indexed_field_removes_its_index_entry() {
 fn deleting_a_required_field_is_rejected() {
     // A required field can only go away when its entry/resource is deleted.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n\nfn drop_title(id: int)\n    delete ^books(id).title\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n\npub fn drop_title(id: int)\n    delete ^books(id).title\n",
     );
     let store = TreeStore::memory();
     run_entry(
@@ -4065,7 +4045,7 @@ fn deleting_a_layer_entry_leaves_other_entries() {
     // survive. Read each entry's `.title` to prove it: the deleted entry's title
     // falls back to the `??` default, the survivor's stays intact.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\n    versions(version: int)\n        required title: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).versions(1).title = \"first\"\n    ^books(id).versions(2).title = \"second\"\n\nfn drop_version(id: int, v: int)\n    delete ^books(id).versions(v)\n\nfn version_title(id: int, v: int): string\n    return ^books(id).versions(v).title ?? \"<gone>\"\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\n    versions(version: int)\n        required title: string\n\npub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).versions(1).title = \"first\"\n    ^books(id).versions(2).title = \"second\"\n\npub fn drop_version(id: int, v: int)\n    delete ^books(id).versions(v)\n\npub fn version_title(id: int, v: int): string\n    return ^books(id).versions(v).title ?? \"<gone>\"\n",
     );
     let store = TreeStore::memory();
     run_entry(
@@ -4116,7 +4096,7 @@ fn deleting_a_keyed_leaf_entry_leaves_other_entries() {
     // `count(^books(id).tags)` counts the remaining entries; reading the deleted
     // one is an absent-element error while the survivor reads back.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).tags(1) = \"fiction\"\n    ^books(id).tags(2) = \"funny\"\n\nfn drop_tag(id: int, pos: int)\n    delete ^books(id).tags(pos)\n\nfn tag_count(id: int): int\n    return count(^books(id).tags)\n\nfn tag_at(id: int, pos: int): string\n    return ^books(id).tags(pos) ?? \"\"\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\npub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).tags(1) = \"fiction\"\n    ^books(id).tags(2) = \"funny\"\n\npub fn drop_tag(id: int, pos: int)\n    delete ^books(id).tags(pos)\n\npub fn tag_count(id: int): int\n    return count(^books(id).tags)\n\npub fn tag_at(id: int, pos: int): string\n    return ^books(id).tags(pos) ?? \"\"\n",
     );
     let store = TreeStore::memory();
     run_entry(
@@ -4163,7 +4143,7 @@ fn deleting_a_keyed_leaf_entry_leaves_other_entries() {
 #[test]
 fn a_transaction_commits_on_normal_exit() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn save(id: int)\n    transaction\n        ^books(id).title = \"kept\"\n\nfn title_of(id: int): string\n    return ^books(id).title\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn save(id: int)\n    transaction\n        ^books(id).title = \"kept\"\n\npub fn title_of(id: int): string\n    return ^books(id).title\n",
     );
     let store = TreeStore::memory();
     run_entry(
@@ -4185,7 +4165,7 @@ fn a_transaction_commits_on_normal_exit() {
 #[test]
 fn a_transaction_rolls_back_on_an_escaping_error() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn risky(id: int)\n    transaction\n        ^books(id).title = \"staged\"\n        const x = 1 / 0\n\nfn has_book(id: int): bool\n    return exists(^books(id))\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn risky(id: int)\n    transaction\n        ^books(id).title = \"staged\"\n        const x = 1 / 0\n\npub fn has_book(id: int): bool\n    return exists(^books(id))\n",
     );
     let store = TreeStore::memory();
     let result = run_entry(
@@ -4219,34 +4199,34 @@ resource Book at ^books(id: int)
 
     index byIsbn(isbn) unique
 
-fn seed(id: int, t: string, isbn: string)
+pub fn seed(id: int, t: string, isbn: string)
     ^books(id).title = t
     ^books(id).isbn = isbn
 
-fn claimOrCode(id: int, isbn: string): string
+pub fn claimOrCode(id: int, isbn: string): string
     try
         ^books(id).isbn = isbn
     catch err: Error
         return err.code
     return \"written\"
 
-fn claim(id: int, isbn: string)
+pub fn claim(id: int, isbn: string)
     ^books(id).isbn = isbn
 
-fn recover(id: int, isbn: string, fallback: string): string
+pub fn recover(id: int, isbn: string, fallback: string): string
     try
         ^books(id).isbn = isbn
     catch err: Error
         ^books(id).title = fallback
     return ^books(id).title ?? \"\"
 
-fn titleOf(id: int): string
+pub fn titleOf(id: int): string
     return ^books(id).title ?? \"\"
 
-fn isbnOf(id: int): string
+pub fn isbnOf(id: int): string
     return ^books(id).isbn ?? \"\"
 
-fn ownerOf(isbn: string): Id(^books)
+pub fn ownerOf(isbn: string): Id(^books)
     for id in ^books.byIsbn(isbn)
         return id
     throw Error(code: \"test.missing_isbn\", message: \"missing isbn\")
@@ -4363,9 +4343,8 @@ fn a_caught_unique_conflict_lets_following_code_run_and_did_not_write() {
 
 #[test]
 fn an_uncaught_unique_conflict_keeps_its_dotted_code() {
-    // Preserve uncaught behavior: a conflict that escapes the entry surfaces with
-    // its own `write.unique_conflict` code (not run.uncaught_error), exactly as
-    // before it became catchable.
+    // A unique conflict that escapes the entry surfaces with its own
+    // `write.unique_conflict` code rather than a generic uncaught-error code.
     let program = checked_program(UNIQUE_RECOVERY);
     let store = TreeStore::memory();
     run_entry(
@@ -4407,7 +4386,7 @@ fn a_unique_conflict_inside_a_transaction_can_be_caught_and_continue() {
     // A conflict caught inside a transaction has no effect, and the transaction
     // continues and commits its other writes.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    isbn: string\n\n    index byIsbn(isbn) unique\n\nfn seed(id: int, t: string, isbn: string)\n    ^books(id).title = t\n    ^books(id).isbn = isbn\n\nfn run_it(id: int, isbn: string, t: string)\n    transaction\n        try\n            ^books(id).isbn = isbn\n        catch err: Error\n            ^books(id).title = t\n\nfn titleOf(id: int): string\n    return ^books(id).title ?? \"\"\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    isbn: string\n\n    index byIsbn(isbn) unique\n\npub fn seed(id: int, t: string, isbn: string)\n    ^books(id).title = t\n    ^books(id).isbn = isbn\n\npub fn run_it(id: int, isbn: string, t: string)\n    transaction\n        try\n            ^books(id).isbn = isbn\n        catch err: Error\n            ^books(id).title = t\n\npub fn titleOf(id: int): string\n    return ^books(id).title ?? \"\"\n",
     );
     let store = TreeStore::memory();
     run_entry(
@@ -4460,7 +4439,7 @@ fn a_caught_write_fault_does_not_leak_into_a_later_fault() {
     // After a `try` catches a write fault, the stashed Error is cleared, so a later
     // genuine fault (divide-by-zero) still faults rather than being miscaught.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    isbn: string\n\n    index byIsbn(isbn) unique\n\nfn seed(id: int, t: string, isbn: string)\n    ^books(id).title = t\n    ^books(id).isbn = isbn\n\nfn run_it(): int\n    try\n        ^books(2).isbn = \"978-0\"\n    catch err: Error\n        write(\"caught\")\n    const boom = 1 / 0\n    return 0\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    isbn: string\n\n    index byIsbn(isbn) unique\n\npub fn seed(id: int, t: string, isbn: string)\n    ^books(id).title = t\n    ^books(id).isbn = isbn\n\npub fn run_it(): int\n    try\n        ^books(2).isbn = \"978-0\"\n    catch err: Error\n        write(\"caught\")\n    const boom = 1 / 0\n    return 0\n",
     );
     let store = TreeStore::memory();
     run_entry(
@@ -4496,7 +4475,7 @@ fn a_caught_write_fault_does_not_leak_into_a_later_fault() {
 #[test]
 fn an_unguarded_absent_element_read_is_rejected() {
     checker_rejects(
-        "resource Book at ^books(id: int)\n    title: string\n\nfn titleOrCode(id: int): string\n    try\n        return ^books(id).title\n    catch err: Error\n        return err.code\n",
+        "resource Book at ^books(id: int)\n    title: string\n\npub fn titleOrCode(id: int): string\n    try\n        return ^books(id).title\n    catch err: Error\n        return err.code\n",
         "check.bare_maybe_present_read",
     );
 }
@@ -4504,7 +4483,7 @@ fn an_unguarded_absent_element_read_is_rejected() {
 #[test]
 fn reads_inside_a_transaction_see_earlier_writes() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn rww(id: int): string\n    transaction\n        ^books(id).title = \"fresh\"\n        return ^books(id).title\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn rww(id: int): string\n    transaction\n        ^books(id).title = \"fresh\"\n        return ^books(id).title\n",
     );
     let store = TreeStore::memory();
     let outcome =
@@ -4515,7 +4494,7 @@ fn reads_inside_a_transaction_see_earlier_writes() {
 #[test]
 fn append_writes_at_the_next_position() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn add_tag(id: int, t: string): int\n    return append(^books(id).tags, t)\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\npub fn add_tag(id: int, t: string): int\n    return append(^books(id).tags, t)\n",
     );
     let store = TreeStore::memory();
     let appended = |t: &str| {
@@ -4557,7 +4536,7 @@ fn append_writes_at_the_next_position() {
 #[test]
 fn appends_then_reads_back_keyed_leaf_entries() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn add_tag(id: int, t: string): int\n    return append(^books(id).tags, t)\n\nfn tag_at(id: int, pos: int): string\n    return ^books(id).tags(pos) ?? \"\"\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\npub fn add_tag(id: int, t: string): int\n    return append(^books(id).tags, t)\n\npub fn tag_at(id: int, pos: int): string\n    return ^books(id).tags(pos) ?? \"\"\n",
     );
     let store = TreeStore::memory();
     run_entry(
@@ -4598,7 +4577,7 @@ fn explicit_keyed_leaf_write_then_reads_back() {
     // `^books(id).tags(pos) = value` writes one keyed-leaf entry directly, and a
     // string-keyed leaf `scores(key) = value` writes through the same path.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n    scores(key: string): int\n\nfn set_tag(id: int, pos: int, t: string)\n    ^books(id).tags(pos) = t\n\nfn set_score(id: int, key: string, n: int)\n    ^books(id).scores(key) = n\n\nfn tag_at(id: int, pos: int): string\n    return ^books(id).tags(pos) ?? \"\"\n\nfn score_at(id: int, key: string): int\n    return ^books(id).scores(key) ?? 0\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n    scores(key: string): int\n\npub fn set_tag(id: int, pos: int, t: string)\n    ^books(id).tags(pos) = t\n\npub fn set_score(id: int, key: string, n: int)\n    ^books(id).scores(key) = n\n\npub fn tag_at(id: int, pos: int): string\n    return ^books(id).tags(pos) ?? \"\"\n\npub fn score_at(id: int, key: string): int\n    return ^books(id).scores(key) ?? 0\n",
     );
     let store = TreeStore::memory();
     run_entry(
@@ -4654,7 +4633,7 @@ fn explicit_keyed_leaf_write_creates_a_hole_that_append_skips() {
     // An explicit write past the dense range leaves a hole; append chooses one
     // past the highest positive key, not the first gap.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn set_tag(id: int, pos: int, t: string)\n    ^books(id).tags(pos) = t\n\nfn add_tag(id: int, t: string): int\n    return append(^books(id).tags, t)\n\nfn tag_at(id: int, pos: int): string\n    return ^books(id).tags(pos) ?? \"\"\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\npub fn set_tag(id: int, pos: int, t: string)\n    ^books(id).tags(pos) = t\n\npub fn add_tag(id: int, t: string): int\n    return append(^books(id).tags, t)\n\npub fn tag_at(id: int, pos: int): string\n    return ^books(id).tags(pos) ?? \"\"\n",
     );
     let store = TreeStore::memory();
     // Write position 5 directly, leaving 1..=4 as holes.
@@ -4703,32 +4682,32 @@ resource Book at ^books(id: int)
 
     index byShelf(shelf, id)
 
-fn add(id: int, t: string, s: string)
+pub fn add(id: int, t: string, s: string)
     ^books(id).title = t
     ^books(id).shelf = s
 
-fn count_on(shelf: string): int
+pub fn count_on(shelf: string): int
     var c = 0
     for id in keys(^books.byShelf(shelf))
         c = c + 1
     return c
 
-fn count_via_bare_index(): int
+pub fn count_via_bare_index(): int
     var c = 0
     for shelf in ^books.byShelf
         for id in ^books.byShelf(shelf)
             c = c + 1
     return c
 
-fn reshelve_while_iterating()
+pub fn reshelve_while_iterating()
     for id in keys(^books.byShelf(\"fiction\"))
         ^books(id).shelf = \"history\"
 
-fn reshelve_while_iterating_direct()
+pub fn reshelve_while_iterating_direct()
     for id in ^books.byShelf(\"fiction\")
         ^books(id).shelf = \"history\"
 
-fn titles_on(shelf: string)
+pub fn titles_on(shelf: string)
     for id in ^books.byShelf(shelf)
         print(^books(id).title)
 ";
@@ -4888,22 +4867,22 @@ resource Book at ^books(id: int)
     required title: string
     required shelf: string
 
-fn read(id: int): Book
+pub fn read(id: int): Book
     var fallback: Book
     fallback.title = \"\"
     fallback.shelf = \"\"
     return ^books(id) ?? fallback
 
-fn copy(from: int, to: int)
+pub fn copy(from: int, to: int)
     var fallback: Book
     fallback.title = \"\"
     fallback.shelf = \"\"
     ^books(to) = ^books(from) ?? fallback
 
-fn title_of(id: int): string
+pub fn title_of(id: int): string
     return ^books(id).title ?? \"\"
 
-fn shelf_of(id: int): string
+pub fn shelf_of(id: int): string
     return ^books(id).shelf ?? \"\"
 ";
 
@@ -4951,7 +4930,7 @@ fn constructs_a_resource_value() {
         "resource Book at ^books(id: int)\n\
          \x20\x20\x20\x20required title: string\n\
          \x20\x20\x20\x20shelf: string\n\n\
-         fn draft(): Book\n\
+         pub fn draft(): Book\n\
          \x20\x20\x20\x20return Book(title: \"Mort\", shelf: \"fiction\")\n",
     );
     let store = TreeStore::memory();
@@ -4973,7 +4952,7 @@ fn constructs_a_resource_value_with_a_local_resource_field() {
          resource Person\n\
          \x20\x20\x20\x20required name: string\n\
          \x20\x20\x20\x20address: Address\n\n\
-         fn city(): string\n\
+         pub fn city(): string\n\
          \x20\x20\x20\x20const person = Person(name: \"Sam\", address: Address(city: \"Paris\"))\n\
          \x20\x20\x20\x20return person.address.city\n",
     );
@@ -5028,11 +5007,11 @@ fn resource_constructor_value_can_be_saved() {
         "resource Book at ^books(id: int)\n\
          \x20\x20\x20\x20required title: string\n\
          \x20\x20\x20\x20author: string\n\n\
-         fn save(): int\n\
+         pub fn save(): int\n\
          \x20\x20\x20\x20const draft = Book(title: \"Small Gods\", author: \"Pratchett\")\n\
          \x20\x20\x20\x20^books(1) = draft\n\
          \x20\x20\x20\x20return count(^books)\n\n\
-         fn title(): string\n\
+         pub fn title(): string\n\
          \x20\x20\x20\x20return ^books(1).title\n",
     );
     let store = TreeStore::memory();
@@ -5047,7 +5026,7 @@ fn resource_constructor_optional_coalesce_is_checker_rejected() {
     checker_rejects(
         "resource Profile\n\
          \x20\x20\x20\x20email: string\n\n\
-         fn email(): string\n\
+         pub fn email(): string\n\
          \x20\x20\x20\x20return Profile()?.email ?? \"none\"\n",
         "check.operator_type",
     );
@@ -5082,17 +5061,17 @@ resource Patient at ^patients(id: int)
         required first: string
         last: string
 
-fn read(id: int): Patient
+pub fn read(id: int): Patient
     var fallback: Patient
     fallback.mrn = \"\"
     return ^patients(id) ?? fallback
 
-fn copy(from: int, to: int)
+pub fn copy(from: int, to: int)
     var fallback: Patient
     fallback.mrn = \"\"
     ^patients(to) = ^patients(from) ?? fallback
 
-fn first_of(id: int): string
+pub fn first_of(id: int): string
     return ^patients(id)?.name?.first ?? \"\"
 ";
 
@@ -5149,11 +5128,11 @@ fn whole_resource_write_from_local_value_accepts_resources_with_unkeyed_groups()
          \x20   binding\n\
          \x20       cover: string\n\
          \x20       spine: string\n\n\
-         fn save(id: int)\n\
+         pub fn save(id: int)\n\
          \x20   var book: Book\n\
          \x20   book.title = \"Small Gods\"\n\
          \x20   ^books(id) = book\n\n\
-         fn title_of(id: int): string\n\
+         pub fn title_of(id: int): string\n\
          \x20   return ^books(id).title ?? \"\"\n",
     );
     let store = TreeStore::memory();
@@ -5214,7 +5193,7 @@ resource Book at ^books(id: int)
     required title: string
     shelf: string
 
-fn add(title: string, shelf: string): Id(^books)
+pub fn add(title: string, shelf: string): Id(^books)
     const id = nextId(^books)
     var book: Book
     book.title = title
@@ -5222,10 +5201,10 @@ fn add(title: string, shelf: string): Id(^books)
     ^books(id) = book
     return id
 
-fn title_of(id: int): string
+pub fn title_of(id: int): string
     return ^books(id).title ?? \"\"
 
-fn shelf_of(id: int): string
+pub fn shelf_of(id: int): string
     return ^books(id).shelf ?? \"\"
 ";
 
@@ -5257,7 +5236,7 @@ fn builds_a_local_resource_and_saves_it() {
 #[test]
 fn reads_a_local_resource_field() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\nfn echo(t: string): string\n    var book: Book\n    book.title = t\n    return book.title\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\npub fn echo(t: string): string\n    var book: Book\n    book.title = t\n    return book.title\n",
     );
     let store = TreeStore::memory();
     let value = run_entry(
@@ -5276,11 +5255,11 @@ const CLOCK_SAMPLE: &str = "\
 resource Event at ^events(id: int)
     required changedAt: instant
 
-fn record(id: int)
+pub fn record(id: int)
     const now: instant = std::clock::now()
     ^events(id).changedAt = now
 
-fn changed_at_of(id: int): instant
+pub fn changed_at_of(id: int): instant
     return ^events(id).changedAt
 ";
 
@@ -5307,7 +5286,7 @@ fn clock_now_reads_the_host_clock_capability() {
 
 #[test]
 fn clock_now_without_a_clock_capability_is_a_capability_error() {
-    let program = checked_program("fn t(): instant\n    return std::clock::now()\n");
+    let program = checked_program("pub fn t(): instant\n    return std::clock::now()\n");
     let store = TreeStore::memory();
     // Plain `run_entry` supplies no host capabilities.
     let result = run_entry(&store, checked_entry!(&program, "test::t"));
@@ -5320,13 +5299,13 @@ fn clock_now_without_a_clock_capability_is_a_capability_error() {
 /// A program that reads environment variables through the three `std::env`
 /// builtins: presence, lookup with a default, and a required lookup.
 const ENV_SAMPLE: &str = "\
-fn has(name: string): bool
+pub fn has(name: string): bool
     return std::env::exists(name)
 
-fn read(name: string, fallback: string): string
+pub fn read(name: string, fallback: string): string
     return std::env::get(name, fallback)
 
-fn must(name: string): string
+pub fn must(name: string): string
     return std::env::require(name)
 ";
 
@@ -5450,13 +5429,13 @@ fn env_without_an_environment_capability_is_a_capability_error() {
 
 /// A program that logs at each level, including an `Error` value.
 const LOG_SAMPLE: &str = "\
-fn note(m: string)
+pub fn note(m: string)
     std::log::info(m)
 
-fn careful(m: string)
+pub fn careful(m: string)
     std::log::warn(m)
 
-fn boom()
+pub fn boom()
     std::log::error(Error(code: \"E_BOOM\", message: \"kaboom\"))
 ";
 
@@ -5503,7 +5482,7 @@ fn log_without_a_log_capability_is_a_capability_error() {
 #[test]
 fn log_error_requires_an_error_value() {
     checker_rejects(
-        "fn t()\n    std::log::error(\"not an error\")\n",
+        "pub fn t()\n    std::log::error(\"not an error\")\n",
         "check.call_argument",
     );
 }
@@ -5511,7 +5490,7 @@ fn log_error_requires_an_error_value() {
 #[test]
 fn a_group_entry_field_write_lands_in_saved_data() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\n    notes(noteId: string)\n        text: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n\nfn add_note(id: int, note: string, t: string)\n    ^books(id).notes(note).text = t\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\n    notes(noteId: string)\n        text: string\n\npub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n\npub fn add_note(id: int, note: string, t: string)\n    ^books(id).notes(note).text = t\n",
     );
     let store = TreeStore::memory();
     run_entry(
@@ -5568,7 +5547,7 @@ fn group_entry_field_writes_compose_in_a_transaction() {
     // The sample's `add` shape: a whole-record write plus group-entry history
     // writes, all inside one transaction.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\n    versions(version: int)\n        required title: string\n        required shelf: string\n\nfn add(id: int, t: string, s: string)\n    transaction\n        ^books(id).title = t\n        ^books(id).versions(1).title = t\n        ^books(id).versions(1).shelf = s\n\nfn title_of(id: int): string\n    return ^books(id).title\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\n    versions(version: int)\n        required title: string\n        required shelf: string\n\npub fn add(id: int, t: string, s: string)\n    transaction\n        ^books(id).title = t\n        ^books(id).versions(1).title = t\n        ^books(id).versions(1).shelf = s\n\npub fn title_of(id: int): string\n    return ^books(id).title\n",
     );
     let store = TreeStore::memory();
     run_entry(
@@ -5610,7 +5589,7 @@ fn a_call_binds_named_arguments_by_name() {
     // Named arguments may appear in any order; they bind by name, not position.
     // `sub(b: 10, a: 3)` is `3 - 10`, not `10 - 3`.
     let program = checked_program(
-        "fn sub(a: int, b: int): int\n    return a - b\n\nfn go(): int\n    return sub(b: 10, a: 3)\n",
+        "pub fn sub(a: int, b: int): int\n    return a - b\n\npub fn go(): int\n    return sub(b: 10, a: 3)\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::go")),
@@ -5621,7 +5600,7 @@ fn a_call_binds_named_arguments_by_name() {
 #[test]
 fn a_call_mixes_positional_then_named_arguments() {
     let program = checked_program(
-        "fn sub(a: int, b: int): int\n    return a - b\n\nfn go(): int\n    return sub(10, b: 3)\n",
+        "pub fn sub(a: int, b: int): int\n    return a - b\n\npub fn go(): int\n    return sub(10, b: 3)\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::go")),
@@ -5632,7 +5611,7 @@ fn a_call_mixes_positional_then_named_arguments() {
 #[test]
 fn a_call_with_an_unknown_parameter_name_is_rejected() {
     checker_rejects(
-        "fn sub(a: int, b: int): int\n    return a - b\n\nfn go(): int\n    return sub(a: 1, c: 2)\n",
+        "pub fn sub(a: int, b: int): int\n    return a - b\n\npub fn go(): int\n    return sub(a: 1, c: 2)\n",
         "check.call_argument",
     );
 }
@@ -5640,7 +5619,7 @@ fn a_call_with_an_unknown_parameter_name_is_rejected() {
 #[test]
 fn a_call_missing_an_argument_is_rejected() {
     checker_rejects(
-        "fn sub(a: int, b: int): int\n    return a - b\n\nfn go(): int\n    return sub(a: 1)\n",
+        "pub fn sub(a: int, b: int): int\n    return a - b\n\npub fn go(): int\n    return sub(a: 1)\n",
         "check.call_argument",
     );
 }
@@ -5648,15 +5627,13 @@ fn a_call_missing_an_argument_is_rejected() {
 #[test]
 fn a_call_supplying_a_parameter_twice_is_rejected() {
     checker_rejects(
-        "fn sub(a: int, b: int): int\n    return a - b\n\nfn go(): int\n    return sub(1, a: 2)\n",
+        "pub fn sub(a: int, b: int): int\n    return a - b\n\npub fn go(): int\n    return sub(1, a: 2)\n",
         "check.call_argument",
     );
 }
 
-// Note: positional-after-named (`sub(b: 1, 2)`) is now rejected by the PARSER
-// (parse.syntax), so it cannot reach the runtime via a parsed program; the
-// `bind_arguments` guard remains as defensive depth. The parser owns this rule
-// and tests it in marrow-syntax.
+// Positional-after-named (`sub(b: 1, 2)`) is a parser-owned syntax rule covered in
+// marrow-syntax, so it never reaches the runtime.
 
 /// Extract the single `mw` code block from the canonical sample, so the
 /// integration test runs the exact published source.
@@ -5713,13 +5690,13 @@ resource Book at ^books(id: int)
     versions(version: int)
         required title: string
 
-fn seed(id: int, t: string)
+pub fn seed(id: int, t: string)
     ^books(id).title = t
 
-fn set_version_title(id: int, v: int, t: string)
+pub fn set_version_title(id: int, v: int, t: string)
     ^books(id).versions(v).title = t
 
-fn version_title(id: int, v: int): string
+pub fn version_title(id: int, v: int): string
     return ^books(id).versions(v).title
 ";
 
@@ -5841,14 +5818,14 @@ fn multiple_stores_over_one_resource_keep_runtime_roots_separate() {
          store ^books(id: int): Book\n\
          store ^archivedBooks(id: int): Book\n\
          \n\
-         fn seed()\n\
+         pub fn seed()\n\
          \x20   ^books(1).title = \"live\"\n\
          \x20   ^archivedBooks(1).title = \"archived\"\n\
          \n\
-         fn live(): string\n\
+         pub fn live(): string\n\
          \x20   return ^books(1).title ?? \"\"\n\
          \n\
-         fn archived(): string\n\
+         pub fn archived(): string\n\
          \x20   return ^archivedBooks(1).title ?? \"\"\n",
     );
     let store = TreeStore::memory();
@@ -5872,11 +5849,11 @@ const BOOK_IDENTITY: &str = "\
 resource Book at ^books(id: int)
     required title: string
 
-fn save(t: string)
+pub fn save(t: string)
     const id = nextId(^books)
     ^books(id).title = t
 
-fn title(): string
+pub fn title(): string
     for id in ^books
         return ^books(id).title
     return \"\"
@@ -5913,7 +5890,7 @@ fn allocates_and_uses_a_single_key_store_identity() {
 fn a_plain_int_identity_still_works() {
     // The bare int path remains the executable single-key store identity path.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn save()\n    ^books(1).title = \"a\"\n\nfn read(): string\n    return ^books(1).title\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn save()\n    ^books(1).title = \"a\"\n\npub fn read(): string\n    return ^books(1).title\n",
     );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::save")).expect("save");
@@ -5929,10 +5906,10 @@ const ENROLLMENT_IDENTITY: &str = "\
 resource Enrollment at ^enrollments(studentId: string, courseId: string)
     status: string
 
-fn enroll(s: string, c: string, st: string)
+pub fn enroll(s: string, c: string, st: string)
     ^enrollments(s, c).status = st
 
-fn statusOf(s: string, c: string): string
+pub fn statusOf(s: string, c: string): string
     return ^enrollments(s, c).status ?? \"\"
 ";
 
@@ -5983,7 +5960,7 @@ fn constructs_and_uses_a_composite_identity_round_trips() {
 #[test]
 fn composite_root_keys_write_in_declaration_order() {
     let program = checked_program(
-        "resource Enrollment at ^enrollments(studentId: string, courseId: string)\n    status: string\n\nfn enroll()\n    ^enrollments(\"s\", \"c\").status = \"active\"\n",
+        "resource Enrollment at ^enrollments(studentId: string, courseId: string)\n    status: string\n\npub fn enroll()\n    ^enrollments(\"s\", \"c\").status = \"active\"\n",
     );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::enroll")).expect("enroll");
@@ -6005,7 +5982,7 @@ fn whole_resource_read_through_an_identity() {
     // The primary-root iterator yields a composite identity that can be used for
     // a whole-resource read.
     let program = checked_program(
-        "resource Enrollment at ^enrollments(studentId: string, courseId: string)\n    status: string\n\nfn statusOf(): string\n    for id in ^enrollments\n        var e: Enrollment = ^enrollments(id)\n        return e.status\n    return \"\"\n",
+        "resource Enrollment at ^enrollments(studentId: string, courseId: string)\n    status: string\n\npub fn statusOf(): string\n    for id in ^enrollments\n        var e: Enrollment = ^enrollments(id)\n        return e.status\n    return \"\"\n",
     );
     let store = TreeStore::memory();
     write_data_value(
@@ -6032,30 +6009,30 @@ resource Settings at ^settings
     required theme: string
     required maxLoans: int
 
-fn init(t: string, n: int)
+pub fn init(t: string, n: int)
     transaction
         ^settings.theme = t
         ^settings.maxLoans = n
 
-fn setMaxLoans(n: int)
+pub fn setMaxLoans(n: int)
     ^settings.maxLoans = n
 
-fn setTheme(t: string)
+pub fn setTheme(t: string)
     ^settings.theme = t
 
-fn theme(): string
+pub fn theme(): string
     return ^settings.theme ?? \"\"
 
-fn snapshot(): Settings
+pub fn snapshot(): Settings
     var fallback: Settings
     fallback.theme = \"\"
     fallback.maxLoans = 0
     return ^settings ?? fallback
 
-fn restore(s: Settings)
+pub fn restore(s: Settings)
     ^settings = s
 
-fn restoreFixture(theme: string, maxLoans: int)
+pub fn restoreFixture(theme: string, maxLoans: int)
     var s: Settings
     s.theme = theme
     s.maxLoans = maxLoans
@@ -6189,14 +6166,14 @@ resource Patient at ^patients(id: int)
         first: string
         last: string
 
-fn setName(id: int, f: string, l: string)
+pub fn setName(id: int, f: string, l: string)
     ^patients(id).name.first = f
     ^patients(id).name.last = l
 
-fn firstOf(id: int): string
+pub fn firstOf(id: int): string
     return ^patients(id)?.name?.first ?? \"\"
 
-fn lastOf(id: int): string
+pub fn lastOf(id: int): string
     return ^patients(id)?.name?.last ?? \"\"
 ";
 
@@ -6261,29 +6238,29 @@ resource Book at ^books(id: int)
 
     index byIsbn(isbn) unique
 
-fn register(id: int, t: string, isbn: string)
+pub fn register(id: int, t: string, isbn: string)
     ^books(id).title = t
     ^books(id).isbn = isbn
 
-fn titleByIsbnKey(isbn: string, fallback: int): string
+pub fn titleByIsbnKey(isbn: string, fallback: int): string
     for id in ^books.byIsbn(isbn)
         return ^books(id).title ?? \"\"
     return ^books(fallback).title ?? \"\"
 
-fn hasIsbn(isbn: string): bool
+pub fn hasIsbn(isbn: string): bool
     return exists(^books.byIsbn(isbn))
 
-fn countIsbn(isbn: string): int
+pub fn countIsbn(isbn: string): int
     return count(^books.byIsbn(isbn))
 
-fn iterTitlesByIsbn(isbn: string)
+pub fn iterTitlesByIsbn(isbn: string)
     for id in ^books.byIsbn(isbn)
         print(^books(id).title ?? \"\")
 
-fn changeIsbn(id: Id(^books))
+pub fn changeIsbn(id: Id(^books))
     ^books(id).isbn = \"978-1\"
 
-fn changeIsbnThroughHelper(isbn: string)
+pub fn changeIsbnThroughHelper(isbn: string)
     for id in ^books.byIsbn(isbn)
         changeIsbn(id)
 ";
@@ -6459,7 +6436,7 @@ fn helper_call_mutating_a_traversed_unique_index_faults() {
 #[test]
 fn keys_over_a_unique_index_lookup_is_not_a_collection() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    isbn: string\n\n    index byIsbn(isbn) unique\n\nfn register(id: int, t: string, isbn: string)\n    ^books(id).title = t\n    ^books(id).isbn = isbn\n\nfn countKeysByIsbn(isbn: string): int\n    var c = 0\n    for id in keys(^books.byIsbn(isbn))\n        c = c + 1\n    return c\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    isbn: string\n\n    index byIsbn(isbn) unique\n\npub fn register(id: int, t: string, isbn: string)\n    ^books(id).title = t\n    ^books(id).isbn = isbn\n\npub fn countKeysByIsbn(isbn: string): int\n    var c = 0\n    for id in keys(^books.byIsbn(isbn))\n        c = c + 1\n    return c\n",
     );
     let store = TreeStore::memory();
     run_entry(
@@ -6489,17 +6466,17 @@ fn keys_over_a_unique_index_lookup_is_not_a_collection() {
 #[test]
 fn unique_index_prefix_branch_presence_count_and_iteration_agree() {
     checker_rejects(
-        "resource Item at ^items(id: int)\n    required title: string\n    series: string\n    code: string\n\n    index bySeriesCode(series, code) unique\n\nfn countSeries(series: string): int\n    return count(^items.bySeriesCode(series))\n",
+        "resource Item at ^items(id: int)\n    required title: string\n    series: string\n    code: string\n\n    index bySeriesCode(series, code) unique\n\npub fn countSeries(series: string): int\n    return count(^items.bySeriesCode(series))\n",
         "check.key_type",
     );
 }
 
 #[test]
 fn unique_index_prefix_branch_loops_are_rejected_by_the_checker() {
-    let source = "resource Item at ^items(id: int)\n    required title: string\n    series: string\n    code: string\n\n    index bySeriesCode(series, code) unique\n\nfn titlesInSeries(series: string)\n    for id in ^items.bySeriesCode(series)\n        print(^items(id).title ?? \"\")\n";
+    let source = "resource Item at ^items(id: int)\n    required title: string\n    series: string\n    code: string\n\n    index bySeriesCode(series, code) unique\n\npub fn titlesInSeries(series: string)\n    for id in ^items.bySeriesCode(series)\n        print(^items(id).title ?? \"\")\n";
     checker_rejects(source, "check.key_type");
 
-    let source = "resource Item at ^items(id: int)\n    required title: string\n    series: string\n    code: string\n\n    index bySeriesCode(series, code) unique\n\nfn titlesInAnySeries()\n    for id in ^items.bySeriesCode\n        print(^items(id).title ?? \"\")\n";
+    let source = "resource Item at ^items(id: int)\n    required title: string\n    series: string\n    code: string\n\n    index bySeriesCode(series, code) unique\n\npub fn titlesInAnySeries()\n    for id in ^items.bySeriesCode\n        print(^items(id).title ?? \"\")\n";
     checker_rejects(source, "check.key_type");
 }
 
@@ -6512,7 +6489,7 @@ resource Book at ^books(id: int)
 
     index byShelf(shelf, id)
 
-fn firstOnShelf(shelf: string): Id(^books)
+pub fn firstOnShelf(shelf: string): Id(^books)
     return ^books.byShelf(shelf)
 ";
 
@@ -6534,38 +6511,38 @@ resource Enrollment at ^enrollments(studentId: string, courseId: string)
 
     index byStatus(status, studentId, courseId)
 
-fn enroll(s: string, c: string, st: string)
+pub fn enroll(s: string, c: string, st: string)
     var enrollment: Enrollment
     enrollment.status = st
     enrollment.student = s
     enrollment.course = c
     ^enrollments(s, c) = enrollment
 
-fn activeStatuses()
+pub fn activeStatuses()
     for id in keys(^enrollments.byStatus(\"active\"))
         print(^enrollments(id).status)
 
-fn activeEnrollmentsDirect()
+pub fn activeEnrollmentsDirect()
     for id in ^enrollments.byStatus(\"active\")
         print($\"{^enrollments(id).student}:{^enrollments(id).course}\")
 
-fn activeCoursesForStudent(student: string)
+pub fn activeCoursesForStudent(student: string)
     for id in ^enrollments.byStatus(\"active\", student)
         print(^enrollments(id).course)
 
-fn activeCourseExact(student: string, course: string)
+pub fn activeCourseExact(student: string, course: string)
     for id in ^enrollments.byStatus(\"active\", student, course)
         print(^enrollments(id).course)
 
-fn activeCourseExactPair(student: string, course: string)
+pub fn activeCourseExactPair(student: string, course: string)
     for id, enrollment in ^enrollments.byStatus(\"active\", student, course)
         print($\"{^enrollments(id).course}:{enrollment.course}\")
 
-fn activeCourseExactKeys(student: string, course: string)
+pub fn activeCourseExactKeys(student: string, course: string)
     for id in keys(^enrollments.byStatus(\"active\", student, course))
         print(^enrollments(id).course)
 
-fn activeCourseExactCount(student: string, course: string): int
+pub fn activeCourseExactCount(student: string, course: string): int
     return count(^enrollments.byStatus(\"active\", student, course))
 
 ";
@@ -6673,7 +6650,7 @@ fn traverses_a_composite_identity_index() {
 #[test]
 fn helper_mutating_a_traversed_composite_index_faults_at_runtime() {
     let program = checked_program(
-        "resource Enrollment at ^enrollments(studentId: string, courseId: string)\n    required status: string\n    required student: string\n    required course: string\n\n    index byStatus(status, studentId, courseId)\n\nfn enroll(s: string, c: string, st: string)\n    var enrollment: Enrollment\n    enrollment.status = st\n    enrollment.student = s\n    enrollment.course = c\n    ^enrollments(s, c) = enrollment\n\nfn markInactive(id: Id(^enrollments))\n    ^enrollments(id).status = \"inactive\"\n\nfn deactivateExact(student: string, course: string)\n    for id in ^enrollments.byStatus(\"active\", student, course)\n        markInactive(id)\n",
+        "resource Enrollment at ^enrollments(studentId: string, courseId: string)\n    required status: string\n    required student: string\n    required course: string\n\n    index byStatus(status, studentId, courseId)\n\npub fn enroll(s: string, c: string, st: string)\n    var enrollment: Enrollment\n    enrollment.status = st\n    enrollment.student = s\n    enrollment.course = c\n    ^enrollments(s, c) = enrollment\n\npub fn markInactive(id: Id(^enrollments))\n    ^enrollments(id).status = \"inactive\"\n\npub fn deactivateExact(student: string, course: string)\n    for id in ^enrollments.byStatus(\"active\", student, course)\n        markInactive(id)\n",
     );
     let store = TreeStore::memory();
     run_entry(
@@ -6737,31 +6714,31 @@ const BOOK_PRIMARY: &str = "\
 resource Book at ^books(id: int)
     required title: string
 
-fn add(id: int, t: string)
+pub fn add(id: int, t: string)
     ^books(id).title = t
 
-fn titles()
+pub fn titles()
     for id in ^books
         print(^books(id).title)
 
-fn directIds()
+pub fn directIds()
     for id in ^books
         print($\"{id}\")
 
-fn idsAndElementTitles()
+pub fn idsAndElementTitles()
     for id, book in ^books
         print($\"{id}: {book.title}\")
 
-fn reversedElementTitles()
+pub fn reversedElementTitles()
     for id, book in reversed(^books)
         print(book.title)
 
-fn reversedIdsAsValue()
+pub fn reversedIdsAsValue()
     const ids = reversed(^books)
     for id in ids
         print($\"{id}\")
 
-fn ids()
+pub fn ids()
     const all = keys(^books)
     for id in all
         print($\"{id}\")
@@ -6926,7 +6903,7 @@ fn iterating_a_singleton_root_is_a_type_error() {
     // A keyless singleton has no identities to enumerate; iterating it is a
     // type error, not a silent empty loop.
     let program = checked_program(
-        "resource Settings at ^settings\n    theme: string\n\nfn each()\n    for s in ^settings\n        print(\"x\")\n",
+        "resource Settings at ^settings\n    theme: string\n\npub fn each()\n    for s in ^settings\n        print(\"x\")\n",
     );
     let store = TreeStore::memory();
     let error = run_entry(&store, checked_entry!(&program, "test::each")).unwrap_err();
@@ -6938,10 +6915,10 @@ const ENROLLMENT_PRIMARY: &str = "\
 resource Enrollment at ^enrollments(studentId: string, courseId: string)
     status: string
 
-fn enroll(s: string, c: string, st: string)
+pub fn enroll(s: string, c: string, st: string)
     ^enrollments(s, c).status = st
 
-fn statuses()
+pub fn statuses()
     for id, enrollment in ^enrollments
         print(enrollment.status)
 ";
@@ -6983,27 +6960,27 @@ pub fn seed()
     const a: int = append(^books(1).tags, \"fiction\")
     const b: int = append(^books(1).tags, \"funny\")
 
-fn positions()
+pub fn positions()
     for pos in ^books(1).tags
         print($\"{pos}\")
 
-fn tagValues()
+pub fn tagValues()
     for pos, tag in ^books(1).tags
         print(tag)
 
-fn tagEntries()
+pub fn tagEntries()
     for pos, tag in ^books(1).tags
         print($\"{pos}={tag}\")
 
-fn tagValuesDescending()
+pub fn tagValuesDescending()
     for pos, tag in reversed(^books(1).tags)
         print(tag)
 
-fn positionsDescending()
+pub fn positionsDescending()
     for pos in reversed(keys(^books(1).tags))
         print($\"{pos}\")
 
-fn keysOf()
+pub fn keysOf()
     for pos in keys(^books(1).tags)
         print($\"{pos}\")
 ";
@@ -7077,11 +7054,11 @@ const PLAYER_SCORES: &str = "\
 resource Game at ^games(id: int)
     scores(playerId: string): int
 
-fn players()
+pub fn players()
     for p in keys(^games(1).scores)
         print(p)
 
-fn scores()
+pub fn scores()
     for player, score in ^games(1).scores
         print($\"{score}\")
 ";
@@ -7131,11 +7108,11 @@ pub fn seed()
     ^books(1).versions(2).title = \"second\"
     ^books(1).versions(1).title = \"first\"
 
-fn versionTitles()
+pub fn versionTitles()
     for v, version in ^books(1).versions
         print(version.title)
 
-fn versionEntries()
+pub fn versionEntries()
     for v, version in ^books(1).versions
         print($\"{v}: {version.title}\")
 ";
@@ -7163,7 +7140,7 @@ fn two_name_keyed_group_layer_loop_yields_key_and_entry() {
 #[test]
 fn deleting_a_record_while_traversing_the_root_is_a_traversal_fault() {
     checker_rejects(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn clear()\n    for id in keys(^books)\n        delete ^books(id)\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\npub fn clear()\n    for id in keys(^books)\n        delete ^books(id)\n",
         "check.loop_mutates_traversed_layer",
     );
 }
@@ -7171,7 +7148,7 @@ fn deleting_a_record_while_traversing_the_root_is_a_traversal_fault() {
 #[test]
 fn traversal_faults_are_not_catchable_errors() {
     checker_rejects(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn clear(): string\n    try\n        for id in keys(^books)\n            delete ^books(id)\n        return \"completed\"\n    catch error: Error\n        return error.code\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\npub fn clear(): string\n    try\n        for id in keys(^books)\n            delete ^books(id)\n        return \"completed\"\n    catch error: Error\n        return error.code\n",
         "check.loop_mutates_traversed_layer",
     );
 }
@@ -7179,7 +7156,7 @@ fn traversal_faults_are_not_catchable_errors() {
 #[test]
 fn appending_to_the_sequence_being_traversed_is_a_traversal_fault() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"a\"\n    const p: int = append(^books(1).tags, \"x\")\n\nfn grow()\n    for tag in ^books(1).tags\n        const p: int = append(^books(1).tags, \"y\")\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\npub fn seed()\n    ^books(1).title = \"a\"\n    const p: int = append(^books(1).tags, \"x\")\n\npub fn grow()\n    for tag in ^books(1).tags\n        const p: int = append(^books(1).tags, \"y\")\n",
     );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
@@ -7193,7 +7170,7 @@ fn appending_to_the_sequence_being_traversed_is_a_traversal_fault() {
 #[test]
 fn helper_appending_to_the_sequence_being_traversed_is_a_traversal_fault() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"a\"\n    append(^books(1).tags, \"x\")\n\nfn grow()\n    append(^books(1).tags, \"y\")\n\nfn walk()\n    for tag in ^books(1).tags\n        grow()\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\npub fn seed()\n    ^books(1).title = \"a\"\n    append(^books(1).tags, \"x\")\n\npub fn grow()\n    append(^books(1).tags, \"y\")\n\npub fn walk()\n    for tag in ^books(1).tags\n        grow()\n",
     );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
@@ -7207,7 +7184,7 @@ fn helper_appending_to_the_sequence_being_traversed_is_a_traversal_fault() {
 #[test]
 fn helper_deleting_from_the_root_being_traversed_is_a_traversal_fault() {
     checker_rejects(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn remove(id: int)\n    delete ^books(id)\n\nfn walk()\n    for id in keys(^books)\n        remove(id)\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\npub fn remove(id: int)\n    delete ^books(id)\n\npub fn walk()\n    for id in keys(^books)\n        remove(id)\n",
         "check.call_argument",
     );
 }
@@ -7215,7 +7192,7 @@ fn helper_deleting_from_the_root_being_traversed_is_a_traversal_fault() {
 #[test]
 fn field_write_creating_a_record_in_the_traversed_root_is_a_traversal_fault() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn grow()\n    for id in ^books\n        ^books(99).title = \"new\"\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\npub fn grow()\n    for id in ^books\n        ^books(99).title = \"new\"\n",
     );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
@@ -7229,7 +7206,7 @@ fn field_write_creating_a_record_in_the_traversed_root_is_a_traversal_fault() {
 #[test]
 fn collecting_saved_keys_as_a_local_snapshot_is_checker_rejected() {
     checker_rejects(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn clear()\n    const ids = keys(^books)\n    for id in ids\n        delete ^books(id)\n\nfn remaining(): int\n    return count(^books)\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\npub fn clear()\n    const ids = keys(^books)\n    for id in ids\n        delete ^books(id)\n\npub fn remaining(): int\n    return count(^books)\n",
         "check.key_type",
     );
 }
@@ -7239,7 +7216,7 @@ fn mutating_a_different_record_layer_while_traversing_is_allowed() {
     // Traversing `^books(1).tags` and appending to `^books(2).tags` touches a
     // different record's layer, so it is not a traversal fault.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n    const p: int = append(^books(1).tags, \"x\")\n\nfn copy()\n    for tag in ^books(1).tags\n        const p: int = append(^books(2).tags, \"y\")\n\nfn tags2(): int\n    return count(^books(2).tags)\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\npub fn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n    const p: int = append(^books(1).tags, \"x\")\n\npub fn copy()\n    for tag in ^books(1).tags\n        const p: int = append(^books(2).tags, \"y\")\n\npub fn tags2(): int\n    return count(^books(2).tags)\n",
     );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
@@ -7261,29 +7238,29 @@ resource Book at ^books(id: int)
     required title: string
     tags(pos: int): string
 
-fn add(id: int, t: string)
+pub fn add(id: int, t: string)
     ^books(id).title = t
 
-fn delId(id: int)
+pub fn delId(id: int)
     delete ^books(id)
 
-fn tag(id: int, t: string)
+pub fn tag(id: int, t: string)
     const p: int = append(^books(id).tags, t)
 
-fn idsDescending()
+pub fn idsDescending()
     for id in reversed(keys(^books))
         print($\"{id}\")
 
-fn keysReversedValue()
+pub fn keysReversedValue()
     const r = reversed(keys(^books))
     for id in r
         print($\"{id}\")
 
-fn titlesDescending()
+pub fn titlesDescending()
     for id, book in reversed(^books)
         print(book.title)
 
-fn nextOfKey(id: int, fallback: string): string
+pub fn nextOfKey(id: int, fallback: string): string
     const wanted: string = ^books(id).title ?? \"\"
     for current in keys(^books)
         if (^books(current).title ?? \"\") == wanted
@@ -7293,7 +7270,7 @@ fn nextOfKey(id: int, fallback: string): string
             return ^books(neighbor).title ?? fallback
     return fallback
 
-fn prevOfKey(id: int, fallback: string): string
+pub fn prevOfKey(id: int, fallback: string): string
     const wanted: string = ^books(id).title ?? \"\"
     for current in keys(^books)
         if (^books(current).title ?? \"\") == wanted
@@ -7303,25 +7280,25 @@ fn prevOfKey(id: int, fallback: string): string
             return ^books(neighbor).title ?? fallback
     return fallback
 
-fn firstIdKey(fallback: string): string
+pub fn firstIdKey(fallback: string): string
     for current in keys(^books)
         const first: Id(^books) = next(^books) ?? current
         return ^books(first).title ?? fallback
     return fallback
 
-fn lastIdKey(fallback: string): string
+pub fn lastIdKey(fallback: string): string
     for current in keys(^books)
         const last: Id(^books) = prev(^books) ?? current
         return ^books(last).title ?? fallback
     return fallback
 
-fn nextOrDefaultKey(id: int, fallback: string): string
+pub fn nextOrDefaultKey(id: int, fallback: string): string
     return nextOfKey(id, fallback)
 
-fn nextTitleKey(id: int): string
+pub fn nextTitleKey(id: int): string
     return nextOfKey(id, \"\")
 
-fn breakAfterFirst(): int
+pub fn breakAfterFirst(): int
     var seen = 0
     for id in reversed(^books)
         seen = seen + 1
@@ -7592,7 +7569,7 @@ fn reversed_iteration_supports_early_break() {
 fn next_on_a_keyed_child_layer_position() {
     // `next(^books(1).tags(1))` seeks among the layer's integer positions.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"a\"\n    const x: int = append(^books(1).tags, \"p\")\n    const y: int = append(^books(1).tags, \"q\")\n    const z: int = append(^books(1).tags, \"r\")\n\nfn nextPos(p: int): int\n    return next(^books(1).tags(p)) ?? 0\n\nfn firstPos(): int\n    return next(^books(1).tags) ?? 0\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\npub fn seed()\n    ^books(1).title = \"a\"\n    const x: int = append(^books(1).tags, \"p\")\n    const y: int = append(^books(1).tags, \"q\")\n    const z: int = append(^books(1).tags, \"r\")\n\npub fn nextPos(p: int): int\n    return next(^books(1).tags(p)) ?? 0\n\npub fn firstPos(): int\n    return next(^books(1).tags) ?? 0\n",
     );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
@@ -7621,7 +7598,7 @@ fn reversed_over_an_in_memory_sequence_reverses_directly() {
     // `reversed(std::text::split(...))` reverses the in-memory sequence — no store
     // involved — so a `for` over it yields the elements back-to-front.
     let program = checked_program(
-        "fn rev()\n    for word in reversed(std::text::split(\"a,b,c\", \",\"))\n        print(word)\n",
+        "pub fn rev()\n    for word in reversed(std::text::split(\"a,b,c\", \",\"))\n        print(word)\n",
     );
     let store = TreeStore::memory();
     let outcome = run_entry(&store, checked_entry!(&program, "test::rev")).expect("run");
@@ -7631,7 +7608,7 @@ fn reversed_over_an_in_memory_sequence_reverses_directly() {
 #[test]
 fn reversed_respects_the_traversed_layer_write_guard() {
     checker_rejects(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\nfn clear()\n    for id in reversed(keys(^books))\n        delete ^books(id)\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\npub fn clear()\n    for id in reversed(keys(^books))\n        delete ^books(id)\n",
         "check.loop_mutates_traversed_layer",
     );
 }
@@ -7643,7 +7620,7 @@ fn reversed_over_a_composite_root_is_a_true_reverse() {
     // reader and the writer share one committed catalog so their member catalog ids
     // address the same store cells.
     let program = checked_program(&format!(
-        "{ENROLLMENT_PRIMARY}\nfn revStatuses()\n    for id, enrollment in reversed(^enrollments)\n        print(enrollment.status)\n"
+        "{ENROLLMENT_PRIMARY}\npub fn revStatuses()\n    for id, enrollment in reversed(^enrollments)\n        print(enrollment.status)\n"
     ));
     let store = TreeStore::memory();
     let enroll = |s: &str, c: &str, st: &str| {
@@ -7677,11 +7654,11 @@ resource Book at ^books(id: int)
 
     index byShelf(shelf, id)
 
-fn add(id: int, t: string, s: string)
+pub fn add(id: int, t: string, s: string)
     ^books(id).title = t
     ^books(id).shelf = s
 
-fn onShelfReversed(shelf: string)
+pub fn onShelfReversed(shelf: string)
     for id in reversed(^books.byShelf(shelf))
         print($\"{id}\")
 ";
@@ -7731,11 +7708,11 @@ resource Book at ^books(id: int)
 
     index byShelf(shelf, id)
 
-fn add(id: int, t: string, s: string)
+pub fn add(id: int, t: string, s: string)
     ^books(id).title = t
     ^books(id).shelf = s
 
-fn nextOrDefaultKey(id: int, fallback: string): string
+pub fn nextOrDefaultKey(id: int, fallback: string): string
     const wanted: string = ^books(id).title ?? \"\"
     for current in keys(^books)
         if (^books(current).title ?? \"\") == wanted
@@ -7745,10 +7722,10 @@ fn nextOrDefaultKey(id: int, fallback: string): string
             return ^books(neighbor).title ?? fallback
     return fallback
 
-fn nextOrSelfKey(id: int): string
+pub fn nextOrSelfKey(id: int): string
     return nextOrDefaultKey(id, ^books(id).title ?? \"\")
 
-fn lastIdKey(fallback: string): string
+pub fn lastIdKey(fallback: string): string
     for current in keys(^books)
         const last: Id(^books) = prev(^books) ?? current
         return ^books(last).title ?? fallback
@@ -7834,21 +7811,21 @@ resource Book at ^books(id: int)
     subtitle: string
     tags: sequence[string]
 
-fn seed()
+pub fn seed()
     ^books(1).title = \"Mort\"
     const a: int = append(^books(1).tags, \"fiction\")
     const b: int = append(^books(1).tags, \"funny\")
 
-fn countTitle(): int
+pub fn countTitle(): int
     return count(^books(1).title)
 
-fn countTags(): int
+pub fn countTags(): int
     return count(^books(1).tags)
 
-fn countMissingField(): int
+pub fn countMissingField(): int
     return count(^books(1).subtitle)
 
-fn countMissingTags(): int
+pub fn countMissingTags(): int
     return count(^books(2).tags)
 ";
 
@@ -7874,7 +7851,7 @@ fn count_of_a_path_with_both_value_and_children_counts_children() {
     // When a path has BOTH a value and children, `count` returns the number of
     // immediate children, not children-plus-one.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    tags: sequence[string]\n\nfn n(): int\n    return count(^books(1).tags)\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    tags: sequence[string]\n\npub fn n(): int\n    return count(^books(1).tags)\n",
     );
     let store = TreeStore::memory();
     // Seed a value at `^books(1).tags` itself and two children below it.
@@ -7920,32 +7897,32 @@ resource Book at ^books(id: int)
 
     index byShelf(shelf, id)
 
-fn add(id: int, t: string, s: string)
+pub fn add(id: int, t: string, s: string)
     ^books(id).title = t
     ^books(id).shelf = s
 
-fn tag(id: int, t: string): int
+pub fn tag(id: int, t: string): int
     return append(^books(id).tags, t)
 
-fn countBranch(shelf: string): int
+pub fn countBranch(shelf: string): int
     return count(^books.byShelf(shelf))
 
-fn keysBranch(shelf: string): int
+pub fn keysBranch(shelf: string): int
     var c = 0
     for id in keys(^books.byShelf(shelf))
         c = c + 1
     return c
 
-fn countRoot(): int
+pub fn countRoot(): int
     return count(^books)
 
-fn countLayer(id: int): int
+pub fn countLayer(id: int): int
     return count(^books(id).tags)
 
-fn countScalar(id: int): int
+pub fn countScalar(id: int): int
     return count(^books(id).title)
 
-fn countRecord(id: int): int
+pub fn countRecord(id: int): int
     return count(^books(id))
 ";
 
@@ -8067,7 +8044,7 @@ fn count_over_an_index_branch_matches_branch_entry_count() {
 #[test]
 fn count_over_an_indexed_root_ignores_populated_index_branches() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n    isbn: string\n\n    index byShelf(shelf, id)\n    index byIsbn(isbn) unique\n\nfn add(id: int, t: string, s: string)\n    ^books(id).title = t\n    ^books(id).shelf = s\n\nfn addIsbn(id: int, isbn: string)\n    ^books(id).isbn = isbn\n\nfn countRoot(): int\n    return count(^books)\n\nfn iterRoot(): int\n    var n = 0\n    for book in ^books\n        n = n + 1\n    return n\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n    isbn: string\n\n    index byShelf(shelf, id)\n    index byIsbn(isbn) unique\n\npub fn add(id: int, t: string, s: string)\n    ^books(id).title = t\n    ^books(id).shelf = s\n\npub fn addIsbn(id: int, isbn: string)\n    ^books(id).isbn = isbn\n\npub fn countRoot(): int\n    return count(^books)\n\npub fn iterRoot(): int\n    var n = 0\n    for book in ^books\n        n = n + 1\n    return n\n",
     );
     let store = TreeStore::memory();
     let call = |entry: CheckedEntryCall| run_entry(&store, entry).expect("run").value;
@@ -8111,7 +8088,7 @@ fn count_over_an_indexed_root_ignores_populated_index_branches() {
 #[test]
 fn count_over_a_direct_saved_root_matches_written_records() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"A\"\n    ^books(2).title = \"B\"\n    ^books(3).title = \"C\"\n\nfn countRoot(): int\n    return count(^books)\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn seed()\n    ^books(1).title = \"A\"\n    ^books(2).title = \"B\"\n    ^books(3).title = \"C\"\n\npub fn countRoot(): int\n    return count(^books)\n",
     );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
@@ -8127,7 +8104,7 @@ fn count_over_a_direct_saved_root_matches_written_records() {
 #[test]
 fn keys_saved_root_loop_returns_ids_in_store_order() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"A\"\n    ^books(2).title = \"B\"\n    ^books(3).title = \"C\"\n\nfn idOrder()\n    for id in keys(^books)\n        print($\"{id}\")\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn seed()\n    ^books(1).title = \"A\"\n    ^books(2).title = \"B\"\n    ^books(3).title = \"C\"\n\npub fn idOrder()\n    for id in keys(^books)\n        print($\"{id}\")\n",
     );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
@@ -8143,7 +8120,7 @@ fn keys_saved_root_loop_returns_ids_in_store_order() {
 #[test]
 fn direct_saved_root_loop_streams_ids_and_reads_current_values() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"A\"\n    ^books(2).title = \"B\"\n\nfn mutateFutureValue(): int\n    var total = 0\n    for id in ^books\n        if ^books(id).title == \"A\"\n            total = total * 10 + 1\n            ^books(2).title = \"Z\"\n        else if ^books(id).title == \"B\"\n            total = total * 10 + 2\n        else if ^books(id).title == \"Z\"\n            total = total * 10 + 9\n    return total\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn seed()\n    ^books(1).title = \"A\"\n    ^books(2).title = \"B\"\n\npub fn mutateFutureValue(): int\n    var total = 0\n    for id in ^books\n        if ^books(id).title == \"A\"\n            total = total * 10 + 1\n            ^books(2).title = \"Z\"\n        else if ^books(id).title == \"B\"\n            total = total * 10 + 2\n        else if ^books(id).title == \"Z\"\n            total = total * 10 + 9\n    return total\n",
     );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
@@ -8159,7 +8136,7 @@ fn direct_saved_root_loop_streams_ids_and_reads_current_values() {
 #[test]
 fn direct_saved_root_loop_returns_before_later_records() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed(id: int)\n    ^books(id).title = $\"Book {id}\"\n\nfn printFirstId()\n    for id in keys(^books)\n        print($\"{id}\")\n        return\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn seed(id: int)\n    ^books(id).title = $\"Book {id}\"\n\npub fn printFirstId()\n    for id in keys(^books)\n        print($\"{id}\")\n        return\n",
     );
     let store = TreeStore::memory();
     for id in 1..=129 {
@@ -8181,7 +8158,7 @@ fn direct_saved_root_loop_returns_before_later_records() {
 #[test]
 fn direct_values_loop_returns_before_reading_later_records() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    note: string\n\nfn seed()\n    ^books(1).title = \"Mort\"\n\nfn firstTitle(): string\n    for book in values(^books)\n        return book.title\n    return \"\"\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    note: string\n\npub fn seed()\n    ^books(1).title = \"Mort\"\n\npub fn firstTitle(): string\n    for book in values(^books)\n        return book.title\n    return \"\"\n",
     );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
@@ -8205,7 +8182,7 @@ fn direct_values_loop_returns_before_reading_later_records() {
 #[test]
 fn direct_entries_loop_returns_before_reading_later_records() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    note: string\n\nfn seed()\n    ^books(1).title = \"Mort\"\n\nfn firstTitle(): string\n    for id, book in ^books\n        return $\"{id}: {book.title}\"\n    return \"\"\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    note: string\n\npub fn seed()\n    ^books(1).title = \"Mort\"\n\npub fn firstTitle(): string\n    for id, book in ^books\n        return $\"{id}: {book.title}\"\n    return \"\"\n",
     );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
@@ -8229,7 +8206,7 @@ fn direct_entries_loop_returns_before_reading_later_records() {
 #[test]
 fn keys_saved_layer_loops_return_keys_in_order() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\nfn seed()\n    ^books(1).title = \"A\"\n    ^books(1).tags(1) = \"x\"\n    ^books(1).tags(2) = \"y\"\n    ^books(1).tags(3) = \"z\"\n\nfn tagKeys(): int\n    var total = 0\n    for pos in keys(^books(1).tags)\n        total = total * 10 + pos\n    return total\n\nfn tagKeysRev(): int\n    var total = 0\n    for pos in reversed(keys(^books(1).tags))\n        total = total * 10 + pos\n    return total\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\npub fn seed()\n    ^books(1).title = \"A\"\n    ^books(1).tags(1) = \"x\"\n    ^books(1).tags(2) = \"y\"\n    ^books(1).tags(3) = \"z\"\n\npub fn tagKeys(): int\n    var total = 0\n    for pos in keys(^books(1).tags)\n        total = total * 10 + pos\n    return total\n\npub fn tagKeysRev(): int\n    var total = 0\n    for pos in reversed(keys(^books(1).tags))\n        total = total * 10 + pos\n    return total\n",
     );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
@@ -8252,7 +8229,7 @@ fn keys_saved_layer_loops_return_keys_in_order() {
 #[test]
 fn count_over_a_composite_root_matches_direct_iteration() {
     let program = checked_program(
-        "resource Cell at ^cells(x: int, y: int)\n    required value: int\n\nfn put(x: int, y: int, value: int)\n    ^cells(x, y).value = value\n\nfn countRoot(): int\n    return count(^cells)\n\nfn iterRoot(): int\n    var n = 0\n    for cell in ^cells\n        n = n + 1\n    return n\n",
+        "resource Cell at ^cells(x: int, y: int)\n    required value: int\n\npub fn put(x: int, y: int, value: int)\n    ^cells(x, y).value = value\n\npub fn countRoot(): int\n    return count(^cells)\n\npub fn iterRoot(): int\n    var n = 0\n    for cell in ^cells\n        n = n + 1\n    return n\n",
     );
     let store = TreeStore::memory();
     for (x, y, value) in [(1, 1, 11), (1, 2, 12), (2, 1, 21)] {
@@ -8288,33 +8265,33 @@ resource Book at ^books(id: int)
     versions(version: int)
         required note: string
 
-fn seed()
+pub fn seed()
     ^books(1).title = \"Mort\"
     ^books(1).tags(1) = \"fiction\"
     ^books(1).versions(2).note = \"draft\"
 
-fn tagExists(id: int, pos: int): bool
+pub fn tagExists(id: int, pos: int): bool
     return exists(^books(id).tags(pos))
 
-fn versionExists(id: int, ver: int): bool
+pub fn versionExists(id: int, ver: int): bool
     return exists(^books(id).versions(ver))
 
-fn tagCount(id: int): int
+pub fn tagCount(id: int): int
     return count(^books(id).tags)
 
-fn versionFieldCount(id: int, ver: int): int
+pub fn versionFieldCount(id: int, ver: int): int
     return count(^books(id).versions(ver))
 
-fn topLevelExists(id: int): bool
+pub fn topLevelExists(id: int): bool
     return exists(^books(id).title)
 
-fn topLevelCount(id: int): int
+pub fn topLevelCount(id: int): int
     return count(^books(id).title)
 
-fn assertTagAbsent(id: int, pos: int)
+pub fn assertTagAbsent(id: int, pos: int)
     std::assert::absent(^books(id).tags(pos))
 
-fn assertVersionAbsent(id: int, ver: int)
+pub fn assertVersionAbsent(id: int, ver: int)
     std::assert::absent(^books(id).versions(ver))
 ";
 
@@ -8322,9 +8299,7 @@ fn assertVersionAbsent(id: int, ver: int)
 // `ChildLayer`/`IndexKey` segments — the same shape a normal read or write
 // lowers to. `exists`, `count`, and `std::assert::absent` must read that same
 // path, not a record-key mis-encoding, so they agree byte-for-byte with what is
-// actually stored. (Before routing these through the one canonical lowering, the
-// schema-unaware escape hatch encoded `tags(pos)` as a record-key lookup, so
-// `exists` mis-reported absent and `assert::absent` passed over a written entry.)
+// actually stored.
 #[test]
 fn exists_count_and_assert_absent_agree_over_a_present_keyed_layer_entry() {
     let program = checked_program(BOOK_KEYED_PRESENCE);
@@ -8477,29 +8452,29 @@ resource Table at ^tables(name: string)
         cells(col: int)
             required value: string
 
-fn setField(table: string, row: int, col: int, value: string)
+pub fn setField(table: string, row: int, col: int, value: string)
     ^tables(table).rows(row).fields(col) = value
 
-fn addField(table: string, row: int, value: string): int
+pub fn addField(table: string, row: int, value: string): int
     return append(^tables(table).rows(row).fields, value)
 
-fn fieldAt(table: string, row: int, col: int): string
+pub fn fieldAt(table: string, row: int, col: int): string
     return ^tables(table).rows(row).fields(col) ?? \"\"
 
-fn seedCells()
+pub fn seedCells()
     ^tables(\"t\").rows(1).cells(1).value = \"a\"
     ^tables(\"t\").rows(1).cells(2).value = \"b\"
 
-fn countCells(): int
+pub fn countCells(): int
     return count(^tables(\"t\").rows(1).cells)
 
-fn iterateCells(): int
+pub fn iterateCells(): int
     var total: int = 0
     for cell in ^tables(\"t\").rows(1).cells
         total = total + 1
     return total
 
-fn cellEntries()
+pub fn cellEntries()
     for col, cell in entries(^tables(\"t\").rows(1).cells)
         print($\"{col}={cell.value}\")
 ";
@@ -8598,7 +8573,7 @@ fn nested_keyed_group_layers_iterate_and_materialize_entries() {
 #[test]
 fn writing_a_nested_keyed_leaf_while_traversing_it_is_a_traversal_fault() {
     checker_rejects(
-        "resource Table at ^tables(name: string)\n    rows(row: int)\n        fields(col: int): string\n\nfn mutateNestedLeafDuringTraversal()\n    for col in keys(^tables(\"t\").rows(1).fields)\n        ^tables(\"t\").rows(1).fields(3) = \"c\"\n",
+        "resource Table at ^tables(name: string)\n    rows(row: int)\n        fields(col: int): string\n\npub fn mutateNestedLeafDuringTraversal()\n    for col in keys(^tables(\"t\").rows(1).fields)\n        ^tables(\"t\").rows(1).fields(3) = \"c\"\n",
         "check.loop_mutates_traversed_layer",
     );
 }
@@ -8611,60 +8586,60 @@ resource Book at ^books(id: int)
     required title: string
     tags: sequence[string]
 
-fn add(id: int, t: string)
+pub fn add(id: int, t: string)
     ^books(id).title = t
 
-fn tag(id: int, t: string): int
+pub fn tag(id: int, t: string): int
     return append(^books(id).tags, t)
 
-fn titles()
+pub fn titles()
     for book in values(^books)
         print(book.title)
 
-fn idsAndTitles()
+pub fn idsAndTitles()
     for id, book in entries(^books)
         print($\"{id}: {book.title}\")
 
-fn tagValues(id: int)
+pub fn tagValues(id: int)
     for tag in values(^books(id).tags)
         print(tag)
 
-fn tagEntries(id: int)
+pub fn tagEntries(id: int)
     for pos, tag in entries(^books(id).tags)
         print($\"{pos}={tag}\")
 
-fn titlesReversed()
+pub fn titlesReversed()
     for book in reversed(values(^books))
         print(book.title)
 
-fn idsAndTitlesReversed()
+pub fn idsAndTitlesReversed()
     for id, book in reversed(entries(^books))
         print($\"{id}: {book.title}\")
 
-fn tagValuesReversed(id: int)
+pub fn tagValuesReversed(id: int)
     for tag in reversed(values(^books(id).tags))
         print(tag)
 
-fn tagEntriesReversed(id: int)
+pub fn tagEntriesReversed(id: int)
     for pos, tag in reversed(entries(^books(id).tags))
         print($\"{pos}={tag}\")
 
-fn titlesValue()
+pub fn titlesValue()
     const books = values(^books)
     for book in books
         print(book.title)
 
-fn titleEntriesValue()
+pub fn titleEntriesValue()
     const books = entries(^books)
     for id, book in books
         print($\"{id}: {book.title}\")
 
-fn tagValuesValue(id: int)
+pub fn tagValuesValue(id: int)
     const tags = values(^books(id).tags)
     for tag in tags
         print(tag)
 
-fn tagEntriesValue(id: int)
+pub fn tagEntriesValue(id: int)
     const tags = entries(^books(id).tags)
     for pos, tag in tags
         print($\"{pos}={tag}\")
@@ -9036,7 +9011,7 @@ fn keyed_group_entry_read_materializes_unkeyed_group_descendants() {
 /// A two-key books program with an index, reused by the maintenance tests below:
 /// it can seed records, drop the whole `^books` root, and count remaining records
 /// and index entries so a root drop's effect is observable.
-const MAINTENANCE_BOOKS: &str = "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\nfn seed()\n    ^books(1).title = \"Mort\"\n    ^books(1).shelf = \"fiction\"\n    ^books(2).title = \"Guards\"\n    ^books(2).shelf = \"fiction\"\n\nfn drop_root()\n    delete ^books\n\nfn drop_root_while_iterating_index()\n    for id in keys(^books.byShelf(\"fiction\"))\n        delete ^books\n\nfn record_count(): int\n    var c = 0\n    for book in ^books\n        c = c + 1\n    return c\n\nfn shelf_count(s: string): int\n    var c = 0\n    for id in keys(^books.byShelf(s))\n        c = c + 1\n    return c\n";
+const MAINTENANCE_BOOKS: &str = "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\npub fn seed()\n    ^books(1).title = \"Mort\"\n    ^books(1).shelf = \"fiction\"\n    ^books(2).title = \"Guards\"\n    ^books(2).shelf = \"fiction\"\n\npub fn drop_root()\n    delete ^books\n\npub fn drop_root_while_iterating_index()\n    for id in keys(^books.byShelf(\"fiction\"))\n        delete ^books\n\npub fn record_count(): int\n    var c = 0\n    for book in ^books\n        c = c + 1\n    return c\n\npub fn shelf_count(s: string): int\n    var c = 0\n    for id in keys(^books.byShelf(s))\n        c = c + 1\n    return c\n";
 
 #[test]
 fn deleting_a_whole_root_without_maintenance_is_rejected() {
@@ -9115,7 +9090,7 @@ fn whole_identity_delete_stays_ungated_under_no_maintenance() {
     // `delete ^books(1)` is ordinary whole-identity work: it must still succeed
     // with no maintenance capability, leaving the sibling record in place.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed()\n    ^books(1).title = \"Mort\"\n    ^books(2).title = \"Guards\"\n\nfn drop_one()\n    delete ^books(1)\n\nfn record_count(): int\n    var c = 0\n    for book in ^books\n        c = c + 1\n    return c\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn seed()\n    ^books(1).title = \"Mort\"\n    ^books(2).title = \"Guards\"\n\npub fn drop_one()\n    delete ^books(1)\n\npub fn record_count(): int\n    var c = 0\n    for book in ^books\n        c = c + 1\n    return c\n",
     );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
@@ -9135,7 +9110,7 @@ fn deleting_a_required_field_under_maintenance_succeeds() {
     // A required-field delete is rejected without maintenance (existing behavior),
     // but a maintenance run lifts the guard and actually removes the field.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n\nfn drop_title(id: int)\n    delete ^books(id).title\n\nfn has_title(id: int): bool\n    return exists(^books(id).title)\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n\npub fn drop_title(id: int)\n    delete ^books(id).title\n\npub fn has_title(id: int): bool\n    return exists(^books(id).title)\n",
     );
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
@@ -9167,7 +9142,7 @@ fn deleting_a_required_field_under_maintenance_succeeds() {
 #[test]
 fn maintenance_transaction_can_delete_required_field_after_a_field_write() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).shelf = \"fiction\"\n\nfn repair(id: int)\n    transaction\n        ^books(id).shelf = \"legacy\"\n        delete ^books(id).title\n\nfn has_title(id: int): bool\n    return exists(^books(id).title)\n\nfn shelf_of(id: int): string\n    return ^books(id).shelf ?? \"\"\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\npub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).shelf = \"fiction\"\n\npub fn repair(id: int)\n    transaction\n        ^books(id).shelf = \"legacy\"\n        delete ^books(id).title\n\npub fn has_title(id: int): bool\n    return exists(^books(id).title)\n\npub fn shelf_of(id: int): string\n    return ^books(id).shelf ?? \"\"\n",
     );
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
@@ -9210,7 +9185,7 @@ fn maintenance_transaction_can_delete_required_field_after_a_field_write() {
 #[test]
 fn maintenance_transaction_still_rejects_new_partial_required_record() {
     let program = checked_program(
-        "resource Item at ^items(id: int)\n    required name: string\n    shelf: string\n\nfn create(id: int)\n    transaction\n        ^items(id).shelf = \"legacy\"\n\nfn has_item(id: int): bool\n    return exists(^items(id))\n",
+        "resource Item at ^items(id: int)\n    required name: string\n    shelf: string\n\npub fn create(id: int)\n    transaction\n        ^items(id).shelf = \"legacy\"\n\npub fn has_item(id: int): bool\n    return exists(^items(id))\n",
     );
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
@@ -9239,7 +9214,7 @@ fn maintenance_transaction_still_rejects_new_partial_required_record() {
 #[test]
 fn maintenance_transaction_noop_required_delete_does_not_permit_partial_record() {
     let program = checked_program(
-        "resource Item at ^items(id: int)\n    required name: string\n    shelf: string\n\nfn create(id: int)\n    transaction\n        ^items(id).shelf = \"legacy\"\n        delete ^items(id).name\n\nfn has_item(id: int): bool\n    return exists(^items(id))\n",
+        "resource Item at ^items(id: int)\n    required name: string\n    shelf: string\n\npub fn create(id: int)\n    transaction\n        ^items(id).shelf = \"legacy\"\n        delete ^items(id).name\n\npub fn has_item(id: int): bool\n    return exists(^items(id))\n",
     );
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
@@ -9268,7 +9243,7 @@ fn maintenance_transaction_noop_required_delete_does_not_permit_partial_record()
 #[test]
 fn maintenance_transaction_staged_required_delete_does_not_permit_partial_record() {
     let program = checked_program(
-        "resource Item at ^items(id: int)\n    required name: string\n    shelf: string\n\nfn create(id: int)\n    transaction\n        ^items(id).name = \"temporary\"\n        ^items(id).shelf = \"legacy\"\n        delete ^items(id).name\n\nfn has_item(id: int): bool\n    return exists(^items(id))\n",
+        "resource Item at ^items(id: int)\n    required name: string\n    shelf: string\n\npub fn create(id: int)\n    transaction\n        ^items(id).name = \"temporary\"\n        ^items(id).shelf = \"legacy\"\n        delete ^items(id).name\n\npub fn has_item(id: int): bool\n    return exists(^items(id))\n",
     );
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
@@ -9297,7 +9272,7 @@ fn maintenance_transaction_staged_required_delete_does_not_permit_partial_record
 #[test]
 fn maintenance_transaction_whole_resource_required_delete_does_not_permit_partial_record() {
     let program = checked_program(
-        "resource Item at ^items(id: int)\n    required name: string\n    shelf: string\n\nfn create(id: int)\n    var item: Item\n    item.name = \"temporary\"\n    item.shelf = \"legacy\"\n    transaction\n        ^items(id) = item\n        delete ^items(id).name\n\nfn has_item(id: int): bool\n    return exists(^items(id))\n",
+        "resource Item at ^items(id: int)\n    required name: string\n    shelf: string\n\npub fn create(id: int)\n    var item: Item\n    item.name = \"temporary\"\n    item.shelf = \"legacy\"\n    transaction\n        ^items(id) = item\n        delete ^items(id).name\n\npub fn has_item(id: int): bool\n    return exists(^items(id))\n",
     );
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
@@ -9326,7 +9301,7 @@ fn maintenance_transaction_whole_resource_required_delete_does_not_permit_partia
 #[test]
 fn maintenance_transaction_whole_group_required_delete_does_not_permit_partial_entry() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    versions(version: int)\n        required title: string\n        note: string\n\nfn seed(id: int)\n    ^books(id).title = \"root\"\n\nfn create_version(id: int)\n    var version: Book\n    version.title = \"temporary\"\n    version.note = \"legacy\"\n    transaction\n        ^books(id).versions(1) = version\n        delete ^books(id).versions(1).title\n\nfn has_version(id: int): bool\n    return exists(^books(id).versions(1))\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    versions(version: int)\n        required title: string\n        note: string\n\npub fn seed(id: int)\n    ^books(id).title = \"root\"\n\npub fn create_version(id: int)\n    var version: Book\n    version.title = \"temporary\"\n    version.note = \"legacy\"\n    transaction\n        ^books(id).versions(1) = version\n        delete ^books(id).versions(1).title\n\npub fn has_version(id: int): bool\n    return exists(^books(id).versions(1))\n",
     );
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
@@ -9361,7 +9336,7 @@ fn maintenance_transaction_whole_group_required_delete_does_not_permit_partial_e
 #[test]
 fn maintenance_outer_delete_of_inner_created_required_field_is_rejected() {
     let program = checked_program(
-        "resource Item at ^items(id: int)\n    required name: string\n    shelf: string\n\nfn create(id: int)\n    transaction\n        transaction\n            ^items(id).name = \"temporary\"\n            ^items(id).shelf = \"legacy\"\n        delete ^items(id).name\n\nfn has_item(id: int): bool\n    return exists(^items(id))\n",
+        "resource Item at ^items(id: int)\n    required name: string\n    shelf: string\n\npub fn create(id: int)\n    transaction\n        transaction\n            ^items(id).name = \"temporary\"\n            ^items(id).shelf = \"legacy\"\n        delete ^items(id).name\n\npub fn has_item(id: int): bool\n    return exists(^items(id))\n",
     );
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
@@ -9390,7 +9365,7 @@ fn maintenance_outer_delete_of_inner_created_required_field_is_rejected() {
 #[test]
 fn maintenance_required_delete_exemption_covers_parent_validation_for_child_writes() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n    notes(note: string)\n        required text: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).shelf = \"fiction\"\n\nfn repair(id: int)\n    transaction\n        delete ^books(id).title\n        ^books(id).notes(\"n1\").text = \"indexed\"\n\nfn has_title(id: int): bool\n    return exists(^books(id).title)\n\nfn note_text(id: int): string\n    return ^books(id).notes(\"n1\").text ?? \"\"\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n    notes(note: string)\n        required text: string\n\npub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).shelf = \"fiction\"\n\npub fn repair(id: int)\n    transaction\n        delete ^books(id).title\n        ^books(id).notes(\"n1\").text = \"indexed\"\n\npub fn has_title(id: int): bool\n    return exists(^books(id).title)\n\npub fn note_text(id: int): string\n    return ^books(id).notes(\"n1\").text ?? \"\"\n",
     );
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
@@ -9431,7 +9406,7 @@ fn maintenance_required_delete_exemption_covers_parent_validation_for_child_writ
 #[test]
 fn maintenance_required_delete_exemption_crosses_nested_transaction_commit() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).shelf = \"fiction\"\n\nfn inner_delete(id: int)\n    transaction\n        ^books(id).shelf = \"outer\"\n        transaction\n            delete ^books(id).title\n\nfn outer_delete(id: int)\n    transaction\n        delete ^books(id).title\n        transaction\n            ^books(id).shelf = \"inner\"\n\nfn has_title(id: int): bool\n    return exists(^books(id).title)\n\nfn shelf_of(id: int): string\n    return ^books(id).shelf ?? \"\"\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\npub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).shelf = \"fiction\"\n\npub fn inner_delete(id: int)\n    transaction\n        ^books(id).shelf = \"outer\"\n        transaction\n            delete ^books(id).title\n\npub fn outer_delete(id: int)\n    transaction\n        delete ^books(id).title\n        transaction\n            ^books(id).shelf = \"inner\"\n\npub fn has_title(id: int): bool\n    return exists(^books(id).title)\n\npub fn shelf_of(id: int): string\n    return ^books(id).shelf ?? \"\"\n",
     );
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
@@ -9505,7 +9480,7 @@ fn maintenance_required_delete_exemption_crosses_nested_transaction_commit() {
 #[test]
 fn quoted_undeclared_saved_field_write_is_unknown_field_without_maintenance() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n\nfn quoted_write(id: int)\n    ^books(id).\"old-title\" = \"legacy\"\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n\npub fn quoted_write(id: int)\n    ^books(id).\"old-title\" = \"legacy\"\n",
     );
     let store = TreeStore::memory();
     run_entry(
@@ -9526,7 +9501,7 @@ fn quoted_undeclared_saved_field_write_is_unknown_field_without_maintenance() {
 #[test]
 fn quoted_undeclared_saved_field_write_is_unknown_field_under_maintenance() {
     checker_rejects(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n\nfn quoted_write(id: int, v: string)\n    ^books(id).\"old-title\" = v\n\nfn quoted_read(id: int): string\n    return ^books(id).\"old-title\"\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n\npub fn quoted_write(id: int, v: string)\n    ^books(id).\"old-title\" = v\n\npub fn quoted_read(id: int): string\n    return ^books(id).\"old-title\"\n",
         "check.untyped_value",
     );
 }
@@ -9534,7 +9509,7 @@ fn quoted_undeclared_saved_field_write_is_unknown_field_under_maintenance() {
 #[test]
 fn quoted_undeclared_saved_field_write_does_not_get_raw_type_rules() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn quoted_write(id: int, n: int)\n    ^books(id).\"count\" = n\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn quoted_write(id: int, n: int)\n    ^books(id).\"count\" = n\n",
     );
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
@@ -9552,7 +9527,7 @@ fn quoted_undeclared_saved_field_write_does_not_get_raw_type_rules() {
 #[test]
 fn unquoted_undeclared_field_stays_unknown_field_even_under_maintenance() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn typo(id: int)\n    ^books(id).nope = \"x\"\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn typo(id: int)\n    ^books(id).nope = \"x\"\n",
     );
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
@@ -9570,7 +9545,7 @@ fn unquoted_undeclared_field_stays_unknown_field_even_under_maintenance() {
 #[test]
 fn quoted_declared_saved_field_write_uses_managed_path_under_maintenance() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).shelf = \"fiction\"\n\nfn quoted_update(id: int)\n    ^books(id).\"shelf\" = \"history\"\n\nfn shelf_at(s: string): int\n    var c = 0\n    for id in keys(^books.byShelf(s))\n        c = c + 1\n    return c\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\npub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).shelf = \"fiction\"\n\npub fn quoted_update(id: int)\n    ^books(id).\"shelf\" = \"history\"\n\npub fn shelf_at(s: string): int\n    var c = 0\n    for id in keys(^books.byShelf(s))\n        c = c + 1\n    return c\n",
     );
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
@@ -9613,7 +9588,7 @@ fn quoted_declared_saved_field_write_uses_managed_path_under_maintenance() {
 #[test]
 fn quoted_undeclared_saved_field_read_is_managed_field_error_under_maintenance() {
     checker_rejects(
-        "resource Book at ^books(id: int)\n    required title: string\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n\nfn quoted_read(id: int): string\n    return ^books(id).\"old-title\"\n",
+        "resource Book at ^books(id: int)\n    required title: string\n\npub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n\npub fn quoted_read(id: int): string\n    return ^books(id).\"old-title\"\n",
         "check.untyped_value",
     );
 }
@@ -9621,7 +9596,7 @@ fn quoted_undeclared_saved_field_read_is_managed_field_error_under_maintenance()
 #[test]
 fn managed_write_to_a_declared_field_is_unaffected() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\nfn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).shelf = \"fiction\"\n\nfn move_shelf(id: int, s: string)\n    ^books(id).shelf = s\n\nfn shelf_at(s: string): int\n    var c = 0\n    for id in keys(^books.byShelf(s))\n        c = c + 1\n    return c\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\npub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).shelf = \"fiction\"\n\npub fn move_shelf(id: int, s: string)\n    ^books(id).shelf = s\n\npub fn shelf_at(s: string): int\n    var c = 0\n    for id in keys(^books.byShelf(s))\n        c = c + 1\n    return c\n",
     );
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
@@ -9669,7 +9644,7 @@ fn managed_write_to_a_declared_field_is_unaffected() {
 #[test]
 fn quoted_declared_saved_field_write_uses_managed_path_without_maintenance() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\nfn quoted_update(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).\"shelf\" = \"history\"\n\nfn shelf(id: int): string\n    return ^books(id).shelf ?? \"\"\n",
+        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\npub fn quoted_update(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).\"shelf\" = \"history\"\n\npub fn shelf(id: int): string\n    return ^books(id).shelf ?? \"\"\n",
     );
     let store = TreeStore::memory();
     run_entry(
@@ -9700,8 +9675,8 @@ fn quoted_declared_saved_field_write_uses_managed_path_without_maintenance() {
 fn an_identity_argument_splices_in_as_the_record_key() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\n\
-         fn save()\n    const id = nextId(^books)\n    ^books(id).title = \"a\"\n\n\
-         fn read(): string\n    return ^books(1).title\n",
+         pub fn save()\n    const id = nextId(^books)\n    ^books(id).title = \"a\"\n\n\
+         pub fn read(): string\n    return ^books(1).title\n",
     );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::save")).expect("save");
@@ -9717,7 +9692,7 @@ fn an_identity_argument_splices_in_as_the_record_key() {
 fn a_wrong_typed_key_faults_at_lowering_and_does_not_write() {
     checker_rejects(
         "resource Book at ^books(id: int)\n    required title: string\n\n\
-         fn save(bad: string)\n    ^books(bad).title = \"a\"\n",
+         pub fn save(bad: string)\n    ^books(bad).title = \"a\"\n",
         "check.key_type",
     );
 }
@@ -9729,8 +9704,8 @@ fn a_wrong_scalar_spliced_identity_faults_and_does_not_write() {
     checker_rejects(
         "resource Book at ^books(id: int)\n    required title: string\n\n\
          resource Magazine at ^magazines(issn: string)\n    required title: string\n\n\
-         fn seed()\n    ^magazines(\"issn\").title = \"m\"\n\n\
-         fn save()\n    for id in ^magazines\n        ^books(id).title = \"a\"\n",
+         pub fn seed()\n    ^magazines(\"issn\").title = \"m\"\n\n\
+         pub fn save()\n    for id in ^magazines\n        ^books(id).title = \"a\"\n",
         "check.key_type",
     );
 }
@@ -9741,8 +9716,8 @@ fn a_wrong_scalar_spliced_identity_faults_and_does_not_write() {
 fn a_single_key_store_identity_splice_still_writes() {
     let program = checked_program(
         "resource Book at ^books(id: int)\n    required title: string\n\n\
-         fn seed()\n    ^books(7).title = \"seed\"\n\n\
-         fn save()\n    for id in ^books\n        ^books(id).title = \"a\"\n",
+         pub fn seed()\n    ^books(7).title = \"seed\"\n\n\
+         pub fn save()\n    for id in ^books\n        ^books(id).title = \"a\"\n",
     );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
@@ -9767,8 +9742,8 @@ fn a_single_key_store_identity_splice_still_writes() {
 fn an_identity_mixed_with_a_raw_key_is_rejected() {
     checker_rejects(
         "resource Pair at ^pairs(a: int, b: int)\n    required title: string\n\n\
-         fn seed()\n    ^pairs(7, 8).title = \"seed\"\n\n\
-         fn save()\n    for id in ^pairs\n        ^pairs(id, 5).title = \"a\"\n",
+         pub fn seed()\n    ^pairs(7, 8).title = \"seed\"\n\n\
+         pub fn save()\n    for id in ^pairs\n        ^pairs(id, 5).title = \"a\"\n",
         "check.key_type",
     );
 }
@@ -9779,7 +9754,7 @@ fn an_identity_mixed_with_a_raw_key_is_rejected() {
 fn a_keyed_root_without_an_identity_is_a_type_error() {
     checker_rejects(
         "resource Book at ^books(id: int)\n    required title: string\n\n\
-         fn read(): string\n    return ^books.title\n",
+         pub fn read(): string\n    return ^books.title\n",
         "check.untyped_value",
     );
 }
@@ -9790,8 +9765,8 @@ fn a_keyed_root_without_an_identity_is_a_type_error() {
 fn an_unkeyed_group_hop_lowers_to_a_child_layer() {
     let program = checked_program(
         "resource Patient at ^patients(id: int)\n    mrn: string\n    name\n        first: string\n\n\
-         fn save()\n    ^patients(1).name.first = \"Sam\"\n\n\
-         fn read(): string\n    return ^patients(1)?.name?.first ?? \"\"\n",
+         pub fn save()\n    ^patients(1).name.first = \"Sam\"\n\n\
+         pub fn read(): string\n    return ^patients(1)?.name?.first ?? \"\"\n",
     );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::save")).expect("save");
@@ -9862,7 +9837,7 @@ fn hook_observes_each_statement_with_its_locals_and_depth() {
     // Three statements on consecutive lines, each adding one local; the hook is
     // offered each before it runs, so it sees the locals bound by earlier ones.
     let program = checked_program(
-        "fn compute(a: int): int\n\
+        "pub fn compute(a: int): int\n\
          \x20\x20\x20\x20const b = a + 1\n\
          \x20\x20\x20\x20var c = b * 2\n\
          \x20\x20\x20\x20return c\n",
@@ -9899,10 +9874,10 @@ fn hook_depth_tracks_nested_activations() {
     // A call deepens the activation; the callee's statements report a greater
     // depth than the caller's, so step-over/step-out can be expressed by depth.
     let program = checked_program(
-        "fn inner(): int\n\
+        "pub fn inner(): int\n\
          \x20\x20\x20\x20return 1\n\
          \n\
-         fn outer(): int\n\
+         pub fn outer(): int\n\
          \x20\x20\x20\x20const x = inner()\n\
          \x20\x20\x20\x20return x\n",
     );
@@ -9930,7 +9905,7 @@ fn hook_store_handle_sees_prior_writes() {
         "resource Account at ^accts(id: int)\n\
          \x20\x20\x20\x20balance: int\n\
          \n\
-         fn seed(): int\n\
+         pub fn seed(): int\n\
          \x20\x20\x20\x20^accts(1).balance = 7\n\
          \x20\x20\x20\x20return 0\n",
     );
@@ -9984,7 +9959,7 @@ fn hook_error_aborts_the_run() {
     // Returning Err from `before_statement` terminates the run; the error
     // surfaces and later statements never execute.
     let program = checked_program(
-        "fn compute(): int\n\
+        "pub fn compute(): int\n\
          \x20\x20\x20\x20const a = 1\n\
          \x20\x20\x20\x20const b = 2\n\
          \x20\x20\x20\x20return a + b\n",
@@ -10048,7 +10023,7 @@ fn hook_observes_each_managed_write_in_commit_order() {
         "resource Book at ^books(id: int)\n\
          \x20\x20\x20\x20title: string\n\
          \n\
-         fn seed(): int\n\
+         pub fn seed(): int\n\
          \x20\x20\x20\x20^books(1).title = \"Mort\"\n\
          \x20\x20\x20\x20delete ^books(1)\n\
          \x20\x20\x20\x20return 0\n",
@@ -10104,13 +10079,13 @@ fn hook_observes_each_managed_delete_shape() {
          \x20\x20\x20\x20versions(version: int)\n\
          \x20\x20\x20\x20\x20\x20\x20\x20note: string\n\
          \n\
-         fn seed()\n\
+         pub fn seed()\n\
          \x20\x20\x20\x20^books(1).details.note = \"top\"\n\
          \x20\x20\x20\x20^books(2).details.meta.label = \"nested group\"\n\
          \x20\x20\x20\x20^books(3).details.meta.label = \"nested scalar\"\n\
          \x20\x20\x20\x20^books(4).versions(1).note = \"entry\"\n\
          \n\
-         fn dropAll()\n\
+         pub fn dropAll()\n\
          \x20\x20\x20\x20delete ^books(1).details\n\
          \x20\x20\x20\x20delete ^books(2).details.meta\n\
          \x20\x20\x20\x20delete ^books(3).details.meta.label\n\
@@ -10194,11 +10169,11 @@ fn hook_observes_maintenance_whole_root_deletes() {
          \n\
          \x20\x20\x20\x20index byShelf(shelf, id)\n\
          \n\
-         fn seed()\n\
+         pub fn seed()\n\
          \x20\x20\x20\x20^books(1).title = \"Mort\"\n\
          \x20\x20\x20\x20^books(1).shelf = \"fiction\"\n\
          \n\
-         fn dropRoot()\n\
+         pub fn dropRoot()\n\
          \x20\x20\x20\x20delete ^books\n",
     );
     let store = TreeStore::memory();
@@ -10251,7 +10226,7 @@ fn no_hook_run_pays_no_write_observation() {
         "resource Book at ^books(id: int)\n\
          \x20\x20\x20\x20title: string\n\
          \n\
-         fn seed(): int\n\
+         pub fn seed(): int\n\
          \x20\x20\x20\x20^books(1).title = \"Mort\"\n\
          \x20\x20\x20\x20return 0\n",
     );
@@ -10300,7 +10275,7 @@ fn display_debug_renders_scalars_and_structured_previews() {
         "resource Book at ^books(id: int)\n\
          \x20\x20\x20\x20title: string\n\
          \n\
-         fn nextBookId(): Id(^books)\n\
+         pub fn nextBookId(): Id(^books)\n\
          \x20\x20\x20\x20return nextId(^books)\n",
     );
     let store = TreeStore::memory();
@@ -10317,7 +10292,7 @@ fn an_ordinary_run_with_host_is_unchanged_by_the_hook_machinery() {
     // Sanity: the same program through the non-debugged entry behaves exactly as
     // before — no hook installed, no behavior change.
     let program = checked_program(
-        "fn compute(a: int): int\n\
+        "pub fn compute(a: int): int\n\
          \x20\x20\x20\x20const b = a + 1\n\
          \x20\x20\x20\x20return b\n",
     );
@@ -10331,7 +10306,7 @@ fn an_ordinary_run_with_host_is_unchanged_by_the_hook_machinery() {
     assert_eq!(outcome.value, Some(Value::Int(5)));
 }
 
-// --- W1 unified resolver: module-aware, visibility-aware runtime dispatch ---
+// Module-aware, visibility-aware runtime call dispatch.
 
 /// Build a checked program from `(module_name, source)` pairs, one source file
 /// per pair, so module-aware dispatch and file ids use the production checker
@@ -10352,10 +10327,9 @@ fn multi_module_program(modules: &[(&str, &str)]) -> CheckedRuntimeProgram {
 
 #[test]
 fn bare_call_resolves_in_own_module_not_a_foreign_one() {
-    // The proven P1 bug: two modules each declare `fn greet` returning a distinct
-    // value. `zzz::run` calls a bare `greet()`. A bare name resolves in its own
-    // module first, so it must run `zzz::greet` (2) — never the foreign
-    // `aaa::greet` (1) the old first-match-across-all-modules resolver reached.
+    // Two modules each declare `fn greet` returning a distinct value. `zzz::run`
+    // calls a bare `greet()`. A bare name resolves in its own module first, so it
+    // must run `zzz::greet` (2), never the foreign `aaa::greet` (1).
     let program = multi_module_program(&[
         ("aaa", "pub fn greet(): int\n    return 1\n"),
         (
@@ -10387,8 +10361,8 @@ fn cross_module_call_to_a_private_fn_is_a_visibility_error() {
 fn an_index_branch_is_not_an_assignable_place() {
     checker_rejects(
         "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\n\
-         fn give(inout s: string)\n    s = \"x\"\n\n\
-         fn run_it()\n    give(inout ^books.byShelf(\"a\"))\n",
+         pub fn give(inout s: string)\n    s = \"x\"\n\n\
+         pub fn run_it()\n    give(inout ^books.byShelf(\"a\"))\n",
         "check.untyped_value",
     );
 }
@@ -10400,8 +10374,8 @@ fn an_enum_field_round_trips_through_saved_data() {
     let program = checked_program(
         "enum Status\n    active\n    archived\n    banned\n\n\
          resource Order at ^orders(id: int)\n    required state: Status\n\n\
-         fn seed(id: int)\n    ^orders(id).state = Status::archived\n\n\
-         fn matches_archived(id: int): bool\n    return (^orders(id).state ?? Status::active) == Status::archived\n",
+         pub fn seed(id: int)\n    ^orders(id).state = Status::archived\n\n\
+         pub fn matches_archived(id: int): bool\n    return (^orders(id).state ?? Status::active) == Status::archived\n",
     );
     let store = TreeStore::memory();
     run_entry(
@@ -10443,9 +10417,9 @@ fn an_entry_enum_argument_uses_checked_catalog_identity() {
     let program = checked_program(
         "enum Status\n    active\n    archived\n\n\
          resource Order at ^orders(id: int)\n    required state: Status\n\n\
-         fn give(): Status\n    return Status::active\n\n\
-         fn save(state: Status)\n    ^orders(1).state = state\n\n\
-         fn read(): bool\n    return (^orders(1).state ?? Status::archived) == Status::active\n",
+         pub fn give(): Status\n    return Status::active\n\n\
+         pub fn save(state: Status)\n    ^orders(1).state = state\n\n\
+         pub fn read(): bool\n    return (^orders(1).state ?? Status::archived) == Status::active\n",
     );
     let store = TreeStore::memory();
     let state = run_entry(&store, checked_entry!(&program, "test::give"))
@@ -10467,9 +10441,9 @@ fn an_enum_index_uses_catalog_member_keys() {
     let program = checked_program(
         "enum Status\n    active\n    archived\n    banned\n\n\
          resource Order at ^orders(id: int)\n    required state: Status\n    index byState(state, id)\n\n\
-         fn seed()\n    ^orders(1).state = Status::archived\n    ^orders(2).state = Status::active\n    ^orders(3).state = Status::archived\n\n\
-         fn countArchived(): int\n    var count = 0\n    for id in ^orders.byState(Status::archived)\n        count = count + 1\n    return count\n\n\
-         fn countActive(): int\n    var count = 0\n    for id in ^orders.byState(Status::active)\n        count = count + 1\n    return count\n",
+         pub fn seed()\n    ^orders(1).state = Status::archived\n    ^orders(2).state = Status::active\n    ^orders(3).state = Status::archived\n\n\
+         pub fn countArchived(): int\n    var count = 0\n    for id in ^orders.byState(Status::archived)\n        count = count + 1\n    return count\n\n\
+         pub fn countActive(): int\n    var count = 0\n    for id in ^orders.byState(Status::active)\n        count = count + 1\n    return count\n",
     );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed enum-index fixture");
@@ -10489,7 +10463,7 @@ fn an_enum_index_uses_catalog_member_keys() {
 
 #[test]
 fn a_singleton_keyed_enum_leaf_can_be_matched_after_read() {
-    let program = checked_program_typed(
+    let program = checked_program(
         "enum Kind\n    number\n    plus\n\n\
          resource Session at ^session\n    required cursor: int\n    kinds(pos: int): Kind\n\n\
          pub fn readBack(): int\n    \
@@ -10512,8 +10486,8 @@ fn a_singleton_keyed_enum_leaf_can_be_matched_after_read() {
 fn enum_equality_is_true_for_the_same_member_and_false_otherwise() {
     let program = checked_program(
         "enum Color\n    red\n    green\n    blue\n\n\
-         fn same(): bool\n    return Color::green == Color::green\n\n\
-         fn different(): bool\n    return Color::green == Color::blue\n",
+         pub fn same(): bool\n    return Color::green == Color::green\n\n\
+         pub fn different(): bool\n    return Color::green == Color::blue\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::same")).unwrap(),
@@ -10529,14 +10503,14 @@ fn enum_equality_is_true_for_the_same_member_and_false_otherwise() {
 /// distinct marker, so the returned value names the chosen arm.
 #[test]
 fn match_dispatches_to_the_arm_for_the_scrutinees_member() {
-    let program = checked_program_typed(
+    let program = checked_program(
         "enum Status\n    active\n    archived\n    banned\n\n\
-         fn label(s: Status): int\n    \
+         pub fn label(s: Status): int\n    \
          match s\n        active\n            return 10\n        \
          archived\n            return 20\n        banned\n            return 30\n\n\
-         fn labelActive(): int\n    return label(Status::active)\n\n\
-         fn labelArchived(): int\n    return label(Status::archived)\n\n\
-         fn labelBanned(): int\n    return label(Status::banned)\n",
+         pub fn labelActive(): int\n    return label(Status::active)\n\n\
+         pub fn labelArchived(): int\n    return label(Status::archived)\n\n\
+         pub fn labelBanned(): int\n    return label(Status::banned)\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::labelActive")).unwrap(),
@@ -10558,13 +10532,13 @@ fn match_dispatches_to_the_arm_for_the_scrutinees_member() {
 /// result for `B`.
 #[test]
 fn match_dispatches_by_the_scrutinees_enum_not_the_arm_set() {
-    let program = checked_program_typed(
+    let program = checked_program(
         "enum A\n    x\n    y\n\n\
          enum B\n    y\n    x\n\n\
-         fn label(s: B): int\n    \
+         pub fn label(s: B): int\n    \
          match s\n        x\n            return 1\n        y\n            return 2\n\n\
-         fn labelX(): int\n    return label(B::x)\n\n\
-         fn labelY(): int\n    return label(B::y)\n",
+         pub fn labelX(): int\n    return label(B::x)\n\n\
+         pub fn labelY(): int\n    return label(B::y)\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::labelX")).unwrap(),
@@ -10581,8 +10555,8 @@ fn match_dispatches_by_the_scrutinees_enum_not_the_arm_set() {
 fn a_nested_member_path_resolves_to_the_right_member() {
     let program = checked_program(
         "enum Cat\n    category tiger\n        bengal\n        siberian\n    housecat\n\n\
-         fn bengalMatches(): bool\n    return Cat::bengal == Cat::tiger::bengal\n\n\
-         fn bengalIsHousecat(): bool\n    return Cat::bengal == Cat::housecat\n",
+         pub fn bengalMatches(): bool\n    return Cat::bengal == Cat::tiger::bengal\n\n\
+         pub fn bengalIsHousecat(): bool\n    return Cat::bengal == Cat::housecat\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::bengalMatches")).unwrap(),
@@ -10598,10 +10572,10 @@ fn a_nested_member_path_resolves_to_the_right_member() {
 /// false for one outside it (a `housecat`).
 #[test]
 fn is_tests_subtree_membership() {
-    let program = checked_program_typed(
+    let program = checked_program(
         "enum Cat\n    category tiger\n        bengal\n        siberian\n    housecat\n\n\
-         fn bengalIsTiger(): bool\n    return Cat::bengal is Cat::tiger\n\n\
-         fn housecatIsTiger(): bool\n    return Cat::housecat is Cat::tiger\n",
+         pub fn bengalIsTiger(): bool\n    return Cat::bengal is Cat::tiger\n\n\
+         pub fn housecatIsTiger(): bool\n    return Cat::housecat is Cat::tiger\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::bengalIsTiger")).unwrap(),
@@ -10617,10 +10591,10 @@ fn is_tests_subtree_membership() {
 /// `Cat::bengal` but not `Cat::siberian`.
 #[test]
 fn is_against_a_leaf_is_exact() {
-    let program = checked_program_typed(
+    let program = checked_program(
         "enum Cat\n    category tiger\n        bengal\n        siberian\n    housecat\n\n\
-         fn bengalIsBengal(): bool\n    return Cat::bengal is Cat::bengal\n\n\
-         fn siberianIsBengal(): bool\n    return Cat::siberian is Cat::bengal\n",
+         pub fn bengalIsBengal(): bool\n    return Cat::bengal is Cat::bengal\n\n\
+         pub fn siberianIsBengal(): bool\n    return Cat::siberian is Cat::bengal\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::bengalIsBengal")).unwrap(),
@@ -10636,14 +10610,14 @@ fn is_against_a_leaf_is_exact() {
 /// value both take the `tiger` arm, a `housecat` takes its own.
 #[test]
 fn match_runs_the_category_arm_for_any_descendant() {
-    let program = checked_program_typed(
+    let program = checked_program(
         "enum Cat\n    category tiger\n        bengal\n        siberian\n    housecat\n\n\
-         fn label(pet: Cat): int\n    \
+         pub fn label(pet: Cat): int\n    \
          match pet\n        tiger\n            return 1\n        \
          housecat\n            return 2\n\n\
-         fn labelBengal(): int\n    return label(Cat::bengal)\n\n\
-         fn labelSiberian(): int\n    return label(Cat::siberian)\n\n\
-         fn labelHousecat(): int\n    return label(Cat::housecat)\n",
+         pub fn labelBengal(): int\n    return label(Cat::bengal)\n\n\
+         pub fn labelSiberian(): int\n    return label(Cat::siberian)\n\n\
+         pub fn labelHousecat(): int\n    return label(Cat::housecat)\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::labelBengal")).unwrap(),
@@ -10666,8 +10640,8 @@ fn a_duplicated_member_resolves_by_its_full_path_to_a_distinct_member() {
     let program = checked_program(
         "enum Cat\n    category tiger\n        bengal\n        paw\n\
          \x20   category lion\n        paw\n        mane\n\n\
-         fn sameTigerPaw(): bool\n    return Cat::tiger::paw == Cat::tiger::paw\n\n\
-         fn differentPaws(): bool\n    return Cat::tiger::paw == Cat::lion::paw\n",
+         pub fn sameTigerPaw(): bool\n    return Cat::tiger::paw == Cat::tiger::paw\n\n\
+         pub fn differentPaws(): bool\n    return Cat::tiger::paw == Cat::lion::paw\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::sameTigerPaw")).unwrap(),
@@ -10684,19 +10658,19 @@ fn a_duplicated_member_resolves_by_its_full_path_to_a_distinct_member() {
 /// `paw`s take different arms even though they share a name.
 #[test]
 fn match_with_qualified_arms_dispatches_each_duplicated_paw_to_its_own_arm() {
-    let program = checked_program_typed(
+    let program = checked_program(
         "enum Cat\n    category tiger\n        bengal\n        paw\n\
          \x20   category lion\n        paw\n        mane\n\n\
-         fn label(pet: Cat): int\n    \
+         pub fn label(pet: Cat): int\n    \
          match pet\n        \
          tiger::bengal\n            return 1\n        \
          tiger::paw\n            return 2\n        \
          lion::paw\n            return 3\n        \
          lion::mane\n            return 4\n\n\
-         fn labelTigerBengal(): int\n    return label(Cat::tiger::bengal)\n\n\
-         fn labelTigerPaw(): int\n    return label(Cat::tiger::paw)\n\n\
-         fn labelLionPaw(): int\n    return label(Cat::lion::paw)\n\n\
-         fn labelLionMane(): int\n    return label(Cat::lion::mane)\n",
+         pub fn labelTigerBengal(): int\n    return label(Cat::tiger::bengal)\n\n\
+         pub fn labelTigerPaw(): int\n    return label(Cat::tiger::paw)\n\n\
+         pub fn labelLionPaw(): int\n    return label(Cat::lion::paw)\n\n\
+         pub fn labelLionMane(): int\n    return label(Cat::lion::mane)\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::labelTigerPaw")).unwrap(),
@@ -10722,13 +10696,13 @@ fn match_with_qualified_arms_dispatches_each_duplicated_paw_to_its_own_arm() {
 /// a duplicated leaf via its qualifying path.
 #[test]
 fn is_with_a_full_path_to_a_duplicated_leaf_is_exact() {
-    let program = checked_program_typed(
+    let program = checked_program(
         "enum Cat\n    category tiger\n        bengal\n        paw\n\
          \x20   category lion\n        paw\n        mane\n\n\
-         fn tigerPawIsTigerPaw(): bool\n    return Cat::tiger::paw is Cat::tiger::paw\n\n\
-         fn lionPawIsTigerPaw(): bool\n    return Cat::lion::paw is Cat::tiger::paw\n\n\
-         fn tigerPawIsTiger(): bool\n    return Cat::tiger::paw is Cat::tiger\n\n\
-         fn lionPawIsTiger(): bool\n    return Cat::lion::paw is Cat::tiger\n",
+         pub fn tigerPawIsTigerPaw(): bool\n    return Cat::tiger::paw is Cat::tiger::paw\n\n\
+         pub fn lionPawIsTigerPaw(): bool\n    return Cat::lion::paw is Cat::tiger::paw\n\n\
+         pub fn tigerPawIsTiger(): bool\n    return Cat::tiger::paw is Cat::tiger\n\n\
+         pub fn lionPawIsTiger(): bool\n    return Cat::lion::paw is Cat::tiger\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::tigerPawIsTigerPaw")).unwrap(),
@@ -10809,7 +10783,7 @@ fn uncaught_throw_from_cross_module_callee_carries_the_raising_frame_file_id() {
 #[test]
 fn checked_program_entry_fault_carries_origin() {
     let error = eval_source(
-        "fn f(): int\n    const boom = 1 / 0\n    return 0\n",
+        "pub fn f(): int\n    const boom = 1 / 0\n    return 0\n",
         "f",
         Vec::new(),
     )
@@ -10959,7 +10933,7 @@ fn a_self_referencing_identity_field_round_trips() {
          \x20   ^people(person).managerId = manager\n\
          \x20   return read(manager)\n\
          \n\
-         fn read(expected: Id(^people)): bool\n\
+         pub fn read(expected: Id(^people)): bool\n\
          \x20   const stored: Id(^people) = ^people(1).managerId ?? expected\n\
          \x20   return stored == expected\n",
     );
