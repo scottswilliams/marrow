@@ -207,19 +207,6 @@ pub fn resolve_store_by_root<'p>(
     None
 }
 
-/// The resource declared with `name` anywhere in the project. Resource names are
-/// not yet visibility-gated, so this is a project-wide name lookup.
-pub fn resolve_resource_by_name_any<'p>(
-    program: &'p CheckedProgram,
-    name: &str,
-) -> Option<&'p ResourceSchema> {
-    program
-        .modules
-        .iter()
-        .flat_map(|module| &module.resources)
-        .find(|resource| resource.name == name)
-}
-
 /// Look up `leaf` in `module` for `kind`, returning the matching declaration.
 /// Functions and resources each live in their own table.
 fn lookup_in_module<'p>(
