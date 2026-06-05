@@ -1970,21 +1970,35 @@ fn reserved_word_as_var_name_reports_variable_name_diagnostic() {
 
 #[test]
 fn rejects_malformed_type_annotations() {
-    for source in [
-        "module app\nconst Max: = 1\n",
-        "module app\nfn main(value:)\n    return\n",
-        "module app\nresource Book at ^books(id:)\n    title: string\n",
-        "module app\nresource Book\n    title: sequence[]\n",
+    // Each malformed-type position carries its own diagnostic, so pairing every
+    // source with its specific message selects the malformed-type error rather
+    // than any diagnostic whose text happens to contain "type".
+    for (source, expected) in [
+        (
+            "module app\nconst Max: = 1\n",
+            "expected const type annotation",
+        ),
+        (
+            "module app\nfn main(value:)\n    return\n",
+            "expected parameter type annotation",
+        ),
+        (
+            "module app\nresource Book at ^books(id:)\n    title: string\n",
+            "expected key type annotation",
+        ),
+        (
+            "module app\nresource Book\n    title: sequence[]\n",
+            "expected field type after `:`",
+        ),
     ] {
         let parsed = parse_source(source);
 
         assert!(parsed.has_errors(), "expected error for:\n{source}");
         assert!(
-            parsed
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.message.contains("type")),
-            "diagnostics for {source}: {:#?}",
+            parsed.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == "parse.syntax" && diagnostic.message.contains(expected)
+            }),
+            "expected a parse.syntax diagnostic containing {expected:?} for {source}: {:#?}",
             parsed.diagnostics
         );
     }
