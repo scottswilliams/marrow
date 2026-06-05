@@ -138,12 +138,9 @@ fn declaration_span(declaration: &Declaration) -> crate::SourceSpan {
     }
 }
 
-/// Render one top-level declaration as canonical Marrow source, normalized to a
-/// fixed layout. A drift anchor reads this as the declaration's stable shape: it
-/// changes when the declaration changes and ignores the surrounding source layout,
-/// so a digest built from it binds the whole declared surface with no field-by-field
-/// enumeration gap. `source` supplies the original text any statement body the
-/// declaration carries renders from.
+/// Render one top-level declaration to canonical Marrow source with a fixed
+/// layout, independent of how the declaration was spelled in the input. `source`
+/// supplies the original text for any statement body the declaration carries.
 pub fn format_declaration_normalized(source: &str, declaration: &Declaration) -> String {
     format_declaration(source, declaration)
 }
@@ -503,7 +500,13 @@ pub(crate) fn format_block(source: &str, block: &Block, level: usize) -> String 
             && comment.span.start_byte > stmt_span.start_byte
             && comment.span.start_byte < next_start
         {
-            text.push_str(&format!(" ; {}", comments.next().expect("peeked").text));
+            let comment = comments.next().expect("peeked");
+            text.push(' ');
+            text.push_str(comment_marker_str(comment.marker));
+            if !comment.text.is_empty() {
+                text.push(' ');
+                text.push_str(&comment.text);
+            }
         }
         lines.push(text);
     }
@@ -523,14 +526,20 @@ pub(crate) fn format_block(source: &str, block: &Block, level: usize) -> String 
 /// re-indenting it to whichever block the lexer structurally attached it to.
 fn format_comment(comment: &Comment) -> String {
     let pad = " ".repeat(comment.span.column.saturating_sub(1) as usize);
-    let marker = match comment.marker {
-        CommentMarker::Line => ";",
-        CommentMarker::Doc => ";;",
-    };
+    let marker = comment_marker_str(comment.marker);
     if comment.text.is_empty() {
         format!("{pad}{marker}")
     } else {
         format!("{pad}{marker} {}", comment.text)
+    }
+}
+
+/// The canonical marker text for a comment. Owning this in one place keeps the
+/// own-line and trailing comment paths from spelling `;` and `;;` independently.
+fn comment_marker_str(marker: CommentMarker) -> &'static str {
+    match marker {
+        CommentMarker::Line => ";",
+        CommentMarker::Doc => ";;",
     }
 }
 
@@ -844,9 +853,8 @@ fn format_argument(argument: &Argument) -> String {
 
 fn format_argument_at(argument: &Argument, level: usize) -> String {
     let mut out = String::new();
-    match argument.mode {
-        Some(ArgMode::InOut) => out.push_str("inout "),
-        None => {}
+    if let Some(ArgMode::InOut) = argument.mode {
+        out.push_str("inout ");
     }
     if let Some(name) = &argument.name {
         out.push_str(name);

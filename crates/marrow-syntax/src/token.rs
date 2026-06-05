@@ -270,6 +270,13 @@ pub(crate) fn is_qualified_name(text: &str) -> bool {
     is_identifier(first) && parts.all(is_identifier)
 }
 
+/// Is `text` well-formed as a type annotation? This is a lexical guard the
+/// parser uses to disambiguate productions (for example, a key list `name: type`
+/// from other paren content) without resolving meaning. It rejects spellings that
+/// cannot be a type at all, whereas the semantic owner of type structure,
+/// `marrow_schema::Type::resolve`, is total and maps any leftover spelling to a
+/// named type. The two live in different crates by design: shape decisions stay
+/// in the parser, type meaning stays in the schema layer downstream of it.
 pub(crate) fn is_type_text(text: &str) -> bool {
     let text = text.trim();
     if text.is_empty() || text.contains('=') {

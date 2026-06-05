@@ -379,6 +379,21 @@ fn parses_keyed_var_declaration() {
 }
 
 #[test]
+fn keyed_var_rejects_a_non_type_key_like_the_resource_path() {
+    // The keyed-`var` key list and the resource key list are one concept and
+    // must apply the same key-type rule: a key whose annotation is not a type
+    // (here the integer `1`) is rejected in both.
+    let parsed = parse_source(
+        "module app\n\
+         fn tally()\n\
+         \x20   var counts(name: 1): int\n",
+    );
+    assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
+    let tally = parsed.file.function("tally").expect("tally function");
+    assert!(tally.body.statements.is_empty(), "{tally:#?}");
+}
+
+#[test]
 fn parses_a_range_for_by_step() {
     let parsed = parse_source(
         "module app\n\

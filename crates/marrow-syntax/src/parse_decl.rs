@@ -2544,31 +2544,8 @@ fn parse_var_keys(
         }
     }
     let close = close?;
-    let keys = parse_key_param_list(source, &line[open_index + 1..close])?;
+    let keys = parse_key_params_tokens(source, &line[open_index + 1..close]).ok()?;
     Some((keys, close + 1))
-}
-
-/// Parse a comma-separated list of `name: type` key declarations. Requires at
-/// least one declaration.
-fn parse_key_param_list(source: &str, inner: &[Token]) -> Option<Vec<KeyParam>> {
-    if inner.is_empty() {
-        return None;
-    }
-    let mut keys = Vec::new();
-    for part in split_top_level_commas(inner) {
-        let name = part.first()?;
-        if name.kind != TokenKind::Identifier
-            || part.get(1).map(|token| token.kind) != Some(TokenKind::Colon)
-            || part.len() < 3
-        {
-            return None;
-        }
-        keys.push(KeyParam {
-            name: name.text(source).to_string(),
-            ty: type_ref_from_tokens(source, &part[2..]),
-        });
-    }
-    Some(keys)
 }
 
 /// Split tokens on top-level commas (depth 0), dropping a trailing empty group
