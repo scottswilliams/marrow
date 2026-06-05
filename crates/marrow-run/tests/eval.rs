@@ -2909,6 +2909,7 @@ fn run_entry_rejects_host_values_that_do_not_match_checked_parameters() {
     let error = rejected_entry_call(&program, "test::needs_int", vec![Value::Str("x".into())]);
 
     assert_eq!(error.code, RUN_TYPE);
+    assert!(error.message.contains("entry argument `n`"));
 }
 
 #[test]
@@ -2936,6 +2937,7 @@ fn run_entry_rejects_host_values_for_moded_parameters() {
     let error = rejected_entry_call(&program, "test::fill", vec![Value::Int(0)]);
 
     assert_eq!(error.code, RUN_TYPE);
+    assert!(error.message.contains("inout"));
 }
 
 #[test]
@@ -2947,6 +2949,7 @@ fn run_entry_rejects_host_values_for_identity_parameters() {
     let error = rejected_entry_call(&program, "test::load", vec![Value::Int(1)]);
 
     assert_eq!(error.code, RUN_TYPE);
+    assert!(error.message.contains("entry argument `id`"));
 }
 
 #[test]
@@ -2958,6 +2961,7 @@ fn run_entry_rejects_host_values_for_resource_parameters() {
     let error = rejected_entry_call(&program, "test::show", vec![Value::Resource(vec![])]);
 
     assert_eq!(error.code, RUN_TYPE);
+    assert!(error.message.contains("entry argument `book`"));
 }
 
 #[test]

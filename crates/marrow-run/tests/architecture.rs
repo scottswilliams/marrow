@@ -254,7 +254,6 @@ fn checked_saved_places_do_not_embed_schema_copies() {
             "ResourceSchema",
             "IndexSchema",
             "KeyDef",
-            "Type",
             "pub store:",
             "pub resource:",
             "schema:",
@@ -262,6 +261,12 @@ fn checked_saved_places_do_not_embed_schema_copies() {
             if source_contains(section, forbidden) {
                 violations.push(format!("{name} embeds schema copy `{forbidden}`"));
             }
+        }
+        // `Type` is a family root: any `*Type` schema type embedded directly in a
+        // saved-place descriptor (ScalarType, MarrowType, ...) is a schema copy, so it
+        // is matched as a substring rather than as a whole identifier.
+        if section.contains("Type") {
+            violations.push(format!("{name} embeds schema copy `Type`"));
         }
     }
 
@@ -437,17 +442,17 @@ fn production_runtime_enum_values_use_catalog_member_identity() {
 
     for path in runtime_rs_files() {
         let text = fs::read_to_string(&path).expect("runtime source");
-        for forbidden in [
-            "ordinal",
-            "allowed_ordinals",
-            "member_ordinal",
-            "enum_value_from_ordinal",
-            "enum_member_by_ordinal",
-            "SavedValue::Int(i64::from",
-        ] {
-            if source_contains(&text, forbidden) {
-                violations.push(format!("{} contains {forbidden}", path.display()));
-            }
+        // `ordinal` is a family root: any suffix- or prefix-named reintroduction
+        // (member_ordinals, subtree_ordinals, arm_ordinal) reopens ordinal-based enum
+        // identity, so it must match as a substring rather than a whole identifier.
+        if text.contains("ordinal") {
+            violations.push(format!("{} contains ordinal", path.display()));
+        }
+        if source_contains(&text, "SavedValue::Int(i64::from") {
+            violations.push(format!(
+                "{} contains SavedValue::Int(i64::from",
+                path.display()
+            ));
         }
     }
 
@@ -456,10 +461,8 @@ fn production_runtime_enum_values_use_catalog_member_identity() {
         .expect("crate parent");
     let executable = crate_parent.join("marrow-check/src/executable.rs");
     let text = fs::read_to_string(&executable).expect("checked executable source");
-    for forbidden in ["allowed_ordinals", "member_ordinal", "pub ordinal"] {
-        if source_contains(&text, forbidden) {
-            violations.push(format!("{} contains {forbidden}", executable.display()));
-        }
+    if text.contains("ordinal") {
+        violations.push(format!("{} contains ordinal", executable.display()));
     }
 
     assert!(
@@ -501,6 +504,26 @@ fn production_runtime_does_not_resolve_calls_from_source_strings() {
     assert!(
         violations.is_empty(),
         "production runtime still resolves calls from source strings:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn production_runtime_has_no_reserved_ephemeral_root_execution() {
+    let mut violations = Vec::new();
+
+    for path in runtime_rs_files() {
+        let text = fs::read_to_string(&path).expect("runtime source");
+        for forbidden in ["cache ~", "ensure ~", "Id(~", "~"] {
+            if source_contains(&text, forbidden) {
+                violations.push(format!("{} contains {forbidden}", path.display()));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "production runtime contains reserved `~` ephemeral-root execution:\n{}",
         violations.join("\n")
     );
 }
