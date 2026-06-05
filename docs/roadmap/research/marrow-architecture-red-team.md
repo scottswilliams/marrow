@@ -39,7 +39,11 @@ The red-team findings are also concrete:
   the rule in memory/redb conformance.
 - The path/query surface is duplicated. `data get` parses source path text, then collapses field, child-layer, and index segments into `SourceMember` (`crates/marrow/src/cmd_data/get.rs:16-30`, `80-96`). Serve has a distinct JSON segment codec with explicit field/layer/key cases (`crates/marrow/src/serve/protocol/codec.rs:25-38`, `80-86`). `data dump` emits human path plus base64 bytes (`crates/marrow/src/cmd_data.rs:221-244`, `315-321`). This is already a semantic split waiting to become compatibility glue.
 - Debug/admin protocols are intentionally demoted, but still tempting. Serve only dispatches `debug_data_*`, and tests reject non-debug `data_*` operations (`crates/marrow/src/serve/protocol.rs:77-100`, `crates/marrow/src/serve/protocol/tests.rs:93-100`). That is good. It also means Marrow does not yet have a production data API.
-- Integrity is schema-aware, but orphan handling is shallow by design. Restore verification counts declared-record integrity only and explicitly does not reject orphan debris (`crates/marrow/src/cmd_data/integrity.rs:80-103`). Orphan classification is catalog-ID membership and does not validate exact nesting (`crates/marrow/src/cmd_data/orphan.rs:81-88`). This may be a faithful-backup choice, but it is a sharp long-term compatibility edge.
+- Integrity is schema-aware, and restore rejects orphan backup cells before
+  commit. `data integrity` still reports orphan cells already present in a local
+  store, and orphan classification is catalog-ID membership rather than a full
+  nesting proof (`crates/marrow/src/cmd_data/orphan.rs:81-88`). That remaining
+  classification depth is a tooling follow-up, not a restore import policy.
 - There is weak Rust shape in high-risk areas. `checks.rs` is 3521 lines, `evolution/discharge.rs` is 2572 lines, `tree.rs` is 2175 lines, `lib.rs` in `marrow-check` is 1556 lines, and `binding.rs` is 1542 lines. `evolution/discharge.rs` holds top-level discharge, proposal scans, structural backstops, index repair, text ownership parsing, and accumulator state (`crates/marrow-check/src/evolution/discharge.rs:68-82`, `2048-2052`, `2186-2194`). Prototype syntax is fenced by checks, not removed from the grammar and walkers (`crates/marrow-check/src/prototype.rs:12-34`; see reserved `merge`/`lock` in `docs/language/syntax.md:371-386`).
 
 ## 3. External Precedents And Counter-Precedents
@@ -120,7 +124,9 @@ Local embedded limits. Redb and the current foundation are many readers plus one
 
 Evolution novelty. Gel, Prisma, and Alembic keep migration histories because schema evolution is hard and irreversible. Marrow's one-off `evolve` blocks are elegant, but only if preview/apply/source digest/catalog proposal/runtime place lowering are exact. The proposal-only mismatch is a warning sign.
 
-Restore and repair ambiguity. Faithful restore that accepts orphan debris may be the right maintenance contract, but it must be named. Otherwise users will read "restore validates data" as "restore proves the whole store is clean."
+Restore and repair boundary. Restore rejects orphan backup cells and verifies
+before commit. Repair tooling may still need deeper classification for existing
+local-store debris, but restore is no longer a raw debris-preserving import path.
 
 ## 7. Concrete Follow-Up Recommendations
 
@@ -132,7 +138,9 @@ Ranked by foundation risk:
 4. Keep commit metadata boundary tests in place: multi-write transactions and generated index writes must describe the whole physical commit.
 5. Keep backend conformance for the prohibited snapshot/write overlap so memory and redb cannot diverge.
 6. Keep store traversal and evolution backfill on streaming visitors or paged cursors where the contract is unbounded data. Where full materialization remains, document it as a v0.1 bound with tests.
-7. Strengthen orphan/integrity semantics. Decide whether restore should reject orphan/corrupt extra cells, report them while succeeding, or define faithful restore as preserving invalid debris. Make the CLI wording and tests match that decision.
+7. Strengthen orphan/integrity semantics without weakening restore. Keep restore
+   rejecting orphan backup cells, and make repair/data-integrity tooling report
+   existing local-store debris with deeper typed classification.
 8. Decide whether `TreeStore` node/leaf/sequence APIs are production, test/debug, or removable. If runtime production writes use generic data/index paths, old facade shapes should not survive by accident.
 9. Split `crates/marrow-check/src/evolution/discharge.rs` before adding any new evolution semantics. Suggested owners: proposal ID resolution, structural compatibility, data scans, default/transform obligations, index obligations, repair diagnostics, and witness accumulation.
 10. Replace semantic string path parsing in catalog/evolution (`CatalogKey { path: String }`, path formatting, `rsplit_once`) with typed catalog addresses where feasible. Stable IDs are weakened whenever path text still carries hidden structure.
