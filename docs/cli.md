@@ -11,7 +11,8 @@ marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] \
   [--format text|json|jsonl] <projectdir>
 marrow test [--trace] [--format text|json|jsonl] <projectdir>
 marrow data <typed inspection subcommand> <projectdir>
-marrow debug explain [--format text|json|jsonl] <projectdir> <target>
+marrow data dump [--format text|json|jsonl] [--limit <n>] \
+  [--cursor <opaque>] <projectdir>
 marrow backup [--format text|json|jsonl] <projectdir> <output-file>
 marrow restore [--format text|json|jsonl] <projectdir> <backup-file>
 marrow lsp
@@ -48,8 +49,8 @@ Commands that report diagnostics or saved data take `--format`:
 Plain `run` output is the program's own `print`/`write` stream, which carries no
 envelope. `run --trace`, `run --dry-run`, and `test --trace` accept `--format`
 for their tooling reports; when reports compose, more than one top-level JSON
-object may appear on stdout. `--format` is also accepted by `check`,
-`debug explain`, and typed `data` subcommands.
+object may appear on stdout. `--format` is also accepted by `check` and typed
+`data` subcommands.
 
 ---
 
@@ -274,42 +275,6 @@ $ echo $?
 The implemented assertions are `std::assert::isTrue`, `isFalse`, `absent`, and
 `fail`.
 
----
-
-## `marrow debug explain`
-
-```
-marrow debug explain [--format text|json|jsonl] <projectdir> <target>
-```
-
-Statically explain a target without running code. The target is either a saved
-`^path` or a name. Saved-path explanation is a diagnostic/admin inspection
-surface; typed production previews are deferred to a future checked local API
-generated from shared tooling facts.
-
-A `^path` target reports checked path facts: the root and resource it names, the
-resolved class — a scalar leaf and its type, a generated index entry, a key-type
-mismatch, or an orphan — and, for a field, the declared indexes it participates
-in. The classification is the same one `data integrity` applies per record, so
-explain and integrity agree on what each path means.
-
-A name target reports its resolution through the same resolver the checker and
-runtime use: found (with owning module and kind), ambiguous (with candidate
-modules), not visible (a private function reached by a qualified path), or
-unresolved.
-
-```console
-$ marrow debug explain ./proj '^books(1).title'
-^books(1).title resolves to field `title` of resource Book, type string
-indexes: covered by `byTitle`(title) unique
-
-$ marrow debug explain --format json ./proj shelf::add
-{"target":"shelf::add","kind":"name","resolution":"found","module":"shelf","resolved_kind":"function"}
-```
-
-Exits `0` when it can explain the target, `1` if the project does not check, and
-`2` on command-line usage errors or a malformed target.
-
 ## `marrow data`
 
 `marrow data` is the typed inspection and repair-tooling boundary. It must read
@@ -317,10 +282,20 @@ through checked source, accepted catalog metadata, and typed tree-cell store
 APIs. It does not expose raw backend keys, raw saved-path encoders, or archive
 streams as production CLI behavior.
 
-Read-only diagnostic/admin inspection of a project's saved data. It never
-creates or modifies the store; a project with no saved data on disk reports as
-empty. See [data-tools.md](data-tools.md) for full output shapes and the path
-syntax. These commands are not a production backup/restore format.
+There is no `marrow explain` command in v0.1. Checked access, path, and name
+facts are internal compiler/tooling facts surfaced through diagnostics,
+`marrow data integrity`, dry-run reports, LSP/editor features, or future
+accepted tooling surfaces. They are not exposed as query-plan, optimizer, or
+standalone explanation output.
+
+Read-only diagnostic/admin/operator inspection of a project's saved data. The
+v0.1 decision is to keep `get` and `dump` as `marrow data` subcommands, not
+production app APIs. They never create or modify the store; a project with no
+saved data on disk reports as empty. `get` is exact-path and point-bounded.
+`dump` is snapshot-bound and must stream or page rather than materializing
+unbounded data. See
+[data-tools.md](data-tools.md) for full output shapes and the path syntax. These
+commands are not production app APIs and not a production backup/restore format.
 
 `data diff` and `data load` are deferred — see
 [future/data-tools.md](future/data-tools.md).

@@ -3,7 +3,6 @@
 use marrow_store::StoreError;
 
 pub mod data;
-pub mod explain;
 pub mod integrity;
 pub mod metadata;
 
@@ -13,10 +12,6 @@ pub use data::{
     QueryError, count_data_records, data_children, data_children_supports_paging,
     data_query_under_prefix, data_roots_in_store, read_data_query, render_query_segments,
     resolve_data_query, resolve_source_text_data_query, visit_data_records, walk_data,
-};
-pub use explain::{
-    IndexExplanation, NameExplanation, NameResolutionExplanation, SavedPathExplanation,
-    explain_name, explain_saved_path,
 };
 pub use integrity::{
     IntegrityOutcome, IntegrityOutcomeKind, IntegrityProblem, ORPHAN_INTEGRITY_HELP,

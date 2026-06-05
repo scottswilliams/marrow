@@ -110,7 +110,7 @@ remains valid.
 
 A transform should operate over typed old and new schema views. It should run
 with restricted effects, bounded traversal, cancellation/checkpoint behavior,
-dry-run explain output, and destructive approval where needed.
+dry-run preview output, and destructive approval where needed.
 
 ## Store Recompilation
 

@@ -135,57 +135,12 @@ fn tooling_data_root_module_is_only_a_facade() {
 }
 
 #[test]
-fn explain_surface_does_not_claim_query_or_index_plans() {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let repo = manifest_dir.parent().expect("repo root");
-    let paths = [
-        "src/cmd_explain.rs",
-        "../marrow-check/src/tooling/explain.rs",
-        "../../docs/cli.md",
-        "../../docs/data-tools.md",
-        "../../docs/tooling-surfaces.md",
-        "../../docs/implementation.md",
-        "../../docs/serve-protocol.md",
-    ];
-    let mut violations = Vec::new();
-
-    for relative in paths {
-        let path = repo.join("marrow").join(relative);
-        let text = fs::read_to_string(&path).expect("read explain/doc surface");
-        for (line_number, line) in text.lines().enumerate() {
-            let lower = line.to_ascii_lowercase();
-            if lower.contains("index plan")
-                || lower.contains("query plan")
-                || lower.contains("optimizer")
-            {
-                violations.push(format!(
-                    "{}:{} contains query-plan language: {}",
-                    path.display(),
-                    line_number + 1,
-                    line.trim()
-                ));
-            }
-        }
-    }
-
-    assert!(
-        violations.is_empty(),
-        "explain/docs must describe checked facts, not query/index plans or optimizers:\n{}",
-        violations.join("\n")
-    );
-}
-
-#[test]
-fn explain_is_debug_admin_not_a_top_level_command() {
-    // `explain` must reach the user only through the debug/admin surface. A
-    // behavioral check is more durable than scanning the dispatcher's match-arm
-    // text, which would break on any mechanical reshape that left the boundary
-    // intact.
+fn explain_command_surface_is_absent() {
     let top_level = run_marrow(&["explain", "--help"]);
     assert_eq!(
         top_level.code,
         Some(2),
-        "`marrow explain` must not be a top-level command: {}",
+        "`marrow explain` must not be a command: {}",
         top_level.stderr
     );
     assert!(
@@ -197,18 +152,35 @@ fn explain_is_debug_admin_not_a_top_level_command() {
     let debug_surface = run_marrow(&["debug", "explain", "--help"]);
     assert_eq!(
         debug_surface.code,
-        Some(0),
-        "`marrow debug explain` must be the admin entry point: {}",
+        Some(2),
+        "`marrow debug explain` must not be a renamed command: {}",
         debug_surface.stderr
     );
     assert!(
-        debug_surface.stdout.contains("marrow debug explain"),
-        "`marrow debug explain --help` should describe the debug surface: {}",
-        debug_surface.stdout
+        debug_surface.stderr.contains("unknown command"),
+        "`marrow debug explain` should be rejected before any debug subcommand dispatch: {}",
+        debug_surface.stderr
     );
 
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let repo = manifest_dir.parent().expect("repo root");
+    let retired_sources = [
+        "src/cmd_explain.rs",
+        "../marrow-check/src/tooling/explain.rs",
+    ];
+    let mut leftover_sources = Vec::new();
+    for relative in retired_sources {
+        let path = repo.join("marrow").join(relative);
+        if path.exists() {
+            leftover_sources.push(path.display().to_string());
+        }
+    }
+    assert!(
+        leftover_sources.is_empty(),
+        "deleted explain surface must not leave unused command/facts modules:\n{}",
+        leftover_sources.join("\n")
+    );
+
     let docs = [
         "../../docs/cli.md",
         "../../docs/tooling-surfaces.md",
@@ -218,14 +190,16 @@ fn explain_is_debug_admin_not_a_top_level_command() {
     for relative in docs {
         let path = repo.join("marrow").join(relative);
         let text = fs::read_to_string(&path).expect("read docs");
-        if text.contains("marrow explain") {
-            violations.push(path.display().to_string());
+        for forbidden in ["marrow debug explain", "debug explain"] {
+            if text.contains(forbidden) {
+                violations.push(format!("{} contains `{forbidden}`", path.display()));
+            }
         }
     }
 
     assert!(
         violations.is_empty(),
-        "canonical docs must name `marrow debug explain`, not top-level `marrow explain`:\n{}",
+        "canonical docs must not advertise an explain command surface:\n{}",
         violations.join("\n")
     );
 }
@@ -247,7 +221,6 @@ fn is_identifier_char(ch: char) -> bool {
 
 struct CliRun {
     code: Option<i32>,
-    stdout: String,
     stderr: String,
 }
 
@@ -258,7 +231,6 @@ fn run_marrow(args: &[&str]) -> CliRun {
         .expect("run marrow");
     CliRun {
         code: output.status.code(),
-        stdout: String::from_utf8(output.stdout).expect("stdout utf8"),
         stderr: String::from_utf8(output.stderr).expect("stderr utf8"),
     }
 }

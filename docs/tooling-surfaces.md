@@ -5,15 +5,14 @@ define another database model, and a debug surface does not become a production
 API by being documented.
 
 The shared tooling facts layer owns typed data-query resolution, path rendering,
-bounded previews, integrity findings, explain facts, catalog/snapshot metadata,
-and cursor validation. CLI commands, `marrow serve`, LSP adapters, backup/restore,
-and future local APIs are renderers over those facts.
+bounded previews, integrity findings, catalog/snapshot metadata, and cursor
+validation. CLI commands, `marrow serve`, LSP adapters, backup/restore, and
+future local APIs are renderers over those facts.
 
 ## Feature Surface Matrix
 
 | Surface | v0.1 verdict | Fact authority | Boundary |
 |---|---|---|---|
-| `marrow debug explain` | Keep as diagnostic/admin explanation. | Checked resolver and saved-path classifier through shared explain facts. | Does not expose physical keys, production preview contracts, or runtime-strategy output. |
 | `marrow data roots` / `stats` | Keep as operator/admin inspection. | Checked saved roots plus typed tree-cell traversal. | Exact scans are allowed for admin commands; they are not production preview APIs. |
 | `marrow data dump` | Keep as operator/admin inspection. | Checked/catalog path rendering plus typed data traversal. | May expose canonical payload bytes; walks a full stable snapshot by explicit operator request; not a backup/restore format, sync format, production preview, or production data API. |
 | `marrow data get` | Keep as operator/admin point inspection. | Checked data-query resolution plus typed store read. | Presence states are typed facts; raw payload bytes remain diagnostic/admin output. |
