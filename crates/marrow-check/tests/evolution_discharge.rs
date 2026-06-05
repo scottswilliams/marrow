@@ -8,6 +8,8 @@
 //! an old store snapshot that predates a new member or index; the catalog-evolution
 //! cases pin a hand-built accepted catalog the current source has moved away from.
 
+mod support;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -16,34 +18,13 @@ use marrow_check::{
     CheckedProgram, CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace, check_project,
     checked_saved_root_place,
 };
-use marrow_project::{
-    CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata, parse_config,
-};
+use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_store::value::{Scalar, encode_value};
 
-fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&root).expect("create project root");
-    build(&root);
-    root
-}
-
-fn write(root: &Path, relative: &str, contents: &str) {
-    let path = root.join(relative);
-    fs::create_dir_all(path.parent().unwrap()).expect("create dirs");
-    fs::write(path, contents).expect("write file");
-}
-
-fn config() -> marrow_project::ProjectConfig {
-    parse_config(r#"{ "sourceRoots": ["src"] }"#).expect("config")
-}
+use support::{TempProject, config, temp_project, write};
 
 fn catalog_path(root: &Path) -> PathBuf {
     root.join("marrow.catalog.json")
@@ -518,7 +499,6 @@ fn optional_sparse_add_needs_no_rewrite() {
     seed.member(2, "title", Scalar::Str("Hyperion".into()));
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     let subtitle_id = member_catalog_id(&place, "subtitle");
     assert!(
@@ -564,7 +544,6 @@ fn required_with_default_backfills_old_records() {
     seed.member(2, "title", Scalar::Str("Hyperion".into()));
 
     let result = witness(&program, &store);
-    fs::remove_dir_all(&root).ok();
 
     let pages_id = member_catalog_id(&place, "pages");
     match verdict_for(&result, &pages_id) {
@@ -619,7 +598,6 @@ fn constant_temporal_and_bytes_defaults_discharge_as_default() {
     seed.member(1, "title", Scalar::Str("Launch".into()));
 
     let result = witness(&program, &store);
-    fs::remove_dir_all(&root).ok();
 
     let expect_default = |member: &str, expected: Scalar| {
         let member_id = member_catalog_id(&place, member);
@@ -672,7 +650,6 @@ fn bytes_default_accepts_any_string_as_raw_utf8() {
     seed.member(1, "title", Scalar::Str("Launch".into()));
 
     let (result, _diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     let member_id = member_catalog_id(&place, "payload");
     match verdict_for(&result, &member_id) {
@@ -719,7 +696,6 @@ fn non_canonical_temporal_default_fails_closed() {
     seed.member(1, "title", Scalar::Str("Launch".into()));
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     let day_id = member_catalog_id(&place, "day");
     assert!(
@@ -732,11 +708,17 @@ fn non_canonical_temporal_default_fails_closed() {
         "{:#?}",
         result.verdicts
     );
+    // The diagnostic names the offending member by its typed catalog id. The
+    // non-encodable-default cause itself ("out of range") has no typed `RepairReason`
+    // variant yet (a future evolution lane adds one carrying `ConstDefaultError`), so
+    // the cause is asserted through the message until that lands.
+    let day_diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.catalog_id.as_str() == day_id)
+        .expect("a diagnostic naming the day member");
     assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("out of range")),
-        "{diagnostics:#?}"
+        day_diagnostic.message.contains("out of range"),
+        "{day_diagnostic:#?}"
     );
 }
 
@@ -770,7 +752,6 @@ fn non_constant_default_fails_closed_with_transform_hint() {
     seed.member(1, "title", Scalar::Str("Dune".into()));
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     let pages_id = member_catalog_id(&place, "pages");
     assert!(
@@ -783,11 +764,18 @@ fn non_constant_default_fails_closed_with_transform_hint() {
         "{:#?}",
         result.verdicts
     );
+    // The diagnostic names the member by its typed catalog id. The non-constant cause
+    // ("a varying fill is a transform, not a default") has no typed `RepairReason`
+    // variant yet, so it is asserted through the message until a future evolution lane
+    // carries `ConstDefaultError` on the verdict.
+    let pages_diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.catalog_id.as_str() == pages_id)
+        .expect("a diagnostic naming the pages member");
     assert!(
-        diagnostics.iter().any(|diagnostic| {
-            diagnostic.message.contains("constant") && diagnostic.message.contains("transform")
-        }),
-        "{diagnostics:#?}"
+        pages_diagnostic.message.contains("constant")
+            && pages_diagnostic.message.contains("transform"),
+        "{pages_diagnostic:#?}"
     );
 }
 
@@ -820,15 +808,19 @@ fn required_without_default_fails_naming_records() {
     seed.member(2, "title", Scalar::Str("Hyperion".into()));
 
     let (witness, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
+    let pages_id = member_catalog_id(&place, "pages");
     assert!(!witness.is_activatable(), "{witness:#?}");
+    // Both seeded records lack the new required member: the typed count proves the
+    // record total, and the diagnostic names the member by its catalog id. The
+    // per-record key list ("1", "2") lives only in the message; a future evolution
+    // lane that carries a typed record-key sample on the witness would let that be
+    // asserted typed too.
+    assert_eq!(witness.counts.records_lacking_member, 2, "{witness:#?}");
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.message.contains("1")
-                && diagnostic.message.contains("2")
-                && diagnostic.message.contains("pages")),
+            .any(|diagnostic| diagnostic.catalog_id.as_str() == pages_id),
         "{diagnostics:#?}"
     );
 }
@@ -860,7 +852,6 @@ fn required_present_member_with_incompatible_bytes_repairs() {
     seed.member(1, "title", Scalar::Str("not an int".into()));
 
     let (witness, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     let title_id = member_catalog_id(&place, "title");
     assert!(!witness.is_activatable(), "{witness:#?}");
@@ -877,8 +868,7 @@ fn required_present_member_with_incompatible_bytes_repairs() {
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.message.contains("title")
-                && diagnostic.message.contains("decode")),
+            .any(|diagnostic| diagnostic.catalog_id.as_str() == title_id),
         "{diagnostics:#?}"
     );
 }
@@ -922,7 +912,6 @@ fn rename_with_intent_is_catalog_only() {
     seed.member_by_id(1, &title_id, Scalar::Str("Dune".into()));
 
     let result = witness(&program, &store);
-    fs::remove_dir_all(&root).ok();
 
     let heading_id = member_catalog_id(&place, "heading");
     assert_eq!(heading_id, title_id, "rename preserves the stable id");
@@ -977,7 +966,6 @@ fn rename_and_retype_requires_transform() {
     seed.member_by_id(1, &title_id, Scalar::Str("Dune".into()));
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     let count_id = member_catalog_id(&place, "count");
     assert_eq!(count_id, title_id, "rename preserves the stable id");
@@ -995,8 +983,7 @@ fn rename_and_retype_requires_transform() {
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.message.contains("count")
-                && diagnostic.message.contains("transform")),
+            .any(|diagnostic| diagnostic.catalog_id.as_str() == count_id),
         "{diagnostics:#?}"
     );
 }
@@ -1044,7 +1031,6 @@ fn store_identity_key_type_change_fails_closed() {
     seed.record(1);
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         matches!(
@@ -1060,8 +1046,7 @@ fn store_identity_key_type_change_fails_closed() {
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.catalog_id.as_str() == store_id
-                && diagnostic.message.contains("identity key")),
+            .any(|diagnostic| diagnostic.catalog_id.as_str() == store_id),
         "{diagnostics:#?}"
     );
 }
@@ -1102,7 +1087,6 @@ fn store_identity_key_arity_change_fails_closed() {
     let store = TreeStore::memory();
 
     let (result, _) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         matches!(
@@ -1154,7 +1138,6 @@ fn store_identity_key_shape_unchanged_is_no_store_repair() {
     seed.member_by_id(1, &hex_id(3), Scalar::Str("Dune".into()));
 
     let (result, _) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !result
@@ -1218,7 +1201,6 @@ fn retype_preview(
     seed.member_by_id(1, &value_id, old_value);
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
     let value_id = member_catalog_id(&place, "value");
     (value_id, result, diagnostics)
 }
@@ -1249,9 +1231,7 @@ fn assert_retype_steered(
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.catalog_id.as_str() == value_id
-                && diagnostic.message.contains("value")
-                && diagnostic.message.contains("transform")),
+            .any(|diagnostic| diagnostic.catalog_id.as_str() == value_id),
         "{diagnostics:#?}"
     );
 }
@@ -1331,7 +1311,6 @@ fn retype_optional_member_with_data_is_transform_required() {
     seed.member_by_id(1, &value_id, Scalar::Int(1));
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     let value_id = member_catalog_id(&place, "value");
     assert_retype_steered(&value_id, &result, &diagnostics);
@@ -1377,7 +1356,6 @@ fn retype_optional_member_without_data_is_no_op() {
     seed.member_by_id(1, &hex_id(5), Scalar::Str("Dune".into()));
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     let value_id = member_catalog_id(&place, "value");
     assert!(
@@ -1426,7 +1404,6 @@ fn unchanged_type_still_proves_data() {
     seed.member_by_id(1, &value_id, Scalar::Int(7));
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     let value_id = member_catalog_id(&place, "value");
     assert!(
@@ -1467,7 +1444,6 @@ fn brand_new_member_is_not_a_retype() {
     seed.member(1, "title", Scalar::Str("Dune".into()));
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     let rank_id = member_catalog_id(&place, "rank");
     assert!(
@@ -1520,7 +1496,6 @@ fn retype_scalar_to_enum_is_transform_required() {
     seed.member_by_id(1, &value_id, Scalar::Int(1));
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     let value_id = member_catalog_id(&place, "value");
     assert_retype_steered(&value_id, &result, &diagnostics);
@@ -1563,7 +1538,6 @@ fn retype_scalar_to_identity_is_transform_required() {
     seed.member_by_id(1, &value_id, Scalar::Int(1));
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     let value_id = member_catalog_id(&place, "value");
     assert_retype_steered(&value_id, &result, &diagnostics);
@@ -1631,7 +1605,6 @@ fn retype_enum_to_identity_is_transform_required() {
     seed.member_bytes_by_id(1, &value_id, encode_identity_payload(&[SavedKey::Int(1)]));
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     let value_id = member_catalog_id(&place, "value");
     assert_retype_steered(&value_id, &result, &diagnostics);
@@ -1681,7 +1654,6 @@ fn populated_member_with_unknown_accepted_leaf_fails_closed() {
     seed.member_by_id(1, &value_id, Scalar::Bool(true));
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     let value_id = member_catalog_id(&place, "value");
     assert_retype_steered(&value_id, &result, &diagnostics);
@@ -1741,7 +1713,6 @@ fn retire_of_populated_member_requires_scoped_approval() {
     }
 
     let result = witness(&program, &store);
-    fs::remove_dir_all(&root).ok();
 
     match verdict_for(&result, &subtitle_id) {
         Verdict::DestructiveDecisionRequired { populated } => assert_eq!(*populated, 2),
@@ -1780,7 +1751,6 @@ fn new_unique_index_over_clean_data_rebuilds() {
     seed.index_entry("byIsbn", Scalar::Str("222".into()), 2);
 
     let result = witness(&program, &store);
-    fs::remove_dir_all(&root).ok();
 
     let index_id = index_catalog_id(&place, "byIsbn");
     assert!(
@@ -1823,14 +1793,14 @@ fn new_unique_index_over_colliding_data_fails() {
     seed.index_entry("byIsbn", Scalar::Str("dup".into()), 2);
 
     let (witness, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
+    let byisbn_id = index_catalog_id(&place, "byIsbn");
     assert!(!witness.is_activatable(), "{witness:#?}");
     assert!(witness.counts.index_collisions > 0, "{witness:#?}");
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.message.contains("byIsbn")),
+            .any(|diagnostic| diagnostic.catalog_id.as_str() == byisbn_id),
         "{diagnostics:#?}"
     );
 }
@@ -1871,7 +1841,6 @@ fn transform_from_decodable_sibling_is_applyable() {
 
     let cents_id = member_catalog_id(&place, "priceCents");
     let price_id = member_catalog_id(&place, "price");
-    fs::remove_dir_all(&root).ok();
 
     assert!(result.is_activatable(), "{result:#?}");
     match verdict_for(&result, &cents_id) {
@@ -1919,7 +1888,6 @@ fn transform_undecodable_read_member_fails_closed() {
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
     let cents_id = member_catalog_id(&place, "priceCents");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!result.is_activatable(), "{result:#?}");
     assert!(
@@ -1933,9 +1901,9 @@ fn transform_undecodable_read_member_fails_closed() {
         result.verdicts
     );
     assert!(
-        diagnostics.iter().any(|diagnostic| {
-            diagnostic.message.contains("transform") && diagnostic.message.contains("decode")
-        }),
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.catalog_id.as_str() == cents_id),
         "{diagnostics:#?}"
     );
 }
@@ -1960,7 +1928,6 @@ fn transform_saved_write_is_check_error() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         report
             .diagnostics
@@ -1991,7 +1958,6 @@ fn transform_return_type_mismatch_is_check_error() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         report.has_errors(),
         "expected a return-type error: {:#?}",
@@ -2018,7 +1984,6 @@ fn transform_reading_own_target_is_check_error() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         report
             .diagnostics
@@ -2052,7 +2017,6 @@ fn transform_reading_other_transform_target_is_check_error() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         report
             .diagnostics
@@ -2085,7 +2049,6 @@ fn transform_reading_saved_root_is_check_error() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         report
             .diagnostics
@@ -2119,7 +2082,6 @@ fn transform_reading_same_block_default_target_is_check_error() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         report
             .diagnostics
@@ -2152,7 +2114,6 @@ fn transform_of_nested_member_is_check_error() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         report
             .diagnostics
@@ -2209,7 +2170,6 @@ fn witness_composes_catalog_and_store_fingerprints() {
     seed.member(1, "title", Scalar::Str("Dune".into()));
 
     let (witness, _diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(witness.accepted_catalog.epoch, accepted_epoch);
     assert_eq!(witness.accepted_catalog.digest, accepted_digest);
@@ -2258,7 +2218,7 @@ fn witness_composes_catalog_and_store_fingerprints() {
 #[test]
 fn dropped_sparse_field_is_no_op_not_error() {
     let subtitle_id = hex_id(4);
-    let root = temp_project("discharge-f12-drop", |root| {
+    let root = temp_project("discharge-dropped-sparse-field", |root| {
         write(
             root,
             "src/books.mw",
@@ -2291,7 +2251,6 @@ fn dropped_sparse_field_is_no_op_not_error() {
     let store = TreeStore::memory();
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         matches!(verdict_for(&result, &subtitle_id), Verdict::NoOp),
@@ -2302,7 +2261,7 @@ fn dropped_sparse_field_is_no_op_not_error() {
     assert!(
         !diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.message.contains("subtitle")),
+            .any(|diagnostic| diagnostic.catalog_id.as_str() == subtitle_id),
         "{diagnostics:#?}"
     );
 }
@@ -2314,7 +2273,7 @@ fn dropped_sparse_field_is_no_op_not_error() {
 #[test]
 fn dropped_field_an_index_needs_requires_retire() {
     let isbn_id = hex_id(4);
-    let root = temp_project("discharge-f12-index", |root| {
+    let root = temp_project("discharge-dropped-field-needs-retire", |root| {
         write(
             root,
             "src/books.mw",
@@ -2367,7 +2326,6 @@ fn dropped_field_an_index_needs_requires_retire() {
     let (_report, program) = check_project(&root, &config()).expect("check");
     let store = TreeStore::memory();
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     // The dropped member an index still reads is its own typed failure: a retire is
     // required, distinct from a plain missing-required-member repair. The verdict
@@ -2382,8 +2340,7 @@ fn dropped_field_an_index_needs_requires_retire() {
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.message.contains("byIsbn")
-                && diagnostic.message.contains("retire")),
+            .any(|diagnostic| diagnostic.catalog_id.as_str() == isbn_id),
         "{diagnostics:#?}"
     );
 }
@@ -2391,7 +2348,7 @@ fn dropped_field_an_index_needs_requires_retire() {
 #[test]
 fn dropped_field_ignores_same_named_index_on_another_resource() {
     let book_subtitle_id = hex_id(5);
-    let root = temp_project("discharge-f12-index-owner", |root| {
+    let root = temp_project("discharge-dropped-field-index-owner", |root| {
         write(
             root,
             "src/media.mw",
@@ -2455,16 +2412,17 @@ fn dropped_field_ignores_same_named_index_on_another_resource() {
     let (_report, program) = check_project(&root, &config()).expect("check");
     let store = TreeStore::memory();
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         matches!(verdict_for(&result, &book_subtitle_id), Verdict::NoOp),
         "{result:#?}"
     );
+    // Dropping `Book.subtitle` must not be blamed on `Movie`'s `bySubtitle` index: no
+    // diagnostic carries that index's catalog id (`hex_id(10)`).
     assert!(
         !diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.message.contains("bySubtitle")),
+            .any(|diagnostic| diagnostic.catalog_id.as_str() == hex_id(10)),
         "{diagnostics:#?}"
     );
 }
@@ -2529,7 +2487,6 @@ fn dropped_index_is_index_dropped() {
     let (_report, program) = check_project(&root, &config()).expect("check");
     let store = TreeStore::memory();
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         matches!(verdict_for(&result, &index_id), Verdict::IndexDropped),
@@ -2548,7 +2505,7 @@ fn dropped_index_is_index_dropped() {
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");
 }
 
-fn composite_index_project(name: &str) -> PathBuf {
+fn composite_index_project(name: &str) -> TempProject {
     temp_project(name, |root| {
         write(
             root,
@@ -2585,7 +2542,6 @@ fn composite_unique_index_distinct_tuples_rebuild() {
     seed.member(2, "b", Scalar::Str("two".into()));
 
     let result = witness(&program, &store);
-    fs::remove_dir_all(&root).ok();
 
     let index_id = index_catalog_id(&place, "byPair");
     assert!(
@@ -2617,7 +2573,6 @@ fn composite_unique_index_duplicate_tuple_collides() {
     seed.member(2, "b", Scalar::Str("same".into()));
 
     let result = witness(&program, &store);
-    fs::remove_dir_all(&root).ok();
 
     let index_id = index_catalog_id(&place, "byPair");
     assert!(
@@ -2663,7 +2618,6 @@ fn new_unique_index_no_cells_clean_rebuilds() {
     seed.member(2, "isbn", Scalar::Str("222".into()));
 
     let result = witness(&program, &store);
-    fs::remove_dir_all(&root).ok();
 
     let index_id = index_catalog_id(&place, "byIsbn");
     assert!(
@@ -2704,7 +2658,6 @@ fn new_unique_index_no_cells_duplicate_collides() {
     seed.member(2, "isbn", Scalar::Str("dup".into()));
 
     let result = witness(&program, &store);
-    fs::remove_dir_all(&root).ok();
 
     let index_id = index_catalog_id(&place, "byIsbn");
     assert!(
@@ -2750,7 +2703,6 @@ fn required_nested_group_leaf_missing_fails_closed() {
 
     let result = witness(&program, &store);
     let last_id = nested_member_catalog_id(&place, "name", "last");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         matches!(
@@ -2810,7 +2762,6 @@ fn required_keyed_layer_leaf_missing_fails_closed() {
 
     let body_id = nested_member_catalog_id(&place, "versions", "body");
     let (result, _diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !result.is_activatable(),
@@ -2883,7 +2834,6 @@ fn keyed_layer_leaf_present_in_every_entry_proves() {
 
     let body_id = nested_member_catalog_id(&place, "versions", "body");
     let result = witness(&program, &store);
-    fs::remove_dir_all(&root).ok();
 
     assert!(result.is_activatable(), "{:#?}", result.verdicts);
     assert!(
@@ -2902,7 +2852,6 @@ fn digests(name: &str, source: &str) -> (String, String) {
     let program = commit_then_check(&root);
     let store = TreeStore::memory();
     let witness = witness(&program, &store);
-    fs::remove_dir_all(&root).ok();
     (witness.source_digest, witness.evolution_digest)
 }
 
@@ -3360,12 +3309,10 @@ fn durable_fixture(f: DurableFixture) -> String {
     )
 }
 
-/// A pure enum rename (`Status` -> `State`) is NOT a retype. The member keeps referencing
+/// A pure enum rename (`Status` -> `State`) is not a retype. The member keeps referencing
 /// the same enum stable identity, so the identity-aware leaf token is unchanged across the
 /// rename and a populated record discharges as a clean `DataProof`, never a false
-/// `TypeChangeRequiresTransform`. This is the regression the spelling-based comparison
-/// caused: `Type::Display` rendered `Status` and `State` as different, blocking a legal
-/// rename.
+/// `TypeChangeRequiresTransform`.
 #[test]
 fn enum_rename_is_not_a_retype() {
     let value_id = hex_id(3);
@@ -3435,7 +3382,6 @@ fn enum_rename_is_not_a_retype() {
     seed.member_bytes_by_id(1, &value_id, enum_value_bytes(&enum_stable, &draft_member));
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     let value_id = member_catalog_id(&place, "value");
     assert!(
@@ -3506,7 +3452,6 @@ fn enum_member_removed_fails_closed() {
     );
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     let value_id = member_catalog_id(&place, "value");
     assert!(
@@ -3528,9 +3473,8 @@ fn enum_member_removed_fails_closed() {
     );
 }
 
-/// A REQUIRED enum leaf is presence- and decode-scanned exactly like a required scalar: a
-/// record missing its enum cell fails closed. Before the total-scan fix, a required
-/// non-scalar leaf was never scanned, so a missing required enum slipped through.
+/// A required enum leaf is presence- and decode-scanned exactly like a required scalar: a
+/// record missing its enum cell fails closed.
 #[test]
 fn required_enum_leaf_missing_fails_closed() {
     let root = temp_project("discharge-required-enum-missing", |root| {
@@ -3562,7 +3506,6 @@ fn required_enum_leaf_missing_fails_closed() {
     seed.member(1, "title", Scalar::Str("Dune".into()));
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     let state_id = member_catalog_id(&place, "state");
     assert!(
@@ -3609,7 +3552,6 @@ fn required_identity_leaf_missing_fails_closed() {
     seed.member(1, "title", Scalar::Str("Dune".into()));
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     let author_id = member_catalog_id(&place, "author");
     assert!(
@@ -3659,7 +3601,6 @@ fn required_enum_leaf_present_proves_data() {
     seed.member_bytes_by_id(1, &state_id, enum_value_bytes(&enum_id, &draft));
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         matches!(verdict_for(&result, &state_id), Verdict::DataProof),
@@ -3724,7 +3665,6 @@ fn retype_enum_a_to_enum_b_is_transform_required() {
     seed.member_bytes_by_id(1, &value_id, enum_value_bytes(&status_stable, &hex_id(8)));
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     let value_id = member_catalog_id(&place, "value");
     assert_retype_steered(&value_id, &result, &diagnostics);
@@ -3783,7 +3723,6 @@ fn store_rename_behind_identity_leaf_is_not_a_retype() {
     seed.member_bytes_by_id(1, &value_id, encode_identity_payload(&[SavedKey::Int(1)]));
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     let value_id = member_catalog_id(&place, "parent");
     assert!(
@@ -3842,7 +3781,6 @@ fn keyed_leaf_map_value_retype_over_populated_map_fails_closed() {
 
     let map_id = keyed_leaf_catalog_id(&place, "tags");
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !result.is_activatable(),
@@ -3902,7 +3840,6 @@ fn keyed_leaf_map_value_unchanged_proves() {
     );
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         result.is_activatable(),
@@ -3915,8 +3852,7 @@ fn keyed_leaf_map_value_unchanged_proves() {
 /// A brand-new required scalar member added over a populated store with no `evolve default`
 /// and no transform fails closed: the existing records lack it, and there is nothing to
 /// backfill them with, so the add-required-field obligation is unmet. The new member has no
-/// accepted catalog id yet, so the presence scan must be proposal-aware to reach it at all —
-/// keying off the accepted ids alone orphaned the requiredness and silently activated.
+/// accepted catalog id yet, so the presence scan must be proposal-aware to reach it at all.
 #[test]
 fn brand_new_required_member_over_populated_store_fails_closed() {
     let title_stable = hex_id(3);
@@ -3957,7 +3893,6 @@ fn brand_new_required_member_over_populated_store_fails_closed() {
 
     let pages_id = new_member_proposal_id(&program, "books::Book::pages");
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !result.is_activatable(),
@@ -4024,7 +3959,6 @@ fn brand_new_required_member_with_default_backfills() {
 
     let pages_id = new_member_proposal_id(&program, "books::Book::pages");
     let result = witness(&program, &store);
-    fs::remove_dir_all(&root).ok();
 
     match verdict_for(&result, &pages_id) {
         Verdict::Default { value } => {
@@ -4071,7 +4005,6 @@ fn brand_new_required_member_over_empty_store_activates() {
     let store = TreeStore::memory();
 
     let result = witness(&program, &store);
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         result.is_activatable(),
@@ -4125,7 +4058,6 @@ fn stored_enum_value_naming_now_category_member_fails_closed() {
     );
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !result.is_activatable(),
@@ -4153,9 +4085,7 @@ fn stored_enum_value_naming_now_category_member_fails_closed() {
 /// A brand-new REQUIRED leaf added inside an EXISTING keyed layer over populated entries
 /// fails closed with no default: the keyed layer already has entries that predate the new
 /// leaf, so requiredness is unmet per existing entry. The new leaf has no bound facts id,
-/// only a proposal-minted one, so the keyed scan must thread the resolved id to reach it;
-/// before this fix the keyed scan recorded only bound ids and silently activated the
-/// brand-new required leaf over populated entries.
+/// only a proposal-minted one, so the keyed scan must thread the resolved id to reach it.
 #[test]
 fn brand_new_required_keyed_leaf_over_populated_layer_fails_closed() {
     let root = temp_project("discharge-new-keyed-required-no-default", |root| {
@@ -4207,7 +4137,6 @@ fn brand_new_required_keyed_leaf_over_populated_layer_fails_closed() {
 
     let body_id = new_member_proposal_id(&program, "policies::Policy::versions::body");
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !result.is_activatable(),
@@ -4285,7 +4214,6 @@ fn brand_new_required_keyed_leaf_with_default_backfills() {
 
     let body_id = new_member_proposal_id(&program, "policies::Policy::versions::body");
     let result = witness(&program, &store);
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         matches!(verdict_for(&result, &body_id), Verdict::Default { .. }),
@@ -4298,8 +4226,8 @@ fn brand_new_required_keyed_leaf_with_default_backfills() {
 /// A leaf retyped from a tokenizable scalar to a non-tokenizable `sequence` over populated
 /// data fails closed: a leaf position whose new declared type produces no leaf token still
 /// changed type, so the populated old bytes cannot be silently reread. The retype check must
-/// be total over the new side; before this fix a `sequence` (or unknown) new type produced no
-/// token, so the member was dropped from the leaf map and its retype escaped detection.
+/// be total over the new side, so a leaf whose new type yields no token still counts as a
+/// type change rather than dropping out of the leaf map undetected.
 #[test]
 fn retype_scalar_to_sequence_over_populated_data_fails_closed() {
     let value_id = hex_id(3);
@@ -4337,7 +4265,6 @@ fn retype_scalar_to_sequence_over_populated_data_fails_closed() {
 
     let value_id = member_catalog_id(&place, "value");
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !result.is_activatable(),
@@ -4362,11 +4289,11 @@ fn retype_scalar_to_sequence_over_populated_data_fails_closed() {
     );
 }
 
-/// An OPTIONAL enum leaf whose enum dropped a selectable member fails closed when a stored
-/// value names the removed member: an optional enum leaf is normally scanned only on a
-/// retype, so a member-removal under an UNCHANGED enum identity slipped through. The enum
-/// keeps its stable identity (not a retype), but its selectable-member set shrank this
-/// cycle, which forces a presence/validity scan of every leaf referencing it.
+/// An optional enum leaf whose enum dropped a selectable member fails closed when a stored
+/// value names the removed member. An optional enum leaf is normally scanned only on a
+/// retype, but here the enum keeps its stable identity (not a retype) while its
+/// selectable-member set shrank this cycle, so every leaf referencing it must still be
+/// presence- and validity-scanned.
 #[test]
 fn optional_enum_leaf_with_dropped_member_fails_closed() {
     let value_id = hex_id(3);
@@ -4422,7 +4349,6 @@ fn optional_enum_leaf_with_dropped_member_fails_closed() {
 
     let value_id = member_catalog_id(&place, "state");
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !result.is_activatable(),
@@ -4482,7 +4408,6 @@ fn optional_enum_leaf_with_unchanged_enum_proves() {
     seed.member_bytes_by_id(1, &state_id, enum_value_bytes(&enum_id, &shipped));
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         result.is_activatable(),
@@ -4543,7 +4468,6 @@ fn leaf_member_becoming_a_group_over_populated_data_fails_closed() {
         "a leaf becoming a group keeps the member's accepted stable id"
     );
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !result.is_activatable(),
@@ -4619,7 +4543,6 @@ fn leaf_member_becoming_a_keyed_layer_over_populated_data_fails_closed() {
         "a leaf becoming a keyed layer keeps the member's accepted stable id"
     );
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !result.is_activatable(),
@@ -4702,7 +4625,6 @@ fn retype_of_leaf_nested_in_populated_keyed_group_fails_closed() {
         "a retyped keyed-nested leaf keeps its accepted stable id"
     );
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !result.is_activatable(),
@@ -4774,7 +4696,6 @@ fn retype_of_keyed_nested_leaf_with_overlapping_byte_fails_closed() {
 
     let body_id = nested_member_catalog_id(&place, "versions", "body");
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !result.is_activatable(),
@@ -4848,7 +4769,6 @@ fn unchanged_leaf_nested_in_populated_keyed_group_proves() {
 
     let body_id = nested_member_catalog_id(&place, "versions", "body");
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(result.is_activatable(), "{:#?}", result.verdicts);
     assert!(
@@ -4915,7 +4835,6 @@ fn keyed_layer_key_type_change_over_populated_entries_fails_closed() {
         "a re-keyed keyed layer keeps its accepted stable id"
     );
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !result.is_activatable(),
@@ -4985,7 +4904,6 @@ fn plain_group_reshaped_to_keyed_layer_over_populated_data_fails_closed() {
 
     let layer_id = group_member_catalog_id(&place, "versions");
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !result.is_activatable(),
@@ -5059,7 +4977,6 @@ fn keyed_layer_reshaped_to_plain_group_over_populated_data_fails_closed() {
 
     let group_id = group_member_catalog_id(&place, "versions");
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !result.is_activatable(),
@@ -5133,7 +5050,6 @@ fn leaf_to_group_adding_required_submember_over_empty_cell_fails_closed() {
     // only in the proposal, so the descend reaches it by its proposal-minted id.
     let first_id = new_member_proposal_id(&program, "books::Book::value::first");
     let (result, _diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !result.is_activatable(),
@@ -5203,7 +5119,6 @@ fn keyed_layer_arity_change_fails_closed_via_backstop() {
 
     let layer_id = group_member_catalog_id(&place, "versions");
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !result.is_activatable(),
@@ -5273,7 +5188,6 @@ fn renamed_keyed_layer_with_unchanged_shape_does_not_overfire() {
 
     let layer_id = keyed_leaf_catalog_id(&place, "labels");
     let (result, _diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         result.is_activatable(),
@@ -5344,7 +5258,6 @@ fn reordered_keyed_layer_members_do_not_overfire() {
 
     let layer_id = group_member_catalog_id(&place, "versions");
     let (result, _diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         result.is_activatable(),
@@ -5410,7 +5323,6 @@ fn optional_add_beside_unchanged_keyed_layer_does_not_overfire() {
 
     let layer_id = group_member_catalog_id(&place, "versions");
     let (result, _diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         result.is_activatable(),
@@ -5499,7 +5411,6 @@ fn nested_keyed_layer_rekey_below_keyed_ancestor_fails_closed() {
     );
     let body_member_id = deep_member_catalog_id(&place, &["versions", "revisions", "body"]);
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !result.is_activatable(),
@@ -5597,7 +5508,6 @@ fn nested_keyed_layer_arity_change_two_levels_deep_fails_closed() {
 
     let revisions_layer_id = deep_member_catalog_id(&place, &["versions", "revisions"]);
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !result.is_activatable(),
@@ -5694,7 +5604,6 @@ fn deep_interior_member_structural_divergence_fails_closed() {
         "the reshaped deep interior member keeps its accepted stable id"
     );
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !result.is_activatable(),
@@ -5779,7 +5688,6 @@ fn unchanged_nested_keyed_layer_does_not_overfire() {
     let revisions_layer_id = deep_member_catalog_id(&place, &["versions", "revisions"]);
     let body_member_id = deep_member_catalog_id(&place, &["versions", "revisions", "body"]);
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         result.is_activatable(),

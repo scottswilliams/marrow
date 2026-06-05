@@ -1,29 +1,8 @@
-use std::fs;
-use std::path::{Path, PathBuf};
+mod support;
 
 use marrow_check::{check_project, resolve::resolve_store_by_root};
-use marrow_project::parse_config;
 
-fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&root).expect("create project root");
-    build(&root);
-    root
-}
-
-fn write(root: &Path, relative: &str, contents: &str) {
-    let path = root.join(relative);
-    fs::create_dir_all(path.parent().unwrap()).expect("create dirs");
-    fs::write(path, contents).expect("write file");
-}
-
-fn config() -> marrow_project::ProjectConfig {
-    parse_config(r#"{ "sourceRoots": ["src"] }"#).expect("config")
-}
+use support::{config, temp_project, write};
 
 #[test]
 fn store_resolver_returns_store_module_and_resource_context() {
@@ -39,7 +18,6 @@ fn store_resolver_returns_store_module_and_resource_context() {
         );
     });
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let books = resolve_store_by_root(&program, "books").expect("books store");
@@ -72,7 +50,6 @@ fn store_indexes_are_checked_facts_not_resource_members() {
         );
     });
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let module = program.facts.module_id("shelf").expect("shelf module");

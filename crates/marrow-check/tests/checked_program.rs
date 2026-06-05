@@ -1,33 +1,14 @@
-use std::fs;
-use std::path::{Path, PathBuf};
+mod support;
 
 use marrow_check::{
-    CheckedType, HostEffect, MarrowType, SavedPlaceEffect, check_project, check_tests_program,
+    CheckedType, DiagnosticPayload, HostEffect, MarrowType, SavedPlaceEffect, check_project,
+    check_tests_program,
 };
 use marrow_project::parse_config;
 use marrow_schema::stdlib::Capability;
 use marrow_store::value::ScalarType;
 
-fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&root).expect("create project root");
-    build(&root);
-    root
-}
-
-fn write(root: &Path, relative: &str, contents: &str) {
-    let path = root.join(relative);
-    fs::create_dir_all(path.parent().unwrap()).expect("create dirs");
-    fs::write(path, contents).expect("write file");
-}
-
-fn config() -> marrow_project::ProjectConfig {
-    parse_config(r#"{ "sourceRoots": ["src"] }"#).expect("config")
-}
+use support::{config, temp_project, write};
 
 #[test]
 fn builds_a_module_for_a_clean_library_file() {
@@ -43,7 +24,6 @@ fn builds_a_module_for_a_clean_library_file() {
         );
     });
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     assert_eq!(program.modules.len(), 1, "{program:#?}");
@@ -85,7 +65,6 @@ fn checked_functions_do_not_carry_source_bodies() {
         );
     });
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 
     let runtime = program.runtime();
@@ -127,7 +106,6 @@ fn checked_facts_assign_typed_ids_to_same_named_declarations() {
         );
     });
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let facts = &program.facts;
@@ -169,14 +147,12 @@ fn checked_facts_do_not_first_match_bare_foreign_resource_annotations() {
         );
     });
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "check.unknown_type"
-                && diagnostic.message.contains("Book")),
+        report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == marrow_check::CHECK_UNKNOWN_TYPE
+                && diagnostic.payload == DiagnosticPayload::UnknownType("Book".into())
+        }),
         "{:#?}",
         report.diagnostics
     );
@@ -214,7 +190,6 @@ fn checked_facts_record_function_effects_with_typed_places() {
         );
     });
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let facts = &program.facts;
@@ -309,7 +284,6 @@ fn checked_facts_resolve_qualified_resource_annotations_to_the_owner() {
         );
     });
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let facts = &program.facts;
@@ -359,7 +333,6 @@ fn checked_test_program_preserves_source_facts_and_resolves_test_facts() {
     let (src_report, src_program) = check_project(&root, &cfg).expect("check source");
     let (test_report, combined) =
         check_tests_program(&root, &cfg, &src_program).expect("check tests");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!src_report.has_errors(), "{:#?}", src_report.diagnostics);
     assert!(!test_report.has_errors(), "{:#?}", test_report.diagnostics);
@@ -401,7 +374,6 @@ fn checked_facts_fail_closed_for_invalid_saved_places_and_signatures() {
         );
     });
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(report.has_errors(), "{:#?}", report.diagnostics);
     let facts = &program.facts;
@@ -435,7 +407,6 @@ fn checked_facts_record_saved_reads_inside_saved_path_keys() {
         );
     });
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let facts = &program.facts;
@@ -487,7 +458,6 @@ fn next_id_types_to_the_resource_identity() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -508,7 +478,6 @@ fn next_id_over_a_composite_root_is_flagged() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -535,7 +504,6 @@ fn next_id_over_a_string_keyed_root_is_flagged() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -563,7 +531,6 @@ fn next_id_over_a_singleton_root_is_flagged() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -597,7 +564,6 @@ fn reversed_preserves_the_sequence_element_type() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     // `w` is `string`, so `w + 1` is a string-plus-int operator type error — not an
     // unresolved-call error (which would mean `reversed` was never recognized).
@@ -637,7 +603,6 @@ fn local_collections_can_be_subscripted() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -661,7 +626,6 @@ fn next_and_prev_of_a_keyed_root_type_to_the_identity() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -682,7 +646,6 @@ fn next_with_wrong_arity_is_flagged() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -712,7 +675,6 @@ fn next_of_a_layer_position_coalesces_to_the_key_type() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -734,7 +696,6 @@ fn next_over_a_composite_identity_record_is_flagged() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -760,7 +721,6 @@ fn next_over_a_bare_composite_identity_root_is_flagged() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -786,7 +746,6 @@ fn next_over_a_bare_identity_value_is_flagged() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -816,7 +775,6 @@ fn next_over_an_index_branch_is_flagged() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -846,7 +804,6 @@ fn keys_over_composite_identity_index_bind_reconstructed_identities() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -866,7 +823,6 @@ fn short_form_std_import_resolves() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -885,7 +841,6 @@ fn short_form_without_import_is_unresolved() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -919,12 +874,11 @@ fn short_form_project_import_resolves() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
-/// A std helper's argument types are now checked: passing an `int` where
+/// A std helper's argument types are checked: passing an `int` where
 /// `std::text::contains` expects a `string` reports `check.call_argument`.
 #[test]
 fn std_call_with_wrong_argument_type_is_flagged() {
@@ -938,7 +892,6 @@ fn std_call_with_wrong_argument_type_is_flagged() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -950,7 +903,7 @@ fn std_call_with_wrong_argument_type_is_flagged() {
     );
 }
 
-/// A std helper's arity is now checked: `std::math::modulo` takes two ints, so a
+/// A std helper's arity is checked: `std::math::modulo` takes two ints, so a
 /// one-argument call reports `check.call_argument`.
 #[test]
 fn std_call_with_wrong_arity_is_flagged() {
@@ -964,7 +917,6 @@ fn std_call_with_wrong_arity_is_flagged() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -990,7 +942,6 @@ fn well_typed_std_call_checks_clean() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -1014,7 +965,6 @@ fn duration_literal_types_to_duration() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     // The duration argument to `std::clock::add` must not raise an untyped-value
     // error: a duration literal is a known type, not dynamic data.
@@ -1054,7 +1004,6 @@ fn short_form_std_call_is_arg_checked() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1082,7 +1031,6 @@ fn short_form_keyword_module_resolves() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -1099,7 +1047,6 @@ fn a_file_with_a_parse_error_contributes_no_module() {
         );
     });
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(report.has_errors(), "{:#?}", report.diagnostics);
     assert!(program.modules.is_empty(), "{program:#?}");
@@ -1135,7 +1082,6 @@ fn error_value_diagnostic_codes(slot: &str, signature: &str, body: &str) -> Vec<
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     report
         .diagnostics
         .iter()
@@ -1212,7 +1158,6 @@ fn error_argument_to_user_function_is_a_call_argument_error() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1234,9 +1179,8 @@ fn error_argument_to_user_function_is_a_call_argument_error() {
 
 /// Build a project declaring `fn takes(e: Error)` and calling it with `arg` from
 /// inside a `try`/`catch e: Error` (so the name `e` is an `Error` value in scope),
-/// and return the diagnostic codes. An `Error`-typed parameter is a reachable user
-/// type (`from_resolved` maps it to `MarrowType::Error`), so the argument loop must
-/// check it like a scalar.
+/// and return the diagnostic codes. An `Error`-typed parameter is a concrete user
+/// type, so the argument loop checks it like any other typed slot.
 fn error_param_call_diagnostic_codes(slot: &str, arg: &str) -> Vec<String> {
     let root = temp_project(&format!("program-error-param-{slot}"), |root| {
         write(
@@ -1255,7 +1199,6 @@ fn error_param_call_diagnostic_codes(slot: &str, arg: &str) -> Vec<String> {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     report
         .diagnostics
         .iter()
@@ -1265,8 +1208,6 @@ fn error_param_call_diagnostic_codes(slot: &str, arg: &str) -> Vec<String> {
 
 /// Passing a `string` literal to a `takes(e: Error)` parameter reports
 /// `check.call_argument`: the scalar does not satisfy the concrete `Error` slot.
-/// (Before the fix the `as_primitive(&param.ty).is_some()` gate skipped any
-/// `Error`-typed parameter, silently accepting the mismatch.)
 #[test]
 fn scalar_argument_to_error_param_is_a_call_argument_error() {
     let codes = error_param_call_diagnostic_codes("scalar", "\"oops\"");
@@ -1388,7 +1329,6 @@ fn scalar_argument_to_std_log_error_is_a_call_argument_error() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1415,7 +1355,6 @@ fn untyped_argument_to_std_log_error_is_an_untyped_value_error() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1457,7 +1396,6 @@ fn wrong_store_identity_argument_is_flagged() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1485,7 +1423,6 @@ fn wrong_store_identity_return_is_flagged() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1497,9 +1434,8 @@ fn wrong_store_identity_return_is_flagged() {
     );
 }
 
-/// Storing a `Id(^magazines)` into a `Id(^books)` place is a nominal mismatch reported
-/// as `check.assignment_type` — closing the value-side asymmetry where a
-/// non-primitive place used to be left alone.
+/// Storing a `Id(^magazines)` into a `Id(^books)` place is a nominal mismatch
+/// reported as `check.assignment_type`.
 #[test]
 fn wrong_store_identity_assignment_is_flagged() {
     let root = temp_project("program-id-assign", |root| {
@@ -1514,7 +1450,6 @@ fn wrong_store_identity_assignment_is_flagged() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1548,7 +1483,6 @@ fn scalar_and_identity_are_not_interchangeable_arguments() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     let count = report
         .diagnostics
@@ -1578,7 +1512,6 @@ fn same_store_identity_checks_clean() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -1610,7 +1543,6 @@ fn qualified_resource_identity_annotation_unifies_with_owner_identity() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -1637,7 +1569,6 @@ fn aliased_resource_and_identity_annotations_resolve_to_the_owner() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -1671,7 +1602,6 @@ fn resource_equality_is_an_operator_type_error() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         report
             .diagnostics
@@ -1698,7 +1628,6 @@ fn resource_against_scalar_equality_is_an_operator_type_error() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         report
             .diagnostics
@@ -1725,7 +1654,6 @@ fn sequence_equality_is_an_operator_type_error() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         report
             .diagnostics
@@ -1752,7 +1680,6 @@ fn cross_resource_identity_equality_is_an_operator_type_error() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         report
             .diagnostics
@@ -1780,12 +1707,10 @@ fn same_store_identity_equality_checks_clean() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
-/// A raw scalar `==` scalar comparison stays clean — broadening the guard does not
-/// disturb the ordinary scalar-equality path.
+/// A raw scalar `==` scalar comparison checks clean.
 #[test]
 fn raw_scalar_equality_still_checks_clean() {
     let root = temp_project("program-eq-scalar", |root| {
@@ -1800,7 +1725,6 @@ fn raw_scalar_equality_still_checks_clean() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
@@ -1825,7 +1749,6 @@ fn cross_resource_identity_coalesce_is_flagged() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         report
             .diagnostics
@@ -1853,7 +1776,6 @@ fn unary_on_identity_is_an_operator_type_error() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         report
             .diagnostics
@@ -1888,7 +1810,6 @@ fn arithmetic_with_identity_operand_is_an_operator_type_error() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         report
             .diagnostics
@@ -1915,7 +1836,6 @@ fn ordering_two_identities_is_an_operator_type_error() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         report
             .diagnostics
@@ -1942,7 +1862,6 @@ fn logical_with_identity_operand_is_an_operator_type_error() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         report
             .diagnostics
@@ -1969,7 +1888,6 @@ fn concat_with_identity_operand_is_an_operator_type_error() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         report
             .diagnostics
@@ -1980,8 +1898,7 @@ fn concat_with_identity_operand_is_an_operator_type_error() {
     );
 }
 
-/// A scalar-only binary operation (`1 + 2`) stays clean — broadening the non-scalar
-/// guard does not disturb the ordinary scalar arithmetic path.
+/// A scalar-only binary operation (`1 + 2`) checks clean.
 #[test]
 fn scalar_arithmetic_still_checks_clean() {
     let root = temp_project("program-bin-scalar", |root| {
@@ -1996,7 +1913,6 @@ fn scalar_arithmetic_still_checks_clean() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
@@ -2023,7 +1939,6 @@ fn if_identity_condition_is_a_condition_type_error() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         report
             .diagnostics
@@ -2051,7 +1966,6 @@ fn while_identity_condition_is_a_condition_type_error() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         report
             .diagnostics
@@ -2079,7 +1993,6 @@ fn if_whole_record_condition_is_a_condition_type_error() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         report
             .diagnostics
@@ -2107,7 +2020,6 @@ fn if_sequence_condition_is_a_condition_type_error() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         report
             .diagnostics
@@ -2118,8 +2030,7 @@ fn if_sequence_condition_is_a_condition_type_error() {
     );
 }
 
-/// A `bool` condition (`if s == "x"`) stays clean — broadening the condition guard
-/// does not disturb a genuine `bool` condition.
+/// A genuine `bool` condition (`if s == "x"`) checks clean.
 #[test]
 fn bool_condition_still_checks_clean() {
     let root = temp_project("program-if-bool", |root| {
@@ -2135,7 +2046,6 @@ fn bool_condition_still_checks_clean() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
@@ -2163,7 +2073,6 @@ fn string_leaf_coalesced_with_identity_is_flagged() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         report
             .diagnostics
@@ -2190,7 +2099,6 @@ fn whole_record_coalesced_with_scalar_is_flagged() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         report
             .diagnostics
@@ -2201,8 +2109,7 @@ fn whole_record_coalesced_with_scalar_is_flagged() {
     );
 }
 
-/// A scalar leaf defaulted with a matching scalar (`book.title ?? "x"`) stays clean
-/// — broadening the non-scalar branch does not disturb the ordinary scalar `??`.
+/// A scalar leaf defaulted with a matching scalar (`book.title ?? "x"`) checks clean.
 #[test]
 fn scalar_coalesce_still_checks_clean() {
     let root = temp_project("program-coalesce-scalar", |root| {
@@ -2217,7 +2124,6 @@ fn scalar_coalesce_still_checks_clean() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
@@ -2239,7 +2145,6 @@ fn string_key_into_int_keyspace_is_flagged() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -2269,7 +2174,6 @@ fn cross_resource_key_identity_is_flagged() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -2297,7 +2201,6 @@ fn same_store_key_identity_checks_clean() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -2318,7 +2221,6 @@ fn unknown_key_reentry_is_rejected() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -2356,7 +2258,6 @@ fn cross_module_qualified_identity_splice_defers() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !report
@@ -2387,7 +2288,6 @@ fn enum_member_selectability_matches_schema_owner() {
         );
     });
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 
     let facts = &program.facts;

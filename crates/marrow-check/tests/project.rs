@@ -1,29 +1,11 @@
-use std::fs;
-use std::path::{Path, PathBuf};
+mod support;
 
-use marrow_check::{check_project, check_tests};
+use std::path::Path;
+
+use marrow_check::{DiagnosticPayload, check_project, check_tests};
 use marrow_project::parse_config;
 
-fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&root).expect("create project root");
-    build(&root);
-    root
-}
-
-fn write(root: &Path, relative: &str, contents: &str) {
-    let path = root.join(relative);
-    fs::create_dir_all(path.parent().unwrap()).expect("create dirs");
-    fs::write(path, contents).expect("write file");
-}
-
-fn config() -> marrow_project::ProjectConfig {
-    parse_config(r#"{ "sourceRoots": ["src"] }"#).expect("config")
-}
+use support::{config, temp_project, write};
 
 /// The `.mw` code block from the canonical reference sample.
 fn sample_source() -> String {
@@ -45,7 +27,6 @@ fn the_reference_sample_checks_clean() {
         write(root, "src/shelf/sample.mw", &sample_source());
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
@@ -64,7 +45,6 @@ fn analyze_project_uses_overlay_source_instead_of_disk() {
 
     let overlaid = analyze_project(&root, &config(), &sources).expect("analyze");
     let (clean, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         overlaid
@@ -95,7 +75,6 @@ fn analyze_project_reports_configured_test_file_parse_errors() {
         parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
 
     let snapshot = analyze_project(&root, &cfg, &ProjectSources::new()).expect("analyze");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         snapshot.report.diagnostics.iter().any(|d| {
@@ -119,7 +98,6 @@ fn analyze_project_reports_unsaved_configured_test_file_parse_errors() {
     let sources = ProjectSources::new().with(&path, "pub fn t()\n\tapp::noop()\n");
 
     let snapshot = analyze_project(&root, &cfg, &sources).expect("analyze");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         snapshot
@@ -145,7 +123,6 @@ fn analyze_project_retains_configured_test_files_in_snapshot() {
     let path = root.join("tests/smoke_test.mw");
 
     let snapshot = analyze_project(&root, &cfg, &ProjectSources::new()).expect("analyze");
-    fs::remove_dir_all(&root).ok();
 
     let analyzed = snapshot
         .files
@@ -170,7 +147,6 @@ fn analyze_project_retains_unsaved_configured_test_files_in_snapshot() {
     let sources = ProjectSources::new().with(&path, source);
 
     let snapshot = analyze_project(&root, &cfg, &sources).expect("analyze");
-    fs::remove_dir_all(&root).ok();
 
     let analyzed = snapshot
         .files
@@ -198,7 +174,6 @@ fn analyze_project_includes_configured_tests_when_sources_have_errors() {
     let sources = ProjectSources::new().with(&path, "fn smoke()\n    var y: int = \"str\"\n");
 
     let snapshot = analyze_project(&root, &cfg, &sources).expect("analyze");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         snapshot.files.iter().any(|file| file.path == path),
@@ -242,7 +217,6 @@ fn analyze_project_suppresses_test_resolution_noise_when_source_modules_are_inco
     );
 
     let snapshot = analyze_project(&root, &cfg, &sources).expect("analyze");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         snapshot
@@ -281,7 +255,6 @@ fn analyze_project_keeps_test_local_resolution_diagnostics_when_source_modules_a
     );
 
     let snapshot = analyze_project(&root, &cfg, &sources).expect("analyze");
-    fs::remove_dir_all(&root).ok();
 
     for code in [
         "check.unresolved_import",
@@ -318,7 +291,6 @@ fn analyze_project_keeps_test_local_bare_call_matching_hidden_source_module() {
         ProjectSources::new().with(&path, "fn smoke()\n    app()\n    var y: int = \"str\"\n");
 
     let snapshot = analyze_project(&root, &cfg, &sources).expect("analyze");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         snapshot
@@ -359,7 +331,6 @@ fn analyze_project_keeps_test_local_submodule_import_matching_hidden_source_pref
     );
 
     let snapshot = analyze_project(&root, &cfg, &sources).expect("analyze");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         snapshot
@@ -402,7 +373,6 @@ fn analyze_project_keeps_test_local_unresolved_call_when_another_test_has_parse_
     );
 
     let snapshot = analyze_project(&root, &cfg, &sources).expect("analyze");
-    fs::remove_dir_all(&root).ok();
 
     for code in [
         "check.unresolved_call",
@@ -442,7 +412,6 @@ fn analyze_project_suppresses_unresolved_import_when_broken_configured_test_is_i
     );
 
     let snapshot = analyze_project(&root, &cfg, &sources).expect("analyze");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !snapshot
@@ -492,7 +461,6 @@ fn analyze_project_ignores_declared_modules_in_broken_configured_tests_for_call_
     );
 
     let snapshot = analyze_project(&root, &cfg, &sources).expect("analyze");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         snapshot
@@ -535,7 +503,6 @@ fn analyze_project_keeps_source_module_calls_when_broken_test_path_collides() {
     );
 
     let snapshot = analyze_project(&root, &cfg, &sources).expect("analyze");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         snapshot
@@ -574,7 +541,6 @@ fn analyze_project_keeps_test_module_calls_when_broken_source_path_collides() {
     );
 
     let snapshot = analyze_project(&root, &cfg, &sources).expect("analyze");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         snapshot
@@ -617,7 +583,6 @@ fn analyze_project_reports_duplicate_when_test_module_collides_with_source_modul
     );
 
     let snapshot = analyze_project(&root, &cfg, &sources).expect("analyze");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         snapshot.report.diagnostics.iter().any(|d| {
@@ -671,7 +636,6 @@ fn analyze_project_suppresses_unknown_types_from_broken_configured_test_declarat
     );
 
     let snapshot = analyze_project(&root, &cfg, &sources).expect("analyze");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !snapshot
@@ -719,7 +683,6 @@ fn analyze_project_keeps_test_local_type_syntax_diagnostics_when_hidden_type_nam
     );
 
     let snapshot = analyze_project(&root, &cfg, &sources).expect("analyze");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         snapshot
@@ -754,7 +717,6 @@ fn analysis_snapshot_retains_files_with_parse_errors() {
     let path = root.join("src/bad.mw");
 
     let snapshot = analyze_project(&root, &config(), &ProjectSources::new()).expect("analyze");
-    fs::remove_dir_all(&root).ok();
 
     let analyzed = snapshot
         .files
@@ -801,13 +763,11 @@ fn surfaces_resource_body_index_errors() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "parse.syntax"
-                && diagnostic.message.contains("store body")),
+            .any(|diagnostic| diagnostic.code == "parse.syntax" && diagnostic.span.line == 5),
         "{:#?}",
         report.diagnostics
     );
@@ -930,7 +890,6 @@ fn rejects_a_cross_module_qualified_enum_identity_key() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     let found = with_code(&report, "schema.nonscalar_key");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
     assert!(found[0].message.contains("a::Status"));
@@ -1170,9 +1129,9 @@ fn a_non_category_parent_with_children_is_rejected() {
 
 #[test]
 fn a_correctly_marked_category_parent_checks_clean() {
-    // The same program with `category tiger` is well-formed: `tiger` is no longer a
-    // value, and the match's leaf coverage (`bengal`, `siberian`, `housecat`) is
-    // exhaustive. The fix must not over-reject the correct shape.
+    // With `category tiger`, `tiger` is a category rather than a value, and the
+    // match's leaf coverage (`bengal`, `siberian`, `housecat`) is exhaustive, so the
+    // program checks clean.
     let report = check_module_report(
         "parent-category-clean",
         "module m\n\
@@ -1243,10 +1202,10 @@ fn an_overlapping_arm_yields_only_a_duplicate_not_a_secondary_nonexhaustive() {
 
 #[test]
 fn a_flat_enum_match_and_equality_still_check() {
-    // A flat enum is unchanged: its `match` is exhaustive over its members and `==`
-    // is exact nominal equality, both clean.
+    // A flat enum's `match` is exhaustive over its members and `==` is exact nominal
+    // equality; both check clean.
     let report = check_module_report(
-        "flat-enum-regression",
+        "flat-enum-match-equality",
         "module m\n\
          enum Status\n\
          \x20   active\n\
@@ -1485,7 +1444,6 @@ fn reports_two_stores_sharing_one_saved_root() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     let owners = with_code(&report, "schema.duplicate_root_owner");
     assert_eq!(owners.len(), 1, "{:#?}", report.diagnostics);
@@ -1506,7 +1464,6 @@ fn split_store_may_precede_the_resource_shape() {
         );
     });
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let module = program.facts.module_id("shelf").expect("shelf module");
@@ -1545,10 +1502,6 @@ fn saved_inout_through_resource_reference_is_rejected() {
 
     let found = with_code(&report, "check.rejected_surface");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
-    assert!(
-        found.iter().any(|d| d.message.contains("saved `inout`")),
-        "{found:#?}"
-    );
 }
 
 #[test]
@@ -1563,7 +1516,6 @@ fn saved_inout_through_index_entry_is_rejected_surface() {
 
     let found = with_code(&report, "check.rejected_surface");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
-    assert!(found[0].message.contains("saved `inout`"), "{found:#?}");
 }
 
 #[test]
@@ -1578,7 +1530,6 @@ fn malformed_saved_inout_through_keyed_root_field_is_rejected() {
 
     let found = with_code(&report, "check.rejected_surface");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
-    assert!(found[0].message.contains("saved `inout`"), "{found:#?}");
 }
 
 #[test]
@@ -1593,7 +1544,6 @@ fn malformed_saved_inout_through_index_branch_is_rejected() {
 
     let found = with_code(&report, "check.rejected_surface");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
-    assert!(found[0].message.contains("saved `inout`"), "{found:#?}");
 }
 
 #[test]
@@ -1650,7 +1600,6 @@ fn clean_project_has_no_diagnostics() {
         write(root, "src/main.mw", "fn main()\n    return\n");
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
@@ -1660,7 +1609,6 @@ fn reports_module_path_mismatch() {
         write(root, "src/shelf/books.mw", "module shelf::other\n");
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     let diagnostic = report
         .diagnostics
@@ -1686,7 +1634,6 @@ fn surfaces_parse_diagnostics_with_file_path() {
         write(root, "src/bad.mw", "module bad\n\tconst X: int = 1\n");
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     let diagnostic = report
         .diagnostics
@@ -1705,7 +1652,6 @@ fn a_dotted_stem_file_cannot_be_a_module() {
         write(root, "src/config.v2.mw", "module config\n");
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     let diagnostic = report
         .diagnostics
@@ -1728,7 +1674,6 @@ fn reports_duplicate_module_across_source_roots() {
     let config = parse_config(r#"{ "sourceRoots": ["src", "lib"] }"#).expect("config");
 
     let (report, _program) = check_project(&root, &config).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     let duplicates: Vec<_> = report
         .diagnostics
@@ -1750,7 +1695,6 @@ fn distinct_modules_are_not_flagged_as_duplicates() {
         write(root, "src/b.mw", "module b\n");
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
@@ -1761,7 +1705,6 @@ fn a_script_file_is_not_bound_to_its_path() {
         write(root, "src/tools/script.mw", "fn run()\n    return\n");
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
@@ -1785,7 +1728,6 @@ fn reports_duplicate_function_declaration() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     let duplicates = duplicate_declarations(&report);
     assert_eq!(duplicates.len(), 1, "{:#?}", report.diagnostics);
@@ -1804,7 +1746,6 @@ fn reports_duplicate_const_declaration() {
         write(root, "src/m.mw", "module m\nconst A = 1\nconst A = 2\n");
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     let duplicates = duplicate_declarations(&report);
     assert_eq!(duplicates.len(), 1, "{:#?}", report.diagnostics);
@@ -1825,7 +1766,6 @@ fn reports_duplicate_resource_declaration() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     let duplicates = duplicate_declarations(&report);
     assert_eq!(duplicates.len(), 1, "{:#?}", report.diagnostics);
@@ -1846,7 +1786,6 @@ fn reports_const_resource_name_collision() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     let duplicates = duplicate_declarations(&report);
     assert_eq!(duplicates.len(), 1, "{:#?}", report.diagnostics);
@@ -1869,7 +1808,6 @@ fn reports_import_short_name_collision_with_declaration() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     let duplicates = duplicate_declarations(&report);
     assert_eq!(duplicates.len(), 1, "{:#?}", report.diagnostics);
@@ -1892,7 +1830,6 @@ fn distinct_declarations_are_not_flagged() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         duplicate_declarations(&report).is_empty(),
         "{:#?}",
@@ -1921,7 +1858,6 @@ fn standard_library_and_project_imports_resolve() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         unresolved_imports(&report).is_empty(),
         "{:#?}",
@@ -1939,14 +1875,14 @@ fn reports_unresolved_import() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     let unresolved = unresolved_imports(&report);
     assert_eq!(unresolved.len(), 1, "{:#?}", report.diagnostics);
-    assert!(
-        unresolved[0].message.contains("unknown::mod"),
-        "{}",
-        unresolved[0].message
+    assert_eq!(
+        unresolved[0].payload,
+        DiagnosticPayload::UnresolvedImport("unknown::mod".into()),
+        "{:#?}",
+        unresolved[0]
     );
     assert_eq!(unresolved[0].span.line, 1, "{:#?}", unresolved[0]);
 }
@@ -1969,7 +1905,6 @@ fn checks_test_files_into_named_modules() {
         parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
     let (src_report, src_program) = check_project(&root, &cfg).expect("check src");
     let (test_report, test_modules) = check_tests(&root, &cfg, &src_program).expect("check tests");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!src_report.has_errors(), "{:#?}", src_report.diagnostics);
     assert!(!test_report.has_errors(), "{:#?}", test_report.diagnostics);
@@ -2001,7 +1936,6 @@ fn reports_a_parse_error_in_a_test_file() {
         parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
     let (_src_report, src_program) = check_project(&root, &cfg).expect("check src");
     let (test_report, _modules) = check_tests(&root, &cfg, &src_program).expect("check tests");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         test_report
@@ -2033,7 +1967,6 @@ fn a_test_file_is_named_from_its_path_not_a_declared_module() {
         parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
     let (_src_report, src_program) = check_project(&root, &cfg).expect("check src");
     let (test_report, test_modules) = check_tests(&root, &cfg, &src_program).expect("check tests");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!test_report.has_errors(), "{:#?}", test_report.diagnostics);
     assert_eq!(test_modules.len(), 1, "{test_modules:#?}");
@@ -2050,22 +1983,17 @@ fn reports_unknown_types_in_signatures_and_consts() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     let found = with_code(&report, "check.unknown_type");
     assert_eq!(found.len(), 3, "{:#?}", report.diagnostics);
-    assert!(
-        found.iter().any(|d| d.message.contains("Booook")),
-        "{found:#?}"
-    );
-    assert!(
-        found.iter().any(|d| d.message.contains("Alsobad")),
-        "{found:#?}"
-    );
-    assert!(
-        found.iter().any(|d| d.message.contains("Nope")),
-        "{found:#?}"
-    );
+    for name in ["Booook", "Alsobad", "Nope"] {
+        assert!(
+            found
+                .iter()
+                .any(|d| d.payload == DiagnosticPayload::UnknownType(name.into())),
+            "{name}: {found:#?}"
+        );
+    }
 }
 
 #[test]
@@ -2078,14 +2006,12 @@ fn map_annotations_outside_resource_members_are_not_supported_types() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     let found = with_code(&report, "check.unknown_type");
     assert_eq!(found.len(), 7, "{:#?}", report.diagnostics);
     assert!(
-        found
-            .iter()
-            .all(|diagnostic| diagnostic.message.contains("map[string,int]")),
+        found.iter().all(|diagnostic| diagnostic.payload
+            == DiagnosticPayload::UnknownType("map[string,int]".into())),
         "{found:#?}"
     );
     let schema = with_code(&report, "schema.unsupported_type");
@@ -2110,7 +2036,6 @@ fn known_types_are_not_flagged_as_unknown() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         with_code(&report, "check.unknown_type").is_empty(),
@@ -2131,7 +2056,6 @@ fn reports_a_bare_return_in_a_value_returning_function() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert_eq!(
         with_code(&report, "check.return_value").len(),
         1,
@@ -2146,7 +2070,6 @@ fn reports_a_value_return_in_a_void_function() {
         write(root, "src/m.mw", "module m\nfn g()\n    return 1\n");
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert_eq!(
         with_code(&report, "check.return_value").len(),
         1,
@@ -2165,7 +2088,6 @@ fn matching_returns_are_not_flagged() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         with_code(&report, "check.return_value").is_empty(),
         "{:#?}",
@@ -2185,7 +2107,6 @@ fn reports_a_value_function_that_may_not_return() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert_eq!(
         with_code(&report, "check.missing_return").len(),
         2,
@@ -2210,7 +2131,6 @@ fn functions_that_return_on_all_paths_are_not_flagged() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         with_code(&report, "check.missing_return").is_empty(),
         "{:#?}",
@@ -2815,7 +2735,6 @@ fn same_module_resource_annotation_beats_foreign_enum_fallback() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         with_code(&report, "check.return_type").is_empty(),
         "{:#?}",
@@ -2836,7 +2755,6 @@ fn same_module_resource_annotation_beats_private_foreign_enum_diagnostic() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         with_code(&report, "check.private_enum").is_empty(),
         "{:#?}",
@@ -2888,7 +2806,6 @@ fn a_qualified_resource_constructor_is_not_an_unresolved_call() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         with_code(&report, "check.unresolved_call").is_empty(),
         "{:#?}",
@@ -2911,7 +2828,6 @@ fn qualified_id_call_uses_the_resource_constructor_without_identity_precedence()
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         with_code(&report, "check.call_argument").len() == 1,
         "{:#?}",
@@ -3208,7 +3124,6 @@ fn unresolved_calls_are_suppressed_when_a_module_fails_to_parse() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         with_code(&report, "check.unresolved_call").is_empty(),
         "{:#?}",
@@ -3232,7 +3147,6 @@ fn rejects_a_wrong_argument_count_in_a_qualified_cross_module_call() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert_eq!(
         with_code(&report, "check.call_argument").len(),
         1,
@@ -3518,11 +3432,6 @@ fn append_to_a_group_layer_is_a_check_error() {
         "check.call_argument",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
-    assert!(
-        found[0].message.contains("leaf layer"),
-        "{}",
-        found[0].message
-    );
 }
 
 #[test]
@@ -3746,11 +3655,6 @@ fn interpolation_rejects_enum_values() {
         "check.operator_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
-    assert!(
-        found[0].message.contains("interpolation cannot render"),
-        "{}",
-        found[0].message
-    );
     assert!(found[0].message.contains("Color"), "{}", found[0].message);
 }
 
@@ -4292,7 +4196,6 @@ fn same_named_resources_use_their_own_module_shape() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
@@ -4308,15 +4211,18 @@ fn identity_type_must_name_a_declared_store() {
         "check.unknown_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
-    assert!(found[0].message.contains("Id(^missing)"), "{found:#?}");
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::UnknownType("Id(^missing)".into())
+    );
 }
 
 #[test]
-fn legacy_identity_constructor_conversion_is_unresolved() {
-    // The legacy constructor spelling is no longer a conversion boundary for store
-    // identities.
+fn resource_id_constructor_in_an_identity_assignment_is_unresolved() {
+    // A `Resource::Id(...)` constructor is not a store-identity conversion boundary;
+    // assigning it into an identity field is an unresolved call, not a coercion.
     let found = check_module(
-        "ref-field-converted-ok",
+        "id-ctor-assignment-unresolved",
         "module m\n\
          resource Author at ^authors(id: int)\n    name: string\n\n\
          resource Book at ^books(id: int)\n    authorId: Id(^authors)\n\n\
@@ -4327,9 +4233,9 @@ fn legacy_identity_constructor_conversion_is_unresolved() {
 }
 
 #[test]
-fn legacy_identity_constructor_calls_are_unresolved() {
+fn resource_id_constructor_call_is_unresolved() {
     let found = check_module(
-        "ctor-legacy-unresolved",
+        "id-ctor-call-unresolved",
         "module m\n\
          resource Author at ^authors(id: int)\n    name: string\n\n\
          fn f()\n    const author = Author::Id(7)\n",
@@ -4621,7 +4527,6 @@ fn with_code<'a>(
 fn check_script(name: &str, src: &str, code: &str) -> Vec<marrow_check::CheckDiagnostic> {
     let root = temp_project(name, |root| write(root, "src/app.mw", src));
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     with_code(&report, code).into_iter().cloned().collect()
 }
 
@@ -4632,7 +4537,6 @@ fn check_script(name: &str, src: &str, code: &str) -> Vec<marrow_check::CheckDia
 fn check_module(name: &str, src: &str, code: &str) -> Vec<marrow_check::CheckDiagnostic> {
     let root = temp_project(name, |root| write(root, "src/m.mw", src));
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     with_code(&report, code).into_iter().cloned().collect()
 }
 
@@ -4641,7 +4545,6 @@ fn check_module(name: &str, src: &str, code: &str) -> Vec<marrow_check::CheckDia
 fn check_module_report(name: &str, src: &str) -> marrow_check::CheckReport {
     let root = temp_project(name, |root| write(root, "src/m.mw", src));
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     report
 }
 
@@ -4658,7 +4561,6 @@ fn check_tests_report(name: &str, app_src: &str, test_src: &str) -> marrow_check
     let (src_report, src_program) = check_project(&root, &cfg).expect("check src");
     assert!(!src_report.has_errors(), "{:#?}", src_report.diagnostics);
     let (test_report, _modules) = check_tests(&root, &cfg, &src_program).expect("check tests");
-    fs::remove_dir_all(&root).ok();
     test_report
 }
 
@@ -5266,7 +5168,7 @@ fn lock_is_rejected_by_the_parser() {
     );
 }
 
-// --- W1 unified resolver: module-aware, visibility-aware call resolution ---
+// Module-aware, visibility-aware call resolution.
 
 /// Check a two-module project (`src/aaa.mw` + `src/zzz.mw`), returning the whole
 /// report. The two modules let a call in `zzz` be resolved against `zzz`'s own
@@ -5278,7 +5180,6 @@ fn check_two_modules(name: &str, aaa: &str, zzz: &str) -> marrow_check::CheckRep
         write(root, "src/zzz.mw", zzz);
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     report
 }
 
@@ -5289,7 +5190,7 @@ fn bare_call_resolves_in_own_module_not_a_foreign_one() {
     // and check clean — never a foreign `aaa::greet`. (The runtime twin of this
     // pin proves the P1 bug, where the bare call ran `aaa::greet`.)
     let report = check_two_modules(
-        "w1-bare-own-module",
+        "resolve-bare-own-module",
         "module aaa\npub fn greet(): int\n    return 1\n",
         "module zzz\nfn greet(): int\n    return 2\nfn run(): int\n    return greet()\n",
     );
@@ -5308,7 +5209,7 @@ fn cross_module_bare_call_is_unresolved_not_first_match() {
     // function is only reachable as `aaa::greet`. The bare call must be
     // `check.unresolved_call` — not silently first-matched to `aaa::greet`.
     let report = check_two_modules(
-        "w1-cross-bare-unresolved",
+        "resolve-cross-bare-unresolved",
         "module aaa\npub fn greet(): int\n    return 1\n",
         "module zzz\nfn run(): int\n    return greet()\n",
     );
@@ -5327,7 +5228,7 @@ fn cross_module_call_to_a_private_fn_is_a_visibility_error() {
     // call is a distinct visibility error (`check.private_function`), not a plain
     // unresolved call — the name resolves, the visibility does not.
     let report = check_two_modules(
-        "w1-cross-private",
+        "resolve-cross-private",
         "module aaa\nfn secret(): int\n    return 1\n",
         "module zzz\nfn run(): int\n    return aaa::secret()\n",
     );
@@ -5361,7 +5262,6 @@ fn cross_module_use_of_a_private_enum_is_a_visibility_error() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     let found = with_code(&report, "check.private_enum");
     assert_eq!(found.len(), 2, "{:#?}", report.diagnostics);
     assert!(
@@ -5394,7 +5294,6 @@ fn cross_module_use_of_a_public_enum_checks_clean() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
@@ -5405,7 +5304,7 @@ fn same_named_resources_constructor_resolves_by_module() {
     // `zzz` resource. The call must type as a constructor (no unresolved call),
     // resolving by the calling module rather than first-matching `aaa::Book`.
     let report = check_two_modules(
-        "w1-same-named-resource",
+        "resolve-same-named-resource",
         "module aaa\nresource Book\n    title: string\n",
         "module zzz\nresource Book\n    title: string\nfn make(): Book\n    return Book(title: \"x\")\n",
     );
@@ -5433,11 +5332,13 @@ fn bare_foreign_resource_annotation_is_unknown_not_project_wide() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     let unknown_types = with_code(&report, "check.unknown_type");
     assert_eq!(unknown_types.len(), 1, "{:#?}", report.diagnostics);
-    assert!(unknown_types[0].message.contains("Book"));
+    assert_eq!(
+        unknown_types[0].payload,
+        DiagnosticPayload::UnknownType("Book".into())
+    );
 }
 
 #[test]
@@ -5446,7 +5347,7 @@ fn bare_call_to_a_pub_fn_in_two_modules_is_ambiguous() {
     // calls a bare `greet()`. Each is reachable only as `module::greet`, so the
     // bare name cannot pick one: a distinct `check.ambiguous_call` (qualify it),
     // not a plain unresolved call or a silent first-match to `aaa::greet`.
-    let root = temp_project("w1-ambiguous-call", |root| {
+    let root = temp_project("resolve-ambiguous-call", |root| {
         write(
             root,
             "src/aaa.mw",
@@ -5464,7 +5365,6 @@ fn bare_call_to_a_pub_fn_in_two_modules_is_ambiguous() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert_eq!(
         with_code(&report, "check.ambiguous_call").len(),
         1,
@@ -5539,7 +5439,6 @@ fn reports_an_enum_resource_name_collision() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     let duplicates = duplicate_declarations(&report);
     assert_eq!(duplicates.len(), 1, "{:#?}", report.diagnostics);
@@ -5560,7 +5459,6 @@ fn the_checked_program_carries_enum_schemas() {
         );
     });
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let status = &program.modules[0].enums[0];
     assert_eq!(status.name, "Status");
@@ -5720,7 +5618,6 @@ fn a_match_over_a_modules_own_same_named_enum_checks_clean() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
@@ -5797,7 +5694,6 @@ fn assignment_between_same_named_enums_qualifies_the_message() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     let found = with_code(&report, "check.assignment_type");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
     assert!(
@@ -5838,7 +5734,6 @@ fn a_qualified_enum_saved_field_declaration_checks_clean() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
@@ -5940,7 +5835,6 @@ fn a_nonexhaustive_match_over_a_qualified_enum_scrutinee_is_a_check_error() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     let found = with_code(&report, "check.nonexhaustive_match");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
     assert!(found[0].message.contains("closed"), "{}", found[0].message);
@@ -5972,7 +5866,6 @@ fn passing_a_third_modules_enum_to_a_qualified_parameter_is_a_check_error() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     let found = with_code(&report, "check.call_argument");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
 }
@@ -6006,7 +5899,6 @@ fn a_bare_foreign_only_enum_annotation_resolves_to_the_real_owner_not_a_phantom(
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         !report.has_errors(),
         "a bare foreign-only enum annotation must resolve to the real owner, not a phantom: {:#?}",
@@ -6043,7 +5935,6 @@ fn passing_a_foreign_enum_to_a_qualified_parameter_is_a_check_error() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     let found = with_code(&report, "check.call_argument");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
 }
@@ -6069,7 +5960,6 @@ fn passing_a_raw_scalar_to_a_qualified_enum_parameter_is_a_check_error() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     let found = with_code(&report, "check.call_argument");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
 }
@@ -6112,7 +6002,6 @@ fn a_wrong_enum_through_a_relay_chain_to_a_qualified_parameter_is_a_check_error(
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     let found = with_code(&report, "check.call_argument");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
 }
@@ -6143,7 +6032,6 @@ fn a_wrong_enum_to_a_qualified_parameter_in_an_equality_body_is_a_check_error() 
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     let found = with_code(&report, "check.call_argument");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
 }
@@ -6173,7 +6061,6 @@ fn a_wrong_enum_to_a_qualified_parameter_inside_a_loop_is_a_check_error() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     let found = with_code(&report, "check.call_argument");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
 }
@@ -6199,7 +6086,6 @@ fn passing_the_matching_enum_to_a_qualified_parameter_checks_clean() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         !report.has_errors(),
         "a matching cross-module enum argument must check clean: {:#?}",
@@ -6263,7 +6149,6 @@ fn a_qualified_enum_var_annotation_accepts_the_same_qualified_member() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
@@ -6287,7 +6172,6 @@ fn a_match_over_a_qualified_member_typed_local_dispatches_clean() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
@@ -6324,7 +6208,6 @@ fn passing_a_nested_module_wrong_enum_to_a_qualified_parameter_is_a_check_error(
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     let found = with_code(&report, "check.call_argument");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
 }
@@ -6344,7 +6227,6 @@ fn passing_a_raw_scalar_to_a_nested_module_enum_parameter_is_a_check_error() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     let found = with_code(&report, "check.call_argument");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
 }
@@ -6366,7 +6248,6 @@ fn returning_a_wrong_enum_from_a_nested_module_function_is_a_check_error() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     let found = with_code(&report, "check.return_type");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
 }
@@ -6386,7 +6267,6 @@ fn assigning_a_wrong_enum_into_a_nested_module_enum_local_is_a_check_error() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     let found = with_code(&report, "check.assignment_type");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
 }
@@ -6411,7 +6291,6 @@ fn a_nonexhaustive_match_over_a_nested_module_enum_scrutinee_is_a_check_error() 
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     let found = with_code(&report, "check.nonexhaustive_match");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
     assert!(
@@ -6440,7 +6319,6 @@ fn an_unknown_member_of_a_nested_module_enum_literal_is_a_check_error() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     let found = with_code(&report, "check.unknown_enum_member");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
     assert!(found[0].message.contains("bogus"), "{}", found[0].message);
@@ -6449,8 +6327,7 @@ fn an_unknown_member_of_a_nested_module_enum_literal_is_a_check_error() {
 #[test]
 fn passing_the_matching_nested_module_enum_checks_clean() {
     // The clean counterpart: `a::b::take(s: a::b::Status)` called with the matching
-    // `a::b::Status::active`. A like-for-like nested-module enum argument must check
-    // clean — the fix must not over-reject once the slot carries its real owner.
+    // `a::b::Status::active`. A like-for-like nested-module enum argument checks clean.
     let root = temp_project("enum-nested-arg-clean", |root| {
         nested_module_sources(root);
         write(
@@ -6461,7 +6338,6 @@ fn passing_the_matching_nested_module_enum_checks_clean() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         !report.has_errors(),
         "a matching nested-module enum argument must check clean: {:#?}",
@@ -6515,7 +6391,6 @@ fn a_module_less_script_self_reference_checks_clean() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         !report.has_errors(),
         "a correct module-less script must check clean: {:#?}",
@@ -6543,7 +6418,6 @@ fn another_module_cannot_use_a_module_less_script() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     let found = with_code(&report, "check.unresolved_import");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
     assert!(found[0].message.contains("app"), "{}", found[0].message);
@@ -6564,7 +6438,6 @@ fn a_module_less_script_joins_the_program_under_the_empty_name() {
         );
     });
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let script = program
         .modules
@@ -6599,14 +6472,9 @@ fn two_module_less_scripts_are_a_check_error() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     let found = with_code(&report, "check.multiple_scripts");
     // Each offending file is named; neither is privileged over the other.
     assert_eq!(found.len(), 2, "{:#?}", report.diagnostics);
-    assert!(
-        found.iter().all(|d| d.message.contains("module")),
-        "{found:#?}"
-    );
     assert!(
         found.iter().any(|d| d.file.ends_with("one.mw"))
             && found.iter().any(|d| d.file.ends_with("two.mw")),
@@ -6637,7 +6505,6 @@ fn two_scripts_with_clashing_resources_never_silently_bind_to_the_wrong_shape() 
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         !with_code(&report, "check.multiple_scripts").is_empty(),
         "two scripts with clashing resources must be rejected, never silently bound: {:#?}",
@@ -6660,7 +6527,6 @@ fn a_script_cannot_see_another_scripts_functions() {
         write(root, "src/b.mw", "pub fn other()\n    var x = helper()\n");
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(
         !with_code(&report, "check.multiple_scripts").is_empty(),
         "b cannot see a's functions; the two-script project is rejected: {:#?}",

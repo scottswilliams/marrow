@@ -1,34 +1,16 @@
 //! Range-for header checks: endpoint typing, the `by` step, the default-step
 //! rule, and the dead-loop / direction-safety rules.
 
-use std::fs;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+mod support;
 
 use marrow_check::check_project;
-use marrow_project::parse_config;
 
-/// A process-unique project directory, so parallel test threads never share one
-/// (a shared dir would let one test's `remove_dir_all` race another's read).
-fn temp_project(source: &str) -> PathBuf {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let root = std::env::temp_dir().join(format!("marrow-range-{}-{id}", std::process::id()));
-    let path = root.join("src/m.mw");
-    fs::create_dir_all(path.parent().unwrap()).expect("create dirs");
-    fs::write(path, source).expect("write source");
-    root
-}
-
-fn config() -> marrow_project::ProjectConfig {
-    parse_config(r#"{ "sourceRoots": ["src"] }"#).expect("config")
-}
+use support::{config, temp_project, write};
 
 /// The diagnostic codes a module's source produces, in report order.
 fn codes(source: &str) -> Vec<String> {
-    let root = temp_project(source);
+    let root = temp_project("range", |root| write(root, "src/m.mw", source));
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     report
         .diagnostics
         .iter()
@@ -37,10 +19,14 @@ fn codes(source: &str) -> Vec<String> {
 }
 
 /// The diagnostic messages a module's source produces, in report order.
+///
+/// Range diagnostics select the indefinite article for the endpoint type name
+/// (`an instant`, not `a instant`); that grammar lives only in the rendered
+/// message, with no typed signal to assert. The two article tests below are the
+/// only coverage of that rule and rely on this helper.
 fn messages(source: &str) -> Vec<String> {
-    let root = temp_project(source);
+    let root = temp_project("range", |root| write(root, "src/m.mw", source));
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     report
         .diagnostics
         .iter()

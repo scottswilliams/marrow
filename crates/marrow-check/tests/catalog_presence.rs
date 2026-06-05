@@ -1,3 +1,5 @@
+mod support;
+
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -7,30 +9,9 @@ use marrow_check::{
     PresenceProofSource, PresenceProofStatus, StoreIndexKeySource, StoredValueMeaning,
     check_project,
 };
-use marrow_project::{
-    CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata, parse_config,
-};
+use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 
-fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&root).expect("create project root");
-    build(&root);
-    root
-}
-
-fn write(root: &Path, relative: &str, contents: &str) {
-    let path = root.join(relative);
-    fs::create_dir_all(path.parent().unwrap()).expect("create dirs");
-    fs::write(path, contents).expect("write file");
-}
-
-fn config() -> marrow_project::ProjectConfig {
-    parse_config(r#"{ "sourceRoots": ["src"] }"#).expect("config")
-}
+use support::{config, temp_project, write};
 
 fn catalog_path(root: &Path) -> PathBuf {
     root.join("marrow.catalog.json")
@@ -93,7 +74,6 @@ fn first_source_check_proposes_catalog_ids_without_writing_accepted_catalog() {
 
     let (report, program) = check_project(&root, &config()).expect("check");
     let accepted_path = catalog_path(&root);
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     assert!(
@@ -176,8 +156,6 @@ fn write_accepted_catalog_is_atomic_and_leaves_no_temp() {
         round_tripped, next,
         "the written file is the complete catalog, not a truncated prefix"
     );
-
-    fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -204,7 +182,6 @@ fn source_only_check_leaves_accepted_catalog_epoch_unchanged() {
 
     let (report, program) = check_project(&root, &config()).expect("check");
     let after = fs::read_to_string(catalog_path(&root)).expect("read after");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     assert_eq!(program.catalog.accepted_epoch, Some(7));
@@ -369,7 +346,6 @@ fn non_active_catalog_entries_and_aliases_do_not_bind_live_source_facts() {
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -413,7 +389,6 @@ fn reserved_catalog_path_blocks_source_reuse_without_intent() {
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -462,7 +437,6 @@ fn retire_reserves_the_path_spelling_against_future_reuse() {
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let proposal = program.catalog.proposal.expect("proposal");
@@ -503,7 +477,6 @@ fn catalog_proposal_ids_do_not_collide_with_accepted_stable_ids() {
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -549,7 +522,6 @@ fn source_rename_without_accepted_catalog_intent_fails_closed() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -593,7 +565,6 @@ fn accepted_catalog_alias_does_not_authorize_source_rollback() {
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -640,7 +611,6 @@ fn accepted_catalog_rename_preserves_stable_id() {
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let module = program.facts.module_id("library").expect("module");
@@ -690,7 +660,6 @@ fn catalog_proposals_preserve_accepted_aliases_and_lifecycle() {
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -746,7 +715,6 @@ fn enum_member_facts_use_catalog_ids_independent_of_source_order() {
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let module = program.facts.module_id("books").expect("module");
@@ -818,7 +786,6 @@ fn enum_field_value_meaning_uses_catalog_member_identity_after_source_reorder() 
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let module = program.facts.module_id("books").expect("module");
@@ -900,7 +867,6 @@ fn enum_index_key_meaning_uses_catalog_member_identity_after_source_reorder() {
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let module = program.facts.module_id("books").expect("module");
@@ -980,7 +946,6 @@ fn enum_field_value_meaning_fails_closed_for_unresolved_bare_enum_names() {
     });
 
     let (_report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     let module = program.facts.module_id("b").expect("module");
     let order = program
@@ -1033,7 +998,6 @@ fn coalesce_rejects_non_saved_function_calls_outside_the_presence_ledger() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1062,7 +1026,6 @@ fn if_exists_narrows_reads_inside_the_then_block() {
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !report
@@ -1100,7 +1063,6 @@ fn if_exists_narrowing_is_key_sensitive() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1130,7 +1092,6 @@ fn if_exists_narrowing_is_binding_sensitive() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1161,7 +1122,6 @@ fn if_exists_narrowing_expires_when_a_key_binding_is_assigned() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1194,7 +1154,6 @@ fn if_exists_narrowing_expires_when_a_key_binding_is_passed_inout() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1227,7 +1186,6 @@ fn if_exists_narrowing_expires_when_a_key_field_is_assigned() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1262,7 +1220,6 @@ fn if_exists_narrowing_expires_when_a_key_field_is_passed_inout() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1296,7 +1253,6 @@ fn if_exists_narrowing_expires_when_nested_condition_mutates_key() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1329,7 +1285,6 @@ fn if_exists_narrowing_ignores_condition_proofs_after_key_mutation() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1359,7 +1314,6 @@ fn if_exists_narrowing_expires_when_saved_field_is_deleted() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1390,7 +1344,6 @@ fn if_exists_narrowing_expires_when_saved_root_is_replaced() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1422,7 +1375,6 @@ fn if_exists_narrowing_expires_when_called_function_writes_saved_data() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1456,7 +1408,6 @@ fn if_exists_narrowing_expires_when_called_function_transitively_writes_saved_da
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1486,7 +1437,6 @@ fn if_exists_narrowing_expires_when_only_child_of_parent_is_deleted() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1516,7 +1466,6 @@ fn unique_index_coalesce_records_presence_proof() {
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !report
@@ -1557,7 +1506,6 @@ fn next_coalesce_records_read_site_resolution() {
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let proof_sources: Vec<_> = program
@@ -1600,7 +1548,6 @@ fn for_loop_over_saved_layer_narrows_iterated_entry_reads() {
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     assert!(
@@ -1629,7 +1576,6 @@ fn unknown_cannot_reenter_a_saved_identity_keyspace() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1657,7 +1603,6 @@ fn values_loop_does_not_narrow_value_as_an_entry_key() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1685,7 +1630,6 @@ fn single_binding_entries_loop_does_not_narrow_entry_as_a_key() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1713,7 +1657,6 @@ fn two_binding_keys_loop_does_not_narrow_ordinal_as_a_key() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1741,7 +1684,6 @@ fn two_binding_reversed_keys_loop_does_not_narrow_ordinal_as_a_key() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1769,7 +1711,6 @@ fn two_binding_saved_path_loop_narrows_the_key_binding() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
@@ -1790,7 +1731,6 @@ fn duplicate_entries_loop_bindings_do_not_narrow_the_visible_value_as_a_key() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1822,7 +1762,6 @@ fn if_exists_narrowing_expires_when_same_condition_calls_saved_writer() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1858,7 +1797,6 @@ fn bare_maybe_present_read_errors_and_resolved_reads_record_allowed_proof_source
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -1952,7 +1890,6 @@ fn evolve_rename_authorizes_a_saved_data_backed_member_rename() {
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !report
@@ -2015,7 +1952,6 @@ fn source_member_rename_without_evolve_intent_still_fails_closed() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -2061,7 +1997,6 @@ fn evolve_retire_marks_the_proposal_entry_reserved() {
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let proposal = program.catalog.proposal.expect("proposal");
@@ -2106,7 +2041,6 @@ fn evolve_retire_of_a_still_declared_resource_member_fails_closed() {
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -2148,7 +2082,6 @@ fn evolve_retire_of_a_still_declared_saved_root_fails_closed() {
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -2197,7 +2130,6 @@ fn evolve_retire_of_a_still_declared_store_index_fails_closed() {
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -2245,7 +2177,6 @@ fn evolve_target_that_resolves_to_nothing_is_diagnosed() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -2294,7 +2225,6 @@ fn evolve_binding_that_would_collide_identity_is_reported_at_check() {
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -2340,7 +2270,6 @@ fn evolve_rename_whose_source_is_still_declared_fails_closed() {
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -2404,7 +2333,6 @@ fn evolve_rename_onto_a_live_accepted_target_fails_closed() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -2452,7 +2380,6 @@ fn two_renames_onto_the_same_target_conflict() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -2484,7 +2411,6 @@ fn evolve_transform_body_reports_undefined_names_and_calls() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -2519,7 +2445,6 @@ fn evolve_default_value_type_mismatch_is_diagnosed() {
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         report
@@ -2569,7 +2494,6 @@ fn proposed_ids_are_not_derived_from_the_member_path() {
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let proposal = program.catalog.proposal.expect("proposal");
@@ -2596,7 +2520,6 @@ fn proposed_ids_use_128_bit_random_shape() {
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let proposal = program.catalog.proposal.expect("proposal");
@@ -2676,7 +2599,6 @@ fn evolve_rename_reads_the_stored_id_rather_than_recomputing_it() {
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !report
@@ -2736,7 +2658,6 @@ fn committed_ids_are_stable_across_rechecks() {
     };
 
     let (recheck, program) = check_project(&root, &config()).expect("recheck");
-    fs::remove_dir_all(&root).ok();
     assert!(!recheck.has_errors(), "{:#?}", recheck.diagnostics);
 
     let module = program.facts.module_id("books").expect("books module");
@@ -2770,7 +2691,6 @@ fn committed_leaf_member_records_its_token_in_the_structural_signature_only() {
         .expect("baseline written");
 
     let json = fs::read_to_string(catalog_path(&root)).expect("read accepted catalog");
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         !json.contains("acceptedLeaf"),
@@ -2818,7 +2738,6 @@ fn committed_keyed_leaf_map_member_folds_its_key_shape_into_the_signature() {
         .expect("baseline written");
 
     let json = fs::read_to_string(catalog_path(&root)).expect("read accepted catalog");
-    fs::remove_dir_all(&root).ok();
 
     let accepted = CatalogMetadata::from_json(&json).expect("accepted catalog parses");
     let tags = accepted
@@ -2861,7 +2780,6 @@ fn member_accepted_before_structural_signatures_were_recorded_is_not_reported_as
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     assert!(
@@ -2886,7 +2804,6 @@ fn distinct_new_members_receive_distinct_ids() {
     });
 
     let (report, program) = check_project(&root, &config()).expect("check");
-    fs::remove_dir_all(&root).ok();
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 
     let proposal = program.catalog.proposal.expect("proposal");

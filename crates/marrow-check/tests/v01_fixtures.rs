@@ -1,48 +1,11 @@
-use std::fs;
-use std::path::{Path, PathBuf};
+mod support;
 
 use marrow_check::check_project;
-use marrow_project::parse_config;
 use marrow_schema::NodeKind;
 
+use support::{config, temp_project, write};
+
 const LIBRARY_SOURCE: &str = include_str!("../../../fixtures/v01/library.mw");
-
-struct TempProject {
-    root: PathBuf,
-}
-
-impl TempProject {
-    fn path(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl Drop for TempProject {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
-    }
-}
-
-fn temp_project(name: &str, build: impl FnOnce(&Path)) -> TempProject {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&root).expect("create project root");
-    build(&root);
-    TempProject { root }
-}
-
-fn write(root: &Path, relative: &str, contents: &str) {
-    let path = root.join(relative);
-    fs::create_dir_all(path.parent().unwrap()).expect("create dirs");
-    fs::write(path, contents).expect("write file");
-}
-
-fn config() -> marrow_project::ProjectConfig {
-    parse_config(r#"{ "sourceRoots": ["src"] }"#).expect("config")
-}
 
 #[test]
 fn v01_library_fixture_checks_clean_and_exposes_store_identity_refs() {
