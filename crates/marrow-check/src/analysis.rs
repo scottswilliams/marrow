@@ -216,7 +216,10 @@ pub(crate) fn analyze_source_project(
                                 first.display()
                             ),
                             span: module.span,
-                            payload: DiagnosticPayload::None,
+                            payload: DiagnosticPayload::DuplicateModule {
+                                name: expected.clone(),
+                                first_file: first.clone(),
+                            },
                         });
                     } else {
                         declared.insert(expected.clone(), file.path.clone());

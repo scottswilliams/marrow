@@ -232,7 +232,8 @@ pub const SCHEMA_DUPLICATE_ROOT_OWNER: &str = "schema.duplicate_root_owner";
 /// import names the module it failed to resolve, an unresolved call names the
 /// function, and an unknown type names the type spelling. Schema diagnostics carry
 /// the schema compiler's structured error kind. Duplicate declarations carry the
-/// duplicated name and first declaration span. Duplicate root ownership names the
+/// duplicated name and first declaration span. Duplicate modules carry the
+/// duplicated name and first source file. Duplicate root ownership names the
 /// saved root and first owning file. Other diagnostics carry
 /// [`DiagnosticPayload::None`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -253,6 +254,8 @@ pub enum DiagnosticPayload {
         name: String,
         first_span: SourceSpan,
     },
+    /// `check.duplicate_module`: duplicated module name and first source file.
+    DuplicateModule { name: String, first_file: PathBuf },
     /// `schema.duplicate_root_owner`: saved root and first owning source file.
     DuplicateRootOwner { root: String, first_owner: PathBuf },
 }
@@ -811,6 +814,7 @@ impl TestResolutionSuppression {
             DiagnosticPayload::UnknownType(name) => self.references_hidden_type(name),
             DiagnosticPayload::Schema(_)
             | DiagnosticPayload::DuplicateDeclaration { .. }
+            | DiagnosticPayload::DuplicateModule { .. }
             | DiagnosticPayload::DuplicateRootOwner { .. }
             | DiagnosticPayload::None => false,
         }
@@ -1063,7 +1067,10 @@ fn split_duplicate_test_modules(
                     first.display()
                 ),
                 span: SourceSpan::default(),
-                payload: DiagnosticPayload::None,
+                payload: DiagnosticPayload::DuplicateModule {
+                    name: module.name.clone(),
+                    first_file: (*first).clone(),
+                },
             });
             duplicates.insert(module.name);
         } else {

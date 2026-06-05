@@ -586,12 +586,23 @@ fn analyze_project_reports_duplicate_when_test_module_collides_with_source_modul
 
     let snapshot = analyze_project(&root, &cfg, &sources).expect("analyze");
 
-    assert!(
-        snapshot.report.diagnostics.iter().any(|d| {
-            d.code == "check.duplicate_module" && d.file.ends_with(Path::new("tests/app.mw"))
-        }),
-        "a configured test module must not silently duplicate a source module: {:#?}",
-        snapshot.report.diagnostics
+    let duplicate = snapshot
+        .report
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "check.duplicate_module" && d.file.ends_with(Path::new("tests/app.mw")))
+        .unwrap_or_else(|| {
+            panic!(
+                "a configured test module must not silently duplicate a source module: {:#?}",
+                snapshot.report.diagnostics
+            )
+        });
+    assert_eq!(
+        duplicate.payload,
+        DiagnosticPayload::DuplicateModule {
+            name: "tests::app".into(),
+            first_file: root.join("src/tests/app.mw"),
+        }
     );
     assert!(
         !snapshot
@@ -1755,10 +1766,12 @@ fn reports_duplicate_module_across_source_roots() {
         .filter(|d| d.code == "check.duplicate_module")
         .collect();
     assert_eq!(duplicates.len(), 1, "{:#?}", report.diagnostics);
-    assert!(
-        duplicates[0].message.contains("shared"),
-        "{}",
-        duplicates[0].message
+    assert_eq!(
+        duplicates[0].payload,
+        DiagnosticPayload::DuplicateModule {
+            name: "shared".into(),
+            first_file: root.join("lib/shared.mw"),
+        }
     );
 }
 
