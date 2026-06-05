@@ -2,6 +2,8 @@
 //! respecting lexical scope (shadowing) and `use` aliases, plus rename-safety
 //! classification. Exercises the same analysis path editor tooling uses.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 
 use marrow_check::binding::{RenameSafety, SymbolKind};
@@ -9,19 +11,7 @@ use marrow_check::{
     AnalysisSnapshot, CheckedStmt, ProjectSources, analyze_project, build_binding_index,
 };
 
-fn temp_root(name: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&root).expect("create project root");
-    root
-}
-
-fn config() -> marrow_project::ProjectConfig {
-    marrow_project::parse_config(r#"{ "sourceRoots": ["src"] }"#).expect("config")
-}
+use support::{config, temp_root};
 
 /// Analyze a set of `(relative-path, source)` files written under `src` and build
 /// the binding index over the resulting snapshot. Returns the index and the
@@ -46,7 +36,6 @@ fn analyze_snapshot(name: &str, files: &[(&str, &str)]) -> (AnalysisSnapshot, Ve
         paths.push(path);
     }
     let snapshot = analyze_project(&root, &config(), &sources).expect("analyze");
-    std::fs::remove_dir_all(&root).ok();
     (snapshot, paths)
 }
 

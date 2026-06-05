@@ -12,13 +12,15 @@
 //! check), and the absence assertions reject any such definition regardless of
 //! whitespace or visibility prefix.
 
+/// Whether `c` separates two identifiers (so it bounds an identifier token).
+fn boundary(c: char) -> bool {
+    !(c.is_alphanumeric() || c == '_')
+}
+
 /// Whether `name` occurs in `src` as a standalone identifier, bounded on both
 /// sides by a non-identifier character (so `name` never matches inside `name_v2`
 /// or `prefix_name`).
 fn mentions_ident(src: &str, name: &str) -> bool {
-    fn boundary(c: char) -> bool {
-        !(c.is_alphanumeric() || c == '_')
-    }
     src.match_indices(name).any(|(start, _)| {
         let before_ok = start == 0 || src[..start].chars().next_back().is_some_and(boundary);
         let after_ok = src[start + name.len()..]
@@ -29,13 +31,20 @@ fn mentions_ident(src: &str, name: &str) -> bool {
     })
 }
 
-/// Whether `src` defines a function named exactly `name` (followed by `(` or a
-/// generic `<`, never a longer identifier such as `name_v2`).
+/// Whether `src` defines a function named exactly `name`: the `fn` keyword is a
+/// standalone token (not the tail of an identifier such as `myfn`), `name`
+/// follows it as a whole identifier, and a `(` or generic `<` opens the
+/// signature.
 fn defines_fn(src: &str, name: &str) -> bool {
     src.match_indices(name).any(|(start, _)| {
         let before = src[..start].trim_end();
         let after = src[start + name.len()..].trim_start();
-        before.ends_with("fn") && after.starts_with(['(', '<'])
+        let fn_keyword = before.ends_with("fn")
+            && before[..before.len() - "fn".len()]
+                .chars()
+                .next_back()
+                .is_none_or(boundary);
+        fn_keyword && after.starts_with(['(', '<'])
     })
 }
 

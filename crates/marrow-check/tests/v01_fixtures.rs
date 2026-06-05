@@ -12,7 +12,7 @@ fn v01_library_fixture_checks_clean_and_exposes_store_identity_refs() {
     let root = temp_project("v01-library-check", |root| {
         write(root, "src/v01/library.mw", LIBRARY_SOURCE);
     });
-    let (report, program) = check_project(root.path(), &config()).expect("check");
+    let (report, program) = check_project(&root, &config()).expect("check");
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 

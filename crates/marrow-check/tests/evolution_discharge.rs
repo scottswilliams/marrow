@@ -708,10 +708,9 @@ fn non_canonical_temporal_default_fails_closed() {
         "{:#?}",
         result.verdicts
     );
-    // The diagnostic names the offending member by its typed catalog id. The
-    // non-encodable-default cause itself ("out of range") has no typed `RepairReason`
-    // variant yet (a future evolution lane adds one carrying `ConstDefaultError`), so
-    // the cause is asserted through the message until that lands.
+    // The diagnostic names the offending member by its typed catalog id; the
+    // non-encodable-default cause has no typed `RepairReason` variant, so it is
+    // asserted through the message.
     let day_diagnostic = diagnostics
         .iter()
         .find(|diagnostic| diagnostic.catalog_id.as_str() == day_id)
@@ -764,10 +763,9 @@ fn non_constant_default_fails_closed_with_transform_hint() {
         "{:#?}",
         result.verdicts
     );
-    // The diagnostic names the member by its typed catalog id. The non-constant cause
+    // The diagnostic names the member by its typed catalog id; the non-constant cause
     // ("a varying fill is a transform, not a default") has no typed `RepairReason`
-    // variant yet, so it is asserted through the message until a future evolution lane
-    // carries `ConstDefaultError` on the verdict.
+    // variant, so it is asserted through the message.
     let pages_diagnostic = diagnostics
         .iter()
         .find(|diagnostic| diagnostic.catalog_id.as_str() == pages_id)
@@ -812,10 +810,8 @@ fn required_without_default_fails_naming_records() {
     let pages_id = member_catalog_id(&place, "pages");
     assert!(!witness.is_activatable(), "{witness:#?}");
     // Both seeded records lack the new required member: the typed count proves the
-    // record total, and the diagnostic names the member by its catalog id. The
-    // per-record key list ("1", "2") lives only in the message; a future evolution
-    // lane that carries a typed record-key sample on the witness would let that be
-    // asserted typed too.
+    // record total and the diagnostic names the member by its catalog id; the
+    // per-record key list ("1", "2") is carried only in the message.
     assert_eq!(witness.counts.records_lacking_member, 2, "{witness:#?}");
     assert!(
         diagnostics

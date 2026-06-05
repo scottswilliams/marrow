@@ -1,42 +1,16 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+mod support;
 
 use marrow_check::{PathSegment, StorePathClass, check_project, classify_store_path};
-use marrow_project::parse_config;
 use marrow_store::key::SavedKey;
 use marrow_store::value::ScalarType;
 
-static NEXT_TEMP_PROJECT: AtomicU64 = AtomicU64::new(0);
-
-fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_nanos();
-    let serial = NEXT_TEMP_PROJECT.fetch_add(1, Ordering::Relaxed);
-    let root = std::env::temp_dir().join(format!(
-        "marrow-{name}-{}-{nanos}-{serial}",
-        std::process::id()
-    ));
-    fs::create_dir_all(&root).expect("create project root");
-    build(&root);
-    root
-}
-
-fn write(root: &Path, relative: &str, contents: &str) {
-    let path = root.join(relative);
-    fs::create_dir_all(path.parent().unwrap()).expect("create dirs");
-    fs::write(path, contents).expect("write file");
-}
+use support::{config, temp_project, write};
 
 fn checked_program(source: &str) -> marrow_check::CheckedProgram {
     let root = temp_project("durable-path", |root| {
         write(root, "src/app.mw", source);
     });
-    let config = parse_config(r#"{ "sourceRoots": ["src"] }"#).expect("config");
-    let (report, program) = check_project(&root, &config).expect("check project");
-    fs::remove_dir_all(&root).ok();
+    let (report, program) = check_project(&root, &config()).expect("check project");
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     program
 }

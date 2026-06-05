@@ -1,10 +1,9 @@
 //! Shared project-setup harness for the `marrow-check` integration tests.
 //!
-//! Every checker test drives the real `check_project` pipeline over a throwaway
-//! on-disk project. This module is the single owner of that setup: a temp
-//! directory keyed by name plus a process- and call-unique suffix (so parallel
-//! test threads never share a root and one test's cleanup cannot race another's
-//! read), a recursive file writer, and the standard `src`-rooted config.
+//! Every checker test drives the real `check_project` or `analyze_project`
+//! pipeline over a throwaway on-disk project. This module is the single owner of
+//! that setup: a uniquely named temp directory, a recursive file writer, and the
+//! standard `src`-rooted config.
 //!
 //! [`TempProject`] removes its directory on drop, so a test never cleans up by
 //! hand and a panicking assertion still releases the directory.
@@ -25,16 +24,11 @@ static NEXT_PROJECT_SERIAL: AtomicU64 = AtomicU64::new(0);
 
 /// A temporary project directory removed when the value is dropped.
 ///
-/// Derefs to its root [`Path`], so it passes straight into `check_project` and
-/// any other `&Path` consumer without an explicit accessor.
+/// Derefs to its root [`Path`], so it passes straight into `check_project`,
+/// `analyze_project`, and any other `&Path` consumer without an explicit
+/// accessor.
 pub struct TempProject {
     root: PathBuf,
-}
-
-impl TempProject {
-    pub fn path(&self) -> &Path {
-        &self.root
-    }
 }
 
 impl Deref for TempProject {
@@ -45,20 +39,18 @@ impl Deref for TempProject {
     }
 }
 
-impl AsRef<Path> for TempProject {
-    fn as_ref(&self) -> &Path {
-        &self.root
-    }
-}
-
 impl Drop for TempProject {
     fn drop(&mut self) {
         fs::remove_dir_all(&self.root).ok();
     }
 }
 
-/// Create a uniquely named project root and let `build` populate its files.
-pub fn temp_project(name: &str, build: impl FnOnce(&Path)) -> TempProject {
+/// Create an empty, uniquely named project root removed on drop.
+///
+/// The name is suffixed with the process id plus a nanosecond clock reading and
+/// a process-unique serial, so parallel test threads never share a directory and
+/// one test's cleanup cannot race another's read.
+pub fn temp_root(name: &str) -> TempProject {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock after unix epoch")
@@ -69,8 +61,14 @@ pub fn temp_project(name: &str, build: impl FnOnce(&Path)) -> TempProject {
         std::process::id()
     ));
     fs::create_dir_all(&root).expect("create project root");
-    build(&root);
     TempProject { root }
+}
+
+/// Create a uniquely named project root and let `build` populate its files.
+pub fn temp_project(name: &str, build: impl FnOnce(&Path)) -> TempProject {
+    let root = temp_root(name);
+    build(&root);
+    root
 }
 
 /// Write `contents` to `root/relative`, creating parent directories as needed.

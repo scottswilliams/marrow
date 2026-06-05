@@ -1502,6 +1502,7 @@ fn saved_inout_through_resource_reference_is_rejected() {
 
     let found = with_code(&report, "check.rejected_surface");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert!(found[0].message.contains("saved `inout`"), "{found:#?}");
 }
 
 #[test]
@@ -1516,6 +1517,7 @@ fn saved_inout_through_index_entry_is_rejected_surface() {
 
     let found = with_code(&report, "check.rejected_surface");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert!(found[0].message.contains("saved `inout`"), "{found:#?}");
 }
 
 #[test]
@@ -1530,6 +1532,7 @@ fn malformed_saved_inout_through_keyed_root_field_is_rejected() {
 
     let found = with_code(&report, "check.rejected_surface");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert!(found[0].message.contains("saved `inout`"), "{found:#?}");
 }
 
 #[test]
@@ -1544,6 +1547,7 @@ fn malformed_saved_inout_through_index_branch_is_rejected() {
 
     let found = with_code(&report, "check.rejected_surface");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert!(found[0].message.contains("saved `inout`"), "{found:#?}");
 }
 
 #[test]
@@ -3432,6 +3436,7 @@ fn append_to_a_group_layer_is_a_check_error() {
         "check.call_argument",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(found[0].message.contains("leaf layer"), "{found:#?}");
 }
 
 #[test]

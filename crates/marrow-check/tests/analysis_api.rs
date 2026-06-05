@@ -2,6 +2,8 @@
 //! reconstructing the cursor's lexical scope exactly as the checker does and
 //! emitting no diagnostics of their own.
 
+mod support;
+
 use std::path::PathBuf;
 
 use marrow_check::program::MarrowType;
@@ -9,19 +11,7 @@ use marrow_check::{CheckedProgram, ProjectSources, analyze_project, scope_at, ty
 use marrow_schema::ScalarType;
 use marrow_syntax::ParsedSource;
 
-fn temp_root(name: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&root).expect("create project root");
-    root
-}
-
-fn config() -> marrow_project::ProjectConfig {
-    marrow_project::parse_config(r#"{ "sourceRoots": ["src"] }"#).expect("config")
-}
+use support::{config, temp_root};
 
 /// Analyze a single `src/m.mw` source and return the program plus the parse for
 /// that file, so a test can position into the buffer it controls. The source is
@@ -34,7 +24,6 @@ fn analyze(name: &str, source: &str) -> (CheckedProgram, ParsedSource, PathBuf) 
     std::fs::write(&path, source).expect("write source");
     let sources = ProjectSources::new().with(&path, source);
     let snapshot = analyze_project(&root, &config(), &sources).expect("analyze");
-    std::fs::remove_dir_all(&root).ok();
     let parsed = snapshot
         .files
         .into_iter()
@@ -291,7 +280,6 @@ fn type_at_and_scope_at_emit_no_diagnostics() {
     let sources = ProjectSources::new().with(&path, source);
 
     let snapshot = analyze_project(&root, &config(), &sources).expect("analyze");
-    std::fs::remove_dir_all(&root).ok();
     let before = snapshot.report.diagnostics.clone();
     assert!(!snapshot.report.has_errors(), "{before:#?}");
     let program = &snapshot.program;

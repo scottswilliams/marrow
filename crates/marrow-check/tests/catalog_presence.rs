@@ -134,7 +134,7 @@ fn write_accepted_catalog_is_atomic_and_leaves_no_temp() {
     ]);
     marrow_check::write_accepted_catalog(&root, &config(), &next).expect("write accepted catalog");
 
-    let entries: Vec<String> = fs::read_dir(&root)
+    let entries: Vec<String> = fs::read_dir(&*root)
         .expect("read project root")
         .map(|entry| {
             entry
