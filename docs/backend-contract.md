@@ -115,8 +115,9 @@ Store-level metadata is written through typed meta cells:
 | Commit metadata | `04` | Commit id, catalog epoch, layout epoch, source digest, profile digest, changed root/index catalog IDs, and activation evidence |
 
 The v0 engine profile records layout epoch and key profile version `0`. Its
-digest is deterministic FNV-1a 64-bit over a fixed profile label, the key
-profile version, and the big-endian layout epoch.
+profile fingerprint is deterministic, non-cryptographic, and scoped only to
+engine-profile equality; catalog, source, evolution, and commit fences use
+`sha256:<hex>` digests instead.
 
 Commit metadata stores the commit id, catalog epoch, layout epoch, activation
 counts, and target counts as big-endian `u64` values. Strings, the engine

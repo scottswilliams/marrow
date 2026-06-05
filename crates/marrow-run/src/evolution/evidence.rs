@@ -1,18 +1,20 @@
+use std::fmt::Write as _;
+
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::DataPathSegment;
-
-const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-const FNV_PRIME: u64 = 0x100000001b3;
+use sha2::{Digest, Sha256};
 
 #[derive(Clone)]
 pub(super) struct EvidenceDigest {
-    hash: u64,
+    hash: Sha256,
 }
 
 impl EvidenceDigest {
     pub(super) fn new(label: &str) -> Self {
-        let mut digest = Self { hash: FNV_OFFSET };
+        let mut digest = Self {
+            hash: Sha256::new(),
+        };
         digest.bytes(label.as_bytes());
         digest
     }
@@ -58,7 +60,13 @@ impl EvidenceDigest {
     }
 
     pub(super) fn finish(&self) -> String {
-        format!("fnv1a64:{:016x}", self.hash)
+        let digest = self.finish_bytes();
+        let mut out = String::with_capacity("sha256:".len() + digest.len() * 2);
+        out.push_str("sha256:");
+        for byte in digest {
+            write!(&mut out, "{byte:02x}").expect("writing to String cannot fail");
+        }
+        out
     }
 
     fn saved_key(&mut self, key: &SavedKey) {
@@ -95,10 +103,14 @@ impl EvidenceDigest {
     }
 
     fn raw(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.hash ^= u64::from(*byte);
-            self.hash = self.hash.wrapping_mul(FNV_PRIME);
-        }
+        self.hash.update(bytes);
+    }
+
+    fn finish_bytes(&self) -> [u8; 32] {
+        let digest = self.hash.clone().finalize();
+        let mut bytes = [0u8; 32];
+        bytes.copy_from_slice(&digest);
+        bytes
     }
 }
 
@@ -120,26 +132,38 @@ pub(super) fn retire_evidence_digest(
     digest.finish()
 }
 
+/// Bounded, order-independent evidence for rebuilt index rows. Expected rows are
+/// derived from saved records while actual rows are visited by index order, so the
+/// summary cannot depend on traversal order or retain every row digest.
 #[derive(Default)]
 pub(super) struct EvidenceSetDigest {
     count: u64,
-    sum: u64,
-    xor: u64,
+    sum: [u64; 4],
+    xor: [u64; 4],
 }
 
 impl EvidenceSetDigest {
     pub(super) fn add(&mut self, row: EvidenceDigest) {
-        let hash = row.hash;
+        let hash = row.finish_bytes();
         self.count += 1;
-        self.sum = self.sum.wrapping_add(hash);
-        self.xor ^= hash;
+        for (slot, chunk) in hash.chunks_exact(8).enumerate() {
+            let mut bytes = [0u8; 8];
+            bytes.copy_from_slice(chunk);
+            let word = u64::from_be_bytes(bytes);
+            self.sum[slot] = self.sum[slot].wrapping_add(word);
+            self.xor[slot] ^= word;
+        }
     }
 
     pub(super) fn finish(&self, label: &str) -> String {
         let mut digest = EvidenceDigest::new(label);
         digest.u64(self.count);
-        digest.u64(self.sum);
-        digest.u64(self.xor);
+        for word in self.sum {
+            digest.u64(word);
+        }
+        for word in self.xor {
+            digest.u64(word);
+        }
         digest.finish()
     }
 }

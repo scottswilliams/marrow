@@ -9,7 +9,7 @@ use crate::cell::{
 };
 use crate::key::{SavedKey, decode_key_value, encode_key_value};
 
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+const CHECKSUM_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 const TARGET_VERSION_V0: u8 = 0;
 const KIND_NODE: u8 = 0;
@@ -356,7 +356,7 @@ fn fold_chunk(hash: u64, bytes: &[u8]) -> u64 {
 fn fold(mut hash: u64, bytes: &[u8]) -> u64 {
     for &byte in bytes {
         hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
+        hash = hash.wrapping_mul(CHECKSUM_PRIME);
     }
     hash
 }

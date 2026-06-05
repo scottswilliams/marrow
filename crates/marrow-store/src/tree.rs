@@ -1759,11 +1759,15 @@ mod tests {
                 catalog_id: catalog("cat_00000000000000000000000000000005"),
                 records_backfilled: 2,
                 target_records: 3,
-                evidence_digest: "fnv1a64:0000000000000005".to_string(),
+                evidence_digest:
+                    "sha256:0000000000000000000000000000000000000000000000000000000000000005"
+                        .to_string(),
             }],
             activation_indexes_rebuilt: 1,
             activation_records_retired: 4,
-            activation_retire_evidence_digest: "fnv1a64:0000000000000006".to_string(),
+            activation_retire_evidence_digest:
+                "sha256:0000000000000000000000000000000000000000000000000000000000000006"
+                    .to_string(),
             activation_records_retired_by_id: vec![
                 (catalog("cat_00000000000000000000000000000003"), 3),
                 (catalog("cat_00000000000000000000000000000004"), 1),
@@ -1796,12 +1800,19 @@ mod tests {
             commit_id: 7,
             catalog_epoch: 3,
             layout_epoch: 0,
-            source_digest: "fnv1a64:00000000deadbeef".to_string(),
+            source_digest:
+                "sha256:00000000000000000000000000000000000000000000000000000000deadbeef"
+                    .to_string(),
             engine_profile_digest: [1, 2, 3, 4, 5, 6, 7, 8],
             changed_root_catalog_ids: Vec::new(),
             changed_index_catalog_ids: Vec::new(),
-            activation_evolution_digest: "fnv1a64:00000000feedface".to_string(),
-            activation_proposal_catalog_digest: Some("fnv1a64:00000000c001d00d".to_string()),
+            activation_evolution_digest:
+                "sha256:00000000000000000000000000000000000000000000000000000000feedface"
+                    .to_string(),
+            activation_proposal_catalog_digest: Some(
+                "sha256:00000000000000000000000000000000000000000000000000000000c001d00d"
+                    .to_string(),
+            ),
             activation_proposal_new_catalog_ids: vec![catalog(
                 "cat_00000000000000000000000000000005",
             )],
@@ -1809,7 +1820,9 @@ mod tests {
             activation_default_records_by_id: Vec::new(),
             activation_indexes_rebuilt: 0,
             activation_records_retired: 0,
-            activation_retire_evidence_digest: "fnv1a64:0000000000000000".to_string(),
+            activation_retire_evidence_digest:
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                    .to_string(),
             activation_records_retired_by_id: Vec::new(),
             activation_records_transformed: 0,
         };

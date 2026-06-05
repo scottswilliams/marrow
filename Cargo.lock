@@ -215,6 +215,7 @@ dependencies = [
  "marrow-schema",
  "marrow-store",
  "marrow-syntax",
+ "sha2",
  "tempfile",
 ]
 

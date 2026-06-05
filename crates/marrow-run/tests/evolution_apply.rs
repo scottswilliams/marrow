@@ -385,8 +385,11 @@ fn default_receipt_is_bounded_for_many_records() {
     let evidence = &commit.activation_default_records_by_id[0];
     assert_eq!(evidence.records_backfilled, 128);
     assert_eq!(evidence.target_records, 128);
-    assert!(evidence.evidence_digest.starts_with("fnv1a64:"));
-    assert!(evidence.evidence_digest.len() <= "fnv1a64:ffffffffffffffff".len());
+    assert!(evidence.evidence_digest.starts_with("sha256:"));
+    assert_eq!(
+        evidence.evidence_digest.len(),
+        "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".len()
+    );
 }
 
 #[test]
@@ -398,7 +401,7 @@ fn completion_rejects_forged_default_receipt_digest() {
         .expect("read commit")
         .expect("activation commit");
     commit.activation_default_records_by_id[0].evidence_digest =
-        "fnv1a64:ffffffffffffffff".to_string();
+        "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string();
     store
         .write_commit_metadata(&commit)
         .expect("forge default evidence");

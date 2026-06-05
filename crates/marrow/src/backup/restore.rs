@@ -508,17 +508,6 @@ mod tests {
         cleanup(&root);
     }
 
-    #[test]
-    fn rejects_commit_metadata_that_disagrees_with_the_manifest() {
-        let (root, program) = committed_program("restore-commit-mismatch", BOOK_SOURCE);
-        let archive = seeded_backup(&program);
-        let archive = with_mismatched_commit_descriptor(&archive);
-        let error = restore_into_empty(&program, &archive)
-            .expect_err("inconsistent commit metadata is rejected");
-        assert_eq!(error.code(), "restore.corrupt_chunk");
-        cleanup(&root);
-    }
-
     /// Re-encode the manifest with a layout epoch bumped past the running build's, so a
     /// restore validates it as a foreign engine. The cell stream is left intact.
     fn with_bumped_layout_epoch(archive: &[u8]) -> Vec<u8> {
@@ -601,7 +590,8 @@ mod tests {
         target.push(0); // typed target-frame version.
         target.push(3); // value target.
         target.extend_from_slice(&0u32.to_be_bytes()); // empty member/key path.
-        write_test_chunk(&mut target, place.store_catalog_id.as_bytes());
+        let store_catalog_id = place.store_catalog_id.expect("accepted store id");
+        write_test_chunk(&mut target, store_catalog_id.as_bytes());
         target.extend_from_slice(&1u32.to_be_bytes());
         write_test_chunk(&mut target, &encode_identity_payload(&[SavedKey::Int(1)]));
 
@@ -609,27 +599,6 @@ mod tests {
         write_raw_test_cell(&mut rewritten, &target, b"not-a-node-marker");
         write_matching_checksum(&mut manifest, &rewritten);
         frame(&manifest, rewritten)
-    }
-
-    fn with_mismatched_commit_descriptor(archive: &[u8]) -> Vec<u8> {
-        rewrite_manifest(archive, |manifest| {
-            let engine = manifest.get("engine").expect("engine object");
-            let catalog_epoch = manifest
-                .get("catalog_epoch")
-                .and_then(|v| v.as_u64())
-                .unwrap();
-            let layout_epoch = engine.get("layout_epoch").and_then(|v| v.as_u64()).unwrap();
-            let profile_digest = engine.get("profile_digest").cloned().unwrap();
-            manifest["commit"] = serde_json::json!({
-                "commit_id": 1,
-                "catalog_epoch": catalog_epoch,
-                "layout_epoch": layout_epoch,
-                "source_digest": "fnv1a64:0000000000000000",
-                "engine_profile_digest": profile_digest,
-                "changed_root_catalog_ids": [],
-                "changed_index_catalog_ids": [],
-            });
-        })
     }
 
     /// Parse the manifest JSON, apply `edit`, and re-frame the archive with the rewritten

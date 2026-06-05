@@ -23,7 +23,7 @@ const MAGIC: &[u8; 8] = b"MARROWBK";
 const MAX_MANIFEST_BYTES: u32 = 16 * 1024 * 1024;
 const MAX_CELL_BYTES: u32 = 256 * 1024 * 1024;
 
-const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const CHECKSUM_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 
 /// Fold one cell's framed bytes into the running checksum, exactly as they are
 /// written, so the write and read sides agree.
@@ -31,7 +31,7 @@ pub(super) fn checksum_cell(hash: u64, cell: TreeBackupCell<'_>) -> u64 {
     cell.fold_checksum(hash)
 }
 
-pub(super) const CHECKSUM_SEED: u64 = FNV_OFFSET;
+pub(super) const CHECKSUM_SEED: u64 = CHECKSUM_OFFSET;
 
 pub(super) fn write_header(
     out: &mut impl Write,
@@ -344,11 +344,11 @@ mod tests {
             "commit_id": 1,
             "catalog_epoch": 2,
             "layout_epoch": 0,
-            "source_digest": "fnv1a64:0000000000000001",
+            "source_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
             "engine_profile_digest": "0102030405060708",
             "changed_root_catalog_ids": [],
             "changed_index_catalog_ids": [],
-            "activation_evolution_digest": "fnv1a64:0000000000000002",
+            "activation_evolution_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
             "activation_proposal_catalog_digest": null,
             "activation_proposal_new_catalog_ids": [],
             "activation_records_backfilled": 0,
@@ -359,7 +359,7 @@ mod tests {
             }],
             "activation_indexes_rebuilt": 0,
             "activation_records_retired": 0,
-            "activation_retire_evidence_digest": "fnv1a64:0000000000000000",
+            "activation_retire_evidence_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
             "activation_records_retired_by_id": [],
             "activation_records_transformed": 0,
         });

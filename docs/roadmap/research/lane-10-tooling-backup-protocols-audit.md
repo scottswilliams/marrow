@@ -100,7 +100,7 @@ Protocol-conformance debt. LSP position encoding is not yet fully spec-correct f
 
 Restore policy ambiguity. Restore validates declared cells and rebuilds indexes, but permits orphan data cells to remain for later integrity reporting. That is a reasonable faithfulness policy, yet it must be named as such. Otherwise "restore verifies backup" will be misread as "restored store has no extra unreachable data."
 
-Checksum overclaim risk. The backup archive checksum is suitable for accidental corruption detection, not adversarial tamper resistance. Do not build security claims on the FNV-style checksum.
+Checksum overclaim risk. The backup archive checksum is suitable for accidental corruption detection, not adversarial tamper resistance. Do not build security claims on the archive checksum.
 
 CLI product sprawl. The v0.1 CLI already lists check, evolve, fmt, run, test, data, explain, backup, restore, lsp, and serve. Every new subcommand must justify why it is a view over existing facts rather than a new product surface.
 

@@ -28,7 +28,7 @@ impl EngineProfile {
     }
 
     pub fn digest_bytes(&self) -> EngineProfileDigest {
-        fnv1a64(&self.digest_preimage()).to_be_bytes()
+        engine_profile_hash64(&self.digest_preimage()).to_be_bytes()
     }
 
     pub fn digest_hex(&self) -> String {
@@ -131,7 +131,8 @@ pub(crate) fn decode_commit_metadata(bytes: &[u8]) -> Result<CommitMetadata, Sto
     let activation_records_retired_by_id = cursor.take_retire_counts()?;
     let activation_default_records_by_id = cursor.take_default_counts()?;
     let activation_proposal_new_catalog_ids = cursor.take_catalog_ids()?;
-    let activation_proposal_catalog_digest = (!proposal_digest.is_empty()).then_some(proposal_digest);
+    let activation_proposal_catalog_digest =
+        (!proposal_digest.is_empty()).then_some(proposal_digest);
     if !cursor.is_empty() {
         return Err(corrupt_metadata(bytes));
     }
@@ -156,7 +157,7 @@ pub(crate) fn decode_commit_metadata(bytes: &[u8]) -> Result<CommitMetadata, Sto
     })
 }
 
-fn fnv1a64(bytes: &[u8]) -> u64 {
+fn engine_profile_hash64(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in bytes {
         hash ^= u64::from(*byte);
