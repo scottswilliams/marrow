@@ -12,7 +12,7 @@ use crate::env::Env;
 use crate::error::{RUN_UNBOUND_NAME, RuntimeError, assign_error, type_error, unsupported};
 use crate::expr::eval_expr;
 use crate::read::read_local_field;
-use crate::value::Value;
+use crate::value::{Value, value_scalar_type};
 use crate::write_dispatch::write_local_field;
 
 pub(crate) fn bind_arguments(
@@ -55,9 +55,9 @@ pub(crate) fn bind_arguments_with_modes(
         let entry = match arg.mode {
             None => (eval_expr(&arg.value, env)?, None),
             Some(ArgMode::InOut) => {
-                let place = resolve_read_write_place(&arg.value, span)?;
+                let place = Place::from_expr(&arg.value, span)?;
                 let current = place.read(span, env)?;
-                (current, Some(place.into_write_place()))
+                (current, Some(place))
             }
         };
         place_argument(&mut slots, index, entry, params, span)?;
@@ -249,24 +249,6 @@ pub(crate) fn checked_value_accepts(expected: &CheckedRuntimeValueType, value: &
     }
 }
 
-fn value_scalar_type(value: &Value) -> Option<ScalarType> {
-    match value {
-        Value::Int(_) => Some(ScalarType::Int),
-        Value::Bool(_) => Some(ScalarType::Bool),
-        Value::Str(_) => Some(ScalarType::Str),
-        Value::Instant(_) => Some(ScalarType::Instant),
-        Value::Date(_) => Some(ScalarType::Date),
-        Value::Duration(_) => Some(ScalarType::Duration),
-        Value::Decimal(_) => Some(ScalarType::Decimal),
-        Value::Bytes(_) => Some(ScalarType::Bytes),
-        Value::Sequence(_)
-        | Value::LocalTree(_)
-        | Value::Resource(_)
-        | Value::Identity(_)
-        | Value::Enum(_) => None,
-    }
-}
-
 fn identity_keys_match(declared: &[KeyDef], keys: &[SavedKey]) -> bool {
     declared.len() == keys.len()
         && declared
@@ -285,64 +267,51 @@ fn modes_match(arg: Option<ArgMode>, param: Option<ParamMode>) -> bool {
     )
 }
 
+/// A local assignable place an `inout` argument reads its current value from and
+/// writes its final value back to: either a local binding or a field of one. The
+/// names come straight from a single-segment `ExecExpr::Name`, so they are bare
+/// strings rather than checked identifiers.
 pub(crate) enum Place {
     Local(String),
     LocalField { base: String, field: String },
 }
 
-enum ReadWritePlace {
-    Local(String),
-    LocalField { base: String, field: String },
-}
-
-fn resolve_read_write_place(
-    expr: &ExecExpr,
-    span: SourceSpan,
-) -> Result<ReadWritePlace, RuntimeError> {
-    match expr {
-        ExecExpr::Name { segments, .. } if segments.len() == 1 => {
-            Ok(ReadWritePlace::Local(segments[0].clone()))
+impl Place {
+    fn from_expr(expr: &ExecExpr, span: SourceSpan) -> Result<Place, RuntimeError> {
+        match expr {
+            ExecExpr::Name { segments, .. } if segments.len() == 1 => {
+                Ok(Place::Local(segments[0].clone()))
+            }
+            ExecExpr::Field { base, name, .. } if matches!(base.as_ref(), ExecExpr::Name { segments, .. } if segments.len() == 1) =>
+            {
+                let ExecExpr::Name { segments, .. } = base.as_ref() else {
+                    unreachable!("guarded by the match arm")
+                };
+                Ok(Place::LocalField {
+                    base: segments[0].clone(),
+                    field: name.clone(),
+                })
+            }
+            _ => Err(unsupported(
+                "an inout argument that is not a local assignable place",
+                span,
+            )),
         }
-        ExecExpr::Field { base, name, .. } if matches!(base.as_ref(), ExecExpr::Name { segments, .. } if segments.len() == 1) =>
-        {
-            let ExecExpr::Name { segments, .. } = base.as_ref() else {
-                unreachable!("guarded by the match arm")
-            };
-            Ok(ReadWritePlace::LocalField {
-                base: segments[0].clone(),
-                field: name.clone(),
-            })
-        }
-        _ => Err(unsupported(
-            "an inout argument that is not a local assignable place",
-            span,
-        )),
     }
-}
 
-impl ReadWritePlace {
     fn read(&self, span: SourceSpan, env: &mut Env<'_>) -> Result<Value, RuntimeError> {
         match self {
-            ReadWritePlace::Local(name) => env.lookup(name).cloned().ok_or_else(|| RuntimeError {
+            Place::Local(name) => env.lookup(name).cloned().ok_or_else(|| RuntimeError {
                 throw: None,
                 origin: None,
                 code: RUN_UNBOUND_NAME,
                 message: format!("`{name}` is not bound"),
                 span,
             }),
-            ReadWritePlace::LocalField { base, field } => read_local_field(base, field, span, env),
+            Place::LocalField { base, field } => read_local_field(base, field, span, env),
         }
     }
 
-    fn into_write_place(self) -> Place {
-        match self {
-            ReadWritePlace::Local(name) => Place::Local(name),
-            ReadWritePlace::LocalField { base, field } => Place::LocalField { base, field },
-        }
-    }
-}
-
-impl Place {
     pub(crate) fn write(
         self,
         value: Value,

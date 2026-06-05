@@ -1,12 +1,32 @@
 use marrow_check::CheckedArg as ExecArg;
 use marrow_store::Decimal;
-use marrow_store::value::{SavedValue, ScalarType, decode_value, encode_value};
+use marrow_store::value::{SavedValue, ScalarType, decode_value};
 use marrow_syntax::SourceSpan;
 
 use crate::env::Env;
-use crate::error::{Located, RuntimeError, conversion_error, decimal_overflow, type_error};
+use crate::error::{RuntimeError, conversion_error, decimal_overflow, type_error};
 use crate::expr::eval_expr;
-use crate::value::{Value, saved_value_to_value};
+use crate::value::{Value, canonical_scalar_text, saved_value_to_value};
+
+/// The conversion a checked call resolves to: a scalar target or the `ErrorCode`
+/// spelling, whose storage envelope is a string. The checker already settled
+/// which one through `CheckedBuiltinCall`, so the runtime branches on this typed
+/// kind rather than re-parsing a name string.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ConversionKind {
+    Scalar(ScalarType),
+    ErrorCode,
+}
+
+impl ConversionKind {
+    /// The conversion's language spelling, used only to render error messages.
+    fn name(self) -> &'static str {
+        match self {
+            ConversionKind::Scalar(scalar) => scalar.name(),
+            ConversionKind::ErrorCode => "ErrorCode",
+        }
+    }
+}
 
 pub(crate) fn eval_bytes_conversion(
     args: &[ExecArg],
@@ -16,33 +36,42 @@ pub(crate) fn eval_bytes_conversion(
     let [arg] = args else {
         return Err(type_error("`bytes` takes one argument", span));
     };
-    match eval_expr(&arg.value, env)? {
-        Value::Str(text) => Ok(Value::Bytes(text.into_bytes())),
-        Value::Bytes(bytes) => Ok(Value::Bytes(bytes)),
-        _ => Err(conversion_error("bytes", span)),
-    }
+    convert_to_bytes(eval_expr(&arg.value, env)?, span)
 }
 
 pub(crate) fn eval_conversion(
-    name: &str,
+    kind: ConversionKind,
     args: &[ExecArg],
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     let [arg] = args else {
-        return Err(type_error(&format!("`{name}` takes one argument"), span));
+        return Err(type_error(
+            &format!("`{}` takes one argument", kind.name()),
+            span,
+        ));
     };
     let value = eval_expr(&arg.value, env)?;
-    match name {
-        "bool" => convert_to_bool(value, span),
-        "int" => convert_to_int(value, span),
-        "decimal" => convert_to_decimal(value, span),
-        "string" => convert_to_string(value, span),
-        "date" => convert_to_canonical_scalar(value, ScalarType::Date, "date", span),
-        "instant" => convert_to_canonical_scalar(value, ScalarType::Instant, "instant", span),
-        "duration" => convert_to_canonical_scalar(value, ScalarType::Duration, "duration", span),
-        "ErrorCode" => convert_to_error_code(value, span),
-        _ => Err(conversion_error(name, span)),
+    match kind {
+        ConversionKind::ErrorCode => convert_to_error_code(value, span),
+        ConversionKind::Scalar(scalar) => match scalar {
+            ScalarType::Bool => convert_to_bool(value, span),
+            ScalarType::Int => convert_to_int(value, span),
+            ScalarType::Decimal => convert_to_decimal(value, span),
+            ScalarType::Str => convert_to_string(value, span),
+            ScalarType::Bytes => convert_to_bytes(value, span),
+            ScalarType::Date | ScalarType::Instant | ScalarType::Duration => {
+                convert_to_canonical_scalar(value, scalar, span)
+            }
+        },
+    }
+}
+
+fn convert_to_bytes(value: Value, span: SourceSpan) -> Result<Value, RuntimeError> {
+    match value {
+        Value::Str(text) => Ok(Value::Bytes(text.into_bytes())),
+        Value::Bytes(bytes) => Ok(Value::Bytes(bytes)),
+        _ => Err(conversion_error("bytes", span)),
     }
 }
 
@@ -125,9 +154,9 @@ fn convert_to_string(value: Value, span: SourceSpan) -> Result<Value, RuntimeErr
         Value::Bytes(bytes) => {
             String::from_utf8(bytes).map_err(|_| conversion_error("string", span))?
         }
-        Value::Date(days) => canonical_value_text(SavedValue::Date(days), span)?,
-        Value::Instant(nanos) => canonical_value_text(SavedValue::Instant(nanos), span)?,
-        Value::Duration(nanos) => canonical_value_text(SavedValue::Duration(nanos), span)?,
+        Value::Date(days) => canonical_scalar_text(SavedValue::Date(days), span)?,
+        Value::Instant(nanos) => canonical_scalar_text(SavedValue::Instant(nanos), span)?,
+        Value::Duration(nanos) => canonical_scalar_text(SavedValue::Duration(nanos), span)?,
         Value::Sequence(_)
         | Value::LocalTree(_)
         | Value::Resource(_)
@@ -168,7 +197,6 @@ fn is_error_code_text(text: &str) -> bool {
 fn convert_to_canonical_scalar(
     value: Value,
     ty: ScalarType,
-    name: &str,
     span: SourceSpan,
 ) -> Result<Value, RuntimeError> {
     match value {
@@ -177,12 +205,7 @@ fn convert_to_canonical_scalar(
         Value::Duration(_) if ty == ScalarType::Duration => Ok(value),
         Value::Str(text) => decode_value(text.as_bytes(), ty)
             .map(saved_value_to_value)
-            .ok_or_else(|| conversion_error(name, span)),
-        _ => Err(conversion_error(name, span)),
+            .ok_or_else(|| conversion_error(ty.name(), span)),
+        _ => Err(conversion_error(ty.name(), span)),
     }
-}
-
-fn canonical_value_text(value: SavedValue, span: SourceSpan) -> Result<String, RuntimeError> {
-    let bytes = encode_value(&value).map_err(|error| error.located(span))?;
-    Ok(String::from_utf8(bytes).expect("canonical scalar text is UTF-8"))
 }

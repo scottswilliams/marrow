@@ -4,7 +4,7 @@ use marrow_store::Decimal;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::{SavedKey, decode_identity_payload_arity};
 use marrow_store::tree::{TreeEnumMember, decode_tree_enum_member, encode_tree_enum_member};
-use marrow_store::value::{SavedValue, decode_value, encode_value};
+use marrow_store::value::{SavedValue, ScalarType, decode_value, encode_value};
 use marrow_syntax::SourceSpan;
 
 use marrow_check::{
@@ -202,6 +202,38 @@ pub(crate) fn saved_key_to_value(key: SavedKey) -> Option<Value> {
 /// boundaries cannot confuse a raw scalar key with an `Id(^store)`.
 pub(crate) fn identity_value(root: &str, keys: Vec<SavedKey>) -> Value {
     Value::Identity(IdentityValue::for_root(root, keys))
+}
+
+/// The scalar type of a scalar runtime value, or `None` for the composite shapes
+/// (enums, sequences, trees, resources, identities) that are not scalars. The
+/// single owner of value-to-scalar-type classification across the runtime.
+pub(crate) fn value_scalar_type(value: &Value) -> Option<ScalarType> {
+    Some(match value {
+        Value::Int(_) => ScalarType::Int,
+        Value::Bool(_) => ScalarType::Bool,
+        Value::Str(_) => ScalarType::Str,
+        Value::Instant(_) => ScalarType::Instant,
+        Value::Date(_) => ScalarType::Date,
+        Value::Duration(_) => ScalarType::Duration,
+        Value::Decimal(_) => ScalarType::Decimal,
+        Value::Bytes(_) => ScalarType::Bytes,
+        Value::Enum(_)
+        | Value::Sequence(_)
+        | Value::LocalTree(_)
+        | Value::Resource(_)
+        | Value::Identity(_) => return None,
+    })
+}
+
+/// The canonical text of a saved scalar. The canonical byte encoding is always
+/// valid UTF-8, so the only failure is an out-of-range temporal value that cannot
+/// be formatted, which surfaces as a located error.
+pub(crate) fn canonical_scalar_text(
+    value: SavedValue,
+    span: SourceSpan,
+) -> Result<String, RuntimeError> {
+    let bytes = encode_value(&value).map_err(|error| error.located(span))?;
+    Ok(String::from_utf8(bytes).expect("a canonical scalar encodes as UTF-8 text"))
 }
 
 /// Convert a runtime value to the saved scalar a managed write stores. Enum

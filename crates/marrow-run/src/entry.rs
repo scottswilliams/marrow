@@ -16,7 +16,7 @@ use crate::error::{
     unknown_function,
 };
 use crate::host::{Host, StepHook};
-use crate::value::{RunOutput, Value, enum_value_from_member};
+use crate::value::{RunOutput, Value, enum_value_from_member, value_scalar_type};
 
 #[derive(Debug, Clone)]
 pub struct CheckedEntryCall<'p> {
@@ -75,7 +75,7 @@ fn run_entry_impl<'p>(
     let program = call.program;
     let target = call.target;
     let (module, function) = function_by_ref(program, target, SourceSpan::default())?;
-    let args = canonicalize_entry_args(program, function, call.args.clone())?;
+    let args = &call.args;
     let output = Rc::new(RefCell::new(String::new()));
     let names: Vec<&str> = function
         .params
@@ -95,7 +95,7 @@ fn run_entry_impl<'p>(
         param_names: &names,
         body: executable_body(function)?,
         span: function.span,
-        args: &args,
+        args,
         writeback: &[],
         traversed_layers: &[],
         hook,
@@ -226,22 +226,4 @@ fn reject_entry_mode(
         &format!("entry parameter `{name}` is inout and must be called from checked source"),
         SourceSpan::default(),
     ))
-}
-
-fn value_scalar_type(value: &Value) -> Option<marrow_schema::ScalarType> {
-    match value {
-        Value::Int(_) => Some(marrow_schema::ScalarType::Int),
-        Value::Bool(_) => Some(marrow_schema::ScalarType::Bool),
-        Value::Str(_) => Some(marrow_schema::ScalarType::Str),
-        Value::Instant(_) => Some(marrow_schema::ScalarType::Instant),
-        Value::Date(_) => Some(marrow_schema::ScalarType::Date),
-        Value::Duration(_) => Some(marrow_schema::ScalarType::Duration),
-        Value::Decimal(_) => Some(marrow_schema::ScalarType::Decimal),
-        Value::Bytes(_) => Some(marrow_schema::ScalarType::Bytes),
-        Value::Enum(_)
-        | Value::Sequence(_)
-        | Value::LocalTree(_)
-        | Value::Resource(_)
-        | Value::Identity(_) => None,
-    }
 }

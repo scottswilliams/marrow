@@ -1,18 +1,18 @@
 //! Pure `std::` helpers with no host capability.
 
 use marrow_check::CheckedArg as ExecArg;
-use marrow_store::value::{SavedValue, ScalarType, decode_value, encode_value};
+use marrow_store::value::{SavedValue, ScalarType, decode_value};
 use marrow_syntax::SourceSpan;
 
 use crate::base64;
 use crate::env::Env;
-use crate::error::{Located, RuntimeError, overflow, std_arity, type_error, unsupported};
+use crate::error::{RuntimeError, overflow, std_arity, type_error, unsupported};
 use crate::expr::eval_int;
 use crate::stdlib::{
     eval_bytes_arg, eval_date_arg, eval_decimal_arg, eval_duration_arg, eval_instant_arg,
     eval_text, int_modulo, int_remainder,
 };
-use crate::value::Value;
+use crate::value::{Value, canonical_scalar_text};
 
 pub(crate) fn eval_std(
     module: &str,
@@ -290,8 +290,5 @@ fn add_clock_duration(
 }
 
 fn format_scalar(value: SavedValue, span: SourceSpan) -> Result<Value, RuntimeError> {
-    let bytes = encode_value(&value).map_err(|error| error.located(span))?;
-    Ok(Value::Str(
-        String::from_utf8(bytes).expect("a canonical scalar encodes as UTF-8 text"),
-    ))
+    canonical_scalar_text(value, span).map(Value::Str)
 }

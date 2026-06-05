@@ -22,8 +22,8 @@ use crate::local_collection::eval_local_collection_read;
 use crate::neighbor::eval_neighbor;
 use crate::std_pure::eval_std;
 use crate::stdlib::{
-    eval_assert, eval_bytes_conversion, eval_conversion, eval_count, eval_error_constructor,
-    eval_exists, eval_output,
+    ConversionKind, OutputKind, eval_assert, eval_bytes_conversion, eval_conversion, eval_count,
+    eval_error_constructor, eval_exists, eval_output,
 };
 use crate::value::Value;
 
@@ -143,15 +143,17 @@ fn eval_builtin_call(
     env: &mut Env<'_>,
 ) -> Result<Option<Value>, RuntimeError> {
     match target {
-        CheckedBuiltinCall::Print => eval_output("print", args, span, env),
-        CheckedBuiltinCall::Write => eval_output("write", args, span, env),
+        CheckedBuiltinCall::Print => eval_output(OutputKind::Print, args, span, env),
+        CheckedBuiltinCall::Write => eval_output(OutputKind::Write, args, span, env),
         CheckedBuiltinCall::Exists => eval_exists(args, span, env).map(Some),
         CheckedBuiltinCall::NextId => eval_next_id(args, span, env).map(Some),
         CheckedBuiltinCall::Append => eval_append(args, span, env).map(Some),
         CheckedBuiltinCall::Bytes => eval_bytes_conversion(args, span, env).map(Some),
-        CheckedBuiltinCall::ErrorCode => eval_conversion("ErrorCode", args, span, env).map(Some),
+        CheckedBuiltinCall::ErrorCode => {
+            eval_conversion(ConversionKind::ErrorCode, args, span, env).map(Some)
+        }
         CheckedBuiltinCall::Conversion(scalar) => {
-            eval_conversion(scalar.name(), args, span, env).map(Some)
+            eval_conversion(ConversionKind::Scalar(scalar), args, span, env).map(Some)
         }
         CheckedBuiltinCall::Keys => eval_keys(args, span, env).map(Some),
         CheckedBuiltinCall::Count => eval_count(args, span, env).map(Some),
