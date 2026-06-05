@@ -528,16 +528,15 @@ impl TypeContext<'_> {
         body: &Block,
         diagnostics: &mut Vec<CheckDiagnostic>,
     ) {
-        let Some(resource_prefix) = self
-            .target_member_path(target)
-            .and_then(|path| path.rsplit_once("::").map(|(head, _)| head.to_string()))
-        else {
+        let Some(target_path) = target_path(self.module, target) else {
             return;
         };
-        let target_path = self.target_member_path(target);
+        let Some(resource_prefix) = transform_resource_prefix(&target_path) else {
+            return;
+        };
         for read in old_field_reads(body) {
-            let read_path = format!("{resource_prefix}::{}", read.field);
-            let message = if Some(&read_path) == target_path.as_ref() {
+            let read_path = transform_read_path(resource_prefix, &read.field);
+            let message = if read_path == target_path {
                 Some(format!(
                     "a transform cannot read its own target `old.{}`; compute it from other members",
                     read.field
@@ -565,12 +564,6 @@ impl TypeContext<'_> {
             span,
             payload: DiagnosticPayload::None,
         }
-    }
-
-    /// The module-qualified catalog path the target names, used to compare reads
-    /// against transform targets.
-    fn target_member_path(&self, target: &Expression) -> Option<String> {
-        target_path(self.module, target)
     }
 
     /// Whether the target names a top-level member of a resource: a bare resource name
@@ -694,17 +687,30 @@ pub(crate) fn transform_body_in_source<'a>(
 /// `<resource>::<field>`. The paths are deduplicated in source order; the catalog
 /// binding resolves them to stable ids and discharge proves their decodability.
 fn transform_read_paths(target_path: &str, body: &Block) -> Vec<String> {
-    let Some((resource_prefix, _)) = target_path.rsplit_once("::") else {
+    let Some(resource_prefix) = transform_resource_prefix(target_path) else {
         return Vec::new();
     };
     let mut paths = Vec::new();
     for read in old_field_reads(body) {
-        let path = format!("{resource_prefix}::{}", read.field);
+        let path = transform_read_path(resource_prefix, &read.field);
         if !paths.contains(&path) {
             paths.push(path);
         }
     }
     paths
+}
+
+/// The resource catalog path a transform target belongs to: its module-qualified path with
+/// the trailing member segment dropped. A target with no member segment names no resource.
+fn transform_resource_prefix(target_path: &str) -> Option<&str> {
+    target_path.rsplit_once("::").map(|(prefix, _)| prefix)
+}
+
+/// The catalog path an `old.<field>` read names: the target's resource prefix joined to the
+/// read field. This is the one mapping from a transform read to a catalog path, shared by
+/// the read-restriction check and the read-path collection so the two never disagree.
+fn transform_read_path(resource_prefix: &str, field: &str) -> String {
+    format!("{resource_prefix}::{field}")
 }
 
 /// One `old.<field>` read inside a transform body: the immediate field name read off

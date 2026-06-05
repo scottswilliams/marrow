@@ -21,21 +21,22 @@ pub struct TransformReadMember {
 }
 
 /// Resolve each read-member stable id against a place to a top-level plain field. A read
-/// whose stable id resolves no such field, has no leaf, or is not a valid catalog id is
-/// dropped: there is no cell to read, so the body simply sees that member as absent from
-/// `old`. The result preserves the order of `reads`.
+/// whose stable id resolves no such field or has no leaf is dropped: there is no cell to
+/// read, so the body simply sees that member as absent from `old`. The result preserves the
+/// order of `reads`. Reads are already the canonical [`CatalogId`] the witness carries, so a
+/// root member matches by typed-id equality with no re-validation.
 pub fn transform_read_members(
     place: &CheckedSavedPlace,
-    reads: &[String],
+    reads: &[CatalogId],
 ) -> Vec<TransformReadMember> {
     reads
         .iter()
-        .filter_map(|raw| {
+        .filter_map(|read_id| {
             let member = place.root_members.iter().find(|member| {
-                member.is_plain_field() && member.catalog_id.as_deref() == Some(raw.as_str())
+                member.is_plain_field() && member.catalog_id.as_deref() == Some(read_id.as_str())
             })?;
             Some(TransformReadMember {
-                catalog_id: CatalogId::new(raw.clone()).ok()?,
+                catalog_id: read_id.clone(),
                 name: member.name.clone(),
                 leaf: member.leaf.clone()?,
             })

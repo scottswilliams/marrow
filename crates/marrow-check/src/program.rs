@@ -13,6 +13,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use marrow_schema::{ScalarType, Type};
+use marrow_store::cell::CatalogId;
 use marrow_syntax::{Expression, ParsedSource, SourceSpan, TypeRef};
 
 use crate::executable::{
@@ -295,7 +296,7 @@ pub struct EvolveDefault {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvolveTransform {
     pub catalog_id: Option<String>,
-    pub reads: Vec<String>,
+    pub reads: Vec<CatalogId>,
     pub resource: String,
     pub file: PathBuf,
     pub target_path: String,

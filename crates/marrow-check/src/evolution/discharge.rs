@@ -395,10 +395,7 @@ fn accepted_selectable_enum_members(program: &CheckedProgram) -> HashMap<String,
         else {
             continue;
         };
-        let has_child = members.iter().any(|other| {
-            !std::ptr::eq(*other, *member) && is_member_path_of(&other.path, &member.path)
-        });
-        if !has_child {
+        if accepted_member_is_selectable(member, &members) {
             by_enum
                 .entry((*enum_catalog_id).to_string())
                 .or_default()
@@ -406,6 +403,17 @@ fn accepted_selectable_enum_members(program: &CheckedProgram) -> HashMap<String,
         }
     }
     by_enum
+}
+
+/// Whether an accepted enum member is selectable: a value may name it. The accepted catalog
+/// records no selectability flag, only the member tree as paths, so this is read structurally —
+/// a member is selectable exactly when it is a leaf of that tree, with no other member carrying
+/// its path as a strict prefix. This mirrors the source rule that a member is a category exactly
+/// when it has children, and is the one home for the accepted-side selectability derivation.
+fn accepted_member_is_selectable(member: &CatalogEntry, members: &[&CatalogEntry]) -> bool {
+    !members
+        .iter()
+        .any(|other| !std::ptr::eq(*other, member) && is_member_path_of(&other.path, &member.path))
 }
 
 /// Whether `path` names a member strictly under `ancestor`: it starts with `ancestor::` and

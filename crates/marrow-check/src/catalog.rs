@@ -468,13 +468,14 @@ pub(crate) fn rebind_activation_resume_program(
             rebound_transform.reads = transform
                 .reads
                 .iter()
-                .map(|read| {
-                    rebind_catalog_id(
+                .filter_map(|read| {
+                    let rebound = rebind_catalog_id(
                         CatalogEntryKind::ResourceMember,
-                        read,
+                        read.as_str(),
                         &current_paths,
                         &replacement_ids,
-                    )
+                    );
+                    CatalogId::new(rebound).ok()
                 })
                 .collect();
             rebound_transform
@@ -555,6 +556,7 @@ fn bound_transforms(
                 .read_paths
                 .iter()
                 .filter_map(|path| member_target_id(path, ids))
+                .filter_map(|id| CatalogId::new(id).ok())
                 .collect();
             Some(EvolveTransform {
                 catalog_id: member_target_id(&transform.path, ids),
