@@ -5,6 +5,7 @@ use std::path::Path;
 use marrow_check::{CheckDiagnostic, DiagnosticPayload, check_project, check_tests};
 use marrow_project::parse_config;
 use marrow_schema::{SchemaErrorKind, SchemaKeyTarget, Type};
+use marrow_syntax::SourceSpan;
 
 use support::{config, temp_project, write};
 
@@ -1791,104 +1792,105 @@ fn duplicate_declarations(
         .collect()
 }
 
+fn source_line_span(source: &str, line: u32) -> SourceSpan {
+    let start_byte = source
+        .split_inclusive('\n')
+        .take(line.saturating_sub(1) as usize)
+        .map(str::len)
+        .sum();
+    let end_byte = source[start_byte..]
+        .find('\n')
+        .map_or(source.len(), |offset| start_byte + offset);
+    SourceSpan {
+        start_byte,
+        end_byte,
+        line,
+        column: 1,
+    }
+}
+
+fn assert_duplicate_declaration_payload(
+    diagnostic: &marrow_check::CheckDiagnostic,
+    name: &str,
+    source: &str,
+    first_line: u32,
+) {
+    assert_eq!(
+        diagnostic.payload,
+        DiagnosticPayload::DuplicateDeclaration {
+            name: name.into(),
+            first_span: source_line_span(source, first_line),
+        }
+    );
+}
+
 #[test]
 fn reports_duplicate_function_declaration() {
+    let source = "module m\nfn run()\n    return\nfn run()\n    return\n";
     let root = temp_project("dup-fn", |root| {
-        write(
-            root,
-            "src/m.mw",
-            "module m\nfn run()\n    return\nfn run()\n    return\n",
-        );
+        write(root, "src/m.mw", source);
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
 
     let duplicates = duplicate_declarations(&report);
     assert_eq!(duplicates.len(), 1, "{:#?}", report.diagnostics);
-    assert!(
-        duplicates[0].message.contains("run"),
-        "{}",
-        duplicates[0].message
-    );
+    assert_duplicate_declaration_payload(duplicates[0], "run", source, 2);
     // The later occurrence is reported.
     assert_eq!(duplicates[0].span.line, 4, "{:#?}", duplicates[0]);
 }
 
 #[test]
 fn reports_duplicate_const_declaration() {
+    let source = "module m\nconst A = 1\nconst A = 2\n";
     let root = temp_project("dup-const", |root| {
-        write(root, "src/m.mw", "module m\nconst A = 1\nconst A = 2\n");
+        write(root, "src/m.mw", source);
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
 
     let duplicates = duplicate_declarations(&report);
     assert_eq!(duplicates.len(), 1, "{:#?}", report.diagnostics);
-    assert!(
-        duplicates[0].message.contains('A'),
-        "{}",
-        duplicates[0].message
-    );
+    assert_duplicate_declaration_payload(duplicates[0], "A", source, 2);
 }
 
 #[test]
 fn reports_duplicate_resource_declaration() {
+    let source = "module m\nresource Book\n    title: string\nresource Book\n    title: string\n";
     let root = temp_project("dup-resource", |root| {
-        write(
-            root,
-            "src/m.mw",
-            "module m\nresource Book\n    title: string\nresource Book\n    title: string\n",
-        );
+        write(root, "src/m.mw", source);
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
 
     let duplicates = duplicate_declarations(&report);
     assert_eq!(duplicates.len(), 1, "{:#?}", report.diagnostics);
-    assert!(
-        duplicates[0].message.contains("Book"),
-        "{}",
-        duplicates[0].message
-    );
+    assert_duplicate_declaration_payload(duplicates[0], "Book", source, 2);
 }
 
 #[test]
 fn reports_const_resource_name_collision() {
+    let source = "module m\nconst Book = 1\nresource Book\n    title: string\n";
     let root = temp_project("const-resource", |root| {
-        write(
-            root,
-            "src/m.mw",
-            "module m\nconst Book = 1\nresource Book\n    title: string\n",
-        );
+        write(root, "src/m.mw", source);
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
 
     let duplicates = duplicate_declarations(&report);
     assert_eq!(duplicates.len(), 1, "{:#?}", report.diagnostics);
-    assert!(
-        duplicates[0].message.contains("Book"),
-        "{}",
-        duplicates[0].message
-    );
+    assert_duplicate_declaration_payload(duplicates[0], "Book", source, 2);
 }
 
 #[test]
 fn reports_import_short_name_collision_with_declaration() {
+    let source = "module m\nuse shelf::books\nfn books()\n    return\n";
     let root = temp_project("use-collision", |root| {
         // `use shelf::books` contributes the short name `books`, which collides
         // with the declared function of the same name.
-        write(
-            root,
-            "src/m.mw",
-            "module m\nuse shelf::books\nfn books()\n    return\n",
-        );
+        write(root, "src/m.mw", source);
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
 
     let duplicates = duplicate_declarations(&report);
     assert_eq!(duplicates.len(), 1, "{:#?}", report.diagnostics);
-    assert!(
-        duplicates[0].message.contains("books"),
-        "{}",
-        duplicates[0].message
-    );
+    assert_duplicate_declaration_payload(duplicates[0], "books", source, 2);
     // The function declaration is the later occurrence.
     assert_eq!(duplicates[0].span.line, 3, "{:#?}", duplicates[0]);
 }
@@ -5513,22 +5515,15 @@ fn reports_an_unknown_enum_member() {
 #[test]
 fn reports_an_enum_resource_name_collision() {
     // An enum and a resource share the module-level declaration namespace.
+    let source = "module m\nenum Book\n    a\nresource Book\n    title: string\n";
     let root = temp_project("enum-resource-collision", |root| {
-        write(
-            root,
-            "src/m.mw",
-            "module m\nenum Book\n    a\nresource Book\n    title: string\n",
-        );
+        write(root, "src/m.mw", source);
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
 
     let duplicates = duplicate_declarations(&report);
     assert_eq!(duplicates.len(), 1, "{:#?}", report.diagnostics);
-    assert!(
-        duplicates[0].message.contains("Book"),
-        "{}",
-        duplicates[0].message
-    );
+    assert_duplicate_declaration_payload(duplicates[0], "Book", source, 2);
 }
 
 #[test]

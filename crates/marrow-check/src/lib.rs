@@ -231,8 +231,9 @@ pub const SCHEMA_DUPLICATE_ROOT_OWNER: &str = "schema.duplicate_root_owner";
 /// rendered message. Resolution-suppression branches on typed identities: an
 /// import names the module it failed to resolve, an unresolved call names the
 /// function, and an unknown type names the type spelling. Schema diagnostics carry
-/// the schema compiler's structured error kind. Duplicate root ownership names
-/// the saved root and first owning file. Other diagnostics carry
+/// the schema compiler's structured error kind. Duplicate declarations carry the
+/// duplicated name and first declaration span. Duplicate root ownership names the
+/// saved root and first owning file. Other diagnostics carry
 /// [`DiagnosticPayload::None`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DiagnosticPayload {
@@ -247,6 +248,11 @@ pub enum DiagnosticPayload {
     UnknownType(String),
     /// Schema compiler facts for schema diagnostics.
     Schema(marrow_schema::SchemaErrorKind),
+    /// `check.duplicate_declaration`: duplicated name and first declaration span.
+    DuplicateDeclaration {
+        name: String,
+        first_span: SourceSpan,
+    },
     /// `schema.duplicate_root_owner`: saved root and first owning source file.
     DuplicateRootOwner { root: String, first_owner: PathBuf },
 }
@@ -804,6 +810,7 @@ impl TestResolutionSuppression {
             DiagnosticPayload::UnresolvedCall(name) => self.references_hidden_module_member(name),
             DiagnosticPayload::UnknownType(name) => self.references_hidden_type(name),
             DiagnosticPayload::Schema(_)
+            | DiagnosticPayload::DuplicateDeclaration { .. }
             | DiagnosticPayload::DuplicateRootOwner { .. }
             | DiagnosticPayload::None => false,
         }
@@ -1601,7 +1608,10 @@ fn check_duplicate_declarations(
                 file: file.to_path_buf(),
                 message: format!("`{name}` is already declared on line {}", first.line),
                 span: *span,
-                payload: DiagnosticPayload::None,
+                payload: DiagnosticPayload::DuplicateDeclaration {
+                    name: (*name).to_string(),
+                    first_span: *first,
+                },
             }),
             None => {
                 first_seen.insert(name, *span);
