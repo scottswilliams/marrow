@@ -227,11 +227,12 @@ pub const IO_READ: &str = "io.read";
 /// project checker reports it rather than per-store schema compilation.
 pub const SCHEMA_DUPLICATE_ROOT_OWNER: &str = "schema.duplicate_root_owner";
 
-/// The offending name a resolution diagnostic carries, recovered without parsing
-/// the rendered message. Resolution-suppression branches on this typed identity:
-/// an import names the module it failed to resolve, an unresolved call names the
-/// (possibly qualified) function, and an unknown type names the type spelling. Any
-/// other diagnostic carries [`DiagnosticPayload::None`].
+/// Structured data attached to diagnostics whose consumers need more than the
+/// rendered message. Resolution-suppression branches on typed identities: an
+/// import names the module it failed to resolve, an unresolved call names the
+/// function, and an unknown type names the type spelling. Schema diagnostics carry
+/// the schema compiler's structured error kind. Other diagnostics carry
+/// [`DiagnosticPayload::None`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DiagnosticPayload {
     /// No resolution identity is attached.
@@ -243,6 +244,8 @@ pub enum DiagnosticPayload {
     UnresolvedCall(String),
     /// `unknown type`: the type spelling the checker did not recognize.
     UnknownType(String),
+    /// Schema compiler facts for schema diagnostics.
+    Schema(marrow_schema::SchemaErrorKind),
 }
 
 /// A problem found while checking a project, located in a specific file.
@@ -253,9 +256,8 @@ pub struct CheckDiagnostic {
     pub file: PathBuf,
     pub message: String,
     pub span: SourceSpan,
-    /// Typed resolution identity for the codes whose suppression needs it; `None`
-    /// for every other diagnostic. Set at the emit site so suppression never reads
-    /// the rendered message.
+    /// Typed facts for diagnostics whose consumers need structured data. Set at
+    /// the emit site so consumers do not read the rendered message.
     pub payload: DiagnosticPayload,
 }
 
@@ -798,7 +800,7 @@ impl TestResolutionSuppression {
             }
             DiagnosticPayload::UnresolvedCall(name) => self.references_hidden_module_member(name),
             DiagnosticPayload::UnknownType(name) => self.references_hidden_type(name),
-            DiagnosticPayload::None => false,
+            DiagnosticPayload::Schema(_) | DiagnosticPayload::None => false,
         }
     }
 
@@ -1200,14 +1202,7 @@ fn check_file_source(
                 {
                     let (schema, errors) = marrow_schema::compile_store(store, resource);
                     for error in errors {
-                        let diagnostic = CheckDiagnostic {
-                            code: error.code,
-                            severity: Severity::Error,
-                            file: file_path.to_path_buf(),
-                            message: error.message,
-                            span: error.span,
-                            payload: DiagnosticPayload::None,
-                        };
+                        let diagnostic = schema_diagnostic(file_path, error);
                         if !diagnostics.iter().any(|existing| {
                             existing.code == diagnostic.code
                                 && existing.file == diagnostic.file
@@ -1235,14 +1230,7 @@ fn check_file_source(
             marrow_syntax::Declaration::Enum(decl) => {
                 let (schema, errors) = marrow_schema::compile_enum(decl);
                 for error in errors {
-                    diagnostics.push(CheckDiagnostic {
-                        code: error.code,
-                        severity: Severity::Error,
-                        file: file_path.to_path_buf(),
-                        message: error.message,
-                        span: error.span,
-                        payload: DiagnosticPayload::None,
-                    });
+                    push_schema_error(file_path, diagnostics, error);
                 }
                 enums.push(schema);
             }
@@ -1321,14 +1309,24 @@ fn push_schema_error(
     diagnostics: &mut Vec<CheckDiagnostic>,
     error: marrow_schema::SchemaError,
 ) {
-    diagnostics.push(CheckDiagnostic {
-        code: error.code,
+    diagnostics.push(schema_diagnostic(file_path, error));
+}
+
+fn schema_diagnostic(file_path: &Path, error: marrow_schema::SchemaError) -> CheckDiagnostic {
+    let marrow_schema::SchemaError {
+        kind,
+        code,
+        message,
+        span,
+    } = error;
+    CheckDiagnostic {
+        code,
         severity: Severity::Error,
         file: file_path.to_path_buf(),
-        message: error.message,
-        span: error.span,
-        payload: DiagnosticPayload::None,
-    });
+        message,
+        span,
+        payload: DiagnosticPayload::Schema(kind),
+    }
 }
 
 /// Resolve a function declaration for the checked-program artifact: its

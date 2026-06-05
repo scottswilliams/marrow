@@ -93,7 +93,9 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
                 DiagnosticPayload::UnresolvedCall(name) => {
                     !references_incomplete_module_member(name, &incomplete_modules)
                 }
-                DiagnosticPayload::UnknownType(_) | DiagnosticPayload::None => true,
+                DiagnosticPayload::UnknownType(_)
+                | DiagnosticPayload::Schema(_)
+                | DiagnosticPayload::None => true,
             });
     }
 }

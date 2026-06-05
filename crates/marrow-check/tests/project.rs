@@ -2,8 +2,9 @@ mod support;
 
 use std::path::Path;
 
-use marrow_check::{DiagnosticPayload, check_project, check_tests};
+use marrow_check::{CheckDiagnostic, DiagnosticPayload, check_project, check_tests};
 use marrow_project::parse_config;
+use marrow_schema::{SchemaErrorKind, SchemaKeyTarget, Type};
 
 use support::{config, temp_project, write};
 
@@ -786,7 +787,13 @@ fn split_store_applies_saved_field_schema_rules() {
         "schema.non_enum_named_field",
     );
     assert_eq!(errors.len(), 1, "{errors:#?}");
-    assert!(errors[0].message.contains("author"));
+    assert_schema_payload(
+        &errors[0],
+        SchemaErrorKind::NonEnumNamedField {
+            field: "author".to_string(),
+            ty: "Author".to_string(),
+        },
+    );
 }
 
 #[test]
@@ -805,7 +812,15 @@ fn rejects_an_enum_typed_identity_key() {
         "schema.nonscalar_key",
     );
     assert_eq!(errors.len(), 1, "{errors:#?}");
-    assert!(errors[0].message.contains("Status"));
+    assert_schema_payload(
+        &errors[0],
+        SchemaErrorKind::NonScalarKey {
+            target: SchemaKeyTarget::IdentityKey {
+                name: "state".to_string(),
+            },
+            ty: Type::Named("Status".to_string()),
+        },
+    );
 }
 
 #[test]
@@ -821,7 +836,15 @@ fn rejects_an_enum_typed_layer_key_param() {
         "schema.nonscalar_key",
     );
     assert_eq!(errors.len(), 1, "{errors:#?}");
-    assert!(errors[0].message.contains("Status"));
+    assert_schema_payload(
+        &errors[0],
+        SchemaErrorKind::NonScalarKey {
+            target: SchemaKeyTarget::KeyParam {
+                name: "state".to_string(),
+            },
+            ty: Type::Named("Status".to_string()),
+        },
+    );
 }
 
 #[test]
@@ -838,7 +861,15 @@ fn rejects_a_typo_named_identity_key() {
         "schema.nonscalar_key",
     );
     assert_eq!(errors.len(), 1, "{errors:#?}");
-    assert!(errors[0].message.contains("Stutus"));
+    assert_schema_payload(
+        &errors[0],
+        SchemaErrorKind::NonScalarKey {
+            target: SchemaKeyTarget::IdentityKey {
+                name: "state".to_string(),
+            },
+            ty: Type::Named("Stutus".to_string()),
+        },
+    );
 }
 
 #[test]
@@ -851,7 +882,15 @@ fn rejects_a_typo_named_layer_key_param() {
         "schema.nonscalar_key",
     );
     assert_eq!(errors.len(), 1, "{errors:#?}");
-    assert!(errors[0].message.contains("Stutus"));
+    assert_schema_payload(
+        &errors[0],
+        SchemaErrorKind::NonScalarKey {
+            target: SchemaKeyTarget::KeyParam {
+                name: "state".to_string(),
+            },
+            ty: Type::Named("Stutus".to_string()),
+        },
+    );
 }
 
 #[test]
@@ -868,7 +907,15 @@ fn rejects_a_resource_typed_identity_key() {
         "schema.nonscalar_key",
     );
     assert_eq!(errors.len(), 1, "{errors:#?}");
-    assert!(errors[0].message.contains("Person"));
+    assert_schema_payload(
+        &errors[0],
+        SchemaErrorKind::NonScalarKey {
+            target: SchemaKeyTarget::IdentityKey {
+                name: "owner".to_string(),
+            },
+            ty: Type::Named("Person".to_string()),
+        },
+    );
 }
 
 #[test]
@@ -892,7 +939,15 @@ fn rejects_a_cross_module_qualified_enum_identity_key() {
     let (report, _program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "schema.nonscalar_key");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
-    assert!(found[0].message.contains("a::Status"));
+    assert_schema_payload(
+        found[0],
+        SchemaErrorKind::NonScalarKey {
+            target: SchemaKeyTarget::IdentityKey {
+                name: "state".to_string(),
+            },
+            ty: Type::Named("a::Status".to_string()),
+        },
+    );
 }
 
 #[test]
@@ -908,7 +963,13 @@ fn rejects_a_sequence_index_argument() {
         "schema.unknown_index_arg",
     );
     assert_eq!(errors.len(), 1, "{errors:#?}");
-    assert!(errors[0].message.contains("byTags"));
+    assert_schema_payload(
+        &errors[0],
+        SchemaErrorKind::UnknownIndexArg {
+            index: "byTags".to_string(),
+            arg: "tags".to_string(),
+        },
+    );
 }
 
 #[test]
@@ -4526,6 +4587,14 @@ fn with_code<'a>(
         .iter()
         .filter(|d| d.code == code)
         .collect()
+}
+
+fn assert_schema_payload(diagnostic: &CheckDiagnostic, expected: SchemaErrorKind) {
+    assert_eq!(
+        diagnostic.payload,
+        DiagnosticPayload::Schema(expected),
+        "{diagnostic:#?}"
+    );
 }
 
 /// Check a single script `src` and return its diagnostics with `code`.
