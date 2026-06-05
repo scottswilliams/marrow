@@ -12,11 +12,12 @@ This tracker is the operational source of truth for the Marrow rust-hardening au
 - Tracker lane worktree: `/Users/scottwilliams/Dev/marrow-rust-hardening-tracker`
 - Tracker lane branch: `rust-hardening-tracker`
 - Base commit: `7435c7dbd6ae9817460d5d44ebaa0e54c0aa9b70`
-- Current tracked audit head: `7435c7dbd6ae9817460d5d44ebaa0e54c0aa9b70`
+- Audit-start tracked head: `7435c7dbd6ae9817460d5d44ebaa0e54c0aa9b70`
+- L00 integrated tracker commit on main: `9415b37635bfde9d42437bca3862f5db92d5fb9d`
 - Main status at audit start: clean, `## main...origin/main`, head `7435c7dbd6ae9817460d5d44ebaa0e54c0aa9b70`
 - Live main integration state is intentionally not frozen here. Re-run `git -C /Users/scottwilliams/Dev/marrow rev-parse HEAD` and `git -C /Users/scottwilliams/Dev/marrow status --short --branch` immediately before every integration, then record that fresh state in the lane evidence packet.
 - Tracked file count at audit start: 279
-- Tracked file count after staging this tracker: 280
+- Current tracked file count after integrating this tracker on main: 277
 - `docs/roadmap/` did not exist at audit start; this file creates it.
 
 ## Status Values
@@ -68,14 +69,14 @@ Per-lane evidence records must include these fields before a lane can be marked 
 
 ## Initial Global Scan Evidence
 
-Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start or from `/Users/scottwilliams/Dev/marrow-rust-hardening-tracker` after the tracker file was staged. Exact command text is kept here so evidence can be reproduced.
+Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/Users/scottwilliams/Dev/marrow-rust-hardening-tracker` during L00 bootstrap, or from current main during L00 integration. Exact command text is kept here so evidence can be reproduced.
 
 - Tracked file count at audit start:
   `git ls-files | wc -l`
   Result: `279`.
-- Tracked file count after staging the tracker:
+- Tracked file count after integrating the tracker on current main:
   `git ls-files | wc -l`
-  Result: `280`.
+  Result: `277`.
 - Main status at audit start:
   `git status --short --branch`
   Result: `## main...origin/main`.
@@ -90,7 +91,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start or from 
   Result: no matches; command exited 1.
 - Area counts:
   `git ls-files | awk -F/ '{ if ($1 == "crates") area=$1"/"$2; else if ($1 == "docs") area=$1"/"$2; else area=$1 } { count[area]++ } END { for (area in count) print count[area], area }' | sort -k2,2`
-  Result: largest areas are `crates/marrow-run` 73, `crates/marrow-check` 67, `crates/marrow` 47; staged tracker adds `docs/roadmap` 1.
+  Result: largest areas are `crates/marrow-run` 73, `crates/marrow-check` 66, `crates/marrow` 45; integrated tracker adds `docs/roadmap` 1.
 - Oversized files:
   `git ls-files -z | xargs -0 wc -l | sort -nr | sed -n '1,60p'`
   Result: top files include `crates/marrow-run/tests/eval.rs` 11097, `crates/marrow-check/tests/project.rs` 6540, `crates/marrow-check/tests/evolution_discharge.rs` 5710, `crates/marrow-check/src/checks.rs` 3645, `crates/marrow-run/tests/evolution_apply.rs` 3269.
@@ -102,16 +103,16 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start or from 
   Result: `36` lines. Production-looking hits include `crates/marrow-run/src/store.rs:161 pub(crate) fn raw_catalog_id` and `crates/marrow-store/src/backup.rs` raw archive constructors; test-source hits require lane triage.
 - Message/prose assertions:
   `rg -n "message\.contains|\.message\.contains|stderr\.contains|stdout\.contains|error\.to_string\(\)\.contains|assert!\([^\n]*contains" crates -g "*.rs" | wc -l`
-  Result: `418` lines.
+  Result: `410` lines.
 - Source-text architecture scans:
   `rg -n "include_str!|read_to_string|match_indices|forbidden|architecture|source-text|source text|scan" crates/*/tests crates/*/src -g "*.rs" | wc -l`
-  Result: `533` lines; known policy-scan files include `crates/marrow-run/tests/architecture.rs`, `crates/marrow-check/tests/presence_architecture.rs`, and `crates/marrow/tests/tooling_architecture.rs`.
+  Result: `534` lines; known policy-scan files include `crates/marrow-run/tests/architecture.rs`, `crates/marrow-check/tests/presence_architecture.rs`, and `crates/marrow/tests/tooling_architecture.rs`.
 - Comment sediment terms:
   `rg -n "\bTODO\b|\bFIXME\b|\blegacy\b|\bprototype\b|\bmigration\b|\btemporary\b|\bcompatibility\b|\bshim\b|\bbridge\b|\bpreviously\b|\bnow\b" AGENTS.md CLAUDE.md README.md docs crates -g "*.rs" -g "*.md" -g "*.mw" -g "*.toml" -g "*.json" | wc -l`
-  Result: `197` lines.
+  Result: `196` lines.
 - Duplicate classifier/name-family scan:
   `rg -n "\b(classify|is_builtin|builtin|saved_root|identity|store_key|catalog_id|raw_path|DataPath|SavedPath|RuntimePath|PathSegment|StoreKey|CatalogId)\b" crates -g "*.rs" | wc -l`
-  Result: `2368` broad hits; this is a triage input, not proof of a bug.
+  Result: `2361` broad hits; this is a triage input, not proof of a bug.
 
 ## Initial Findings
 
@@ -141,7 +142,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start or from 
 
 | Lane | Worktree | Target Dir | Base | Head | Status | Gates | Soundness | Idiom/Spec | Findings/Fixes | Absence/Integration |
 |---|---|---|---|---|---|---|---|---|---|---|
-| L00 tracker bootstrap | `/Users/scottwilliams/Dev/marrow-rust-hardening-tracker` | not needed for doc-only bootstrap | `7435c7dbd6ae9817460d5d44ebaa0e54c0aa9b70` | pending commit | in-lane | `git diff --cached --check` clean; staged inventory check clean | pass, no findings | pass, no findings | R001-R005 fixed and re-reviewed | integration requires fresh live-main recheck |
+| L00 tracker bootstrap | `/Users/scottwilliams/Dev/marrow-rust-hardening-tracker` | not needed for doc-only bootstrap | `7435c7dbd6ae9817460d5d44ebaa0e54c0aa9b70` | lane `7b04e4876c5927a1f5599d30bbb28f4f2ec4ce75`; main `9415b37635bfde9d42437bca3862f5db92d5fb9d` | complete | staged and post-cherry-pick diff checks clean; inventory checks clean | pass, no findings | pass, no findings | R001-R006 fixed and re-reviewed | integrated on main after live-main recheck |
 | L01 language-docs | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l01-language-docs` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L02 docs-meta | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l02-docs-meta` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L03 syntax | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-syntax` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
@@ -229,7 +230,6 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start or from 
 - `crates/marrow-check/src/tooling/data/shape.rs` - status: unreviewed; owner: L09 checker-tooling; notes: initial inventory.
 - `crates/marrow-check/src/tooling/data/traversal.rs` - status: unreviewed; owner: L09 checker-tooling; notes: initial inventory.
 - `crates/marrow-check/src/tooling/data/walk.rs` - status: unreviewed; owner: L09 checker-tooling; notes: initial inventory.
-- `crates/marrow-check/src/tooling/explain.rs` - status: unreviewed; owner: L09 checker-tooling; notes: initial inventory.
 - `crates/marrow-check/src/tooling/integrity.rs` - status: unreviewed; owner: L09 checker-tooling; notes: initial inventory.
 - `crates/marrow-check/src/tooling/metadata.rs` - status: unreviewed; owner: L09 checker-tooling; notes: initial inventory.
 - `crates/marrow-check/src/tooling/mod.rs` - status: unreviewed; owner: L09 checker-tooling; notes: initial inventory.
@@ -394,7 +394,6 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start or from 
 - `crates/marrow/src/cmd_evolve/mod.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/src/cmd_evolve/render.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/src/cmd_evolve/store.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
-- `crates/marrow/src/cmd_explain.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/src/cmd_fmt.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/src/cmd_restore.rs` - status: unreviewed; owner: L13 backup-restore; notes: initial inventory.
 - `crates/marrow/src/cmd_run.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
@@ -416,7 +415,6 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start or from 
 - `crates/marrow/tests/data_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/tests/dry_run_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/tests/evolve_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
-- `crates/marrow/tests/explain_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/tests/fmt_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/tests/lsp_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/tests/run_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
@@ -479,7 +477,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start or from 
 - `docs/tooling-surfaces.md` - status: unreviewed; owner: L02 docs-meta; notes: initial inventory.
 
 ### docs/roadmap
-- `docs/roadmap/rust-hardening-file-audit.md` - status: in-lane; owner: L00 tracker bootstrap; notes: creates the operational source of truth.
+- `docs/roadmap/rust-hardening-file-audit.md` - status: complete; owner: L00 tracker bootstrap; notes: creates the operational source of truth.
 
 ### root continued
 - `fixtures/v01/library.mw` - status: unreviewed; owner: L00 root-fixtures; notes: initial inventory.
@@ -495,9 +493,12 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start or from 
 ## L00 Tracker Bootstrap Evidence
 
 - Changed files: `docs/roadmap/rust-hardening-file-audit.md`.
+- Lane commit: `7b04e4876c5927a1f5599d30bbb28f4f2ec4ce75`.
+- Main integration commit: `9415b37635bfde9d42437bca3862f5db92d5fb9d`.
+- Main integration base: `16f105e632ae05ebb7f7a44fd3f1b6e022efcdaa`.
 - Focused gates:
   - `git diff --cached --check` passed with no output.
-  - `while IFS= read -r f; do if ! rg -F "\`$f\`" docs/roadmap/rust-hardening-file-audit.md >/dev/null; then printf 'missing %s\n' "$f"; missing=1; fi; done < <(git ls-files); exit $missing` passed with no output.
+  - `comm -3 <(git ls-files | sort) <(sed -n 's/^- \`\([^`]*\)\` - status:.*/\1/p' docs/roadmap/rust-hardening-file-audit.md | sort)` passed with no output.
 - Full gates: not run; L00 is a staged documentation bootstrap with no Rust code changes.
 - Soundness review: pass after re-review; no findings.
 - Idiom/spec review: pass after re-review; no findings.
@@ -507,5 +508,12 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start or from 
   - R003: Added per-lane evidence fields and expanded the lane status ledger.
   - R004: Marked shared checker and CLI test support files as serialized dependencies.
   - R005: Removed volatile latest-main state from durable tracker state and made live-main recheck an integration gate.
+  - R006: Reran current-main scan counts and updated stale post-integration totals after live-main file removals.
 - Absence scan: `rg -n "\bunsafe\b" -g "*.rs"` returned no matches at audit start.
-- Integration state: pending. Recheck live main immediately before cherry-pick or equivalent integration.
+- Integration state: integrated on main; future lanes still must recheck live main immediately before their own integration.
+- Integration gates:
+  - `git -C /Users/scottwilliams/Dev/marrow status --short --branch` before cherry-pick: clean main at `16f105e632ae05ebb7f7a44fd3f1b6e022efcdaa`.
+  - `git cherry-pick -x 7b04e4876c5927a1f5599d30bbb28f4f2ec4ce75` produced `9415b37635bfde9d42437bca3862f5db92d5fb9d`.
+  - `git diff --check HEAD^..HEAD` passed with no output.
+  - Main bidirectional inventory check passed with no output.
+  - `git status --short --branch` after cherry-pick reported clean main ahead by one commit.
