@@ -470,23 +470,18 @@ fn data_integrity_reports_an_orphan_problem_with_a_tooling_kind() {
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stdout = String::from_utf8(output.stdout).expect("utf8");
-    let value: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
-    let problem = value["problems"]
-        .as_array()
-        .expect("problems")
-        .iter()
-        .find(|problem| problem["code"] == serde_json::json!("data.orphan"))
-        .expect("an orphan problem");
+    let value = json(output);
+    let problem = integrity_problem(&value, "data.orphan");
     assert_eq!(problem["kind"], serde_json::json!("tooling"), "{value}");
     assert_eq!(
         problem["source_span"]["path"],
         serde_json::json!("<undeclared saved root>"),
         "{value}"
     );
+    let text = value.to_string();
     assert!(
-        !stdout.contains("deadbeef") && !stdout.contains("cat_"),
-        "{stdout}"
+        !text.contains("deadbeef") && !text.contains("cat_"),
+        "{text}"
     );
     assert_eq!(
         problem["help"],

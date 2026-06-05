@@ -525,14 +525,20 @@ fn evolve_apply_rejects_repair_required_witness() {
         seed_title_only(&store, &place, 1, "Dune");
     }
 
-    let output = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    let output = marrow(&[
+        "evolve",
+        "apply",
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
     let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
     let pages = read_scalar(&store, &place, 1, "pages", ScalarType::Int);
     fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("evolve.repair_required"), "{stderr}");
+    let record = support::json(output.stdout);
+    assert_eq!(record["code"], serde_json::json!("evolve.repair_required"));
     assert_eq!(pages, None, "repair-required apply must not write data");
 }
 
@@ -1121,7 +1127,13 @@ fn evolve_apply_resume_fails_closed_when_source_diverges_from_the_store_commit()
     fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
     write(&root, "src/books.mw", RENAME_SOURCE);
 
-    let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    let resume = marrow(&[
+        "evolve",
+        "apply",
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
 
     // The file must remain at the baseline: the divergent rename catalog is never frozen.
     assert_eq!(
@@ -1131,12 +1143,13 @@ fn evolve_apply_resume_fails_closed_when_source_diverges_from_the_store_commit()
     );
     assert_eq!(store_epoch(&root), Some(baseline_epoch + 1));
     let code = resume.status.code();
-    let stderr = String::from_utf8(resume.stderr).expect("stderr utf8");
+    let record = support::json(resume.stdout);
     fs::remove_dir_all(&root).ok();
-    assert_eq!(code, Some(1), "resume fails closed: {code:?} {stderr}");
-    assert!(
-        stderr.contains("run.schema_drift"),
-        "resume reports schema drift against the committed shape: {stderr}"
+    assert_eq!(code, Some(1), "resume fails closed: {code:?} {record}");
+    assert_eq!(
+        record["code"],
+        serde_json::json!("run.schema_drift"),
+        "resume reports schema drift against the committed shape"
     );
 }
 
