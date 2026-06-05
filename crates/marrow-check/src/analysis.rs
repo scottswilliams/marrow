@@ -188,7 +188,10 @@ pub(crate) fn analyze_source_project(
                         first.display()
                     ),
                     span: store.span,
-                    payload: DiagnosticPayload::None,
+                    payload: DiagnosticPayload::DuplicateRootOwner {
+                        root: store.root.root.clone(),
+                        first_owner: first.clone(),
+                    },
                 }),
                 None => {
                     root_owners.insert(store.root.root.clone(), file.path.clone());

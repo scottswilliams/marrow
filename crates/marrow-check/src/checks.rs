@@ -95,6 +95,7 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
                 }
                 DiagnosticPayload::UnknownType(_)
                 | DiagnosticPayload::Schema(_)
+                | DiagnosticPayload::DuplicateRootOwner { .. }
                 | DiagnosticPayload::None => true,
             });
     }

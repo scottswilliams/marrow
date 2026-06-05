@@ -1508,7 +1508,15 @@ fn reports_two_stores_sharing_one_saved_root() {
 
     let owners = with_code(&report, "schema.duplicate_root_owner");
     assert_eq!(owners.len(), 1, "{:#?}", report.diagnostics);
-    assert!(owners[0].message.contains("books"), "{}", owners[0].message);
+    assert_eq!(
+        owners[0].payload,
+        DiagnosticPayload::DuplicateRootOwner {
+            root: "books".into(),
+            first_owner: root.join("src/shelf.mw"),
+        },
+        "{:#?}",
+        owners[0]
+    );
 }
 
 #[test]
