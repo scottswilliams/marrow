@@ -131,10 +131,10 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 | Prototype paths | Global term scan has docs/test hits; no production judgment yet. | needs-lane | all lanes |
 | Duplicate semantic classifiers | Targeted scan found classifier families in checker/runtime; owner lanes must prove one semantic owner. | needs-lane | L06-L11 |
 | Public raw/string APIs | Raw/catalog/archive hits require production-boundary review. | needs-lane | L10, L12, L13, L14 |
-| Fallback branches and legacy modes | Term scan has test/doc hits; owner lanes must distinguish domain examples from compatibility glue. | needs-lane | all lanes |
+| Fallback branches and legacy modes | L00 root-fixtures hits are AGENTS policy prohibitions. Other term scan hits require lane-local review. | needs-lane | L01, L06-L14 |
 | Message-parsing logic | L03 syntax, L04 schema, and L05 project-model have no `message.contains` semantic assertions after integration; remaining areas still need lane-local migration. | needs-lane | L06-L14 |
 | Source-text architecture scans | Existing scans identified in architecture tests. | needs-lane | L08, L10, L14 |
-| Comment sediment | L02 removed empty future placeholder pages; remaining L02 hits were triaged as durable data-evolution compatibility/migration contracts, `std::clock::now`, old path aliases, bridge wording for host-system extensions, and protocol cursor text. L03 syntax hits were triaged as durable `rename ... now spelled` semantics and `now` sample text; L04 schema hits were triaged as `clock.now` domain text and a pre-existing `string`/`Str` bridge comment; L05 project-model hits were triaged as durable store-key migration wording and a `SystemTime::now()` false positive. | needs-lane | L00-L01, L06-L14 |
+| Comment sediment | L00 root-fixtures hits are durable AGENTS policy prohibitions and repository operating rules. L02 removed empty future placeholder pages; remaining L02 hits were triaged as durable data-evolution compatibility/migration contracts, `std::clock::now`, old path aliases, bridge wording for host-system extensions, and protocol cursor text. L03 syntax hits were triaged as durable `rename ... now spelled` semantics and `now` sample text; L04 schema hits were triaged as `clock.now` domain text and a pre-existing `string`/`Str` bridge comment; L05 project-model hits were triaged as durable store-key migration wording and a `SystemTime::now()` false positive. | needs-lane | L01, L06-L14 |
 | Cargo target isolation | Future lane commands must spell lane-specific `CARGO_TARGET_DIR`. | needs-lane | all lanes |
 | Cargo.lock churn | No lockfile change at audit start. | reviewed-clean | L00 |
 
@@ -142,7 +142,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 
 | Lane | Worktree | Target Dir | Base | Head | Status | Gates | Soundness | Idiom/Spec | Findings/Fixes | Absence/Integration |
 |---|---|---|---|---|---|---|---|---|---|---|
-| L00 tracker bootstrap | `/Users/scottwilliams/Dev/marrow-rust-hardening-tracker` | not needed for doc-only bootstrap | `7435c7dbd6ae9817460d5d44ebaa0e54c0aa9b70` | lane `7b04e4876c5927a1f5599d30bbb28f4f2ec4ce75`; main `9415b37635bfde9d42437bca3862f5db92d5fb9d` | complete | staged and post-cherry-pick diff checks clean; inventory checks clean | pass, no findings | pass, no findings | R001-R006 fixed and re-reviewed | integrated on main after live-main recheck |
+| L00 tracker/root-fixtures | tracker `/Users/scottwilliams/Dev/marrow-rust-hardening-tracker`; root `/Users/scottwilliams/Dev/marrow-rust-hardening-l00-root-fixtures` | root lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l00-root-fixtures` | tracker `7435c7dbd6ae9817460d5d44ebaa0e54c0aa9b70`; root `d528f5e9a9e281c8076145a2b734976de3d8a12e` | tracker lane `7b04e4876c5927a1f5599d30bbb28f4f2ec4ce75`; root no source commit; tracker main `9415b37635bfde9d42437bca3862f5db92d5fb9d` | complete | tracker bootstrap checks, root focused checks, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings | pass, no findings | R001-R006 fixed and re-reviewed; no root review findings | integrated on main after live-main recheck; root evidence recorded |
 | L01 language-docs | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l01-language-docs` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L02 docs-meta | `/Users/scottwilliams/Dev/marrow-rust-hardening-l02-docs-meta` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l02-docs-meta`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l02-main-integration` | `3032e90a4e274fbcce91a3b3ebdd948643948e48` | lane `3dd44fa8989af9e5dc1599e22caadbb02b42d851`; main `fe34e8695dae03f2d9fb1e857a22482e63edb6ab` | complete | focused docs scans, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings | pass, no findings | no review findings | integrated on main after live-main recheck; tracker evidence recorded |
 | L03 syntax | `/Users/scottwilliams/Dev/marrow-rust-hardening-l03-syntax` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-syntax`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-main-integration` | `14bbe00fe0be30f741727b8a65da0ceb8bc4d403` | lane `2a961360cd428eb772b65fbf18f6b961b9230ef7`; main `0627dab32fd19a66edb14d0a960afd3fb36fb779` | complete | focused, package, workspace build/test, workspace clippy, and fmt gates passed | fail on typed reason probes, then pass after fixes | fail on broad reason/test-shape findings, then pass after fixes | L03-R001 through L03-R003 fixed and re-reviewed | integrated on main after live-main recheck; tracker evidence recorded |
@@ -161,13 +161,13 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 ## File Inventory
 
 ### root
-- `.gitignore` - status: unreviewed; owner: L00 root-fixtures; notes: initial inventory.
-- `AGENTS.md` - status: unreviewed; owner: L00 root-fixtures; notes: initial inventory.
-- `CLAUDE.md` - status: unreviewed; owner: L00 root-fixtures; notes: initial inventory.
-- `Cargo.lock` - status: unreviewed; owner: L00 root-fixtures; notes: initial inventory.
-- `Cargo.toml` - status: unreviewed; owner: L00 root-fixtures; notes: initial inventory.
-- `LICENSE-APACHE` - status: unreviewed; owner: L00 root-fixtures; notes: initial inventory.
-- `README.md` - status: unreviewed; owner: L00 root-fixtures; notes: initial inventory.
+- `.gitignore` - status: complete; owner: L00 root-fixtures; notes: reviewed-clean by root-fixtures audit.
+- `AGENTS.md` - status: complete; owner: L00 root-fixtures; notes: reviewed-clean; sediment hits are durable repository policy prohibitions and operating rules.
+- `CLAUDE.md` - status: complete; owner: L00 root-fixtures; notes: reviewed-clean one-line pointer to AGENTS.
+- `Cargo.lock` - status: complete; owner: L00 root-fixtures; notes: reviewed-clean; locked metadata passed and no lockfile churn.
+- `Cargo.toml` - status: complete; owner: L00 root-fixtures; notes: reviewed-clean; workspace metadata resolves and `unsafe_code = "forbid"` remains set.
+- `LICENSE-APACHE` - status: complete; owner: L00 root-fixtures; notes: reviewed-clean standard Apache-2.0 text.
+- `README.md` - status: complete; owner: L00 root-fixtures; notes: reviewed-clean root product and reference overview.
 
 ### crates/marrow-check/core
 - `crates/marrow-check/Cargo.toml` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
@@ -480,8 +480,8 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `docs/roadmap/rust-hardening-file-audit.md` - status: complete; owner: L00 tracker bootstrap; notes: creates the operational source of truth.
 
 ### root continued
-- `fixtures/v01/library.mw` - status: unreviewed; owner: L00 root-fixtures; notes: initial inventory.
-- `rust-toolchain.toml` - status: unreviewed; owner: L00 root-fixtures; notes: initial inventory.
+- `fixtures/v01/library.mw` - status: complete; owner: L00 root-fixtures; notes: reviewed-clean durable v0.1 fixture, included by checker and CLI v0.1 tests.
+- `rust-toolchain.toml` - status: complete; owner: L00 root-fixtures; notes: reviewed-clean; pinned toolchain matches workspace Rust version.
 
 ## Backlog
 
@@ -517,6 +517,40 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
   - `git diff --check HEAD^..HEAD` passed with no output.
   - Main bidirectional inventory check passed with no output.
   - `git status --short --branch` after cherry-pick reported clean main ahead by one commit.
+
+## L00 Root-Fixtures Evidence
+
+- Changed files: none; root/manifests/fixture files were reviewed-clean without source edits.
+- Lane source commit: none.
+- Main source integration commit: none; this evidence update records the audit state.
+- Base/head: `/Users/scottwilliams/Dev/marrow-rust-hardening-l00-root-fixtures` at `d528f5e9a9e281c8076145a2b734976de3d8a12e`.
+- Failing-or-focused checks:
+  - No RED/edit cycle was run because the build worker and reviewers found no concrete cleanup to make.
+  - Baseline checks inspected all owned files: `.gitignore`, `AGENTS.md`, `CLAUDE.md`, `Cargo.lock`, `Cargo.toml`, `LICENSE-APACHE`, `README.md`, `fixtures/v01/library.mw`, and `rust-toolchain.toml`.
+- Focused gates:
+  - `git diff --check` passed with no output.
+  - `git diff --name-status` returned no output.
+  - `git diff --name-status -- docs/language docs/roadmap` returned no output.
+  - `git diff --name-status d528f5e9a9e281c8076145a2b734976de3d8a12e -- Cargo.lock Cargo.toml rust-toolchain.toml` returned no output.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l00-root-fixtures cargo metadata --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l00-root-fixtures/Cargo.toml --locked --format-version 1 --no-deps` passed.
+- Full lane gates:
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l00-root-fixtures cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l00-root-fixtures/Cargo.toml --all --check` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l00-root-fixtures cargo build --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l00-root-fixtures/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l00-root-fixtures cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l00-root-fixtures/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l00-root-fixtures cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l00-root-fixtures/Cargo.toml --workspace --all-targets -- -D warnings` passed.
+- Soundness review: pass, no findings. Reviewer inspected every owned file, reran locked metadata, and ran focused fixture consumers: `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l00-review-soundness cargo test -p marrow-check --test v01_fixtures --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l00-root-fixtures/Cargo.toml` passed and `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l00-review-soundness cargo test -p marrow --test v01_cli --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l00-root-fixtures/Cargo.toml` passed.
+- Idiom/spec review: pass, no findings. Reviewer inspected root docs, manifest/lint shape, toolchain pin, lockfile state, and fixture naming/module shape.
+- Fixed review findings: none; re-review not required.
+- Absence and sibling scans:
+  - Sediment scan over owned files found only AGENTS policy terms: shims, legacy, prototype, bridge, compatibility, previously, and now.
+  - Unsafe scan over owned files found only the AGENTS rule forbidding unsafe Rust.
+  - Fixture reference scan found `fixtures/v01/library.mw` included by `crates/marrow-check/tests/v01_fixtures.rs` and `crates/marrow/tests/v01_cli.rs`.
+  - `git diff -- Cargo.lock Cargo.toml rust-toolchain.toml` returned no output.
+- Integration gates:
+  - `git -C /Users/scottwilliams/Dev/marrow fetch origin main` completed before root-fixtures tracker integration; `HEAD`, `origin/main`, and `FETCH_HEAD` were all `d528f5e9a9e281c8076145a2b734976de3d8a12e`.
+  - No source cherry-pick was required because the lane changed no root/manifests/fixture files.
+  - Tracker evidence was updated on main with the unrelated untracked `docs/roadmap/release-hardening-operating-plan.md` left untouched.
+  - `git -C /Users/scottwilliams/Dev/marrow status --short --branch` after the tracker evidence update showed main aligned with `origin/main`, this tracker file modified, and the unrelated untracked `docs/roadmap/release-hardening-operating-plan.md`.
 
 ## L02 Docs-Meta Evidence
 
