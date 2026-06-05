@@ -128,14 +128,14 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 | Pattern | Current Evidence | Status | Owner |
 |---|---|---|---|
 | `unsafe` Rust | `rg -n "\\bunsafe\\b" -g "*.rs"` returned no matches. | reviewed-clean | L00 |
-| Prototype paths | Completed L00-L05 and L01 lanes found no retained prototype paths in their owned areas; remaining hits require lane-local review. | needs-lane | L06-L14 |
+| Prototype paths | Completed L00-L05 and L12 lanes found no retained prototype paths in their owned areas; remaining hits require lane-local review. | needs-lane | L06-L11, L13-L14 |
 | Duplicate semantic classifiers | Targeted scan found classifier families in checker/runtime; owner lanes must prove one semantic owner. | needs-lane | L06-L11 |
-| Public raw/string APIs | Raw/catalog/archive hits require production-boundary review. | needs-lane | L10, L12, L13, L14 |
-| Fallback branches and legacy modes | L00 root-fixtures hits are AGENTS policy prohibitions. L01 language-doc hits are v0.1/reserved boundary text rather than compatibility fallback behavior. Other term scan hits require lane-local review. | needs-lane | L06-L14 |
-| Message-parsing logic | L03 syntax, L04 schema, and L05 project-model have no `message.contains` semantic assertions after integration; remaining areas still need lane-local migration. | needs-lane | L06-L14 |
+| Public raw/string APIs | L12 store raw archive constructors are `pub(crate)` typed backup boundaries or test-gated constructors; redb raw byte checks are native substrate tests. Other raw/catalog/archive hits require production-boundary review. | needs-lane | L10, L13, L14 |
+| Fallback branches and legacy modes | L00 root-fixtures hits are AGENTS policy prohibitions. L01 language-doc hits are v0.1/reserved boundary text rather than compatibility fallback behavior. L12 store hits are version-refusal and table-initialization comments or tests rejecting legacy manifest spellings. Other term scan hits require lane-local review. | needs-lane | L06-L11, L13-L14 |
+| Message-parsing logic | L03 syntax, L04 schema, L05 project-model, and L12 store have no `message.contains` semantic assertions after integration; remaining areas still need lane-local migration. | needs-lane | L06-L11, L13-L14 |
 | Source-text architecture scans | Existing scans identified in architecture tests. | needs-lane | L08, L10, L14 |
-| Comment sediment | L00 root-fixtures hits are durable AGENTS policy prohibitions and repository operating rules. L01 language-doc hits were triaged as durable `migration DSL` negative scope, `std::clock::now()` examples, and `rename ... now spelled` evolution wording. L02 removed empty future placeholder pages; remaining L02 hits were triaged as durable data-evolution compatibility/migration contracts, `std::clock::now`, old path aliases, bridge wording for host-system extensions, and protocol cursor text. L03 syntax hits were triaged as durable `rename ... now spelled` semantics and `now` sample text; L04 schema hits were triaged as `clock.now` domain text and a pre-existing `string`/`Str` bridge comment; L05 project-model hits were triaged as durable store-key migration wording and a `SystemTime::now()` false positive. | needs-lane | L06-L14 |
-| Cargo target isolation | Future lane commands must spell lane-specific `CARGO_TARGET_DIR`. | needs-lane | all lanes |
+| Comment sediment | L00 root-fixtures hits are durable AGENTS policy prohibitions and repository operating rules. L01 language-doc hits were triaged as durable `migration DSL` negative scope, `std::clock::now()` examples, and `rename ... now spelled` evolution wording. L02 removed empty future placeholder pages; remaining L02 hits were triaged as durable data-evolution compatibility/migration contracts, `std::clock::now`, old path aliases, bridge wording for host-system extensions, and protocol cursor text. L03 syntax hits were triaged as durable `rename ... now spelled` semantics and `now` sample text; L04 schema hits were triaged as `clock.now` domain text and a pre-existing `string`/`Str` bridge comment; L05 project-model hits were triaged as durable store-key migration wording and a `SystemTime::now()` false positive; L12 store hits were durable redb format/version comments, native substrate raw-byte tests, and internal byte-decoder variable names. | needs-lane | L06-L11, L13-L14 |
+| Cargo target isolation | Completed lanes spell lane-specific `CARGO_TARGET_DIR`; future lane commands must keep doing so. | needs-lane | L06-L11, L13-L14 |
 | Cargo.lock churn | No lockfile change at audit start. | reviewed-clean | L00 |
 
 ## Lane Status Ledger
@@ -154,7 +154,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 | L09 checker-tooling | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l09-checker-tooling` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L10 runtime-core | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-runtime-core` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L11 runtime-evolution | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l11-runtime-evolution` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
-| L12 store | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-store` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
+| L12 store | `/Users/scottwilliams/Dev/marrow-rust-hardening-l12-store` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-store`; review `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-review-soundness` and `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-review-idiom`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-main-integration` | `e3690d46d5cebb760728dfb20b49cd52d0806c2b` | no source commit; tracker evidence recorded | complete | focused store/default/native checks, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings | pass, no findings | no review findings | no source cherry-pick required; main integration gates passed |
 | L13 backup-restore | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-backup-restore` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L14 cli-tools-server | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-cli-tools-server` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 
@@ -346,23 +346,23 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow-schema/tests/resolve_type.rs` - status: complete; owner: L04 schema; notes: reviewed-clean; pre-existing `string`/`Str` bridge comment is durable type-spelling rationale.
 
 ### crates/marrow-store
-- `crates/marrow-store/Cargo.toml` - status: unreviewed; owner: L12 store; notes: initial inventory.
-- `crates/marrow-store/src/backend.rs` - status: unreviewed; owner: L12 store; notes: initial inventory.
-- `crates/marrow-store/src/backup.rs` - status: unreviewed; owner: L12 store; notes: initial inventory.
-- `crates/marrow-store/src/cell.rs` - status: unreviewed; owner: L12 store; notes: initial inventory.
-- `crates/marrow-store/src/conformance.rs` - status: unreviewed; owner: L12 store; notes: initial inventory.
-- `crates/marrow-store/src/decimal.rs` - status: unreviewed; owner: L12 store; notes: initial inventory.
-- `crates/marrow-store/src/key.rs` - status: unreviewed; owner: L12 store; notes: initial inventory.
-- `crates/marrow-store/src/lib.rs` - status: unreviewed; owner: L12 store; notes: initial inventory.
-- `crates/marrow-store/src/mem.rs` - status: unreviewed; owner: L12 store; notes: initial inventory.
-- `crates/marrow-store/src/metadata.rs` - status: unreviewed; owner: L12 store; notes: initial inventory.
-- `crates/marrow-store/src/redb.rs` - status: unreviewed; owner: L12 store; notes: initial inventory.
-- `crates/marrow-store/src/traversal.rs` - status: unreviewed; owner: L12 store; notes: initial inventory.
-- `crates/marrow-store/src/tree.rs` - status: unreviewed; owner: L12 store; notes: initial inventory.
-- `crates/marrow-store/src/value.rs` - status: unreviewed; owner: L12 store; notes: initial inventory.
-- `crates/marrow-store/tests/redb_store.rs` - status: unreviewed; owner: L12 store; notes: initial inventory.
-- `crates/marrow-store/tests/tree_store.rs` - status: unreviewed; owner: L12 store; notes: initial inventory.
-- `crates/marrow-store/tests/value_encoding.rs` - status: unreviewed; owner: L12 store; notes: initial inventory.
+- `crates/marrow-store/Cargo.toml` - status: complete; owner: L12 store; notes: reviewed-clean; no manifest churn.
+- `crates/marrow-store/src/backend.rs` - status: complete; owner: L12 store; notes: reviewed-clean typed backend contract and `StoreError` codes.
+- `crates/marrow-store/src/backup.rs` - status: complete; owner: L12 store; notes: reviewed-clean; raw backup constructors are crate-internal or test-gated and validate typed data-cell targets.
+- `crates/marrow-store/src/cell.rs` - status: complete; owner: L12 store; notes: reviewed-clean typed cell-key encoding and child decoders.
+- `crates/marrow-store/src/conformance.rs` - status: complete; owner: L12 store; notes: reviewed-clean shared backend conformance coverage.
+- `crates/marrow-store/src/decimal.rs` - status: complete; owner: L12 store; notes: reviewed-clean canonical decimal envelope and arithmetic.
+- `crates/marrow-store/src/key.rs` - status: complete; owner: L12 store; notes: reviewed-clean typed saved-key encoding boundary.
+- `crates/marrow-store/src/lib.rs` - status: complete; owner: L12 store; notes: reviewed-clean public module surface.
+- `crates/marrow-store/src/mem.rs` - status: complete; owner: L12 store; notes: reviewed-clean memory backend conformance.
+- `crates/marrow-store/src/metadata.rs` - status: complete; owner: L12 store; notes: reviewed-clean typed commit metadata codec.
+- `crates/marrow-store/src/redb.rs` - status: complete; owner: L12 store; notes: reviewed-clean native backend, transaction, and raw-byte substrate tests.
+- `crates/marrow-store/src/traversal.rs` - status: complete; owner: L12 store; notes: reviewed-clean scan accumulator and paging boundary.
+- `crates/marrow-store/src/tree.rs` - status: complete; owner: L12 store; notes: reviewed-clean typed tree facade, backup traversal, metadata, and transaction coverage.
+- `crates/marrow-store/src/value.rs` - status: complete; owner: L12 store; notes: reviewed-clean canonical saved-value codec.
+- `crates/marrow-store/tests/redb_store.rs` - status: complete; owner: L12 store; notes: reviewed-clean native redb persistence and handle-boundary coverage.
+- `crates/marrow-store/tests/tree_store.rs` - status: complete; owner: L12 store; notes: reviewed-clean typed tree-store behavior coverage.
+- `crates/marrow-store/tests/value_encoding.rs` - status: complete; owner: L12 store; notes: reviewed-clean canonical value encoding coverage.
 
 ### crates/marrow-syntax
 - `crates/marrow-syntax/Cargo.toml` - status: complete; owner: L03 syntax; notes: reviewed-clean; no manifest churn.
@@ -742,3 +742,53 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
   - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-main-integration cargo build --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
   - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-main-integration cargo test --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
   - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-main-integration cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace --all-targets -- -D warnings` passed.
+
+## L12 Store Evidence
+
+- Worktree: `/Users/scottwilliams/Dev/marrow-rust-hardening-l12-store`.
+- Target dirs:
+  - Lane: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-store`.
+  - Soundness review: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-review-soundness`.
+  - Idiom/spec review: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-review-idiom`.
+  - Main integration: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-main-integration`.
+- Base/head:
+  - Lane base/head: `e3690d46d5cebb760728dfb20b49cd52d0806c2b`.
+  - Live main before tracker evidence: `e3690d46d5cebb760728dfb20b49cd52d0806c2b`, aligned with `origin/main`.
+- Changed files: none in the L12 source worktree; only tracker evidence changed on main.
+- Failing or focused check:
+  - No RED check was warranted because the full store audit found no concrete behavior gap requiring a code change.
+- Focused gates:
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-store cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l12-store/Cargo.toml -p marrow-store` passed with 42 unit tests, 16 `tree_store` tests, 20 `value_encoding` tests, and doc-tests.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-store cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l12-store/Cargo.toml -p marrow-store --all-targets -- -D warnings` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-store cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l12-store/Cargo.toml -p marrow-store --features native` passed with 51 unit tests including redb conformance, 7 `redb_store` tests, 17 `tree_store` tests, and 20 `value_encoding` tests.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-store cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l12-store/Cargo.toml -p marrow-store --all-targets --features native -- -D warnings` passed.
+- Store contracts inspected:
+  - Transaction contract: `Backend`, `MemStore`, `RedbStore`, and `TreeStore` transaction wrappers; native redb rollback/commit uses an undo journal under the outer write transaction.
+  - Backup/restore boundary: backup streams data-family cells through typed `DataCellKey` frames; restore tests validate framed cells before replay and revalidate the store before commit.
+  - Integrity/conformance: shared conformance covers read/write/delete, pagination, snapshots, commit/rollback, and write-exclusion; native tests cover redb persistence and handle boundaries.
+  - Raw/value boundary: byte decoders are private or `pub(crate)` typed codec boundaries; public encode/decode APIs take typed inputs or typed expected shapes.
+  - Public raw/helper surfaces: `TreeBackupCell::from_raw` is crate-internal and validates data-cell targets; `TreeBackupCellBuf::from_raw` is test-gated; redb raw-byte tests are substrate probes.
+- Full lane gates:
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-store cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l12-store/Cargo.toml --all --check` passed with no output.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-store cargo build --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l12-store/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-store cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l12-store/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-store cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l12-store/Cargo.toml --workspace --all-targets -- -D warnings` passed.
+- Soundness review: pass, no findings. The reviewer exercised `marrow-store` default/native tests, backup unit tests, backup CLI tests, data CLI integrity tests, runtime transaction tests, native run persistence, and targeted evolution rollback/drift probes. One invalid combined-filter command and one zero-test filter were not counted as evidence; each intended probe was rerun with a valid focused command.
+- Idiom/spec review: pass, no findings. The reviewer inspected all owned store Rust and tests, and ran `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-review-idiom cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l12-store/Cargo.toml -p marrow-store --all-features`, which passed with 51 unit tests, 7 `redb_store` tests, 17 `tree_store` tests, and 20 `value_encoding` tests.
+- Fixed review findings:
+  - None.
+- Absence and sibling scans:
+  - `rg -n '\bunsafe\b' crates/marrow-store -g '*.rs'` returned no matches.
+  - `rg -n '\bunsafe\b|message\.contains|\.message\.contains|stderr\.contains|stdout\.contains|error\.to_string\(\)\.contains|assert!\([^\n]*contains' crates/marrow-store -g '*.rs'` returned no matches.
+  - `git diff -- Cargo.lock Cargo.toml crates/marrow-store/Cargo.toml` returned no output.
+  - `git diff --name-status` and `git diff --check` returned no output in the L12 worktree.
+  - Raw/helper/prototype/legacy scans found only private decoder variables, crate-internal or test-gated backup constructors, redb native substrate tests, and durable format-version refusal wording.
+- Integration gates:
+  - `git -C /Users/scottwilliams/Dev/marrow fetch origin` completed; `git -C /Users/scottwilliams/Dev/marrow rev-parse HEAD` and `git -C /Users/scottwilliams/Dev/marrow rev-parse origin/main` both returned `e3690d46d5cebb760728dfb20b49cd52d0806c2b`.
+  - `git -C /Users/scottwilliams/Dev/marrow status --short --branch` showed `## main...origin/main` plus unrelated untracked `docs/roadmap/release-hardening-operating-plan.md`.
+  - Post-tracker-evidence `git -C /Users/scottwilliams/Dev/marrow status --short --branch` showed `## main...origin/main`, modified `docs/roadmap/rust-hardening-file-audit.md`, and unrelated untracked `docs/roadmap/release-hardening-operating-plan.md`.
+  - No source cherry-pick was required because the lane made no source changes.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-main-integration cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --all --check` passed with no output.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-main-integration cargo build --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-main-integration cargo test --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-main-integration cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace --all-targets -- -D warnings` passed.
