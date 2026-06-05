@@ -11,6 +11,7 @@ use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 mod digest;
 pub use digest::sha256_digest;
@@ -63,7 +64,43 @@ impl StoreBackend {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigError {
     pub code: &'static str,
+    pub kind: ConfigErrorKind,
     pub message: String,
+}
+
+/// The typed reason a `marrow.json` failed validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigErrorKind {
+    InvalidJson,
+    MissingSourceRoots,
+    EmptySourceRoots,
+    UnknownStoreBackend {
+        backend: String,
+    },
+    NativeStoreMissingDataDir,
+    NativeStoreEmptyDataDir,
+    InvalidPath {
+        field: ConfigPathField,
+        value: String,
+        reason: ConfigPathViolation,
+    },
+}
+
+/// The config field that carried an invalid project-relative path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigPathField {
+    SourceRootsEntry,
+    DataDir,
+    TestsEntry,
+    AcceptedCatalog,
+}
+
+/// Why a configured project-relative path is invalid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigPathViolation {
+    Empty,
+    Absolute,
+    ParentDir,
 }
 
 /// Stable error code for an invalid accepted catalog metadata file.
@@ -349,10 +386,22 @@ impl fmt::Display for CatalogError {
 impl std::error::Error for CatalogError {}
 
 impl ConfigError {
-    fn new(message: impl Into<String>) -> Self {
+    fn new(kind: ConfigErrorKind, message: impl Into<String>) -> Self {
         Self {
             code: CONFIG_INVALID,
+            kind,
             message: message.into(),
+        }
+    }
+}
+
+impl ConfigPathField {
+    fn label(self) -> &'static str {
+        match self {
+            Self::SourceRootsEntry => "sourceRoots entry",
+            Self::DataDir => "dataDir",
+            Self::TestsEntry => "tests entry",
+            Self::AcceptedCatalog => "acceptedCatalog",
         }
     }
 }
@@ -367,39 +416,66 @@ impl std::error::Error for ConfigError {}
 
 /// Parse and validate the contents of a `marrow.json` file.
 pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
-    let raw: RawConfig =
-        serde_json::from_str(json).map_err(|error| ConfigError::new(error.to_string()))?;
+    let value: Value = serde_json::from_str(json)
+        .map_err(|error| ConfigError::new(ConfigErrorKind::InvalidJson, error.to_string()))?;
+    let object = config_object(&value)?;
+    let has_source_roots = object.contains_key("sourceRoots");
+    object_field(object, "run")?;
+    object_field(object, "store")?;
+    let raw: RawConfig = serde_json::from_str(json)
+        .map_err(|error| ConfigError::new(ConfigErrorKind::InvalidJson, error.to_string()))?;
 
+    if !has_source_roots {
+        return Err(ConfigError::new(
+            ConfigErrorKind::MissingSourceRoots,
+            "`sourceRoots` must list at least one source directory",
+        ));
+    }
     if raw.source_roots.is_empty() {
         return Err(ConfigError::new(
+            ConfigErrorKind::EmptySourceRoots,
             "`sourceRoots` must list at least one source directory",
         ));
     }
     for source_root in &raw.source_roots {
-        check_under_root("sourceRoots entry", source_root)?;
+        check_under_root(ConfigPathField::SourceRootsEntry, source_root)?;
     }
     for pattern in &raw.tests {
-        check_under_root("tests entry", pattern)?;
+        check_under_root(ConfigPathField::TestsEntry, pattern)?;
     }
 
     let store = match raw.store {
         Some(store) => {
             let backend = StoreBackend::parse(&store.backend).ok_or_else(|| {
-                ConfigError::new(format!(
-                    "unknown store backend `{}`; expected `memory` or `native`",
-                    store.backend
-                ))
+                ConfigError::new(
+                    ConfigErrorKind::UnknownStoreBackend {
+                        backend: store.backend.clone(),
+                    },
+                    format!(
+                        "unknown store backend `{}`; expected `memory` or `native`",
+                        store.backend
+                    ),
+                )
             })?;
-            // The native backend opens against a directory, so it cannot run
-            // without one; reject the unrunnable config here rather than at open.
-            if backend == StoreBackend::Native && store.data_dir.as_deref().unwrap_or("").is_empty()
-            {
-                return Err(ConfigError::new(
-                    "the `native` store backend requires a non-empty `dataDir`",
-                ));
+            if backend == StoreBackend::Native {
+                match store.data_dir.as_deref() {
+                    None => {
+                        return Err(ConfigError::new(
+                            ConfigErrorKind::NativeStoreMissingDataDir,
+                            "the `native` store backend requires a non-empty `dataDir`",
+                        ));
+                    }
+                    Some("") => {
+                        return Err(ConfigError::new(
+                            ConfigErrorKind::NativeStoreEmptyDataDir,
+                            "the `native` store backend requires a non-empty `dataDir`",
+                        ));
+                    }
+                    Some(_) => {}
+                }
             }
             if let Some(data_dir) = &store.data_dir {
-                check_under_root("dataDir", data_dir)?;
+                check_under_root(ConfigPathField::DataDir, data_dir)?;
             }
             Some(StoreConfig {
                 backend,
@@ -412,7 +488,7 @@ pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
     let accepted_catalog = raw
         .accepted_catalog
         .unwrap_or_else(|| "marrow.catalog.json".to_string());
-    check_under_root("acceptedCatalog", &accepted_catalog)?;
+    check_under_root(ConfigPathField::AcceptedCatalog, &accepted_catalog)?;
 
     Ok(ProjectConfig {
         source_roots: raw.source_roots,
@@ -425,25 +501,76 @@ pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
 
 /// Reject a configured path that would not stay under the project root: every
 /// such value is joined onto the root, and `Path::join` discards the root for an
-/// absolute argument, while a `..` component walks above it. `label` names the
-/// field for the diagnostic.
-fn check_under_root(label: &str, value: &str) -> Result<(), ConfigError> {
+/// absolute argument, while a `..` component walks above it.
+fn check_under_root(field: ConfigPathField, value: &str) -> Result<(), ConfigError> {
     if value.is_empty() {
-        return Err(ConfigError::new(format!("`{label}` must not be empty")));
+        return Err(invalid_config_path(
+            field,
+            value,
+            ConfigPathViolation::Empty,
+        ));
     }
     let path = Path::new(value);
     if path.is_absolute() {
-        return Err(ConfigError::new(format!(
-            "`{label}` `{value}` must be relative to the project root, not absolute"
-        )));
+        return Err(invalid_config_path(
+            field,
+            value,
+            ConfigPathViolation::Absolute,
+        ));
     }
     if path
         .components()
         .any(|component| component == Component::ParentDir)
     {
-        return Err(ConfigError::new(format!(
-            "`{label}` `{value}` must not contain a `..` component"
-        )));
+        return Err(invalid_config_path(
+            field,
+            value,
+            ConfigPathViolation::ParentDir,
+        ));
+    }
+    Ok(())
+}
+
+fn invalid_config_path(
+    field: ConfigPathField,
+    value: &str,
+    reason: ConfigPathViolation,
+) -> ConfigError {
+    let label = field.label();
+    let message = match reason {
+        ConfigPathViolation::Empty => format!("`{label}` must not be empty"),
+        ConfigPathViolation::Absolute => {
+            format!("`{label}` `{value}` must be relative to the project root, not absolute")
+        }
+        ConfigPathViolation::ParentDir => {
+            format!("`{label}` `{value}` must not contain a `..` component")
+        }
+    };
+    ConfigError::new(
+        ConfigErrorKind::InvalidPath {
+            field,
+            value: value.to_string(),
+            reason,
+        },
+        message,
+    )
+}
+
+fn config_object(value: &Value) -> Result<&serde_json::Map<String, Value>, ConfigError> {
+    value.as_object().ok_or_else(|| {
+        ConfigError::new(
+            ConfigErrorKind::InvalidJson,
+            "config root must be a JSON object",
+        )
+    })
+}
+
+fn object_field(object: &serde_json::Map<String, Value>, field: &str) -> Result<(), ConfigError> {
+    if object.get(field).is_some_and(|value| !value.is_object()) {
+        return Err(ConfigError::new(
+            ConfigErrorKind::InvalidJson,
+            format!("`{field}` must be a JSON object"),
+        ));
     }
     Ok(())
 }

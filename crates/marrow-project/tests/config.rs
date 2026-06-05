@@ -1,4 +1,6 @@
-use marrow_project::{StoreBackend, parse_config};
+use marrow_project::{
+    ConfigErrorKind, ConfigPathField, ConfigPathViolation, StoreBackend, parse_config,
+};
 
 #[test]
 fn parses_the_documented_example_config() {
@@ -50,13 +52,14 @@ fn accepts_the_memory_backend() {
 fn rejects_missing_source_roots() {
     let error = parse_config(r#"{ "tests": ["t.mw"] }"#).expect_err("should reject");
     assert_eq!(error.code, "config.invalid");
-    assert!(error.message.contains("sourceRoots"), "{}", error.message);
+    assert_eq!(error.kind, ConfigErrorKind::MissingSourceRoots);
 }
 
 #[test]
 fn rejects_empty_source_roots() {
     let error = parse_config(r#"{ "sourceRoots": [] }"#).expect_err("should reject");
     assert_eq!(error.code, "config.invalid");
+    assert_eq!(error.kind, ConfigErrorKind::EmptySourceRoots);
 }
 
 #[test]
@@ -64,64 +67,90 @@ fn rejects_unknown_store_backend() {
     let error = parse_config(r#"{ "sourceRoots": ["src"], "store": { "backend": "postgres" } }"#)
         .expect_err("should reject");
     assert_eq!(error.code, "config.invalid");
-    assert!(error.message.contains("postgres"), "{}", error.message);
+    assert_eq!(
+        error.kind,
+        ConfigErrorKind::UnknownStoreBackend {
+            backend: "postgres".to_string()
+        }
+    );
 }
 
 #[test]
 fn rejects_native_store_without_data_dir() {
-    // The native backend cannot open without a data directory, so a native store
-    // missing (or with an empty) `dataDir` is invalid here, not later at open time.
     let error = parse_config(r#"{ "sourceRoots": ["src"], "store": { "backend": "native" } }"#)
         .expect_err("should reject");
     assert_eq!(error.code, "config.invalid");
-    assert!(error.message.contains("dataDir"), "{}", error.message);
+    assert_eq!(error.kind, ConfigErrorKind::NativeStoreMissingDataDir);
 
     let error = parse_config(
         r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": "" } }"#,
     )
     .expect_err("should reject");
     assert_eq!(error.code, "config.invalid");
-    assert!(error.message.contains("dataDir"), "{}", error.message);
+    assert_eq!(error.kind, ConfigErrorKind::NativeStoreEmptyDataDir);
 }
 
 #[test]
 fn rejects_path_entries_that_escape_the_project_root() {
-    // sourceRoots, dataDir, and tests entries are joined onto the project root,
-    // so an empty, absolute, or `..`-bearing value would escape it. Each is
-    // rejected with a message naming the offending value.
-    for (json, offender) in [
-        (r#"{ "sourceRoots": [""] }"#, ""),
-        (r#"{ "sourceRoots": ["/etc"] }"#, "/etc"),
-        (r#"{ "sourceRoots": ["../other"] }"#, "../other"),
+    for (json, field, value, reason) in [
+        (
+            r#"{ "sourceRoots": [""] }"#,
+            ConfigPathField::SourceRootsEntry,
+            "",
+            ConfigPathViolation::Empty,
+        ),
+        (
+            r#"{ "sourceRoots": ["/etc"] }"#,
+            ConfigPathField::SourceRootsEntry,
+            "/etc",
+            ConfigPathViolation::Absolute,
+        ),
+        (
+            r#"{ "sourceRoots": ["../other"] }"#,
+            ConfigPathField::SourceRootsEntry,
+            "../other",
+            ConfigPathViolation::ParentDir,
+        ),
         (
             r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": "/var/data" } }"#,
+            ConfigPathField::DataDir,
             "/var/data",
+            ConfigPathViolation::Absolute,
         ),
         (
             r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": "../data" } }"#,
+            ConfigPathField::DataDir,
             "../data",
+            ConfigPathViolation::ParentDir,
         ),
         (
             r#"{ "sourceRoots": ["src"], "tests": ["../tests/*.mw"] }"#,
+            ConfigPathField::TestsEntry,
             "../tests/*.mw",
+            ConfigPathViolation::ParentDir,
         ),
         (
             r#"{ "sourceRoots": ["src"], "tests": ["/abs/tests"] }"#,
+            ConfigPathField::TestsEntry,
             "/abs/tests",
+            ConfigPathViolation::Absolute,
         ),
         (
             r#"{ "sourceRoots": ["src"], "acceptedCatalog": "../catalog.json" }"#,
+            ConfigPathField::AcceptedCatalog,
             "../catalog.json",
+            ConfigPathViolation::ParentDir,
         ),
     ] {
         let error = parse_config(json).expect_err("should reject");
         assert_eq!(error.code, "config.invalid", "{json}");
-        assert!(
-            error.message.contains(offender)
-                || (offender.is_empty() && error.message.contains("empty")),
-            "message {:?} should name offender {:?}",
-            error.message,
-            offender
+        assert_eq!(
+            error.kind,
+            ConfigErrorKind::InvalidPath {
+                field,
+                value: value.to_string(),
+                reason
+            }
         );
     }
 }
@@ -131,10 +160,30 @@ fn rejects_unknown_top_level_keys() {
     let error = parse_config(r#"{ "sourceRoots": ["src"], "globals": ["^x"] }"#)
         .expect_err("should reject unknown keys");
     assert_eq!(error.code, "config.invalid");
+    assert_eq!(error.kind, ConfigErrorKind::InvalidJson);
+    assert_eq!(
+        error.message,
+        "unknown field `globals`, expected one of `sourceRoots`, `run`, `store`, `tests`, `acceptedCatalog` at line 1 column 35"
+    );
+}
+
+#[test]
+fn rejects_non_object_config_shapes() {
+    for json in [
+        "[]",
+        r#"[["src"]]"#,
+        r#"{ "sourceRoots": ["src"], "run": ["main"] }"#,
+        r#"{ "sourceRoots": ["src"], "store": ["native", "db"] }"#,
+    ] {
+        let error = parse_config(json).expect_err("should reject non-object config shape");
+        assert_eq!(error.code, "config.invalid", "{json}");
+        assert_eq!(error.kind, ConfigErrorKind::InvalidJson, "{json}");
+    }
 }
 
 #[test]
 fn rejects_malformed_json() {
     let error = parse_config("{ not json").expect_err("should reject");
     assert_eq!(error.code, "config.invalid");
+    assert_eq!(error.kind, ConfigErrorKind::InvalidJson);
 }
