@@ -100,6 +100,7 @@ mod tests {
     use marrow_store::tree::{CommitMetadata, TreeStore};
 
     use super::super::test_support::{BOOK_SOURCE, committed_program};
+    use super::super::{BackupCorruptProblem, BackupError};
     use super::build_manifest;
 
     #[test]
@@ -138,9 +139,12 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
 
         assert_eq!(error.code(), "restore.corrupt_chunk");
-        assert!(
-            error.to_string().contains("commit metadata disagrees"),
-            "{error}"
-        );
+        assert!(matches!(
+            error,
+            BackupError::CorruptChunk {
+                problem: BackupCorruptProblem::ManifestCommitBindingMismatch,
+                ..
+            }
+        ));
     }
 }

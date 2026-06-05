@@ -34,6 +34,12 @@ fn marrow(args: &[&str]) -> std::process::Output {
         .expect("run marrow")
 }
 
+fn json_code(output: &std::process::Output) -> String {
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("json error output");
+    value["code"].as_str().expect("json error code").to_string()
+}
+
 /// A native-store project whose `seed` entry writes one book, plus its committed
 /// catalog. Running `seed` populates the store; the data directory can then be
 /// removed to model an empty restore target with the same source and catalog.
@@ -200,13 +206,10 @@ fn restore_refuses_a_non_empty_target() {
         Some(0)
     );
     // The store still holds the seeded data, so restore must refuse it.
-    let restore = marrow(&["restore", &dir, &archive_arg]);
+    let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
     fs::remove_dir_all(&root).ok();
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
-    assert!(
-        String::from_utf8_lossy(&restore.stderr).contains("restore.not_empty"),
-        "non-empty restore reports restore.not_empty: {restore:?}"
-    );
+    assert_eq!(json_code(&restore), "restore.not_empty");
 }
 
 #[test]
@@ -229,13 +232,10 @@ fn restore_rejects_a_corrupt_backup() {
     fs::write(&archive, &bytes).expect("write corrupt archive");
 
     fs::remove_dir_all(&data_dir).expect("remove store data");
-    let restore = marrow(&["restore", &dir, &archive_arg]);
+    let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
     fs::remove_dir_all(&root).ok();
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
-    assert!(
-        String::from_utf8_lossy(&restore.stderr).contains("restore.corrupt_chunk"),
-        "a corrupt backup reports restore.corrupt_chunk: {restore:?}"
-    );
+    assert_eq!(json_code(&restore), "restore.corrupt_chunk");
 }
 
 /// A native-store project with both a non-unique and a unique index over a keyed
@@ -394,7 +394,7 @@ fn restore_rejects_a_backup_carrying_an_orphan_cell() {
     assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
 
     fs::remove_dir_all(&data_dir).expect("remove store data");
-    let restore = marrow(&["restore", &dir, &archive_arg]);
+    let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
     let roots_after_failed_restore = marrow(&["data", "roots", &dir]);
     fs::remove_dir_all(&root).ok();
     assert_eq!(
@@ -402,11 +402,7 @@ fn restore_rejects_a_backup_carrying_an_orphan_cell() {
         Some(1),
         "restore rejects a backup with orphan debris: {restore:?}"
     );
-    let restore_err = String::from_utf8_lossy(&restore.stderr).to_string();
-    assert!(
-        restore_err.contains("restore.data_invalid"),
-        "orphan restore reports restore.data_invalid: {restore:?}"
-    );
+    assert_eq!(json_code(&restore), "restore.data_invalid");
     assert!(
         String::from_utf8_lossy(&roots_after_failed_restore.stdout).contains("(no saved data)"),
         "failed restore leaves the target empty: {roots_after_failed_restore:?}"
@@ -449,7 +445,7 @@ fn restore_rejects_a_backup_carrying_an_impossible_data_cell_shape() {
     assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
 
     fs::remove_dir_all(&data_dir).expect("remove store data");
-    let restore = marrow(&["restore", &dir, &archive_arg]);
+    let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
     let roots_after_failed_restore = marrow(&["data", "roots", &dir]);
     fs::remove_dir_all(&root).ok();
     assert_eq!(
@@ -457,10 +453,7 @@ fn restore_rejects_a_backup_carrying_an_impossible_data_cell_shape() {
         Some(1),
         "restore rejects a backup with an impossible data cell shape: {restore:?}"
     );
-    assert!(
-        String::from_utf8_lossy(&restore.stderr).contains("restore.data_invalid"),
-        "impossible shape restore reports restore.data_invalid: {restore:?}"
-    );
+    assert_eq!(json_code(&restore), "restore.data_invalid");
     assert!(
         String::from_utf8_lossy(&roots_after_failed_restore.stdout).contains("(no saved data)"),
         "failed restore leaves the target empty: {roots_after_failed_restore:?}"
@@ -487,13 +480,10 @@ fn restore_rejects_trailing_bytes() {
     fs::write(&archive, &bytes).expect("write archive with trailing bytes");
 
     fs::remove_dir_all(&data_dir).expect("remove store data");
-    let restore = marrow(&["restore", &dir, &archive_arg]);
+    let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
     fs::remove_dir_all(&root).ok();
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
-    assert!(
-        String::from_utf8_lossy(&restore.stderr).contains("restore.corrupt_chunk"),
-        "trailing bytes report restore.corrupt_chunk: {restore:?}"
-    );
+    assert_eq!(json_code(&restore), "restore.corrupt_chunk");
 }
 
 /// `nextId(^books)` allocates from the highest stored record id, which lives in the

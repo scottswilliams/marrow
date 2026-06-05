@@ -10,7 +10,7 @@ use marrow_store::cell::DataCellKind;
 use marrow_store::tree::{TreeBackupCellBuf, TreeStore};
 
 use super::archive::{self, CHECKSUM_SEED, checksum_cell};
-use super::{BackupError, BackupManifest, EngineDescriptor};
+use super::{BackupCorruptProblem, BackupError, BackupManifest, EngineDescriptor};
 
 /// What a completed restore replayed.
 #[derive(Debug)]
@@ -140,14 +140,16 @@ fn replay(
         restore_cell(store, &cell)?;
     }
     if checksum != manifest.data_checksum {
-        return Err(BackupError::CorruptChunk(
+        return Err(BackupError::corrupt(
+            BackupCorruptProblem::ChecksumMismatch,
             "backup data checksum does not match its manifest".to_string(),
         ));
     }
     // The cell count and checksum both matched, so a byte past the last cell is
     // trailing junk the backup did not write: a truncated, doubled, or tampered file.
     if has_trailing_bytes(input)? {
-        return Err(BackupError::CorruptChunk(
+        return Err(BackupError::corrupt(
+            BackupCorruptProblem::TrailingBytes,
             "backup carries trailing bytes after its cell stream".to_string(),
         ));
     }

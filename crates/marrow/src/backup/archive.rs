@@ -7,8 +7,8 @@ use std::io::{Read, Write};
 use serde_json::{Value, json};
 
 use super::{
-    BackupError, BackupManifest, CommitDescriptor, DefaultCountDescriptor, EngineDescriptor,
-    FORMAT_VERSION, RetireCountDescriptor,
+    BackupCorruptProblem, BackupError, BackupFormatProblem, BackupManifest, CommitDescriptor,
+    DefaultCountDescriptor, EngineDescriptor, FORMAT_VERSION, RetireCountDescriptor,
 };
 use marrow_store::tree::{
     EngineProfileDigest, TreeBackupCell, TreeBackupCellBuf, TreeBackupCellReadError,
@@ -53,26 +53,37 @@ pub(super) fn read_header(input: &mut impl Read) -> Result<BackupManifest, Backu
     let mut magic = [0u8; 8];
     input.read_exact(&mut magic).map_err(format_version_io)?;
     if &magic != MAGIC {
-        return Err(BackupError::FormatVersion(
+        return Err(BackupError::format_version(
+            BackupFormatProblem::NotBackupFile,
             "not a Marrow backup file".to_string(),
         ));
     }
     let version = read_u32(input).map_err(format_version_io)?;
     if version != FORMAT_VERSION {
-        return Err(BackupError::FormatVersion(format!(
-            "backup format version {version} is unsupported (this build writes {FORMAT_VERSION})"
-        )));
+        return Err(BackupError::format_version(
+            BackupFormatProblem::UnsupportedVersion {
+                found: version,
+                expected: FORMAT_VERSION,
+            },
+            format!(
+                "backup format version {version} is unsupported (this build writes {FORMAT_VERSION})"
+            ),
+        ));
     }
     let manifest_len = read_u32(input).map_err(format_version_io)?;
     if manifest_len > MAX_MANIFEST_BYTES {
-        return Err(BackupError::FormatVersion(
+        return Err(BackupError::format_version(
+            BackupFormatProblem::ManifestTooLarge,
             "backup manifest is implausibly large".to_string(),
         ));
     }
     let mut bytes = vec![0u8; manifest_len as usize];
     input.read_exact(&mut bytes).map_err(format_version_io)?;
     let value: Value = serde_json::from_slice(&bytes).map_err(|error| {
-        BackupError::FormatVersion(format!("backup manifest is not valid: {error}"))
+        BackupError::format_version(
+            BackupFormatProblem::ManifestInvalid,
+            format!("backup manifest is not valid: {error}"),
+        )
     })?;
     manifest_from_json(&value)
 }
@@ -89,18 +100,26 @@ fn read_u32(input: &mut impl Read) -> std::io::Result<u32> {
 }
 
 fn format_version_io(error: std::io::Error) -> BackupError {
-    BackupError::FormatVersion(format!("backup header is truncated: {error}"))
+    BackupError::format_version(
+        BackupFormatProblem::HeaderTruncated,
+        format!("backup header is truncated: {error}"),
+    )
 }
 
 fn read_cell_error(error: TreeBackupCellReadError) -> BackupError {
     match error {
-        TreeBackupCellReadError::EndedEarly => {
-            BackupError::corrupt("backup cell stream ended early")
-        }
-        TreeBackupCellReadError::CellTooLarge => {
-            BackupError::corrupt("backup cell is implausibly large")
-        }
-        TreeBackupCellReadError::MalformedCell => BackupError::corrupt("backup cell is malformed"),
+        TreeBackupCellReadError::EndedEarly => BackupError::corrupt(
+            BackupCorruptProblem::CellStreamEndedEarly,
+            "backup cell stream ended early",
+        ),
+        TreeBackupCellReadError::CellTooLarge => BackupError::corrupt(
+            BackupCorruptProblem::CellTooLarge,
+            "backup cell is implausibly large",
+        ),
+        TreeBackupCellReadError::MalformedCell => BackupError::corrupt(
+            BackupCorruptProblem::MalformedCell,
+            "backup cell is malformed",
+        ),
     }
 }
 
@@ -153,7 +172,7 @@ fn commit_to_json(commit: &CommitDescriptor) -> Value {
 }
 
 fn manifest_from_json(value: &Value) -> Result<BackupManifest, BackupError> {
-    let engine = value.get("engine").ok_or_else(missing("engine"))?;
+    let engine = object_field(value, "engine")?;
     Ok(BackupManifest {
         format_version: u32_field(value, "format_version")?,
         source_digest: str_field(value, "source_digest")?.to_string(),
@@ -167,7 +186,8 @@ fn manifest_from_json(value: &Value) -> Result<BackupManifest, BackupError> {
         },
         commit: match value.get("commit") {
             None | Some(Value::Null) => None,
-            Some(commit) => Some(commit_from_json(commit)?),
+            Some(commit @ Value::Object(_)) => Some(commit_from_json(commit)?),
+            Some(_) => return Err(wrong_type("commit", "object")),
         },
         record_count: u64_field(value, "record_count")?,
         data_checksum: u64_field(value, "data_checksum")?,
@@ -213,62 +233,113 @@ fn commit_from_json(value: &Value) -> Result<CommitDescriptor, BackupError> {
 }
 
 fn missing(field: &'static str) -> impl Fn() -> BackupError {
-    move || BackupError::FormatVersion(format!("backup manifest is missing `{field}`"))
+    move || {
+        BackupError::format_version(
+            BackupFormatProblem::MissingField { field },
+            format!("backup manifest is missing `{field}`"),
+        )
+    }
+}
+
+fn wrong_type(field: &'static str, expected: &'static str) -> BackupError {
+    BackupError::format_version(
+        BackupFormatProblem::FieldType { field, expected },
+        format!("backup manifest field `{field}` must be {expected}"),
+    )
+}
+
+fn object_field<'a>(value: &'a Value, field: &'static str) -> Result<&'a Value, BackupError> {
+    match value.get(field) {
+        None => Err(missing(field)()),
+        Some(object @ Value::Object(_)) => Ok(object),
+        Some(_) => Err(wrong_type(field, "object")),
+    }
 }
 
 fn u32_field(value: &Value, field: &'static str) -> Result<u32, BackupError> {
-    let number = u64_field(value, field)?;
-    u32::try_from(number)
-        .map_err(|_| BackupError::FormatVersion(format!("`{field}` is out of range")))
+    let Some(number) = number_field(value, field, "u32")? else {
+        return Err(missing(field)());
+    };
+    u32::try_from(number).map_err(|_| {
+        BackupError::format_version(
+            BackupFormatProblem::FieldOutOfRange { field },
+            format!("`{field}` is out of range"),
+        )
+    })
 }
 
 fn u8_field(value: &Value, field: &'static str) -> Result<u8, BackupError> {
-    let number = u64_field(value, field)?;
-    u8::try_from(number)
-        .map_err(|_| BackupError::FormatVersion(format!("`{field}` is out of range")))
+    let Some(number) = number_field(value, field, "u8")? else {
+        return Err(missing(field)());
+    };
+    u8::try_from(number).map_err(|_| {
+        BackupError::format_version(
+            BackupFormatProblem::FieldOutOfRange { field },
+            format!("`{field}` is out of range"),
+        )
+    })
 }
 
 fn u64_field(value: &Value, field: &'static str) -> Result<u64, BackupError> {
-    value
-        .get(field)
-        .and_then(Value::as_u64)
-        .ok_or_else(missing(field))
+    match number_field(value, field, "u64")? {
+        Some(number) => Ok(number),
+        None => Err(missing(field)()),
+    }
+}
+
+fn number_field(
+    value: &Value,
+    field: &'static str,
+    expected: &'static str,
+) -> Result<Option<u64>, BackupError> {
+    match value.get(field) {
+        None => Ok(None),
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .ok_or_else(|| wrong_type(field, expected))
+            .map(Some),
+        Some(_) => Err(wrong_type(field, expected)),
+    }
 }
 
 fn opt_u64_field(value: &Value, field: &'static str) -> Result<Option<u64>, BackupError> {
     match value.get(field) {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::Number(_)) => Ok(Some(u64_field(value, field)?)),
-        Some(_) => Err(missing(field)()),
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .ok_or_else(|| wrong_type(field, "u64"))
+            .map(Some),
+        Some(_) => Err(wrong_type(field, "u64")),
     }
 }
 
 fn str_field<'a>(value: &'a Value, field: &'static str) -> Result<&'a str, BackupError> {
-    value
-        .get(field)
-        .and_then(Value::as_str)
-        .ok_or_else(missing(field))
+    match value.get(field) {
+        None => Err(missing(field)()),
+        Some(Value::String(text)) => Ok(text),
+        Some(_) => Err(wrong_type(field, "string")),
+    }
 }
 
 fn opt_str_field(value: &Value, field: &'static str) -> Result<Option<String>, BackupError> {
     match value.get(field) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(text)) => Ok(Some(text.clone())),
-        Some(_) => Err(missing(field)()),
+        Some(_) => Err(wrong_type(field, "string")),
     }
 }
 
 fn str_array_field(value: &Value, field: &'static str) -> Result<Vec<String>, BackupError> {
-    value
-        .get(field)
-        .and_then(Value::as_array)
-        .ok_or_else(missing(field))?
+    let entries = match value.get(field) {
+        None => return Err(missing(field)()),
+        Some(Value::Array(entries)) => entries,
+        Some(_) => return Err(wrong_type(field, "array")),
+    };
+    entries
         .iter()
-        .map(|entry| {
-            entry
-                .as_str()
-                .map(str::to_string)
-                .ok_or_else(missing(field))
+        .map(|entry| match entry {
+            Value::String(text) => Ok(text.clone()),
+            _ => Err(wrong_type(field, "string")),
         })
         .collect()
 }
@@ -281,6 +352,9 @@ fn default_counts_field(
         Value::Array(entries) => entries
             .iter()
             .map(|entry| {
+                if !entry.is_object() {
+                    return Err(wrong_type(field, "object"));
+                }
                 Ok(DefaultCountDescriptor {
                     catalog_id: str_field(entry, "catalog_id")?.to_string(),
                     records_backfilled: u64_field(entry, "records_backfilled")?,
@@ -289,7 +363,7 @@ fn default_counts_field(
                 })
             })
             .collect(),
-        _ => Err(missing(field)()),
+        _ => Err(wrong_type(field, "array")),
     }
 }
 
@@ -301,13 +375,16 @@ fn retire_counts_field(
         Value::Array(entries) => entries
             .iter()
             .map(|entry| {
+                if !entry.is_object() {
+                    return Err(wrong_type(field, "object"));
+                }
                 Ok(RetireCountDescriptor {
                     catalog_id: str_field(entry, "catalog_id")?.to_string(),
                     records: u64_field(entry, "records")?,
                 })
             })
             .collect(),
-        _ => Err(missing(field)()),
+        _ => Err(wrong_type(field, "array")),
     }
 }
 
@@ -315,14 +392,19 @@ fn digest_field(value: &Value, field: &'static str) -> Result<EngineProfileDiges
     let text = str_field(value, field)?;
     let mut digest = EngineProfileDigest::default();
     if text.len() != digest.len() * 2 {
-        return Err(BackupError::FormatVersion(format!(
-            "`{field}` is not an 8-byte digest"
-        )));
+        return Err(BackupError::format_version(
+            BackupFormatProblem::DigestLength { field },
+            format!("`{field}` is not an 8-byte digest"),
+        ));
     }
     for (index, byte) in digest.iter_mut().enumerate() {
         let pair = &text[index * 2..index * 2 + 2];
-        *byte = u8::from_str_radix(pair, 16)
-            .map_err(|_| BackupError::FormatVersion(format!("`{field}` is not hexadecimal")))?;
+        *byte = u8::from_str_radix(pair, 16).map_err(|_| {
+            BackupError::format_version(
+                BackupFormatProblem::DigestHex { field },
+                format!("`{field}` is not hexadecimal"),
+            )
+        })?;
     }
     Ok(digest)
 }
@@ -337,8 +419,48 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use serde_json::json;
 
-    use super::super::{CommitDescriptor, DefaultCountDescriptor};
-    use super::{commit_from_json, commit_to_json};
+    use super::super::{
+        BackupError, BackupFormatProblem, CommitDescriptor, DefaultCountDescriptor,
+    };
+    use super::{commit_from_json, commit_to_json, manifest_from_json};
+
+    fn minimal_manifest() -> serde_json::Value {
+        json!({
+            "format_version": super::FORMAT_VERSION,
+            "source_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+            "catalog_epoch": null,
+            "engine": {
+                "name": super::super::ENGINE_NAME,
+                "layout_epoch": 0,
+                "key_profile_version": 0,
+                "value_codec_version": marrow_store::value::VALUE_CODEC_VERSION,
+                "profile_digest": "0102030405060708",
+            },
+            "commit": null,
+            "record_count": 0,
+            "data_checksum": 0,
+        })
+    }
+
+    #[test]
+    fn manifest_reports_present_wrong_type_fields() {
+        let mut manifest = minimal_manifest();
+        manifest["record_count"] = json!("1");
+
+        let error = manifest_from_json(&manifest).expect_err("wrong type is rejected");
+
+        assert_eq!(error.code(), "restore.format_version");
+        assert!(matches!(
+            error,
+            BackupError::FormatVersion {
+                problem: BackupFormatProblem::FieldType {
+                    field: "record_count",
+                    expected: "u64"
+                },
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn commit_manifest_requires_default_count_evidence_digest() {
@@ -369,7 +491,15 @@ mod tests {
         let error = commit_from_json(&commit).expect_err("missing evidence is corrupt");
 
         assert_eq!(error.code(), "restore.format_version");
-        assert!(error.to_string().contains("evidence_digest"), "{error}");
+        assert!(matches!(
+            error,
+            BackupError::FormatVersion {
+                problem: BackupFormatProblem::MissingField {
+                    field: "evidence_digest"
+                },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -402,17 +532,30 @@ mod tests {
 
         let error = commit_from_json(&commit).expect_err("legacy evolution digest is corrupt");
         assert_eq!(error.code(), "restore.format_version");
-        assert!(
-            error.to_string().contains("activation_evolution_digest"),
-            "{error}"
-        );
+        assert!(matches!(
+            error,
+            BackupError::FormatVersion {
+                problem: BackupFormatProblem::DigestSpelling {
+                    field: "activation_evolution_digest"
+                },
+                ..
+            }
+        ));
 
         commit["activation_evolution_digest"] = json!("");
         commit["activation_default_records_by_id"][0]["evidence_digest"] =
             json!(legacy("0000000000000005"));
         let error = commit_from_json(&commit).expect_err("legacy default evidence is corrupt");
         assert_eq!(error.code(), "restore.format_version");
-        assert!(error.to_string().contains("evidence_digest"), "{error}");
+        assert!(matches!(
+            error,
+            BackupError::FormatVersion {
+                problem: BackupFormatProblem::DigestSpelling {
+                    field: "evidence_digest"
+                },
+                ..
+            }
+        ));
     }
 
     #[test]

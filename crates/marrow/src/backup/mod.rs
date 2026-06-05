@@ -204,6 +204,7 @@ impl CommitDescriptor {
             || self.engine_profile_digest != manifest.engine.profile_digest
         {
             return Err(BackupError::corrupt(
+                BackupCorruptProblem::ManifestCommitBindingMismatch,
                 "manifest commit metadata disagrees with the backup binding",
             ));
         }
@@ -273,9 +274,10 @@ fn require_sha256_digest(field: &'static str, digest: &str) -> Result<(), Backup
     if sha256_digest_spelling(digest) {
         Ok(())
     } else {
-        Err(BackupError::FormatVersion(format!(
-            "`{field}` must be a sha256 digest"
-        )))
+        Err(BackupError::format_version(
+            BackupFormatProblem::DigestSpelling { field },
+            format!("`{field}` must be a sha256 digest"),
+        ))
     }
 }
 
@@ -292,8 +294,12 @@ fn sha256_digest_spelling(digest: &str) -> bool {
 fn catalog_ids(ids: &[String]) -> Result<Vec<marrow_store::cell::CatalogId>, BackupError> {
     ids.iter()
         .map(|id| {
-            marrow_store::cell::CatalogId::new(id.clone())
-                .map_err(|_| BackupError::corrupt("manifest carries a malformed catalog id"))
+            marrow_store::cell::CatalogId::new(id.clone()).map_err(|_| {
+                BackupError::corrupt(
+                    BackupCorruptProblem::MalformedCatalogId,
+                    "manifest carries a malformed catalog id",
+                )
+            })
         })
         .collect()
 }
@@ -304,8 +310,13 @@ fn default_counts(
     counts
         .iter()
         .map(|count| {
-            let id = marrow_store::cell::CatalogId::new(count.catalog_id.clone())
-                .map_err(|_| BackupError::corrupt("manifest carries a malformed catalog id"))?;
+            let id =
+                marrow_store::cell::CatalogId::new(count.catalog_id.clone()).map_err(|_| {
+                    BackupError::corrupt(
+                        BackupCorruptProblem::MalformedCatalogId,
+                        "manifest carries a malformed catalog id",
+                    )
+                })?;
             Ok(marrow_store::tree::ActivationDefaultRecordCount {
                 catalog_id: id,
                 records_backfilled: count.records_backfilled,
@@ -322,8 +333,13 @@ fn retire_counts(
     counts
         .iter()
         .map(|count| {
-            let id = marrow_store::cell::CatalogId::new(count.catalog_id.clone())
-                .map_err(|_| BackupError::corrupt("manifest carries a malformed catalog id"))?;
+            let id =
+                marrow_store::cell::CatalogId::new(count.catalog_id.clone()).map_err(|_| {
+                    BackupError::corrupt(
+                        BackupCorruptProblem::MalformedCatalogId,
+                        "manifest carries a malformed catalog id",
+                    )
+                })?;
             Ok((id, count.records))
         })
         .collect()
@@ -337,9 +353,15 @@ pub enum BackupError {
     /// A store read or write failed.
     Store(marrow_store::StoreError),
     /// The backup header or manifest is not a Marrow backup this build understands.
-    FormatVersion(String),
+    FormatVersion {
+        problem: BackupFormatProblem,
+        message: String,
+    },
     /// A cell chunk failed its checksum or framing.
-    CorruptChunk(String),
+    CorruptChunk {
+        problem: BackupCorruptProblem,
+        message: String,
+    },
     /// The restore target already holds saved data.
     NotEmpty,
     /// The backup was written under a different engine, layout, or value codec.
@@ -352,9 +374,58 @@ pub enum BackupError {
     DataInvalid(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackupFormatProblem {
+    NotBackupFile,
+    UnsupportedVersion {
+        found: u32,
+        expected: u32,
+    },
+    HeaderTruncated,
+    ManifestTooLarge,
+    ManifestInvalid,
+    MissingField {
+        field: &'static str,
+    },
+    FieldType {
+        field: &'static str,
+        expected: &'static str,
+    },
+    FieldOutOfRange {
+        field: &'static str,
+    },
+    DigestLength {
+        field: &'static str,
+    },
+    DigestHex {
+        field: &'static str,
+    },
+    DigestSpelling {
+        field: &'static str,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackupCorruptProblem {
+    CellStreamEndedEarly,
+    CellTooLarge,
+    MalformedCell,
+    ManifestCommitBindingMismatch,
+    MalformedCatalogId,
+    ChecksumMismatch,
+    TrailingBytes,
+}
+
 impl BackupError {
-    fn corrupt(message: &str) -> Self {
-        Self::CorruptChunk(message.to_string())
+    fn format_version(problem: BackupFormatProblem, message: String) -> Self {
+        Self::FormatVersion { problem, message }
+    }
+
+    fn corrupt(problem: BackupCorruptProblem, message: impl Into<String>) -> Self {
+        Self::CorruptChunk {
+            problem,
+            message: message.into(),
+        }
     }
 
     /// The stable dotted code a tool reports for this failure.
@@ -362,8 +433,8 @@ impl BackupError {
         match self {
             Self::Io(_) => "io.write",
             Self::Store(error) => error.code(),
-            Self::FormatVersion(_) => "restore.format_version",
-            Self::CorruptChunk(_) => "restore.corrupt_chunk",
+            Self::FormatVersion { .. } => "restore.format_version",
+            Self::CorruptChunk { .. } => "restore.corrupt_chunk",
             Self::NotEmpty => "restore.not_empty",
             Self::EngineRecompileRequired(_) => "restore.engine_recompile_required",
             Self::SourceMismatch(_) => "restore.source_mismatch",
@@ -378,9 +449,15 @@ impl std::fmt::Display for BackupError {
         match self {
             Self::Io(error) => write!(f, "backup i/o failed: {error}"),
             Self::Store(error) => write!(f, "{error}"),
-            Self::FormatVersion(message)
-            | Self::CorruptChunk(message)
-            | Self::EngineRecompileRequired(message)
+            Self::FormatVersion { problem, message } => {
+                let _ = problem;
+                write!(f, "{message}")
+            }
+            Self::CorruptChunk { problem, message } => {
+                let _ = problem;
+                write!(f, "{message}")
+            }
+            Self::EngineRecompileRequired(message)
             | Self::SourceMismatch(message)
             | Self::CatalogMismatch(message)
             | Self::DataInvalid(message) => write!(f, "{message}"),
