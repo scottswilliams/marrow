@@ -132,7 +132,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 | Duplicate semantic classifiers | Targeted scan found classifier families in checker/runtime; owner lanes must prove one semantic owner. | needs-lane | L06-L11 |
 | Public raw/string APIs | L12 store raw archive constructors are `pub(crate)` typed backup boundaries or test-gated constructors; redb raw byte checks are native substrate tests. L13 backup/restore raw cell helpers are test-only malformed-archive constructors; production archive errors now carry typed payloads. Other raw/catalog hits require production-boundary review. | needs-lane | L10, L14 |
 | Fallback branches and legacy modes | L00 root-fixtures hits are AGENTS policy prohibitions. L01 language-doc hits are v0.1/reserved boundary text rather than compatibility fallback behavior. L12 store hits are version-refusal and table-initialization comments or tests rejecting legacy manifest spellings. L13 legacy digest hits are rejection tests for old digest spelling, not compatibility behavior. Other term scan hits require lane-local review. | needs-lane | L06-L11, L14 |
-| Message-parsing logic | L03 syntax, L04 schema, L05 project-model, L12 store, and L13 backup/restore have no `message.contains` semantic assertions after integration; remaining areas still need lane-local migration. | needs-lane | L06-L11, L14 |
+| Message-parsing logic | L03 syntax, L04 schema, L05 project-model, L12 store, and L13 backup/restore have no `message.contains` semantic assertions after integration. L06 schema-payload slice migrated the early schema-family checker assertions it touched; remaining checker/runtime/tooling areas still need lane-local migration. | needs-lane | L06-L11, L14 |
 | Source-text architecture scans | Existing scans identified in architecture tests. | needs-lane | L08, L10, L14 |
 | Comment sediment | L00 root-fixtures hits are durable AGENTS policy prohibitions and repository operating rules. L01 language-doc hits were triaged as durable `migration DSL` negative scope, `std::clock::now()` examples, and `rename ... now spelled` evolution wording. L02 removed empty future placeholder pages; remaining L02 hits were triaged as durable data-evolution compatibility/migration contracts, `std::clock::now`, old path aliases, bridge wording for host-system extensions, and protocol cursor text. L03 syntax hits were triaged as durable `rename ... now spelled` semantics and `now` sample text; L04 schema hits were triaged as `clock.now` domain text and a pre-existing `string`/`Str` bridge comment; L05 project-model hits were triaged as durable store-key migration wording and a `SystemTime::now()` false positive; L12 store hits were durable redb format/version comments, native substrate raw-byte tests, and internal byte-decoder variable names; L13 backup/restore hits were durable legacy-digest rejection tests, raw-engine-copy contract docs, and test/output wording. | needs-lane | L06-L11, L14 |
 | Cargo target isolation | Completed lanes spell lane-specific `CARGO_TARGET_DIR`; future lane commands must keep doing so. | needs-lane | L06-L11, L14 |
@@ -148,7 +148,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 | L03 syntax | `/Users/scottwilliams/Dev/marrow-rust-hardening-l03-syntax` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-syntax`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-main-integration` | `14bbe00fe0be30f741727b8a65da0ceb8bc4d403` | lane `2a961360cd428eb772b65fbf18f6b961b9230ef7`; main `0627dab32fd19a66edb14d0a960afd3fb36fb779` | complete | focused, package, workspace build/test, workspace clippy, and fmt gates passed | fail on typed reason probes, then pass after fixes | fail on broad reason/test-shape findings, then pass after fixes | L03-R001 through L03-R003 fixed and re-reviewed | integrated on main after live-main recheck; tracker evidence recorded |
 | L04 schema | `/Users/scottwilliams/Dev/marrow-rust-hardening-l04-schema` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l04-schema`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l04-main-integration` | `5ca2a691806d963c5b44cef8a1eb02ac1b5da7e4` | lane `8b651049860539650ca534820cd3ca03711dd03d`; main `ee5422fe7de568a874ed2b2b4aaee6f9a721a7d8` | complete | focused, package, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings | pass, no findings | L04-P001 fixed before review; no review findings | integrated on main after live-main recheck; tracker evidence recorded |
 | L05 project-model | `/Users/scottwilliams/Dev/marrow-rust-hardening-l05-project-model` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-project-model`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-main-integration` | `49556121dc4648dec8cd7e11692a4d85cdaf6d7e` | lane `5623e86632a0a62b29c02ad2d104ef1d5969d028`; main `aac2638f1430a3a85a4a7c98a1490b6b1ea7a28c` | complete | focused, package, workspace build/test, workspace clippy, and fmt gates passed | fail on object-shape probe, then pass after fix | pass, no findings; pass after re-review | L05-R001 fixed and re-reviewed | integrated on main after live-main recheck; tracker evidence recorded |
-| L06 checker-core | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l06-checker-core` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
+| L06 checker-core | `/Users/scottwilliams/Dev/marrow-rust-hardening-l06-checker-core` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l06-checker-core`; review `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l06-review-soundness-1` and `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l06-review-idiom-1`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l06-main-integration-schema-payload` | `580f92ad684840c30833dc025d3a908a5aaadc2c` | lane and main `cd3d4d20a819b0b0447a2be9221edfc1817a2a95` | in-lane | focused schema payload tests, package test, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings | pass, no findings | no review findings | schema diagnostic payload slice integrated; broader L06 files remain in lane |
 | L07 checker-evolution | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l07-checker-evolution` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L08 checker-presence | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l08-checker-presence` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L09 checker-tooling | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l09-checker-tooling` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
@@ -174,7 +174,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow-check/src/analysis.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
 - `crates/marrow-check/src/binding.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
 - `crates/marrow-check/src/catalog.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
-- `crates/marrow-check/src/checks.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
+- `crates/marrow-check/src/checks.rs` - status: in-lane; owner: L06 checker-core; notes: schema diagnostic payload slice integrated; broader checker-core review remains.
 - `crates/marrow-check/src/durable_path.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
 - `crates/marrow-check/src/enums.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
 
@@ -199,7 +199,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow-check/src/executable/syntax_parts.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
 - `crates/marrow-check/src/facts.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
 - `crates/marrow-check/src/infer.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
-- `crates/marrow-check/src/lib.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
+- `crates/marrow-check/src/lib.rs` - status: in-lane; owner: L06 checker-core; notes: schema diagnostic payload slice integrated; broader checker-core review remains.
 
 ### crates/marrow-check/presence
 - `crates/marrow-check/src/presence.rs` - status: unreviewed; owner: L08 checker-presence; notes: initial inventory.
@@ -243,7 +243,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow-check/tests/durable_path.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
 - `crates/marrow-check/tests/evolution_discharge.rs` - status: unreviewed; owner: L07 checker-evolution; notes: initial inventory.
 - `crates/marrow-check/tests/presence_architecture.rs` - status: unreviewed; owner: L08 checker-presence; notes: initial inventory.
-- `crates/marrow-check/tests/project.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
+- `crates/marrow-check/tests/project.rs` - status: in-lane; owner: L06 checker-core; notes: early schema-family assertions now use exact `DiagnosticPayload::Schema` values for the integrated slice; broader checker-core test cleanup remains.
 - `crates/marrow-check/tests/ranges.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
 - `crates/marrow-check/tests/resource_store_contract.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
 - `crates/marrow-check/tests/support/mod.rs` - status: unreviewed; owner: L06 checker-core; notes: serialized shared checker test support; L07 and L08 must sequence through L06 or split support before editing.
@@ -857,6 +857,57 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
   - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-main-integration cargo test --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
   - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-main-integration cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace --all-targets -- -D warnings` passed.
   - Post-tracker-evidence `git -C /Users/scottwilliams/Dev/marrow status --short --branch` showed main ahead of origin by the L13 source commit, modified `docs/roadmap/rust-hardening-file-audit.md`, and unrelated untracked `docs/roadmap/release-hardening-operating-plan.md`.
+
+## L06 Schema Diagnostic Payload Evidence
+
+- Worktree: `/Users/scottwilliams/Dev/marrow-rust-hardening-l06-checker-core`.
+- Target dirs:
+  - Lane: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l06-checker-core`.
+  - Soundness review: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l06-review-soundness-1`.
+  - Idiom/spec review: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l06-review-idiom-1`.
+  - Main integration: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l06-main-integration-schema-payload`.
+- Base/head:
+  - Lane base: `580f92ad684840c30833dc025d3a908a5aaadc2c`.
+  - Lane and main source commit: `cd3d4d20a819b0b0447a2be9221edfc1817a2a95`.
+- Changed files:
+  - `crates/marrow-check/src/lib.rs`
+  - `crates/marrow-check/src/checks.rs`
+  - `crates/marrow-check/tests/project.rs`
+- Failing-or-focused check:
+  - The focused schema test compile-failed before production changes because `DiagnosticPayload::Schema` did not exist.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l06-checker-core cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l06-checker-core/Cargo.toml -p marrow-check --test project split_store_applies_saved_field_schema_rules -- --exact` passed after the payload implementation.
+- Source changes:
+  - Added `DiagnosticPayload::Schema(marrow_schema::SchemaErrorKind)`.
+  - Routed schema diagnostics emitted by `check_file_source`, resource schema checks, enum schema checks, and saved-member schema checks through `schema_diagnostic` or `push_schema_error`.
+  - Kept compile-store duplicate suppression on the prior code/file/message/span key while preserving the schema payload on the diagnostic that survives.
+  - Updated resolution suppression matches so schema payloads are never treated as hidden resolution facts.
+  - Migrated the touched early schema-family checker tests to assert exact `SchemaErrorKind` payloads instead of checking rendered message substrings.
+- Focused and lane gates:
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l06-checker-core cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l06-checker-core/Cargo.toml -p marrow-check --test project split_store_applies_saved_field_schema_rules -- --exact` passed with 1 test.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l06-checker-core cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l06-checker-core/Cargo.toml -p marrow-check --test project` passed with 368 tests.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l06-checker-core cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l06-checker-core/Cargo.toml -p marrow-check` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l06-checker-core cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l06-checker-core/Cargo.toml --all --check` passed with no output.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l06-checker-core cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l06-checker-core/Cargo.toml -p marrow-check --all-targets -- -D warnings` passed.
+  - An accidental concurrent `marrow-check` test/clippy run against the same lane target dir was discarded as evidence; both commands above were rerun sequentially with the explicit target dir.
+- Soundness review: pass, no findings. Reviewer reran `git diff --check`, `cargo test -p marrow-check --test project`, and `cargo test -p marrow-check` with the soundness review target dir.
+- Idiom/spec review: pass, no findings. Reviewer reran `git diff --check`, `cargo test -p marrow-check`, `cargo fmt --all --check`, and `cargo clippy -p marrow-check --all-targets -- -D warnings` with the idiom/spec review target dir.
+- Absence and sibling scans:
+  - `git diff --check` returned no output.
+  - `rg -n '\bunsafe\b' crates/marrow-check/src/lib.rs crates/marrow-check/src/checks.rs crates/marrow-check/tests/project.rs` returned no matches.
+  - `rg -n 'marrow_schema::compile_|SchemaError|push_schema_error|schema_diagnostic' crates/marrow-check/src/lib.rs crates/marrow-check/src/checks.rs` showed the touched schema emit paths route through `schema_diagnostic` or `push_schema_error`.
+  - `rg -n 'message\.contains|rendered\.contains|\.contains\(' crates/marrow-check/tests/project.rs` still finds unrelated checker tests outside this slice; the migrated schema-family assertions no longer use rendered message substrings.
+  - `git diff --name-only` before commit listed only the three changed L06 files; no manifest or lockfile changed.
+- Integration gates:
+  - `git -C /Users/scottwilliams/Dev/marrow fetch origin main` completed before integration; `git -C /Users/scottwilliams/Dev/marrow rev-parse HEAD` and `git -C /Users/scottwilliams/Dev/marrow rev-parse origin/main` both returned `580f92ad684840c30833dc025d3a908a5aaadc2c`.
+  - `git -C /Users/scottwilliams/Dev/marrow status --short --branch` showed `## main...origin/main` plus unrelated untracked `docs/roadmap/release-hardening-operating-plan.md`.
+  - `git -C /Users/scottwilliams/Dev/marrow merge --ff-only cd3d4d20a819b0b0447a2be9221edfc1817a2a95` fast-forwarded main.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l06-main-integration-schema-payload cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --all --check` passed with no output.
+  - `rg -n '\bunsafe\b' --glob '*.rs'` returned no matches.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l06-main-integration-schema-payload cargo build --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l06-main-integration-schema-payload cargo test --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l06-main-integration-schema-payload cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace --all-targets -- -D warnings` passed.
+  - After `git -C /Users/scottwilliams/Dev/marrow push origin main`, `git -C /Users/scottwilliams/Dev/marrow status --short --branch` showed `## main...origin/main` plus unrelated untracked `docs/roadmap/release-hardening-operating-plan.md`.
+  - Post-tracker-evidence `git -C /Users/scottwilliams/Dev/marrow status --short --branch` showed main at `cd3d4d20a819b0b0447a2be9221edfc1817a2a95`, modified `docs/roadmap/rust-hardening-file-audit.md`, and unrelated untracked `docs/roadmap/release-hardening-operating-plan.md`.
 
 ## L14 CLI Diagnostic Test-Support Evidence
 
