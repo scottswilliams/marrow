@@ -6,7 +6,7 @@ use marrow_check::{
     CheckDiagnostic, DiagnosticPayload, RejectedSurface, check_project, check_tests,
 };
 use marrow_project::parse_config;
-use marrow_schema::{SchemaErrorKind, SchemaKeyTarget, Type};
+use marrow_schema::{SchemaErrorKind, SchemaKeyTarget, SchemaUnsupportedTypeTarget, Type};
 use marrow_syntax::SourceSpan;
 
 use support::{config, temp_project, write};
@@ -2132,7 +2132,14 @@ fn map_annotations_outside_resource_members_are_not_supported_types() {
     );
     let schema = with_code(&report, "schema.unsupported_type");
     assert_eq!(schema.len(), 1, "{:#?}", report.diagnostics);
-    assert!(schema[0].message.contains("scores"), "{schema:#?}");
+    assert_eq!(
+        schema[0].payload,
+        DiagnosticPayload::Schema(SchemaErrorKind::UnsupportedType {
+            target: SchemaUnsupportedTypeTarget::Field,
+            name: "scores".into(),
+        }),
+        "{schema:#?}"
+    );
 }
 
 #[test]
