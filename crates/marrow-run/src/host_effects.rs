@@ -6,7 +6,7 @@ use marrow_syntax::SourceSpan;
 use crate::env::Env;
 use crate::error::{
     RUN_ABSENT, RUN_CAPABILITY, RuntimeError, error_field, io_error, raise, raise_fault, std_arity,
-    type_error, unsupported,
+    type_error,
 };
 use crate::expr::eval_expr;
 use crate::stdlib::eval_text;
@@ -36,7 +36,7 @@ pub(crate) fn eval_clock_capability(
     match op {
         "now" => Ok(Value::Instant(nanos)),
         "today" => Ok(Value::Date(nanos.div_euclid(NANOS_PER_DAY) as i32)),
-        _ => Err(unsupported(&format!("std::clock::{op}"), span)),
+        _ => unreachable!("the stdlib table routes only `now`/`today` to the clock capability"),
     }
 }
 
@@ -74,7 +74,9 @@ pub(crate) fn eval_env(
             )),
         },
         ("exists" | "get" | "require", _) => Err(std_arity("env", op, span)),
-        _ => Err(unsupported(&format!("std::env::{op}"), span)),
+        _ => unreachable!(
+            "the stdlib table routes only `exists`/`get`/`require` to the env capability"
+        ),
     }
 }
 
@@ -106,7 +108,9 @@ pub(crate) fn eval_log(
             format!("ERROR [{code}] {message}\n")
         }
         ("info" | "warn" | "error", _) => return Err(std_arity("log", op, span)),
-        _ => return Err(unsupported(&format!("std::log::{op}"), span)),
+        _ => {
+            unreachable!("the stdlib table routes only `info`/`warn`/`error` to the log capability")
+        }
     };
     env.guard_rollback_sensitive_host_effect(&format!("std::log::{op}"), span)?;
     sink.borrow_mut().push_str(&line);
@@ -157,6 +161,8 @@ pub(crate) fn eval_io(
             &format!("`std::io::{op}` got the wrong arguments"),
             span,
         )),
-        _ => Err(unsupported(&format!("std::io::{op}"), span)),
+        _ => unreachable!(
+            "the stdlib table routes only readText/writeText/readBytes/writeBytes to the io capability"
+        ),
     }
 }

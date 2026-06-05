@@ -242,7 +242,7 @@ fn delete_nested_scalar_field(
         ));
     }
     let identity = path.identity.as_slice();
-    let required_address = DataAddress::member_path(
+    let address = DataAddress::member_path(
         &path.place,
         identity,
         &path.layer_addresses,
@@ -251,18 +251,7 @@ fn delete_nested_scalar_field(
     )?;
     let had_required_data = deletes_required
         && env.host.maintenance
-        && required_delete_has_preexisting_data(
-            std::slice::from_ref(&required_address),
-            span,
-            env,
-        )?;
-    let address = DataAddress::member_path(
-        &path.place,
-        identity,
-        &path.layer_addresses,
-        &[field.to_string()],
-        span,
-    )?;
+        && required_delete_has_preexisting_data(std::slice::from_ref(&address), span, env)?;
     env.apply_plan(plan_data_delete(address), span)?;
     note_nested_required_delete(path, had_required_data, env);
     Ok(())

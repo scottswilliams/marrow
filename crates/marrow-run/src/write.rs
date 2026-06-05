@@ -713,10 +713,14 @@ fn checked_members_for_layers<'a>(
     Ok(members)
 }
 
-fn checked_layer<'a>(
+/// Resolve the innermost addressed layer to its checked member and return that
+/// member paired with the [`LayerAddress`] it resolved, so callers that need the
+/// terminal layer's keys reuse the slot this already proved present instead of
+/// re-deriving it.
+fn checked_layer<'a, 'l>(
     place: &'a CheckedSavedPlace,
-    layers: &[LayerAddress],
-) -> Result<&'a CheckedSavedMember, WriteError> {
+    layers: &'l [LayerAddress],
+) -> Result<(&'a CheckedSavedMember, &'l LayerAddress), WriteError> {
     let Some(last) = layers.last() else {
         return Err(WriteError {
             code: WRITE_UNKNOWN_LAYER,
@@ -724,28 +728,29 @@ fn checked_layer<'a>(
         });
     };
     let parent = checked_members_for_layers(place, &layers[..layers.len() - 1])?;
-    parent
+    let member = parent
         .iter()
         .find(|member| member.catalog_id == last.catalog_id)
         .ok_or_else(|| WriteError {
             code: WRITE_UNKNOWN_LAYER,
             message: format!("checked layer `{}` is missing", last.name),
-        })
+        })?;
+    Ok((member, last))
 }
 
 fn leaf_layer<'a>(
     place: &'a CheckedSavedPlace,
     layers: &[LayerAddress],
 ) -> Result<&'a CheckedSavedMember, WriteError> {
-    let layer = checked_layer(place, layers)?;
-    if !layer.key_params.is_empty() && layer.key_params.len() != layers.last().unwrap().keys.len() {
+    let (layer, last) = checked_layer(place, layers)?;
+    if !layer.key_params.is_empty() && layer.key_params.len() != last.keys.len() {
         return Err(WriteError {
             code: WRITE_LAYER_KEY_ARITY,
             message: format!(
                 "keyed layer `{}` expects {} key(s), got {}",
                 layer.name,
                 layer.key_params.len(),
-                layers.last().unwrap().keys.len()
+                last.keys.len()
             ),
         });
     }
@@ -756,7 +761,7 @@ fn group_layer<'a>(
     place: &'a CheckedSavedPlace,
     layers: &[LayerAddress],
 ) -> Result<&'a CheckedSavedMember, WriteError> {
-    let layer = checked_layer(place, layers)?;
+    let (layer, _) = checked_layer(place, layers)?;
     if layer.is_field() {
         return Err(WriteError {
             code: WRITE_NOT_A_GROUP_LAYER,

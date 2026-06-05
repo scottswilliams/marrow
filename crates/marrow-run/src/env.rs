@@ -77,11 +77,7 @@ impl RequiredEntryCheck {
     fn same_entry(&self, other: &Self) -> bool {
         self.place.store_catalog_id == other.place.store_catalog_id
             && self.identity == other.identity
-            && self.entry_layers() == other.entry_layers()
-    }
-
-    fn entry_layers(&self) -> Vec<LayerAddress> {
-        self.layers.to_vec()
+            && self.layers == other.layers
     }
 }
 
@@ -404,7 +400,7 @@ impl<'p> Env<'p> {
                     deleted.place.store_catalog_id == check.place.store_catalog_id
                         && deleted.identity == check.identity
                 })
-                .map(RequiredEntryCheck::entry_layers)
+                .map(|deleted| deleted.layers.clone())
                 .collect();
             validate_required_fields_for_entry(
                 &check.place,
@@ -421,39 +417,17 @@ impl<'p> Env<'p> {
 
     pub(crate) fn commit_required_entry_checks(&mut self, depth: usize) {
         let mut transaction = self.transaction.borrow_mut();
-        if depth > 1 {
-            for check in &mut transaction.required_entry_checks {
-                if check.depth == depth {
-                    check.depth -= 1;
-                }
-            }
-        } else {
-            transaction
-                .required_entry_checks
-                .retain(|check| check.depth < depth);
-        }
-        if depth > 1 {
-            for check in &mut transaction.maintenance_required_deletes {
-                if check.depth == depth {
-                    check.depth -= 1;
-                }
-            }
-        } else {
-            transaction
-                .maintenance_required_deletes
-                .retain(|check| check.depth < depth);
-        }
-        if depth > 1 {
-            for created in &mut transaction.created_required_paths {
-                if created.depth == depth {
-                    created.depth -= 1;
-                }
-            }
-        } else {
-            transaction
-                .created_required_paths
-                .retain(|created| created.depth < depth);
-        }
+        lower_savepoint_level(&mut transaction.required_entry_checks, depth, |check| {
+            &mut check.depth
+        });
+        lower_savepoint_level(
+            &mut transaction.maintenance_required_deletes,
+            depth,
+            |check| &mut check.depth,
+        );
+        lower_savepoint_level(&mut transaction.created_required_paths, depth, |created| {
+            &mut created.depth
+        });
     }
 
     pub(crate) fn discard_required_entry_checks(&mut self, depth: usize) {
@@ -505,17 +479,9 @@ impl<'p> Env<'p> {
 
     pub(crate) fn commit_transaction_metadata(&mut self, depth: usize) {
         let mut transaction = self.transaction.borrow_mut();
-        if depth > 1 {
-            for pending in &mut transaction.pending_commit_metadata {
-                if pending.depth == depth {
-                    pending.depth -= 1;
-                }
-            }
-        } else {
-            transaction
-                .pending_commit_metadata
-                .retain(|pending| pending.depth < depth);
-        }
+        lower_savepoint_level(&mut transaction.pending_commit_metadata, depth, |pending| {
+            &mut pending.depth
+        });
         merge_pending_commit_metadata(&mut transaction.pending_commit_metadata);
     }
 
@@ -863,6 +829,26 @@ fn pending_commit_metadata_at_depth(
         .pending_commit_metadata
         .last_mut()
         .expect("pending metadata was just inserted")
+}
+
+/// Lower one savepoint level on commit. A nested commit (`depth > 1`) folds items
+/// recorded at this level into the enclosing savepoint by decrementing their depth;
+/// the outermost commit (`depth == 1`) discards anything that level alone owned.
+fn lower_savepoint_level<T>(
+    items: &mut Vec<T>,
+    depth: usize,
+    item_depth: impl Fn(&mut T) -> &mut usize,
+) {
+    if depth > 1 {
+        for item in items.iter_mut() {
+            let item_depth = item_depth(item);
+            if *item_depth == depth {
+                *item_depth -= 1;
+            }
+        }
+    } else {
+        items.retain_mut(|item| *item_depth(item) < depth);
+    }
 }
 
 fn merge_pending_commit_metadata(changes: &mut Vec<PendingCommitMetadata>) {

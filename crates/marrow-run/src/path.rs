@@ -256,9 +256,8 @@ pub(crate) fn saved_path_present(
 }
 
 /// Evaluate a keyed lookup's arguments to saved key segments, rejecting named or
-/// mode arguments.
-/// arguments. When `allow_identity_splice` (the record-identity position), a sole
-/// identity-valued argument (`^root(id)` where `id: Id(^root)`) splices its
+/// mode arguments. When `allow_identity_splice` (the record-identity position), a
+/// sole identity-valued argument (`^root(id)` where `id: Id(^root)`) splices its
 /// lowered keys in as the full key vector and an identity mixed with raw keys is
 /// rejected; otherwise (a keyed layer or index lookup) each argument is one raw
 /// key.

@@ -5,6 +5,26 @@ use marrow_store::key::SavedKey;
 use marrow_store::tree::DataPathSegment;
 use sha2::{Digest, Sha256};
 
+/// Domain-separation tag for the per-cell evidence digest of an activation-default
+/// backfill. Backfill staging and crash-resume completion both seed their digest
+/// with this exact label; the completion digest is meaningful only because it must
+/// equal the staged one, so the two sides share a single const rather than two
+/// literals that could silently drift apart.
+pub(super) const ACTIVATION_DEFAULT_DIGEST: &str = "marrow-activation-default-v1";
+
+/// Domain-separation tag for the per-row digest folded into a rebuilt-index set
+/// digest. The expected (record-derived) and actual (index-order) sides hash each
+/// row under this label, so a single const keeps them from diverging by a typo.
+pub(super) const INDEX_ROW_DIGEST: &str = "marrow-index-row-v1";
+
+/// Domain-separation tag for the order-independent set digest summarizing a rebuilt
+/// index. Expected and actual set digests are compared under this label, so it must
+/// be one shared const on both sides of the comparison.
+pub(super) const INDEX_SET_DIGEST: &str = "marrow-index-set-v1";
+
+/// Domain-separation tag for the retire-evidence digest stamped at activation.
+const ACTIVATION_RETIRE_DIGEST: &str = "marrow-activation-retire-v1";
+
 #[derive(Clone)]
 pub(super) struct EvidenceDigest {
     hash: Sha256,
@@ -121,7 +141,7 @@ pub(super) fn retire_evidence_digest(
 ) -> String {
     let mut counts = counts.to_vec();
     counts.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
-    let mut digest = EvidenceDigest::new("marrow-activation-retire-v1");
+    let mut digest = EvidenceDigest::new(ACTIVATION_RETIRE_DIGEST);
     digest.u64(commit_id);
     digest.u64(records_retired);
     digest.u64(counts.len() as u64);

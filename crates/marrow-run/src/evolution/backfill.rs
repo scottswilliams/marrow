@@ -30,7 +30,7 @@ use super::apply::{
     ApplyError, MemberLocation, PathStep, StagedWork, for_each_place_record, locate_member,
     store_id,
 };
-use super::evidence::EvidenceDigest;
+use super::evidence::{ACTIVATION_DEFAULT_DIGEST, EvidenceDigest};
 
 /// Stage a `WriteData` of the encoded default at every record (or keyed entry) that
 /// lacks the defaulted member. Existing cells on accepted optional members are
@@ -47,7 +47,7 @@ pub(super) fn stage_default_backfill(
 ) -> Result<(), ApplyError> {
     let mut count = 0usize;
     let mut target_count = 0usize;
-    let mut digest = EvidenceDigest::new("marrow-activation-default-v1");
+    let mut digest = EvidenceDigest::new(ACTIVATION_DEFAULT_DIGEST);
     digest.catalog_id(catalog_id);
     for (place, location) in locations(places, catalog_id) {
         let sid = store_id(place)?;
@@ -110,7 +110,7 @@ pub(super) fn stage_default_presence_receipt(
     staged: &mut StagedWork,
 ) -> Result<(), ApplyError> {
     let mut target_count = 0usize;
-    let mut digest = EvidenceDigest::new("marrow-activation-default-v1");
+    let mut digest = EvidenceDigest::new(ACTIVATION_DEFAULT_DIGEST);
     digest.catalog_id(catalog_id);
     for (place, location) in locations(places, catalog_id) {
         let sid = store_id(place)?;

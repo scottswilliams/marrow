@@ -9,7 +9,7 @@ use crate::value::decode_leaf;
 
 use super::super::apply::{ApplyError, for_each_place_record, store_id};
 use super::super::backfill::{locations, visit_member_cell_paths};
-use super::super::evidence::EvidenceDigest;
+use super::super::evidence::{ACTIVATION_DEFAULT_DIGEST, EvidenceDigest};
 use super::{catalog_id, incomplete};
 
 pub(super) struct DefaultCompletion {
@@ -34,7 +34,7 @@ pub(super) fn verify_default_completion(
             .map_err(|_| ApplyError::Drift)?;
         let mut target_leaf = None;
         let mut target_records = 0u64;
-        let mut cell_digest = EvidenceDigest::new("marrow-activation-default-v1");
+        let mut cell_digest = EvidenceDigest::new(ACTIVATION_DEFAULT_DIGEST);
         cell_digest.catalog_id(&target);
         for (place, location) in locations(places, &target) {
             let sid = store_id(place)?;

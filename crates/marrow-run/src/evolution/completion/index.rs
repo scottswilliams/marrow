@@ -9,7 +9,9 @@ use crate::index_maintenance::{EmptyStagedData, index_rebuild_entry_with_staged}
 use crate::write_plan::PlanStep;
 
 use super::super::apply::{ApplyError, for_each_place_record};
-use super::super::evidence::{EvidenceDigest, EvidenceSetDigest};
+use super::super::evidence::{
+    EvidenceDigest, EvidenceSetDigest, INDEX_ROW_DIGEST, INDEX_SET_DIGEST,
+};
 use super::super::lifecycle::retired_proposal_ids;
 use super::catalog_id;
 
@@ -68,7 +70,7 @@ fn verify_rebuilt_index(
     })?;
 
     let actual = actual_index_digest(store, &index_id)?;
-    if actual.finish("marrow-index-set-v1") != expected.finish("marrow-index-set-v1") {
+    if actual.finish(INDEX_SET_DIGEST) != expected.finish(INDEX_SET_DIGEST) {
         return Err(ApplyError::Drift);
     }
     Ok(())
@@ -99,7 +101,7 @@ fn add_index_row(
     identity: &[SavedKey],
     value: &[u8],
 ) {
-    let mut row = EvidenceDigest::new("marrow-index-row-v1");
+    let mut row = EvidenceDigest::new(INDEX_ROW_DIGEST);
     row.catalog_id(index);
     row.saved_keys(keys);
     row.saved_keys(identity);

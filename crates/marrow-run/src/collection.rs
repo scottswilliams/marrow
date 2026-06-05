@@ -66,13 +66,11 @@ pub(crate) fn eval_keys(
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     let [path] = args else {
-        return Err(RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_TYPE,
-            message: "`keys` takes one argument".into(),
+        return Err(RuntimeError::fault(
+            RUN_TYPE,
+            "`keys` takes one argument".into(),
             span,
-        });
+        ));
     };
     if path.value.saved_place().is_none() {
         return Ok(Value::Sequence(enumerate_local_collection_dir(
@@ -91,13 +89,11 @@ pub(crate) fn eval_values(
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     let [path] = args else {
-        return Err(RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_TYPE,
-            message: "`values` takes one argument".into(),
+        return Err(RuntimeError::fault(
+            RUN_TYPE,
+            "`values` takes one argument".into(),
             span,
-        });
+        ));
     };
     if path.value.saved_place().is_none() {
         let values = materialize_local_collection_dir(
@@ -119,13 +115,11 @@ pub(crate) fn eval_entries(
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     let [path] = args else {
-        return Err(RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_TYPE,
-            message: "`entries` takes one argument".into(),
+        return Err(RuntimeError::fault(
+            RUN_TYPE,
+            "`entries` takes one argument".into(),
             span,
-        });
+        ));
     };
     if path.value.saved_place().is_none() {
         let entries = materialize_local_collection_dir(
@@ -147,13 +141,11 @@ pub(crate) fn eval_reversed(
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     let [arg] = args else {
-        return Err(RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_TYPE,
-            message: "`reversed` takes one argument".into(),
+        return Err(RuntimeError::fault(
+            RUN_TYPE,
+            "`reversed` takes one argument".into(),
             span,
-        });
+        ));
     };
     if let Some(inner) = values_or_entries(&arg.value) {
         return reversed_materialized(inner, span, env);
