@@ -1,10 +1,32 @@
 use std::fs;
 use std::path::Path;
 
+#[allow(dead_code)]
+pub(crate) fn json(stdout: Vec<u8>) -> serde_json::Value {
+    serde_json::from_slice(&stdout).expect("json output")
+}
+
+#[allow(dead_code)]
+pub(crate) fn jsonl(stdout: Vec<u8>) -> Vec<serde_json::Value> {
+    let text = String::from_utf8(stdout).expect("jsonl utf8");
+    text.lines()
+        .map(|line| serde_json::from_str(line).expect("jsonl record"))
+        .collect()
+}
+
+#[allow(dead_code)]
+pub(crate) fn codes(records: &[serde_json::Value]) -> Vec<&str> {
+    records
+        .iter()
+        .filter_map(|record| record["code"].as_str())
+        .collect()
+}
+
 /// Freeze a fixture project's pending durable identity through the one production
 /// catalog writer, so read-only commands (`data`, `serve`) and store-backed runs see
 /// a committed catalog without re-implementing the write. A project that does not
 /// check cleanly, or proposes no catalog change, is left untouched.
+#[allow(dead_code)]
 pub(crate) fn commit_catalog_if_clean(root: &Path) {
     let Ok(config_text) = fs::read_to_string(root.join("marrow.json")) else {
         return;

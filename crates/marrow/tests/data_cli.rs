@@ -41,6 +41,20 @@ fn marrow(args: &[&str]) -> std::process::Output {
         .expect("run marrow")
 }
 
+fn json(output: std::process::Output) -> serde_json::Value {
+    support::json(output.stdout)
+}
+
+fn integrity_problem(value: &serde_json::Value, code: &str) -> serde_json::Value {
+    value["problems"]
+        .as_array()
+        .expect("problems")
+        .iter()
+        .find(|problem| problem["code"] == serde_json::json!(code))
+        .cloned()
+        .unwrap_or_else(|| panic!("{code} not found in {value:#?}"))
+}
+
 const CONFIG: &str =
     r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#;
 const SRC: &str = "module app\n\
@@ -327,20 +341,26 @@ fn data_integrity_reports_an_undeclared_store_cell_as_data_orphan() {
         "cat_00000000000000000000000000000001",
     );
 
-    let output = marrow(&["data", "integrity", &dir]);
+    let output = marrow(&["data", "integrity", "--format", "json", &dir]);
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("utf8");
-    assert!(stderr.contains("data.orphan"), "{stderr}");
-    assert!(stderr.contains("<undeclared saved root>"), "{stderr}");
-    assert!(!stderr.contains("deadbeef"), "{stderr}");
-    assert!(!stderr.contains("cat_"), "{stderr}");
+    let value = json(output);
+    let problem = integrity_problem(&value, "data.orphan");
+    assert_eq!(
+        problem["source_span"]["path"],
+        serde_json::json!("<undeclared saved root>")
+    );
+    let text = value.to_string();
     assert!(
-        stderr.contains(
-            "help: run `marrow data integrity` after source-native evolution or maintenance repair"
-        ),
-        "orphan text output includes repair guidance: {stderr}"
+        !text.contains("deadbeef") && !text.contains("cat_"),
+        "{value}"
+    );
+    assert_eq!(
+        problem["help"],
+        serde_json::json!(
+            "run `marrow data integrity` after source-native evolution or maintenance repair"
+        )
     );
 }
 
@@ -357,18 +377,21 @@ fn data_integrity_reports_an_undeclared_member_cell_as_data_orphan() {
         "cat_000000000000000000000000cafef00d",
     );
 
-    let output = marrow(&["data", "integrity", &dir]);
+    let output = marrow(&["data", "integrity", "--format", "json", &dir]);
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("utf8");
-    assert!(stderr.contains("data.orphan"), "{stderr}");
-    assert!(
-        stderr.contains("^counter(1).<undeclared member>"),
-        "{stderr}"
+    let value = json(output);
+    let problem = integrity_problem(&value, "data.orphan");
+    assert_eq!(
+        problem["source_span"]["path"],
+        serde_json::json!("^counter(1).<undeclared member>")
     );
-    assert!(!stderr.contains("cafef00d"), "{stderr}");
-    assert!(!stderr.contains("cat_"), "{stderr}");
+    let text = value.to_string();
+    assert!(
+        !text.contains("cafef00d") && !text.contains("cat_"),
+        "{value}"
+    );
 }
 
 #[test]
@@ -385,13 +408,16 @@ fn data_integrity_reports_an_extra_key_below_a_scalar_field_as_data_orphan() {
         b"7".to_vec(),
     );
 
-    let output = marrow(&["data", "integrity", &dir]);
+    let output = marrow(&["data", "integrity", "--format", "json", &dir]);
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("utf8");
-    assert!(stderr.contains("data.orphan"), "{stderr}");
-    assert!(stderr.contains("^counter(1).value(99)"), "{stderr}");
+    let value = json(output);
+    let problem = integrity_problem(&value, "data.orphan");
+    assert_eq!(
+        problem["source_span"]["path"],
+        serde_json::json!("^counter(1).value(99)")
+    );
 }
 
 #[test]
@@ -419,13 +445,16 @@ fn data_integrity_reports_a_keyed_member_value_without_its_key_as_data_orphan() 
         b"7".to_vec(),
     );
 
-    let output = marrow(&["data", "integrity", &dir]);
+    let output = marrow(&["data", "integrity", "--format", "json", &dir]);
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("utf8");
-    assert!(stderr.contains("data.orphan"), "{stderr}");
-    assert!(stderr.contains("^hits.when"), "{stderr}");
+    let value = json(output);
+    let problem = integrity_problem(&value, "data.orphan");
+    assert_eq!(
+        problem["source_span"]["path"],
+        serde_json::json!("^hits.when")
+    );
 }
 
 #[test]
@@ -481,13 +510,16 @@ fn data_integrity_reports_a_non_canonical_value_as_data_decode() {
         b"+1".to_vec(),
     );
 
-    let output = marrow(&["data", "integrity", &dir]);
+    let output = marrow(&["data", "integrity", "--format", "json", &dir]);
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("utf8");
-    assert!(stderr.contains("data.decode"), "{stderr}");
-    assert!(stderr.contains("^counter(1).value"), "{stderr}");
+    let value = json(output);
+    let problem = integrity_problem(&value, "data.decode");
+    assert_eq!(
+        problem["source_span"]["path"],
+        serde_json::json!("^counter(1).value")
+    );
 }
 
 #[test]
@@ -520,13 +552,16 @@ fn data_integrity_reports_a_corrupt_identity_leaf_as_data_decode() {
         corrupt,
     );
 
-    let output = marrow(&["data", "integrity", &dir]);
+    let output = marrow(&["data", "integrity", "--format", "json", &dir]);
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("utf8");
-    assert!(stderr.contains("data.decode"), "{stderr}");
-    assert!(stderr.contains("^books(1).authorId"), "{stderr}");
+    let value = json(output);
+    let problem = integrity_problem(&value, "data.decode");
+    assert_eq!(
+        problem["source_span"]["path"],
+        serde_json::json!("^books(1).authorId")
+    );
 }
 
 #[test]
@@ -558,13 +593,16 @@ fn data_integrity_reports_a_wrong_typed_identity_leaf_as_data_key_type() {
         wrong_typed,
     );
 
-    let output = marrow(&["data", "integrity", &dir]);
+    let output = marrow(&["data", "integrity", "--format", "json", &dir]);
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("utf8");
-    assert!(stderr.contains("data.key_type"), "{stderr}");
-    assert!(stderr.contains("^books(1).authorId"), "{stderr}");
+    let value = json(output);
+    let problem = integrity_problem(&value, "data.key_type");
+    assert_eq!(
+        problem["source_span"]["path"],
+        serde_json::json!("^books(1).authorId")
+    );
 }
 
 #[test]
@@ -592,15 +630,15 @@ fn data_integrity_reports_a_wrong_typed_keyed_member_key_as_data_key_type() {
         b"7".to_vec(),
     );
 
-    let output = marrow(&["data", "integrity", &dir]);
+    let output = marrow(&["data", "integrity", "--format", "json", &dir]);
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("utf8");
-    assert!(stderr.contains("data.key_type"), "{stderr}");
-    assert!(
-        stderr.contains("^hits.when(\"not-an-instant\")"),
-        "{stderr}"
+    let value = json(output);
+    let problem = integrity_problem(&value, "data.key_type");
+    assert_eq!(
+        problem["source_span"]["path"],
+        serde_json::json!("^hits.when(\"not-an-instant\")")
     );
 }
 
@@ -617,12 +655,12 @@ fn data_integrity_reports_a_wrong_typed_record_key_as_data_key_type() {
         b"7".to_vec(),
     );
 
-    let output = marrow(&["data", "integrity", &dir]);
+    let output = marrow(&["data", "integrity", "--format", "json", &dir]);
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("utf8");
-    assert!(stderr.contains("data.key_type"), "{stderr}");
+    let value = json(output);
+    let _problem = integrity_problem(&value, "data.key_type");
 }
 
 #[test]

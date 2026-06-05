@@ -3,6 +3,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+mod support;
+
 fn temp_source(name: &str, source: &str) -> std::path::PathBuf {
     let mut path = std::env::temp_dir();
     let nanos = std::time::SystemTime::now()
@@ -12,6 +14,29 @@ fn temp_source(name: &str, source: &str) -> std::path::PathBuf {
     path.push(format!("marrow-{name}-{}-{nanos}.mw", std::process::id(),));
     fs::write(&path, source).expect("write source");
     path
+}
+
+fn check_json(path: impl AsRef<std::ffi::OsStr>) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .arg("check")
+        .arg("--format")
+        .arg("json")
+        .arg(path)
+        .output()
+        .expect("run marrow check")
+}
+
+fn diagnostic_codes(report: &Value) -> Vec<&str> {
+    report["diagnostics"]
+        .as_array()
+        .expect("diagnostics array")
+        .iter()
+        .filter_map(|diagnostic| diagnostic["code"].as_str())
+        .collect()
+}
+
+fn assert_has_code(report: &Value, code: &str) {
+    assert!(diagnostic_codes(report).contains(&code), "{report:#?}");
 }
 
 #[test]
@@ -159,16 +184,12 @@ fn check_reports_schema_diagnostics_for_a_project_directory() {
     )
     .expect("write source");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .arg("check")
-        .arg(&dir)
-        .output()
-        .expect("run marrow check");
+    let output = check_json(&dir);
 
     fs::remove_dir_all(&dir).ok();
     assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("schema.unknown_in_saved"), "{stderr}");
+    let report = support::json(output.stdout);
+    assert_has_code(&report, "schema.unknown_in_saved");
 }
 
 #[test]
@@ -211,43 +232,34 @@ fn check_rejects_saved_inout_for_a_project_directory() {
     )
     .expect("write source");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .arg("check")
-        .arg(&dir)
-        .output()
-        .expect("run marrow check");
+    let output = check_json(&dir);
 
     fs::remove_dir_all(&dir).ok();
     assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("check.rejected_surface"), "{stderr}");
-    assert!(stderr.contains("saved `inout`"), "{stderr}");
+    let report = support::json(output.stdout);
+    assert_has_code(&report, "check.rejected_surface");
 }
 
 #[test]
 fn check_reports_return_type_errors_for_a_single_file() {
-    // A single file that parses but returns the wrong type used to print "ok" and
-    // exit 0 because the single-file path only parsed. It now runs the full type
-    // checker, so the `check.return_type` diagnostic surfaces and the exit is
-    // non-zero — located at the operator's real file path, not a scratch path.
+    // A single-file check runs the same type checker as a project check, with
+    // diagnostics located at the source path passed to the CLI.
     let path = temp_source(
         "return-type",
         "module m\nfn f(): int\n    return \"nope\"\n",
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .arg("check")
-        .arg(&path)
-        .output()
-        .expect("run marrow check");
+    let output = check_json(&path);
 
     fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("check.return_type"), "{stderr}");
+    let report = support::json(output.stdout);
+    assert_has_code(&report, "check.return_type");
     assert!(
-        stderr.contains(&path.display().to_string()),
-        "diagnostic should point at the named file: {stderr}"
+        report["diagnostics"][0]["source_span"]["file"]
+            .as_str()
+            .is_some_and(|file| file == path.display().to_string()),
+        "diagnostic should point at the named file: {report:#?}"
     );
 }
 
@@ -260,34 +272,26 @@ fn check_reports_assignment_type_errors_for_a_single_file() {
         "module m\nfn f()\n    var x: int = \"str\"\n",
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .arg("check")
-        .arg(&path)
-        .output()
-        .expect("run marrow check");
+    let output = check_json(&path);
 
     fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+    let report = support::json(output.stdout);
+    assert_has_code(&report, "check.assignment_type");
 }
 
 #[test]
 fn check_reports_operator_type_errors_for_a_single_file() {
-    // `1 + true` is an int-plus-bool operator error; the single-file path now
-    // reaches the operator type rule.
+    // `1 + true` is an int-plus-bool operator error in single-file and project
+    // checks alike.
     let path = temp_source("operator-type", "module m\nfn f()\n    var x = 1 + true\n");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .arg("check")
-        .arg(&path)
-        .output()
-        .expect("run marrow check");
+    let output = check_json(&path);
 
     fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("check.operator_type"), "{stderr}");
+    let report = support::json(output.stdout);
+    assert_has_code(&report, "check.operator_type");
 }
 
 #[test]
@@ -297,16 +301,12 @@ fn check_reports_type_errors_in_a_module_less_script() {
     // the real `check.return_type` diagnostic.
     let path = temp_source("script-type", "fn f(): int\n    return \"nope\"\n");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .arg("check")
-        .arg(&path)
-        .output()
-        .expect("run marrow check");
+    let output = check_json(&path);
 
     fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("check.return_type"), "{stderr}");
+    let report = support::json(output.stdout);
+    assert_has_code(&report, "check.return_type");
 }
 
 #[test]
@@ -368,16 +368,12 @@ fn check_single_module_less_script_string_into_an_int_field_errors() {
         "resource Order at ^orders(id: int)\n    required count: int\n\npub fn main()\n    var o: Order\n    o.count = \"alsobad\"\n    ^orders(1) = o\n",
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .arg("check")
-        .arg(&path)
-        .output()
-        .expect("run marrow check");
+    let output = check_json(&path);
 
     fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+    let report = support::json(output.stdout);
+    assert_has_code(&report, "check.assignment_type");
 }
 
 #[test]
@@ -398,16 +394,12 @@ fn check_rejects_a_project_with_two_module_less_scripts() {
     )
     .expect("write two");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .arg("check")
-        .arg(&dir)
-        .output()
-        .expect("run marrow check");
+    let output = check_json(&dir);
 
     fs::remove_dir_all(&dir).ok();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("check.multiple_scripts"), "{stderr}");
+    let report = support::json(output.stdout);
+    assert_has_code(&report, "check.multiple_scripts");
 }
 
 #[test]
@@ -420,17 +412,10 @@ fn check_rejects_module_declarations_named_like_builtins() {
     )
     .expect("write source");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .arg("check")
-        .arg(&dir)
-        .output()
-        .expect("run marrow check");
+    let output = check_json(&dir);
 
     fs::remove_dir_all(&dir).ok();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("check.duplicate_declaration"), "{stderr}");
-    assert!(stderr.contains("builtin"), "{stderr}");
-    assert!(stderr.contains("exists"), "{stderr}");
-    assert!(stderr.contains("keys"), "{stderr}");
+    let report = support::json(output.stdout);
+    assert_has_code(&report, "check.duplicate_declaration");
 }

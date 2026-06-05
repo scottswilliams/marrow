@@ -11,6 +11,8 @@ use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_store::value::{Scalar, ScalarType, decode_value, encode_value};
 
+mod support;
+
 fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -230,15 +232,21 @@ fn check_data_reports_repair_required_from_attached_store() {
         seed_title_only(&store, &place, 1, "Dune");
     }
 
-    let output = marrow(&["check", "--data", root.to_str().unwrap()]);
+    let output = marrow(&[
+        "check",
+        "--data",
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
     fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("evolve.repair_required"), "{stderr}");
-    assert!(
-        stderr.contains("Book.pages") || stderr.contains("pages"),
-        "{stderr}"
+    let record = support::json(output.stdout);
+    assert_eq!(record["code"], "evolve.repair_required");
+    assert_eq!(
+        record["data"]["catalog_id"],
+        serde_json::json!(member_catalog_id(&place, "pages"))
     );
 }
 
@@ -580,11 +588,18 @@ fn evolve_preview_reports_destructive_approval_requirement() {
     fs::remove_dir_all(&root).ok();
 
     assert_eq!(json.status.code(), Some(1), "{json:?}");
-    let stdout = String::from_utf8(json.stdout).expect("stdout");
-    assert!(stdout.contains("\"status\":\"blocked\""), "{stdout}");
-    assert!(stdout.contains("\"evolve.approval_required\""), "{stdout}");
-    assert!(stdout.contains("\"catalog_id\""), "{stdout}");
-    assert!(stdout.contains("\"populated\""), "{stdout}");
+    let value = support::json(json.stdout);
+    assert_eq!(value["status"], "blocked");
+    let blocking = value["blocking"].as_array().expect("blocking reports");
+    let report = blocking
+        .iter()
+        .find(|report| report["code"] == serde_json::json!("evolve.approval_required"))
+        .unwrap_or_else(|| panic!("{value:#?}"));
+    assert_eq!(
+        report["data"]["catalog_id"],
+        serde_json::json!(member_catalog_id(&accepted_place, "subtitle"))
+    );
+    assert_eq!(report["data"]["populated"], serde_json::json!(1));
 }
 
 #[test]
@@ -844,8 +859,8 @@ fn evolve_apply_advances_accepted_catalog_in_lockstep_for_rename() {
     );
     assert_eq!(store_epoch(&root), Some(baseline_epoch + 1));
 
-    // The renamed member keeps its stable id and now records the new path; the old
-    // spelling survives only as an alias, never as the live path.
+    // The renamed member keeps its stable id, records the new path, and leaves
+    // the old spelling as an alias rather than a live path.
     let blurb = catalog
         .entries
         .iter()
@@ -1042,7 +1057,7 @@ fn evolve_apply_resumes_a_half_applied_store_by_writing_the_file_only() {
         "resume completes: {resume:?}"
     );
 
-    // The file is now caught up to the store, with no re-applied data work.
+    // Resuming completes the file side without re-applying data work.
     assert_eq!(accepted_catalog(&root).epoch, baseline_epoch + 1);
     assert_eq!(store_epoch(&root), Some(baseline_epoch + 1));
     let stdout = String::from_utf8(resume.stdout).expect("stdout utf8");

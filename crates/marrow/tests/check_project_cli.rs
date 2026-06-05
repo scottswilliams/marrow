@@ -4,6 +4,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+mod support;
+
 fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -29,6 +31,27 @@ fn run_check(args: &[&str]) -> std::process::Output {
         .expect("run marrow check")
 }
 
+fn codes(records: &[Value]) -> Vec<&str> {
+    support::codes(records)
+}
+
+fn assert_has_code(records: &[Value], code: &str) {
+    assert!(codes(records).contains(&code), "{records:#?}");
+}
+
+fn assert_lacks_code(records: &[Value], code: &str) {
+    assert!(!codes(records).contains(&code), "{records:#?}");
+}
+
+fn assert_has_file(records: &[Value], suffix: &str) {
+    assert!(
+        records.iter().any(|record| record["source_span"]["file"]
+            .as_str()
+            .is_some_and(|file| file.ends_with(suffix))),
+        "{records:#?}"
+    );
+}
+
 #[test]
 fn checks_a_clean_project_directory() {
     let root = temp_project("proj-clean", |root| {
@@ -36,12 +59,13 @@ fn checks_a_clean_project_directory() {
         write(root, "src/shelf/books.mw", "module shelf::books\n");
         write(root, "src/main.mw", "fn main()\n    return\n");
     });
-    let output = run_check(&[root.to_str().unwrap()]);
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
     fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
-    assert!(stdout.contains("ok"), "{stdout}");
+    let records = support::jsonl(output.stdout);
+    assert_eq!(records.last().unwrap()["kind"], "summary");
+    assert_eq!(records.last().unwrap()["status"], "ok");
 }
 
 #[test]
@@ -50,12 +74,12 @@ fn reports_project_module_path_mismatch() {
         write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
         write(root, "src/shelf/books.mw", "module shelf::other\n");
     });
-    let output = run_check(&[root.to_str().unwrap()]);
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
     fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("check.module_path"), "{stderr}");
+    let records = support::jsonl(output.stdout);
+    assert_has_code(&records, "check.module_path");
 }
 
 #[test]
@@ -68,11 +92,7 @@ fn reports_project_check_as_jsonl() {
     fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1));
-    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
-    let records: Vec<Value> = stdout
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("jsonl record"))
-        .collect();
+    let records = support::jsonl(output.stdout);
     assert_eq!(records[0]["code"], "check.module_path");
     assert_eq!(records.last().unwrap()["kind"], "summary");
     assert_eq!(records.last().unwrap()["status"], "failed");
@@ -94,13 +114,13 @@ fn surfaces_a_parse_error_in_a_project_file_with_its_path() {
         // A tab is a lexical error.
         write(root, "src/bad.mw", "module bad\n\tconst X: int = 1\n");
     });
-    let output = run_check(&[root.to_str().unwrap()]);
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
     fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("parse.syntax"), "{stderr}");
-    assert!(stderr.contains("bad.mw"), "{stderr}");
+    let records = support::jsonl(output.stdout);
+    assert_has_code(&records, "parse.syntax");
+    assert_has_file(&records, "bad.mw");
 }
 
 #[test]
@@ -122,13 +142,13 @@ fn project_check_reports_parse_errors_in_configured_tests() {
             "pub fn broken()\n    var for: int = 1\n",
         );
     });
-    let output = run_check(&[root.to_str().unwrap()]);
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
     fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("parse.syntax"), "{stderr}");
-    assert!(stderr.contains("broken_test.mw"), "{stderr}");
+    let records = support::jsonl(output.stdout);
+    assert_has_code(&records, "parse.syntax");
+    assert_has_file(&records, "broken_test.mw");
 }
 
 #[test]
@@ -150,13 +170,13 @@ fn project_check_reports_type_errors_in_configured_tests() {
             "pub fn bad(): int\n    return \"nope\"\n",
         );
     });
-    let output = run_check(&[root.to_str().unwrap()]);
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
     fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("check.return_type"), "{stderr}");
-    assert!(stderr.contains("t_test.mw"), "{stderr}");
+    let records = support::jsonl(output.stdout);
+    assert_has_code(&records, "check.return_type");
+    assert_has_file(&records, "t_test.mw");
 }
 
 #[test]
@@ -171,14 +191,13 @@ fn surfaces_a_parse_error_in_configured_test_files() {
         // A tab is a lexical error.
         write(root, "tests/bad_test.mw", "pub fn t()\n\tapp::noop()\n");
     });
-    let output = run_check(&[root.to_str().unwrap()]);
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
     fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("parse.syntax"), "{stderr}");
-    assert!(stderr.contains("bad_test.mw"), "{stderr}");
-    assert!(stderr.contains("tabs"), "{stderr}");
+    let records = support::jsonl(output.stdout);
+    assert_has_code(&records, "parse.syntax");
+    assert_has_file(&records, "bad_test.mw");
 }
 
 #[test]
@@ -197,14 +216,14 @@ fn reports_configured_test_files_when_source_files_have_errors() {
         // A tab is a lexical error.
         write(root, "tests/bad_test.mw", "pub fn t()\n\treturn\n");
     });
-    let output = run_check(&[root.to_str().unwrap()]);
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
     fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("check.assignment_type"), "{stderr}");
-    assert!(stderr.contains("parse.syntax"), "{stderr}");
-    assert!(stderr.contains("bad_test.mw"), "{stderr}");
+    let records = support::jsonl(output.stdout);
+    assert_has_code(&records, "check.assignment_type");
+    assert_has_code(&records, "parse.syntax");
+    assert_has_file(&records, "bad_test.mw");
 }
 
 #[test]
@@ -233,16 +252,16 @@ fn suppresses_configured_test_resolution_noise_when_source_parse_fails() {
             "use app\nfn smoke()\n    app::f()\n    var b: Book\n    var y: int = \"str\"\n",
         );
     });
-    let output = run_check(&[root.to_str().unwrap()]);
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
     fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("parse.syntax"), "{stderr}");
-    assert!(stderr.contains("check.assignment_type"), "{stderr}");
-    assert!(!stderr.contains("check.unresolved_import"), "{stderr}");
-    assert!(!stderr.contains("check.unresolved_call"), "{stderr}");
-    assert!(!stderr.contains("check.unknown_type"), "{stderr}");
+    let records = support::jsonl(output.stdout);
+    assert_has_code(&records, "parse.syntax");
+    assert_has_code(&records, "check.assignment_type");
+    assert_lacks_code(&records, "check.unresolved_import");
+    assert_lacks_code(&records, "check.unresolved_call");
+    assert_lacks_code(&records, "check.unknown_type");
 }
 
 #[test]
@@ -265,15 +284,15 @@ fn keeps_configured_test_local_resolution_diagnostics_when_source_parse_fails() 
              \x20   var y: int = \"str\"\n",
         );
     });
-    let output = run_check(&[root.to_str().unwrap()]);
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
     fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("check.unresolved_import"), "{stderr}");
-    assert!(stderr.contains("check.unresolved_call"), "{stderr}");
-    assert!(stderr.contains("check.unknown_type"), "{stderr}");
-    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+    let records = support::jsonl(output.stdout);
+    assert_has_code(&records, "check.unresolved_import");
+    assert_has_code(&records, "check.unresolved_call");
+    assert_has_code(&records, "check.unknown_type");
+    assert_has_code(&records, "check.assignment_type");
 }
 
 #[test]
@@ -291,14 +310,14 @@ fn keeps_configured_test_local_bare_call_matching_hidden_source_module() {
             "fn smoke()\n    app()\n    var y: int = \"str\"\n",
         );
     });
-    let output = run_check(&[root.to_str().unwrap()]);
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
     fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("parse.syntax"), "{stderr}");
-    assert!(stderr.contains("check.unresolved_call"), "{stderr}");
-    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+    let records = support::jsonl(output.stdout);
+    assert_has_code(&records, "parse.syntax");
+    assert_has_code(&records, "check.unresolved_call");
+    assert_has_code(&records, "check.assignment_type");
 }
 
 #[test]
@@ -319,14 +338,14 @@ fn keeps_configured_test_local_submodule_import_matching_hidden_source_prefix() 
             );
         },
     );
-    let output = run_check(&[root.to_str().unwrap()]);
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
     fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("parse.syntax"), "{stderr}");
-    assert!(stderr.contains("check.unresolved_import"), "{stderr}");
-    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+    let records = support::jsonl(output.stdout);
+    assert_has_code(&records, "parse.syntax");
+    assert_has_code(&records, "check.unresolved_import");
+    assert_has_code(&records, "check.assignment_type");
 }
 
 #[test]
@@ -349,15 +368,15 @@ fn keeps_configured_test_local_unresolved_call_when_another_test_has_parse_error
             "fn smoke()\n    missing_local()\n    var n: NotAType\n    var y: int = \"str\"\n",
         );
     });
-    let output = run_check(&[root.to_str().unwrap()]);
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
     fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("parse.syntax"), "{stderr}");
-    assert!(stderr.contains("check.unresolved_call"), "{stderr}");
-    assert!(stderr.contains("check.unknown_type"), "{stderr}");
-    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+    let records = support::jsonl(output.stdout);
+    assert_has_code(&records, "parse.syntax");
+    assert_has_code(&records, "check.unresolved_call");
+    assert_has_code(&records, "check.unknown_type");
+    assert_has_code(&records, "check.assignment_type");
 }
 
 #[test]
@@ -380,14 +399,14 @@ fn suppresses_unresolved_import_when_broken_configured_test_is_imported() {
             "use tests::helper\nfn smoke()\n    var y: int = \"str\"\n",
         );
     });
-    let output = run_check(&[root.to_str().unwrap()]);
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
     fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("parse.syntax"), "{stderr}");
-    assert!(!stderr.contains("check.unresolved_import"), "{stderr}");
-    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+    let records = support::jsonl(output.stdout);
+    assert_has_code(&records, "parse.syntax");
+    assert_lacks_code(&records, "check.unresolved_import");
+    assert_has_code(&records, "check.assignment_type");
 }
 
 #[test]
@@ -417,14 +436,14 @@ fn ignores_declared_modules_in_broken_configured_tests_for_call_suppression() {
             );
         },
     );
-    let output = run_check(&[root.to_str().unwrap()]);
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
     fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("parse.syntax"), "{stderr}");
-    assert!(stderr.contains("check.unresolved_call"), "{stderr}");
-    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+    let records = support::jsonl(output.stdout);
+    assert_has_code(&records, "parse.syntax");
+    assert_has_code(&records, "check.unresolved_call");
+    assert_has_code(&records, "check.assignment_type");
 }
 
 #[test]
@@ -447,14 +466,14 @@ fn keeps_source_module_calls_when_broken_test_path_collides() {
             "fn smoke()\n    tests::app::missing()\n    var y: int = \"str\"\n",
         );
     });
-    let output = run_check(&[root.to_str().unwrap()]);
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
     fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("parse.syntax"), "{stderr}");
-    assert!(stderr.contains("check.unresolved_call"), "{stderr}");
-    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+    let records = support::jsonl(output.stdout);
+    assert_has_code(&records, "parse.syntax");
+    assert_has_code(&records, "check.unresolved_call");
+    assert_has_code(&records, "check.assignment_type");
 }
 
 #[test]
@@ -473,14 +492,14 @@ fn keeps_test_module_calls_when_broken_source_path_collides() {
             "fn smoke()\n    tests::app::missing()\n    var y: int = \"str\"\n",
         );
     });
-    let output = run_check(&[root.to_str().unwrap()]);
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
     fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("parse.syntax"), "{stderr}");
-    assert!(stderr.contains("check.unresolved_call"), "{stderr}");
-    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+    let records = support::jsonl(output.stdout);
+    assert_has_code(&records, "parse.syntax");
+    assert_has_code(&records, "check.unresolved_call");
+    assert_has_code(&records, "check.assignment_type");
 }
 
 #[test]
@@ -503,14 +522,14 @@ fn reports_duplicate_when_test_module_collides_with_source_module() {
             "fn smoke()\n    tests::app::testOnly()\n    var y: int = \"str\"\n",
         );
     });
-    let output = run_check(&[root.to_str().unwrap()]);
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
     fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("check.duplicate_module"), "{stderr}");
-    assert!(!stderr.contains("check.unresolved_call"), "{stderr}");
-    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+    let records = support::jsonl(output.stdout);
+    assert_has_code(&records, "check.duplicate_module");
+    assert_lacks_code(&records, "check.unresolved_call");
+    assert_has_code(&records, "check.assignment_type");
 }
 
 #[test]
@@ -537,14 +556,14 @@ fn suppresses_unknown_types_from_broken_configured_test_declarations() {
             "fn smoke()\n    var f: Fixture\n    var y: int = \"str\"\n",
         );
     });
-    let output = run_check(&[root.to_str().unwrap()]);
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
     fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("parse.syntax"), "{stderr}");
-    assert!(!stderr.contains("check.unknown_type"), "{stderr}");
-    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+    let records = support::jsonl(output.stdout);
+    assert_has_code(&records, "parse.syntax");
+    assert_lacks_code(&records, "check.unknown_type");
+    assert_has_code(&records, "check.assignment_type");
 }
 
 #[test]
@@ -569,14 +588,14 @@ fn keeps_configured_test_local_type_syntax_diagnostics_when_hidden_type_names_ma
             "fn smoke()\n    var n: map[Book,int]\n    var y: int = \"str\"\n",
         );
     });
-    let output = run_check(&[root.to_str().unwrap()]);
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
     fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("parse.syntax"), "{stderr}");
-    assert!(stderr.contains("check.unknown_type"), "{stderr}");
-    assert!(stderr.contains("check.assignment_type"), "{stderr}");
+    let records = support::jsonl(output.stdout);
+    assert_has_code(&records, "parse.syntax");
+    assert_has_code(&records, "check.unknown_type");
+    assert_has_code(&records, "check.assignment_type");
 }
 
 #[test]
@@ -584,12 +603,12 @@ fn reports_missing_marrow_json() {
     let root = temp_project("proj-noconfig", |root| {
         write(root, "src/main.mw", "fn main()\n    return\n");
     });
-    let output = run_check(&[root.to_str().unwrap()]);
+    let output = run_check(&["--format", "json", root.to_str().unwrap()]);
     fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("io.read"), "{stderr}");
+    let record = support::json(output.stdout);
+    assert_eq!(record["code"], "io.read");
 }
 
 #[test]
