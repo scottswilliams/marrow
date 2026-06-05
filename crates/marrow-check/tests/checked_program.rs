@@ -2367,3 +2367,63 @@ fn cross_module_qualified_identity_splice_defers() {
         report.diagnostics
     );
 }
+
+/// The facts layer's enum-member selectability verdict is the one the schema owns:
+/// a `category` member or a member with children is not selectable, every other
+/// member is. The fact records the schema's answer rather than re-deriving the
+/// rule, so this pins the two to the same verdict for a hierarchical enum.
+#[test]
+fn enum_member_selectability_matches_schema_owner() {
+    let root = temp_project("program-enum-selectable", |root| {
+        write(
+            root,
+            "src/zoo/cats.mw",
+            "module zoo::cats\n\
+             enum Cat\n\
+             \x20   category tiger\n\
+             \x20       bengal\n\
+             \x20       siberian\n\
+             \x20   housecat\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    fs::remove_dir_all(&root).ok();
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+
+    let facts = &program.facts;
+    let module = facts.module_id("zoo::cats").expect("module fact");
+    let enum_id = facts.enum_id(module, "Cat").expect("enum fact");
+    let schema = program.modules[module.0 as usize]
+        .enums
+        .iter()
+        .find(|schema| schema.name == "Cat")
+        .expect("enum schema");
+
+    let mut verdicts: Vec<(&str, bool)> = Vec::new();
+    for member in facts.enum_members() {
+        if member.enum_id != enum_id {
+            continue;
+        }
+        let ordinal = schema.ordinal(&member.name).expect("schema member by name");
+        assert_eq!(
+            facts.enum_member_is_selectable(member.id),
+            schema.is_selectable_leaf(ordinal),
+            "selectability of `{}` must match the schema owner",
+            member.name
+        );
+        verdicts.push((
+            member.name.as_str(),
+            facts.enum_member_is_selectable(member.id),
+        ));
+    }
+
+    assert_eq!(
+        verdicts,
+        vec![
+            ("tiger", false),
+            ("bengal", true),
+            ("siberian", true),
+            ("housecat", true),
+        ]
+    );
+}

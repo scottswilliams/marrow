@@ -179,111 +179,20 @@ fn catalog_binding(
     let source_entries = source_catalog_entries(program);
     let mut ids = HashMap::new();
     let proposal = match accepted {
-        Some(catalog) => {
-            let accepted_index = AcceptedCatalog::new(catalog);
-            // Each current source catalog path mapped to the kind the source declares
-            // there, computed once and shared by rename resolution and retire
-            // admission so both read the same source view.
-            let source_kinds = source_kinds(&source_entries);
-            // A rename declares that the entity now at `to_path` is the accepted
-            // entry formerly at `from_path`. Resolution is keyed by the new path so
-            // the source loop can find the matching intent, and is an injective
-            // partial map: a duplicate source or target, a source still declared, or
-            // a target with no accepted identity to carry is a closed-by-default
-            // error rather than a silent relocation.
-            let mut renames =
-                resolve_renames(&accepted_index, &source_kinds, &evolve.renames, diagnostics);
-            let mut proposal_entries = catalog.entries.clone();
-            // An accepted Active entry whose source declaration has disappeared but
-            // is neither renamed nor retired stays Active here with no source
-            // backing. Dropping a sparse field is a legal no-op (its data simply
-            // lingers), so this is not a check-time error; classifying such an entry
-            // (deprecate it, or require a retire intent when an index, invariant, or
-            // alias still depends on it) is a discharge obligation, not catalog
-            // binding's concern.
-            let mut allocator = StableIdAllocator::over(&proposal_entries);
-            let mut changed = false;
-            for source in &source_entries {
-                let rename = renames.remove(&source.path);
-                if let Some(binding) = accepted_index.active_entry(source.kind, &source.path) {
-                    // A rename onto a path that already names a live accepted entity
-                    // cannot move identity there; the declared intent is a no-op the
-                    // author must resolve, so report it instead of dropping it.
-                    if rename.is_some() {
-                        push_rename_target_live(source, diagnostics);
-                    }
-                    let stable_id = binding.entry.stable_id.clone();
-                    ids.insert(CatalogKey::new(source.kind, source.path.clone()), stable_id);
-                } else if let Some(reserved) =
-                    accepted_index.reserved_entry(source.kind, &source.path)
-                {
-                    push_reserved_reuse(source, reserved.entry, diagnostics);
-                    changed = true;
-                } else if let Some(rename) = rename {
-                    apply_rename(&mut proposal_entries, source, &rename.from_path, &mut ids);
-                    changed = true;
-                } else {
-                    push_pending_identity(source, diagnostics);
-                    prepare_proposal_path(&mut proposal_entries, source.kind, &source.path);
-                    proposal_entries.push(proposed_catalog_entry(source, &mut allocator));
-                    changed = true;
-                }
-            }
-            // A rename whose target the source never declares relocates nothing; the
-            // declared intent must not vanish silently.
-            for rename in renames.values() {
-                report_unresolved_intent(&rename.file, rename.span, diagnostics);
-            }
-            if apply_retires(
-                &mut proposal_entries,
-                &evolve.retires,
-                &source_kinds,
-                diagnostics,
-            ) {
-                changed = true;
-            }
-            // Record each store's identity-key shape and each member's structural signature into
-            // the proposal once every referent's id is bound, so a renamed enum or store resolves
-            // to its preserved identity. The proposal id map covers freshly-minted referents the
-            // accepted-only `ids` map does not, without binding proposal ids onto live facts. A
-            // signature that differs from the accepted snapshot is a real change that advances the
-            // proposal; backfilling an unknown one is not.
-            let leaf_token_ids = proposal_id_map(&proposal_entries);
-            if record_store_key_shapes(
-                program,
-                &mut proposal_entries,
-                &leaf_token_ids,
-                Some(catalog),
-            ) {
-                changed = true;
-            }
-            if record_member_structs(
-                program,
-                &mut proposal_entries,
-                &leaf_token_ids,
-                Some(catalog),
-            ) {
-                changed = true;
-            }
-            changed.then(|| CatalogMetadata::new(catalog.epoch + 1, proposal_entries))
-        }
-        None => {
-            for rename in &evolve.renames {
-                report_unresolved_intent(&rename.file, rename.span, diagnostics);
-            }
-            for retire in &evolve.retires {
-                report_unresolved_intent(&retire.file, retire.span, diagnostics);
-            }
-            let mut allocator = StableIdAllocator::empty();
-            let mut proposal_entries: Vec<CatalogEntry> = source_entries
-                .iter()
-                .map(|source| proposed_catalog_entry(source, &mut allocator))
-                .collect();
-            let leaf_token_ids = proposal_id_map(&proposal_entries);
-            record_store_key_shapes(program, &mut proposal_entries, &leaf_token_ids, None);
-            record_member_structs(program, &mut proposal_entries, &leaf_token_ids, None);
-            Some(CatalogMetadata::new(1, proposal_entries))
-        }
+        Some(catalog) => bind_against_accepted(
+            program,
+            catalog,
+            evolve,
+            &source_entries,
+            &mut ids,
+            diagnostics,
+        ),
+        None => Some(bind_first_run(
+            program,
+            evolve,
+            &source_entries,
+            diagnostics,
+        )),
     };
 
     // The proposal is the catalog the commit path freezes when the program runs or an
@@ -320,6 +229,130 @@ fn catalog_binding(
         leaf_token_ids,
         proposal,
     }
+}
+
+/// Bind current source against an existing accepted catalog: carry each declared entity's
+/// accepted identity forward, apply renames and retires, mint identity for genuinely new
+/// entities, and record the store-key and member-structure signatures. Binds the
+/// accepted-or-relocated stable ids into `ids`, and returns the advanced proposal when any
+/// of this is a real change, or `None` when the source matches the accepted catalog exactly.
+fn bind_against_accepted(
+    program: &CheckedProgram,
+    catalog: &CatalogMetadata,
+    evolve: &EvolveIntents,
+    source_entries: &[SourceCatalogEntry],
+    ids: &mut HashMap<CatalogKey, String>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> Option<CatalogMetadata> {
+    let accepted_index = AcceptedCatalog::new(catalog);
+    // Each current source catalog path mapped to the kind the source declares
+    // there, computed once and shared by rename resolution and retire
+    // admission so both read the same source view.
+    let source_kinds = source_kinds(source_entries);
+    // A rename declares that the entity now at `to_path` is the accepted
+    // entry formerly at `from_path`. Resolution is keyed by the new path so
+    // the source loop can find the matching intent, and is an injective
+    // partial map: a duplicate source or target, a source still declared, or
+    // a target with no accepted identity to carry is a closed-by-default
+    // error rather than a silent relocation.
+    let mut renames = resolve_renames(&accepted_index, &source_kinds, &evolve.renames, diagnostics);
+    let mut proposal_entries = catalog.entries.clone();
+    // An accepted Active entry whose source declaration has disappeared but
+    // is neither renamed nor retired stays Active here with no source
+    // backing. Dropping a sparse field is a legal no-op (its data simply
+    // lingers), so this is not a check-time error; classifying such an entry
+    // (deprecate it, or require a retire intent when an index, invariant, or
+    // alias still depends on it) is a discharge obligation, not catalog
+    // binding's concern.
+    let mut allocator = StableIdAllocator::over(&proposal_entries);
+    let mut changed = false;
+    for source in source_entries {
+        let rename = renames.remove(&source.path);
+        if let Some(binding) = accepted_index.active_entry(source.kind, &source.path) {
+            // A rename onto a path that already names a live accepted entity
+            // cannot move identity there; the declared intent is a no-op the
+            // author must resolve, so report it instead of dropping it.
+            if rename.is_some() {
+                push_rename_target_live(source, diagnostics);
+            }
+            let stable_id = binding.entry.stable_id.clone();
+            ids.insert(CatalogKey::new(source.kind, source.path.clone()), stable_id);
+        } else if let Some(reserved) = accepted_index.reserved_entry(source.kind, &source.path) {
+            push_reserved_reuse(source, reserved.entry, diagnostics);
+            changed = true;
+        } else if let Some(rename) = rename {
+            apply_rename(&mut proposal_entries, source, &rename.from_path, ids);
+            changed = true;
+        } else {
+            push_pending_identity(source, diagnostics);
+            prepare_proposal_path(&mut proposal_entries, source.kind, &source.path);
+            proposal_entries.push(proposed_catalog_entry(source, &mut allocator));
+            changed = true;
+        }
+    }
+    // A rename whose target the source never declares relocates nothing; the
+    // declared intent must not vanish silently.
+    for rename in renames.values() {
+        report_unresolved_intent(&rename.file, rename.span, diagnostics);
+    }
+    if apply_retires(
+        &mut proposal_entries,
+        &evolve.retires,
+        &source_kinds,
+        diagnostics,
+    ) {
+        changed = true;
+    }
+    // Record each store's identity-key shape and each member's structural signature into
+    // the proposal once every referent's id is bound, so a renamed enum or store resolves
+    // to its preserved identity. The proposal id map covers freshly-minted referents the
+    // accepted-only `ids` map does not, without binding proposal ids onto live facts. A
+    // signature that differs from the accepted snapshot is a real change that advances the
+    // proposal; backfilling an unknown one is not.
+    let leaf_token_ids = proposal_id_map(&proposal_entries);
+    if record_store_key_shapes(
+        program,
+        &mut proposal_entries,
+        &leaf_token_ids,
+        Some(catalog),
+    ) {
+        changed = true;
+    }
+    if record_member_structs(
+        program,
+        &mut proposal_entries,
+        &leaf_token_ids,
+        Some(catalog),
+    ) {
+        changed = true;
+    }
+    changed.then(|| CatalogMetadata::new(catalog.epoch + 1, proposal_entries))
+}
+
+/// Bind current source with no accepted catalog yet: every entity mints fresh identity, and
+/// every rename or retire is an unresolved intent (there is nothing to carry forward). The
+/// first-run proposal is always a real proposal, so this returns it directly.
+fn bind_first_run(
+    program: &CheckedProgram,
+    evolve: &EvolveIntents,
+    source_entries: &[SourceCatalogEntry],
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> CatalogMetadata {
+    for rename in &evolve.renames {
+        report_unresolved_intent(&rename.file, rename.span, diagnostics);
+    }
+    for retire in &evolve.retires {
+        report_unresolved_intent(&retire.file, retire.span, diagnostics);
+    }
+    let mut allocator = StableIdAllocator::empty();
+    let mut proposal_entries: Vec<CatalogEntry> = source_entries
+        .iter()
+        .map(|source| proposed_catalog_entry(source, &mut allocator))
+        .collect();
+    let leaf_token_ids = proposal_id_map(&proposal_entries);
+    record_store_key_shapes(program, &mut proposal_entries, &leaf_token_ids, None);
+    record_member_structs(program, &mut proposal_entries, &leaf_token_ids, None);
+    CatalogMetadata::new(1, proposal_entries)
 }
 
 /// The `(kind, path) -> stable id` map of a proposal's entries, keyed by each entry's

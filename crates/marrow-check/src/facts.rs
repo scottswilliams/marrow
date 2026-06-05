@@ -173,8 +173,7 @@ impl CheckedFacts {
     }
 
     pub fn enum_member_is_selectable(&self, id: EnumMemberId) -> bool {
-        self.enum_member(id)
-            .is_some_and(|member| !member.category && !self.enum_member_has_children(id))
+        self.enum_member(id).is_some_and(|member| member.selectable)
     }
 
     pub fn enum_member_is_descendant(
@@ -599,42 +598,65 @@ impl CheckedFacts {
                 catalog_id: None,
                 span: declaration.map_or(SourceSpan::default(), |store| store.span),
             });
-            for index in &store.indexes {
-                let span = declaration
-                    .and_then(|store| {
-                        store
-                            .indexes
-                            .iter()
-                            .find(|candidate| candidate.name == index.name)
-                            .map(|candidate| candidate.span)
-                    })
-                    .unwrap_or_default();
-                let id = StoreIndexId(self.store_indexes.len() as u32);
-                let keys = module
-                    .resources
-                    .iter()
-                    .find(|resource| resource.name == store.resource)
-                    .map(|resource_schema| {
-                        self.store_index_keys(
-                            module_id,
-                            resource,
-                            store,
-                            resource_schema,
-                            index,
-                            &aliases,
-                        )
-                    })
-                    .unwrap_or_else(Vec::new);
-                self.store_indexes.push(StoreIndexFact {
-                    id,
-                    store: store_id,
-                    name: index.name.clone(),
-                    unique: index.unique,
-                    keys,
-                    catalog_id: None,
-                    span,
-                });
-            }
+            self.collect_store_index_facts(
+                module_id,
+                store_id,
+                module,
+                store,
+                declaration,
+                &aliases,
+            );
+        }
+    }
+
+    fn collect_store_index_facts(
+        &mut self,
+        module_id: ModuleId,
+        store_id: StoreId,
+        module: &CheckedModule,
+        store: &marrow_schema::StoreSchema,
+        declaration: Option<&marrow_syntax::StoreDecl>,
+        aliases: &HashMap<String, Vec<String>>,
+    ) {
+        let Some(resource) = self.resource_id(module_id, &store.resource) else {
+            return;
+        };
+        let resource_schema = module
+            .resources
+            .iter()
+            .find(|candidate| candidate.name == store.resource);
+        for index in &store.indexes {
+            let span = declaration
+                .and_then(|store| {
+                    store
+                        .indexes
+                        .iter()
+                        .find(|candidate| candidate.name == index.name)
+                        .map(|candidate| candidate.span)
+                })
+                .unwrap_or_default();
+            let id = StoreIndexId(self.store_indexes.len() as u32);
+            let keys = resource_schema
+                .map(|resource_schema| {
+                    self.store_index_keys(
+                        module_id,
+                        resource,
+                        store,
+                        resource_schema,
+                        index,
+                        aliases,
+                    )
+                })
+                .unwrap_or_else(Vec::new);
+            self.store_indexes.push(StoreIndexFact {
+                id,
+                store: store_id,
+                name: index.name.clone(),
+                unique: index.unique,
+                keys,
+                catalog_id: None,
+                span,
+            });
         }
     }
 
@@ -737,7 +759,7 @@ impl CheckedFacts {
                         .parent
                         .map(|parent| EnumMemberId(member_start + parent as u32)),
                     name: member.name.clone(),
-                    category: member.category,
+                    selectable: enum_schema.is_selectable_leaf(index),
                     catalog_id: None,
                     span: member_spans
                         .get(index)
@@ -887,19 +909,9 @@ impl CheckedFacts {
     fn selectable_enum_members(&self, enum_id: EnumId) -> Vec<EnumMemberId> {
         self.enum_members
             .iter()
-            .filter(|member| {
-                member.enum_id == enum_id
-                    && !member.category
-                    && !self.enum_member_has_children(member.id)
-            })
+            .filter(|member| member.enum_id == enum_id && member.selectable)
             .map(|member| member.id)
             .collect()
-    }
-
-    fn enum_member_has_children(&self, id: EnumMemberId) -> bool {
-        self.enum_members
-            .iter()
-            .any(|member| member.parent == Some(id))
     }
 
     fn store_index_keys(
@@ -1071,7 +1083,10 @@ pub struct EnumMemberFact {
     pub enum_id: EnumId,
     pub parent: Option<EnumMemberId>,
     pub name: String,
-    pub category: bool,
+    /// Whether this member is selectable as a value, as the [`marrow_schema::EnumSchema`]
+    /// owner decides it: a concrete leaf with no children and no `category` marker. The fact
+    /// records the schema's verdict so the selectability rule has one owner.
+    pub selectable: bool,
     pub catalog_id: Option<String>,
     pub span: SourceSpan,
 }

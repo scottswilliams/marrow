@@ -7,7 +7,7 @@ use marrow_syntax::SourceSpan;
 use crate::catalog::{CatalogKey, active_proposal_id_map, resource_member_path, store_index_path};
 use crate::facts::{ModuleId, ResourceId, ResourceMemberId, StoreId, StoreIndexFact};
 use crate::program::CheckedProgram;
-use crate::resolve::{resolve_store_by_root, resolve_store_by_root as store_by_root};
+use crate::resolve::resolve_store_by_root;
 
 use super::{
     CheckedArg, CheckedExpr, CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedKeyParam,
@@ -367,7 +367,7 @@ fn checked_store_leaf_kind(
 ) -> Option<crate::StoreLeafKind> {
     match ty {
         Type::Identity(root) => {
-            let store = store_by_root(program, root)?;
+            let store = resolve_store_by_root(program, root)?;
             Some(crate::StoreLeafKind::Identity {
                 store_root: root.clone(),
                 arity: store.store.identity_keys.len(),
