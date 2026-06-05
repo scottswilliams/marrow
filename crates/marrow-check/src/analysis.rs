@@ -253,6 +253,7 @@ pub(crate) fn analyze_source_project(
                         "module `{}` does not match its path; expected `{expected}`",
                         module.name
                     ),
+                    Some(expected.clone()),
                 )),
                 // `discover_modules` only yields `.mw` files with clean relative
                 // paths, so it always carries an expected name; this arm is
@@ -264,6 +265,7 @@ pub(crate) fn analyze_source_project(
                         "a file at this path cannot declare module `{}`",
                         module.name
                     ),
+                    None,
                 )),
             }
         } else if !parsed.has_errors() {

@@ -97,6 +97,7 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
                 | DiagnosticPayload::Schema(_)
                 | DiagnosticPayload::DuplicateDeclaration { .. }
                 | DiagnosticPayload::DuplicateModule { .. }
+                | DiagnosticPayload::ModulePath { .. }
                 | DiagnosticPayload::DuplicateRootOwner { .. }
                 | DiagnosticPayload::None => true,
             });

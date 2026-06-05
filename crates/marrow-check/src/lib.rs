@@ -233,9 +233,10 @@ pub const SCHEMA_DUPLICATE_ROOT_OWNER: &str = "schema.duplicate_root_owner";
 /// function, and an unknown type names the type spelling. Schema diagnostics carry
 /// the schema compiler's structured error kind. Duplicate declarations carry the
 /// duplicated name and first declaration span. Duplicate modules carry the
-/// duplicated name and first source file. Duplicate root ownership names the
-/// saved root and first owning file. Other diagnostics carry
-/// [`DiagnosticPayload::None`].
+/// duplicated name and first source file. Module-path diagnostics carry the
+/// declared module name and expected path-derived name when one exists.
+/// Duplicate root ownership names the saved root and first owning file. Other
+/// diagnostics carry [`DiagnosticPayload::None`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DiagnosticPayload {
     /// No resolution identity is attached.
@@ -256,6 +257,11 @@ pub enum DiagnosticPayload {
     },
     /// `check.duplicate_module`: duplicated module name and first source file.
     DuplicateModule { name: String, first_file: PathBuf },
+    /// `check.module_path`: declared name and expected path-derived name.
+    ModulePath {
+        declared: String,
+        expected: Option<String>,
+    },
     /// `schema.duplicate_root_owner`: saved root and first owning source file.
     DuplicateRootOwner { root: String, first_owner: PathBuf },
 }
@@ -815,6 +821,7 @@ impl TestResolutionSuppression {
             DiagnosticPayload::Schema(_)
             | DiagnosticPayload::DuplicateDeclaration { .. }
             | DiagnosticPayload::DuplicateModule { .. }
+            | DiagnosticPayload::ModulePath { .. }
             | DiagnosticPayload::DuplicateRootOwner { .. }
             | DiagnosticPayload::None => false,
         }
@@ -1548,6 +1555,7 @@ fn module_path_error(
     file: &marrow_project::ModuleFile,
     module: &marrow_syntax::ModuleDecl,
     message: String,
+    expected: Option<String>,
 ) -> CheckDiagnostic {
     CheckDiagnostic {
         code: CHECK_MODULE_PATH,
@@ -1555,7 +1563,10 @@ fn module_path_error(
         file: file.path.clone(),
         message,
         span: module.span,
-        payload: DiagnosticPayload::None,
+        payload: DiagnosticPayload::ModulePath {
+            declared: module.name.clone(),
+            expected,
+        },
     }
 }
 

@@ -1700,10 +1700,12 @@ fn reports_module_path_mismatch() {
         .iter()
         .find(|d| d.code == "check.module_path")
         .expect("module-path diagnostic");
-    assert!(
-        diagnostic.message.contains("shelf::books"),
-        "{}",
-        diagnostic.message
+    assert_eq!(
+        diagnostic.payload,
+        DiagnosticPayload::ModulePath {
+            declared: "shelf::other".into(),
+            expected: Some("shelf::books".into()),
+        }
     );
     assert!(
         diagnostic.file.ends_with("books.mw"),
@@ -1743,10 +1745,12 @@ fn a_dotted_stem_file_cannot_be_a_module() {
         .iter()
         .find(|d| d.code == "check.module_path")
         .expect("module-path diagnostic");
-    assert!(
-        diagnostic.message.contains("config.v2"),
-        "{}",
-        diagnostic.message
+    assert_eq!(
+        diagnostic.payload,
+        DiagnosticPayload::ModulePath {
+            declared: "config".into(),
+            expected: Some("config.v2".into()),
+        }
     );
 }
 
