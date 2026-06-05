@@ -529,12 +529,139 @@ impl EnumSchema {
 /// An error found while compiling a resource into a schema.
 ///
 /// `code` is a stable `schema.*` identifier; `message` is human-readable; and
-/// `span` points at the offending declaration.
+/// `span` points at the offending declaration. `kind` carries the semantic fact
+/// tests and downstream callers should assert.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SchemaError {
+    pub kind: SchemaErrorKind,
     pub code: &'static str,
     pub message: String,
     pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SchemaErrorKind {
+    DuplicateMember {
+        target: SchemaDuplicateTarget,
+        name: String,
+    },
+    CategoryLeaf {
+        member: String,
+    },
+    ParentNotCategory {
+        member: String,
+    },
+    UnknownInSaved {
+        target: SchemaSavedUnknownTarget,
+        name: String,
+    },
+    UnsupportedType {
+        target: SchemaUnsupportedTypeTarget,
+        name: String,
+    },
+    KeyMemberCollision {
+        collision: SchemaNameCollision,
+    },
+    UnknownIndexArg {
+        index: String,
+        arg: String,
+    },
+    UnorderableKey {
+        target: SchemaKeyTarget,
+        ty: Type,
+    },
+    IndexMissingIdentityKeys {
+        index: String,
+    },
+    IndexRequiresKeyedRoot {
+        index: String,
+    },
+    NestedIndexArg {
+        index: String,
+        arg: String,
+    },
+    NonEnumNamedField {
+        field: String,
+        ty: String,
+    },
+    NonScalarKey {
+        target: SchemaKeyTarget,
+        ty: Type,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchemaDuplicateTarget {
+    ResourceMember,
+    EnumMember,
+    KeyParam,
+    Index,
+}
+
+impl SchemaDuplicateTarget {
+    fn message_name(self) -> &'static str {
+        match self {
+            Self::ResourceMember => "resource member",
+            Self::EnumMember => "enum member",
+            Self::KeyParam => "key",
+            Self::Index => "index",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchemaSavedUnknownTarget {
+    Field,
+    IdentityKey,
+    Key,
+    KeyedLeaf,
+}
+
+impl SchemaSavedUnknownTarget {
+    fn message_name(self) -> &'static str {
+        match self {
+            Self::Field => "field",
+            Self::IdentityKey => "identity key",
+            Self::Key => "key",
+            Self::KeyedLeaf => "keyed leaf",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchemaUnsupportedTypeTarget {
+    Field,
+    Key,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SchemaNameCollision {
+    IdentityKeyWithMember { key: String },
+    IdentityKeyWithIndex { key: String, index: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SchemaKeyTarget {
+    IdentityKey { name: String },
+    KeyParam { name: String },
+    IndexArg { index: String, arg: String },
+}
+
+impl SchemaKeyTarget {
+    fn name(&self) -> &str {
+        match self {
+            Self::IdentityKey { name } | Self::KeyParam { name } => name,
+            Self::IndexArg { arg, .. } => arg,
+        }
+    }
+
+    fn saved_key_name(&self) -> Option<&'static str> {
+        match self {
+            Self::IdentityKey { .. } => Some("identity key"),
+            Self::KeyParam { .. } => Some("key"),
+            Self::IndexArg { .. } => None,
+        }
+    }
 }
 
 /// A resource member name collides with another member at the same level.
@@ -650,7 +777,7 @@ fn compile_resource_shape(
     let mut errors = Vec::new();
 
     let mut members = Vec::new();
-    let mut names = Namespace::default();
+    let mut names = Namespace::new(SchemaDuplicateTarget::ResourceMember);
 
     for member in &decl.members {
         names.check(member_name(member), member_span(member), &mut errors);
@@ -682,8 +809,18 @@ pub fn compile_store(
         }
         let ty = Type::resolve(&key.ty);
         if ty.embeds_unknown() {
-            errors.push(unknown_error("identity key", &key.name, decl.span));
-        } else if let Some(error) = key_type_error("identity key", &key.name, &ty, decl.span) {
+            errors.push(unknown_error(
+                SchemaSavedUnknownTarget::IdentityKey,
+                &key.name,
+                decl.span,
+            ));
+        } else if let Some(error) = key_type_error(
+            SchemaKeyTarget::IdentityKey {
+                name: key.name.clone(),
+            },
+            &ty,
+            decl.span,
+        ) {
             errors.push(error);
         }
         if resource
@@ -692,6 +829,11 @@ pub fn compile_store(
             .any(|member| member.name == key.name)
         {
             errors.push(SchemaError {
+                kind: SchemaErrorKind::KeyMemberCollision {
+                    collision: SchemaNameCollision::IdentityKeyWithMember {
+                        key: key.name.clone(),
+                    },
+                },
                 code: SCHEMA_KEY_MEMBER_COLLISION,
                 message: format!(
                     "identity key `{}` collides with a top-level member of the \
@@ -704,11 +846,14 @@ pub fn compile_store(
         }
     }
 
-    let mut names = Namespace::default();
+    let mut names = Namespace::new(SchemaDuplicateTarget::Index);
     for index in &decl.indexes {
         names.check(&index.name, index.span, &mut errors);
         if decl.root.keys.is_empty() {
             errors.push(SchemaError {
+                kind: SchemaErrorKind::IndexRequiresKeyedRoot {
+                    index: index.name.clone(),
+                },
                 code: SCHEMA_INDEX_REQUIRES_KEYED_ROOT,
                 message: format!(
                     "index `{}` requires a keyed saved root; a singleton store has \
@@ -721,6 +866,12 @@ pub fn compile_store(
         }
         if decl.root.keys.iter().any(|key| key.name == index.name) {
             errors.push(SchemaError {
+                kind: SchemaErrorKind::KeyMemberCollision {
+                    collision: SchemaNameCollision::IdentityKeyWithIndex {
+                        key: index.name.clone(),
+                        index: index.name.clone(),
+                    },
+                },
                 code: SCHEMA_KEY_MEMBER_COLLISION,
                 message: format!(
                     "identity key `{}` collides with index `{}`; identity keys and \
@@ -794,6 +945,10 @@ fn flatten_enum_members(
     for member in siblings {
         if seen.contains(&member.name.as_str()) {
             errors.push(SchemaError {
+                kind: SchemaErrorKind::DuplicateMember {
+                    target: SchemaDuplicateTarget::EnumMember,
+                    name: member.name.clone(),
+                },
                 code: SCHEMA_DUPLICATE_MEMBER,
                 message: format!("duplicate enum member `{}`", member.name),
                 span: member.span,
@@ -803,6 +958,9 @@ fn flatten_enum_members(
         seen.push(&member.name);
         if member.category && member.members.is_empty() {
             errors.push(SchemaError {
+                kind: SchemaErrorKind::CategoryLeaf {
+                    member: member.name.clone(),
+                },
                 code: SCHEMA_CATEGORY_LEAF,
                 message: format!(
                     "category `{}` has no members; a category must group nested members",
@@ -812,6 +970,9 @@ fn flatten_enum_members(
             });
         } else if !member.category && !member.members.is_empty() {
             errors.push(SchemaError {
+                kind: SchemaErrorKind::ParentNotCategory {
+                    member: member.name.clone(),
+                },
                 code: SCHEMA_PARENT_NOT_CATEGORY,
                 message: format!(
                     "`{}` has nested members but is not a category; mark a grouping member \
@@ -867,8 +1028,18 @@ fn check_key_params(keys: &[KeyParam], span: SourceSpan, errors: &mut Vec<Schema
         }
         let ty = Type::resolve(&key.ty);
         if ty.embeds_unknown() {
-            errors.push(unknown_error("key", &key.name, span));
-        } else if let Some(error) = key_type_error("key", &key.name, &ty, span) {
+            errors.push(unknown_error(
+                SchemaSavedUnknownTarget::Key,
+                &key.name,
+                span,
+            ));
+        } else if let Some(error) = key_type_error(
+            SchemaKeyTarget::KeyParam {
+                name: key.name.clone(),
+            },
+            &ty,
+            span,
+        ) {
             errors.push(error);
         }
     }
@@ -880,6 +1051,10 @@ fn unsupported_map_key_param_error(key: &KeyParam, span: SourceSpan) -> Option<S
 
 fn unsupported_map_key_error(name: &str, ty: &str, span: SourceSpan) -> Option<SchemaError> {
     contains_map_type_syntax(ty).then(|| SchemaError {
+        kind: SchemaErrorKind::UnsupportedType {
+            target: SchemaUnsupportedTypeTarget::Key,
+            name: name.to_string(),
+        },
         code: SCHEMA_UNSUPPORTED_TYPE,
         message: format!(
             "key `{}` uses `map[...]`, which is only supported as saved \
@@ -897,8 +1072,14 @@ fn check_synthetic_map_key(key: &str, span: SourceSpan, errors: &mut Vec<SchemaE
     }
     let ty = Type::resolve_text(key);
     if ty.embeds_unknown() {
-        errors.push(unknown_error("key", "key", span));
-    } else if let Some(error) = key_type_error("key", "key", &ty, span) {
+        errors.push(unknown_error(SchemaSavedUnknownTarget::Key, "key", span));
+    } else if let Some(error) = key_type_error(
+        SchemaKeyTarget::KeyParam {
+            name: "key".to_string(),
+        },
+        &ty,
+        span,
+    ) {
         errors.push(error);
     }
 }
@@ -911,17 +1092,23 @@ fn check_member_unknown(member: &ResourceMember, errors: &mut Vec<SchemaError>) 
         ResourceMember::Field(field) => {
             // A keyed leaf carries its value type the same way a plain field
             // does; both reject `unknown`.
-            let (what, ty) = if field.keys.is_empty()
+            let (target, ty) = if field.keys.is_empty()
                 && let Some((_, value)) = map_entry(&field.ty.text)
             {
-                ("keyed leaf", Type::resolve_text(value))
+                (
+                    SchemaSavedUnknownTarget::KeyedLeaf,
+                    Type::resolve_text(value),
+                )
             } else if field.keys.is_empty() {
-                ("field", Type::resolve(&field.ty))
+                (SchemaSavedUnknownTarget::Field, Type::resolve(&field.ty))
             } else {
-                ("keyed leaf", Type::resolve(&field.ty))
+                (
+                    SchemaSavedUnknownTarget::KeyedLeaf,
+                    Type::resolve(&field.ty),
+                )
             };
             if ty.embeds_unknown() {
-                errors.push(unknown_error(what, &field.name, field.span));
+                errors.push(unknown_error(target, &field.name, field.span));
             }
         }
         ResourceMember::Group(group) => {
@@ -991,6 +1178,10 @@ fn check_unsupported_map_key_params(
 
 fn unsupported_map_field_error(field: &FieldDecl) -> SchemaError {
     SchemaError {
+        kind: SchemaErrorKind::UnsupportedType {
+            target: SchemaUnsupportedTypeTarget::Field,
+            name: field.name.clone(),
+        },
         code: SCHEMA_UNSUPPORTED_TYPE,
         message: format!(
             "field `{}` uses `map[...]`, which is only supported as unrequired \
@@ -1069,6 +1260,10 @@ fn check_named_field_type(
 ) {
     match ty {
         Type::Named(name) if !is_declared_enum_name(name) => errors.push(SchemaError {
+            kind: SchemaErrorKind::NonEnumNamedField {
+                field: field.name.clone(),
+                ty: name.clone(),
+            },
             code: SCHEMA_NON_ENUM_NAMED_FIELD,
             message: format!(
                 "saved field `{}` has type `{name}`, which is not a declared enum; \
@@ -1094,6 +1289,10 @@ fn check_store_index_args(
         match store_index_arg_type(arg, keys, resource) {
             None if store_index_arg_is_nested_field(arg, resource) => {
                 errors.push(SchemaError {
+                    kind: SchemaErrorKind::NestedIndexArg {
+                        index: index.name.clone(),
+                        arg: arg.clone(),
+                    },
                     code: SCHEMA_NESTED_INDEX_ARG,
                     message: format!(
                         "index `{}` argument `{arg}` names a field nested through an \
@@ -1104,6 +1303,10 @@ fn check_store_index_args(
                 });
             }
             None => errors.push(SchemaError {
+                kind: SchemaErrorKind::UnknownIndexArg {
+                    index: index.name.clone(),
+                    arg: arg.clone(),
+                },
                 code: SCHEMA_UNKNOWN_INDEX_ARG,
                 message: format!(
                     "index `{}` argument `{arg}` does not name an identity \
@@ -1121,6 +1324,9 @@ fn check_store_index_args(
     }
     if !index.unique && !ends_with_identity_keys(&index.args, keys) {
         errors.push(SchemaError {
+            kind: SchemaErrorKind::IndexMissingIdentityKeys {
+                index: index.name.clone(),
+            },
             code: SCHEMA_INDEX_MISSING_IDENTITY_KEYS,
             message: format!(
                 "non-unique index `{}` must end with all identity key(s) in \
@@ -1225,12 +1431,17 @@ fn split_top_level_comma(text: &str) -> Option<(&str, &str)> {
     None
 }
 
-fn unknown_error(what: &str, name: &str, span: SourceSpan) -> SchemaError {
+fn unknown_error(target: SchemaSavedUnknownTarget, name: &str, span: SourceSpan) -> SchemaError {
     SchemaError {
+        kind: SchemaErrorKind::UnknownInSaved {
+            target,
+            name: name.to_string(),
+        },
         code: SCHEMA_UNKNOWN_IN_SAVED,
         message: format!(
-            "saved {what} `{name}` cannot use `unknown`; managed saved \
-             schemas use concrete types"
+            "saved {} `{name}` cannot use `unknown`; managed saved \
+             schemas use concrete types",
+            target.message_name()
         ),
         span,
     }
@@ -1268,10 +1479,18 @@ fn classify_key_type(ty: &Type) -> KeyTypeVerdict {
 /// or `None` if it is a valid key. `decimal` keeps its own "no key encoding"
 /// message and code; any other non-scalar is the orderable-scalar rule. `unknown`
 /// is reported separately by the caller, so it does not reach here.
-fn key_type_error(what: &str, name: &str, ty: &Type, span: SourceSpan) -> Option<SchemaError> {
+fn key_type_error(target: SchemaKeyTarget, ty: &Type, span: SourceSpan) -> Option<SchemaError> {
+    let what = target
+        .saved_key_name()
+        .expect("only saved key targets are checked here");
+    let name = target.name().to_string();
     match classify_key_type(ty) {
         KeyTypeVerdict::Ok => None,
         KeyTypeVerdict::Decimal => Some(SchemaError {
+            kind: SchemaErrorKind::UnorderableKey {
+                target,
+                ty: ty.clone(),
+            },
             code: SCHEMA_UNORDERABLE_KEY,
             message: format!(
                 "saved {what} `{name}` cannot use `decimal`; saved keys use ordered \
@@ -1280,6 +1499,10 @@ fn key_type_error(what: &str, name: &str, ty: &Type, span: SourceSpan) -> Option
             span,
         }),
         KeyTypeVerdict::NonScalar => Some(SchemaError {
+            kind: SchemaErrorKind::NonScalarKey {
+                target,
+                ty: ty.clone(),
+            },
             code: SCHEMA_NONSCALAR_KEY,
             message: format!(
                 "saved {what} `{name}` must be an orderable scalar type, but found `{ty}`"
@@ -1297,6 +1520,13 @@ fn index_arg_type_key_error(
 ) -> Option<SchemaError> {
     match resolved {
         Type::Scalar(ScalarType::Decimal) => Some(SchemaError {
+            kind: SchemaErrorKind::UnorderableKey {
+                target: SchemaKeyTarget::IndexArg {
+                    index: index.to_string(),
+                    arg: arg.to_string(),
+                },
+                ty: resolved.clone(),
+            },
             code: SCHEMA_UNORDERABLE_KEY,
             message: format!(
                 "index `{index}` argument `{arg}` is a `decimal`, which has no key \
@@ -1306,6 +1536,13 @@ fn index_arg_type_key_error(
         }),
         Type::Scalar(_) | Type::Named(_) => None,
         Type::Sequence(_) | Type::Identity(_) | Type::Unknown => Some(SchemaError {
+            kind: SchemaErrorKind::NonScalarKey {
+                target: SchemaKeyTarget::IndexArg {
+                    index: index.to_string(),
+                    arg: arg.to_string(),
+                },
+                ty: resolved.clone(),
+            },
             code: SCHEMA_NONSCALAR_KEY,
             message: format!(
                 "index `{index}` argument `{arg}` must be an orderable scalar type, \
@@ -1319,7 +1556,7 @@ fn index_arg_type_key_error(
 /// Compile the members nested inside a group into nodes.
 fn group_members(group: &GroupDecl, errors: &mut Vec<SchemaError>, map_sugar: bool) -> Vec<Node> {
     let mut members = Vec::new();
-    let mut names = Namespace::default();
+    let mut names = Namespace::new(SchemaDuplicateTarget::ResourceMember);
 
     for member in &group.members {
         names.check(member_name(member), member_span(member), errors);
@@ -1446,6 +1683,10 @@ fn check_duplicate_key_params(keys: &[KeyParam], span: SourceSpan, errors: &mut 
 
 fn duplicate_key_error(name: &str, span: SourceSpan) -> SchemaError {
     SchemaError {
+        kind: SchemaErrorKind::DuplicateMember {
+            target: SchemaDuplicateTarget::KeyParam,
+            name: name.to_string(),
+        },
         code: SCHEMA_DUPLICATE_MEMBER,
         message: format!("duplicate key `{name}`"),
         span,
@@ -1470,17 +1711,28 @@ fn key_def(key: &KeyParam) -> KeyDef {
 
 /// Tracks member names seen at one nesting level so duplicates can be reported.
 /// Fields, layers, and indexes share one flat namespace per level.
-#[derive(Default)]
 struct Namespace {
     seen: Vec<String>,
+    target: SchemaDuplicateTarget,
 }
 
 impl Namespace {
+    fn new(target: SchemaDuplicateTarget) -> Self {
+        Self {
+            seen: Vec::new(),
+            target,
+        }
+    }
+
     fn check(&mut self, name: &str, span: SourceSpan, errors: &mut Vec<SchemaError>) {
         if self.seen.iter().any(|existing| existing == name) {
             errors.push(SchemaError {
+                kind: SchemaErrorKind::DuplicateMember {
+                    target: self.target,
+                    name: name.to_string(),
+                },
                 code: SCHEMA_DUPLICATE_MEMBER,
-                message: format!("duplicate resource member `{name}`"),
+                message: format!("duplicate {} `{name}`", self.target.message_name()),
                 span,
             });
         } else {

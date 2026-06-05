@@ -3,7 +3,7 @@
 
 use marrow_schema::{
     EnumSchema, SCHEMA_CATEGORY_LEAF, SCHEMA_DUPLICATE_MEMBER, SCHEMA_PARENT_NOT_CATEGORY,
-    compile_enum,
+    SchemaErrorKind, compile_enum,
 };
 use marrow_syntax::{Declaration, EnumDecl, parse_source};
 
@@ -133,7 +133,12 @@ fn rejects_a_non_category_parent_with_children() {
     ));
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert_eq!(errors[0].code, SCHEMA_PARENT_NOT_CATEGORY);
-    assert!(errors[0].message.contains("tiger"), "{:?}", errors[0]);
+    assert_eq!(
+        errors[0].kind,
+        SchemaErrorKind::ParentNotCategory {
+            member: "tiger".to_string(),
+        }
+    );
 }
 
 /// Member-name uniqueness is per sibling level: two `tiger`s under one parent
