@@ -631,11 +631,11 @@ pub(crate) fn local_field_type(
 }
 
 fn error_field_type(field: &str) -> Option<MarrowType> {
-    match field {
-        "code" | "message" | "help" => Some(MarrowType::Primitive(ScalarType::Str)),
-        "data" => Some(MarrowType::Unknown),
-        _ => None,
-    }
+    let descriptor = marrow_schema::error::field(field)?;
+    Some(MarrowType::from_resolved(
+        descriptor.ty.clone(),
+        TypeNames::default(),
+    ))
 }
 
 /// The declared type of a group field read at any nesting depth, reached through

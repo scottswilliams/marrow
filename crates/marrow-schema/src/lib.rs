@@ -13,6 +13,7 @@ use marrow_syntax::{
     SourceSpan, StoreDecl, TypeRef,
 };
 
+pub mod error;
 pub mod stdlib;
 
 // The canonical scalar type lives in marrow-store; re-export it so resolution

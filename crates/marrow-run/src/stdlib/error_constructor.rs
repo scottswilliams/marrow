@@ -16,7 +16,7 @@ pub(crate) fn eval_error_constructor(
         let Some(name) = &arg.name else {
             return Err(type_error("`Error(...)` takes named arguments", span));
         };
-        if !matches!(name.as_str(), "code" | "message" | "help" | "data") {
+        if marrow_schema::error::field(name).is_none() {
             return Err(type_error(&format!("`Error` has no field `{name}`"), span));
         }
         if fields.iter().any(|(existing, _)| existing == name) {
@@ -27,9 +27,13 @@ pub(crate) fn eval_error_constructor(
         }
         fields.push((name.clone(), eval_expr(&arg.value, env)?));
     }
-    for required in ["code", "message"] {
-        if !fields.iter().any(|(name, _)| name == required) {
-            return Err(type_error(&format!("`Error` requires `{required}`"), span));
+    for required in marrow_schema::error::fields()
+        .iter()
+        .filter(|field| field.required)
+    {
+        if !fields.iter().any(|(name, _)| name == required.name) {
+            let name = required.name;
+            return Err(type_error(&format!("`Error` requires `{name}`"), span));
         }
     }
     Ok(Value::Resource(fields))

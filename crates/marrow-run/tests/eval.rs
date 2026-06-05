@@ -1722,9 +1722,34 @@ fn throw_surfaces_as_an_uncaught_error() {
 #[test]
 fn error_constructor_requires_code_and_message() {
     let program = checked_program("pub fn bad()\n    throw Error(code: \"x.y\")\n");
+    let error = run(checked_entry!(&program, "test::bad")).unwrap_err();
+    assert_eq!(error.code, RUN_TYPE);
+    // The required subset {code, message} is owned by the schema descriptor; pin
+    // the message a missing required field surfaces so the descriptor stays the
+    // single source of the `Error` shape without drifting from this contract.
+    assert_eq!(error.message, "`Error` requires `message`");
+}
+
+#[test]
+fn error_constructor_rejects_an_unknown_field() {
+    let program = checked_program(
+        "pub fn bad()\n    throw Error(code: \"x\", message: \"m\", oops: \"!\")\n",
+    );
+    let error = run(checked_entry!(&program, "test::bad")).unwrap_err();
+    assert_eq!(error.code, RUN_TYPE);
+    assert_eq!(error.message, "`Error` has no field `oops`");
+}
+
+#[test]
+fn error_fields_keep_their_declared_types() {
+    // `help` is a string scalar and `data` is the open `unknown` payload; reading
+    // each off a caught error must type and run as the descriptor declares.
+    let program = checked_program(
+        "pub fn pick(): string\n    try\n        throw Error(code: \"x.y\", message: \"m\", help: \"try again\", data: \"raw\")\n    catch err: Error\n        return err.help\n",
+    );
     assert_eq!(
-        run(checked_entry!(&program, "test::bad")).unwrap_err().code,
-        RUN_TYPE
+        run(checked_entry!(&program, "test::pick")),
+        Ok(Some(Value::Str("try again".into())))
     );
 }
 
