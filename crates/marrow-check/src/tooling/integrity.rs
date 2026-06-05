@@ -262,7 +262,7 @@ impl DeclaredSchema {
         let store_id = store.as_str();
         let Some(root) = self.roots.get(store_id) else {
             return Some(orphan_problem(
-                render_unknown_path(store_id, &identity, &path),
+                render_unknown_path(),
                 "a saved root the schema no longer declares",
             ));
         };
@@ -316,13 +316,12 @@ fn orphan_problem(path: String, reason: &'static str) -> IntegrityProblem {
     }
 }
 
-fn render_unknown_path(store_id: &str, identity: &[SavedKey], path: &[DataPathSegment]) -> String {
-    let mut text = format!("data:{store_id}");
-    for key in identity {
-        push_key(&mut text, key);
-    }
-    render_data_path(&mut text, path, None);
-    text
+fn render_unknown_path() -> String {
+    "<undeclared saved root>".to_string()
+}
+
+fn render_unknown_member(text: &mut String) {
+    text.push_str("<undeclared member>");
 }
 
 fn render_data_path(
@@ -337,7 +336,7 @@ fn render_data_path(
                 let id = member.as_str();
                 match names.and_then(|names| names.get(id)) {
                     Some(name) => text.push_str(name),
-                    None => text.push_str(id),
+                    None => render_unknown_member(text),
                 }
             }
             DataPathSegment::Key(key) => {

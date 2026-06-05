@@ -7,10 +7,6 @@ Goal: make CLI, LSP, data tools, serve, backup, restore, and future adapters
 consume shared compiler/runtime facts and expose typed production protocols,
 with raw protocols limited to explicit debug/admin surfaces.
 
-Worktree: `/Users/scottwilliams/Dev/marrow-lane-10-tooling-protocols`
-
-Target dir: `/Users/scottwilliams/Dev/.build/marrow-targets/lane-10-tooling-protocols`
-
 Status: historical lane plan. Lane 10's typed backup/restore foundation landed;
 Lane 16 supersedes the stale tooling/protocol blockers by moving data, explain,
 integrity, metadata, and cursor facts into `marrow_check::tooling`. Treat this
@@ -20,9 +16,8 @@ work.
 Resolved or superseded blockers inherited from the Lane 8 repair:
 
 - `marrow data get`, `marrow data dump`, and `marrow debug explain ^path` are
-  diagnostic/admin inspection surfaces rendered from shared facts. Final product
-  naming for `explain` and raw data inspection remains a Scott decision, but
-  these commands are not production preview APIs.
+  diagnostic/admin inspection surfaces rendered from shared facts. They are not
+  production preview APIs.
 - Raw `marrow serve saved_children` is gone. Current serve inspection operations
   are explicitly `debug_data_*`; the production protocol must be checked-fact
   based, bounded, and snapshot/catalog-epoch scoped.
@@ -245,8 +240,8 @@ Phase B writes failing adapter checks:
 
 - default help and production docs omit deleted/debug-only surfaces;
 - debug/admin raw inspection requires an explicit flag or command namespace;
-- `explain`, `serve`, trace, dry-run, maintenance, and data inspection surfaces
-  match the verdict matrix;
+- `debug explain`, `serve`, trace, dry-run, maintenance, and data inspection
+  surfaces match the verdict matrix;
 - CLI and LSP render the same diagnostic from shared facts;
 - presence-ledger proof details appear through CLI/LSP without reclassification;
 - raw debug protocols are opt-in;
@@ -255,13 +250,8 @@ Phase B writes failing adapter checks:
 - backup during concurrent read uses a stable snapshot;
 - backup CLI and serve protocols consume the manifest/API from Phase A.
 
-Focused commands:
-
-```sh
-CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/lane-10-tooling-protocols \
-    cargo test --manifest-path /Users/scottwilliams/Dev/marrow-lane-10-tooling-protocols/Cargo.toml \
-    -p marrow
-```
+Focused gates must run from the active integration worktree with an explicit
+isolated target directory and explicit manifest path.
 
 ## Review Lenses
 
@@ -283,26 +273,14 @@ or test fixture just because it existed in the prototype.
 
 Run the full central gate. Add scans:
 
-```sh
-rg -n 'explain|serve|trace|dry-run|maintenance|raw|debug|path|saved path|backend bytes|re-resolv|resolve|query|server|sync|generated API' \
-    /Users/scottwilliams/Dev/marrow-lane-10-tooling-protocols/crates/marrow/src \
-    /Users/scottwilliams/Dev/marrow-lane-10-tooling-protocols/docs
-```
+Scan the active stack for `explain`, `serve`, `trace`, `dry-run`,
+`maintenance`, `raw`, `debug`, `path`, `saved path`, `backend bytes`,
+`re-resolve`, `query`, `server`, `sync`, and generated API wording.
 
 Every match must be typed production rendering, explicit debug/admin scope, or a
 test proving the old surface is rejected.
 
-## Starter Prompt
-
-Continue Marrow v0.1 Lane 10 in `/Users/scottwilliams/Dev/marrow-lane-10-tooling-protocols`.
-Use branch `lane-10-tooling-protocols`, use
-`CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/lane-10-tooling-protocols`
-on every cargo command, and follow `/Users/scottwilliams/Dev/AGENTS.md`.
-First inspect current `main`, worktrees, and dependency status. Start with a
-read-only feature-surface audit plus stale raw protocol inventory. Do not edit
-tracked protocol docs, define replacement typed protocol shapes, or patch around
-missing semantic facts in tools before dependencies land. If dependencies are
-missing, return **audit complete** or **blocked**, not done.
+## Historical Execution Criteria
 
 Deliver a verdict matrix for every current or documented tool/protocol/language
 or database-facing surface: keep production, debug/admin only, rename/rescope,
@@ -322,14 +300,13 @@ production backup/restore API, then make CLI/LSP/data/serve/backup render or
 consume those facts directly and restrict raw surfaces to debug/admin.
 
 Do not stop after fixing one endpoint or command. After each fix, scan the
-sibling family: `serve saved_*`, `data *`, `explain`, backup/restore/archive,
-LSP, docs, tests, help output, and protocol examples. No legacy survival for
-green tests: migrate/delete tests, fixtures, docs, commands, flags, and clients
-that depend on raw protocol bytes, raw path JSON, tool-local semantic
-classifiers, or unbounded previews. Before review, satisfy the Area Cleanup
-Gate: split backup manifest validation, restore activation, CLI rendering, LSP
-rendering, data preview, key/path codecs, cursor handling, and serve adapters;
-delete raw protocol, saved-path re-resolution, raw archive, unbounded preview,
-and LSP semantic-patch helpers. Leave the worktree dirty for soundness,
-idiom/spec, and feature/spec review. A final done claim must include the
-completion evidence packet required by the central plan.
+sibling family: `serve debug_data_*`, `data *`, `debug explain`,
+backup/restore/archive, LSP, docs, tests, help output, and protocol examples.
+No legacy survival for green tests: migrate/delete tests, fixtures, docs,
+commands, flags, and clients that depend on raw protocol bytes, raw path JSON,
+tool-local semantic classifiers, or unbounded previews. Before review, satisfy
+the Area Cleanup Gate: split backup manifest validation, restore activation,
+CLI rendering, LSP rendering, data preview, key/path codecs, cursor handling,
+and serve adapters; delete raw protocol, saved-path re-resolution, raw archive,
+unbounded preview, and LSP semantic-patch helpers. A final done claim must
+include the completion evidence packet required by the central plan.

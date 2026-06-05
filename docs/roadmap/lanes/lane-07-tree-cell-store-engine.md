@@ -8,11 +8,8 @@ Goal: make the Marrow v0.1 store foundation a typed tree-cell store keyed by
 stable catalog IDs, typed key values, sequence state, index cells, commit
 metadata, and an explicit engine profile.
 
-Current perfection-pass worktree:
-`/Users/scottwilliams/Dev/marrow-lane-07-production-boundary-recovery`
-
-Current target dir:
-`/Users/scottwilliams/Dev/.cargo-targets/lane-07-production-boundary-recovery`
+Status: historical lane plan. The durable store contract below is the useful
+reference; do not treat old lane execution details as active state.
 
 ## Store Contract
 
@@ -106,8 +103,8 @@ The replacement production imports are:
   decode_value}` for canonical leaf payloads.
 
 Checker-owned source path text remains a CLI/diagnostic convenience for
-`marrow data get` and `marrow debug explain`. It is not a store replacement API and
-must not be used to construct physical store keys or raw traversal.
+`marrow data get` and `marrow debug explain`. It is not a store replacement API
+and must not be used to construct physical store keys or raw traversal.
 
 Runtime callers must resolve source roots, fields, keyed layers, indexes, enum
 members, and referenced stores through checked facts/catalog data before calling
@@ -127,17 +124,8 @@ path segments or raw backend bytes.
 
 ## Verification
 
-Focused store gates use the isolated target dir explicitly:
-
-```sh
-CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.cargo-targets/lane-07-production-boundary-recovery \
-    cargo test --manifest-path /Users/scottwilliams/Dev/marrow-lane-07-production-boundary-recovery/Cargo.toml \
-    -p marrow-store --features native
-
-CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.cargo-targets/lane-07-production-boundary-recovery \
-    cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow-lane-07-production-boundary-recovery/Cargo.toml \
-    -p marrow-store --all-targets --all-features -- -D warnings
-```
+Focused store gates must run from the active integration worktree with an
+explicit isolated target directory and explicit manifest path.
 
 Architecture scans must prove raw saved-path/archive APIs are absent from the
 store crate public surface. Matches are acceptable only for private substrate

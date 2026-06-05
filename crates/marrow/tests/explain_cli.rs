@@ -26,6 +26,13 @@ fn marrow(args: &[&str]) -> std::process::Output {
         .expect("run marrow")
 }
 
+fn marrow_debug_explain(args: &[&str]) -> std::process::Output {
+    let mut command_args = Vec::with_capacity(args.len() + 2);
+    command_args.extend(["debug", "explain"]);
+    command_args.extend_from_slice(args);
+    marrow(&command_args)
+}
+
 /// A project whose `Book` resource has a unique `byTitle` index and a public
 /// function, plus a private one, for both halves of explain.
 fn book_project(name: &str) -> PathBuf {
@@ -53,7 +60,7 @@ fn explains_a_saved_field_path_with_its_index() {
     // string, and it feeds the unique `byTitle` index.
     let project = book_project("explain-field");
     let dir = project.to_str().unwrap().to_string();
-    let output = marrow(&["explain", &dir, "^books(1).title"]);
+    let output = marrow_debug_explain(&[&dir, "^books(1).title"]);
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -70,7 +77,7 @@ fn explains_an_index_marker_path() {
     // marker (not a typed scalar leaf).
     let project = book_project("explain-index");
     let dir = project.to_str().unwrap().to_string();
-    let output = marrow(&["explain", &dir, "^books.byTitle(\"x\")"]);
+    let output = marrow_debug_explain(&[&dir, "^books.byTitle(\"x\")"]);
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -86,7 +93,7 @@ fn explains_an_orphan_path() {
     // `^bogus(1).x` is under no declared root: an orphan.
     let project = book_project("explain-orphan");
     let dir = project.to_str().unwrap().to_string();
-    let output = marrow(&["explain", &dir, "^bogus(1).x"]);
+    let output = marrow_debug_explain(&[&dir, "^bogus(1).x"]);
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -98,7 +105,7 @@ fn explains_an_orphan_path() {
 fn explains_a_saved_path_as_json() {
     let project = book_project("explain-field-json");
     let dir = project.to_str().unwrap().to_string();
-    let output = marrow(&["explain", "--format", "json", &dir, "^books(1).title"]);
+    let output = marrow_debug_explain(&["--format", "json", &dir, "^books(1).title"]);
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -120,7 +127,7 @@ fn explains_a_public_function_name() {
     // A public `fn` resolves: found, in module `shelf`, kind function.
     let project = book_project("explain-name-found");
     let dir = project.to_str().unwrap().to_string();
-    let output = marrow(&["explain", "--format", "json", &dir, "shelf::add"]);
+    let output = marrow_debug_explain(&["--format", "json", &dir, "shelf::add"]);
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -137,7 +144,7 @@ fn explains_a_not_visible_qualified_name() {
     // A non-pub function reached by a qualified path is not visible.
     let project = book_project("explain-name-private");
     let dir = project.to_str().unwrap().to_string();
-    let output = marrow(&["explain", "--format", "json", &dir, "shelf::helper"]);
+    let output = marrow_debug_explain(&["--format", "json", &dir, "shelf::helper"]);
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -152,7 +159,7 @@ fn explains_a_module_qualified_resource_name() {
     // A module-qualified resource name resolves to the resource declaration.
     let project = book_project("explain-qualified-resource");
     let dir = project.to_str().unwrap().to_string();
-    let output = marrow(&["explain", "--format", "json", &dir, "shelf::Book"]);
+    let output = marrow_debug_explain(&["--format", "json", &dir, "shelf::Book"]);
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -184,7 +191,7 @@ fn explains_a_typed_reference_field() {
         );
     });
     let dir = project.to_str().unwrap().to_string();
-    let output = marrow(&["explain", "--format", "json", &dir, "^books(1).authorId"]);
+    let output = marrow_debug_explain(&["--format", "json", &dir, "^books(1).authorId"]);
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -200,7 +207,7 @@ fn explains_a_typed_reference_field() {
 fn bare_resource_name_outside_its_module_is_unresolved() {
     let project = book_project("explain-bare-resource-unresolved");
     let dir = project.to_str().unwrap().to_string();
-    let output = marrow(&["explain", "--format", "json", &dir, "Book"]);
+    let output = marrow_debug_explain(&["--format", "json", &dir, "Book"]);
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -228,7 +235,7 @@ fn explains_an_ambiguous_bare_name() {
         );
     });
     let dir = project.to_str().unwrap().to_string();
-    let output = marrow(&["explain", "--format", "json", &dir, "widget"]);
+    let output = marrow_debug_explain(&["--format", "json", &dir, "widget"]);
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -256,7 +263,7 @@ fn ambiguous_bare_resource_names_are_not_first_matched() {
         );
     });
     let dir = project.to_str().unwrap().to_string();
-    let output = marrow(&["explain", "--format", "json", &dir, "Book"]);
+    let output = marrow_debug_explain(&["--format", "json", &dir, "Book"]);
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -273,7 +280,7 @@ fn a_malformed_saved_path_is_a_usage_error() {
     let project = book_project("explain-bad-path");
     let dir = project.to_str().unwrap().to_string();
     // A leading `^` with no root name is malformed.
-    let output = marrow(&["explain", &dir, "^"]);
+    let output = marrow_debug_explain(&[&dir, "^"]);
     fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(2), "{output:?}");

@@ -338,6 +338,9 @@ fn data_integrity_reports_an_undeclared_store_cell_as_data_orphan() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("utf8");
     assert!(stderr.contains("data.orphan"), "{stderr}");
+    assert!(stderr.contains("<undeclared saved root>"), "{stderr}");
+    assert!(!stderr.contains("deadbeef"), "{stderr}");
+    assert!(!stderr.contains("cat_"), "{stderr}");
     assert!(
         stderr.contains(
             "help: run `marrow data integrity` after source-native evolution or maintenance repair"
@@ -365,6 +368,12 @@ fn data_integrity_reports_an_undeclared_member_cell_as_data_orphan() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("utf8");
     assert!(stderr.contains("data.orphan"), "{stderr}");
+    assert!(
+        stderr.contains("^counter(1).<undeclared member>"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("cafef00d"), "{stderr}");
+    assert!(!stderr.contains("cat_"), "{stderr}");
 }
 
 #[test]
@@ -446,6 +455,15 @@ fn data_integrity_reports_an_orphan_problem_with_a_tooling_kind() {
         .find(|problem| problem["code"] == serde_json::json!("data.orphan"))
         .expect("an orphan problem");
     assert_eq!(problem["kind"], serde_json::json!("tooling"), "{value}");
+    assert_eq!(
+        problem["source_span"]["path"],
+        serde_json::json!("<undeclared saved root>"),
+        "{value}"
+    );
+    assert!(
+        !stdout.contains("deadbeef") && !stdout.contains("cat_"),
+        "{stdout}"
+    );
     assert_eq!(
         problem["help"],
         serde_json::json!(

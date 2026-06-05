@@ -15,11 +15,33 @@ The local vision is not "make tools smart." It is "make tools render canonical c
 
 The tooling vision is explicit. Tools inspect the same source, schema, saved-tree, and error model as the checker/runtime (`docs/implementation.md:376`). `data` is read-only over typed tree-cell store APIs, while backend traversal, physical keys, and archive replay are excluded from production APIs (`docs/implementation.md:376`). Typed backup/restore must bind source digest, catalog epoch, engine profile, value codec, checksums, and derived indexes (`docs/implementation.md:386`). `lsp` is JSON-RPC over stdio and distinct from `serve` (`docs/implementation.md:397`). `serve` is optional, loopback, read-only debug/admin inspection, not an app protocol (`docs/implementation.md:403`, `docs/implementation.md:422`). Bounded/pageable reads are required for large data (`docs/implementation.md:444`), and remote transport/auth is explicitly out of v0.1 scope (`docs/implementation.md:450`, `docs/implementation.md:472`).
 
-The CLI docs match that product boundary. They list `explain`, `backup`, `restore`, `lsp`, and `serve` as v0.1 commands (`docs/cli.md:1`). `explain` is positioned as saved-path diagnostic/admin plus name explanation, with classification shared with `data integrity` and name resolution shared with the resolver (`docs/cli.md:273`). `data` is a typed inspection and repair-tooling boundary, not raw backend access and not backup/restore (`docs/cli.md:306`). Backup/restore are typed artifacts and empty-target transactional loads (`docs/cli.md:400`, `docs/cli.md:434`). LSP is standard JSON-RPC framing (`docs/cli.md:470`). Serve is loopback TCP JSON and debug/admin only (`docs/cli.md:483`).
+The CLI docs now match that product boundary. Saved-path and name explanation
+live under `marrow debug explain`, with classification shared with `data
+integrity` and name resolution shared with the resolver. `data` is a typed
+inspection and repair-tooling boundary, not raw backend access and not
+backup/restore. Backup/restore are typed artifacts and empty-target
+transactional loads. LSP is standard JSON-RPC framing. Serve is loopback TCP JSON
+and debug/admin only.
 
-The dedicated docs sharpen the same rule. Data tools must not define a second semantic model or expose raw store keys/backend APIs as production APIs (`docs/data-tools.md:3`). They read through checked source, accepted catalog, and typed tree-cell APIs (`docs/data-tools.md:10`) and should page large results with opaque cursors (`docs/data-tools.md:14`). Serve operations are intentionally named `debug_data_*`, read through checked source/catalog/tree-cell APIs, and are not production app server/sync/backup/raw saved-path surfaces (`docs/serve-protocol.md:3`). Per-connection snapshots, stale catalog epoch detection, capped child/walk limits, and session cursors are part of that contract (`docs/serve-protocol.md:53`, `docs/serve-protocol.md:124`, `docs/serve-protocol.md:178`). LSP is a minimal diagnostics server using checker facts or parse fallback (`docs/lsp.md:3`, `docs/lsp.md:20`), but it currently documents an intentional UTF-16 gap for astral characters (`docs/lsp.md:77`).
+The dedicated docs sharpen the same rule. Data tools must not define a second
+semantic model or expose raw store keys/backend APIs as production APIs
+(`docs/data-tools.md:3`). They read through checked source, accepted catalog, and
+typed tree-cell APIs (`docs/data-tools.md:10`) and should page large results with
+opaque cursors (`docs/data-tools.md:14`). Serve operations are intentionally named
+`debug_data_*`, read through checked source/catalog/tree-cell APIs, and are not
+production app server/sync/backup/raw saved-path surfaces
+(`docs/serve-protocol.md:3`). Per-connection snapshots, stale catalog epoch
+detection, capped child/walk limits, and session cursors are part of that
+contract (`docs/serve-protocol.md:53`, `docs/serve-protocol.md:124`,
+`docs/serve-protocol.md:178`). LSP is a minimal diagnostics server using checker
+facts or parse fallback, and Lane 16 fixed its default diagnostic coordinates to
+UTF-16 code units.
 
-The lane doc is stale and should not be treated as status truth. It still describes the code phase as blocked on earlier lane work (`docs/roadmap/lanes/lane-10-tooling-backup-protocols.md:14`), while `origin/main` contains Lane 10 backup/tooling commits. Its architectural criteria are still useful: all tooling must consume shared facts, raw protocols must be debug/admin-only, data previews must be bounded snapshot reads, continuations must be catalog-epoch/snapshot bound, and there is no production bridge for protocols (`docs/roadmap/lanes/lane-10-tooling-backup-protocols.md:1`, `docs/roadmap/lanes/lane-10-tooling-backup-protocols.md:180`, `docs/roadmap/lanes/lane-10-tooling-backup-protocols.md:203`).
+The lane doc is historical design context, not active status truth. Its
+architectural criteria are still useful: all tooling must consume shared facts,
+raw protocols must be debug/admin-only, data previews must be bounded snapshot
+reads, continuations must be catalog-epoch/snapshot bound, and there is no
+production bridge for protocols.
 
 The accepted ADRs agree. The tools ADR says every CLI/LSP/DAP/MCP/backup/restore/repair/server surface should render shared analysis facts, and missing facts belong in the compiler, not tool-local schema logic (`/Users/scottwilliams/Dev/marrow-decisions/adr/tooling/01-tools-render-facts-typed-protocols.md:17`, `/Users/scottwilliams/Dev/marrow-decisions/adr/tooling/01-tools-render-facts-typed-protocols.md:63`). Stable surfaces must be versioned, typed, cancelable where needed, and catalog-epoch bound (`/Users/scottwilliams/Dev/marrow-decisions/adr/tooling/01-tools-render-facts-typed-protocols.md:30`). Raw keys, backend bytes, and saved-store paths are debug/admin only (`/Users/scottwilliams/Dev/marrow-decisions/adr/tooling/01-tools-render-facts-typed-protocols.md:45`). The product-scope ADR makes Marrow a SQLite-like local embedded durable app language, not a server/database product (`/Users/scottwilliams/Dev/marrow-decisions/adr/foundations/02-product-target-and-v1-scope.md:19`, `/Users/scottwilliams/Dev/marrow-decisions/adr/foundations/02-product-target-and-v1-scope.md:33`). The unstaged ADR edits strengthen the same conclusion by adding a source-owned access-path law and rejecting lower-layer cost-based plan choice (`/Users/scottwilliams/Dev/marrow-decisions/adr/foundations/01-architecture-laws-and-five-layers.md:56`, `/Users/scottwilliams/Dev/marrow-decisions/adr/storage-engine/02-transactions-commits-and-recovery.md:28`).
 
@@ -120,7 +142,9 @@ orphaned managed cells before commit.
 
 Checksum overclaim risk. The backup archive checksum is suitable for accidental corruption detection, not adversarial tamper resistance. Do not build security claims on the archive checksum.
 
-CLI product sprawl. The v0.1 CLI already lists check, evolve, fmt, run, test, data, explain, backup, restore, lsp, and serve. Every new subcommand must justify why it is a view over existing facts rather than a new product surface.
+CLI product sprawl. The v0.1 CLI already lists check, evolve, fmt, run, test,
+data, debug explain, backup, restore, lsp, and serve. Every new subcommand must
+justify why it is a view over existing facts rather than a new product surface.
 
 ## 7. Concrete Follow-Up Recommendations Ordered By Foundation Risk
 
