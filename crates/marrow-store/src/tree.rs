@@ -77,6 +77,7 @@ pub struct CommitMetadata {
     pub changed_index_catalog_ids: Vec<CatalogId>,
     pub activation_evolution_digest: String,
     pub activation_proposal_catalog_digest: Option<String>,
+    pub activation_proposal_new_catalog_ids: Vec<CatalogId>,
     pub activation_records_backfilled: u64,
     pub activation_default_records_by_id: Vec<ActivationDefaultRecordCount>,
     pub activation_indexes_rebuilt: u64,
@@ -1669,6 +1670,7 @@ fn encode_commit_metadata(metadata: &CommitMetadata) -> Result<Vec<u8>, StoreErr
     )?;
     put_retire_counts(&metadata.activation_records_retired_by_id, &mut bytes)?;
     put_default_counts(&metadata.activation_default_records_by_id, &mut bytes)?;
+    put_catalog_ids(&metadata.activation_proposal_new_catalog_ids, &mut bytes)?;
     Ok(bytes)
 }
 
@@ -1681,50 +1683,18 @@ fn decode_commit_metadata(bytes: &[u8]) -> Result<CommitMetadata, StoreError> {
     let engine_profile_digest = cursor.take_digest()?;
     let changed_root_catalog_ids = cursor.take_catalog_ids()?;
     let changed_index_catalog_ids = cursor.take_catalog_ids()?;
-    let (
-        activation_evolution_digest,
-        activation_proposal_catalog_digest,
-        activation_records_backfilled,
-        activation_default_records_by_id,
-        activation_indexes_rebuilt,
-        activation_records_retired,
-        activation_records_transformed,
-        activation_retire_evidence_digest,
-        activation_records_retired_by_id,
-    ) = if cursor.is_empty() {
-        (
-            String::new(),
-            None,
-            0,
-            Vec::new(),
-            0,
-            0,
-            0,
-            String::new(),
-            Vec::new(),
-        )
-    } else {
-        let evolution_digest = cursor.take_string()?;
-        let proposal_digest = cursor.take_string()?;
-        let activation_records_backfilled = cursor.take_u64()?;
-        let activation_indexes_rebuilt = cursor.take_u64()?;
-        let activation_records_retired = cursor.take_u64()?;
-        let activation_records_transformed = cursor.take_u64()?;
-        let activation_retire_evidence_digest = cursor.take_string()?;
-        let activation_records_retired_by_id = cursor.take_retire_counts()?;
-        let activation_default_records_by_id = cursor.take_default_counts()?;
-        (
-            evolution_digest,
-            (!proposal_digest.is_empty()).then_some(proposal_digest),
-            activation_records_backfilled,
-            activation_default_records_by_id,
-            activation_indexes_rebuilt,
-            activation_records_retired,
-            activation_records_transformed,
-            activation_retire_evidence_digest,
-            activation_records_retired_by_id,
-        )
-    };
+    let activation_evolution_digest = cursor.take_string()?;
+    let proposal_digest = cursor.take_string()?;
+    let activation_records_backfilled = cursor.take_u64()?;
+    let activation_indexes_rebuilt = cursor.take_u64()?;
+    let activation_records_retired = cursor.take_u64()?;
+    let activation_records_transformed = cursor.take_u64()?;
+    let activation_retire_evidence_digest = cursor.take_string()?;
+    let activation_records_retired_by_id = cursor.take_retire_counts()?;
+    let activation_default_records_by_id = cursor.take_default_counts()?;
+    let activation_proposal_new_catalog_ids = cursor.take_catalog_ids()?;
+    let activation_proposal_catalog_digest =
+        (!proposal_digest.is_empty()).then_some(proposal_digest);
     if !cursor.is_empty() {
         return Err(corrupt_cell(bytes));
     }
@@ -1738,6 +1708,7 @@ fn decode_commit_metadata(bytes: &[u8]) -> Result<CommitMetadata, StoreError> {
         changed_index_catalog_ids,
         activation_evolution_digest,
         activation_proposal_catalog_digest,
+        activation_proposal_new_catalog_ids,
         activation_records_backfilled,
         activation_default_records_by_id,
         activation_indexes_rebuilt,
@@ -2173,6 +2144,10 @@ mod tests {
                 "sha256:00000000000000000000000000000000000000000000000000000000c001d00d"
                     .to_string(),
             ),
+            activation_proposal_new_catalog_ids: vec![
+                catalog("cat_00000000000000000000000000000005"),
+                catalog("cat_00000000000000000000000000000006"),
+            ],
             activation_records_backfilled: 2,
             activation_default_records_by_id: vec![ActivationDefaultRecordCount {
                 catalog_id: catalog("cat_00000000000000000000000000000005"),
@@ -2221,6 +2196,9 @@ mod tests {
             changed_index_catalog_ids: Vec::new(),
             activation_evolution_digest: "fnv1a64:00000000feedface".to_string(),
             activation_proposal_catalog_digest: Some("fnv1a64:00000000c001d00d".to_string()),
+            activation_proposal_new_catalog_ids: vec![catalog(
+                "cat_00000000000000000000000000000005",
+            )],
             activation_records_backfilled: 0,
             activation_default_records_by_id: Vec::new(),
             activation_indexes_rebuilt: 0,

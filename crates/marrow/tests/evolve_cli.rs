@@ -141,7 +141,7 @@ fn read_scalar_by_catalog_id(
     member_id: &str,
     ty: ScalarType,
 ) -> Option<Scalar> {
-    let store_id = CatalogId::new(place.store_catalog_id.clone()).expect("store catalog id");
+    let store_id = store_catalog_id(place);
     store
         .read_data_value(
             &store_id,
@@ -312,7 +312,7 @@ fn evolve_apply_backfills_proposal_required_default_before_accepting_catalog() {
     assert!(stdout.contains("records backfilled: 2"), "{stdout}");
 
     let catalog_epoch = accepted_catalog(&root).epoch;
-    let pages_id = accepted_catalog_id(&root, "books::Book::pages");
+    let pages_id = accepted_catalog_entry_id(&root, "books::Book::pages");
     let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
     for id in [1, 2] {
         assert_eq!(
@@ -354,7 +354,7 @@ fn evolve_apply_resumes_proposal_default_after_store_commit() {
     let first = marrow(&["evolve", "apply", root.to_str().unwrap()]);
     assert_eq!(first.status.code(), Some(0), "{first:?}");
     assert_eq!(store_epoch(&root), Some(baseline_epoch + 1));
-    let pages_id = accepted_catalog_id(&root, "books::Book::pages");
+    let pages_id = accepted_catalog_entry_id(&root, "books::Book::pages");
 
     fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
     assert_eq!(accepted_catalog(&root).epoch, baseline_epoch);
@@ -414,7 +414,7 @@ fn evolve_apply_resumes_existing_optional_default_with_preserved_value() {
         "resume completes: {resume:?}"
     );
     let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
-    let pages_id = accepted_catalog_id(&root, "books::Book::pages");
+    let pages_id = accepted_catalog_entry_id(&root, "books::Book::pages");
     let preserved =
         read_scalar_by_catalog_id(&store, &accepted_place, 1, &pages_id, ScalarType::Int);
     let defaulted =
@@ -453,7 +453,7 @@ fn evolve_apply_resumes_redundant_existing_optional_default_without_backfill() {
 
     let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
     let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
-    let pages_id = accepted_catalog_id(&root, "books::Book::pages");
+    let pages_id = accepted_catalog_entry_id(&root, "books::Book::pages");
     let first_pages =
         read_scalar_by_catalog_id(&store, &accepted_place, 1, &pages_id, ScalarType::Int);
     let second_pages =
@@ -476,7 +476,7 @@ fn evolve_apply_resumes_proposal_transform_after_store_commit() {
     let accepted_place = root_place(&accepted, "books");
     {
         let store = open_native_store(&root);
-        let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+        let store_id = store_catalog_id(&accepted_place);
         store
             .write_node(&store_id, &[SavedKey::Int(1)])
             .expect("write record");
@@ -489,7 +489,7 @@ fn evolve_apply_resumes_proposal_transform_after_store_commit() {
 
     let first = marrow(&["evolve", "apply", root.to_str().unwrap()]);
     assert_eq!(first.status.code(), Some(0), "{first:?}");
-    let price_cents_id = accepted_catalog_id(&root, "books::Book::priceCents");
+    let price_cents_id = accepted_catalog_entry_id(&root, "books::Book::priceCents");
 
     fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
     let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
@@ -661,7 +661,7 @@ fn accepted_catalog(root: &Path) -> marrow_project::CatalogMetadata {
     marrow_project::CatalogMetadata::from_json(&json).expect("parse accepted catalog")
 }
 
-fn accepted_catalog_id(root: &Path, path: &str) -> String {
+fn accepted_catalog_entry_id(root: &Path, path: &str) -> String {
     accepted_catalog(root)
         .entries
         .into_iter()

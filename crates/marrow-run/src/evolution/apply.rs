@@ -2,7 +2,7 @@
 
 use marrow_check::evolution::{EvolutionWitness, Verdict};
 use marrow_check::{
-    CatalogEntryKind, CatalogLifecycle, CheckedProgram, CheckedRuntimeProgram, CheckedSavedMember,
+    CatalogEntryKind, CheckedProgram, CheckedRuntimeProgram, CheckedSavedMember,
     CheckedSavedMemberKind, CheckedSavedPlace, StoreLeafKind, checked_activation_root_places,
 };
 use marrow_store::StoreError;
@@ -18,6 +18,7 @@ use super::backfill::{
     stage_retire_deletes,
 };
 use super::evidence::retire_evidence_digest;
+use super::lifecycle::retired_proposal_ids;
 use super::transform::{TransformStage, stage_transform};
 use super::validate::{assert_commit_pin, validate_witness};
 use super::window::{
@@ -54,6 +55,7 @@ pub struct ActivationReceipt {
     pub evolution_digest: String,
     pub accepted_catalog_digest: String,
     pub proposal_catalog_digest: Option<String>,
+    pub proposal_new_catalog_ids: Vec<CatalogId>,
     pub store_commit_id_before: Option<u64>,
     pub changed_root_catalog_ids: Vec<CatalogId>,
     pub changed_index_catalog_ids: Vec<CatalogId>,
@@ -207,6 +209,7 @@ pub fn apply(
             staged.records_retired as u64,
             &retire_counts_u64(&retire_counts)?,
         );
+        let proposal_new_catalog_ids = proposal_new_catalog_ids(program);
         return Ok(ApplyOutcome {
             committed_commit_id,
             catalog_epoch: target_epoch,
@@ -220,6 +223,7 @@ pub fn apply(
                 target_epoch,
                 &staged,
                 &retire_counts,
+                proposal_new_catalog_ids,
                 retire_digest,
             ),
         });
@@ -228,6 +232,7 @@ pub fn apply(
     let commit_id = witness.store_commit_id.unwrap_or(0) + 1;
     let retire_receipt_counts = retire_receipt_counts(program, &destructive_retire_counts)?;
     let retire_receipt_counts_u64 = retire_counts_u64(&retire_receipt_counts)?;
+    let proposal_new_catalog_ids = proposal_new_catalog_ids(program);
     let retire_digest = retire_evidence_digest(
         commit_id,
         staged.records_retired as u64,
@@ -245,6 +250,7 @@ pub fn apply(
                 .proposal_catalog
                 .as_ref()
                 .map(|catalog| catalog.digest.clone()),
+            proposal_new_catalog_ids: proposal_new_catalog_ids.clone(),
             records_backfilled: staged.records_backfilled as u64,
             default_records_by_id: staged.default_records_by_id.clone(),
             indexes_rebuilt: staged.indexes_rebuilt as u64,
@@ -269,9 +275,28 @@ pub fn apply(
             target_epoch,
             &staged,
             &retire_receipt_counts,
+            proposal_new_catalog_ids,
             retire_digest,
         ),
     })
+}
+
+fn proposal_new_catalog_ids(program: &CheckedProgram) -> Vec<CatalogId> {
+    let accepted: std::collections::HashSet<_> = program
+        .catalog
+        .accepted_entries
+        .iter()
+        .map(|entry| entry.stable_id.as_str())
+        .collect();
+    program
+        .catalog
+        .proposal
+        .as_ref()
+        .into_iter()
+        .flat_map(|catalog| catalog.entries.iter())
+        .filter(|entry| !accepted.contains(entry.stable_id.as_str()))
+        .filter_map(|entry| CatalogId::new(entry.stable_id.clone()).ok())
+        .collect()
 }
 
 fn retire_receipt_counts(
@@ -304,42 +329,7 @@ fn retire_counts_u64(counts: &[(CatalogId, usize)]) -> Result<Vec<(CatalogId, u6
 }
 
 fn retired_resource_member_ids(program: &CheckedProgram) -> Result<Vec<CatalogId>, ApplyError> {
-    let mut ids = Vec::new();
-    let Some(proposal) = &program.catalog.proposal else {
-        return Ok(ids);
-    };
-    for entry in &proposal.entries {
-        if entry.kind == CatalogEntryKind::ResourceMember
-            && retired_this_proposal(
-                program,
-                entry.stable_id.as_str(),
-                entry.lifecycle,
-                CatalogEntryKind::ResourceMember,
-            )
-        {
-            ids.push(CatalogId::new(entry.stable_id.clone()).map_err(|_| {
-                ApplyError::Store(StoreError::Corruption {
-                    message: "evolution apply saw an invalid retired member catalog id".to_string(),
-                })
-            })?);
-        }
-    }
-    Ok(ids)
-}
-
-fn retired_this_proposal(
-    program: &CheckedProgram,
-    stable_id: &str,
-    lifecycle: CatalogLifecycle,
-    kind: CatalogEntryKind,
-) -> bool {
-    lifecycle == CatalogLifecycle::Reserved
-        && program.catalog.proposal.is_some()
-        && program.catalog.accepted_entries.iter().any(|accepted| {
-            accepted.kind == kind
-                && accepted.stable_id == stable_id
-                && accepted.lifecycle == CatalogLifecycle::Active
-        })
+    retired_proposal_ids(program, marrow_check::CatalogEntryKind::ResourceMember)
 }
 
 fn stage_redundant_default_receipts(
@@ -369,6 +359,7 @@ fn activation_receipt(
     catalog_epoch: u64,
     staged: &StagedWork,
     retire_counts: &[(CatalogId, usize)],
+    proposal_new_catalog_ids: Vec<CatalogId>,
     retire_evidence_digest: String,
 ) -> ActivationReceipt {
     ActivationReceipt {
@@ -381,6 +372,7 @@ fn activation_receipt(
             .proposal_catalog
             .as_ref()
             .map(|catalog| catalog.digest.clone()),
+        proposal_new_catalog_ids,
         store_commit_id_before: witness.store_commit_id,
         changed_root_catalog_ids: witness.changed_root_catalog_ids.clone(),
         changed_index_catalog_ids: witness.changed_index_catalog_ids.clone(),

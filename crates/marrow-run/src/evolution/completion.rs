@@ -13,8 +13,8 @@ mod retire;
 mod transform;
 mod verdict;
 
+use marrow_check::CheckedProgram;
 use marrow_check::evolution::preview;
-use marrow_check::{CatalogEntryKind, CatalogLifecycle, CheckedProgram};
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::tree::{CommitMetadata, TreeStore};
@@ -62,36 +62,6 @@ fn catalog_id(raw: &str) -> Result<CatalogId, ApplyError> {
             message: "activation completion saw an invalid catalog id".to_string(),
         })
     })
-}
-
-fn retired_ids(program: &CheckedProgram, kind: CatalogEntryKind) -> Vec<CatalogId> {
-    program
-        .catalog
-        .proposal
-        .as_ref()
-        .into_iter()
-        .flat_map(|proposal| proposal.entries.iter())
-        .filter(|entry| {
-            entry.kind == kind
-                && retired_this_proposal(program, entry.stable_id.as_str(), entry.lifecycle, kind)
-        })
-        .filter_map(|entry| CatalogId::new(entry.stable_id.clone()).ok())
-        .collect()
-}
-
-fn retired_this_proposal(
-    program: &CheckedProgram,
-    stable_id: &str,
-    lifecycle: CatalogLifecycle,
-    kind: CatalogEntryKind,
-) -> bool {
-    lifecycle == CatalogLifecycle::Reserved
-        && program.catalog.proposal.is_some()
-        && program.catalog.accepted_entries.iter().any(|accepted| {
-            accepted.kind == kind
-                && accepted.stable_id == stable_id
-                && accepted.lifecycle == CatalogLifecycle::Active
-        })
 }
 
 fn incomplete() -> StoreError {

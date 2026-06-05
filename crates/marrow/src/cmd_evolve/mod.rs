@@ -202,11 +202,22 @@ fn resume_completion(
         report_resume_drift(format);
         return Err(ExitCode::FAILURE);
     };
+    let Ok(program) = marrow_check::evolution::rebind_activation_resume_program(
+        program,
+        &commit.activation_proposal_new_catalog_ids,
+    ) else {
+        report_resume_drift(format);
+        return Err(ExitCode::FAILURE);
+    };
+    let Some(proposal) = &program.catalog.proposal else {
+        report_resume_drift(format);
+        return Err(ExitCode::FAILURE);
+    };
     if commit.activation_proposal_catalog_digest.as_deref() != Some(proposal.digest.as_str()) {
         report_resume_drift(format);
         return Err(ExitCode::FAILURE);
     }
-    if verify_activation_completion(program, store, &commit).is_err() {
+    if verify_activation_completion(&program, store, &commit).is_err() {
         report_resume_drift(format);
         return Err(ExitCode::FAILURE);
     }

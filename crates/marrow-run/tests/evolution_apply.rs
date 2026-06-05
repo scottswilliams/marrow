@@ -337,7 +337,11 @@ fn proposal_required_default_backfills_before_catalog_acceptance() {
     );
     assert_eq!(outcome.receipt.records_backfilled, 2);
 
-    let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(
+        &accepted_place.store_catalog_id,
+        "store",
+    ))
+    .unwrap();
     let int = marrow_store::value::ScalarType::Int;
     assert_eq!(
         read_scalar(&store, &store_id, 1, &pages_id, int),
@@ -403,7 +407,7 @@ fn completion_rejects_forged_default_receipt_digest() {
 fn completion_rejects_missing_default_backfill_cell() {
     let (root, program, place, store, pages_id) =
         applied_proposal_default_fixture("completion-default-missing-cell", 2);
-    let store_id = CatalogId::new(place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
     store
         .delete_data_subtree(
             &store_id,
@@ -503,7 +507,11 @@ fn proposal_required_default_rejects_preexisting_target_data() {
     );
     let program = checked(&root);
     let pages_id = proposal_catalog_id(&program, "books::Book::pages");
-    let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(
+        &accepted_place.store_catalog_id,
+        "store",
+    ))
+    .unwrap();
     store
         .write_data_value(
             &store_id,
@@ -580,7 +588,11 @@ fn proposal_transform_writes_target_before_catalog_acceptance() {
     assert_eq!(outcome.records_transformed, 2);
     assert_eq!(outcome.receipt.records_transformed, 2);
 
-    let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(
+        &accepted_place.store_catalog_id,
+        "store",
+    ))
+    .unwrap();
     let int = marrow_store::value::ScalarType::Int;
     assert_eq!(
         read_scalar(&store, &store_id, 1, &cents_id, int),
@@ -638,7 +650,11 @@ fn completion_rejects_missing_transform_cell() {
         .expect("priceCents id");
     apply(&witness(&program, &store), &program, &store, false, None).expect("apply");
 
-    let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(
+        &accepted_place.store_catalog_id,
+        "store",
+    ))
+    .unwrap();
     store
         .delete_data_subtree(
             &store_id,
@@ -1039,8 +1055,13 @@ fn proposal_default_backfills_every_store_using_the_resource() {
     assert_eq!(outcome.records_backfilled, 2);
 
     let int = marrow_store::value::ScalarType::Int;
-    let books_store_id = CatalogId::new(books_place.store_catalog_id.clone()).unwrap();
-    let archives_store_id = CatalogId::new(archives_place.store_catalog_id.clone()).unwrap();
+    let books_store_id =
+        CatalogId::new(accepted_catalog_id(&books_place.store_catalog_id, "books")).unwrap();
+    let archives_store_id = CatalogId::new(accepted_catalog_id(
+        &archives_place.store_catalog_id,
+        "archives",
+    ))
+    .unwrap();
     assert_eq!(
         read_scalar(&store, &books_store_id, 1, &pages_id, int),
         Some(Scalar::Int(0))
@@ -1109,8 +1130,13 @@ fn proposal_transform_updates_every_store_using_the_resource() {
     assert_eq!(outcome.records_transformed, 2);
 
     let int = marrow_store::value::ScalarType::Int;
-    let books_store_id = CatalogId::new(books_place.store_catalog_id.clone()).unwrap();
-    let archives_store_id = CatalogId::new(archives_place.store_catalog_id.clone()).unwrap();
+    let books_store_id =
+        CatalogId::new(accepted_catalog_id(&books_place.store_catalog_id, "books")).unwrap();
+    let archives_store_id = CatalogId::new(accepted_catalog_id(
+        &archives_place.store_catalog_id,
+        "archives",
+    ))
+    .unwrap();
     assert_eq!(
         read_scalar(&store, &books_store_id, 1, &cents_id, int),
         Some(Scalar::Int(300))
@@ -1319,7 +1345,11 @@ fn completion_fails_when_no_effect_resume_recomputes_repair_required() {
     assert_eq!(outcome.indexes_rebuilt, 0);
     assert_eq!(outcome.records_retired, 0);
 
-    let store_id = CatalogId::new(accepted_place.store_catalog_id.clone()).unwrap();
+    let store_id = CatalogId::new(accepted_catalog_id(
+        &accepted_place.store_catalog_id,
+        "store",
+    ))
+    .unwrap();
     let title_id = CatalogId::new(member_catalog_id(&accepted_place, "title")).unwrap();
     store
         .delete_data_subtree(

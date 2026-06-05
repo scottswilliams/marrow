@@ -372,9 +372,9 @@ rebuilds them from the data. Restore validates that binding and the data against
 the schema, in one transaction, into an empty store. Backups are deterministic
 and portable across conforming backends at the same layout and codec, but byte
 identity requires matching accepted catalog facts, engine profile, value codec,
-and stored data. Proposed IDs are deterministic; accepted IDs remain frozen, so
-divergent catalog histories may still encode equivalent-looking source with
-distinct accepted IDs.
+and stored data. Stable IDs are random opaque values that freeze when accepted,
+so divergent catalog histories may still freeze distinct accepted IDs for source
+that looks equivalent.
 
 ## Also Deferred
 

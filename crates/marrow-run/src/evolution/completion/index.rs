@@ -10,7 +10,8 @@ use crate::write_plan::PlanStep;
 
 use super::super::apply::{ApplyError, for_each_place_record};
 use super::super::evidence::{EvidenceDigest, EvidenceSetDigest};
-use super::{catalog_id, retired_ids};
+use super::super::lifecycle::retired_proposal_ids;
+use super::catalog_id;
 
 pub(super) fn verify_index_completion(
     program: &CheckedProgram,
@@ -27,7 +28,7 @@ pub(super) fn verify_index_completion(
             return Err(ApplyError::Drift);
         }
     }
-    for index_id in retired_ids(program, CatalogEntryKind::StoreIndex) {
+    for index_id in retired_proposal_ids(program, CatalogEntryKind::StoreIndex)? {
         if !index_is_empty(store, &index_id)? {
             return Err(ApplyError::Drift);
         }

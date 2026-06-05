@@ -3,6 +3,7 @@ use std::io::Read;
 use std::path::Path;
 
 use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
+use marrow_store::cell::CatalogId;
 use marrow_syntax::{Severity, SourceSpan};
 
 use crate::evolution::leaf_type;
@@ -344,6 +345,130 @@ pub(crate) fn active_proposal_id_map(program: &CheckedProgram) -> HashMap<Catalo
         .as_ref()
         .map(|proposal| proposal_id_map(&proposal.entries))
         .unwrap_or_default()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActivationResumeRebindError {
+    MissingProposal,
+    ProposalIdCountMismatch,
+}
+
+pub(crate) fn rebind_activation_resume_program(
+    program: &CheckedProgram,
+    proposal_ids: &[CatalogId],
+) -> Result<CheckedProgram, ActivationResumeRebindError> {
+    let current_proposal = program
+        .catalog
+        .proposal
+        .clone()
+        .ok_or(ActivationResumeRebindError::MissingProposal)?;
+    let current_entries = current_proposal.entries.clone();
+    let accepted_ids: HashSet<_> = program
+        .catalog
+        .accepted_entries
+        .iter()
+        .map(|entry| entry.stable_id.as_str())
+        .collect();
+    let mut entries = current_proposal.entries;
+    let mut proposal_ids = proposal_ids.iter();
+    for entry in &mut entries {
+        if !accepted_ids.contains(entry.stable_id.as_str()) {
+            entry.stable_id = proposal_ids
+                .next()
+                .ok_or(ActivationResumeRebindError::ProposalIdCountMismatch)?
+                .as_str()
+                .to_string();
+        }
+    }
+    if proposal_ids.next().is_some() {
+        return Err(ActivationResumeRebindError::ProposalIdCountMismatch);
+    }
+
+    let replacement_ids = proposal_id_map(&entries);
+    let accepted = CatalogMetadata::new(
+        program.catalog.accepted_epoch.unwrap_or_default(),
+        program.catalog.accepted_entries.clone(),
+    );
+    record_store_key_shapes(program, &mut entries, &replacement_ids, Some(&accepted));
+    record_member_structs(program, &mut entries, &replacement_ids, Some(&accepted));
+    let proposal = CatalogMetadata::new(current_proposal.epoch, entries);
+    let replacement_ids = proposal_id_map(&proposal.entries);
+    let current_paths = active_id_paths(&current_entries);
+
+    let mut rebound = program.clone();
+    rebound.catalog.evolve_defaults = rebound
+        .catalog
+        .evolve_defaults
+        .iter()
+        .map(|default| {
+            let mut rebound_default = default.clone();
+            rebound_default.catalog_id = rebind_catalog_id(
+                CatalogEntryKind::ResourceMember,
+                &default.catalog_id,
+                &current_paths,
+                &replacement_ids,
+            );
+            rebound_default
+        })
+        .collect();
+    rebound.catalog.evolve_transforms = rebound
+        .catalog
+        .evolve_transforms
+        .iter()
+        .map(|transform| {
+            let mut rebound_transform = transform.clone();
+            rebound_transform.catalog_id =
+                member_target_id(&transform.target_path, &replacement_ids).or_else(|| {
+                    transform.catalog_id.as_deref().map(|catalog_id| {
+                        rebind_catalog_id(
+                            CatalogEntryKind::ResourceMember,
+                            catalog_id,
+                            &current_paths,
+                            &replacement_ids,
+                        )
+                    })
+                });
+            rebound_transform.reads = transform
+                .reads
+                .iter()
+                .map(|read| {
+                    rebind_catalog_id(
+                        CatalogEntryKind::ResourceMember,
+                        read,
+                        &current_paths,
+                        &replacement_ids,
+                    )
+                })
+                .collect();
+            rebound_transform
+        })
+        .collect();
+    rebound.catalog.proposal = Some(proposal);
+    rebound.catalog.declared_store_key_shapes =
+        declared_store_key_shapes(&rebound, &replacement_ids);
+    rebound.catalog.declared_member_structs = declared_member_structs(&rebound, &replacement_ids);
+    Ok(rebound)
+}
+
+fn active_id_paths(entries: &[CatalogEntry]) -> HashMap<(CatalogEntryKind, String), String> {
+    entries
+        .iter()
+        .filter(|entry| entry.lifecycle == CatalogLifecycle::Active)
+        .map(|entry| ((entry.kind, entry.stable_id.clone()), entry.path.clone()))
+        .collect()
+}
+
+fn rebind_catalog_id(
+    kind: CatalogEntryKind,
+    stable_id: &str,
+    current_paths: &HashMap<(CatalogEntryKind, String), String>,
+    replacement_ids: &HashMap<CatalogKey, String>,
+) -> String {
+    current_paths
+        .get(&(kind, stable_id.to_string()))
+        .and_then(|path| replacement_ids.get(&CatalogKey::new(kind, path.clone())))
+        .cloned()
+        .unwrap_or_else(|| stable_id.to_string())
 }
 
 /// The stable id a member-target evolve path binds to, or `None` when it names no

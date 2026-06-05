@@ -61,9 +61,25 @@ pub(crate) fn count_integrity_problems(
     store: &TreeStore,
     program: &CheckedProgram,
 ) -> Result<(usize, usize), StoreError> {
+    visit_integrity_counts(store, program, None)
+}
+
+pub(crate) fn count_activation_integrity_problems(
+    store: &TreeStore,
+    program: &CheckedProgram,
+) -> Result<(usize, usize), StoreError> {
+    let places = marrow_check::checked_activation_root_places(program);
+    visit_integrity_counts(store, program, Some(&places))
+}
+
+fn visit_integrity_counts(
+    store: &TreeStore,
+    program: &CheckedProgram,
+    places: Option<&[marrow_check::CheckedSavedPlace]>,
+) -> Result<(usize, usize), StoreError> {
     let mut problems = 0usize;
     let mut records = 0usize;
-    visit_integrity_problems(store, program, |outcome| {
+    visit_integrity_problems(store, program, places, |outcome| {
         if let Outcome::Record = outcome.kind {
             records += 1;
         }
@@ -97,24 +113,47 @@ struct IntegrityOutcome {
 fn visit_integrity_problems(
     store: &TreeStore,
     program: &CheckedProgram,
+    places: Option<&[marrow_check::CheckedSavedPlace]>,
     mut visit: impl FnMut(IntegrityOutcome) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
-    visit_data_records(program, store, |record| {
-        visit(IntegrityOutcome {
-            kind: Outcome::Record,
-            problem: check_record(program, &record),
-        })
-    })?;
-    super::orphan::visit_orphans(store, program, |orphan| {
-        visit(IntegrityOutcome {
-            kind: Outcome::StoredCell,
-            problem: Some(IntegrityProblem {
-                code: orphan.code,
-                path: orphan.path,
-                message: orphan.message,
-            }),
-        })
-    })
+    match places {
+        Some(places) => {
+            super::inspect::visit_data_records_in_places(places, store, |record| {
+                visit(IntegrityOutcome {
+                    kind: Outcome::Record,
+                    problem: check_record(program, &record),
+                })
+            })?;
+            super::orphan::visit_orphans_in_places(store, places, |orphan| {
+                visit(IntegrityOutcome {
+                    kind: Outcome::StoredCell,
+                    problem: Some(IntegrityProblem {
+                        code: orphan.code,
+                        path: orphan.path,
+                        message: orphan.message,
+                    }),
+                })
+            })
+        }
+        None => {
+            visit_data_records(program, store, |record| {
+                visit(IntegrityOutcome {
+                    kind: Outcome::Record,
+                    problem: check_record(program, &record),
+                })
+            })?;
+            super::orphan::visit_orphans(store, program, |orphan| {
+                visit(IntegrityOutcome {
+                    kind: Outcome::StoredCell,
+                    problem: Some(IntegrityProblem {
+                        code: orphan.code,
+                        path: orphan.path,
+                        message: orphan.message,
+                    }),
+                })
+            })
+        }
+    }
 }
 
 struct IntegrityProblem {
@@ -265,7 +304,7 @@ fn write_integrity_problems_text(
     store: &TreeStore,
     program: &CheckedProgram,
 ) -> Result<(), StoreError> {
-    visit_integrity_problems(store, program, |outcome| {
+    visit_integrity_problems(store, program, None, |outcome| {
         if let Some(problem) = outcome.problem {
             eprintln!("{}: {}: {}", problem.path, problem.code, problem.message);
         }
@@ -277,7 +316,7 @@ fn write_integrity_problems_jsonl(
     store: &TreeStore,
     program: &CheckedProgram,
 ) -> Result<(), StoreError> {
-    visit_integrity_problems(store, program, |outcome| {
+    visit_integrity_problems(store, program, None, |outcome| {
         if let Some(problem) = outcome.problem {
             write_json(integrity_record(&problem));
         }
@@ -297,7 +336,7 @@ fn write_integrity_json(
     serde_json::to_writer(&mut out, dir).expect("serialize project path");
     write!(out, ",\"records\":{records},\"problems\":[").expect("write integrity JSON");
     let mut first = true;
-    visit_integrity_problems(store, program, |outcome| {
+    visit_integrity_problems(store, program, None, |outcome| {
         if let Some(problem) = outcome.problem {
             if !first {
                 write!(out, ",").expect("write integrity JSON separator");

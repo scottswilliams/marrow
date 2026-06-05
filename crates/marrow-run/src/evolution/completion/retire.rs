@@ -5,7 +5,7 @@ use marrow_store::tree::{CommitMetadata, TreeStore};
 use super::super::apply::{ApplyError, StagedWork};
 use super::super::backfill::stage_retire_deletes;
 use super::super::evidence::retire_evidence_digest;
-use super::retired_ids;
+use super::super::lifecycle::retired_proposal_ids;
 
 pub(super) fn verify_retire_completion(
     program: &CheckedProgram,
@@ -13,7 +13,10 @@ pub(super) fn verify_retire_completion(
     commit: &CommitMetadata,
     places: &[CheckedSavedPlace],
 ) -> Result<(), ApplyError> {
-    let retired = sorted_catalog_ids(retired_ids(program, CatalogEntryKind::ResourceMember));
+    let retired = sorted_catalog_ids(retired_proposal_ids(
+        program,
+        CatalogEntryKind::ResourceMember,
+    )?);
     let expected = exact_retire_counts_u64(commit.activation_records_retired_by_id.clone())?;
     let recorded_ids: Vec<_> = expected.iter().map(|(id, _count)| id.clone()).collect();
     if recorded_ids != retired {

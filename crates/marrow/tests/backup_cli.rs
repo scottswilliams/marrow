@@ -65,6 +65,52 @@ fn seeded_project(name: &str) -> (PathBuf, PathBuf) {
     (root, data_dir)
 }
 
+fn evolution_default_project(name: &str) -> (PathBuf, PathBuf) {
+    let root = temp_project(name, |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "shelf::seed" } }"#,
+        );
+        write(
+            root,
+            "src/shelf.mw",
+            "module shelf\n\
+             \n\
+             resource Book at ^books(id: int)\n\
+             \x20\x20\x20\x20required title: string\n\
+             \n\
+             pub fn seed()\n\
+             \x20\x20\x20\x20transaction\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(1).title = \"Mort\"\n",
+        );
+    });
+    let data_dir = root.join(".data");
+    let seed = marrow(&["run", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed run: {seed:?}");
+    (root, data_dir)
+}
+
+fn add_pages_default_evolution(root: &Path) {
+    write(
+        root,
+        "src/shelf.mw",
+        "module shelf\n\
+         \n\
+         resource Book at ^books(id: int)\n\
+         \x20\x20\x20\x20required title: string\n\
+         \x20\x20\x20\x20required pages: int\n\
+         \n\
+         evolve\n\
+         \x20\x20\x20\x20default Book.pages = 0\n\
+         \n\
+         pub fn seed()\n\
+         \x20\x20\x20\x20transaction\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20^books(1).title = \"Mort\"\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20^books(1).pages = 0\n",
+    );
+}
+
 fn dump(root: &Path) -> String {
     let out = marrow(&["data", "dump", root.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(0), "data dump: {out:?}");
@@ -99,6 +145,47 @@ fn backup_then_restore_round_trips_saved_data() {
     let after = dump(&root);
     fs::remove_dir_all(&root).ok();
     assert_eq!(after, before, "restored data matches the original");
+}
+
+#[test]
+fn restore_crash_window_backup_then_evolve_resume_completes() {
+    let (root, data_dir) = evolution_default_project("backup-crash-window");
+    let dir = root.to_str().unwrap().to_string();
+    let archive = root.join("crash-window.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+    let baseline_catalog_json =
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
+
+    add_pages_default_evolution(&root);
+    let first = marrow(&["evolve", "apply", &dir]);
+    assert_eq!(
+        first.status.code(),
+        Some(0),
+        "first evolve apply: {first:?}"
+    );
+
+    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind catalog");
+    let backup = marrow(&["backup", &dir, &archive_arg]);
+    assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
+
+    fs::remove_dir_all(&data_dir).expect("remove store data");
+    let restore = marrow(&["restore", &dir, &archive_arg]);
+    assert_eq!(restore.status.code(), Some(0), "restore: {restore:?}");
+
+    let resume = marrow(&["evolve", "apply", &dir]);
+    assert_eq!(resume.status.code(), Some(0), "resume: {resume:?}");
+    let stdout = String::from_utf8(resume.stdout).expect("resume stdout utf8");
+    assert!(
+        stdout.contains("completed evolution"),
+        "resume publishes the restored proposal: {stdout}"
+    );
+
+    let after = dump(&root);
+    fs::remove_dir_all(&root).ok();
+    assert!(
+        after.contains("Mort") && after.contains('0'),
+        "restored data survives resume: {after}"
+    );
 }
 
 #[test]

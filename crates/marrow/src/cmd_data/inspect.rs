@@ -47,10 +47,18 @@ pub(crate) fn visit_data_records(
     store: &TreeStore,
     mut visit: impl FnMut(DataRecord) -> Result<(), StoreError>,
 ) -> Result<usize, StoreError> {
+    visit_data_records_in_places(&checked_places(program), store, &mut visit)
+}
+
+pub(crate) fn visit_data_records_in_places(
+    places: &[CheckedSavedPlace],
+    store: &TreeStore,
+    mut visit: impl FnMut(DataRecord) -> Result<(), StoreError>,
+) -> Result<usize, StoreError> {
     let mut records = 0usize;
-    for place in checked_places(program) {
+    for place in places {
         records = records
-            .checked_add(visit_place_records(&place, store, &mut visit)?)
+            .checked_add(visit_place_records(place, store, &mut visit)?)
             .ok_or(StoreError::LimitExceeded {
                 limit: "data record count",
             })?;

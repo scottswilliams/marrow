@@ -149,6 +149,7 @@ fn commit_to_json(commit: &CommitDescriptor) -> Value {
         "changed_index_catalog_ids": commit.changed_index_catalog_ids,
         "activation_evolution_digest": commit.activation_evolution_digest,
         "activation_proposal_catalog_digest": commit.activation_proposal_catalog_digest,
+        "activation_proposal_new_catalog_ids": commit.activation_proposal_new_catalog_ids,
         "activation_records_backfilled": commit.activation_records_backfilled,
         "activation_default_records_by_id": commit.activation_default_records_by_id.iter().map(|count| json!({
             "catalog_id": &count.catalog_id,
@@ -204,6 +205,10 @@ fn commit_from_json(value: &Value) -> Result<CommitDescriptor, BackupError> {
             "activation_proposal_catalog_digest",
         )?
         .filter(|digest| !digest.is_empty()),
+        activation_proposal_new_catalog_ids: str_array_field(
+            value,
+            "activation_proposal_new_catalog_ids",
+        )?,
         activation_records_backfilled: u64_field(value, "activation_records_backfilled")?,
         activation_default_records_by_id: default_counts_field(
             value,
@@ -361,9 +366,10 @@ mod tests {
             "changed_index_catalog_ids": [],
             "activation_evolution_digest": "fnv1a64:0000000000000002",
             "activation_proposal_catalog_digest": null,
+            "activation_proposal_new_catalog_ids": [],
             "activation_records_backfilled": 0,
             "activation_default_records_by_id": [{
-                "catalog_id": "cat_0000000000000001",
+                "catalog_id": "cat_00000000000000000000000000000001",
                 "records_backfilled": 1,
                 "target_records": 1
             }],
@@ -388,22 +394,36 @@ mod tests {
             commit_id: 9,
             catalog_epoch: 7,
             layout_epoch: 1,
-            source_digest: "fnv1a64:0000000000000001".to_string(),
+            source_digest:
+                "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+                    .to_string(),
             engine_profile_digest: [1, 2, 3, 4, 5, 6, 7, 8],
-            changed_root_catalog_ids: vec!["cat_0000000000000001".to_string()],
+            changed_root_catalog_ids: vec!["cat_00000000000000000000000000000001".to_string()],
             changed_index_catalog_ids: Vec::new(),
-            activation_evolution_digest: "fnv1a64:0000000000000002".to_string(),
-            activation_proposal_catalog_digest: Some("fnv1a64:0000000000000003".to_string()),
+            activation_evolution_digest:
+                "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+                    .to_string(),
+            activation_proposal_catalog_digest: Some(
+                "sha256:0000000000000000000000000000000000000000000000000000000000000003"
+                    .to_string(),
+            ),
+            activation_proposal_new_catalog_ids: vec![
+                "cat_00000000000000000000000000000007".to_string(),
+            ],
             activation_records_backfilled: 128,
             activation_default_records_by_id: vec![DefaultCountDescriptor {
-                catalog_id: "cat_0000000000000004".to_string(),
+                catalog_id: "cat_00000000000000000000000000000004".to_string(),
                 records_backfilled: 128,
                 target_records: 128,
-                evidence_digest: "fnv1a64:0000000000000005".to_string(),
+                evidence_digest:
+                    "sha256:0000000000000000000000000000000000000000000000000000000000000005"
+                        .to_string(),
             }],
             activation_indexes_rebuilt: 0,
             activation_records_retired: 0,
-            activation_retire_evidence_digest: "fnv1a64:0000000000000006".to_string(),
+            activation_retire_evidence_digest:
+                "sha256:0000000000000000000000000000000000000000000000000000000000000006"
+                    .to_string(),
             activation_records_retired_by_id: Vec::new(),
             activation_records_transformed: 0,
         };
@@ -421,7 +441,7 @@ mod tests {
         assert_eq!(counts.len(), 1);
         assert_eq!(
             counts[0]["evidence_digest"],
-            json!("fnv1a64:0000000000000005")
+            json!("sha256:0000000000000000000000000000000000000000000000000000000000000005")
         );
         assert_eq!(
             commit_from_json(&value).expect("parse evidence-only commit"),

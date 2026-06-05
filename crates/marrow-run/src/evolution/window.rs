@@ -39,6 +39,7 @@ pub(crate) struct StampFacts {
 pub(crate) struct ActivationStampFacts {
     pub(crate) evolution_digest: String,
     pub(crate) proposal_catalog_digest: Option<String>,
+    pub(crate) proposal_new_catalog_ids: Vec<CatalogId>,
     pub(crate) records_backfilled: u64,
     pub(crate) default_records_by_id: Vec<ActivationDefaultRecordCount>,
     pub(crate) indexes_rebuilt: u64,
@@ -70,6 +71,10 @@ pub(crate) fn metadata_stamp(facts: StampFacts) -> PlanStep {
         activation_proposal_catalog_digest: activation
             .as_ref()
             .and_then(|activation| activation.proposal_catalog_digest.clone()),
+        activation_proposal_new_catalog_ids: activation
+            .as_ref()
+            .map(|activation| activation.proposal_new_catalog_ids.clone())
+            .unwrap_or_default(),
         activation_records_backfilled: activation
             .as_ref()
             .map(|activation| activation.records_backfilled)

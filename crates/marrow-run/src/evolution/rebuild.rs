@@ -8,7 +8,7 @@
 //! maintained — and executes the writes against the store inside the caller's open
 //! transaction, leaving the commit to the caller.
 
-use marrow_check::{CheckedProgram, CheckedSavedPlace, checked_saved_root_place};
+use marrow_check::{CheckedProgram, CheckedSavedPlace, checked_activation_root_places};
 use marrow_store::cell::CatalogId;
 use marrow_store::tree::TreeStore;
 
@@ -41,18 +41,10 @@ pub fn rebuild_store_indexes(
 /// The saved places `program` declares that carry at least one index. A place with
 /// no index contributes no rebuild work.
 fn indexed_places(program: &CheckedProgram) -> Vec<CheckedSavedPlace> {
-    let mut places = Vec::new();
-    for module in &program.modules {
-        for store in &module.stores {
-            if let Some(place) = checked_saved_root_place(program, &store.root, Default::default())
-                && place.store_catalog_id.is_some()
-                && !place.indexes.is_empty()
-            {
-                places.push(place);
-            }
-        }
-    }
-    places
+    checked_activation_root_places(program)
+        .into_iter()
+        .filter(|place| !place.indexes.is_empty())
+        .collect()
 }
 
 /// Stage a full rebuild of every index on `place`: clear the index subtree, then

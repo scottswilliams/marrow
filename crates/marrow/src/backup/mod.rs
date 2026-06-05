@@ -9,10 +9,10 @@
 //! rebuilds them rather than replaying them.
 //!
 //! The cell stream is backend-independent: tree-cell keys derive from catalog stable
-//! IDs, and proposed IDs are generated deterministically before being frozen in the
-//! accepted catalog. Backups are deterministic and portable across conforming backends
-//! at the same layout and codec, but byte identity requires matching accepted catalog
-//! facts, engine profile, value codec, and stored data.
+//! IDs, and stable IDs are random opaque values that freeze when accepted. Backups are
+//! deterministic and portable across conforming backends at the same layout and codec,
+//! but byte identity requires matching accepted catalog facts, engine profile, value
+//! codec, and stored data.
 //!
 //! [`create`] writes a backup over a stable read snapshot; [`restore`] validates a
 //! backup against the project and replays it into an empty store in one
@@ -118,6 +118,7 @@ pub struct CommitDescriptor {
     pub changed_index_catalog_ids: Vec<String>,
     pub activation_evolution_digest: String,
     pub activation_proposal_catalog_digest: Option<String>,
+    pub activation_proposal_new_catalog_ids: Vec<String>,
     pub activation_records_backfilled: u64,
     pub activation_default_records_by_id: Vec<DefaultCountDescriptor>,
     pub activation_indexes_rebuilt: u64,
@@ -161,6 +162,11 @@ impl CommitDescriptor {
                 .collect(),
             activation_evolution_digest: metadata.activation_evolution_digest.clone(),
             activation_proposal_catalog_digest: metadata.activation_proposal_catalog_digest.clone(),
+            activation_proposal_new_catalog_ids: metadata
+                .activation_proposal_new_catalog_ids
+                .iter()
+                .map(|id| id.as_str().to_string())
+                .collect(),
             activation_records_backfilled: metadata.activation_records_backfilled,
             activation_default_records_by_id: metadata
                 .activation_default_records_by_id
@@ -200,6 +206,9 @@ impl CommitDescriptor {
             changed_index_catalog_ids: catalog_ids(&self.changed_index_catalog_ids)?,
             activation_evolution_digest: self.activation_evolution_digest.clone(),
             activation_proposal_catalog_digest: self.activation_proposal_catalog_digest.clone(),
+            activation_proposal_new_catalog_ids: catalog_ids(
+                &self.activation_proposal_new_catalog_ids,
+            )?,
             activation_records_backfilled: self.activation_records_backfilled,
             activation_default_records_by_id: default_counts(
                 &self.activation_default_records_by_id,
@@ -347,18 +356,30 @@ mod tests {
             commit_id: 12,
             catalog_epoch: 9,
             layout_epoch: 1,
-            source_digest: "fnv1a64:0000000000000001".to_string(),
+            source_digest:
+                "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+                    .to_string(),
             engine_profile_digest: [1, 3, 5, 7, 9, 11, 13, 15],
-            changed_root_catalog_ids: vec![catalog("cat_0000000000000001")],
+            changed_root_catalog_ids: vec![catalog("cat_00000000000000000000000000000001")],
             changed_index_catalog_ids: Vec::new(),
-            activation_evolution_digest: "fnv1a64:0000000000000002".to_string(),
-            activation_proposal_catalog_digest: Some("fnv1a64:0000000000000003".to_string()),
+            activation_evolution_digest:
+                "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+                    .to_string(),
+            activation_proposal_catalog_digest: Some(
+                "sha256:0000000000000000000000000000000000000000000000000000000000000003"
+                    .to_string(),
+            ),
+            activation_proposal_new_catalog_ids: vec![catalog(
+                "cat_00000000000000000000000000000005",
+            )],
             activation_records_backfilled: 1,
             activation_default_records_by_id: vec![ActivationDefaultRecordCount {
-                catalog_id: catalog("cat_0000000000000005"),
+                catalog_id: catalog("cat_00000000000000000000000000000005"),
                 records_backfilled: 1,
                 target_records: 2,
-                evidence_digest: "fnv1a64:0000000000000004".to_string(),
+                evidence_digest:
+                    "sha256:0000000000000000000000000000000000000000000000000000000000000004"
+                        .to_string(),
             }],
             activation_indexes_rebuilt: 0,
             activation_records_retired: 0,

@@ -556,9 +556,9 @@ raw bytes. The generated indexes are derived data, so a backup omits them and a
 restore rebuilds them from the restored records. Backups are deterministic and
 portable across conforming backends at the same layout and codec, but byte
 identity requires matching accepted catalog facts, engine profile, value codec,
-and stored data. Proposed IDs are deterministic; accepted IDs remain frozen, so
-divergent catalog histories may still encode equivalent-looking source with
-distinct accepted IDs.
+and stored data. Stable IDs are random opaque values that freeze when accepted,
+so divergent catalog histories may still freeze distinct accepted IDs for source
+that looks equivalent.
 
 Restore replays a backup into an empty store in one transaction and validates the
 data against the schema before activating it; it never treats raw saved paths as

@@ -2249,7 +2249,7 @@ mod tests {
         CheckedSavedIndex {
             id: StoreIndexId(0),
             name: name.to_string(),
-            catalog_id: catalog_id.to_string(),
+            catalog_id: Some(catalog_id.to_string()),
             unique: true,
             keys: vec![CheckedSavedIndexKey {
                 name: key_name.to_string(),
@@ -2264,14 +2264,14 @@ mod tests {
             root: "books".to_string(),
             store_id: StoreId(0),
             resource_id: ResourceId(0),
-            store_catalog_id: "cat_00000000000000aa".to_string(),
+            store_catalog_id: Some("cat_000000000000000000000000000000aa".to_string()),
             resource_name: "Book".to_string(),
             root_members: vec![CheckedSavedMember {
                 id: Some(ResourceMemberId(0)),
                 name: "isbn".to_string(),
                 key_params: Vec::new(),
                 kind: CheckedSavedMemberKind::Field { required: true },
-                catalog_id: "cat_00000000000000bb".to_string(),
+                catalog_id: Some("cat_000000000000000000000000000000bb".to_string()),
                 leaf: Some(StoreLeafKind::Scalar(ScalarType::Str)),
                 group_members: Vec::new(),
             }],
@@ -2300,8 +2300,8 @@ mod tests {
     #[test]
     fn unique_index_with_unresolvable_key_is_unprobeable() {
         let place = place_with_indexes(vec![
-            unique_index("byIsbn", "cat_00000000000000c1", "isbn"),
-            unique_index("byGhost", "cat_00000000000000c2", "ghost"),
+            unique_index("byIsbn", "cat_000000000000000000000000000000c1", "isbn"),
+            unique_index("byGhost", "cat_000000000000000000000000000000c2", "ghost"),
         ]);
 
         let acc = empty_accumulator();
@@ -2315,12 +2315,12 @@ mod tests {
         let unprobeable: Vec<&str> = plan.unprobeable.iter().map(CatalogId::as_str).collect();
         assert_eq!(
             probed,
-            ["cat_00000000000000c1"],
+            ["cat_000000000000000000000000000000c1"],
             "probed {probed:?} unprobeable {unprobeable:?}"
         );
         assert_eq!(
             unprobeable,
-            ["cat_00000000000000c2"],
+            ["cat_000000000000000000000000000000c2"],
             "probed {probed:?} unprobeable {unprobeable:?}"
         );
     }
@@ -2331,12 +2331,13 @@ mod tests {
     #[test]
     fn unprobeable_unique_index_fails_closed() {
         let place = place_with_indexes(vec![
-            unique_index("byIsbn", "cat_00000000000000c1", "isbn"),
-            unique_index("byGhost", "cat_00000000000000c2", "ghost"),
+            unique_index("byIsbn", "cat_000000000000000000000000000000c1", "isbn"),
+            unique_index("byGhost", "cat_000000000000000000000000000000c2", "ghost"),
         ]);
-        let unprobeable: HashSet<CatalogId> = [catalog_id("cat_00000000000000c2").unwrap()]
-            .into_iter()
-            .collect();
+        let unprobeable: HashSet<CatalogId> =
+            [catalog_id("cat_000000000000000000000000000000c2").unwrap()]
+                .into_iter()
+                .collect();
         let mut acc = empty_accumulator();
 
         classify_indexes(&place, &HashMap::new(), &unprobeable, &mut acc).expect("classify");
@@ -2344,7 +2345,7 @@ mod tests {
         let ghost = acc
             .verdicts
             .iter()
-            .find(|v| v.catalog_id.as_str() == "cat_00000000000000c2")
+            .find(|v| v.catalog_id.as_str() == "cat_000000000000000000000000000000c2")
             .expect("ghost verdict");
         assert!(
             matches!(
@@ -2359,7 +2360,7 @@ mod tests {
         let isbn = acc
             .verdicts
             .iter()
-            .find(|v| v.catalog_id.as_str() == "cat_00000000000000c1")
+            .find(|v| v.catalog_id.as_str() == "cat_000000000000000000000000000000c1")
             .expect("isbn verdict");
         assert!(
             matches!(isbn.verdict, Verdict::DerivedRebuild),

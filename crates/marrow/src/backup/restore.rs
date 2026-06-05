@@ -9,7 +9,7 @@ use marrow_run::evolution::{ApplyError, current_engine_profile, rebuild_store_in
 use marrow_store::tree::TreeStore;
 
 use super::archive::{self, CHECKSUM_SEED, checksum_cell};
-use super::{BackupError, BackupManifest, EngineDescriptor};
+use super::{BackupError, BackupManifest, CommitDescriptor, EngineDescriptor};
 
 /// What a completed restore replayed.
 #[derive(Debug)]
@@ -27,16 +27,16 @@ pub fn restore_backup(
     program: &CheckedProgram,
     store: &TreeStore,
     input: &mut impl Read,
-    verify: impl Fn(&TreeStore) -> Result<(), BackupError>,
+    verify: impl Fn(&CheckedProgram, &TreeStore) -> Result<(), BackupError>,
 ) -> Result<RestoreReport, BackupError> {
     let manifest = archive::read_header(input)?;
-    validate_against_project(program, &manifest)?;
+    let restore_program = restore_program(program, &manifest)?;
     if !store.is_empty()? {
         return Err(BackupError::NotEmpty);
     }
 
     store.begin()?;
-    match replay(program, store, &manifest, input, &verify) {
+    match replay(&restore_program, store, &manifest, input, &verify) {
         Ok(report) => {
             store.commit()?;
             Ok(report)
@@ -52,10 +52,10 @@ pub fn restore_backup(
 /// Refuse a backup the running binary cannot faithfully reproduce: a different
 /// engine, layout, or value codec needs a recompile; a different schema or
 /// catalog epoch belongs to a different program state.
-fn validate_against_project(
+fn restore_program(
     program: &CheckedProgram,
     manifest: &BackupManifest,
-) -> Result<(), BackupError> {
+) -> Result<CheckedProgram, BackupError> {
     let current = EngineDescriptor::current(&current_engine_profile());
     if manifest.engine.name != current.name
         || manifest.engine.layout_epoch != current.layout_epoch
@@ -75,17 +75,70 @@ fn validate_against_project(
                 .to_string(),
         ));
     }
-    // A backup carries the catalog epoch its data was committed at. An empty store
-    // has none, so only a backup that actually carries committed data binds an
-    // epoch the project's accepted catalog must match.
-    if let Some(backup_epoch) = manifest.catalog_epoch
-        && Some(backup_epoch) != program.catalog.accepted_epoch
+    if let Some(commit) = &manifest.commit {
+        validate_manifest_commit(manifest, commit)?;
+    }
+
+    let Some(backup_epoch) = manifest.catalog_epoch else {
+        return Ok(program.clone());
+    };
+    if Some(backup_epoch) == program.catalog.accepted_epoch {
+        return Ok(program.clone());
+    }
+
+    let rebound = activation_window_program(program, manifest, backup_epoch)?;
+    Ok(rebound)
+}
+
+fn validate_manifest_commit(
+    manifest: &BackupManifest,
+    commit: &CommitDescriptor,
+) -> Result<(), BackupError> {
+    if Some(commit.catalog_epoch) != manifest.catalog_epoch
+        || commit.layout_epoch != manifest.engine.layout_epoch
+        || commit.source_digest != manifest.source_digest
+        || commit.engine_profile_digest != manifest.engine.profile_digest
     {
-        return Err(BackupError::CatalogMismatch(
-            "backup catalog epoch does not match this project's accepted catalog".to_string(),
+        return Err(BackupError::corrupt(
+            "manifest commit metadata disagrees with the backup binding",
         ));
     }
     Ok(())
+}
+
+fn activation_window_program(
+    program: &CheckedProgram,
+    manifest: &BackupManifest,
+    backup_epoch: u64,
+) -> Result<CheckedProgram, BackupError> {
+    let Some(commit) = &manifest.commit else {
+        return catalog_mismatch();
+    };
+    let Some(commit_proposal_digest) = commit.activation_proposal_catalog_digest.as_deref() else {
+        return catalog_mismatch();
+    };
+    let rebound = marrow_check::evolution::rebind_activation_resume_program(
+        program,
+        &commit.to_metadata()?.activation_proposal_new_catalog_ids,
+    )
+    .map_err(|_| {
+        BackupError::CatalogMismatch(
+            "backup catalog epoch does not match this project's accepted catalog".to_string(),
+        )
+    })?;
+    let Some(proposal) = &rebound.catalog.proposal else {
+        return catalog_mismatch();
+    };
+    if proposal.epoch != backup_epoch || proposal.digest != commit_proposal_digest {
+        return catalog_mismatch();
+    }
+    Ok(rebound)
+}
+
+fn catalog_mismatch<T>() -> Result<T, BackupError> {
+    Err(BackupError::CatalogMismatch(
+        "backup catalog epoch does not match this project's accepted catalog".to_string(),
+    ))
 }
 
 fn replay(
@@ -93,7 +146,7 @@ fn replay(
     store: &TreeStore,
     manifest: &BackupManifest,
     input: &mut impl Read,
-    verify: &impl Fn(&TreeStore) -> Result<(), BackupError>,
+    verify: &impl Fn(&CheckedProgram, &TreeStore) -> Result<(), BackupError>,
 ) -> Result<RestoreReport, BackupError> {
     let mut checksum = CHECKSUM_SEED;
     for _ in 0..manifest.record_count {
@@ -133,7 +186,7 @@ fn replay(
 
     // Reads inside the open transaction see the staged data, so verification runs
     // before commit and a failure rolls the whole restore back.
-    verify(store)?;
+    verify(program, store)?;
 
     Ok(RestoreReport {
         record_count: manifest.record_count,
@@ -167,7 +220,7 @@ mod tests {
     use marrow_check::{CheckedProgram, ProjectConfig, check_project, commit_pending_identity};
     use marrow_store::cell::CatalogId;
     use marrow_store::key::SavedKey;
-    use marrow_store::tree::{DataPathSegment, TreeStore};
+    use marrow_store::tree::{CommitMetadata, DataPathSegment, TreeStore};
 
     use super::{
         BackupError, CHECKSUM_SEED, RestoreReport, archive, checksum_cell, restore_backup,
@@ -176,7 +229,7 @@ mod tests {
 
     /// Restore that verifies nothing: the restore.* codes under test fail in
     /// validation or replay, before a schema check would run.
-    fn accept(_store: &TreeStore) -> Result<(), BackupError> {
+    fn accept(_program: &CheckedProgram, _store: &TreeStore) -> Result<(), BackupError> {
         Ok(())
     }
 
@@ -255,6 +308,28 @@ mod tests {
         if let Some(epoch) = program.catalog.accepted_epoch {
             store.write_catalog_epoch(epoch).expect("stamp epoch");
         }
+        let profile = marrow_run::evolution::current_engine_profile();
+        store
+            .write_commit_metadata(&CommitMetadata {
+                commit_id: 1,
+                catalog_epoch: program.catalog.accepted_epoch.expect("accepted epoch"),
+                layout_epoch: profile.layout_epoch(),
+                source_digest: program.source_digest().to_string(),
+                engine_profile_digest: profile.digest_bytes(),
+                changed_root_catalog_ids: Vec::new(),
+                changed_index_catalog_ids: Vec::new(),
+                activation_evolution_digest: String::new(),
+                activation_proposal_catalog_digest: None,
+                activation_proposal_new_catalog_ids: Vec::new(),
+                activation_records_backfilled: 0,
+                activation_default_records_by_id: Vec::new(),
+                activation_indexes_rebuilt: 0,
+                activation_records_retired: 0,
+                activation_retire_evidence_digest: String::new(),
+                activation_records_retired_by_id: Vec::new(),
+                activation_records_transformed: 0,
+            })
+            .expect("stamp commit");
 
         let mut archive = Vec::new();
         create_backup(program, &store, &mut archive).expect("create backup");
@@ -327,6 +402,20 @@ mod tests {
     }
 
     #[test]
+    fn rejects_commit_metadata_that_disagrees_with_manifest() {
+        let (root, program) = committed_program("restore-commit-binding", BOOK_SOURCE);
+        let archive = seeded_backup(&program);
+        let archive = rewrite_manifest(&archive, |manifest| {
+            manifest["commit"]["source_digest"] = serde_json::json!("sha256:bad");
+        });
+
+        let error = restore_into_empty(&program, &archive)
+            .expect_err("commit metadata must agree with the validated manifest");
+        assert_eq!(error.code(), "restore.corrupt_chunk");
+        cleanup(&root);
+    }
+
+    #[test]
     fn rejects_an_engine_recompile() {
         let (root, program) = committed_program("restore-engine", BOOK_SOURCE);
         let archive = seeded_backup(&program);
@@ -346,14 +435,14 @@ mod tests {
         // Restore replays the data, then the verify proves the declared records decode.
         // A title leaf whose bytes are not a canonical string is `restore.data_invalid`.
         let target = TreeStore::memory();
-        let verify = |store: &TreeStore| match crate::cmd_data::integrity::count_integrity_problems(
-            store, &program,
-        ) {
-            Ok((_, 0)) => Ok(()),
-            Ok((_, _)) => Err(BackupError::DataInvalid(
-                "declared data does not decode".into(),
-            )),
-            Err(error) => Err(BackupError::Store(error)),
+        let verify = |restore_program: &CheckedProgram, store: &TreeStore| {
+            match crate::cmd_data::integrity::count_integrity_problems(store, restore_program) {
+                Ok((_, 0)) => Ok(()),
+                Ok((_, _)) => Err(BackupError::DataInvalid(
+                    "declared data does not decode".into(),
+                )),
+                Err(error) => Err(BackupError::Store(error)),
+            }
         };
         // Replace the seeded title value with bytes that are not a canonical string.
         let archive = with_corrupt_first_value(&archive);

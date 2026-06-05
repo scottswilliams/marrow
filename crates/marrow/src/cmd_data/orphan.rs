@@ -9,7 +9,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use marrow_check::{CheckedProgram, CheckedSavedMember, checked_saved_root_place};
+use marrow_check::{
+    CheckedProgram, CheckedSavedMember, CheckedSavedPlace, checked_saved_root_place,
+};
 use marrow_store::StoreError;
 use marrow_store::cell::{DataCellKey, decode_data_cell_key};
 use marrow_store::key::SavedKey;
@@ -33,6 +35,23 @@ pub(super) fn visit_orphans(
     mut report: impl FnMut(OrphanProblem) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
     let schema = DeclaredSchema::from_program(program);
+    visit_orphans_in_schema(store, &schema, &mut report)
+}
+
+pub(super) fn visit_orphans_in_places(
+    store: &TreeStore,
+    places: &[CheckedSavedPlace],
+    mut report: impl FnMut(OrphanProblem) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    let schema = DeclaredSchema::from_places(places);
+    visit_orphans_in_schema(store, &schema, &mut report)
+}
+
+fn visit_orphans_in_schema(
+    store: &TreeStore,
+    schema: &DeclaredSchema,
+    report: &mut impl FnMut(OrphanProblem) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
     store.visit_backup_cells(|key, _value| {
         if let Some(problem) = schema.classify(key) {
             report(problem)?;
@@ -57,16 +76,21 @@ struct MemberSet {
 
 impl DeclaredSchema {
     fn from_program(program: &CheckedProgram) -> Self {
+        let places: Vec<_> = program
+            .facts
+            .stores()
+            .iter()
+            .filter_map(|store| {
+                checked_saved_root_place(program, &store.root, marrow_syntax::SourceSpan::default())
+            })
+            .collect();
+        Self::from_places(&places)
+    }
+
+    fn from_places(places: &[CheckedSavedPlace]) -> Self {
         let mut roots = HashMap::new();
         let mut members = HashMap::new();
-        for store in program.facts.stores() {
-            let Some(place) = checked_saved_root_place(
-                program,
-                &store.root,
-                marrow_syntax::SourceSpan::default(),
-            ) else {
-                continue;
-            };
+        for place in places {
             let Some(store_catalog_id) = place.store_catalog_id.clone() else {
                 continue;
             };
