@@ -14,6 +14,20 @@ use std::cmp::Ordering;
 /// The decimal envelope: at most 34 significant digits and 34 fractional places.
 const MAX_DIGITS: u32 = 34;
 
+/// Why a decimal spelling did not parse to a stored value. The runtime maps these
+/// to distinct faults — an envelope overflow is a recoverable arithmetic limit,
+/// while malformed input is a type error — so the classification lives here with
+/// the parser rather than being re-derived by callers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecimalParseError {
+    /// A canonical decimal spelling whose value exceeds the 34-digit / 34-place
+    /// envelope.
+    Overflow,
+    /// Text that is not a canonical decimal: malformed structure, a non-digit, a
+    /// non-canonical spelling (leading zero, trailing-zero fraction), or `-0`.
+    Malformed,
+}
+
 /// An exact base-10 decimal, value `coefficient * 10^(-scale)`, in canonical form.
 ///
 /// Canonical means the scale carries no trailing zero (`1.50` and `1.5` are the
@@ -62,33 +76,29 @@ impl Decimal {
     /// accepted and normalized away. `None` for malformed text, `-0`, or a value
     /// outside the envelope.
     pub fn parse(text: &str) -> Option<Decimal> {
-        let (negative, rest) = match text.strip_prefix('-') {
-            Some(rest) => (true, rest),
-            None => (false, text),
-        };
-        let (integer, fraction) = match rest.split_once('.') {
-            Some((integer, fraction)) => (integer, Some(fraction)),
-            None => (rest, None),
-        };
-        if integer.is_empty() || !integer.bytes().all(|b| b.is_ascii_digit()) {
-            return None;
+        let shape = DecimalShape::parse(text)?;
+        shape.to_decimal().ok()
+    }
+
+    /// Parse a decimal whose spelling must already be canonical (no leading zeros,
+    /// no trailing-zero fraction, no `-0`), distinguishing an envelope
+    /// [`Overflow`](DecimalParseError::Overflow) from
+    /// [`Malformed`](DecimalParseError::Malformed) input.
+    ///
+    /// Only a canonical spelling that exceeds the envelope is an overflow; a
+    /// non-canonical but in-range spelling such as `1.50` or `01` is malformed,
+    /// since the canonical form (`1.5`, `1`) is the one stored value. This is the
+    /// same canonical contract [`decode_value`](crate::value::decode_value) reads
+    /// back, lifted to a typed result so the runtime need not re-derive it.
+    pub fn parse_canonical(text: &str) -> Result<Decimal, DecimalParseError> {
+        let shape = DecimalShape::parse(text).ok_or(DecimalParseError::Malformed)?;
+        // The canonical-spelling check is syntactic, so a non-canonical spelling is
+        // malformed whether or not its magnitude fits — the envelope check below
+        // applies only to a spelling that is already the one canonical form.
+        if !shape.is_canonical() {
+            return Err(DecimalParseError::Malformed);
         }
-        if let Some(fraction) = fraction
-            && (fraction.is_empty() || !fraction.bytes().all(|b| b.is_ascii_digit()))
-        {
-            return None;
-        }
-        let scale = fraction.map_or(0, str::len) as u32;
-        let digits = match fraction {
-            Some(fraction) => format!("{integer}{fraction}"),
-            None => integer.to_string(),
-        };
-        let magnitude: i128 = digits.parse().ok()?; // out-of-range -> None
-        if negative && magnitude == 0 {
-            return None; // `-0` is not a value
-        }
-        let coefficient = if negative { -magnitude } else { magnitude };
-        Decimal::from_parts(coefficient, scale)
+        shape.to_decimal()
     }
 
     /// Canonical decimal text: no leading zeros, no trailing-zero fraction, no
@@ -216,6 +226,72 @@ impl Decimal {
         // Euclidean division floors toward negative infinity for a positive
         // divisor: (-27).div_euclid(10) == -3, i.e. floor(-2.7).
         self.coefficient.div_euclid(10i128.pow(self.scale))
+    }
+}
+
+/// A structurally valid decimal spelling split into its sign and digit groups,
+/// before any envelope or canonical-form judgement. Borrows the input.
+struct DecimalShape<'a> {
+    negative: bool,
+    integer: &'a str,
+    fraction: Option<&'a str>,
+}
+
+impl<'a> DecimalShape<'a> {
+    /// Split `text` into a sign, integer digits, and optional fraction digits,
+    /// requiring at least one integer digit and, when a point is present, at least
+    /// one fraction digit, all ASCII. `None` if the structure is malformed; this
+    /// makes no canonical-form or envelope judgement.
+    fn parse(text: &'a str) -> Option<DecimalShape<'a>> {
+        let (negative, rest) = match text.strip_prefix('-') {
+            Some(rest) => (true, rest),
+            None => (false, text),
+        };
+        let (integer, fraction) = match rest.split_once('.') {
+            Some((integer, fraction)) => (integer, Some(fraction)),
+            None => (rest, None),
+        };
+        if integer.is_empty() || !integer.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        if let Some(fraction) = fraction
+            && (fraction.is_empty() || !fraction.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return None;
+        }
+        Some(DecimalShape {
+            negative,
+            integer,
+            fraction,
+        })
+    }
+
+    /// Whether this spelling is already the one canonical form: no leading zero in
+    /// a multi-digit integer, no trailing zero in the fraction, and not `-0`.
+    fn is_canonical(&self) -> bool {
+        let integer_canonical = self.integer == "0" || !self.integer.starts_with('0');
+        let fraction_canonical = self.fraction.is_none_or(|f| !f.ends_with('0'));
+        let is_negative_zero =
+            self.negative && self.integer.bytes().all(|b| b == b'0') && self.fraction.is_none();
+        integer_canonical && fraction_canonical && !is_negative_zero
+    }
+
+    /// The decimal value, normalized into the envelope.
+    /// [`Overflow`](DecimalParseError::Overflow) if the magnitude exceeds the
+    /// 34-digit / 34-place envelope or `i128` range;
+    /// [`Malformed`](DecimalParseError::Malformed) for `-0`, which is no value.
+    fn to_decimal(&self) -> Result<Decimal, DecimalParseError> {
+        let scale = self.fraction.map_or(0, str::len) as u32;
+        let digits = match self.fraction {
+            Some(fraction) => format!("{}{fraction}", self.integer),
+            None => self.integer.to_string(),
+        };
+        let magnitude: i128 = digits.parse().map_err(|_| DecimalParseError::Overflow)?;
+        if self.negative && magnitude == 0 {
+            return Err(DecimalParseError::Malformed); // `-0` is not a value
+        }
+        let coefficient = if self.negative { -magnitude } else { magnitude };
+        Decimal::from_parts(coefficient, scale).ok_or(DecimalParseError::Overflow)
     }
 }
 
@@ -466,6 +542,55 @@ mod tests {
             ("100", "100"),
         ] {
             assert_eq!(dec(input).to_text(), canonical, "input {input}");
+        }
+    }
+
+    #[test]
+    fn parse_canonical_distinguishes_overflow_from_malformed() {
+        use super::DecimalParseError;
+
+        // Canonical, in-envelope spellings parse to the same value as `parse`.
+        for text in ["0", "1.5", "123.456", "-2.5", &"9".repeat(34)] {
+            assert_eq!(
+                Decimal::parse_canonical(text),
+                Ok(Decimal::parse(text).unwrap()),
+                "{text}",
+            );
+        }
+
+        // A canonical decimal spelling whose value exceeds the envelope is an
+        // overflow, distinct from malformed input.
+        for text in [
+            "99999999999999999999999999999999999",
+            "0.11111111111111111111111111111111111",
+        ] {
+            assert_eq!(
+                Decimal::parse_canonical(text),
+                Err(DecimalParseError::Overflow),
+                "{text}",
+            );
+        }
+
+        // Malformed structure and non-canonical spellings are malformed, never
+        // overflow: a non-decimal, a doubled point, a trailing-zero fraction, a
+        // leading zero, `-0`, and an out-of-envelope but non-canonical magnitude.
+        for text in [
+            "",
+            "abc",
+            "1.2.3",
+            "1.",
+            ".5",
+            "1.50",
+            "01",
+            "-0",
+            "+1",
+            &format!("0.{}", "0".repeat(35)),
+        ] {
+            assert_eq!(
+                Decimal::parse_canonical(text),
+                Err(DecimalParseError::Malformed),
+                "{text}",
+            );
         }
     }
 

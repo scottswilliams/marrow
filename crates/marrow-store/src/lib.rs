@@ -28,4 +28,4 @@ mod conformance;
 pub use backend::StoreError;
 
 /// Exact base-10 decimal arithmetic, re-exported at the crate root.
-pub use decimal::Decimal;
+pub use decimal::{Decimal, DecimalParseError};
