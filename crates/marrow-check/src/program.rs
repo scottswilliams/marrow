@@ -267,9 +267,8 @@ pub struct ProgramCatalog {
     /// keyed, and its leaf token if a leaf, so discharge compares it against the accepted
     /// signature to fail closed on any structural divergence — a keyed-layer re-key, a
     /// group<->keyed-group reshape, or an unforeseen transition — that no targeted classifier
-    /// already covers, and the leaf-position arm derives the member's declared leaf token by
-    /// stripping its `leaf:` prefix, so the signature is the single in-memory source for that
-    /// token. It comes from source, so the divergence is detected even for an
+    /// already covers. It is the in-memory baseline discharge reads through the signature's
+    /// single decoder, and it comes from source, so the divergence is detected even for an
     /// otherwise-unchanged program that emits no proposal.
     pub declared_member_structs: HashMap<String, String>,
     pub proposal: Option<marrow_project::CatalogMetadata>,

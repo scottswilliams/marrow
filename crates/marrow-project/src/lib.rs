@@ -197,36 +197,112 @@ impl CatalogEntry {
     }
 }
 
+/// The structural shape a resource member's durable data occupies, decoded from its identity-aware
+/// structural signature. The signature is a discriminated union over a member's shape: a leaf (a
+/// plain field or a keyed-leaf map) carries its value-by-identity leaf token, an unkeyed group
+/// carries nothing, and a keyed group carries the key shape its entries are addressed under. This
+/// enum is the single owner of that convention's decode: every consumer — the durable accepted
+/// side ([`CatalogEntry::accepted_leaf_token`]) and the live declared side in the evolution
+/// discharge — reads shape out of a signature through [`structural_signature`] rather than
+/// matching prefixes at its own use site. The encode side lives at the catalog (de)serialization
+/// boundary in `marrow-check`; this is its sole reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StructuralSignature<'a> {
+    /// A leaf member, carrying its value-by-identity leaf token.
+    Leaf(&'a str),
+    /// An unkeyed group.
+    Group,
+    /// A keyed group, carrying the key shape its entries are addressed under.
+    KeyedGroup(&'a str),
+}
+
+impl<'a> StructuralSignature<'a> {
+    /// The leaf token this signature names, or `None` for a non-leaf shape (a group or keyed
+    /// group records no leaf token).
+    pub fn leaf_token(self) -> Option<&'a str> {
+        match self {
+            Self::Leaf(token) => Some(token),
+            Self::Group | Self::KeyedGroup(_) => None,
+        }
+    }
+}
+
+/// Decode a member's structural signature into its typed shape, or `None` when the text matches no
+/// known shape. The wire form stays a string at the catalog boundary; every interior consumer
+/// branches on this enum rather than re-parsing the convention.
+pub fn structural_signature(signature: &str) -> Option<StructuralSignature<'_>> {
+    if let Some(token) = signature.strip_prefix("leaf:") {
+        Some(StructuralSignature::Leaf(token))
+    } else if signature == "group" {
+        Some(StructuralSignature::Group)
+    } else {
+        signature
+            .strip_prefix("keyed-group:[")
+            .and_then(|rest| rest.strip_suffix(']'))
+            .map(StructuralSignature::KeyedGroup)
+    }
+}
+
 /// The leaf token a member's structural signature encodes, or `None` when the signature names a
-/// non-leaf shape (a group or keyed group records no leaf token). A leaf member records
-/// `leaf:<token>`, so the token is the signature with that prefix stripped.
-///
-/// This is the single decoder of the `leaf:` signature convention. The durable accepted side
-/// ([`CatalogEntry::accepted_leaf_token`]) and the live declared side in the evolution discharge
-/// both read leaf tokens out of their signatures through it, so the prefix is owned in one place
-/// rather than re-stripped at each use site.
+/// non-leaf shape. Both the durable accepted side and the live declared side read leaf tokens
+/// through [`structural_signature`], so the convention is owned in one place.
 pub fn structural_signature_leaf_token(signature: &str) -> Option<&str> {
-    signature.strip_prefix("leaf:")
+    structural_signature(signature).and_then(StructuralSignature::leaf_token)
 }
 
 #[cfg(test)]
 mod structural_signature_tests {
-    use super::structural_signature_leaf_token;
+    use super::{StructuralSignature, structural_signature, structural_signature_leaf_token};
 
     #[test]
     fn decodes_a_leaf_signature_to_its_token() {
-        assert_eq!(structural_signature_leaf_token("leaf:int"), Some("int"));
         assert_eq!(
-            structural_signature_leaf_token("leaf:enum:cat_0123456789abcdef0123456789abcdef"),
-            Some("enum:cat_0123456789abcdef0123456789abcdef")
+            structural_signature("leaf:int"),
+            Some(StructuralSignature::Leaf("int"))
         );
-        assert_eq!(structural_signature_leaf_token("leaf:"), Some(""));
+        assert_eq!(
+            structural_signature("leaf:enum:cat_0123456789abcdef0123456789abcdef"),
+            Some(StructuralSignature::Leaf(
+                "enum:cat_0123456789abcdef0123456789abcdef"
+            ))
+        );
+        assert_eq!(
+            structural_signature("leaf:"),
+            Some(StructuralSignature::Leaf(""))
+        );
+        assert_eq!(structural_signature_leaf_token("leaf:int"), Some("int"));
     }
 
     #[test]
-    fn non_leaf_signatures_have_no_leaf_token() {
+    fn decodes_an_unkeyed_group() {
+        assert_eq!(
+            structural_signature("group"),
+            Some(StructuralSignature::Group)
+        );
         assert_eq!(structural_signature_leaf_token("group"), None);
+    }
+
+    #[test]
+    fn decodes_a_keyed_group_to_its_key_shape() {
+        assert_eq!(
+            structural_signature("keyed-group:[int]"),
+            Some(StructuralSignature::KeyedGroup("int"))
+        );
+        assert_eq!(
+            structural_signature("keyed-group:[int,string]"),
+            Some(StructuralSignature::KeyedGroup("int,string"))
+        );
+        assert_eq!(
+            structural_signature("keyed-group:[]"),
+            Some(StructuralSignature::KeyedGroup(""))
+        );
         assert_eq!(structural_signature_leaf_token("keyed-group:[int]"), None);
+    }
+
+    #[test]
+    fn an_unknown_shape_decodes_to_none() {
+        assert_eq!(structural_signature("mystery"), None);
+        assert_eq!(structural_signature("keyed-group:[int"), None);
     }
 }
 

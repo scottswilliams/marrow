@@ -23,7 +23,7 @@ mod absent_source;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use marrow_project::{CatalogEntry, CatalogEntryKind};
+use marrow_project::{CatalogEntry, CatalogEntryKind, StructuralSignature};
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::{SavedKey, encode_identity_payload};
@@ -799,9 +799,13 @@ fn structural_repair(
     declared: &str,
 ) -> (RepairReason, String) {
     let label = member_label(place, member);
-    let leaf_involved = accepted.starts_with("leaf:") || declared.starts_with("leaf:");
-    let keyed_involved =
-        accepted.starts_with("keyed-group:") || declared.starts_with("keyed-group:");
+    let shapes = [accepted, declared].map(marrow_project::structural_signature);
+    let leaf_involved = shapes
+        .iter()
+        .any(|shape| matches!(shape, Some(StructuralSignature::Leaf(_))));
+    let keyed_involved = shapes
+        .iter()
+        .any(|shape| matches!(shape, Some(StructuralSignature::KeyedGroup(_))));
     if !leaf_involved && keyed_involved {
         (
             RepairReason::KeyedLayerKeyShapeChange,
