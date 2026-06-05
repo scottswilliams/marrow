@@ -18,7 +18,7 @@ impl DataAddress {
     /// identity, and a data path of catalog-id member segments and keys. Evolution
     /// apply derives these directly from the checked facts and the live store, so it
     /// addresses cells without re-resolving a member name path.
-    pub(crate) fn raw(
+    pub(crate) fn from_resolved_parts(
         store: CatalogId,
         identity: Vec<SavedKey>,
         path: Vec<DataPathSegment>,

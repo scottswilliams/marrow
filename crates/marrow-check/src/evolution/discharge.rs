@@ -501,9 +501,9 @@ fn renamed_member_ids(program: &CheckedProgram) -> HashSet<String> {
 /// from the member's structural signature, the one durable field that records it. A member absent
 /// from this map is brand-new (it has no accepted identity yet). The discharge compares this
 /// against the declared token to detect a type change the new type's decoder might otherwise
-/// silently reinterpret. Under clean-break v0.1 every accepted leaf member records its token, so a
+/// silently reinterpret. Under v0.1 every accepted leaf member records its token, so a
 /// leaf member carrying `None` cannot arise from normal use; treating it as a fail-closed retype is
-/// a defensive guard against a hand-edited catalog, not a migration path for a legacy snapshot.
+/// a defensive guard against a hand-edited catalog, not an old-snapshot compatibility path.
 fn accepted_member_leaves(program: &CheckedProgram) -> HashMap<String, Option<String>> {
     program
         .catalog

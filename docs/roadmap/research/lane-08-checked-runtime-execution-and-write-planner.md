@@ -174,12 +174,10 @@ obsolete checked-entry helper shapes
 
 Residual implementation risks are real but bounded:
 
-- `DataAddress::raw` remains, currently used by evolution transform staging from
-  already-resolved catalog IDs and live store identities
-  (`crates/marrow-run/src/store.rs:17`,
-  `crates/marrow-run/src/evolution/transform.rs:90`). This is not a production
-  raw path resolver, but it must stay private/internal and should be called out in
-  Lane 11 absence scans.
+- Runtime address construction remains private and is used by evolution apply
+  staging for default backfill, retire deletes, and transform writes from already
+  resolved catalog IDs and live store identities. This is not a production raw
+  path resolver, but it must stay internal and covered by hardening absence scans.
 - `member_path_segments` still resolves a `Vec<String>` member path against
   checked members (`crates/marrow-run/src/store.rs:248`). It resolves names
   inside checked facts, not physical paths, but the shape is close enough to old
@@ -364,8 +362,8 @@ happen before Marrow treats the runtime/tooling surface as complete:
 1. Make checked operation plans/facts first-class enough for `explain`, trace,
    dry-run, backup/restore, and LSP/tooling to render them without scraping raw
    runtime paths or storage bytes.
-2. Let Lane 11 harden the remaining internal raw-address and string-member-path
-   helpers so they cannot become a public compatibility bridge.
+2. Keep resolved address and string-member-path helpers internal and covered by
+   absence scans so they cannot become a public compatibility bridge.
 
 Do not reverse into syntax-body interpretation, raw saved-path resolution, ORM-like
 lazy loaders, GraphQL resolver planning, or a statistics-based optimizer below the
@@ -395,18 +393,16 @@ kept rejection-only.
 **Weak Rust shape.** Runtime is split into more focused modules than the old
 prototype, but some helpers still encode state as runtime booleans and vectors:
 maintenance is a host boolean (`crates/marrow-run/src/host.rs:122`), transaction
-state is depth/check vectors (`crates/marrow-run/src/env.rs:43`), and
-`DataAddress::raw` is a permissive constructor
-(`crates/marrow-run/src/store.rs:17`). This is acceptable for v0.1, but the
-long-term Rust shape should move toward typed capability/state tokens for
-maintenance/evolution/restore contexts and narrower constructors for already
-checked addresses.
+state is depth/check vectors (`crates/marrow-run/src/env.rs:43`). This is
+acceptable for v0.1, but the long-term Rust shape should move toward typed
+capability/state tokens for maintenance/evolution/restore contexts and narrow
+constructors for already checked addresses.
 
-**Hidden compatibility glue.** `DataAddress::raw` and `member_path_segments` are
-the pressure points. They are currently private and used against checked facts,
-but their names and shapes are close to raw path compatibility. If Lane 10 or
-Lane 11 imports or widens them, Marrow will have recreated a raw-path bridge under
-a checked veneer.
+**Hidden compatibility glue.** Runtime address construction and
+`member_path_segments` are the pressure points. They are private and used against
+checked facts, but their shapes are close to raw path compatibility. If tooling
+or hardening work imports or widens them, Marrow will have recreated a raw-path
+bridge under a checked veneer.
 
 **Unidiomatic language/database design.** "No optimizer" is idiomatic only if
 Marrow keeps durable access explicit and explainable. It would become unidiomatic
@@ -452,10 +448,9 @@ way to bypass normal semantics. Lane 10 names this exact surface
    foundation-level because a raw production protocol can undo Lane 8's runtime
    cleanup from the outside.
 
-4. **Narrow or rename `DataAddress::raw`.** Keep it private and evolution-only, or
-   replace it with constructors that encode their proof source, such as
-   `from_checked_catalog_segments` or an evolution staging address type. Add an
-   absence scan proving no CLI/protocol/tool path can call it.
+4. **Keep resolved runtime address construction private.** Evolution staging may
+   construct addresses from checked catalog ids and live store keys, but no CLI,
+   protocol, or tooling path should be able to call that constructor.
 
 5. **Replace string member paths inside runtime address construction where
    feasible.** `member_path_segments` should either consume checked member refs or

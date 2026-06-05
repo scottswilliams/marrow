@@ -3271,9 +3271,8 @@ fn enum_member_shape_drifts_digest_but_layout_does_not() {
 /// shape — different indentation, blank-line policy, or token spacing — would move every
 /// committed snapshot's digest and read live stores as schema drift. The other digest
 /// tests only compare digests within one run, so both sides would shift together and hide
-/// such a change. This pins the exact value, so a deliberate formatter change surfaces as
-/// a golden move to review rather than slipping through. Update the golden only alongside
-/// a reviewed change to the durable rendering.
+/// such a change. This pins the exact value, so update the golden only alongside
+/// an intentional change to the durable rendering.
 #[test]
 fn shape_digest_is_a_frozen_golden() {
     let source = "module books\n\
@@ -3288,8 +3287,8 @@ fn shape_digest_is_a_frozen_golden() {
     assert_eq!(
         source_digest("golden-shape", source),
         "sha256:531be928b3fe8d46135633888c6ec346e4cb219928a57777cb60bc16d9d88eb9",
-        "the canonical shape rendering moved; update the golden only with a reviewed \
-         change to the durable rendering"
+        "the canonical shape rendering moved; update the golden only with an intentional \
+         durable-rendering change"
     );
 }
 

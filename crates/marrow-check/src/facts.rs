@@ -1144,7 +1144,7 @@ impl StoredValueMeaning {
 }
 
 /// Effects directly visible in a function body. Calls to user functions are not
-/// expanded here; transitive summaries belong to the checked-executable lane.
+/// expanded here; this summary is intentionally local to the function body.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DirectEffectFacts {
     pub saved_reads: Vec<SavedPlaceEffect>,

@@ -470,8 +470,8 @@ fn checked_facts_record_saved_reads_inside_saved_path_keys() {
 /// `nextId(^books)` over a single-`int` root types to `Id(^books)`, so a function
 /// returning it under a declared `Id(^books)` return type checks clean. (`nextId`
 /// is a saved-data read, so it lives in a function body, not a module const.)
-/// Previously `nextId` typed to `Unknown`. The local-const annotation
-/// `const id: Id(^books) = nextId(^books)` likewise checks clean.
+/// The local-const annotation `const id: Id(^books) = nextId(^books)` likewise
+/// checks clean.
 #[test]
 fn next_id_types_to_the_resource_identity() {
     let root = temp_project("program-nextid-id", |root| {

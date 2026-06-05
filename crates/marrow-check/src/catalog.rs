@@ -1311,8 +1311,8 @@ mod tests {
 /// The digest hashes the canonical formatter's rendering of those declarations rather than
 /// enumerating their fields, so any shape change drifts it while a whitespace reformat does
 /// not. The formatter is therefore a frozen anchor: a golden over its output pins the text,
-/// so a formatter change that moved it for an unchanged shape surfaces for review rather
-/// than silently re-reading every committed snapshot as drift.
+/// so a formatter change that moved it for an unchanged shape must be handled as a
+/// store-format decision rather than silently re-reading every committed snapshot as drift.
 pub(crate) fn analyzed_source_digest(program: &CheckedProgram) -> String {
     digest_of(render_declarations(program, DigestScope::Shape))
 }

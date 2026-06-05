@@ -74,7 +74,11 @@ pub(super) fn stage_default_backfill(
                     digest.bytes(&current);
                 } else {
                     steps.push(PlanStep::WriteData {
-                        address: DataAddress::raw(sid.clone(), identity.to_vec(), path.to_vec()),
+                        address: DataAddress::from_resolved_parts(
+                            sid.clone(),
+                            identity.to_vec(),
+                            path.to_vec(),
+                        ),
                         value: value.encoded.clone(),
                     });
                     digest.bytes(&value.encoded);
@@ -242,7 +246,11 @@ pub(super) fn stage_retire_deletes(
         for_each_place_record(store, place, &mut |identity| {
             if store.data_subtree_exists(&sid, identity, &path)? {
                 steps.push(PlanStep::DeleteData {
-                    address: DataAddress::raw(sid.clone(), identity.to_vec(), path.to_vec()),
+                    address: DataAddress::from_resolved_parts(
+                        sid.clone(),
+                        identity.to_vec(),
+                        path.to_vec(),
+                    ),
                 });
                 count += 1;
             }

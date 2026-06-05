@@ -138,7 +138,7 @@ pub const RUN_TRAVERSAL: &str = "run.traversal";
 /// Raise `error` as a catchable language throw on the `Err` channel: the value
 /// rides the [`RuntimeError`]'s `throw` field, so a surrounding `try`/`catch`
 /// binds it. With no surrounding handler, the activation re-surfaces it. The
-/// `code`/`message` carry how it renders if it escapes uncaught: the sentinel
+/// `code`/`message` carry how it renders if it escapes uncaught: the code
 /// `run.uncaught_error` and `uncaught error [{code}]: {message}` from the
 /// `Error`'s own fields. Assumes a well-formed Error with string `code` and
 /// `message`; a malformed one renders blank, which the constructor and the throw
@@ -229,7 +229,7 @@ pub(crate) fn reraise_fault(
 /// read) as a catchable Error while keeping its dotted code. Like [`raise`], the
 /// `Error` value carrying `code`/`message` rides the `throw` field so an enclosing
 /// `try`/`catch` can bind it. Unlike [`raise`], the returned [`RuntimeError`] keeps
-/// the fault's own dotted code rather than the `RUN_UNCAUGHT_THROW` sentinel, so an
+/// the fault's own dotted code rather than `RUN_UNCAUGHT_THROW`, so an
 /// uncaught fault surfaces with the same code it did before it became catchable.
 pub(crate) fn raise_fault(code: &'static str, message: String, span: SourceSpan) -> RuntimeError {
     let error = Value::Resource(vec![

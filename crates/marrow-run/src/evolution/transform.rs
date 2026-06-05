@@ -135,8 +135,11 @@ pub(super) fn visit_transform_writes(ctx: TransformVisit<'_>) -> Result<(), Appl
             let old = bind_old(ctx.runtime, ctx.store, &sid, identity, &reads)?;
             match recompute(ctx.runtime, ctx.store, module, body, old, &target_leaf) {
                 Ok(bytes) => {
-                    let address =
-                        DataAddress::raw(sid.clone(), identity.to_vec(), target_path.to_vec());
+                    let address = DataAddress::from_resolved_parts(
+                        sid.clone(),
+                        identity.to_vec(),
+                        target_path.to_vec(),
+                    );
                     if let Err(error) = (ctx.visit)(address, bytes) {
                         body_fault = Some(error);
                     }
