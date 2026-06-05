@@ -4,6 +4,7 @@ use marrow_store::tree::DataPathSegment;
 
 use crate::{CheckedProgram, CheckedSavedMemberKind, checked_saved_root_place};
 
+use super::query_error::QueryError;
 use super::render::render_query_segments;
 use super::shape::{QueryMemberKind, key_mismatch, query_segment_for_member, tooling_catalog_id};
 use super::{DataQuery, DataQuerySegment};
@@ -19,7 +20,7 @@ pub(crate) struct StorageDataQuery {
 pub fn resolve_data_query(
     program: &CheckedProgram,
     segments: &[DataQuerySegment],
-) -> Result<DataQuery, String> {
+) -> Result<DataQuery, QueryError> {
     let steps: Vec<QuerySegment<'_>> = segments.iter().map(QuerySegment::from_data).collect();
     resolve_query_steps(program, render_query_segments(segments), &steps)
 }
@@ -27,7 +28,7 @@ pub fn resolve_data_query(
 pub fn resolve_source_text_data_query(
     program: &CheckedProgram,
     segments: &[crate::PathSegment],
-) -> Result<DataQuery, String> {
+) -> Result<DataQuery, QueryError> {
     let steps: Vec<QuerySegment<'_>> = segments
         .iter()
         .map(QuerySegment::from_source_text)
@@ -39,14 +40,15 @@ fn resolve_query_steps(
     program: &CheckedProgram,
     path: String,
     segments: &[QuerySegment<'_>],
-) -> Result<DataQuery, String> {
+) -> Result<DataQuery, QueryError> {
     let Some((QuerySegment::Root(root), rest)) = segments.split_first() else {
-        return Err("path must start with a saved root, such as `^books`".into());
+        return Err(QueryError::MissingRoot);
     };
     let place = checked_saved_root_place(program, root, marrow_syntax::SourceSpan::default())
-        .ok_or_else(|| format!("unknown saved root `^{}`", root))?;
-    let store =
-        tooling_catalog_id(&place.store_catalog_id, "store").map_err(|error| error.to_string())?;
+        .ok_or_else(|| QueryError::UnknownRoot {
+            root: (*root).to_string(),
+        })?;
+    let store = tooling_catalog_id(&place.store_catalog_id, "store")?;
     let mut identity = Vec::new();
     let mut rendered_segments = vec![DataQuerySegment::Root((*root).to_string())];
     let mut index = 0usize;
@@ -55,56 +57,61 @@ fn resolve_query_steps(
             break;
         };
         if identity.len() == place.identity_keys.len() {
-            return Err(format!("`^{}` has too many identity keys", root));
+            return Err(QueryError::TooManyIdentityKeys {
+                root: (*root).to_string(),
+            });
         }
         if let Some(mismatch) = key_mismatch(place.identity_keys[identity.len()].scalar, key) {
-            return Err(format!(
-                "identity key is a {} where `^{}` declares {}",
-                mismatch.found.name(),
-                root,
-                mismatch.expected.name()
-            ));
+            return Err(QueryError::IdentityKeyType {
+                root: (*root).to_string(),
+                expected: mismatch.expected,
+                found: mismatch.found,
+            });
         }
         identity.push(key.clone());
         rendered_segments.push(DataQuerySegment::Key(key.clone()));
         index += 1;
     }
     if index < rest.len() && identity.len() != place.identity_keys.len() {
-        return Err(format!(
-            "`^{}` expects {} identity key(s) before member access",
-            root,
-            place.identity_keys.len(),
-        ));
+        return Err(QueryError::MissingIdentityKeys {
+            root: (*root).to_string(),
+            expected: place.identity_keys.len(),
+        });
     }
 
     let mut data_path = Vec::new();
     let mut members = place.root_members.as_slice();
     while let Some(segment) = rest.get(index) {
         let Some((name, kind)) = query_member(segment) else {
-            return Err("a key must follow a saved root or a keyed member".into());
+            return Err(QueryError::UnexpectedKey);
         };
         let member = members
             .iter()
             .find(|member| member.name == *name && kind.matches(member))
-            .ok_or_else(|| kind.unknown_message(name))?;
+            .ok_or_else(|| QueryError::UnknownMember {
+                flavor: kind.flavor(),
+                name: name.to_string(),
+            })?;
         rendered_segments.push(query_segment_for_member(member));
-        data_path.push(DataPathSegment::Member(
-            tooling_catalog_id(&member.catalog_id, "resource member")
-                .map_err(|error| error.to_string())?,
-        ));
+        data_path.push(DataPathSegment::Member(tooling_catalog_id(
+            &member.catalog_id,
+            "resource member",
+        )?));
         index += 1;
 
         let mut key_count = 0usize;
         while let Some(key) = rest.get(index).and_then(query_key) {
             if key_count == member.key_params.len() {
-                return Err(format!("member `{name}` has too many keys"));
+                return Err(QueryError::TooManyMemberKeys {
+                    member: name.to_string(),
+                });
             }
             if let Some(mismatch) = key_mismatch(member.key_params[key_count].scalar, key) {
-                return Err(format!(
-                    "`{name}` key is a {} where the schema declares {}",
-                    mismatch.found.name(),
-                    mismatch.expected.name()
-                ));
+                return Err(QueryError::MemberKeyType {
+                    member: name.to_string(),
+                    expected: mismatch.expected,
+                    found: mismatch.found,
+                });
             }
             data_path.push(DataPathSegment::Key(key.clone()));
             rendered_segments.push(DataQuerySegment::Key(key.clone()));
@@ -114,9 +121,9 @@ fn resolve_query_steps(
 
         if key_count < member.key_params.len() {
             if index < rest.len() {
-                return Err(format!(
-                    "member `{name}` needs all keys before nested access"
-                ));
+                return Err(QueryError::IncompleteMemberKeys {
+                    member: name.to_string(),
+                });
             }
             break;
         }

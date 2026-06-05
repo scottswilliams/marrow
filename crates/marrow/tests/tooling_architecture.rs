@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 #[test]
 fn serve_protocol_does_not_import_cli_data_semantics() {
@@ -23,6 +24,11 @@ fn serve_protocol_does_not_import_cli_data_semantics() {
     );
 }
 
+/// The shared tooling query layer must speak canonical segment kinds. A
+/// `SourceMember` identifier would mean source-text compatibility leaked out of
+/// the named CLI/admin resolver (`resolve_source_text_data_query`, covered by
+/// the `marrow data get` path in `data_cli.rs`) and into the shared facts. No
+/// type boundary forbids merely naming a type, so this is an identifier scan.
 #[test]
 fn shared_tooling_query_segments_are_canonical() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -31,7 +37,7 @@ fn shared_tooling_query_segments_are_canonical() {
 
     for path in rust_files_under(&tooling_dir) {
         let text = fs::read_to_string(&path).expect("read tooling source");
-        if text.contains("SourceMember") {
+        if mentions_identifier(&text, "SourceMember") {
             violations.push(format!("{} mentions SourceMember", path.display()));
         }
     }
@@ -43,8 +49,31 @@ fn shared_tooling_query_segments_are_canonical() {
     );
 }
 
+/// Storage locators and raw payloads must not appear in public tooling
+/// signatures. The forbidden set spans several unrelated types in different
+/// modules (`CatalogId`, `DataPathSegment`, `StoreLeafKind`, raw byte vectors
+/// and slices, in-place string renderers), so no single trait boundary can
+/// express the rule; this is a tidy identifier scan over `pub` declarations.
+///
+/// `DebugDataPayload::as_bytes` is the one sanctioned raw-bytes accessor: the
+/// debug payload wrapper is the public type, and reading its bytes is the
+/// point. It is allowlisted by method name rather than full signature so a
+/// reformat does not trip the scan. The positive contract that ids never leak
+/// is proven by the `data_cli.rs` orphan tests, which assert no `cat_` text
+/// reaches any output.
 #[test]
 fn public_tooling_signatures_hide_storage_locators_and_raw_payloads() {
+    const FORBIDDEN: [&str; 6] = [
+        "CatalogId",
+        "DataPathSegment",
+        "StoreLeafKind",
+        "render_value_bytes",
+        "push_key",
+        "&mut String",
+    ];
+    const RAW_BYTES: [&str; 2] = ["Vec<u8>", "&[u8]"];
+    const RAW_BYTES_ACCESSOR: &str = "fn as_bytes";
+
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let tooling_dir = manifest_dir.join("../marrow-check/src/tooling");
     let mut violations = Vec::new();
@@ -56,17 +85,23 @@ fn public_tooling_signatures_hide_storage_locators_and_raw_payloads() {
             if !trimmed.starts_with("pub ") {
                 continue;
             }
-            if trimmed.contains("CatalogId")
-                || trimmed.contains("DataPathSegment")
-                || trimmed.contains("Vec<u8>")
-                || trimmed.contains("StoreLeafKind")
-                || trimmed.contains("&mut String")
-                || trimmed.contains("render_value_bytes")
-                || trimmed.contains("push_key")
-                || (trimmed.contains("&[u8]") && !trimmed.starts_with("pub fn as_bytes("))
-            {
+            let mut leaks: Vec<&str> = FORBIDDEN
+                .iter()
+                .copied()
+                .filter(|token| trimmed.contains(token))
+                .collect();
+            let is_bytes_accessor = trimmed.contains(RAW_BYTES_ACCESSOR);
+            if !is_bytes_accessor {
+                leaks.extend(
+                    RAW_BYTES
+                        .iter()
+                        .copied()
+                        .filter(|token| trimmed.contains(token)),
+                );
+            }
+            if let Some(token) = leaks.first() {
                 violations.push(format!(
-                    "{}:{} exposes storage/raw type in public tooling API: {}",
+                    "{}:{} exposes storage/raw type `{token}` in public tooling API: {}",
                     path.display(),
                     line_number + 1,
                     trimmed
@@ -85,9 +120,7 @@ fn public_tooling_signatures_hide_storage_locators_and_raw_payloads() {
 #[test]
 fn tooling_data_root_module_is_only_a_facade() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let data_rs = manifest_dir.join("../marrow-check/src/tooling/data.rs");
-    let data_mod = manifest_dir.join("../marrow-check/src/tooling/data/mod.rs");
-    let root = if data_rs.exists() { data_rs } else { data_mod };
+    let root = manifest_dir.join("../marrow-check/src/tooling/data/mod.rs");
     let text = fs::read_to_string(&root).expect("read data module root");
     let line_count = text.lines().count();
 
@@ -141,20 +174,38 @@ fn explain_surface_does_not_claim_query_or_index_plans() {
 
 #[test]
 fn explain_is_debug_admin_not_a_top_level_command() {
+    // `explain` must reach the user only through the debug/admin surface. A
+    // behavioral check is more durable than scanning the dispatcher's match-arm
+    // text, which would break on any mechanical reshape that left the boundary
+    // intact.
+    let top_level = run_marrow(&["explain", "--help"]);
+    assert_eq!(
+        top_level.code,
+        Some(2),
+        "`marrow explain` must not be a top-level command: {}",
+        top_level.stderr
+    );
+    assert!(
+        top_level.stderr.contains("unknown command"),
+        "`marrow explain` should be rejected as unknown: {}",
+        top_level.stderr
+    );
+
+    let debug_surface = run_marrow(&["debug", "explain", "--help"]);
+    assert_eq!(
+        debug_surface.code,
+        Some(0),
+        "`marrow debug explain` must be the admin entry point: {}",
+        debug_surface.stderr
+    );
+    assert!(
+        debug_surface.stdout.contains("marrow debug explain"),
+        "`marrow debug explain --help` should describe the debug surface: {}",
+        debug_surface.stdout
+    );
+
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let repo = manifest_dir.parent().expect("repo root");
-    let main_rs = repo.join("marrow/src/main.rs");
-    let main_text = fs::read_to_string(&main_rs).expect("read main");
-
-    assert!(
-        !main_text.contains("\"explain\" =>"),
-        "explain must not be a top-level CLI command"
-    );
-    assert!(
-        main_text.contains("\"debug\" => cmd_explain::debug(rest)"),
-        "debug explain must stay under the explicit debug/admin dispatcher"
-    );
-
     let docs = [
         "../../docs/cli.md",
         "../../docs/tooling-surfaces.md",
@@ -174,6 +225,39 @@ fn explain_is_debug_admin_not_a_top_level_command() {
         "canonical docs must name `marrow debug explain`, not top-level `marrow explain`:\n{}",
         violations.join("\n")
     );
+}
+
+/// Whether `text` uses `ident` as a whole identifier rather than as a substring
+/// of a longer name, so a comment word or a longer type that merely contains the
+/// token does not trip an identifier scan.
+fn mentions_identifier(text: &str, ident: &str) -> bool {
+    text.match_indices(ident).any(|(start, _)| {
+        let before = text[..start].chars().next_back();
+        let after = text[start + ident.len()..].chars().next();
+        !before.is_some_and(is_identifier_char) && !after.is_some_and(is_identifier_char)
+    })
+}
+
+fn is_identifier_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_'
+}
+
+struct CliRun {
+    code: Option<i32>,
+    stdout: String,
+    stderr: String,
+}
+
+fn run_marrow(args: &[&str]) -> CliRun {
+    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .args(args)
+        .output()
+        .expect("run marrow");
+    CliRun {
+        code: output.status.code(),
+        stdout: String::from_utf8(output.stdout).expect("stdout utf8"),
+        stderr: String::from_utf8(output.stderr).expect("stderr utf8"),
+    }
 }
 
 fn rust_files_under(dir: &Path) -> Vec<std::path::PathBuf> {

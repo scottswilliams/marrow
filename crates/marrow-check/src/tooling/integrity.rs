@@ -9,10 +9,12 @@ use marrow_syntax::Diagnose;
 
 use crate::{
     CheckedProgram, CheckedSavedMember, CheckedSavedPlace, StoreLeafKind,
-    checked_activation_root_places, checked_saved_root_place, identity_leaf_key_mismatch,
+    checked_activation_root_places, identity_leaf_key_mismatch,
 };
 
-use super::data::{DataRecord, push_key, validate_member_value_path, visit_data_records_in_places};
+use super::data::{
+    DataRecord, checked_places, push_key, validate_member_value_path, visit_data_records_in_places,
+};
 
 pub const ORPHAN_INTEGRITY_HELP: &str =
     "run `marrow data integrity` after source-native evolution or maintenance repair";
@@ -199,17 +201,6 @@ fn enum_decode_problem(record: &DataRecord, enum_name: &str) -> IntegrityProblem
         message: format!("stored value is not a catalog-backed `{enum_name}` member"),
         help: None,
     }
-}
-
-fn checked_places(program: &CheckedProgram) -> Vec<CheckedSavedPlace> {
-    program
-        .facts
-        .stores()
-        .iter()
-        .filter_map(|store| {
-            checked_saved_root_place(program, &store.root, marrow_syntax::SourceSpan::default())
-        })
-        .collect()
 }
 
 fn visit_orphans_in_places(

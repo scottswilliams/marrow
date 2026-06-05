@@ -1,5 +1,6 @@
 mod children;
 mod query;
+mod query_error;
 mod read;
 mod render;
 mod shape;
@@ -12,7 +13,8 @@ use crate::{ScalarType, StoreLeafKind};
 
 pub use children::{data_children, data_children_supports_paging};
 pub use query::{data_query_under_prefix, resolve_data_query, resolve_source_text_data_query};
-pub use read::{data_presence_name, read_data_query};
+pub use query_error::{MemberFlavor, QueryError};
+pub use read::read_data_query;
 pub use render::render_query_segments;
 pub use traversal::{count_data_records, data_roots_in_store, visit_data_records};
 pub use walk::walk_data;
@@ -20,7 +22,7 @@ pub use walk::walk_data;
 pub(crate) use query::StorageDataQuery;
 pub(crate) use render::push_key;
 pub(crate) use shape::validate_member_value_path;
-pub(crate) use traversal::visit_data_records_in_places;
+pub(crate) use traversal::{checked_places, visit_data_records_in_places};
 
 pub const MAX_PREVIEW_ITEMS: usize = 10_000;
 
@@ -73,6 +75,18 @@ pub enum DataPresence {
     Absent,
     ValueOnly,
     ChildrenOnly,
+}
+
+impl DataPresence {
+    /// The snake_case label this presence carries in JSON and protocol replies.
+    /// Render-only: callers branch on the variant and emit this for serialization.
+    pub fn as_label(self) -> &'static str {
+        match self {
+            Self::Absent => "absent",
+            Self::ValueOnly => "value_only",
+            Self::ChildrenOnly => "children_only",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -11,10 +11,28 @@ use serde_json::{Value, json};
 use super::codec::{
     decode_base64_field, decode_key, decode_query_path, encode_key, encode_query_path,
 };
-use super::{ProtocolError, bad_request};
+use super::{ProtocolError, bad_request, query_error};
 
 pub(super) struct CursorState {
     key: RandomState,
+}
+
+/// The per-operation parameters of a signed cursor envelope: the version it was
+/// stamped with, the inner payload field name, the scope it must match, the
+/// operation label used in the malformed-cursor message, and the signature
+/// function that reproduces the stamp.
+struct SignedEnvelope<'a> {
+    version: u64,
+    field: &'a str,
+    scope: &'a str,
+    label: &'a str,
+    signature: &'a dyn Fn(&str, &Value) -> String,
+}
+
+impl SignedEnvelope<'_> {
+    fn malformed(&self) -> ProtocolError {
+        bad_request(&format!("`cursor` is not a {} cursor", self.label))
+    }
 }
 
 impl CursorState {
@@ -39,37 +57,18 @@ impl CursorState {
         value: &Value,
         prefix: &DataQuery,
     ) -> Result<DataQuery, ProtocolError> {
-        let cursor = decode_base64_field(value, "cursor")?;
-        let cursor =
-            String::from_utf8(cursor).map_err(|_| bad_request("`cursor` is not a checked path"))?;
-        let cursor: Value = serde_json::from_str(&cursor)
-            .map_err(|_| bad_request("`cursor` is not a debug_data_walk cursor"))?;
-        let object = cursor
-            .as_object()
-            .ok_or_else(|| bad_request("`cursor` is not a debug_data_walk cursor"))?;
-        if object.get("v").and_then(Value::as_u64) != Some(2) {
-            return Err(bad_request("`cursor` is not a debug_data_walk cursor"));
-        }
-        let path = object
-            .get("path")
-            .ok_or_else(|| bad_request("`cursor` is not a debug_data_walk cursor"))?;
-        let scope = object
-            .get("scope")
-            .and_then(Value::as_str)
-            .ok_or_else(|| bad_request("`cursor` is not a debug_data_walk cursor"))?;
-        let sig = object
-            .get("sig")
-            .and_then(Value::as_str)
-            .ok_or_else(|| bad_request("`cursor` is not a debug_data_walk cursor"))?;
-        if sig != self.signature(scope, path) {
-            return Err(bad_request("`cursor` is not a debug_data_walk cursor"));
-        }
-        if scope != prefix.path() {
-            return Err(bad_request("`cursor` is outside the requested path"));
-        }
-        let segments = decode_query_path(path)?;
-        let query =
-            resolve_data_query(program, &segments).map_err(|message| bad_request(&message))?;
+        let path = self.decode_signed_envelope(
+            value,
+            &SignedEnvelope {
+                version: 2,
+                field: "path",
+                scope: prefix.path(),
+                label: "debug_data_walk",
+                signature: &|scope, field| self.signature(scope, field),
+            },
+        )?;
+        let segments = decode_query_path(&path)?;
+        let query = resolve_data_query(program, &segments).map_err(query_error)?;
         if !data_query_under_prefix(&query, prefix) {
             return Err(bad_request("`cursor` is outside the requested path"));
         }
@@ -96,35 +95,59 @@ impl CursorState {
         value: &Value,
         scope: &str,
     ) -> Result<SavedKey, ProtocolError> {
+        let after = self.decode_signed_envelope(
+            value,
+            &SignedEnvelope {
+                version: 1,
+                field: "after",
+                scope,
+                label: "debug_data_children",
+                signature: &|scope, field| self.children_signature(scope, field),
+            },
+        )?;
+        decode_key(&after)
+    }
+
+    /// Validate a signed cursor envelope and return its inner field.
+    ///
+    /// Both cursor flavors share one base64 -> utf8 -> json -> object ->
+    /// version -> field -> scope -> signature contract; only the version, the
+    /// inner field name, and the signature seed differ. A structural or
+    /// signature failure is reported uniformly so a client cannot tell a
+    /// malformed envelope from a forged signature: revealing which check failed
+    /// would help an attacker forge a valid token. A scope mismatch is a
+    /// distinct, safe-to-report condition (the cursor was issued for another
+    /// path), so it keeps its own message.
+    fn decode_signed_envelope(
+        &self,
+        value: &Value,
+        envelope: &SignedEnvelope<'_>,
+    ) -> Result<Value, ProtocolError> {
         let cursor = decode_base64_field(value, "cursor")?;
-        let cursor = String::from_utf8(cursor)
-            .map_err(|_| bad_request("`cursor` is not a debug_data_children cursor"))?;
-        let cursor: Value = serde_json::from_str(&cursor)
-            .map_err(|_| bad_request("`cursor` is not a debug_data_children cursor"))?;
-        let object = cursor
-            .as_object()
-            .ok_or_else(|| bad_request("`cursor` is not a debug_data_children cursor"))?;
-        if object.get("v").and_then(Value::as_u64) != Some(1) {
-            return Err(bad_request("`cursor` is not a debug_data_children cursor"));
+        let cursor = String::from_utf8(cursor).map_err(|_| envelope.malformed())?;
+        let cursor: Value = serde_json::from_str(&cursor).map_err(|_| envelope.malformed())?;
+        let object = cursor.as_object().ok_or_else(|| envelope.malformed())?;
+        if object.get("v").and_then(Value::as_u64) != Some(envelope.version) {
+            return Err(envelope.malformed());
         }
-        let after = object
-            .get("after")
-            .ok_or_else(|| bad_request("`cursor` is not a debug_data_children cursor"))?;
-        let cursor_scope = object
+        let field = object
+            .get(envelope.field)
+            .ok_or_else(|| envelope.malformed())?;
+        let scope = object
             .get("scope")
             .and_then(Value::as_str)
-            .ok_or_else(|| bad_request("`cursor` is not a debug_data_children cursor"))?;
+            .ok_or_else(|| envelope.malformed())?;
         let sig = object
             .get("sig")
             .and_then(Value::as_str)
-            .ok_or_else(|| bad_request("`cursor` is not a debug_data_children cursor"))?;
-        if sig != self.children_signature(cursor_scope, after) {
-            return Err(bad_request("`cursor` is not a debug_data_children cursor"));
+            .ok_or_else(|| envelope.malformed())?;
+        if sig != (envelope.signature)(scope, field) {
+            return Err(envelope.malformed());
         }
-        if cursor_scope != scope {
+        if scope != envelope.scope {
             return Err(bad_request("`cursor` is outside the requested path"));
         }
-        decode_key(after)
+        Ok(field.clone())
     }
 
     fn signature(&self, scope: &str, path: &Value) -> String {

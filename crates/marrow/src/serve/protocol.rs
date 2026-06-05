@@ -118,9 +118,13 @@ pub(super) fn store_error(error: marrow_store::StoreError) -> ProtocolError {
 
 pub(super) fn tooling_error(error: marrow_check::tooling::ToolingError) -> ProtocolError {
     match error {
-        marrow_check::tooling::ToolingError::Query(message) => bad_request(&message),
+        marrow_check::tooling::ToolingError::Query(error) => query_error(error),
         marrow_check::tooling::ToolingError::Store(error) => store_error(error),
     }
+}
+
+pub(super) fn query_error(error: marrow_check::tooling::QueryError) -> ProtocolError {
+    bad_request(&error.to_string())
 }
 
 #[cfg(test)]

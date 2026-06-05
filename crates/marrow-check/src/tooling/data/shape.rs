@@ -5,6 +5,7 @@ use marrow_store::tree::DataPathSegment;
 
 use crate::{CheckedSavedMember, CheckedSavedMemberKind, ScalarType};
 
+use super::query_error::MemberFlavor;
 use super::{DataQuerySegment, KeyMismatch};
 use crate::tooling::ToolingError;
 
@@ -50,11 +51,11 @@ impl QueryMemberKind {
         }
     }
 
-    pub(crate) fn unknown_message(self, name: &str) -> String {
+    pub(crate) fn flavor(self) -> MemberFlavor {
         match self {
-            Self::Field => format!("unknown saved field `{name}`"),
-            Self::Layer => format!("unknown saved layer `{name}`"),
-            Self::SourceText => format!("unknown saved member `{name}`"),
+            Self::Field => MemberFlavor::Field,
+            Self::Layer => MemberFlavor::Layer,
+            Self::SourceText => MemberFlavor::Member,
         }
     }
 }

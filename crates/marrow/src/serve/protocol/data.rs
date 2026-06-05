@@ -1,13 +1,14 @@
 use marrow_check::CheckedProgram;
 use marrow_check::tooling::{
-    DataChild, data_children, data_children_supports_paging, data_presence_name,
-    data_roots_in_store, read_data_query,
+    DataChild, data_children, data_children_supports_paging, data_roots_in_store, read_data_query,
 };
 use marrow_run::base64;
 use marrow_store::tree::TreeStore;
 use serde_json::{Value, json};
 
-use super::codec::{encode_key, request_path, request_query};
+use super::codec::{
+    LimitBounds, LimitDefault, encode_key, request_limit, request_path, request_query,
+};
 use super::cursor::CursorState;
 use super::walk::MAX_WALK;
 use super::{ProtocolError, bad_request, store_error, tooling_error};
@@ -28,7 +29,7 @@ pub(super) fn op_debug_data_get(
     let query = request_query(program, request)?;
     let (value, presence) = read_data_query(store, &query).map_err(store_error)?;
     Ok(json!({
-        "presence": data_presence_name(presence),
+        "presence": presence.as_label(),
         "value": value.map(|payload| base64::encode(payload.as_bytes())),
     }))
 }
@@ -51,7 +52,14 @@ pub(super) fn op_debug_data_children(
         ));
     }
     let limit = if supports_paging {
-        request_children_limit(request)?
+        request_limit(
+            request,
+            &LimitBounds {
+                default: LimitDefault::ServerMaximum,
+                max: MAX_WALK,
+                op: "debug_data_children",
+            },
+        )?
     } else {
         MAX_WALK
     };
@@ -86,34 +94,4 @@ pub(super) fn op_debug_data_children(
         "truncated": page.truncated,
         "cursor": cursor,
     }))
-}
-
-fn request_children_limit(request: &Value) -> Result<usize, ProtocolError> {
-    let Some(value) = request.get("limit") else {
-        return Ok(MAX_WALK);
-    };
-    let invalid = bad_request("`debug_data_children` `limit` must be a positive integer");
-    let Some(number) = value.as_number() else {
-        return Err(invalid);
-    };
-    if let Some(limit) = number.as_u64() {
-        if limit == 0 {
-            return Err(invalid);
-        }
-        return Ok(limit.min(MAX_WALK as u64) as usize);
-    }
-    if number.as_i64().is_some() {
-        return Err(invalid);
-    }
-    if number
-        .as_f64()
-        .is_some_and(|limit| limit.is_finite() && limit.fract() == 0.0 && limit >= u64::MAX as f64)
-    {
-        return Ok(MAX_WALK);
-    }
-    let text = number.to_string();
-    if text.bytes().all(|byte| byte.is_ascii_digit()) && text != "0" {
-        return Ok(MAX_WALK);
-    }
-    Err(invalid)
 }

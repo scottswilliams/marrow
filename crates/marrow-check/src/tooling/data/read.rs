@@ -38,11 +38,3 @@ pub fn read_data_query(
     };
     Ok((value.map(DebugDataPayload::new), presence))
 }
-
-pub fn data_presence_name(presence: DataPresence) -> &'static str {
-    match presence {
-        DataPresence::Absent => "absent",
-        DataPresence::ValueOnly => "value_only",
-        DataPresence::ChildrenOnly => "children_only",
-    }
-}

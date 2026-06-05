@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use marrow_check::tooling::{DataQuerySegment, ToolingError, data_children};
+use marrow_check::tooling::{DataQuerySegment, QueryError, ToolingError, data_children};
 use marrow_check::{
     CheckedProgram, CheckedSavedMember, CheckedSavedPlace, checked_saved_root_place,
 };
@@ -140,15 +140,10 @@ fn shared_data_children_rejects_zero_limit() {
     .expect_err("shared child pages reject a zero limit");
     fs::remove_dir_all(&project).ok();
 
-    match error {
-        ToolingError::Query(message) => {
-            assert!(
-                message.contains("limit"),
-                "zero-limit query error: {message}"
-            );
-        }
-        ToolingError::Store(error) => panic!("expected query error, got store error: {error}"),
-    }
+    assert!(
+        matches!(error, ToolingError::Query(QueryError::ZeroLimit)),
+        "expected a typed zero-limit query error, got {error:?}"
+    );
 }
 
 #[test]
@@ -799,7 +794,6 @@ fn data_integrity_format_json_problems_carry_a_tooling_kind() {
     let value: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
     let problem = &value["problems"][0];
     assert_eq!(problem["code"], serde_json::json!("data.decode"));
-    // `data.*` has no dedicated kind, so `kind_for_code`'s default arm classifies
-    // it as tooling.
+    // `data.*` integrity problems carry the tooling kind.
     assert_eq!(problem["kind"], serde_json::json!("tooling"));
 }

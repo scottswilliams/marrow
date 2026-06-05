@@ -6,6 +6,7 @@ use crate::tooling::ToolingError;
 use crate::{CheckedProgram, CheckedSavedMember, CheckedSavedMemberKind, checked_saved_root_place};
 
 use super::query::data_query_under_prefix;
+use super::query_error::QueryError;
 use super::render::render_query_segments;
 use super::shape::{
     cursor_names_value_path, path_can_match, query_segment_for_member, tooling_catalog_id,
@@ -22,32 +23,24 @@ pub fn walk_data(
     limit: usize,
 ) -> Result<DataWalkPage, ToolingError> {
     if limit == 0 {
-        return Err(ToolingError::Query(
-            "`limit` must be greater than zero".to_string(),
-        ));
+        return Err(QueryError::ZeroLimit.into());
     }
     let place =
         checked_saved_root_place(program, query.root(), marrow_syntax::SourceSpan::default())
-            .ok_or_else(|| {
-                ToolingError::Query(format!("unknown saved root `^{}`", query.root()))
+            .ok_or_else(|| QueryError::UnknownRoot {
+                root: query.root().to_string(),
             })?;
     let mut state = WalkState::new(limit);
     let start = cursor.unwrap_or(query);
     if !data_query_under_prefix(start, query) {
-        return Err(ToolingError::Query(
-            "`cursor` is outside the requested path".to_string(),
-        ));
+        return Err(QueryError::CursorOutsidePath.into());
     }
     if cursor.is_some() && start.storage.identity.len() != query.storage.identity_arity {
-        return Err(ToolingError::Query(
-            "`cursor` is not a data walk position".to_string(),
-        ));
+        return Err(QueryError::CursorNotAPosition.into());
     }
     if cursor.is_some() && !cursor_names_value_path(&place.root_members, &start.storage.data_path)?
     {
-        return Err(ToolingError::Query(
-            "`cursor` is not a data walk position".to_string(),
-        ));
+        return Err(QueryError::CursorNotAPosition.into());
     }
 
     let mut identity = if cursor.is_some() {
@@ -80,9 +73,7 @@ pub fn walk_data(
             &mut path,
         )?;
         if waiting_for_cursor {
-            return Err(ToolingError::Query(
-                "`cursor` does not name a data walk entry".to_string(),
-            ));
+            return Err(QueryError::CursorNotAnEntry.into());
         }
         if state.next_cursor_path.is_some() {
             break;

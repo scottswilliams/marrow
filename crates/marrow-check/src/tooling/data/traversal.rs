@@ -56,7 +56,7 @@ pub(crate) fn visit_data_records_in_places(
     Ok(records)
 }
 
-fn checked_places(program: &CheckedProgram) -> Vec<CheckedSavedPlace> {
+pub(crate) fn checked_places(program: &CheckedProgram) -> Vec<CheckedSavedPlace> {
     program
         .facts
         .stores()

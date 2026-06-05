@@ -4,7 +4,7 @@ use marrow_run::base64;
 use marrow_store::key::SavedKey;
 use serde_json::{Value, json};
 
-use super::{ProtocolError, bad_request};
+use super::{ProtocolError, bad_request, query_error};
 
 pub(super) fn request_path(request: &Value) -> Result<Vec<DataQuerySegment>, ProtocolError> {
     let path = request
@@ -18,7 +18,7 @@ pub(super) fn request_query(
     request: &Value,
 ) -> Result<DataQuery, ProtocolError> {
     let segments = request_path(request)?;
-    resolve_data_query(program, &segments).map_err(|message| bad_request(&message))
+    resolve_data_query(program, &segments).map_err(query_error)
 }
 
 pub(super) fn decode_query_path(value: &Value) -> Result<Vec<DataQuerySegment>, ProtocolError> {
@@ -140,4 +140,76 @@ fn encode_query_segment(segment: &DataQuerySegment) -> Value {
         DataQuerySegment::Layer(name) => json!({ "layer": name }),
         DataQuerySegment::Key(key) => json!({ "key": encode_key(key) }),
     }
+}
+
+/// How an operation treats an absent `limit` argument.
+pub(super) enum LimitDefault {
+    /// `limit` is required; its absence is a bad request.
+    Required,
+    /// `limit` is optional; its absence falls back to the server maximum.
+    ServerMaximum,
+}
+
+/// The bounds and naming an operation gives the shared `limit` parser, so the
+/// non-obvious saturation rules live in one place while each op keeps its own
+/// absent policy and client-facing message.
+pub(super) struct LimitBounds {
+    pub(super) default: LimitDefault,
+    pub(super) max: usize,
+    /// The operation name woven into the bad-request message text.
+    pub(super) op: &'static str,
+}
+
+/// Parse a request `limit` into a positive count no larger than `bounds.max`.
+///
+/// A `limit` larger than the server maximum saturates to it rather than
+/// failing, including JSON integers too large to fit in `u64`, so an
+/// over-eager client gets a full page instead of an error. Zero, negative, and
+/// non-integer limits are rejected.
+pub(super) fn request_limit(request: &Value, bounds: &LimitBounds) -> Result<usize, ProtocolError> {
+    let Some(value) = request.get("limit") else {
+        return match bounds.default {
+            LimitDefault::Required => Err(bad_request(&format!(
+                "`{}` requires a positive integer `limit`",
+                bounds.op
+            ))),
+            LimitDefault::ServerMaximum => Ok(bounds.max),
+        };
+    };
+    let Some(number) = value.as_number() else {
+        return Err(positive_limit_error(bounds));
+    };
+    if let Some(limit) = number.as_u64() {
+        if limit == 0 {
+            return Err(positive_limit_error(bounds));
+        }
+        return Ok(limit.min(bounds.max as u64) as usize);
+    }
+    if number.as_i64().is_some() {
+        return Err(positive_limit_error(bounds));
+    }
+    if is_over_u64_integer(number) {
+        return Ok(bounds.max);
+    }
+    Err(positive_limit_error(bounds))
+}
+
+/// A finite positive JSON integer too large to fit in `u64`, whether serde kept
+/// it as a float or an arbitrary-precision integer literal.
+fn is_over_u64_integer(number: &serde_json::Number) -> bool {
+    if number
+        .as_f64()
+        .is_some_and(|value| value.is_finite() && value.fract() == 0.0 && value >= u64::MAX as f64)
+    {
+        return true;
+    }
+    let text = number.to_string();
+    text.bytes().all(|byte| byte.is_ascii_digit()) && text != "0"
+}
+
+fn positive_limit_error(bounds: &LimitBounds) -> ProtocolError {
+    bad_request(&format!(
+        "`{}` `limit` must be a positive integer",
+        bounds.op
+    ))
 }

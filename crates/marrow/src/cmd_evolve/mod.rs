@@ -38,7 +38,7 @@ pub(crate) fn check_data(dir: &str, format: CheckFormat) -> ExitCode {
     let Ok((config, program)) = load_checked_project_with_format(dir, format) else {
         return ExitCode::FAILURE;
     };
-    let Ok(store) = store::preview_store(dir, &config, format) else {
+    let Ok(store) = store::preview_store(dir, &config) else {
         return ExitCode::FAILURE;
     };
     match preview(&program, &store) {
@@ -66,7 +66,7 @@ fn preview_cmd(raw_args: &[String]) -> ExitCode {
     let Ok((config, program)) = load_checked_project_with_format(&input.dir, input.format) else {
         return ExitCode::FAILURE;
     };
-    let Ok(store) = store::preview_store(&input.dir, &config, input.format) else {
+    let Ok(store) = store::preview_store(&input.dir, &config) else {
         return ExitCode::FAILURE;
     };
     match preview(&program, &store) {

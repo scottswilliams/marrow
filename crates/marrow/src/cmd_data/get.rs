@@ -1,9 +1,7 @@
 use std::process::ExitCode;
 
 use marrow_check::parse_path;
-use marrow_check::tooling::{
-    DataPresence, data_presence_name, read_data_query, resolve_source_text_data_query,
-};
+use marrow_check::tooling::{DataPresence, read_data_query, resolve_source_text_data_query};
 use serde_json::json;
 
 use crate::{CheckFormat, load_checked_project, write_json};
@@ -55,7 +53,7 @@ pub(super) fn data_get(args: &[String]) -> ExitCode {
         CheckFormat::Json | CheckFormat::Jsonl => {
             write_json(json!({
                 "path": query.path(),
-                "presence": data_presence_name(presence),
+                "presence": presence.as_label(),
                 "value_b64": value
                     .as_ref()
                     .map(|payload| marrow_run::base64::encode(payload.as_bytes())),

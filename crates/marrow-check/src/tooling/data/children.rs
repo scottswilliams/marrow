@@ -5,6 +5,7 @@ use crate::tooling::ToolingError;
 use crate::{CheckedProgram, CheckedSavedMember, CheckedSavedMemberKind, checked_saved_root_place};
 
 use super::query::resolve_data_query;
+use super::query_error::QueryError;
 use super::shape::{declared_members_below_path, tooling_catalog_id};
 use super::traversal::data_roots_in_store;
 use super::{DataChild, DataChildrenPage, DataQuery, DataQuerySegment};
@@ -17,9 +18,7 @@ pub fn data_children(
     resume: Option<&SavedKey>,
 ) -> Result<DataChildrenPage, ToolingError> {
     if limit == 0 {
-        return Err(ToolingError::Query(
-            "`limit` must be greater than zero".to_string(),
-        ));
+        return Err(QueryError::ZeroLimit.into());
     }
     if segments.is_empty() {
         let children = data_roots_in_store(program, store)?
@@ -33,31 +32,25 @@ pub fn data_children(
         });
     }
 
-    let query = resolve_data_query(program, segments).map_err(ToolingError::Query)?;
+    let query = resolve_data_query(program, segments)?;
     if query.storage.identity.len() < query.storage.identity_arity {
         return record_children(store, &query, limit, resume);
     }
     let Some((DataQuerySegment::Root(root), _)) = segments.split_first() else {
-        return Err(ToolingError::Query(
-            "path must start with a saved root".to_string(),
-        ));
+        return Err(QueryError::MissingRoot.into());
     };
     let place = checked_saved_root_place(program, root, marrow_syntax::SourceSpan::default())
-        .ok_or_else(|| ToolingError::Query(format!("unknown saved root `^{root}`")))?;
+        .ok_or_else(|| QueryError::UnknownRoot { root: root.clone() })?;
     if let Some(members) =
         declared_members_below_path(&place.root_members, &query.storage.data_path)
     {
         if resume.is_some() {
-            return Err(ToolingError::Query(
-                "declared members are not a paged child scan, so they take no `cursor`".to_string(),
-            ));
+            return Err(QueryError::MembersTakeNoCursor.into());
         }
         return member_children(store, &query, members);
     }
     if query.storage.data_path.is_empty() {
-        return Err(ToolingError::Query(
-            "declared members are not a paged child scan, so they take no `cursor`".to_string(),
-        ));
+        return Err(QueryError::NoChildScan.into());
     }
     data_key_children(store, &query, limit, resume)
 }
@@ -69,17 +62,15 @@ pub fn data_children_supports_paging(
     if segments.is_empty() {
         return Ok(false);
     }
-    let query = resolve_data_query(program, segments).map_err(ToolingError::Query)?;
+    let query = resolve_data_query(program, segments)?;
     if query.storage.identity.len() < query.storage.identity_arity {
         return Ok(true);
     }
     let Some((DataQuerySegment::Root(root), _)) = segments.split_first() else {
-        return Err(ToolingError::Query(
-            "path must start with a saved root".to_string(),
-        ));
+        return Err(QueryError::MissingRoot.into());
     };
     let place = checked_saved_root_place(program, root, marrow_syntax::SourceSpan::default())
-        .ok_or_else(|| ToolingError::Query(format!("unknown saved root `^{root}`")))?;
+        .ok_or_else(|| QueryError::UnknownRoot { root: root.clone() })?;
     Ok(
         declared_members_below_path(&place.root_members, &query.storage.data_path).is_none()
             && !query.storage.data_path.is_empty(),
