@@ -132,9 +132,9 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 | Duplicate semantic classifiers | Targeted scan found classifier families in checker/runtime; owner lanes must prove one semantic owner. | needs-lane | L06-L11 |
 | Public raw/string APIs | Raw/catalog/archive hits require production-boundary review. | needs-lane | L10, L12, L13, L14 |
 | Fallback branches and legacy modes | Term scan has test/doc hits; owner lanes must distinguish domain examples from compatibility glue. | needs-lane | all lanes |
-| Message-parsing logic | L05 project-model has no `message.contains` semantic assertions after integration; remaining areas still need lane-local migration. | needs-lane | L03-L04, L06-L14 |
+| Message-parsing logic | L04 schema and L05 project-model have no `message.contains` semantic assertions after integration; remaining areas still need lane-local migration. | needs-lane | L03, L06-L14 |
 | Source-text architecture scans | Existing scans identified in architecture tests. | needs-lane | L08, L10, L14 |
-| Comment sediment | L05 project-model hits were triaged as durable store-key migration wording and a `SystemTime::now()` false positive; remaining areas still need lane-local review. | needs-lane | L00-L04, L06-L14 |
+| Comment sediment | L04 schema hits were triaged as `clock.now` domain text and a pre-existing `string`/`Str` bridge comment; L05 project-model hits were triaged as durable store-key migration wording and a `SystemTime::now()` false positive. | needs-lane | L00-L03, L06-L14 |
 | Cargo target isolation | Future lane commands must spell lane-specific `CARGO_TARGET_DIR`. | needs-lane | all lanes |
 | Cargo.lock churn | No lockfile change at audit start. | reviewed-clean | L00 |
 
@@ -146,7 +146,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 | L01 language-docs | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l01-language-docs` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L02 docs-meta | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l02-docs-meta` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L03 syntax | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-syntax` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
-| L04 schema | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l04-schema` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
+| L04 schema | `/Users/scottwilliams/Dev/marrow-rust-hardening-l04-schema` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l04-schema`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l04-main-integration` | `5ca2a691806d963c5b44cef8a1eb02ac1b5da7e4` | lane `8b651049860539650ca534820cd3ca03711dd03d`; main `ee5422fe7de568a874ed2b2b4aaee6f9a721a7d8` | complete | focused, package, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings | pass, no findings | L04-P001 fixed before review; no review findings | integrated on main after live-main recheck; tracker evidence recorded |
 | L05 project-model | `/Users/scottwilliams/Dev/marrow-rust-hardening-l05-project-model` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-project-model`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-main-integration` | `49556121dc4648dec8cd7e11692a4d85cdaf6d7e` | lane `5623e86632a0a62b29c02ad2d104ef1d5969d028`; main `aac2638f1430a3a85a4a7c98a1490b6b1ea7a28c` | complete | focused, package, workspace build/test, workspace clippy, and fmt gates passed | fail on object-shape probe, then pass after fix | pass, no findings; pass after re-review | L05-R001 fixed and re-reviewed | integrated on main after live-main recheck; tracker evidence recorded |
 | L06 checker-core | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l06-checker-core` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L07 checker-evolution | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l07-checker-evolution` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
@@ -337,13 +337,13 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow-run/tests/evolution_apply.rs` - status: unreviewed; owner: L11 runtime-evolution; notes: initial inventory.
 
 ### crates/marrow-schema
-- `crates/marrow-schema/Cargo.toml` - status: unreviewed; owner: L04 schema; notes: initial inventory.
-- `crates/marrow-schema/src/error.rs` - status: unreviewed; owner: L04 schema; notes: initial inventory.
-- `crates/marrow-schema/src/lib.rs` - status: unreviewed; owner: L04 schema; notes: initial inventory.
-- `crates/marrow-schema/src/stdlib.rs` - status: unreviewed; owner: L04 schema; notes: initial inventory.
-- `crates/marrow-schema/tests/compile_enum.rs` - status: unreviewed; owner: L04 schema; notes: initial inventory.
-- `crates/marrow-schema/tests/compile_resource.rs` - status: unreviewed; owner: L04 schema; notes: initial inventory.
-- `crates/marrow-schema/tests/resolve_type.rs` - status: unreviewed; owner: L04 schema; notes: initial inventory.
+- `crates/marrow-schema/Cargo.toml` - status: complete; owner: L04 schema; notes: reviewed-clean; no manifest churn.
+- `crates/marrow-schema/src/error.rs` - status: complete; owner: L04 schema; notes: reviewed-clean by lane gates and absence scans.
+- `crates/marrow-schema/src/lib.rs` - status: complete; owner: L04 schema; notes: typed `SchemaErrorKind` payloads added for schema diagnostics; duplicate-index render mismatch fixed.
+- `crates/marrow-schema/src/stdlib.rs` - status: complete; owner: L04 schema; notes: reviewed-clean; `clock.now` sediment hit is domain text.
+- `crates/marrow-schema/tests/compile_enum.rs` - status: complete; owner: L04 schema; notes: enum schema diagnostics assert typed facts instead of prose fragments.
+- `crates/marrow-schema/tests/compile_resource.rs` - status: complete; owner: L04 schema; notes: resource/store schema diagnostics assert typed facts instead of `message.contains`; duplicate-index render has exact output coverage.
+- `crates/marrow-schema/tests/resolve_type.rs` - status: complete; owner: L04 schema; notes: reviewed-clean; pre-existing `string`/`Str` bridge comment is durable type-spelling rationale.
 
 ### crates/marrow-store
 - `crates/marrow-store/Cargo.toml` - status: unreviewed; owner: L12 store; notes: initial inventory.
@@ -517,6 +517,44 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
   - `git diff --check HEAD^..HEAD` passed with no output.
   - Main bidirectional inventory check passed with no output.
   - `git status --short --branch` after cherry-pick reported clean main ahead by one commit.
+
+## L04 Schema Evidence
+
+- Changed files: `crates/marrow-schema/src/lib.rs`, `crates/marrow-schema/tests/compile_enum.rs`, `crates/marrow-schema/tests/compile_resource.rs`.
+- Lane commit: `8b651049860539650ca534820cd3ca03711dd03d`.
+- Main integration commit: `ee5422fe7de568a874ed2b2b4aaee6f9a721a7d8`.
+- Main integration base: `5ca2a691806d963c5b44cef8a1eb02ac1b5da7e4`.
+- Failing-or-focused checks:
+  - Initial RED: `compile_resource` failed on missing `SchemaErrorKind`, `SchemaSavedUnknownTarget`, and `SchemaError.kind`.
+  - Pre-review sibling RED: `duplicate_index_name_is_an_error` failed because duplicate index names rendered as `duplicate resource member` while the typed target was `SchemaDuplicateTarget::Index`.
+- Focused gates:
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l04-schema cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l04-schema/Cargo.toml -p marrow-schema --test compile_resource` passed with 79 tests.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l04-schema cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l04-schema/Cargo.toml -p marrow-schema --test compile_enum` passed with 14 tests.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l04-schema cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l04-schema/Cargo.toml -p marrow-schema` passed with 106 tests.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l04-schema cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l04-schema/Cargo.toml -p marrow-schema -- -D warnings` passed.
+- Full lane gates:
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l04-schema cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l04-schema/Cargo.toml --all --check` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l04-schema cargo build --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l04-schema/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l04-schema cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l04-schema/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l04-schema cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l04-schema/Cargo.toml --workspace --all-targets -- -D warnings` passed.
+- Soundness review: pass, no findings. Reviewer probed schema error construction coverage, duplicate member/key/index/enum paths, saved unknowns, unsupported map contexts, identity-key/index collisions, index argument typing, `Type` payloads, Cargo metadata, and unsafe usage.
+- Idiom/spec review: pass, no findings. Reviewer inspected touched Rust for catch-all public enums, duplicate semantic classifiers, compatibility glue, comment sediment, test helper bloat, and retained message-fragment semantics.
+- Fixed review findings:
+  - L04-P001: Fixed before review. `SchemaDuplicateTarget` now owns its duplicate noun, and duplicate store indexes render `duplicate index` while preserving `SCHEMA_DUPLICATE_MEMBER` and typed `DuplicateMember { target: Index, name }`.
+- Absence and sibling scans:
+  - `rg -n 'message\.contains|\.message\.contains|error\.message\.contains' crates/marrow-schema -g '*.rs'` returned no matches.
+  - `rg -n '\bunsafe\b' -g '*.rs'` returned no matches.
+  - `git diff -- Cargo.lock Cargo.toml crates/marrow-schema/Cargo.toml` returned no output.
+  - `rg -n '\bTODO\b|\bFIXME\b|\blegacy\b|\bprototype\b|\bmigration\b|\btemporary\b|\bcompatibility\b|\bshim\b|\bbridge\b|\bpreviously\b|\bnow\b' crates/marrow-schema -g '*.rs' -g '*.toml'` found only `clock.now` domain text and a pre-existing `string`/`Str` bridge comment in `resolve_type.rs`.
+- Integration gates:
+  - `git -C /Users/scottwilliams/Dev/marrow status --short --branch` before cherry-pick showed main aligned with `origin/main` and an unrelated untracked `docs/roadmap/release-hardening-operating-plan.md`.
+  - `git cherry-pick -x 8b651049860539650ca534820cd3ca03711dd03d` produced `ee5422fe7de568a874ed2b2b4aaee6f9a721a7d8`.
+  - `git -C /Users/scottwilliams/Dev/marrow status --short --branch` after cherry-pick showed main ahead by one commit with the unrelated untracked `docs/roadmap/release-hardening-operating-plan.md`.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l04-main-integration cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --all --check` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l04-main-integration cargo build --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l04-main-integration cargo test --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l04-main-integration cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace --all-targets -- -D warnings` passed.
+  - Main post-integration scans matched the lane absence scans and `git diff --check` returned no output.
 
 ## L05 Project Model Evidence
 
