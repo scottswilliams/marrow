@@ -4,9 +4,9 @@
 //! typed manifest, and the canonical ordered data-cell stream. The manifest binds
 //! the data to the program that wrote it — its source digest, accepted catalog
 //! epoch, engine profile, value-codec version, and a checksum over the cell
-//! stream — so a restore refuses data it cannot faithfully reproduce. The stream
-//! carries the store's data cells only; generated indexes are derived, so a restore
-//! rebuilds them rather than replaying them.
+//! stream — so a restore refuses data outside this binary's checked contract.
+//! The stream carries the store's data cells only; generated indexes are
+//! derived, so a restore rebuilds them rather than replaying them.
 //!
 //! The cell stream is backend-independent and stores typed cell targets derived
 //! from catalog stable IDs. Stable IDs are random opaque values that freeze when

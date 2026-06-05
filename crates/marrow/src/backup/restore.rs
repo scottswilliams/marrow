@@ -50,7 +50,7 @@ pub fn restore_backup(
     }
 }
 
-/// Refuse a backup the running binary cannot faithfully reproduce: a different
+/// Refuse a backup outside this binary's checked replay contract: a different
 /// engine, layout, or value codec needs a recompile; a different schema or
 /// catalog epoch belongs to a different program state.
 fn restore_program(
@@ -203,9 +203,9 @@ fn restore_cell(store: &TreeStore, cell: &TreeBackupCellBuf) -> Result<(), Backu
     Ok(())
 }
 
-/// Whether the input has any byte left after the cell stream. A faithful backup ends
-/// exactly at the last cell, so one readable byte means the file is not the backup the
-/// manifest describes.
+/// Whether the input has any byte left after the cell stream. A well-formed backup
+/// ends exactly at the last cell, so one readable byte means the file is not the
+/// backup the manifest describes.
 fn has_trailing_bytes(input: &mut impl Read) -> Result<bool, BackupError> {
     let mut byte = [0u8; 1];
     Ok(input.read(&mut byte)? != 0)
