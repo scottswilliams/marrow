@@ -175,7 +175,7 @@ fn manifest_from_json(value: &Value) -> Result<BackupManifest, BackupError> {
 }
 
 fn commit_from_json(value: &Value) -> Result<CommitDescriptor, BackupError> {
-    Ok(CommitDescriptor {
+    let commit = CommitDescriptor {
         commit_id: u64_field(value, "commit_id")?,
         catalog_epoch: u64_field(value, "catalog_epoch")?,
         layout_epoch: u64_field(value, "layout_epoch")?,
@@ -207,7 +207,9 @@ fn commit_from_json(value: &Value) -> Result<CommitDescriptor, BackupError> {
             "activation_records_retired_by_id",
         )?,
         activation_records_transformed: u64_field(value, "activation_records_transformed")?,
-    })
+    };
+    commit.validate_digest_shapes()?;
+    Ok(commit)
 }
 
 fn missing(field: &'static str) -> impl Fn() -> BackupError {
@@ -366,6 +368,49 @@ mod tests {
 
         let error = commit_from_json(&commit).expect_err("missing evidence is corrupt");
 
+        assert_eq!(error.code(), "restore.format_version");
+        assert!(error.to_string().contains("evidence_digest"), "{error}");
+    }
+
+    #[test]
+    fn commit_manifest_rejects_legacy_activation_digest_strings() {
+        let legacy = |hex: &str| ["fn", "v1a64:", hex].concat();
+        let mut commit = json!({
+            "commit_id": 1,
+            "catalog_epoch": 2,
+            "layout_epoch": 0,
+            "source_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+            "engine_profile_digest": "0102030405060708",
+            "changed_root_catalog_ids": [],
+            "changed_index_catalog_ids": [],
+            "activation_evolution_digest": legacy("0000000000000002"),
+            "activation_proposal_catalog_digest": null,
+            "activation_proposal_new_catalog_ids": [],
+            "activation_records_backfilled": 0,
+            "activation_default_records_by_id": [{
+                "catalog_id": "cat_00000000000000000000000000000001",
+                "records_backfilled": 1,
+                "target_records": 1,
+                "evidence_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000005"
+            }],
+            "activation_indexes_rebuilt": 0,
+            "activation_records_retired": 0,
+            "activation_retire_evidence_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "activation_records_retired_by_id": [],
+            "activation_records_transformed": 0,
+        });
+
+        let error = commit_from_json(&commit).expect_err("legacy evolution digest is corrupt");
+        assert_eq!(error.code(), "restore.format_version");
+        assert!(
+            error.to_string().contains("activation_evolution_digest"),
+            "{error}"
+        );
+
+        commit["activation_evolution_digest"] = json!("");
+        commit["activation_default_records_by_id"][0]["evidence_digest"] =
+            json!(legacy("0000000000000005"));
+        let error = commit_from_json(&commit).expect_err("legacy default evidence is corrupt");
         assert_eq!(error.code(), "restore.format_version");
         assert!(error.to_string().contains("evidence_digest"), "{error}");
     }

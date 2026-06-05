@@ -10,7 +10,7 @@ use marrow_store::cell::DataCellKind;
 use marrow_store::tree::{TreeBackupCellBuf, TreeStore};
 
 use super::archive::{self, CHECKSUM_SEED, checksum_cell};
-use super::{BackupError, BackupManifest, CommitDescriptor, EngineDescriptor};
+use super::{BackupError, BackupManifest, EngineDescriptor};
 
 /// What a completed restore replayed.
 #[derive(Debug)]
@@ -77,7 +77,7 @@ fn restore_program(
         ));
     }
     if let Some(commit) = &manifest.commit {
-        validate_manifest_commit(manifest, commit)?;
+        commit.validate_manifest_binding(manifest)?;
     }
 
     let Some(backup_epoch) = manifest.catalog_epoch else {
@@ -89,22 +89,6 @@ fn restore_program(
 
     let rebound = activation_window_program(program, manifest, backup_epoch)?;
     Ok(rebound)
-}
-
-fn validate_manifest_commit(
-    manifest: &BackupManifest,
-    commit: &CommitDescriptor,
-) -> Result<(), BackupError> {
-    if Some(commit.catalog_epoch) != manifest.catalog_epoch
-        || commit.layout_epoch != manifest.engine.layout_epoch
-        || commit.source_digest != manifest.source_digest
-        || commit.engine_profile_digest != manifest.engine.profile_digest
-    {
-        return Err(BackupError::corrupt(
-            "manifest commit metadata disagrees with the backup binding",
-        ));
-    }
-    Ok(())
 }
 
 fn activation_window_program(
@@ -240,13 +224,14 @@ fn rebuild_error(error: ApplyError) -> BackupError {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
-    use marrow_check::{CheckedProgram, ProjectConfig, check_project, commit_pending_identity};
+    use marrow_check::CheckedProgram;
     use marrow_store::cell::CatalogId;
     use marrow_store::key::{SavedKey, encode_identity_payload};
     use marrow_store::tree::{CommitMetadata, DataPathSegment, TreeStore};
 
+    use super::super::test_support::{BOOK_SOURCE, committed_program};
     use super::{BackupError, CHECKSUM_SEED, RestoreReport, restore_backup};
     use crate::backup::create_backup;
 
@@ -255,46 +240,6 @@ mod tests {
     fn accept(_program: &CheckedProgram, _store: &TreeStore) -> Result<(), BackupError> {
         Ok(())
     }
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock after unix epoch")
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("create project root");
-        root
-    }
-
-    fn config() -> ProjectConfig {
-        ProjectConfig {
-            source_roots: vec!["src".into()],
-            default_entry: None,
-            store: None,
-            tests: Vec::new(),
-            accepted_catalog: "marrow.catalog.json".into(),
-        }
-    }
-
-    /// Check and commit one `.mw` source into a fresh project, returning the committed
-    /// checked program. The committed catalog binds the catalog ids the store addresses.
-    fn committed_program(name: &str, source: &str) -> (PathBuf, CheckedProgram) {
-        let root = temp_dir(name);
-        let path = root.join("src/shelf.mw");
-        std::fs::create_dir_all(path.parent().unwrap()).expect("create src");
-        std::fs::write(&path, source).expect("write source");
-        let (report, program) = check_project(&root, &config()).expect("check project");
-        assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-        let (report, program) = commit_pending_identity(&root, &config(), &program)
-            .expect("commit catalog")
-            .expect("a catalog to commit");
-        assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-        (root, program)
-    }
-
-    const BOOK_SOURCE: &str =
-        "module shelf\n\nresource Book at ^books(id: int)\n    required title: string\n";
 
     /// Seed one book through the managed tree-cell write path, then build a valid
     /// in-memory backup of the store under `program`.
@@ -429,7 +374,9 @@ mod tests {
         let (root, program) = committed_program("restore-commit-binding", BOOK_SOURCE);
         let archive = seeded_backup(&program);
         let archive = rewrite_manifest(&archive, |manifest| {
-            manifest["commit"]["source_digest"] = serde_json::json!("sha256:bad");
+            manifest["commit"]["source_digest"] = serde_json::json!(
+                "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+            );
         });
 
         let error = restore_into_empty(&program, &archive)

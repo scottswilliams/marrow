@@ -193,9 +193,46 @@ impl CommitDescriptor {
         }
     }
 
-    /// Rebuild the engine-facing commit metadata, rejecting a malformed catalog id
-    /// as a corrupt manifest.
+    pub(crate) fn validate_manifest_binding(
+        &self,
+        manifest: &BackupManifest,
+    ) -> Result<(), BackupError> {
+        self.validate_digest_shapes()?;
+        if Some(self.catalog_epoch) != manifest.catalog_epoch
+            || self.source_digest != manifest.source_digest
+            || self.layout_epoch != manifest.engine.layout_epoch
+            || self.engine_profile_digest != manifest.engine.profile_digest
+        {
+            return Err(BackupError::corrupt(
+                "manifest commit metadata disagrees with the backup binding",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_digest_shapes(&self) -> Result<(), BackupError> {
+        require_sha256_digest("source_digest", &self.source_digest)?;
+        require_optional_sha256_digest(
+            "activation_evolution_digest",
+            &self.activation_evolution_digest,
+        )?;
+        if let Some(digest) = &self.activation_proposal_catalog_digest {
+            require_sha256_digest("activation_proposal_catalog_digest", digest)?;
+        }
+        for count in &self.activation_default_records_by_id {
+            require_sha256_digest("evidence_digest", &count.evidence_digest)?;
+        }
+        require_optional_sha256_digest(
+            "activation_retire_evidence_digest",
+            &self.activation_retire_evidence_digest,
+        )?;
+        Ok(())
+    }
+
+    /// Rebuild the engine-facing commit metadata, rejecting malformed ids or digest
+    /// evidence as a corrupt manifest.
     pub(crate) fn to_metadata(&self) -> Result<CommitMetadata, BackupError> {
+        self.validate_digest_shapes()?;
         Ok(CommitMetadata {
             commit_id: self.commit_id,
             catalog_epoch: self.catalog_epoch,
@@ -222,6 +259,34 @@ impl CommitDescriptor {
             activation_records_transformed: self.activation_records_transformed,
         })
     }
+}
+
+fn require_optional_sha256_digest(field: &'static str, digest: &str) -> Result<(), BackupError> {
+    if digest.is_empty() {
+        Ok(())
+    } else {
+        require_sha256_digest(field, digest)
+    }
+}
+
+fn require_sha256_digest(field: &'static str, digest: &str) -> Result<(), BackupError> {
+    if sha256_digest_spelling(digest) {
+        Ok(())
+    } else {
+        Err(BackupError::FormatVersion(format!(
+            "`{field}` must be a sha256 digest"
+        )))
+    }
+}
+
+fn sha256_digest_spelling(digest: &str) -> bool {
+    let Some(hex) = digest.strip_prefix("sha256:") else {
+        return false;
+    };
+    hex.len() == 64
+        && hex
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 fn catalog_ids(ids: &[String]) -> Result<Vec<marrow_store::cell::CatalogId>, BackupError> {
@@ -336,6 +401,51 @@ impl From<std::io::Error> for BackupError {
 impl From<marrow_store::StoreError> for BackupError {
     fn from(error: marrow_store::StoreError) -> Self {
         Self::Store(error)
+    }
+}
+
+#[cfg(test)]
+pub(super) mod test_support {
+    use std::path::PathBuf;
+
+    use marrow_check::{CheckedProgram, ProjectConfig, check_project, commit_pending_identity};
+
+    pub(super) const BOOK_SOURCE: &str =
+        "module shelf\n\nresource Book at ^books(id: int)\n    required title: string\n";
+
+    pub(super) fn temp_dir(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock after unix epoch")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create project root");
+        root
+    }
+
+    fn config() -> ProjectConfig {
+        ProjectConfig {
+            source_roots: vec!["src".into()],
+            default_entry: None,
+            store: None,
+            tests: Vec::new(),
+            accepted_catalog: "marrow.catalog.json".into(),
+        }
+    }
+
+    pub(super) fn committed_program(name: &str, source: &str) -> (PathBuf, CheckedProgram) {
+        let root = temp_dir(name);
+        let path = root.join("src/shelf.mw");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("create src");
+        std::fs::write(&path, source).expect("write source");
+        let (report, program) = check_project(&root, &config()).expect("check project");
+        assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+        let (report, program) = commit_pending_identity(&root, &config(), &program)
+            .expect("commit catalog")
+            .expect("a catalog to commit");
+        assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+        (root, program)
     }
 }
 

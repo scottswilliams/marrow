@@ -76,16 +76,71 @@ fn build_manifest(
         store.read_layout_epoch()?,
         store.read_engine_profile_digest()?,
     );
-    Ok(BackupManifest {
+    let commit = store
+        .read_commit_metadata()?
+        .as_ref()
+        .map(CommitDescriptor::from_metadata);
+    let manifest = BackupManifest {
         format_version: FORMAT_VERSION,
         source_digest: program.source_digest().to_string(),
         catalog_epoch: store.read_catalog_epoch()?,
         engine,
-        commit: store
-            .read_commit_metadata()?
-            .as_ref()
-            .map(CommitDescriptor::from_metadata),
+        commit,
         record_count,
         data_checksum,
-    })
+    };
+    if let Some(commit) = &manifest.commit {
+        commit.validate_manifest_binding(&manifest)?;
+    }
+    Ok(manifest)
+}
+
+#[cfg(test)]
+mod tests {
+    use marrow_store::tree::{CommitMetadata, TreeStore};
+
+    use super::super::test_support::{BOOK_SOURCE, committed_program};
+    use super::build_manifest;
+
+    #[test]
+    fn backup_manifest_rejects_commit_metadata_that_disagrees_with_binding() {
+        let (root, program) = committed_program("backup-commit-binding", BOOK_SOURCE);
+        let store = TreeStore::memory();
+        let epoch = program.catalog.accepted_epoch.expect("accepted epoch");
+        store.write_catalog_epoch(epoch).expect("stamp epoch");
+        let profile = marrow_run::evolution::current_engine_profile();
+        store
+            .write_commit_metadata(&CommitMetadata {
+                commit_id: 1,
+                catalog_epoch: epoch,
+                layout_epoch: profile.layout_epoch(),
+                source_digest:
+                    "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                        .to_string(),
+                engine_profile_digest: profile.digest_bytes(),
+                changed_root_catalog_ids: Vec::new(),
+                changed_index_catalog_ids: Vec::new(),
+                activation_evolution_digest: String::new(),
+                activation_proposal_catalog_digest: None,
+                activation_proposal_new_catalog_ids: Vec::new(),
+                activation_records_backfilled: 0,
+                activation_default_records_by_id: Vec::new(),
+                activation_indexes_rebuilt: 0,
+                activation_records_retired: 0,
+                activation_retire_evidence_digest: String::new(),
+                activation_records_retired_by_id: Vec::new(),
+                activation_records_transformed: 0,
+            })
+            .expect("stamp commit");
+
+        let error = build_manifest(&program, &store, 0, 0)
+            .expect_err("backup must not emit a self-inconsistent manifest");
+        std::fs::remove_dir_all(&root).ok();
+
+        assert_eq!(error.code(), "restore.corrupt_chunk");
+        assert!(
+            error.to_string().contains("commit metadata disagrees"),
+            "{error}"
+        );
+    }
 }
