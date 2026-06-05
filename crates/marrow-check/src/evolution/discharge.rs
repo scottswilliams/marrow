@@ -2020,16 +2020,16 @@ impl Accumulator {
         }
     }
 
-    /// The identity-aware leaf token current source declares for member `catalog_id`, derived
-    /// from its structural signature: a leaf member records `leaf:<token>`, so the token is the
-    /// signature with that prefix stripped. The structural signature is the single in-memory
-    /// source for the leaf token, mirroring the durable [`CatalogEntry::accepted_leaf_token`] on
-    /// the accepted side. `None` for a non-leaf member (a group or keyed group records no leaf
+    /// The identity-aware leaf token current source declares for member `catalog_id`, decoded
+    /// from its structural signature through the signature's single owner so the live declared
+    /// side and the durable accepted side ([`CatalogEntry::accepted_leaf_token`]) read leaf
+    /// tokens the same way. `None` for a non-leaf member (a group or keyed group records no leaf
     /// token) and for a member with no recorded signature (a pending first-run referent).
     fn declared_leaf_token(&self, catalog_id: &str) -> Option<&str> {
         self.declared_structs
             .get(catalog_id)
-            .and_then(|signature| signature.strip_prefix("leaf:"))
+            .map(String::as_str)
+            .and_then(marrow_project::structural_signature_leaf_token)
     }
 
     /// Whether a member that WAS a plain leaf has become a non-leaf — a group or a keyed

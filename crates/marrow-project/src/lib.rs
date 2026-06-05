@@ -183,8 +183,7 @@ pub struct CatalogEntry {
 
 impl CatalogEntry {
     /// The identity-aware leaf token the member's durable bytes were accepted as, derived from
-    /// the structural signature: a leaf member records `leaf:<token>`, so the token is the
-    /// signature with that prefix stripped. The token records what type the bytes were last
+    /// its accepted structural signature. The token records what type the bytes were last
     /// accepted as by referent identity rather than source spelling, so a later type change is
     /// detected across leaf kinds even when the new type's decoder would also accept the old
     /// bytes (an `int` stored as `1` reads as a `bool` `true`, or as an enum member), while a
@@ -194,7 +193,40 @@ impl CatalogEntry {
     pub fn accepted_leaf_token(&self) -> Option<&str> {
         self.accepted_struct
             .as_deref()
-            .and_then(|signature| signature.strip_prefix("leaf:"))
+            .and_then(structural_signature_leaf_token)
+    }
+}
+
+/// The leaf token a member's structural signature encodes, or `None` when the signature names a
+/// non-leaf shape (a group or keyed group records no leaf token). A leaf member records
+/// `leaf:<token>`, so the token is the signature with that prefix stripped.
+///
+/// This is the single decoder of the `leaf:` signature convention. The durable accepted side
+/// ([`CatalogEntry::accepted_leaf_token`]) and the live declared side in the evolution discharge
+/// both read leaf tokens out of their signatures through it, so the prefix is owned in one place
+/// rather than re-stripped at each use site.
+pub fn structural_signature_leaf_token(signature: &str) -> Option<&str> {
+    signature.strip_prefix("leaf:")
+}
+
+#[cfg(test)]
+mod structural_signature_tests {
+    use super::structural_signature_leaf_token;
+
+    #[test]
+    fn decodes_a_leaf_signature_to_its_token() {
+        assert_eq!(structural_signature_leaf_token("leaf:int"), Some("int"));
+        assert_eq!(
+            structural_signature_leaf_token("leaf:enum:cat_0123456789abcdef0123456789abcdef"),
+            Some("enum:cat_0123456789abcdef0123456789abcdef")
+        );
+        assert_eq!(structural_signature_leaf_token("leaf:"), Some(""));
+    }
+
+    #[test]
+    fn non_leaf_signatures_have_no_leaf_token() {
+        assert_eq!(structural_signature_leaf_token("group"), None);
+        assert_eq!(structural_signature_leaf_token("keyed-group:[int]"), None);
     }
 }
 
