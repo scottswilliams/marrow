@@ -140,7 +140,7 @@ fn split_resource_body_rejects_index_members() {
 }
 
 #[test]
-fn rejects_adr_0209_tilde_roots() {
+fn rejects_tilde_prefixed_saved_roots() {
     for source in [
         "module app\ncache ~books(id: int): Book\n",
         "module app\nensure ~books(id: int): Book\n",
@@ -1917,9 +1917,9 @@ const : int = 1
 
 #[test]
 fn reserved_word_as_const_name_is_rejected() {
-    // syntax.md: "Reserved words are not identifiers." A const name is an
-    // `identifier`, so a reserved word (`at`) there is a parse error, matching
-    // the param/member/key name positions.
+    // Reserved words are not identifiers. A const name is an `identifier`, so a
+    // reserved word (`at`) there is a parse error, matching the param/member/key
+    // name positions.
     let parsed = parse_source("module app\nconst at = 5\n");
     assert!(
         parsed
@@ -2122,8 +2122,8 @@ fn empty_const_value_reports_the_single_generic_diagnostic() {
 
 #[test]
 fn reserved_word_as_parameter_name_is_rejected() {
-    // syntax.md: "Reserved words are not identifiers." A parameter name is an
-    // `identifier`, so a reserved word in that position is a parse error.
+    // Reserved words are not identifiers. A parameter name is an `identifier`,
+    // so a reserved word in that position is a parse error.
     let parsed = parse_source("fn f(at: int)\n    return\n");
     assert_eq!(parsed.diagnostics.len(), 1, "{:#?}", parsed.diagnostics);
     assert!(
