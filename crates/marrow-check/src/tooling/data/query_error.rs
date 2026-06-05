@@ -1,15 +1,17 @@
 use std::fmt;
 
-use marrow_store::StoreError;
-
 use crate::ScalarType;
 
-/// A typed reason a data query, walk, or child page could not be resolved.
+/// A typed reason a data query, walk, or child page is malformed.
 ///
-/// Each variant carries the structured facts a caller needs to act on the
-/// failure (which root, which member, the expected and found key types) rather
-/// than a pre-rendered sentence. The boundary that surfaces the error renders
-/// it through [`fmt::Display`]; checker, serve, and CLI logic match on the
+/// Every variant is a client-facing request error: the path or page arguments
+/// did not describe a valid query. Server-side faults such as a missing or
+/// malformed checked catalog id are not query malformity; they stay
+/// [`crate::tooling::ToolingError::Store`] so they keep the store code at the
+/// boundary. Each variant carries the structured facts a caller needs (which
+/// root, which member, the expected and found key types) rather than a
+/// pre-rendered sentence. The boundary that surfaces the error renders it
+/// through [`fmt::Display`]; checker, serve, and CLI logic match on the
 /// variant, never on the rendered text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueryError {
@@ -53,8 +55,6 @@ pub enum QueryError {
     MembersTakeNoCursor,
     /// The path names a leaf or record with no scannable children.
     NoChildScan,
-    /// A checked catalog id was missing or malformed in the program facts.
-    CorruptCatalogId(StoreError),
 }
 
 /// Which member-naming flavor a query segment used, so an unknown-member error
@@ -133,13 +133,6 @@ impl fmt::Display for QueryError {
             Self::NoChildScan => {
                 write!(f, "the path names a leaf with no scannable children")
             }
-            Self::CorruptCatalogId(error) => write!(f, "{error}"),
         }
-    }
-}
-
-impl From<StoreError> for QueryError {
-    fn from(error: StoreError) -> Self {
-        Self::CorruptCatalogId(error)
     }
 }

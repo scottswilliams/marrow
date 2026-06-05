@@ -4,7 +4,7 @@ use marrow_run::base64;
 use marrow_store::key::SavedKey;
 use serde_json::{Value, json};
 
-use super::{ProtocolError, bad_request, query_error};
+use super::{ProtocolError, bad_request, tooling_error};
 
 pub(super) fn request_path(request: &Value) -> Result<Vec<DataQuerySegment>, ProtocolError> {
     let path = request
@@ -18,7 +18,7 @@ pub(super) fn request_query(
     request: &Value,
 ) -> Result<DataQuery, ProtocolError> {
     let segments = request_path(request)?;
-    resolve_data_query(program, &segments).map_err(query_error)
+    resolve_data_query(program, &segments).map_err(tooling_error)
 }
 
 pub(super) fn decode_query_path(value: &Value) -> Result<Vec<DataQuerySegment>, ProtocolError> {

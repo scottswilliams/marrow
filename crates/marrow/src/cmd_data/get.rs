@@ -1,7 +1,9 @@
 use std::process::ExitCode;
 
 use marrow_check::parse_path;
-use marrow_check::tooling::{DataPresence, read_data_query, resolve_source_text_data_query};
+use marrow_check::tooling::{
+    DataPresence, ToolingError, read_data_query, resolve_source_text_data_query,
+};
 use serde_json::json;
 
 use crate::{CheckFormat, load_checked_project, write_json};
@@ -26,10 +28,13 @@ pub(super) fn data_get(args: &[String]) -> ExitCode {
     };
     let query = match resolve_source_text_data_query(&program, &parsed_segments) {
         Ok(query) => query,
-        Err(message) => {
-            eprintln!("marrow data get: {message}");
+        // A malformed path is a usage error; a corrupt checked catalog id is a
+        // store fault and must report under the store code, not as usage.
+        Err(ToolingError::Query(error)) => {
+            eprintln!("marrow data get: {error}");
             return ExitCode::from(2);
         }
+        Err(ToolingError::Store(error)) => return super::report_store_error(error, format),
     };
     let store = match super::open_tree_store(&dir, &config) {
         Ok(store) => store,

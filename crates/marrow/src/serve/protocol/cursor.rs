@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use super::codec::{
     decode_base64_field, decode_key, decode_query_path, encode_key, encode_query_path,
 };
-use super::{ProtocolError, bad_request, query_error};
+use super::{ProtocolError, bad_request, tooling_error};
 
 pub(super) struct CursorState {
     key: RandomState,
@@ -68,7 +68,7 @@ impl CursorState {
             },
         )?;
         let segments = decode_query_path(&path)?;
-        let query = resolve_data_query(program, &segments).map_err(query_error)?;
+        let query = resolve_data_query(program, &segments).map_err(tooling_error)?;
         if !data_query_under_prefix(&query, prefix) {
             return Err(bad_request("`cursor` is outside the requested path"));
         }

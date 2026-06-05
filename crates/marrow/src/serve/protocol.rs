@@ -116,15 +116,14 @@ pub(super) fn store_error(error: marrow_store::StoreError) -> ProtocolError {
     }
 }
 
+/// Surface a shared tooling failure on the wire. A malformed query is a
+/// client-facing bad request; a store fault keeps the store code so a corrupt
+/// store is never disguised as a client error.
 pub(super) fn tooling_error(error: marrow_check::tooling::ToolingError) -> ProtocolError {
     match error {
-        marrow_check::tooling::ToolingError::Query(error) => query_error(error),
+        marrow_check::tooling::ToolingError::Query(error) => bad_request(&error.to_string()),
         marrow_check::tooling::ToolingError::Store(error) => store_error(error),
     }
-}
-
-pub(super) fn query_error(error: marrow_check::tooling::QueryError) -> ProtocolError {
-    bad_request(&error.to_string())
 }
 
 #[cfg(test)]

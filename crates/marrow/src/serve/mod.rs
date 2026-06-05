@@ -52,7 +52,19 @@ pub(crate) mod test_support {
 
     pub(crate) fn empty_state() -> ServeState {
         ServeState {
-            program: checked_program(),
+            program: checked_program(true),
+            store: TreeStore::memory(),
+        }
+    }
+
+    /// A state whose program was checked but never committed an identity, so its
+    /// saved roots carry no catalog id. Resolving a query against it makes the
+    /// shared tooling raise `StoreError::Corruption` for the missing checked
+    /// catalog id, standing in for a missing or malformed checked catalog id on
+    /// the serve path.
+    pub(crate) fn uncommitted_state() -> ServeState {
+        ServeState {
+            program: checked_program(false),
             store: TreeStore::memory(),
         }
     }
@@ -117,7 +129,7 @@ pub(crate) mod test_support {
             .expect("write checked tree-cell fixture data");
     }
 
-    fn checked_program() -> CheckedProgram {
+    fn checked_program(commit: bool) -> CheckedProgram {
         let root = temp_dir("serve-checked-fixture");
         write(&root, "marrow.json", CONFIG);
         write(&root, "src/app.mw", SOURCE);
@@ -127,6 +139,10 @@ pub(crate) mod test_support {
             !report.has_errors(),
             "serve fixture project must check cleanly: {report:#?}"
         );
+        if !commit {
+            fs::remove_dir_all(&root).ok();
+            return program;
+        }
         let accepted = marrow_check::commit_pending_identity(&root, &config, &program)
             .expect("commit fixture catalog");
         fs::remove_dir_all(&root).ok();

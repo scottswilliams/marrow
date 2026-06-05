@@ -2,6 +2,7 @@ use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::DataPathSegment;
 
+use crate::tooling::ToolingError;
 use crate::{CheckedProgram, CheckedSavedMemberKind, checked_saved_root_place};
 
 use super::query_error::QueryError;
@@ -20,7 +21,7 @@ pub(crate) struct StorageDataQuery {
 pub fn resolve_data_query(
     program: &CheckedProgram,
     segments: &[DataQuerySegment],
-) -> Result<DataQuery, QueryError> {
+) -> Result<DataQuery, ToolingError> {
     let steps: Vec<QuerySegment<'_>> = segments.iter().map(QuerySegment::from_data).collect();
     resolve_query_steps(program, render_query_segments(segments), &steps)
 }
@@ -28,7 +29,7 @@ pub fn resolve_data_query(
 pub fn resolve_source_text_data_query(
     program: &CheckedProgram,
     segments: &[crate::PathSegment],
-) -> Result<DataQuery, QueryError> {
+) -> Result<DataQuery, ToolingError> {
     let steps: Vec<QuerySegment<'_>> = segments
         .iter()
         .map(QuerySegment::from_source_text)
@@ -40,9 +41,9 @@ fn resolve_query_steps(
     program: &CheckedProgram,
     path: String,
     segments: &[QuerySegment<'_>],
-) -> Result<DataQuery, QueryError> {
+) -> Result<DataQuery, ToolingError> {
     let Some((QuerySegment::Root(root), rest)) = segments.split_first() else {
-        return Err(QueryError::MissingRoot);
+        return Err(QueryError::MissingRoot.into());
     };
     let place = checked_saved_root_place(program, root, marrow_syntax::SourceSpan::default())
         .ok_or_else(|| QueryError::UnknownRoot {
@@ -59,14 +60,16 @@ fn resolve_query_steps(
         if identity.len() == place.identity_keys.len() {
             return Err(QueryError::TooManyIdentityKeys {
                 root: (*root).to_string(),
-            });
+            }
+            .into());
         }
         if let Some(mismatch) = key_mismatch(place.identity_keys[identity.len()].scalar, key) {
             return Err(QueryError::IdentityKeyType {
                 root: (*root).to_string(),
                 expected: mismatch.expected,
                 found: mismatch.found,
-            });
+            }
+            .into());
         }
         identity.push(key.clone());
         rendered_segments.push(DataQuerySegment::Key(key.clone()));
@@ -76,14 +79,15 @@ fn resolve_query_steps(
         return Err(QueryError::MissingIdentityKeys {
             root: (*root).to_string(),
             expected: place.identity_keys.len(),
-        });
+        }
+        .into());
     }
 
     let mut data_path = Vec::new();
     let mut members = place.root_members.as_slice();
     while let Some(segment) = rest.get(index) {
         let Some((name, kind)) = query_member(segment) else {
-            return Err(QueryError::UnexpectedKey);
+            return Err(QueryError::UnexpectedKey.into());
         };
         let member = members
             .iter()
@@ -104,14 +108,16 @@ fn resolve_query_steps(
             if key_count == member.key_params.len() {
                 return Err(QueryError::TooManyMemberKeys {
                     member: name.to_string(),
-                });
+                }
+                .into());
             }
             if let Some(mismatch) = key_mismatch(member.key_params[key_count].scalar, key) {
                 return Err(QueryError::MemberKeyType {
                     member: name.to_string(),
                     expected: mismatch.expected,
                     found: mismatch.found,
-                });
+                }
+                .into());
             }
             data_path.push(DataPathSegment::Key(key.clone()));
             rendered_segments.push(DataQuerySegment::Key(key.clone()));
@@ -123,7 +129,8 @@ fn resolve_query_steps(
             if index < rest.len() {
                 return Err(QueryError::IncompleteMemberKeys {
                     member: name.to_string(),
-                });
+                }
+                .into());
             }
             break;
         }
