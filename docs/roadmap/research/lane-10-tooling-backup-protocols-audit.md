@@ -98,7 +98,10 @@ ADR drift. The accepted backup/restore/repair ADR still describes raw inspection
 
 Protocol-conformance debt. LSP position encoding is not yet fully spec-correct for astral characters (`docs/lsp.md:77`, `crates/marrow/src/lsp.rs:243`). LSP diagnostics omit document versions even though the spec supports them when clients opt in. Serve request parameter validation also has small mismatches with its docs.
 
-Restore policy ambiguity. Restore validates declared cells and rebuilds indexes, but permits orphan data cells to remain for later integrity reporting. That is a reasonable faithfulness policy, yet it must be named as such. Otherwise "restore verifies backup" will be misread as "restored store has no extra unreachable data."
+Restore policy settled. Restore validates declared cells, rejects orphan backup
+cells, rebuilds indexes, and verifies before commit. `data integrity` still
+reports orphan cells in existing local stores, but restore must not import
+unreachable durable data from a backup.
 
 Checksum overclaim risk. The backup archive checksum is suitable for accidental corruption detection, not adversarial tamper resistance. Do not build security claims on the archive checksum.
 
@@ -120,7 +123,9 @@ CLI product sprawl. The v0.1 CLI already lists check, evolve, fmt, run, test, da
 
 7. Tighten serve request validation and error mapping. Reject non-integer JSON numbers where docs require integers, preserve exact store error codes when possible, and add protocol tests for those cases.
 
-8. Clarify restore's orphan policy. If restore is faithfulness-first, say that declared data validity is checked before commit and orphan/corruption scans are a post-restore integrity report. If clean-target semantics are desired instead, reject orphan cells before commit.
+8. Preserve restore's clean-target orphan policy. Restore rejects orphan backup
+   cells before commit; future repair tooling may report existing local orphans
+   but must not make restore a raw import path.
 
 9. Avoid checksum overclaiming. Keep current checksum for corruption detection, but call it non-cryptographic. If backups ever cross a trust boundary, add a signed manifest or cryptographic digest as a new explicit contract.
 
