@@ -44,6 +44,17 @@ pub struct EnumMemberId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LocalId(pub u32);
 
+/// The store's resolved resource binding that index-fact collection works against: the
+/// owning module, the store being collected, and the resource the index keys read, in both
+/// its fact id and its schema. The caller resolves these once per store and threads them in
+/// so the collector does not re-resolve the resource it already holds.
+struct StoreIndexBinding<'a> {
+    module_id: ModuleId,
+    store_id: StoreId,
+    resource: ResourceId,
+    resource_schema: Option<&'a marrow_schema::ResourceSchema>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CheckedFacts {
     modules: Vec<ModuleFact>,
@@ -598,33 +609,27 @@ impl CheckedFacts {
                 catalog_id: None,
                 span: declaration.map_or(SourceSpan::default(), |store| store.span),
             });
-            self.collect_store_index_facts(
+            let resource_schema = module
+                .resources
+                .iter()
+                .find(|candidate| candidate.name == store.resource);
+            let index_binding = StoreIndexBinding {
                 module_id,
                 store_id,
-                module,
-                store,
-                declaration,
-                &aliases,
-            );
+                resource,
+                resource_schema,
+            };
+            self.collect_store_index_facts(index_binding, store, declaration, &aliases);
         }
     }
 
     fn collect_store_index_facts(
         &mut self,
-        module_id: ModuleId,
-        store_id: StoreId,
-        module: &CheckedModule,
+        binding: StoreIndexBinding<'_>,
         store: &marrow_schema::StoreSchema,
         declaration: Option<&marrow_syntax::StoreDecl>,
         aliases: &HashMap<String, Vec<String>>,
     ) {
-        let Some(resource) = self.resource_id(module_id, &store.resource) else {
-            return;
-        };
-        let resource_schema = module
-            .resources
-            .iter()
-            .find(|candidate| candidate.name == store.resource);
         for index in &store.indexes {
             let span = declaration
                 .and_then(|store| {
@@ -636,21 +641,22 @@ impl CheckedFacts {
                 })
                 .unwrap_or_default();
             let id = StoreIndexId(self.store_indexes.len() as u32);
-            let keys = resource_schema
+            let keys = binding
+                .resource_schema
                 .map(|resource_schema| {
                     self.store_index_keys(
-                        module_id,
-                        resource,
+                        binding.module_id,
+                        binding.resource,
                         store,
                         resource_schema,
                         index,
                         aliases,
                     )
                 })
-                .unwrap_or_else(Vec::new);
+                .unwrap_or_default();
             self.store_indexes.push(StoreIndexFact {
                 id,
-                store: store_id,
+                store: binding.store_id,
                 name: index.name.clone(),
                 unique: index.unique,
                 keys,
