@@ -1815,7 +1815,10 @@ resource Book at ^books()
         parsed
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.message.contains("key")),
+            .any(|diagnostic| diagnostic.code == "parse.syntax"
+                && diagnostic
+                    .message
+                    .contains("expected at least one key parameter")),
         "{:#?}",
         parsed.diagnostics
     );
@@ -1855,8 +1858,10 @@ const MaxLoans: int
         parsed
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.message.contains("const")
-                && diagnostic.message.contains("=")),
+            .any(|diagnostic| diagnostic.code == "parse.syntax"
+                && diagnostic
+                    .message
+                    .contains("const declarations require `=` and a value")),
         "{:#?}",
         parsed.diagnostics
     );
@@ -1917,9 +1922,8 @@ const : int = 1
 
 #[test]
 fn reserved_word_as_const_name_is_rejected() {
-    // Reserved words are not identifiers. A const name is an `identifier`, so a
-    // reserved word (`at`) there is a parse error, matching the param/member/key
-    // name positions.
+    // A const name, like a parameter, member, or key name, is an `identifier`,
+    // so a reserved word (`at`) in any of those positions is a parse error.
     let parsed = parse_source("module app\nconst at = 5\n");
     assert!(
         parsed
@@ -2122,8 +2126,6 @@ fn empty_const_value_reports_the_single_generic_diagnostic() {
 
 #[test]
 fn reserved_word_as_parameter_name_is_rejected() {
-    // Reserved words are not identifiers. A parameter name is an `identifier`,
-    // so a reserved word in that position is a parse error.
     let parsed = parse_source("fn f(at: int)\n    return\n");
     assert_eq!(parsed.diagnostics.len(), 1, "{:#?}", parsed.diagnostics);
     assert!(
@@ -2137,8 +2139,6 @@ fn reserved_word_as_parameter_name_is_rejected() {
 
 #[test]
 fn reserved_word_as_resource_member_name_is_rejected() {
-    // A resource member name is an `identifier`; a reserved word (`at`) there is
-    // a parse error rather than a silently accepted member.
     let parsed = parse_source("resource R at ^r\n    at: int\n");
     assert_eq!(parsed.diagnostics.len(), 1, "{:#?}", parsed.diagnostics);
     assert!(
@@ -2152,8 +2152,6 @@ fn reserved_word_as_resource_member_name_is_rejected() {
 
 #[test]
 fn reserved_word_as_key_parameter_name_is_rejected() {
-    // A keyed member's key name is an `identifier`; a reserved word (`at`) in a
-    // key parameter list is a parse error.
     let parsed = parse_source("resource R at ^r\n    e(at: string): int\n");
     assert!(
         parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"),
