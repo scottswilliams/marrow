@@ -132,9 +132,9 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 | Duplicate semantic classifiers | Targeted scan found classifier families in checker/runtime; owner lanes must prove one semantic owner. | needs-lane | L06-L11 |
 | Public raw/string APIs | Raw/catalog/archive hits require production-boundary review. | needs-lane | L10, L12, L13, L14 |
 | Fallback branches and legacy modes | Term scan has test/doc hits; owner lanes must distinguish domain examples from compatibility glue. | needs-lane | all lanes |
-| Message-parsing logic | L04 schema and L05 project-model have no `message.contains` semantic assertions after integration; remaining areas still need lane-local migration. | needs-lane | L03, L06-L14 |
+| Message-parsing logic | L03 syntax, L04 schema, and L05 project-model have no `message.contains` semantic assertions after integration; remaining areas still need lane-local migration. | needs-lane | L06-L14 |
 | Source-text architecture scans | Existing scans identified in architecture tests. | needs-lane | L08, L10, L14 |
-| Comment sediment | L04 schema hits were triaged as `clock.now` domain text and a pre-existing `string`/`Str` bridge comment; L05 project-model hits were triaged as durable store-key migration wording and a `SystemTime::now()` false positive. | needs-lane | L00-L03, L06-L14 |
+| Comment sediment | L03 syntax hits were triaged as durable `rename ... now spelled` semantics and `now` sample text; L04 schema hits were triaged as `clock.now` domain text and a pre-existing `string`/`Str` bridge comment; L05 project-model hits were triaged as durable store-key migration wording and a `SystemTime::now()` false positive. | needs-lane | L00-L02, L06-L14 |
 | Cargo target isolation | Future lane commands must spell lane-specific `CARGO_TARGET_DIR`. | needs-lane | all lanes |
 | Cargo.lock churn | No lockfile change at audit start. | reviewed-clean | L00 |
 
@@ -145,7 +145,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 | L00 tracker bootstrap | `/Users/scottwilliams/Dev/marrow-rust-hardening-tracker` | not needed for doc-only bootstrap | `7435c7dbd6ae9817460d5d44ebaa0e54c0aa9b70` | lane `7b04e4876c5927a1f5599d30bbb28f4f2ec4ce75`; main `9415b37635bfde9d42437bca3862f5db92d5fb9d` | complete | staged and post-cherry-pick diff checks clean; inventory checks clean | pass, no findings | pass, no findings | R001-R006 fixed and re-reviewed | integrated on main after live-main recheck |
 | L01 language-docs | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l01-language-docs` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L02 docs-meta | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l02-docs-meta` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
-| L03 syntax | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-syntax` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
+| L03 syntax | `/Users/scottwilliams/Dev/marrow-rust-hardening-l03-syntax` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-syntax`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-main-integration` | `14bbe00fe0be30f741727b8a65da0ceb8bc4d403` | lane `2a961360cd428eb772b65fbf18f6b961b9230ef7`; main `0627dab32fd19a66edb14d0a960afd3fb36fb779` | complete | focused, package, workspace build/test, workspace clippy, and fmt gates passed | fail on typed reason probes, then pass after fixes | fail on broad reason/test-shape findings, then pass after fixes | L03-R001 through L03-R003 fixed and re-reviewed | integrated on main after live-main recheck; tracker evidence recorded |
 | L04 schema | `/Users/scottwilliams/Dev/marrow-rust-hardening-l04-schema` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l04-schema`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l04-main-integration` | `5ca2a691806d963c5b44cef8a1eb02ac1b5da7e4` | lane `8b651049860539650ca534820cd3ca03711dd03d`; main `ee5422fe7de568a874ed2b2b4aaee6f9a721a7d8` | complete | focused, package, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings | pass, no findings | L04-P001 fixed before review; no review findings | integrated on main after live-main recheck; tracker evidence recorded |
 | L05 project-model | `/Users/scottwilliams/Dev/marrow-rust-hardening-l05-project-model` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-project-model`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l05-main-integration` | `49556121dc4648dec8cd7e11692a4d85cdaf6d7e` | lane `5623e86632a0a62b29c02ad2d104ef1d5969d028`; main `aac2638f1430a3a85a4a7c98a1490b6b1ea7a28c` | complete | focused, package, workspace build/test, workspace clippy, and fmt gates passed | fail on object-shape probe, then pass after fix | pass, no findings; pass after re-review | L05-R001 fixed and re-reviewed | integrated on main after live-main recheck; tracker evidence recorded |
 | L06 checker-core | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l06-checker-core` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
@@ -365,19 +365,19 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow-store/tests/value_encoding.rs` - status: unreviewed; owner: L12 store; notes: initial inventory.
 
 ### crates/marrow-syntax
-- `crates/marrow-syntax/Cargo.toml` - status: unreviewed; owner: L03 syntax; notes: initial inventory.
-- `crates/marrow-syntax/src/ast.rs` - status: unreviewed; owner: L03 syntax; notes: initial inventory.
-- `crates/marrow-syntax/src/diagnostic.rs` - status: unreviewed; owner: L03 syntax; notes: initial inventory.
-- `crates/marrow-syntax/src/format.rs` - status: unreviewed; owner: L03 syntax; notes: initial inventory.
-- `crates/marrow-syntax/src/lexer.rs` - status: unreviewed; owner: L03 syntax; notes: initial inventory.
-- `crates/marrow-syntax/src/lib.rs` - status: unreviewed; owner: L03 syntax; notes: initial inventory.
-- `crates/marrow-syntax/src/literal.rs` - status: unreviewed; owner: L03 syntax; notes: initial inventory.
-- `crates/marrow-syntax/src/parse_decl.rs` - status: unreviewed; owner: L03 syntax; notes: initial inventory.
-- `crates/marrow-syntax/src/parse_expr.rs` - status: unreviewed; owner: L03 syntax; notes: initial inventory.
-- `crates/marrow-syntax/src/token.rs` - status: unreviewed; owner: L03 syntax; notes: initial inventory.
-- `crates/marrow-syntax/tests/format.rs` - status: unreviewed; owner: L03 syntax; notes: initial inventory.
-- `crates/marrow-syntax/tests/lexer.rs` - status: unreviewed; owner: L03 syntax; notes: initial inventory.
-- `crates/marrow-syntax/tests/parse.rs` - status: unreviewed; owner: L03 syntax; notes: initial inventory.
+- `crates/marrow-syntax/Cargo.toml` - status: complete; owner: L03 syntax; notes: reviewed-clean; no manifest churn.
+- `crates/marrow-syntax/src/ast.rs` - status: complete; owner: L03 syntax; notes: reviewed-clean; `rename ... now spelled` sediment hit is durable language semantics.
+- `crates/marrow-syntax/src/diagnostic.rs` - status: complete; owner: L03 syntax; notes: typed `DiagnosticReason`, lexer reasons, and parser reasons added to the parse diagnostic surface.
+- `crates/marrow-syntax/src/format.rs` - status: complete; owner: L03 syntax; notes: reviewed-clean; formatter output string assertions remain render-output coverage.
+- `crates/marrow-syntax/src/lexer.rs` - status: complete; owner: L03 syntax; notes: lexer diagnostics now carry typed reasons at emission sites.
+- `crates/marrow-syntax/src/lib.rs` - status: complete; owner: L03 syntax; notes: typed diagnostic reason enums re-exported; `now` sample text is durable fixture content.
+- `crates/marrow-syntax/src/literal.rs` - status: complete; owner: L03 syntax; notes: reviewed-clean by lane gates and absence scans.
+- `crates/marrow-syntax/src/parse_decl.rs` - status: complete; owner: L03 syntax; notes: declaration parser diagnostics now thread typed `ParseDiagnosticReason`/`ExpectedSyntax` from emission sites; no message-to-reason mapper remains.
+- `crates/marrow-syntax/src/parse_expr.rs` - status: complete; owner: L03 syntax; notes: expression parser diagnostics now carry typed reasons at emission sites.
+- `crates/marrow-syntax/src/token.rs` - status: complete; owner: L03 syntax; notes: reviewed-clean by lane gates and absence scans.
+- `crates/marrow-syntax/tests/format.rs` - status: complete; owner: L03 syntax; notes: reviewed-clean; remaining `contains` checks assert formatted output text, not diagnostics.
+- `crates/marrow-syntax/tests/lexer.rs` - status: complete; owner: L03 syntax; notes: lexer diagnostic tests assert typed reasons instead of `message.contains`.
+- `crates/marrow-syntax/tests/parse.rs` - status: complete; owner: L03 syntax; notes: parser diagnostic tests assert typed reasons instead of `message.contains`; helper-specific expected reasons and keyed-var key-list errors covered.
 
 ### crates/marrow
 - `crates/marrow/Cargo.toml` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
@@ -517,6 +517,48 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
   - `git diff --check HEAD^..HEAD` passed with no output.
   - Main bidirectional inventory check passed with no output.
   - `git status --short --branch` after cherry-pick reported clean main ahead by one commit.
+
+## L03 Syntax Evidence
+
+- Changed files: `crates/marrow-syntax/src/diagnostic.rs`, `crates/marrow-syntax/src/lexer.rs`, `crates/marrow-syntax/src/lib.rs`, `crates/marrow-syntax/src/parse_decl.rs`, `crates/marrow-syntax/src/parse_expr.rs`, `crates/marrow-syntax/tests/lexer.rs`, `crates/marrow-syntax/tests/parse.rs`.
+- Lane commit: `2a961360cd428eb772b65fbf18f6b961b9230ef7`.
+- Main integration commit: `0627dab32fd19a66edb14d0a960afd3fb36fb779`.
+- Main integration base: `14bbe00fe0be30f741727b8a65da0ceb8bc4d403`.
+- Failing-or-focused checks:
+  - Initial RED: focused lexer test failed because `DiagnosticReason`, `LexerDiagnosticReason`, and `Diagnostic.reason` did not exist.
+  - Pre-review correction RED: source scan found a blocking `parse_reason_for_message` post-hoc classifier, which was removed.
+  - Review-fix RED: focused parse test failed on missing narrow `ExpectedSyntax` variants before helper-site reasons were tightened.
+- Focused gates:
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-syntax cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l03-syntax/Cargo.toml -p marrow-syntax --test parse` passed with 126 tests.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-syntax cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l03-syntax/Cargo.toml -p marrow-syntax --test lexer` passed with 19 tests.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-syntax cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l03-syntax/Cargo.toml -p marrow-syntax` passed, including 10 unit, 29 format, 19 lexer, 126 parse, and doctests.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-syntax cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l03-syntax/Cargo.toml -p marrow-syntax --all-targets -- -D warnings` passed.
+- Full lane gates:
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-syntax cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l03-syntax/Cargo.toml --all --check` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-syntax cargo build --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l03-syntax/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-syntax cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l03-syntax/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-syntax cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l03-syntax/Cargo.toml --workspace --all-targets -- -D warnings` passed.
+- Soundness review: failed first review on keyed `var` key-list errors collapsing typed parse errors into `Expected(Statement)`, and on helper errors using broad reasons for known enum/resource/root/index invariants. Passed re-review after typed error propagation and narrower reasons were added; reviewer probes confirmed `EmptyKeyParameters`, `Expected(KeyType)`, `Expected(ResourceName)`, `Expected(SavedRootBeginning)`, `Expected(StoreRoot)`, `Expected(EnumName)`, `Expected(IndexName)`, and `Expected(IndexTail)`.
+- Idiom/spec review: failed first review on broad helper-site `Expected(Declaration)` reasons and a key-parameter reserved-word test that asserted only some parse error. Passed re-review after adding closed variants and typed test assertions.
+- Fixed review findings:
+  - L03-R001: Keyed `var` key-list errors now propagate typed `ParseError` values instead of falling through to `Expected(Statement)`.
+  - L03-R002: Helper sites that know exact enum/resource/root/store/index/function invariants now use narrow `ExpectedSyntax` variants; `Expected(Declaration)` remains only top-level recovery.
+  - L03-R003: Reserved-word key-parameter test now asserts `Expected(KeyName)`.
+- Absence and sibling scans:
+  - `rg -n "message\.contains|\.message\.contains|error\.message\.contains|parse_reason_for_message|Result<[^>]*&'static str>|Err\(\"" crates/marrow-syntax -g '*.rs'` returned no matches.
+  - `rg -n '\bunsafe\b' crates/marrow-syntax -g '*.rs'` returned no matches.
+  - `git diff -- Cargo.lock Cargo.toml crates/marrow-syntax/Cargo.toml` returned no output.
+  - `rg -n 'Expected\(ExpectedSyntax::Declaration\)' crates/marrow-syntax/src/parse_decl.rs crates/marrow-syntax/tests/parse.rs` found only the two reviewed top-level recovery sites.
+  - `rg -n '\bTODO\b|\bFIXME\b|\blegacy\b|\bprototype\b|\bmigration\b|\btemporary\b|\bcompatibility\b|\bshim\b|\bbridge\b|\bpreviously\b|\bnow\b' crates/marrow-syntax -g '*.rs' -g '*.toml'` found only durable `rename ... now spelled` semantics and `now` sample text.
+- Integration gates:
+  - `git -C /Users/scottwilliams/Dev/marrow status --short --branch` before cherry-pick showed main aligned with `origin/main` and an unrelated untracked `docs/roadmap/release-hardening-operating-plan.md`.
+  - `git cherry-pick -x 2a961360cd428eb772b65fbf18f6b961b9230ef7` produced `0627dab32fd19a66edb14d0a960afd3fb36fb779`.
+  - `git -C /Users/scottwilliams/Dev/marrow status --short --branch` after cherry-pick showed main ahead by one commit with the unrelated untracked `docs/roadmap/release-hardening-operating-plan.md`.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-main-integration cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --all --check` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-main-integration cargo build --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-main-integration cargo test --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l03-main-integration cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace --all-targets -- -D warnings` passed.
+  - Main post-integration scans matched the lane absence scans and `git diff --check` returned no output.
 
 ## L04 Schema Evidence
 
