@@ -1139,8 +1139,8 @@ resource Book
     assert_eq!(saved.members, local.members);
 }
 
-/// A resource nesting a keyed-leaf layer and a field inside a group, to pin the
-/// field/leaf resolvers on the cases that are not a single top-level lookup.
+/// A resource nesting a keyed-leaf layer and a field inside a group, exercising
+/// the field and leaf resolvers on chains deeper than a single top-level name.
 const NESTED: &str = "\
 resource Catalog at ^catalog(id: int)
     required title: string
@@ -1178,7 +1178,7 @@ fn field_type_resolves_top_level_and_nested_fields() {
 fn field_type_does_not_resolve_a_keyed_leaf_layer() {
     // A keyed-leaf layer is read as a leaf, not a field: `field_type` must not
     // resolve a layer name, top-level or nested, so a bare layer read stays
-    // untyped exactly as the checker treated it before this walk was shared.
+    // untyped.
     let schema = compile_ok(NESTED);
     assert_eq!(schema.field_type(&["tags"]), None);
     assert_eq!(schema.field_type(&["versions", "lines"]), None);

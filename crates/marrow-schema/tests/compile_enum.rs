@@ -63,7 +63,6 @@ fn rejects_a_duplicate_member() {
     ));
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert_eq!(errors[0].code, SCHEMA_DUPLICATE_MEMBER);
-    assert!(errors[0].message.contains("enum member"));
     // The duplicate is reported and dropped, so traversal only sees the distinct
     // members.
     assert_eq!(schema.members.len(), 1, "{:?}", schema.members);

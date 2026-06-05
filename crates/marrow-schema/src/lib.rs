@@ -70,7 +70,10 @@ impl Type {
     }
 
     /// The scalar this type denotes, or `None` for a sequence, identity, named,
-    /// or unknown type. The runtime decodes a saved leaf by this scalar.
+    /// or unknown type. Two saved-data readers ask this one structural question —
+    /// which scalar, if any, this type is: a saved key projects its orderable key
+    /// scalar, and the runtime decodes a saved leaf by it. A named type still
+    /// needs project-level resolution before its durable value meaning is known.
     pub fn scalar(&self) -> Option<ScalarType> {
         match self {
             Self::Scalar(scalar) => Some(*scalar),
@@ -78,13 +81,12 @@ impl Type {
         }
     }
 
-    /// The scalar envelope for a plain saved leaf. Named types need project-level
-    /// resolution before the compiler can attach their durable value meaning.
+    /// The scalar a saved leaf decodes to, at the store read sites that name the
+    /// stored-value envelope rather than a key projection. It is [`Self::scalar`]:
+    /// the two views coincide while every scalar is both a valid key and a valid
+    /// stored leaf, so this delegates rather than re-deriving the match.
     pub fn stored_scalar(&self) -> Option<ScalarType> {
-        match self {
-            Self::Scalar(scalar) => Some(*scalar),
-            _ => None,
-        }
+        self.scalar()
     }
 
     /// Does this type embed `unknown`? A type embeds `unknown` when it is
@@ -940,18 +942,7 @@ fn check_unsupported_map_types(
                 if !saved_map_sugar {
                     check_unsupported_map_key_params(&field.keys, field.span, errors);
                 }
-                if let Some((key, value)) = map_entry(&field.ty.text)
-                    && saved_map_sugar
-                    && field.keys.is_empty()
-                {
-                    if field.required || contains_map_type(value) {
-                        errors.push(unsupported_map_field_error(field));
-                    } else if !contains_map_type(key) {
-                        continue;
-                    }
-                } else if contains_map_type(&field.ty.text) {
-                    errors.push(unsupported_map_field_error(field));
-                }
+                errors.extend(unsupported_map_field(field, saved_map_sugar));
             }
             ResourceMember::Group(group) => {
                 if !saved_map_sugar {
@@ -961,6 +952,28 @@ fn check_unsupported_map_types(
             }
         }
     }
+}
+
+/// The field-level `map[...]` rejection a field earns, or `None` when its type is
+/// not a `map[...]` or is an accepted saved keyed-leaf member.
+///
+/// A top-level `map[K, V]` field under `saved_map_sugar` is accepted exactly when
+/// [`is_supported_map_member`] holds. A required member or a nested value is
+/// rejected here; a nested *key* is left to [`check_synthetic_map_key`], which
+/// owns the key position, so it is not reported twice. Any other `map[...]`
+/// spelling — a local resource, a keyed leaf whose value is a map, or a map under
+/// a `sequence[...]` — is unsupported.
+fn unsupported_map_field(field: &FieldDecl, saved_map_sugar: bool) -> Option<SchemaError> {
+    if saved_map_sugar && field.keys.is_empty() {
+        if is_supported_map_member(field) {
+            return None;
+        }
+        if let Some((_, value)) = map_entry(&field.ty.text) {
+            return (field.required || contains_map_type(value))
+                .then(|| unsupported_map_field_error(field));
+        }
+    }
+    contains_map_type(&field.ty.text).then(|| unsupported_map_field_error(field))
 }
 
 fn check_unsupported_map_key_params(
@@ -1028,14 +1041,11 @@ fn check_named_field(
     match member {
         ResourceMember::Field(field) => {
             let ty = if contains_map_type(&field.ty.text) {
-                if field.keys.is_empty()
-                    && let Some((_, value)) = map_entry(&field.ty.text)
-                    && is_supported_map_member(field)
-                    && !contains_map_type(value)
-                {
-                    Type::resolve_text(value)
-                } else {
-                    return;
+                // Only an accepted keyed-leaf member exposes a saved value type to
+                // check; any other `map[...]` spelling is rejected elsewhere.
+                match map_entry(&field.ty.text) {
+                    Some((_, value)) if is_supported_map_member(field) => Type::resolve_text(value),
+                    _ => return,
                 }
             } else {
                 Type::resolve(&field.ty)
