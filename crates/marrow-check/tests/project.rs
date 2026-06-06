@@ -6623,7 +6623,12 @@ fn another_module_cannot_use_a_module_less_script() {
     let (report, _program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.unresolved_import");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
-    assert!(found[0].message.contains("app"), "{}", found[0].message);
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::UnresolvedImport("app".into()),
+        "{:#?}",
+        found[0]
+    );
 }
 
 #[test]
