@@ -28,11 +28,11 @@ use crate::{
     CHECK_PRIVATE_ENUM, CHECK_PRIVATE_FUNCTION, CHECK_RANGE, CHECK_RANGE_VALUE, CHECK_RETURN_TYPE,
     CHECK_RETURN_VALUE, CHECK_THROW_TYPE, CHECK_UNKNOWN_TYPE, CHECK_UNRESOLVED_CALL,
     CHECK_UNRESOLVED_IMPORT, CHECK_UNTYPED_VALUE, CheckDiagnostic, CheckReport, CheckedProgram,
-    Def, DefItem, DiagnosticPayload, MarrowType, Resolution, ResolvableKind, TypeNames,
-    build_alias_map, builtin_return_type, check_rejected_surface, conversion_return_type,
-    expand_alias, identity_type_for_store, is_builtin_call, is_resolved_import, module_of_file,
-    push_schema_error, resolve, resolve_resource_schema_type, resource_type_name, std_call_params,
-    std_call_return_type,
+    ConversionTarget, ConversionUnsupportedSourceDiagnostic, Def, DefItem, DiagnosticPayload,
+    MarrowType, Resolution, ResolvableKind, TypeNames, build_alias_map, builtin_return_type,
+    check_rejected_surface, conversion_return_type, expand_alias, identity_type_for_store,
+    is_builtin_call, is_resolved_import, module_of_file, push_schema_error, resolve,
+    resolve_resource_schema_type, resource_type_name, std_call_params, std_call_return_type,
 };
 
 /// Resolve every `use` against `resolvable`, run the type pass over each parsed
@@ -104,6 +104,7 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
                 | DiagnosticPayload::PrivateEnum(_)
                 | DiagnosticPayload::DuplicateNamedArgument(_)
                 | DiagnosticPayload::AppendTarget(_)
+                | DiagnosticPayload::ConversionUnsupportedSource(_)
                 | DiagnosticPayload::None => true,
             });
     }
@@ -3038,113 +3039,6 @@ fn saved_layer_node<'p>(
         .descend_layers(&layers)
 }
 
-/// The target of a scalar-conversion builtin. The language spellings `string` and
-/// `ErrorCode` both store as [`ScalarType::Str`], so the source spelling — not the
-/// scalar — is the load-bearing identity; this enum carries it directly instead of
-/// re-deriving it from a raw name. Each variant owns the one set of accepted source
-/// scalars its check consults and the human source list its diagnostic renders, so
-/// the predicate and the message cannot drift apart.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConversionTarget {
-    Bool,
-    Int,
-    Str,
-    ErrorCode,
-    Bytes,
-    Date,
-    Instant,
-    Duration,
-    Decimal,
-}
-
-impl ConversionTarget {
-    /// The conversion target a builtin spelling names, or `None` for a name that is
-    /// not a conversion builtin.
-    fn from_name(name: &str) -> Option<Self> {
-        Some(match name {
-            "bool" => Self::Bool,
-            "int" => Self::Int,
-            "string" => Self::Str,
-            "ErrorCode" => Self::ErrorCode,
-            "bytes" => Self::Bytes,
-            "date" => Self::Date,
-            "instant" => Self::Instant,
-            "duration" => Self::Duration,
-            "decimal" => Self::Decimal,
-            _ => return None,
-        })
-    }
-
-    fn spelling(self) -> &'static str {
-        match self {
-            Self::Bool => "bool",
-            Self::Int => "int",
-            Self::Str => "string",
-            Self::ErrorCode => "ErrorCode",
-            Self::Bytes => "bytes",
-            Self::Date => "date",
-            Self::Instant => "instant",
-            Self::Duration => "duration",
-            Self::Decimal => "decimal",
-        }
-    }
-
-    /// The scalar source types this conversion statically accepts. The diagnostic's
-    /// human source list is rendered from this same set, so a source the message
-    /// names is always a source the check admits.
-    fn accepted_sources(self) -> &'static [ScalarType] {
-        use ScalarType::{Bool, Bytes, Date, Decimal, Duration, Instant, Int, Str};
-        match self {
-            Self::Bool => &[Bool, Int],
-            Self::Int => &[Int, Str, Decimal],
-            Self::Str => &[Str, Int, Decimal, Bool, Bytes, Date, Instant, Duration],
-            Self::ErrorCode => &[Str],
-            Self::Bytes => &[Bytes, Str],
-            Self::Date => &[Date, Str],
-            Self::Instant => &[Instant, Str],
-            Self::Duration => &[Duration, Str],
-            Self::Decimal => &[Decimal, Int, Str],
-        }
-    }
-
-    fn accepts(self, source: &MarrowType) -> bool {
-        match source {
-            MarrowType::Unknown | MarrowType::Invalid => true,
-            MarrowType::Primitive(scalar) => self.accepted_sources().contains(scalar),
-            MarrowType::Enum { .. }
-            | MarrowType::Error
-            | MarrowType::GroupEntry { .. }
-            | MarrowType::Identity(_)
-            | MarrowType::LocalTree { .. }
-            | MarrowType::Resource(_)
-            | MarrowType::Sequence(_) => false,
-        }
-    }
-
-    /// The human source list for the diagnostic, built from [`accepted_sources`] so
-    /// it cannot list a source the predicate rejects (or omit one it admits). The
-    /// runtime owns the finer validity rules a source string or decimal must meet;
-    /// the static list names the source scalar types and `unknown`.
-    fn supported_sources_message(self) -> String {
-        let mut parts: Vec<String> = self
-            .accepted_sources()
-            .iter()
-            .map(|scalar| format!("`{}`", scalar.name()))
-            .collect();
-        parts.push("`unknown`".to_string());
-        join_or_list(&parts)
-    }
-}
-
-fn join_or_list(parts: &[String]) -> String {
-    match parts {
-        [] => String::new(),
-        [only] => only.clone(),
-        [first, second] => format!("{first} or {second}"),
-        [rest @ .., last] => format!("{}, or {last}", rest.join(", ")),
-    }
-}
-
 fn check_conversion_arg(
     target: ConversionTarget,
     arg_types: &[MarrowType],
@@ -3156,16 +3050,25 @@ fn check_conversion_arg(
     if target.accepts(arg_type) {
         return;
     }
-    diagnostics.push(call_diagnostic(
-        file,
-        span,
-        format!(
+    diagnostics.push(CheckDiagnostic {
+        code: CHECK_CALL_ARGUMENT,
+        severity: Severity::Error,
+        file: file.to_path_buf(),
+        message: format!(
             "`{}` cannot convert `{}`; supported sources are {}",
             target.spelling(),
             marrow_type_name(arg_type),
             target.supported_sources_message()
         ),
-    ));
+        span,
+        payload: DiagnosticPayload::ConversionUnsupportedSource(
+            ConversionUnsupportedSourceDiagnostic {
+                target,
+                source: arg_type.clone(),
+                accepted_sources: target.accepted_source_types(),
+            },
+        ),
+    });
 }
 
 fn check_plain_call_modes(

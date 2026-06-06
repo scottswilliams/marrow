@@ -246,6 +246,134 @@ pub enum AppendTargetDiagnostic {
     NonIntKeyedLayer { key_type: MarrowType },
 }
 
+/// The target of a scalar-conversion builtin. The language spellings `string` and
+/// `ErrorCode` both store as [`ScalarType::Str`], so the source spelling is the
+/// conversion identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversionTarget {
+    Bool,
+    Int,
+    Str,
+    ErrorCode,
+    Bytes,
+    Date,
+    Instant,
+    Duration,
+    Decimal,
+}
+
+impl ConversionTarget {
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "bool" => Self::Bool,
+            "int" => Self::Int,
+            "string" => Self::Str,
+            "ErrorCode" => Self::ErrorCode,
+            "bytes" => Self::Bytes,
+            "date" => Self::Date,
+            "instant" => Self::Instant,
+            "duration" => Self::Duration,
+            "decimal" => Self::Decimal,
+            _ => return None,
+        })
+    }
+
+    pub(crate) fn spelling(self) -> &'static str {
+        match self {
+            Self::Bool => "bool",
+            Self::Int => "int",
+            Self::Str => "string",
+            Self::ErrorCode => "ErrorCode",
+            Self::Bytes => "bytes",
+            Self::Date => "date",
+            Self::Instant => "instant",
+            Self::Duration => "duration",
+            Self::Decimal => "decimal",
+        }
+    }
+
+    pub(crate) fn return_type(self) -> MarrowType {
+        let scalar = match self {
+            Self::Bool => ScalarType::Bool,
+            Self::Int => ScalarType::Int,
+            Self::Str | Self::ErrorCode => ScalarType::Str,
+            Self::Bytes => ScalarType::Bytes,
+            Self::Date => ScalarType::Date,
+            Self::Instant => ScalarType::Instant,
+            Self::Duration => ScalarType::Duration,
+            Self::Decimal => ScalarType::Decimal,
+        };
+        MarrowType::Primitive(scalar)
+    }
+
+    pub(crate) fn accepted_sources(self) -> &'static [ScalarType] {
+        use ScalarType::{Bool, Bytes, Date, Decimal, Duration, Instant, Int, Str};
+        match self {
+            Self::Bool => &[Bool, Int],
+            Self::Int => &[Int, Str, Decimal],
+            Self::Str => &[Str, Int, Decimal, Bool, Bytes, Date, Instant, Duration],
+            Self::ErrorCode => &[Str],
+            Self::Bytes => &[Bytes, Str],
+            Self::Date => &[Date, Str],
+            Self::Instant => &[Instant, Str],
+            Self::Duration => &[Duration, Str],
+            Self::Decimal => &[Decimal, Int, Str],
+        }
+    }
+
+    /// The source types this conversion accepts statically, plus unknown.
+    pub fn accepted_source_types(self) -> Vec<MarrowType> {
+        self.accepted_sources()
+            .iter()
+            .copied()
+            .map(MarrowType::Primitive)
+            .chain([MarrowType::Unknown])
+            .collect()
+    }
+
+    pub(crate) fn supported_sources_message(self) -> String {
+        let mut parts: Vec<String> = self
+            .accepted_sources()
+            .iter()
+            .map(|scalar| format!("`{}`", scalar.name()))
+            .collect();
+        parts.push("`unknown`".to_string());
+        join_or_list(&parts)
+    }
+
+    pub(crate) fn accepts(self, source: &MarrowType) -> bool {
+        match source {
+            MarrowType::Unknown | MarrowType::Invalid => true,
+            MarrowType::Primitive(scalar) => self.accepted_sources().contains(scalar),
+            MarrowType::Enum { .. }
+            | MarrowType::Error
+            | MarrowType::GroupEntry { .. }
+            | MarrowType::Identity(_)
+            | MarrowType::LocalTree { .. }
+            | MarrowType::Resource(_)
+            | MarrowType::Sequence(_) => false,
+        }
+    }
+}
+
+fn join_or_list(parts: &[String]) -> String {
+    match parts {
+        [] => String::new(),
+        [only] => only.clone(),
+        [first, second] => format!("{first} or {second}"),
+        [rest @ .., last] => format!("{}, or {last}", rest.join(", ")),
+    }
+}
+
+/// Structured facts for a scalar conversion call whose known source type is not
+/// one of that conversion target's accepted sources.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversionUnsupportedSourceDiagnostic {
+    pub target: ConversionTarget,
+    pub source: MarrowType,
+    pub accepted_sources: Vec<MarrowType>,
+}
+
 /// Structured facts for enum-member and enum-match diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnumDiagnostic {
@@ -287,9 +415,9 @@ pub enum EnumDiagnostic {
 /// Rejected-source-surface diagnostics name the rejected surface. Enum diagnostics
 /// carry the member or coverage fact. Private enum diagnostics name the
 /// inaccessible enum. Duplicate named arguments carry the repeated argument or
-/// field name. Append target diagnostics carry the rejected target shape. Other
-/// diagnostics carry
-/// [`DiagnosticPayload::None`].
+/// field name. Append target diagnostics carry the rejected target shape.
+/// Conversion unsupported-source diagnostics carry the target, rejected source,
+/// and accepted static sources. Other diagnostics carry [`DiagnosticPayload::None`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DiagnosticPayload {
     /// No resolution identity is attached.
@@ -327,6 +455,8 @@ pub enum DiagnosticPayload {
     DuplicateNamedArgument(String),
     /// `check.call_argument`: an `append` target is not an int-keyed leaf layer.
     AppendTarget(AppendTargetDiagnostic),
+    /// `check.call_argument`: a conversion call rejects the known source type.
+    ConversionUnsupportedSource(ConversionUnsupportedSourceDiagnostic),
 }
 
 /// A problem found while checking a project, located in a specific file.
@@ -704,8 +834,8 @@ fn is_builtin_name(name: &str) -> bool {
         // write and print
         | "write" | "print"
         // error constructor
-        | "Error" // conversions: the nine storable scalars, by canonical name.
-    ) || ScalarType::from_scalar_name(name).is_some()
+        | "Error"
+    ) || ConversionTarget::from_name(name).is_some()
 }
 
 /// The return type of a single-name data builtin: `exists(path): bool` and
@@ -730,7 +860,7 @@ fn conversion_return_type(segments: &[String]) -> Option<MarrowType> {
     let [name] = segments else {
         return None;
     };
-    ScalarType::from_scalar_name(name).map(MarrowType::Primitive)
+    ConversionTarget::from_name(name).map(ConversionTarget::return_type)
 }
 
 /// The descriptor for a `std::module::op` helper, looked up in the shared table.
@@ -891,6 +1021,7 @@ impl TestResolutionSuppression {
             | DiagnosticPayload::PrivateEnum(_)
             | DiagnosticPayload::DuplicateNamedArgument(_)
             | DiagnosticPayload::AppendTarget(_)
+            | DiagnosticPayload::ConversionUnsupportedSource(_)
             | DiagnosticPayload::None => false,
         }
     }

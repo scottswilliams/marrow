@@ -3,7 +3,8 @@ mod support;
 use std::path::Path;
 
 use marrow_check::{
-    AppendTargetDiagnostic, CheckDiagnostic, DiagnosticPayload, EnumDiagnostic, MarrowType,
+    AppendTargetDiagnostic, CheckDiagnostic, ConversionTarget,
+    ConversionUnsupportedSourceDiagnostic, DiagnosticPayload, EnumDiagnostic, MarrowType,
     RejectedSurface, ScalarType, check_project, check_tests,
 };
 use marrow_project::parse_config;
@@ -2723,12 +2724,16 @@ fn inout_markers_are_rejected_on_plain_call_targets() {
     assert_eq!(found.len(), 3, "{found:#?}");
 }
 
+fn conversion_source_payload(target: ConversionTarget, source: MarrowType) -> DiagnosticPayload {
+    DiagnosticPayload::ConversionUnsupportedSource(ConversionUnsupportedSourceDiagnostic {
+        target,
+        source,
+        accepted_sources: target.accepted_source_types(),
+    })
+}
+
 #[test]
 fn a_conversion_rejects_an_unsupported_source_and_lists_the_accepted_sources() {
-    // `bool(...)` accepts only `bool` or `int` sources, so a `string` argument is a
-    // `check.call_argument` mismatch. The diagnostic's source list is rendered from
-    // the same accepted-source set the predicate consults, so it names exactly the
-    // scalar sources the check admits plus `unknown`.
     let found = check_module(
         "convert-bool-from-string",
         "module m\n\
@@ -2736,12 +2741,14 @@ fn a_conversion_rejects_an_unsupported_source_and_lists_the_accepted_sources() {
         "check.call_argument",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
-    let message = &found[0].message;
-    assert!(
-        message.contains("`bool` cannot convert `string`"),
-        "{message}"
+    assert_eq!(
+        found[0].payload,
+        conversion_source_payload(
+            ConversionTarget::Bool,
+            MarrowType::Primitive(ScalarType::Str)
+        ),
+        "{found:#?}"
     );
-    assert!(message.contains("`bool`, `int`, or `unknown`"), "{message}");
 }
 
 #[test]
@@ -2765,12 +2772,13 @@ fn the_string_and_error_code_conversions_have_distinct_source_sets() {
         "check.call_argument",
     );
     assert_eq!(rejected.len(), 1, "{rejected:#?}");
-    assert!(
-        rejected[0]
-            .message
-            .contains("`ErrorCode` cannot convert `bytes`"),
-        "{:#?}",
-        rejected[0]
+    assert_eq!(
+        rejected[0].payload,
+        conversion_source_payload(
+            ConversionTarget::ErrorCode,
+            MarrowType::Primitive(ScalarType::Bytes)
+        ),
+        "{rejected:#?}"
     );
 }
 
@@ -3781,8 +3789,14 @@ fn bytes_conversion_rejects_a_known_non_string_source() {
         "check.call_argument",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
-    assert!(found[0].message.contains("bytes"), "{}", found[0].message);
-    assert!(found[0].message.contains("string"), "{}", found[0].message);
+    assert_eq!(
+        found[0].payload,
+        conversion_source_payload(
+            ConversionTarget::Bytes,
+            MarrowType::Primitive(ScalarType::Int)
+        ),
+        "{found:#?}"
+    );
 }
 
 #[test]
@@ -3816,24 +3830,35 @@ fn conversion_calls_reject_known_unsupported_sources() {
         "check.call_argument",
     );
     assert_eq!(found.len(), 6, "{found:#?}");
-    assert!(
-        found.iter().any(|d| d.message.contains("date")),
-        "{found:#?}"
-    );
-    assert!(
-        found.iter().any(|d| d.message.contains("duration")),
-        "{found:#?}"
-    );
-    assert!(
-        found.iter().any(|d| d.message.contains("bool")),
-        "{found:#?}"
-    );
-    assert!(
-        found.iter().any(|d| d.message.contains("decimal")),
-        "{found:#?}"
-    );
-    assert!(
-        found.iter().any(|d| d.message.contains("Color")),
+    let color = MarrowType::Enum {
+        module: "m".into(),
+        name: "Color".into(),
+    };
+    assert_eq!(
+        found
+            .iter()
+            .map(|diagnostic| diagnostic.payload.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            conversion_source_payload(
+                ConversionTarget::Date,
+                MarrowType::Primitive(ScalarType::Int)
+            ),
+            conversion_source_payload(
+                ConversionTarget::Duration,
+                MarrowType::Primitive(ScalarType::Int)
+            ),
+            conversion_source_payload(
+                ConversionTarget::Bool,
+                MarrowType::Primitive(ScalarType::Str)
+            ),
+            conversion_source_payload(
+                ConversionTarget::Decimal,
+                MarrowType::Primitive(ScalarType::Bool)
+            ),
+            conversion_source_payload(ConversionTarget::Int, color.clone()),
+            conversion_source_payload(ConversionTarget::Str, color),
+        ],
         "{found:#?}"
     );
 }
