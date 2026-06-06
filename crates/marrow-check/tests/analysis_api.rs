@@ -7,23 +7,19 @@ mod support;
 use std::path::PathBuf;
 
 use marrow_check::program::MarrowType;
-use marrow_check::{CheckedProgram, ProjectSources, analyze_project, scope_at, type_at};
+use marrow_check::{CheckedProgram, scope_at, type_at};
 use marrow_schema::ScalarType;
 use marrow_syntax::ParsedSource;
 
-use support::{config, temp_root};
+use support::analyze_overlay;
 
 /// Analyze a single `src/m.mw` source and return the program plus the parse for
 /// that file, so a test can position into the buffer it controls. The source is
 /// written to disk so project discovery finds it, then re-supplied as an overlay
 /// to exercise the same path editor tooling uses.
 fn analyze(name: &str, source: &str) -> (CheckedProgram, ParsedSource, PathBuf) {
-    let root = temp_root(name);
-    let path = root.join("src/m.mw");
-    std::fs::create_dir_all(path.parent().unwrap()).expect("create src dir");
-    std::fs::write(&path, source).expect("write source");
-    let sources = ProjectSources::new().with(&path, source);
-    let snapshot = analyze_project(&root, &config(), &sources).expect("analyze");
+    let (snapshot, paths) = analyze_overlay(name, &[("src/m.mw", source)]);
+    let path = paths.into_iter().next().expect("the written file path");
     let parsed = snapshot
         .files
         .into_iter()
@@ -33,17 +29,11 @@ fn analyze(name: &str, source: &str) -> (CheckedProgram, ParsedSource, PathBuf) 
     (snapshot.program, parsed, path)
 }
 
-/// The byte offset of the first occurrence of `needle` in `source`, plus an
-/// inner offset, so a test can point at the middle of a token.
-fn offset_of(source: &str, needle: &str) -> usize {
-    source.find(needle).expect("needle present in source")
-}
-
 #[test]
 fn type_at_a_literal_is_its_scalar_type() {
     let source = "module m\nfn f()\n    const n = 42\n";
     let (program, parsed, path) = analyze("type-at-literal", source);
-    let offset = offset_of(source, "42") + 1;
+    let offset = source.find("42").expect("literal present in source") + 1;
 
     let ty = type_at(&program, &path, &parsed, offset);
     assert_eq!(ty, Some(MarrowType::Primitive(ScalarType::Int)), "{ty:?}");
@@ -273,13 +263,8 @@ fn type_at_and_scope_at_emit_no_diagnostics() {
         fn f(title: string)\n    \
         const greeting = title\n    \
         print(greeting)\n";
-    let root = temp_root("no-diagnostics");
-    let path = root.join("src/m.mw");
-    std::fs::create_dir_all(path.parent().unwrap()).expect("create src dir");
-    std::fs::write(&path, source).expect("write source");
-    let sources = ProjectSources::new().with(&path, source);
-
-    let snapshot = analyze_project(&root, &config(), &sources).expect("analyze");
+    let (snapshot, paths) = analyze_overlay("no-diagnostics", &[("src/m.mw", source)]);
+    let path = paths.into_iter().next().expect("the written file path");
     let before = snapshot.report.diagnostics.clone();
     assert!(!snapshot.report.has_errors(), "{before:#?}");
     let program = &snapshot.program;

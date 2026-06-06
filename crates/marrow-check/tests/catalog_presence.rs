@@ -2,7 +2,6 @@ mod support;
 
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::path::{Path, PathBuf};
 
 use marrow_check::{
     CHECK_BARE_MAYBE_PRESENT_READ, CHECK_CATALOG_INTENT, PresenceProofPlace, PresenceProofRead,
@@ -11,37 +10,45 @@ use marrow_check::{
 };
 use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 
+use support::catalog::{catalog_path, entry as literal_entry, write_catalog};
 use support::{config, temp_project, write};
-
-fn catalog_path(root: &Path) -> PathBuf {
-    root.join("marrow.catalog.json")
-}
 
 fn catalog(entries: Vec<CatalogEntry>) -> CatalogMetadata {
     CatalogMetadata::new(7, entries)
 }
 
+/// Check a single `src/books.mw` module `src` and assert it raises the bare
+/// maybe-present-read diagnostic: the load-bearing input is the mutation in `src` that
+/// expires `if exists` narrowing, so a later read is no longer proven present.
+fn assert_bare_present_read(name: &str, src: &str) {
+    let root = temp_project(name, |root| write(root, "src/books.mw", src));
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+/// A catalog entry whose stable id is minted deterministically from `label`, so a
+/// fixture refers to a member by a readable name and still gets a `cat_`-shaped id the
+/// catalog parser accepts. Tests that need a specific literal id call
+/// [`literal_entry`] (the shared builder) directly.
 fn entry(
     kind: CatalogEntryKind,
     canonical_path: &str,
-    stable_id: &str,
+    label: &str,
     aliases: &[&str],
 ) -> CatalogEntry {
-    CatalogEntry {
-        kind,
-        path: canonical_path.to_string(),
-        stable_id: fixture_id(stable_id),
-        aliases: aliases.iter().map(|alias| alias.to_string()).collect(),
-        lifecycle: CatalogLifecycle::Active,
-        accepted_key_shape: None,
-        accepted_struct: None,
-    }
+    literal_entry(kind, canonical_path, &derived_id(label), aliases)
 }
 
-fn fixture_id(label: &str) -> String {
-    if label.starts_with("cat_") {
-        return label.to_string();
-    }
+/// Mint a deterministic `cat_<32 hex>` stable id from a readable label, so fixtures and
+/// the assertions that look the id back up agree without sharing a literal constant.
+fn derived_id(label: &str) -> String {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     label.hash(&mut hasher);
     let first = hasher.finish();
@@ -49,10 +56,6 @@ fn fixture_id(label: &str) -> String {
     (label, "catalog-presence-fixture").hash(&mut hasher);
     let second = hasher.finish();
     format!("cat_{first:016x}{second:016x}")
-}
-
-fn write_catalog(root: &Path, metadata: &CatalogMetadata) {
-    fs::write(catalog_path(root), metadata.to_json_pretty()).expect("write catalog");
 }
 
 #[test]
@@ -224,7 +227,7 @@ fn accepted_catalog_round_trips_stable_ids_aliases_lifecycle_epoch_and_digest() 
         CatalogEntry {
             kind: CatalogEntryKind::EnumMember,
             path: "books::Status::archived".to_string(),
-            stable_id: fixture_id("enum-member-archived"),
+            stable_id: derived_id("enum-member-archived"),
             aliases: vec!["books::Status::inactive".to_string()],
             lifecycle: CatalogLifecycle::Deprecated,
             accepted_key_shape: None,
@@ -448,7 +451,7 @@ fn retire_reserves_the_path_spelling_against_future_reuse() {
         })
         .unwrap_or_else(|| panic!("proposal keeps retired title: {:#?}", proposal.entries));
     assert_eq!(CatalogLifecycle::Reserved, title.lifecycle);
-    assert_eq!(fixture_id("member-title"), title.stable_id);
+    assert_eq!(derived_id("member-title"), title.stable_id);
 }
 
 #[test]
@@ -466,7 +469,7 @@ fn catalog_proposal_ids_do_not_collide_with_accepted_stable_ids() {
         let metadata = catalog(vec![
             entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
             entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
-            entry(
+            literal_entry(
                 CatalogEntryKind::ResourceMember,
                 "books::Book::title",
                 colliding_id,
@@ -617,7 +620,7 @@ fn accepted_catalog_rename_preserves_stable_id() {
     let resource = program.facts.resource_id(module, "Book").expect("resource");
     assert_eq!(
         program.facts.resource(resource).catalog_id.as_deref(),
-        Some(fixture_id("res-book").as_str())
+        Some(derived_id("res-book").as_str())
     );
 }
 
@@ -649,7 +652,7 @@ fn catalog_proposals_preserve_accepted_aliases_and_lifecycle() {
             CatalogEntry {
                 kind: CatalogEntryKind::Enum,
                 path: "books::OldStatus".to_string(),
-                stable_id: fixture_id("enum-old-status"),
+                stable_id: derived_id("enum-old-status"),
                 aliases: vec!["books::Status".to_string()],
                 lifecycle: CatalogLifecycle::Deprecated,
                 accepted_key_shape: None,
@@ -679,7 +682,7 @@ fn catalog_proposals_preserve_accepted_aliases_and_lifecycle() {
     let deprecated = proposal
         .entries
         .iter()
-        .find(|entry| entry.stable_id == fixture_id("enum-old-status"))
+        .find(|entry| entry.stable_id == derived_id("enum-old-status"))
         .expect("deprecated entry");
     assert_eq!(deprecated.lifecycle, CatalogLifecycle::Deprecated);
     assert_eq!(deprecated.aliases, ["books::Status"]);
@@ -733,11 +736,11 @@ fn enum_member_facts_use_catalog_ids_independent_of_source_order() {
         .expect("archived");
     assert_eq!(
         active.catalog_id.as_deref(),
-        Some(fixture_id("enum-member-active").as_str())
+        Some(derived_id("enum-member-active").as_str())
     );
     assert_eq!(
         archived.catalog_id.as_deref(),
-        Some(fixture_id("enum-member-archived").as_str())
+        Some(derived_id("enum-member-archived").as_str())
     );
 }
 
@@ -809,8 +812,8 @@ fn enum_field_value_meaning_uses_catalog_member_identity_after_source_reorder() 
     assert_eq!(
         catalog_ids,
         [
-            fixture_id("enum-member-active"),
-            fixture_id("enum-member-archived")
+            derived_id("enum-member-active"),
+            derived_id("enum-member-archived")
         ]
     );
 }
@@ -902,8 +905,8 @@ fn enum_index_key_meaning_uses_catalog_member_identity_after_source_reorder() {
     assert_eq!(
         catalog_ids,
         [
-            fixture_id("enum-member-active"),
-            fixture_id("enum-member-archived")
+            derived_id("enum-member-active"),
+            derived_id("enum-member-archived")
         ]
     );
 }
@@ -1048,39 +1051,23 @@ fn if_exists_narrows_reads_inside_the_then_block() {
 
 #[test]
 fn if_exists_narrowing_is_key_sensitive() {
-    let root = temp_project("presence-if-exists-keyed", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
+    assert_bare_present_read(
+        "presence-if-exists-keyed",
+        "module books\n\
              resource Book at ^books(id: int)\n\
              \x20   subtitle: string\n\
              fn guarded(a: int, b: int): string\n\
              \x20   if exists(^books(a).subtitle)\n\
              \x20       return ^books(b).subtitle\n\
              \x20   return \"untitled\"\n",
-        );
-    });
-
-    let (report, _program) = check_project(&root, &config()).expect("check");
-
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
-        "{:#?}",
-        report.diagnostics
     );
 }
 
 #[test]
 fn if_exists_narrowing_is_binding_sensitive() {
-    let root = temp_project("presence-if-exists-shadowed-key", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
+    assert_bare_present_read(
+        "presence-if-exists-shadowed-key",
+        "module books\n\
              resource Book at ^books(id: int)\n\
              \x20   subtitle: string\n\
              fn guarded(id: int): string\n\
@@ -1088,28 +1075,14 @@ fn if_exists_narrowing_is_binding_sensitive() {
              \x20       const id: int = 2\n\
              \x20       return ^books(id).subtitle\n\
              \x20   return \"untitled\"\n",
-        );
-    });
-
-    let (report, _program) = check_project(&root, &config()).expect("check");
-
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
-        "{:#?}",
-        report.diagnostics
     );
 }
 
 #[test]
 fn if_exists_narrowing_expires_when_a_key_binding_is_assigned() {
-    let root = temp_project("presence-if-exists-mutated-key", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
+    assert_bare_present_read(
+        "presence-if-exists-mutated-key",
+        "module books\n\
              resource Book at ^books(id: int)\n\
              \x20   subtitle: string\n\
              fn guarded(id: int): string\n\
@@ -1118,28 +1091,14 @@ fn if_exists_narrowing_expires_when_a_key_binding_is_assigned() {
              \x20       k = 2\n\
              \x20       return ^books(k).subtitle\n\
              \x20   return \"untitled\"\n",
-        );
-    });
-
-    let (report, _program) = check_project(&root, &config()).expect("check");
-
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
-        "{:#?}",
-        report.diagnostics
     );
 }
 
 #[test]
 fn if_exists_narrowing_expires_when_a_key_binding_is_passed_inout() {
-    let root = temp_project("presence-if-exists-inout-key", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
+    assert_bare_present_read(
+        "presence-if-exists-inout-key",
+        "module books\n\
              resource Book at ^books(id: int)\n\
              \x20   subtitle: string\n\
              fn setTo(inout value: int)\n\
@@ -1150,28 +1109,14 @@ fn if_exists_narrowing_expires_when_a_key_binding_is_passed_inout() {
              \x20       setTo(inout k)\n\
              \x20       return ^books(k).subtitle\n\
              \x20   return \"untitled\"\n",
-        );
-    });
-
-    let (report, _program) = check_project(&root, &config()).expect("check");
-
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
-        "{:#?}",
-        report.diagnostics
     );
 }
 
 #[test]
 fn if_exists_narrowing_expires_when_a_key_field_is_assigned() {
-    let root = temp_project("presence-if-exists-mutated-key-field", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
+    assert_bare_present_read(
+        "presence-if-exists-mutated-key-field",
+        "module books\n\
              resource Holder\n\
              \x20   required id: int\n\
              resource Book at ^books(id: int)\n\
@@ -1182,28 +1127,14 @@ fn if_exists_narrowing_expires_when_a_key_field_is_assigned() {
              \x20       holder.id = 2\n\
              \x20       return ^books(holder.id).subtitle\n\
              \x20   return \"untitled\"\n",
-        );
-    });
-
-    let (report, _program) = check_project(&root, &config()).expect("check");
-
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
-        "{:#?}",
-        report.diagnostics
     );
 }
 
 #[test]
 fn if_exists_narrowing_expires_when_a_key_field_is_passed_inout() {
-    let root = temp_project("presence-if-exists-inout-key-field", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
+    assert_bare_present_read(
+        "presence-if-exists-inout-key-field",
+        "module books\n\
              resource Holder\n\
              \x20   required id: int\n\
              resource Book at ^books(id: int)\n\
@@ -1216,28 +1147,14 @@ fn if_exists_narrowing_expires_when_a_key_field_is_passed_inout() {
              \x20       setTo(inout holder.id)\n\
              \x20       return ^books(holder.id).subtitle\n\
              \x20   return \"untitled\"\n",
-        );
-    });
-
-    let (report, _program) = check_project(&root, &config()).expect("check");
-
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
-        "{:#?}",
-        report.diagnostics
     );
 }
 
 #[test]
 fn if_exists_narrowing_expires_when_nested_condition_mutates_key() {
-    let root = temp_project("presence-if-exists-nested-condition-mutates-key", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
+    assert_bare_present_read(
+        "presence-if-exists-nested-condition-mutates-key",
+        "module books\n\
              resource Book at ^books(id: int)\n\
              \x20   subtitle: string\n\
              fn setTo(inout value: int): bool\n\
@@ -1249,28 +1166,14 @@ fn if_exists_narrowing_expires_when_nested_condition_mutates_key() {
              \x20       if setTo(inout k)\n\
              \x20           return ^books(k).subtitle\n\
              \x20   return \"untitled\"\n",
-        );
-    });
-
-    let (report, _program) = check_project(&root, &config()).expect("check");
-
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
-        "{:#?}",
-        report.diagnostics
     );
 }
 
 #[test]
 fn if_exists_narrowing_ignores_condition_proofs_after_key_mutation() {
-    let root = temp_project("presence-if-exists-condition-mutates-key", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
+    assert_bare_present_read(
+        "presence-if-exists-condition-mutates-key",
+        "module books\n\
              resource Book at ^books(id: int)\n\
              \x20   subtitle: string\n\
              fn setTo(inout value: int): bool\n\
@@ -1281,28 +1184,14 @@ fn if_exists_narrowing_ignores_condition_proofs_after_key_mutation() {
              \x20   if exists(^books(k).subtitle) and setTo(inout k)\n\
              \x20       return ^books(k).subtitle\n\
              \x20   return \"untitled\"\n",
-        );
-    });
-
-    let (report, _program) = check_project(&root, &config()).expect("check");
-
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
-        "{:#?}",
-        report.diagnostics
     );
 }
 
 #[test]
 fn if_exists_narrowing_expires_when_saved_field_is_deleted() {
-    let root = temp_project("presence-if-exists-delete-field", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
+    assert_bare_present_read(
+        "presence-if-exists-delete-field",
+        "module books\n\
              resource Book at ^books(id: int)\n\
              \x20   subtitle: string\n\
              fn stale(id: int): string\n\
@@ -1310,28 +1199,14 @@ fn if_exists_narrowing_expires_when_saved_field_is_deleted() {
              \x20       delete ^books(id).subtitle\n\
              \x20       return ^books(id).subtitle\n\
              \x20   return \"untitled\"\n",
-        );
-    });
-
-    let (report, _program) = check_project(&root, &config()).expect("check");
-
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
-        "{:#?}",
-        report.diagnostics
     );
 }
 
 #[test]
 fn if_exists_narrowing_expires_when_saved_root_is_replaced() {
-    let root = temp_project("presence-if-exists-replace-root", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
+    assert_bare_present_read(
+        "presence-if-exists-replace-root",
+        "module books\n\
              resource Book at ^books(id: int)\n\
              \x20   required title: string\n\
              \x20   subtitle: string\n\
@@ -1340,28 +1215,14 @@ fn if_exists_narrowing_expires_when_saved_root_is_replaced() {
              \x20       ^books(id) = Book(title: \"new\")\n\
              \x20       return ^books(id).subtitle\n\
              \x20   return \"untitled\"\n",
-        );
-    });
-
-    let (report, _program) = check_project(&root, &config()).expect("check");
-
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
-        "{:#?}",
-        report.diagnostics
     );
 }
 
 #[test]
 fn if_exists_narrowing_expires_when_called_function_writes_saved_data() {
-    let root = temp_project("presence-if-exists-call-writes-saved", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
+    assert_bare_present_read(
+        "presence-if-exists-call-writes-saved",
+        "module books\n\
              resource Book at ^books(id: int)\n\
              \x20   subtitle: string\n\
              fn dropSubtitle(id: int)\n\
@@ -1371,28 +1232,14 @@ fn if_exists_narrowing_expires_when_called_function_writes_saved_data() {
              \x20       dropSubtitle(id)\n\
              \x20       return ^books(id).subtitle\n\
              \x20   return \"untitled\"\n",
-        );
-    });
-
-    let (report, _program) = check_project(&root, &config()).expect("check");
-
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
-        "{:#?}",
-        report.diagnostics
     );
 }
 
 #[test]
 fn if_exists_narrowing_expires_when_called_function_transitively_writes_saved_data() {
-    let root = temp_project("presence-if-exists-call-transitive-writes-saved", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
+    assert_bare_present_read(
+        "presence-if-exists-call-transitive-writes-saved",
+        "module books\n\
              resource Book at ^books(id: int)\n\
              \x20   subtitle: string\n\
              fn dropSubtitle(id: int)\n\
@@ -1404,18 +1251,6 @@ fn if_exists_narrowing_expires_when_called_function_transitively_writes_saved_da
              \x20       relay(id)\n\
              \x20       return ^books(id).subtitle\n\
              \x20   return \"untitled\"\n",
-        );
-    });
-
-    let (report, _program) = check_project(&root, &config()).expect("check");
-
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
-        "{:#?}",
-        report.diagnostics
     );
 }
 
@@ -1589,109 +1424,53 @@ fn unknown_cannot_reenter_a_saved_identity_keyspace() {
 
 #[test]
 fn values_loop_does_not_narrow_value_as_an_entry_key() {
-    let root = temp_project("presence-values-loop-not-key", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
+    assert_bare_present_read(
+        "presence-values-loop-not-key",
+        "module books\n\
              resource Book at ^books(id: int)\n\
              \x20   scores(pos: int): int\n\
              fn f()\n\
              \x20   for score in values(^books(1).scores)\n\
              \x20   \x20   write(^books(1).scores(score))\n",
-        );
-    });
-
-    let (report, _program) = check_project(&root, &config()).expect("check");
-
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
-        "{:#?}",
-        report.diagnostics
     );
 }
 
 #[test]
 fn single_binding_entries_loop_does_not_narrow_entry_as_a_key() {
-    let root = temp_project("presence-single-entry-loop-not-key", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
+    assert_bare_present_read(
+        "presence-single-entry-loop-not-key",
+        "module books\n\
              resource Book at ^books(id: int)\n\
              \x20   scores(pos: int): int\n\
              fn f()\n\
              \x20   for entry in entries(^books(1).scores)\n\
              \x20   \x20   write(^books(1).scores(entry))\n",
-        );
-    });
-
-    let (report, _program) = check_project(&root, &config()).expect("check");
-
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
-        "{:#?}",
-        report.diagnostics
     );
 }
 
 #[test]
 fn two_binding_keys_loop_does_not_narrow_ordinal_as_a_key() {
-    let root = temp_project("presence-two-binding-keys-loop-not-key", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
+    assert_bare_present_read(
+        "presence-two-binding-keys-loop-not-key",
+        "module books\n\
              resource Book at ^books(id: int)\n\
              \x20   scores(pos: int): int\n\
              fn f()\n\
              \x20   for ordinal, pos in keys(^books(1).scores)\n\
              \x20   \x20   write(^books(1).scores(ordinal))\n",
-        );
-    });
-
-    let (report, _program) = check_project(&root, &config()).expect("check");
-
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
-        "{:#?}",
-        report.diagnostics
     );
 }
 
 #[test]
 fn two_binding_reversed_keys_loop_does_not_narrow_ordinal_as_a_key() {
-    let root = temp_project("presence-two-binding-reversed-keys-loop-not-key", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
+    assert_bare_present_read(
+        "presence-two-binding-reversed-keys-loop-not-key",
+        "module books\n\
              resource Book at ^books(id: int)\n\
              \x20   scores(pos: int): int\n\
              fn f()\n\
              \x20   for ordinal, pos in reversed(keys(^books(1).scores))\n\
              \x20   \x20   write(^books(1).scores(ordinal))\n",
-        );
-    });
-
-    let (report, _program) = check_project(&root, &config()).expect("check");
-
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
-        "{:#?}",
-        report.diagnostics
     );
 }
 
@@ -1717,38 +1496,22 @@ fn two_binding_saved_path_loop_narrows_the_key_binding() {
 
 #[test]
 fn duplicate_entries_loop_bindings_do_not_narrow_the_visible_value_as_a_key() {
-    let root = temp_project("presence-duplicate-entries-loop-bindings-not-key", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
+    assert_bare_present_read(
+        "presence-duplicate-entries-loop-bindings-not-key",
+        "module books\n\
              resource Book at ^books(id: int)\n\
              \x20   scores(pos: int): int\n\
              fn f()\n\
              \x20   for x, x in entries(^books(1).scores)\n\
              \x20   \x20   write(^books(1).scores(x))\n",
-        );
-    });
-
-    let (report, _program) = check_project(&root, &config()).expect("check");
-
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
-        "{:#?}",
-        report.diagnostics
     );
 }
 
 #[test]
 fn if_exists_narrowing_expires_when_same_condition_calls_saved_writer() {
-    let root = temp_project("presence-if-exists-condition-call-writes-saved", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
+    assert_bare_present_read(
+        "presence-if-exists-condition-call-writes-saved",
+        "module books\n\
              resource Book at ^books(id: int)\n\
              \x20   subtitle: string\n\
              fn dropSubtitle(id: int): bool\n\
@@ -1758,18 +1521,6 @@ fn if_exists_narrowing_expires_when_same_condition_calls_saved_writer() {
              \x20   if exists(^books(id).subtitle) and dropSubtitle(id)\n\
              \x20   \x20   return ^books(id).subtitle\n\
              \x20   return \"untitled\"\n",
-        );
-    });
-
-    let (report, _program) = check_project(&root, &config()).expect("check");
-
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
-        "{:#?}",
-        report.diagnostics
     );
 }
 
@@ -1812,17 +1563,25 @@ fn bare_maybe_present_read_errors_and_resolved_reads_record_allowed_proof_source
         .iter()
         .map(|proof| proof.source)
         .collect();
-    assert!(
-        proof_sources.contains(&PresenceProofSource::AttachedData),
-        "{proof_sources:#?}"
-    );
-    assert!(
-        proof_sources.contains(&PresenceProofSource::Declaration),
-        "{proof_sources:#?}"
-    );
-    assert!(
-        proof_sources.contains(&PresenceProofSource::Narrowing),
-        "{proof_sources:#?}"
+    let mut observed_sources: Vec<_> = proof_sources.clone();
+    observed_sources.sort_by_key(|source| format!("{source:?}"));
+    observed_sources.dedup();
+    // Compile-time tripwire: a new PresenceProofSource variant must also be
+    // added to all_sources below, or this match stops being exhaustive.
+    match PresenceProofSource::AttachedData {
+        PresenceProofSource::AttachedData
+        | PresenceProofSource::Declaration
+        | PresenceProofSource::Narrowing => {}
+    }
+    let mut all_sources = vec![
+        PresenceProofSource::AttachedData,
+        PresenceProofSource::Declaration,
+        PresenceProofSource::Narrowing,
+    ];
+    all_sources.sort_by_key(|source| format!("{source:?}"));
+    assert_eq!(
+        observed_sources, all_sources,
+        "every presence-proof source variant must occur once in this fixture"
     );
     assert!(
         program
@@ -1855,13 +1614,6 @@ fn bare_maybe_present_read_errors_and_resolved_reads_record_allowed_proof_source
         program.facts.presence_proofs().len(),
         "presence proof ids must be unique"
     );
-    for proof in program.facts.presence_proofs() {
-        match proof.source {
-            PresenceProofSource::Declaration
-            | PresenceProofSource::Narrowing
-            | PresenceProofSource::AttachedData => {}
-        }
-    }
 }
 
 #[test]
@@ -1908,7 +1660,7 @@ fn evolve_rename_authorizes_a_saved_data_backed_member_rename() {
             entry.kind == CatalogEntryKind::ResourceMember && entry.path == "books::Book::subtitle"
         })
         .expect("renamed member entry");
-    assert_eq!(renamed.stable_id, fixture_id("member-title"));
+    assert_eq!(renamed.stable_id, derived_id("member-title"));
     assert_eq!(renamed.lifecycle, CatalogLifecycle::Active);
     assert!(
         renamed
@@ -2005,7 +1757,7 @@ fn evolve_retire_marks_the_proposal_entry_reserved() {
         .iter()
         .find(|entry| {
             entry.kind == CatalogEntryKind::ResourceMember
-                && entry.stable_id == fixture_id("member-subtitle")
+                && entry.stable_id == derived_id("member-subtitle")
         })
         .expect("retired member entry");
     assert_eq!(retired.lifecycle, CatalogLifecycle::Reserved);
@@ -2153,7 +1905,7 @@ fn assert_entry_stays_active(program: &marrow_check::CheckedProgram, stable_id: 
     let entry = proposal
         .entries
         .iter()
-        .find(|entry| entry.stable_id == fixture_id(stable_id))
+        .find(|entry| entry.stable_id == derived_id(stable_id))
         .expect("proposal must keep the retire target entry");
     assert_eq!(
         entry.lifecycle,
@@ -2287,7 +2039,7 @@ fn evolve_rename_whose_source_is_still_declared_fails_closed() {
         .iter()
         .filter(|member| {
             member.resource == resource
-                && member.catalog_id.as_deref() == Some(fixture_id("member-a").as_str())
+                && member.catalog_id.as_deref() == Some(derived_id("member-a").as_str())
         })
         .map(|member| member.name.as_str())
         .collect();
@@ -2549,13 +2301,13 @@ fn parallel_catalog_additions_merge_without_regenerating_ids() {
     let metadata = CatalogMetadata::new(
         9,
         vec![
-            entry(
+            literal_entry(
                 CatalogEntryKind::Resource,
                 "branch_a::Book",
                 branch_a_id,
                 &[],
             ),
-            entry(
+            literal_entry(
                 CatalogEntryKind::Resource,
                 "branch_b::Magazine",
                 branch_b_id,
@@ -2588,7 +2340,7 @@ fn evolve_rename_reads_the_stored_id_rather_than_recomputing_it() {
         let metadata = catalog(vec![
             entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
             entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
-            entry(
+            literal_entry(
                 CatalogEntryKind::ResourceMember,
                 "books::Book::title",
                 "cat_000000000000000000000000000000ff",

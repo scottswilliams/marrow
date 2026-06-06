@@ -8,7 +8,7 @@ use marrow_project::parse_config;
 use marrow_schema::stdlib::Capability;
 use marrow_store::value::ScalarType;
 
-use support::{config, temp_project, write};
+use support::{config, temp_project, with_code, write};
 
 #[test]
 fn builds_a_module_for_a_clean_library_file() {
@@ -976,11 +976,7 @@ fn duration_literal_types_to_duration() {
         "{:#?}",
         report.diagnostics
     );
-    let return_type_errors: Vec<_> = report
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.code == "check.return_type")
-        .collect();
+    let return_type_errors = with_code(&report, "check.return_type");
     assert_eq!(
         return_type_errors.len(),
         1,
@@ -1060,33 +1056,35 @@ fn a_file_with_a_parse_error_contributes_no_module() {
 // would, never `check.untyped_value` and never nothing. The dual is preserved:
 // `Error` must still satisfy an `Error`-typed slot (`std::log::error`).
 
-/// Build a one-module project whose single function wraps `body` in a
-/// `try`/`catch e: Error`, so `e` is in scope as an `Error` value, and return its
-/// diagnostic codes. `signature` is the function header (e.g. `fn f()`). `slot`
-/// names the project directory: each caller passes a distinct `slot` so that two
-/// of these tests running concurrently under workspace parallelism never share a
-/// temp project (and so cannot delete each other's files mid-run).
-fn error_value_diagnostic_codes(slot: &str, signature: &str, body: &str) -> Vec<String> {
-    let root = temp_project(&format!("program-error-scalar-{slot}"), |root| {
-        write(
-            root,
-            "src/shelf/t.mw",
-            &format!(
-                "module shelf::t\n\
-                 {signature}\n\
-                 \x20   try\n\
-                 \x20       var x = 1\n\
-                 \x20   catch e: Error\n\
-                 {body}\n"
-            ),
-        );
-    });
+/// Check a one-module project whose `src/shelf/t.mw` holds `module_src` and return
+/// its diagnostic codes. `slot` names the project directory: each caller passes a
+/// distinct `slot` so that two tests running concurrently under workspace parallelism
+/// never share a temp project (and so cannot delete each other's files mid-run).
+fn module_diagnostic_codes(slot: &str, module_src: &str) -> Vec<String> {
+    let root = temp_project(slot, |root| write(root, "src/shelf/t.mw", module_src));
     let (report, _) = check_project(&root, &config()).expect("check");
     report
         .diagnostics
         .iter()
         .map(|diagnostic| diagnostic.code.to_string())
         .collect()
+}
+
+/// Build a one-module project whose single function wraps `body` in a
+/// `try`/`catch e: Error`, so `e` is in scope as an `Error` value, and return its
+/// diagnostic codes. `signature` is the function header (e.g. `fn f()`).
+fn error_value_diagnostic_codes(slot: &str, signature: &str, body: &str) -> Vec<String> {
+    module_diagnostic_codes(
+        &format!("program-error-scalar-{slot}"),
+        &format!(
+            "module shelf::t\n\
+             {signature}\n\
+             \x20   try\n\
+             \x20       var x = 1\n\
+             \x20   catch e: Error\n\
+             {body}\n"
+        ),
+    )
 }
 
 /// `if e` over an `Error` condition reports `check.condition_type` (a condition
@@ -1182,28 +1180,19 @@ fn error_argument_to_user_function_is_a_call_argument_error() {
 /// and return the diagnostic codes. An `Error`-typed parameter is a concrete user
 /// type, so the argument loop checks it like any other typed slot.
 fn error_param_call_diagnostic_codes(slot: &str, arg: &str) -> Vec<String> {
-    let root = temp_project(&format!("program-error-param-{slot}"), |root| {
-        write(
-            root,
-            "src/shelf/t.mw",
-            &format!(
-                "module shelf::t\n\
-                 fn takes(e: Error)\n\
-                 \x20   return\n\
-                 fn f()\n\
-                 \x20   try\n\
-                 \x20       var x = 1\n\
-                 \x20   catch e: Error\n\
-                 \x20       takes({arg})\n"
-            ),
-        );
-    });
-    let (report, _) = check_project(&root, &config()).expect("check");
-    report
-        .diagnostics
-        .iter()
-        .map(|diagnostic| diagnostic.code.to_string())
-        .collect()
+    module_diagnostic_codes(
+        &format!("program-error-param-{slot}"),
+        &format!(
+            "module shelf::t\n\
+             fn takes(e: Error)\n\
+             \x20   return\n\
+             fn f()\n\
+             \x20   try\n\
+             \x20       var x = 1\n\
+             \x20   catch e: Error\n\
+             \x20       takes({arg})\n"
+        ),
+    )
 }
 
 /// Passing a `string` literal to a `takes(e: Error)` parameter reports
@@ -1484,11 +1473,7 @@ fn scalar_and_identity_are_not_interchangeable_arguments() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
 
-    let count = report
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.code == "check.call_argument")
-        .count();
+    let count = with_code(&report, "check.call_argument").len();
     assert!(count >= 2, "{:#?}", report.diagnostics);
 }
 

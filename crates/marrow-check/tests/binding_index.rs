@@ -6,12 +6,23 @@ mod support;
 
 use std::path::{Path, PathBuf};
 
-use marrow_check::binding::{RenameSafety, SymbolKind};
-use marrow_check::{
-    AnalysisSnapshot, CheckedStmt, ProjectSources, analyze_project, build_binding_index,
-};
+use marrow_check::binding::{RenameSafety, SymbolKind, SymbolRef};
+use marrow_check::{CheckedStmt, build_binding_index};
 
-use support::{config, temp_root};
+use support::analyze_overlay;
+
+/// Assert `def` is an enum member whose definition span covers the declaration of
+/// `decl` (e.g. `"active\n"`) in `source`, the repeated match-arm-navigation check.
+fn assert_def_covers_member(def: &SymbolRef, source: &str, decl: &str) {
+    assert_eq!(def.kind, SymbolKind::EnumMember, "{def:?}");
+    let member_decl = source
+        .find(decl)
+        .unwrap_or_else(|| panic!("{decl:?} declaration in source"));
+    assert!(
+        def.span.start_byte <= member_decl && member_decl <= def.span.end_byte,
+        "definition span covers the enum member declaration: {def:?}",
+    );
+}
 
 /// Analyze a set of `(relative-path, source)` files written under `src` and build
 /// the binding index over the resulting snapshot. Returns the index and the
@@ -20,23 +31,24 @@ fn analyze(
     name: &str,
     files: &[(&str, &str)],
 ) -> (marrow_check::binding::BindingIndex, Vec<PathBuf>) {
-    let (snapshot, paths) = analyze_snapshot(name, files);
+    let (snapshot, paths) = analyze_overlay(name, files);
     (build_binding_index(&snapshot), paths)
 }
 
-fn analyze_snapshot(name: &str, files: &[(&str, &str)]) -> (AnalysisSnapshot, Vec<PathBuf>) {
-    let root = temp_root(name);
-    let mut sources = ProjectSources::new();
-    let mut paths = Vec::new();
-    for (relative, source) in files {
-        let path = root.join(relative);
-        std::fs::create_dir_all(path.parent().unwrap()).expect("create dir");
-        std::fs::write(&path, source).expect("write source");
-        sources.insert(&path, *source);
-        paths.push(path);
-    }
-    let snapshot = analyze_project(&root, &config(), &sources).expect("analyze");
-    (snapshot, paths)
+/// Like [`analyze`], but first assert the analyzed sources check cleanly, for the
+/// navigation tests whose fixture is meant to type without diagnostics so the index
+/// resolves against a well-formed program.
+fn checked_index(
+    name: &str,
+    files: &[(&str, &str)],
+) -> (marrow_check::binding::BindingIndex, Vec<PathBuf>) {
+    let (snapshot, paths) = analyze_overlay(name, files);
+    assert!(
+        !snapshot.report.has_errors(),
+        "source should check cleanly: {:#?}",
+        snapshot.report.diagnostics
+    );
+    (build_binding_index(&snapshot), paths)
 }
 
 /// The byte offset of the `n`-th (0-based) occurrence of `needle` in `source`,
@@ -242,14 +254,9 @@ fn an_enum_member_literal_resolves_to_the_member_definition() {
     let def = index
         .definition(file, use_offset)
         .expect("enum member literal resolves");
-    assert_eq!(def.kind, SymbolKind::EnumMember, "{def:?}");
+    assert_def_covers_member(&def, source, "archived\n");
 
     let member_decl = source.find("archived\n").expect("archived declaration");
-    assert!(
-        def.span.start_byte <= member_decl && member_decl <= def.span.end_byte,
-        "definition span covers the enum member declaration: {def:?}",
-    );
-
     let refs = index.references(&def);
     assert!(
         refs.iter()
@@ -428,13 +435,7 @@ fn a_match_arm_resolves_to_the_enum_member_definition() {
         .rfind("active\n            return 1")
         .expect("active match arm");
     let def = index.definition(file, arm_use).expect("match arm resolves");
-    assert_eq!(def.kind, SymbolKind::EnumMember, "{def:?}");
-
-    let member_decl = source.find("active\n").expect("active declaration");
-    assert!(
-        def.span.start_byte <= member_decl && member_decl <= def.span.end_byte,
-        "definition span covers the enum member declaration: {def:?}",
-    );
+    assert_def_covers_member(&def, source, "active\n");
 
     let refs = index.references(&def);
     assert!(
@@ -469,13 +470,7 @@ fn a_match_arm_resolves_through_an_inferred_enum_local() {
     let def = index
         .definition(file, arm_use)
         .expect("match arm from inferred local resolves");
-    assert_eq!(def.kind, SymbolKind::EnumMember, "{def:?}");
-
-    let member_decl = source.find("active\n").expect("active declaration");
-    assert!(
-        def.span.start_byte <= member_decl && member_decl <= def.span.end_byte,
-        "definition span covers the enum member declaration: {def:?}",
-    );
+    assert_def_covers_member(&def, source, "active\n");
 }
 
 #[test]
@@ -502,13 +497,7 @@ fn a_match_arm_resolves_through_a_module_enum_constant() {
     let def = index
         .definition(file, arm_use)
         .expect("match arm from module constant resolves");
-    assert_eq!(def.kind, SymbolKind::EnumMember, "{def:?}");
-
-    let member_decl = source.find("archived\n").expect("archived declaration");
-    assert!(
-        def.span.start_byte <= member_decl && member_decl <= def.span.end_byte,
-        "definition span covers the enum member declaration: {def:?}",
-    );
+    assert_def_covers_member(&def, source, "archived\n");
 }
 
 #[test]
@@ -619,13 +608,7 @@ fn a_match_arm_resolves_through_a_sequence_enum_loop_binding() {
     let def = index
         .definition(file, arm_use)
         .expect("match arm from sequence enum loop binding resolves");
-    assert_eq!(def.kind, SymbolKind::EnumMember, "{def:?}");
-
-    let member_decl = source.find("active\n").expect("active declaration");
-    assert!(
-        def.span.start_byte <= member_decl && member_decl <= def.span.end_byte,
-        "definition span covers the enum member declaration: {def:?}",
-    );
+    assert_def_covers_member(&def, source, "active\n");
 }
 
 #[test]
@@ -644,16 +627,10 @@ fn a_match_arm_resolves_through_a_saved_enum_layer_values_loop_binding() {
         archived\n                \
         return 2\n    \
         return 0\n";
-    let (snapshot, paths) = analyze_snapshot(
+    let (index, paths) = checked_index(
         "enum-match-saved-layer-values-loop",
         &[("src/m.mw", source)],
     );
-    assert!(
-        !snapshot.report.has_errors(),
-        "source should check cleanly: {:#?}",
-        snapshot.report.diagnostics
-    );
-    let index = build_binding_index(&snapshot);
     let file = &paths[0];
 
     let arm_use = source
@@ -662,13 +639,7 @@ fn a_match_arm_resolves_through_a_saved_enum_layer_values_loop_binding() {
     let def = index
         .definition(file, arm_use)
         .expect("match arm from saved enum layer values loop binding resolves");
-    assert_eq!(def.kind, SymbolKind::EnumMember, "{def:?}");
-
-    let member_decl = source.find("active\n").expect("active declaration");
-    assert!(
-        def.span.start_byte <= member_decl && member_decl <= def.span.end_byte,
-        "definition span covers the enum member declaration: {def:?}",
-    );
+    assert_def_covers_member(&def, source, "active\n");
 }
 
 #[test]
@@ -687,16 +658,10 @@ fn a_match_arm_resolves_through_a_two_name_saved_enum_layer_loop_binding() {
         archived\n                \
         return 0\n    \
         return 0\n";
-    let (snapshot, paths) = analyze_snapshot(
+    let (index, paths) = checked_index(
         "enum-match-two-name-saved-layer-loop",
         &[("src/m.mw", source)],
     );
-    assert!(
-        !snapshot.report.has_errors(),
-        "source should check cleanly: {:#?}",
-        snapshot.report.diagnostics
-    );
-    let index = build_binding_index(&snapshot);
     let file = &paths[0];
 
     let arm_use = source
@@ -705,13 +670,7 @@ fn a_match_arm_resolves_through_a_two_name_saved_enum_layer_loop_binding() {
     let def = index
         .definition(file, arm_use)
         .expect("match arm from two-name saved enum layer loop binding resolves");
-    assert_eq!(def.kind, SymbolKind::EnumMember, "{def:?}");
-
-    let member_decl = source.find("active\n").expect("active declaration");
-    assert!(
-        def.span.start_byte <= member_decl && member_decl <= def.span.end_byte,
-        "definition span covers the enum member declaration: {def:?}",
-    );
+    assert_def_covers_member(&def, source, "active\n");
 }
 
 #[test]
@@ -730,7 +689,7 @@ fn a_saved_enum_layer_loop_match_records_its_scrutinee_enum() {
         archived\n                \
         return 2\n    \
         return 0\n";
-    let (snapshot, _) = analyze_snapshot("enum-match-saved-layer-stamp", &[("src/m.mw", source)]);
+    let (snapshot, _) = analyze_overlay("enum-match-saved-layer-stamp", &[("src/m.mw", source)]);
     assert!(
         !snapshot.report.has_errors(),
         "source should check cleanly: {:#?}",
@@ -958,16 +917,10 @@ fn qualified_resource_constructor_uses_qualified_module_resource() {
         required subtitle: string\n\
         fn make()\n    \
         const b = state::Book(title: \"x\")\n";
-    let (snapshot, paths) = analyze_snapshot(
+    let (index, paths) = checked_index(
         "qualified-resource-constructor",
         &[("src/shelf/state.mw", state), ("src/shelf/app.mw", app)],
     );
-    assert!(
-        !snapshot.report.has_errors(),
-        "source should check cleanly: {:#?}",
-        snapshot.report.diagnostics
-    );
-    let index = build_binding_index(&snapshot);
     let state_file = &paths[0];
     let app_file = &paths[1];
 
@@ -990,16 +943,10 @@ fn bare_resource_constructor_prefers_current_module_resource() {
         required subtitle: string\n\
         fn make()\n    \
         const b = Book(subtitle: \"b\")\n";
-    let (snapshot, paths) = analyze_snapshot(
+    let (index, paths) = checked_index(
         "bare-resource-constructor-current-module",
         &[("src/shelf/state.mw", state), ("src/shelf/app.mw", app)],
     );
-    assert!(
-        !snapshot.report.has_errors(),
-        "source should check cleanly: {:#?}",
-        snapshot.report.diagnostics
-    );
-    let index = build_binding_index(&snapshot);
     let app_file = &paths[1];
 
     let book = app.find("Book(subtitle").expect("bare constructor");
@@ -1022,7 +969,7 @@ fn alias_qualified_id_call_resolves_to_imported_function_named_id() {
         use shelf::book\n\
         fn run(): int\n    \
         return book::Id()\n";
-    let (snapshot, paths) = analyze_snapshot(
+    let (index, paths) = checked_index(
         "alias-id-call-imported-function",
         &[
             ("src/shelf/book.mw", imported),
@@ -1030,12 +977,6 @@ fn alias_qualified_id_call_resolves_to_imported_function_named_id() {
             ("src/app.mw", app),
         ],
     );
-    assert!(
-        !snapshot.report.has_errors(),
-        "source should check cleanly: {:#?}",
-        snapshot.report.diagnostics
-    );
-    let index = build_binding_index(&snapshot);
     let imported_file = &paths[0];
     let app_file = &paths[2];
 
@@ -1059,7 +1000,7 @@ fn alias_qualified_id_call_resolves_to_imported_resource_named_id() {
         use shelf::book\n\
         fn make()\n    \
         const value = book::Id(title: \"x\")\n";
-    let (snapshot, paths) = analyze_snapshot(
+    let (index, paths) = checked_index(
         "alias-id-call-imported-resource",
         &[
             ("src/shelf/book.mw", imported),
@@ -1067,12 +1008,6 @@ fn alias_qualified_id_call_resolves_to_imported_resource_named_id() {
             ("src/app.mw", app),
         ],
     );
-    assert!(
-        !snapshot.report.has_errors(),
-        "source should check cleanly: {:#?}",
-        snapshot.report.diagnostics
-    );
-    let index = build_binding_index(&snapshot);
     let imported_file = &paths[0];
     let app_file = &paths[2];
 
@@ -1096,7 +1031,7 @@ fn alias_qualified_id_type_ref_expands_alias_to_imported_resource() {
         use shelf::book\n\
         fn load(value: book::Id)\n    \
         return\n";
-    let (snapshot, paths) = analyze_snapshot(
+    let (index, paths) = checked_index(
         "alias-id-type-ref-imported-resource",
         &[
             ("src/traps.mw", trap),
@@ -1104,12 +1039,6 @@ fn alias_qualified_id_type_ref_expands_alias_to_imported_resource() {
             ("src/app.mw", app),
         ],
     );
-    assert!(
-        !snapshot.report.has_errors(),
-        "source should check cleanly: {:#?}",
-        snapshot.report.diagnostics
-    );
-    let index = build_binding_index(&snapshot);
     let imported_file = &paths[1];
     let app_file = &paths[2];
 

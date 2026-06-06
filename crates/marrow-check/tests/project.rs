@@ -11,7 +11,10 @@ use marrow_project::parse_config;
 use marrow_schema::{SchemaErrorKind, SchemaKeyTarget, SchemaUnsupportedTypeTarget, Type};
 use marrow_syntax::SourceSpan;
 
-use support::{config, temp_project, write};
+use support::{
+    assert_clean, check_module, check_module_report, check_script, config, temp_project, with_code,
+    write,
+};
 
 /// The `.mw` code block from the canonical reference sample.
 fn sample_source() -> String {
@@ -33,7 +36,7 @@ fn the_reference_sample_checks_clean() {
         write(root, "src/shelf/sample.mw", &sample_source());
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -812,126 +815,81 @@ fn split_store_applies_saved_field_schema_rules() {
     );
 }
 
+/// A key must be an orderable scalar; any named type in a key position is rejected
+/// structurally, without resolving the name. Each row drives the same invariant from a
+/// distinct named-key source: an enum (names no scalar), a typo (resolves to nothing,
+/// so it could otherwise accept any value), and a declared resource (a real type that is
+/// still not a scalar) — in both the identity-key and keyed-layer-param positions.
 #[test]
-fn rejects_an_enum_typed_identity_key() {
-    // A key must be an orderable scalar. An enum names no scalar, so accepting it
-    // as an identity key lets a raw string or int settle silently into the
-    // keyspace. The rule is structural, so it fires without resolving the name.
-    let errors = check_module(
-        "enum-identity-key",
-        "module m\n\
-         enum Status\n\
-         \x20   active\n\
-         \x20   archived\n\
-         resource Order at ^orders(state: Status)\n\
-         \x20   required note: string\n",
-        "schema.nonscalar_key",
-    );
-    assert_eq!(errors.len(), 1, "{errors:#?}");
-    assert_schema_payload(
-        &errors[0],
-        SchemaErrorKind::NonScalarKey {
-            target: SchemaKeyTarget::IdentityKey {
-                name: "state".to_string(),
-            },
-            ty: Type::Named("Status".to_string()),
-        },
-    );
-}
+fn rejects_a_named_type_in_a_key_position() {
+    let identity = |name: &str| SchemaKeyTarget::IdentityKey {
+        name: name.to_string(),
+    };
+    let key_param = |name: &str| SchemaKeyTarget::KeyParam {
+        name: name.to_string(),
+    };
+    let cases: &[(&str, &str, SchemaKeyTarget, &str)] = &[
+        (
+            "enum-identity-key",
+            "module m\n\
+             enum Status\n\
+             \x20   active\n\
+             \x20   archived\n\
+             resource Order at ^orders(state: Status)\n\
+             \x20   required note: string\n",
+            identity("state"),
+            "Status",
+        ),
+        (
+            "enum-layer-key",
+            "module m\n\
+             enum Status\n\
+             \x20   active\n\
+             \x20   archived\n\
+             resource Order at ^orders(id: int)\n\
+             \x20   byState(state: Status): string\n",
+            key_param("state"),
+            "Status",
+        ),
+        (
+            "typo-identity-key",
+            "module m\n\
+             resource Order at ^orders(state: Stutus)\n\
+             \x20   required note: string\n",
+            identity("state"),
+            "Stutus",
+        ),
+        (
+            "typo-layer-key",
+            "module m\n\
+             resource Order at ^orders(id: int)\n\
+             \x20   byState(state: Stutus): string\n",
+            key_param("state"),
+            "Stutus",
+        ),
+        (
+            "resource-identity-key",
+            "module m\n\
+             resource Person\n\
+             \x20   required name: string\n\
+             resource Order at ^orders(owner: Person)\n\
+             \x20   required note: string\n",
+            identity("owner"),
+            "Person",
+        ),
+    ];
 
-#[test]
-fn rejects_an_enum_typed_layer_key_param() {
-    let errors = check_module(
-        "enum-layer-key",
-        "module m\n\
-         enum Status\n\
-         \x20   active\n\
-         \x20   archived\n\
-         resource Order at ^orders(id: int)\n\
-         \x20   byState(state: Status): string\n",
-        "schema.nonscalar_key",
-    );
-    assert_eq!(errors.len(), 1, "{errors:#?}");
-    assert_schema_payload(
-        &errors[0],
-        SchemaErrorKind::NonScalarKey {
-            target: SchemaKeyTarget::KeyParam {
-                name: "state".to_string(),
+    for (name, source, target, ty_name) in cases {
+        let errors = check_module(name, source, "schema.nonscalar_key");
+        assert_eq!(errors.len(), 1, "{name}: {errors:#?}");
+        assert_schema_payload(
+            &errors[0],
+            SchemaErrorKind::NonScalarKey {
+                target: target.clone(),
+                ty: Type::Named(ty_name.to_string()),
             },
-            ty: Type::Named("Status".to_string()),
-        },
-    );
-}
-
-#[test]
-fn rejects_a_typo_named_identity_key() {
-    // A name that resolves to nothing is rejected exactly like a declared one: the
-    // allowlist asks only "is this an orderable scalar?". A typo'd key would
-    // otherwise accept any value, letting an int and a string coexist in one
-    // identity keyspace.
-    let errors = check_module(
-        "typo-identity-key",
-        "module m\n\
-         resource Order at ^orders(state: Stutus)\n\
-         \x20   required note: string\n",
-        "schema.nonscalar_key",
-    );
-    assert_eq!(errors.len(), 1, "{errors:#?}");
-    assert_schema_payload(
-        &errors[0],
-        SchemaErrorKind::NonScalarKey {
-            target: SchemaKeyTarget::IdentityKey {
-                name: "state".to_string(),
-            },
-            ty: Type::Named("Stutus".to_string()),
-        },
-    );
-}
-
-#[test]
-fn rejects_a_typo_named_layer_key_param() {
-    let errors = check_module(
-        "typo-layer-key",
-        "module m\n\
-         resource Order at ^orders(id: int)\n\
-         \x20   byState(state: Stutus): string\n",
-        "schema.nonscalar_key",
-    );
-    assert_eq!(errors.len(), 1, "{errors:#?}");
-    assert_schema_payload(
-        &errors[0],
-        SchemaErrorKind::NonScalarKey {
-            target: SchemaKeyTarget::KeyParam {
-                name: "state".to_string(),
-            },
-            ty: Type::Named("Stutus".to_string()),
-        },
-    );
-}
-
-#[test]
-fn rejects_a_resource_typed_identity_key() {
-    // A bare name that names a declared resource is still not an orderable scalar.
-    // `Person` here is a declared resource, yet it cannot be a key.
-    let errors = check_module(
-        "resource-identity-key",
-        "module m\n\
-         resource Person\n\
-         \x20   required name: string\n\
-         resource Order at ^orders(owner: Person)\n\
-         \x20   required note: string\n",
-        "schema.nonscalar_key",
-    );
-    assert_eq!(errors.len(), 1, "{errors:#?}");
-    assert_schema_payload(
-        &errors[0],
-        SchemaErrorKind::NonScalarKey {
-            target: SchemaKeyTarget::IdentityKey {
-                name: "owner".to_string(),
-            },
-            ty: Type::Named("Person".to_string()),
-        },
-    );
+        );
+    }
 }
 
 #[test]
@@ -1000,7 +958,7 @@ fn an_enum_field_index_argument_checks_clean() {
          \x20   state: Status\n\
          \x20   index byState(state, id)\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -1017,7 +975,7 @@ fn an_orderable_scalar_key_checks_clean() {
          \x20   required state: Status\n\
          \x20   byTag(tag: string): string\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 /// A nested enum used as a value, a `match` over its leaves, and `is` tests all
@@ -1042,7 +1000,7 @@ fn value_is_category_types_bool() {
             cat_enum()
         ),
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -1058,7 +1016,7 @@ fn is_against_a_concrete_leaf_is_clean() {
             cat_enum()
         ),
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -1175,7 +1133,7 @@ fn a_match_with_a_category_arm_covers_its_subtree() {
             cat_enum()
         ),
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -1257,7 +1215,7 @@ fn a_correctly_marked_category_parent_checks_clean() {
          siberian\n            return 2\n        \
          housecat\n            return 3\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -1325,7 +1283,7 @@ fn a_flat_enum_match_and_equality_still_check() {
          match s\n        active\n            return 1\n        archived\n            return 2\n\n\
          fn same(): bool\n    return Status::active == Status::active\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 /// An enum where `paw` appears under two categories — the blessed duplicate-name
@@ -1349,7 +1307,7 @@ fn a_full_member_path_to_a_duplicated_leaf_resolves_in_value_position() {
             duplicate_paw_enum()
         ),
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -1416,7 +1374,7 @@ fn a_match_with_qualified_arms_over_duplicated_leaves_is_exhaustive() {
             duplicate_paw_enum()
         ),
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -1462,7 +1420,7 @@ fn a_match_with_category_arms_over_a_duplicated_enum_is_exhaustive() {
             duplicate_paw_enum()
         ),
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -1524,7 +1482,7 @@ fn is_with_a_full_member_path_is_exact_and_a_category_is_a_subtree_test() {
             duplicate_paw_enum()
         ),
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -1595,7 +1553,7 @@ fn split_store_may_precede_the_resource_shape() {
     });
     let (report, program) = check_project(&root, &config()).expect("check");
 
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
     let module = program.facts.module_id("shelf").expect("shelf module");
     let resource = program.facts.resource_id(module, "Book").expect("Book");
     let store = program
@@ -1745,7 +1703,7 @@ fn declared_saved_members_named_like_traversal_shapers_are_not_rejected() {
 
     let found = with_code(&report, "check.rejected_surface");
     assert!(found.is_empty(), "{:#?}", report.diagnostics);
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -1756,7 +1714,7 @@ fn clean_project_has_no_diagnostics() {
         write(root, "src/main.mw", "fn main()\n    return\n");
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -1835,11 +1793,7 @@ fn reports_duplicate_module_across_source_roots() {
 
     let (report, _program) = check_project(&root, &config).expect("check");
 
-    let duplicates: Vec<_> = report
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == "check.duplicate_module")
-        .collect();
+    let duplicates = with_code(&report, "check.duplicate_module");
     assert_eq!(duplicates.len(), 1, "{:#?}", report.diagnostics);
     assert_eq!(
         duplicates[0].payload,
@@ -1857,7 +1811,7 @@ fn distinct_modules_are_not_flagged_as_duplicates() {
         write(root, "src/b.mw", "module b\n");
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -1867,17 +1821,13 @@ fn a_script_file_is_not_bound_to_its_path() {
         write(root, "src/tools/script.mw", "fn run()\n    return\n");
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 fn duplicate_declarations(
     report: &marrow_check::CheckReport,
 ) -> Vec<&marrow_check::CheckDiagnostic> {
-    report
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == "check.duplicate_declaration")
-        .collect()
+    with_code(report, "check.duplicate_declaration")
 }
 
 fn source_line_span(source: &str, line: u32) -> SourceSpan {
@@ -2001,11 +1951,7 @@ fn distinct_declarations_are_not_flagged() {
 }
 
 fn unresolved_imports(report: &marrow_check::CheckReport) -> Vec<&marrow_check::CheckDiagnostic> {
-    report
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == "check.unresolved_import")
-        .collect()
+    with_code(report, "check.unresolved_import")
 }
 
 #[test]
@@ -2138,17 +2084,12 @@ fn a_test_file_is_named_from_its_path_not_a_declared_module() {
 
 #[test]
 fn reports_unknown_types_in_signatures_and_consts() {
-    let root = temp_project("unknown-type", |root| {
-        write(
-            root,
-            "src/m.mw",
-            "module m\nconst X: Nope = 1\nfn f(a: Booook): Alsobad\n    return 1\n",
-        );
-    });
-    let (report, _program) = check_project(&root, &config()).expect("check");
-
-    let found = with_code(&report, "check.unknown_type");
-    assert_eq!(found.len(), 3, "{:#?}", report.diagnostics);
+    let found = check_module(
+        "unknown-type",
+        "module m\nconst X: Nope = 1\nfn f(a: Booook): Alsobad\n    return 1\n",
+        "check.unknown_type",
+    );
+    assert_eq!(found.len(), 3, "{found:#?}");
     for name in ["Booook", "Alsobad", "Nope"] {
         assert!(
             found
@@ -2161,14 +2102,10 @@ fn reports_unknown_types_in_signatures_and_consts() {
 
 #[test]
 fn map_annotations_outside_resource_members_are_not_supported_types() {
-    let root = temp_project("map-type-annotation", |root| {
-        write(
-            root,
-            "src/m.mw",
-            "module m\nresource Draft\n    scores: map[string, int]\nconst X: map[string, int] = 1\nfn f(a: map[string, int]): map[string, int]\n    return 1\nfn g()\n    const c: map[string, int] = 1\n    var v: map[string, int]\n    var counts(k: map[string, int]): int\n    try\n        return\n    catch e: map[string, int]\n        return\n",
-        );
-    });
-    let (report, _program) = check_project(&root, &config()).expect("check");
+    let report = check_module_report(
+        "map-type-annotation",
+        "module m\nresource Draft\n    scores: map[string, int]\nconst X: map[string, int] = 1\nfn f(a: map[string, int]): map[string, int]\n    return 1\nfn g()\n    const c: map[string, int] = 1\n    var v: map[string, int]\n    var counts(k: map[string, int]): int\n    try\n        return\n    catch e: map[string, int]\n        return\n",
+    );
 
     let found = with_code(&report, "check.unknown_type");
     assert_eq!(found.len(), 7, "{:#?}", report.diagnostics);
@@ -2216,118 +2153,85 @@ fn known_types_are_not_flagged_as_unknown() {
 
 #[test]
 fn reports_a_bare_return_in_a_value_returning_function() {
-    let root = temp_project("bare-return", |root| {
-        // The bare `return` (inside the `if`) leaves a value-returning function
-        // without a value on that path.
-        write(
-            root,
-            "src/m.mw",
-            "module m\nfn f(c: bool): int\n    if c\n        return\n    return 1\n",
-        );
-    });
-    let (report, _program) = check_project(&root, &config()).expect("check");
-    assert_eq!(
-        with_code(&report, "check.return_value").len(),
-        1,
-        "{:#?}",
-        report.diagnostics
+    // The bare `return` (inside the `if`) leaves a value-returning function without a
+    // value on that path.
+    let found = check_module(
+        "bare-return",
+        "module m\nfn f(c: bool): int\n    if c\n        return\n    return 1\n",
+        "check.return_value",
     );
+    assert_eq!(found.len(), 1, "{found:#?}");
 }
 
 #[test]
 fn reports_a_value_return_in_a_void_function() {
-    let root = temp_project("void-return", |root| {
-        write(root, "src/m.mw", "module m\nfn g()\n    return 1\n");
-    });
-    let (report, _program) = check_project(&root, &config()).expect("check");
-    assert_eq!(
-        with_code(&report, "check.return_value").len(),
-        1,
-        "{:#?}",
-        report.diagnostics
+    let found = check_module(
+        "void-return",
+        "module m\nfn g()\n    return 1\n",
+        "check.return_value",
     );
+    assert_eq!(found.len(), 1, "{found:#?}");
 }
 
 #[test]
 fn matching_returns_are_not_flagged() {
-    let root = temp_project("ok-return", |root| {
-        write(
-            root,
-            "src/m.mw",
-            "module m\nfn ok(c: bool): int\n    if c\n        return 1\n    return 2\n\nfn void_fn(c: bool)\n    if c\n        return\n",
-        );
-    });
-    let (report, _program) = check_project(&root, &config()).expect("check");
-    assert!(
-        with_code(&report, "check.return_value").is_empty(),
-        "{:#?}",
-        report.diagnostics
+    let found = check_module(
+        "ok-return",
+        "module m\nfn ok(c: bool): int\n    if c\n        return 1\n    return 2\n\nfn void_fn(c: bool)\n    if c\n        return\n",
+        "check.return_value",
     );
+    assert!(found.is_empty(), "{found:#?}");
 }
 
 #[test]
 fn reports_a_value_function_that_may_not_return() {
-    let root = temp_project("missing-return", |root| {
-        // `f` falls through the `if` (no else) without returning; `g` ends in an
-        // assignment.
-        write(
-            root,
-            "src/m.mw",
-            "module m\nfn f(c: bool): int\n    if c\n        return 1\n\nfn g(): int\n    var x = 1\n",
-        );
-    });
-    let (report, _program) = check_project(&root, &config()).expect("check");
-    assert_eq!(
-        with_code(&report, "check.missing_return").len(),
-        2,
-        "{:#?}",
-        report.diagnostics
+    // `f` falls through the `if` (no else) without returning; `g` ends in an
+    // assignment.
+    let found = check_module(
+        "missing-return",
+        "module m\nfn f(c: bool): int\n    if c\n        return 1\n\nfn g(): int\n    var x = 1\n",
+        "check.missing_return",
     );
+    assert_eq!(found.len(), 2, "{found:#?}");
 }
 
 #[test]
 fn functions_that_return_on_all_paths_are_not_flagged() {
-    let root = temp_project("returns-all-paths", |root| {
-        // Exhaustive if/else; ends in return; void; ends in a call; ends in a loop.
-        write(
-            root,
-            "src/m.mw",
-            "module m\n\
-             fn a(c: bool): int\n    if c\n        return 1\n    else\n        return 2\n\n\
-             fn b(): int\n    return 7\n\n\
-             fn c()\n    var x = 1\n\n\
-             fn d(): int\n    helper()\n\n\
-             fn e(c: bool): int\n    while c\n        return 1\n",
-        );
-    });
-    let (report, _program) = check_project(&root, &config()).expect("check");
-    assert!(
-        with_code(&report, "check.missing_return").is_empty(),
-        "{:#?}",
-        report.diagnostics
+    // Exhaustive if/else; ends in return; void; ends in a call; ends in a loop.
+    let found = check_module(
+        "returns-all-paths",
+        "module m\n\
+         fn a(c: bool): int\n    if c\n        return 1\n    else\n        return 2\n\n\
+         fn b(): int\n    return 7\n\n\
+         fn c()\n    var x = 1\n\n\
+         fn d(): int\n    helper()\n\n\
+         fn e(c: bool): int\n    while c\n        return 1\n",
+        "check.missing_return",
     );
+    assert!(found.is_empty(), "{found:#?}");
 }
 
+/// Each operator enforces its operand types: a single `check.operator_type` fires when
+/// a `var x = ...` body mixes types the operator does not accept. The rows cover the
+/// arithmetic, concatenation, logical, comparison, and unary operators in turn.
 #[test]
-fn rejects_arithmetic_on_mismatched_operand_types() {
-    // `+` needs matching numeric operands; `1 + true` adds an int and a bool.
-    let found = check_script(
-        "op-arith",
-        "fn f()\n    var x = 1 + true\n",
-        "check.operator_type",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
-}
-
-#[test]
-fn rejects_concatenation_of_non_strings() {
-    // `_` concatenates strings; `1 _ 2` joins two ints.
-    let found = check_script(
-        "op-concat",
-        "fn f()\n    var x = 1 _ 2\n",
-        "check.operator_type",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
+fn rejects_an_operator_on_wrongly_typed_operands() {
+    let cases: &[(&str, &str)] = &[
+        // `+` needs matching numeric operands; `1 + true` adds an int and a bool.
+        ("op-arith", "fn f()\n    var x = 1 + true\n"),
+        // `_` concatenates strings; `1 _ 2` joins two ints.
+        ("op-concat", "fn f()\n    var x = 1 _ 2\n"),
+        // `and` needs bool operands; `true and 1` mixes in an int.
+        ("op-logical", "fn f()\n    var x = true and 1\n"),
+        // Ordering compares same-typed values; `1 < "a"` mixes int and string.
+        ("op-compare", "fn f()\n    var x = 1 < \"a\"\n"),
+        // `not` needs a bool operand; `not 1` negates an int.
+        ("op-unary", "fn f()\n    var x = not 1\n"),
+    ];
+    for (name, source) in cases {
+        let found = check_script(name, source, "check.operator_type");
+        assert_eq!(found.len(), 1, "{name}: {found:#?}");
+    }
 }
 
 #[test]
@@ -2344,39 +2248,6 @@ fn bytes_interpolation_is_a_check_error() {
             source: MarrowType::Primitive(ScalarType::Bytes),
         }
     );
-}
-
-#[test]
-fn rejects_a_logical_operator_on_a_non_bool() {
-    // `and` needs bool operands; `true and 1` mixes in an int.
-    let found = check_script(
-        "op-logical",
-        "fn f()\n    var x = true and 1\n",
-        "check.operator_type",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
-}
-
-#[test]
-fn rejects_a_comparison_of_different_types() {
-    // Ordering compares same-typed values; `1 < "a"` mixes int and string.
-    let found = check_script(
-        "op-compare",
-        "fn f()\n    var x = 1 < \"a\"\n",
-        "check.operator_type",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
-}
-
-#[test]
-fn rejects_a_unary_operator_on_the_wrong_type() {
-    // `not` needs a bool operand; `not 1` negates an int.
-    let found = check_script(
-        "op-unary",
-        "fn f()\n    var x = not 1\n",
-        "check.operator_type",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
 }
 
 #[test]
@@ -2637,7 +2508,7 @@ fn inout_calls_keep_their_declared_return_types() {
          fn take(inout remaining: int, unit: int): string\n    remaining = remaining - unit\n    return \"ok\"\n\n\
          fn caller(): string\n    var n: int = 0\n    if parse(inout n)\n        const piece: string = take(inout n, 1)\n        return piece\n    return \"no\"\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -2659,7 +2530,7 @@ fn read_only_parameter_checks_respect_local_shadowing() {
          fn set_to(inout value: int)\n    value = 1\n\
          fn caller(value: int): int\n    if true\n        var value: int = 0\n        value = value + 1\n        set_to(inout value)\n        return value\n    return value\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -2682,7 +2553,7 @@ fn inout_parameters_can_be_relayed_by_inout_calls() {
          fn set_to(inout value: int)\n    value = 1\n\
          fn relay(inout value: int)\n    set_to(inout value)\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -3057,7 +2928,7 @@ fn a_primary_root_loop_binds_identities() {
          resource Book at ^books(id: int)\n    required title: string\n\n\
          fn titles()\n    for id in ^books\n        var typed: Id(^books) = id\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -3068,7 +2939,7 @@ fn a_two_name_primary_root_loop_binds_identity_and_resource() {
          resource Book at ^books(id: int)\n    required title: string\n\n\
          fn titles()\n    for id, book in ^books\n        var typed: Id(^books) = id\n        var title: string = book.title\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -3079,7 +2950,7 @@ fn a_sequence_layer_loop_binds_keys() {
          resource Book at ^books(id: int)\n    tags: sequence[string]\n\n\
          fn tags(id: Id(^books))\n    for pos in ^books(id).tags\n        var typed: int = pos\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -3090,7 +2961,7 @@ fn a_keyed_group_layer_loop_binds_group_entry_values() {
          resource Book at ^books(id: int)\n    versions(version: int)\n        required title: string\n\n\
          fn titles(id: Id(^books))\n    for version in ^books(id).versions\n        var typed: int = version\n    for n, version in ^books(id).versions\n        var typed: int = n\n        var title: string = version.title\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -3129,7 +3000,7 @@ fn a_unique_index_lookup_loop_binds_the_identity() {
          resource Book at ^books(id: int)\n    isbn: string\n\n    index byIsbn(isbn) unique\n\n\
          fn f(isbn: string)\n    for id in ^books.byIsbn(isbn)\n        var typed: Id(^books) = id\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -3206,7 +3077,7 @@ fn partial_non_unique_index_branches_bind_the_next_index_key_until_identity_suff
          for shelf in ^books.byAuthorShelf(\"ann\")\n        var typed_shelf: string = shelf\n    \
          for id in ^books.byAuthorShelf(\"ann\", \"fiction\")\n        var typed_id: Id(^books) = id\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -3219,7 +3090,7 @@ fn identity_yielding_index_branches_bind_identity_and_resource_pairs() {
          for id, book in ^books.byAuthorShelf(\"ann\", \"fiction\")\n        var typed_id: Id(^books) = id\n        var typed_title: string = book.title\n    \
          for exact_id, exact_book in ^books.byAuthorShelf(\"ann\", \"fiction\", 1)\n        var exact_typed: Id(^books) = exact_id\n        var exact_title: string = exact_book.title\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -3254,7 +3125,7 @@ fn supported_collection_wrappers_bind_their_documented_shapes() {
          resource Book at ^books(id: int)\n    required title: string\n\n\
          fn f()\n    for id in keys(^books)\n        var typed: Id(^books) = id\n    for book in values(^books)\n        var title: string = book.title\n    for id, book in entries(^books)\n        var typed: Id(^books) = id\n        var title: string = book.title\n    for book in reversed(values(^books))\n        var title: string = book.title\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -3265,7 +3136,7 @@ fn layer_key_traversal_binds_declared_key_types() {
          resource Run at ^runs(id: int)\n    terms: sequence[string]\n    amounts(pos: int): decimal\n\n\
          fn f(id: Id(^runs))\n    for pos in keys(^runs(id).terms)\n        const first: bool = pos == 1\n    for pos, amount in entries(^runs(id).amounts)\n        const numbered: bool = pos == 1\n        const total: decimal = amount + 1.0\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -3276,7 +3147,7 @@ fn composite_root_traversal_binds_addressable_identities() {
          resource Cell at ^cells(x: int, y: int)\n    required v: int\n\n\
          fn f()\n    for id, cell in ^cells\n        const same: int = ^cells(id).v\n        const copy: int = cell.v\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -3911,7 +3782,7 @@ fn type_surface_count_builtin_result_is_an_int() {
          fn countBooks(): int\n    return count(^books)\n\n\
          fn countTags(id: Id(^books)): int\n    return count(^books(id).tags)\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -3935,7 +3806,7 @@ fn type_surface_caught_error_fields_have_declared_types() {
          \x20       const code: ErrorCode = err.code\n\
          \x20       const message: string = err.message\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -3950,7 +3821,7 @@ fn type_surface_ledger_reads_and_traversals_have_concrete_types() {
          fn accounts()\n    for code, account in ^accounts\n        const name: string = account.name\n\n\
          fn handle(): bool\n    try\n        throw Error(code: \"x.y\", message: \"m\")\n    catch err: Error\n        return err.code == ErrorCode(\"x.y\")\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -4430,7 +4301,7 @@ fn same_named_resources_use_their_own_module_shape() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -4746,17 +4617,6 @@ fn std_log_error_of_an_error_constructor_checks_clean() {
     );
 }
 
-fn with_code<'a>(
-    report: &'a marrow_check::CheckReport,
-    code: &str,
-) -> Vec<&'a marrow_check::CheckDiagnostic> {
-    report
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == code)
-        .collect()
-}
-
 fn assert_schema_payload(diagnostic: &CheckDiagnostic, expected: SchemaErrorKind) {
     assert_eq!(
         diagnostic.payload,
@@ -4771,31 +4631,6 @@ fn assert_enum_payload(diagnostic: &CheckDiagnostic, expected: EnumDiagnostic) {
         DiagnosticPayload::Enum(expected),
         "{diagnostic:#?}"
     );
-}
-
-/// Check a single script `src` and return its diagnostics with `code`.
-fn check_script(name: &str, src: &str, code: &str) -> Vec<marrow_check::CheckDiagnostic> {
-    let root = temp_project(name, |root| write(root, "src/app.mw", src));
-    let (report, _program) = check_project(&root, &config()).expect("check");
-    with_code(&report, code).into_iter().cloned().collect()
-}
-
-/// Check a single library module `src` (declaring `module m`, placed at the
-/// matching path `src/m.mw`) and return its diagnostics with `code`. Unlike
-/// [`check_script`], the file declares a module, so its functions are part of the
-/// checked program and resolve as call targets.
-fn check_module(name: &str, src: &str, code: &str) -> Vec<marrow_check::CheckDiagnostic> {
-    let root = temp_project(name, |root| write(root, "src/m.mw", src));
-    let (report, _program) = check_project(&root, &config()).expect("check");
-    with_code(&report, code).into_iter().cloned().collect()
-}
-
-/// Check a single library module and return its whole report, for tests that
-/// assert a program is clean rather than filtering for one code.
-fn check_module_report(name: &str, src: &str) -> marrow_check::CheckReport {
-    let root = temp_project(name, |root| write(root, "src/m.mw", src));
-    let (report, _program) = check_project(&root, &config()).expect("check");
-    report
 }
 
 /// Check a project whose `src/app.mw` library declares `app_src` and whose
@@ -4878,7 +4713,7 @@ fn check_tests_leaves_a_clean_test_file_clean() {
         "module app\n\npub fn add(): int\n    return 1\n",
         "pub fn t()\n    std::assert::isTrue(app::add() == 1)\n    var n = std::text::length(\"hi\")\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -5444,8 +5279,7 @@ fn check_two_modules(name: &str, aaa: &str, zzz: &str) -> marrow_check::CheckRep
 fn bare_call_resolves_in_own_module_not_a_foreign_one() {
     // Two modules each declare `fn greet`. `zzz::run` calls a bare `greet()`: a
     // bare name resolves in its own module first, so it must reach `zzz::greet`
-    // and check clean — never a foreign `aaa::greet`. (The runtime twin of this
-    // pin proves the P1 bug, where the bare call ran `aaa::greet`.)
+    // and check clean — never a foreign `aaa::greet`.
     let report = check_two_modules(
         "resolve-bare-own-module",
         "module aaa\npub fn greet(): int\n    return 1\n",
@@ -5552,7 +5386,7 @@ fn cross_module_use_of_a_public_enum_checks_clean() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -5646,7 +5480,7 @@ fn an_enum_member_reference_checks_clean() {
          enum Status\n    active\n    archived\n\n\
          fn f()\n    const s: Status = Status::archived\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -5659,7 +5493,7 @@ fn an_enum_typed_param_and_var_annotation_is_accepted() {
          enum Status\n    active\n    archived\n\n\
          fn f(s: Status): Status\n    var t: Status = Status::active\n    return t\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -5670,7 +5504,7 @@ fn an_enum_typed_resource_field_is_accepted() {
          enum Status\n    active\n    archived\n\n\
          resource Order at ^orders(id: int)\n    required state: Status\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -5716,7 +5550,7 @@ fn the_checked_program_carries_enum_schemas() {
         );
     });
     let (report, program) = check_project(&root, &config()).expect("check");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
     let status = &program.modules[0].enums[0];
     assert_eq!(status.name, "Status");
     assert_eq!(status.members[2].name, "banned");
@@ -5730,7 +5564,7 @@ fn enum_equality_against_the_same_enum_is_accepted() {
          enum Status\n    active\n    archived\n\n\
          fn f(): bool\n    return Status::active == Status::archived\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -5791,7 +5625,7 @@ fn an_exhaustive_match_over_an_enum_checks_clean() {
          match s\n        active\n            return\n        \
          archived\n            return\n        banned\n            return\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -5887,7 +5721,7 @@ fn a_match_over_a_modules_own_same_named_enum_checks_clean() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -6012,7 +5846,7 @@ fn a_qualified_enum_saved_field_declaration_checks_clean() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -6028,7 +5862,7 @@ fn reading_an_enum_saved_field_types_as_that_enum() {
          resource Order at ^orders(id: int)\n    required state: Status\n\n\
          fn f(): bool\n    return ^orders(1).state == Status::active\n",
     );
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 
     // And typing as `Status` means a `==` against a *different* enum is rejected.
     let found = check_module(
@@ -6453,7 +6287,7 @@ fn a_qualified_enum_var_annotation_accepts_the_same_qualified_member() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -6476,7 +6310,7 @@ fn a_match_over_a_qualified_member_typed_local_dispatches_clean() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 /// A nested-module enum `module a::b` owns `Status` and `Color`. Its module name
@@ -6484,14 +6318,28 @@ fn a_match_over_a_qualified_member_typed_local_dispatches_clean() {
 /// qualified literal `a::b::Color::red` are four-segment paths. The module/enum
 /// split must keep all-but-the-last segment as the module (`a::b`), not the first
 /// (`a`) — otherwise the slot stays `Unknown` and every boundary fails open.
-fn nested_module_sources(root: &Path) {
+/// Write `src/a/b.mw` declaring the nested module `a::b` with the `Status` and `Color`
+/// enums followed by `trailing`, so every nested-module enum test shares one owner of
+/// the enum declarations and only varies the function that exercises them.
+fn nested_module_with(root: &Path, trailing: &str) {
     write(
         root,
         "src/a/b.mw",
-        "module a::b\n\
-         pub enum Status\n    active\n    archived\n\n\
-         pub enum Color\n    red\n    green\n\n\
-         pub fn take(s: a::b::Status): int\n    \
+        &format!(
+            "module a::b\n\
+             pub enum Status\n    active\n    archived\n\n\
+             pub enum Color\n    red\n    green\n\n\
+             {trailing}"
+        ),
+    );
+}
+
+/// The nested module `a::b` whose `take(s: a::b::Status)` function the cross-module
+/// argument tests call from `src/app.mw`.
+fn nested_module_sources(root: &Path) {
+    nested_module_with(
+        root,
+        "pub fn take(s: a::b::Status): int\n    \
          match s\n        active\n            return 1\n        archived\n            return 2\n",
     );
 }
@@ -6542,14 +6390,7 @@ fn returning_a_wrong_enum_from_a_nested_module_function_is_a_check_error() {
     // a `Color` is a nominal mismatch rather than an unresolved slot accepting any
     // value.
     let root = temp_project("enum-nested-return-cross", |root| {
-        write(
-            root,
-            "src/a/b.mw",
-            "module a::b\n\
-             pub enum Status\n    active\n    archived\n\n\
-             pub enum Color\n    red\n    green\n\n\
-             fn f(): a::b::Status\n    return a::b::Color::red\n",
-        );
+        nested_module_with(root, "fn f(): a::b::Status\n    return a::b::Color::red\n");
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.return_type");
@@ -6561,13 +6402,9 @@ fn assigning_a_wrong_enum_into_a_nested_module_enum_local_is_a_check_error() {
     // A `var s: a::b::Status` local is assigned `a::b::Color::red`. The annotation
     // must resolve to `a::b::Status` so the cross-enum assignment is caught.
     let root = temp_project("enum-nested-assign-cross", |root| {
-        write(
+        nested_module_with(
             root,
-            "src/a/b.mw",
-            "module a::b\n\
-             pub enum Status\n    active\n    archived\n\n\
-             pub enum Color\n    red\n    green\n\n\
-             fn f()\n    var s: a::b::Status = a::b::Status::active\n    s = a::b::Color::red\n",
+            "fn f()\n    var s: a::b::Status = a::b::Status::active\n    s = a::b::Color::red\n",
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
@@ -6755,7 +6592,7 @@ fn a_module_less_script_joins_the_program_under_the_empty_name() {
         );
     });
     let (report, program) = check_project(&root, &config()).expect("check");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
     let script = program
         .modules
         .iter()

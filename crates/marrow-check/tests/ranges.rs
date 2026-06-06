@@ -3,16 +3,20 @@
 
 mod support;
 
-use marrow_check::check_project;
+use marrow_check::{CheckDiagnostic, check_project};
 
 use support::{config, temp_project, write};
 
-/// The diagnostic codes a module's source produces, in report order.
-fn codes(source: &str) -> Vec<String> {
+/// The diagnostics a module's source produces, in report order.
+fn diagnostics(source: &str) -> Vec<CheckDiagnostic> {
     let root = temp_project("range", |root| write(root, "src/m.mw", source));
     let (report, _program) = check_project(&root, &config()).expect("check");
-    report
-        .diagnostics
+    report.diagnostics
+}
+
+/// The diagnostic codes a module's source produces, in report order.
+fn codes(source: &str) -> Vec<String> {
+    diagnostics(source)
         .iter()
         .map(|d| d.code.to_string())
         .collect()
@@ -25,10 +29,7 @@ fn codes(source: &str) -> Vec<String> {
 /// message, with no typed signal to assert. The two article tests below are the
 /// only coverage of that rule and rely on this helper.
 fn messages(source: &str) -> Vec<String> {
-    let root = temp_project("range", |root| write(root, "src/m.mw", source));
-    let (report, _program) = check_project(&root, &config()).expect("check");
-    report
-        .diagnostics
+    diagnostics(source)
         .iter()
         .map(|d| d.message.clone())
         .collect()

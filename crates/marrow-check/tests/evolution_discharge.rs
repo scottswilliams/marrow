@@ -10,25 +10,21 @@
 
 mod support;
 
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use marrow_check::evolution::{EvolutionWitness, RepairDiagnostic, RepairReason, Verdict, preview};
 use marrow_check::{
     CheckedProgram, CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace, check_project,
     checked_saved_root_place,
 };
-use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
+use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogMetadata};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_store::value::{Scalar, encode_value};
 
+use support::catalog::write_catalog;
 use support::{TempProject, config, temp_project, write};
-
-fn catalog_path(root: &Path) -> PathBuf {
-    root.join("marrow.catalog.json")
-}
 
 /// A valid `cat_<32 lowercase hex>` stable id keyed by a small fixture number, so a
 /// hand-built accepted catalog uses ids the store can address.
@@ -36,16 +32,11 @@ fn hex_id(n: u8) -> String {
     format!("cat_{n:032x}")
 }
 
+/// A bare catalog entry whose literal `stable_id` the store addresses by. The discharge
+/// fixtures use specific `cat_` ids, so this passes the id through verbatim rather than
+/// minting one, and carries no aliases.
 fn entry(kind: CatalogEntryKind, path: &str, stable_id: &str) -> CatalogEntry {
-    CatalogEntry {
-        kind,
-        path: path.to_string(),
-        stable_id: stable_id.to_string(),
-        aliases: Vec::new(),
-        lifecycle: CatalogLifecycle::Active,
-        accepted_key_shape: None,
-        accepted_struct: None,
-    }
+    support::catalog::entry(kind, path, stable_id, &[])
 }
 
 /// A resource-member catalog entry that records the identity-aware leaf token its durable bytes
@@ -93,8 +84,28 @@ fn store_entry(path: &str, stable_id: &str, accepted_key_shape: &str) -> Catalog
     }
 }
 
-fn write_catalog(root: &Path, metadata: &CatalogMetadata) {
-    fs::write(catalog_path(root), metadata.to_json_pretty()).expect("write catalog");
+/// An accepted catalog whose header is the single resource and its store that nearly every
+/// discharge fixture shares: the resource at `hex_id(1)` and its store at `hex_id(2)`. The
+/// store records `key_shape` when the fixture pins an accepted identity-key shape (the re-key
+/// cases compare against it) and carries none otherwise. `members` are the entries the test
+/// actually evolves, appended after the header, so each site spells only its own evolution.
+fn accepted_catalog(
+    epoch: u64,
+    resource_path: &str,
+    store_path: &str,
+    key_shape: Option<&str>,
+    members: Vec<CatalogEntry>,
+) -> CatalogMetadata {
+    let store = match key_shape {
+        Some(shape) => store_entry(store_path, &hex_id(2), shape),
+        None => entry(CatalogEntryKind::Store, store_path, &hex_id(2)),
+    };
+    let mut entries = vec![
+        entry(CatalogEntryKind::Resource, resource_path, &hex_id(1)),
+        store,
+    ];
+    entries.extend(members);
+    CatalogMetadata::new(epoch, entries)
 }
 
 fn checked(root: &Path) -> CheckedProgram {
@@ -130,7 +141,11 @@ struct Seed<'a> {
     place: &'a CheckedSavedPlace,
 }
 
-impl Seed<'_> {
+impl<'a> Seed<'a> {
+    fn new(store: &'a TreeStore, place: &'a CheckedSavedPlace) -> Self {
+        Seed { store, place }
+    }
+
     fn store_id(&self) -> CatalogId {
         CatalogId::new(accepted_catalog_id(&self.place.store_catalog_id, "store"))
             .expect("store catalog id")
@@ -489,10 +504,7 @@ fn optional_sparse_add_needs_no_rewrite() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member(1, "title", Scalar::Str("Dune".into()));
     seed.record(2);
@@ -533,10 +545,7 @@ fn required_with_default_backfills_old_records() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // Old records carry `title` but predate the new required `pages`.
     seed.record(1);
     seed.member(1, "title", Scalar::Str("Dune".into()));
@@ -589,10 +598,7 @@ fn constant_temporal_and_bytes_defaults_discharge_as_default() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "events");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // Old records carry `title` but predate the three new required members.
     seed.record(1);
     seed.member(1, "title", Scalar::Str("Launch".into()));
@@ -642,10 +648,7 @@ fn bytes_default_accepts_any_string_as_raw_utf8() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "events");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member(1, "title", Scalar::Str("Launch".into()));
 
@@ -688,10 +691,7 @@ fn non_canonical_temporal_default_fails_closed() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "events");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member(1, "title", Scalar::Str("Launch".into()));
 
@@ -743,10 +743,7 @@ fn non_constant_default_fails_closed_with_transform_hint() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member(1, "title", Scalar::Str("Dune".into()));
 
@@ -796,10 +793,7 @@ fn required_without_default_fails_naming_records() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member(1, "title", Scalar::Str("Dune".into()));
     seed.record(2);
@@ -840,10 +834,7 @@ fn required_present_member_with_incompatible_bytes_repairs() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member(1, "title", Scalar::Str("not an int".into()));
 
@@ -886,23 +877,19 @@ fn rename_with_intent_is_catalog_only() {
              pub fn add(heading: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             5,
-            vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                entry(CatalogEntryKind::Store, "books::^books", &hex_id(2)),
-                member_entry("books::Book::title", &title_id, "string"),
-            ],
+            "books::Book",
+            "books::^books",
+            None,
+            vec![member_entry("books::Book::title", &title_id, "string")],
         );
         write_catalog(root, &accepted);
     });
     let program = checked(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // The renamed member keeps its accepted stable id; seed data under it.
     seed.record(1);
     seed.member_by_id(1, &title_id, Scalar::Str("Dune".into()));
@@ -940,23 +927,19 @@ fn rename_and_retype_requires_transform() {
              pub fn add(count: int): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             6,
-            vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                entry(CatalogEntryKind::Store, "books::^books", &hex_id(2)),
-                member_entry("books::Book::title", &title_id, "string"),
-            ],
+            "books::Book",
+            "books::^books",
+            None,
+            vec![member_entry("books::Book::title", &title_id, "string")],
         );
         write_catalog(root, &accepted);
     });
     let program = checked(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // The renamed member keeps the old stable id; seed a string under it.
     seed.record(1);
     seed.member_by_id(1, &title_id, Scalar::Str("Dune".into()));
@@ -1001,13 +984,12 @@ fn store_identity_key_type_change_fails_closed() {
              pub fn add(id: string, title: string)\n\
              \x20   ^books(id).title = title\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             7,
-            vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                store_entry("books::^books", &store_id, "int"),
-                member_entry("books::Book::title", &hex_id(3), "string"),
-            ],
+            "books::Book",
+            "books::^books",
+            Some("int"),
+            vec![member_entry("books::Book::title", &hex_id(3), "string")],
         );
         write_catalog(root, &accepted);
     });
@@ -1019,10 +1001,7 @@ fn store_identity_key_type_change_fails_closed() {
         "store keeps its stable id"
     );
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // One record keyed under the old `int` shape, addressed by the preserved store id.
     seed.record(1);
 
@@ -1063,13 +1042,12 @@ fn store_identity_key_arity_change_fails_closed() {
              pub fn add(shelf: int, id: int, title: string)\n\
              \x20   ^books(shelf, id).title = title\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             8,
-            vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                store_entry("books::^books", &store_id, "int"),
-                member_entry("books::Book::title", &hex_id(3), "string"),
-            ],
+            "books::Book",
+            "books::^books",
+            Some("int"),
+            vec![member_entry("books::Book::title", &hex_id(3), "string")],
         );
         write_catalog(root, &accepted);
     });
@@ -1113,23 +1091,19 @@ fn store_identity_key_shape_unchanged_is_no_store_repair() {
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             9,
-            vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                store_entry("books::^books", &store_id, "int"),
-                member_entry("books::Book::title", &hex_id(3), "string"),
-            ],
+            "books::Book",
+            "books::^books",
+            Some("int"),
+            vec![member_entry("books::Book::title", &hex_id(3), "string")],
         );
         write_catalog(root, &accepted);
     });
     let program = checked(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member_by_id(1, &hex_id(3), Scalar::Str("Dune".into()));
 
@@ -1174,25 +1148,19 @@ fn retype_preview(
                  \x20   return nextId(^books)\n"
             ),
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
-            vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                entry(CatalogEntryKind::Store, "books::^books", &hex_id(2)),
-                member_entry("books::Book::value", &value_id, accepted_leaf),
-            ],
+            "books::Book",
+            "books::^books",
+            None,
+            vec![member_entry("books::Book::value", &value_id, accepted_leaf)],
         );
         write_catalog(root, &accepted);
     });
     let program = checked(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
-    // Seed the old-type bytes under the preserved member id, exactly as the prior
-    // schema's writes did.
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member_by_id(1, &value_id, old_value);
 
@@ -1201,34 +1169,45 @@ fn retype_preview(
     (value_id, result, diagnostics)
 }
 
-/// Assert a populated retype is steered to a transform: a fail-closed
-/// `TypeChangeRequiresTransform`, never a silent `DataProof`, and a diagnostic naming
-/// the member and a required transform.
+/// Assert an obligation fails closed: the witness is not activatable, the member's
+/// verdict is `RepairRequired` for exactly `expected_reason` (which rules out a silent
+/// `DataProof`), and a fail-closed diagnostic names the member. The verdict and
+/// diagnostic dumps identify any mismatch, so call sites need no per-test prose.
+fn assert_fails_closed(
+    result: &EvolutionWitness,
+    diagnostics: &[RepairDiagnostic],
+    catalog_id: &str,
+    expected_reason: RepairReason,
+) {
+    assert!(!result.is_activatable(), "{result:#?}");
+    match verdict_for(result, catalog_id) {
+        Verdict::RepairRequired { reason } => assert_eq!(
+            *reason, expected_reason,
+            "wrong fail-closed reason for `{catalog_id}` among {:#?}",
+            result.verdicts
+        ),
+        other => panic!("`{catalog_id}` must fail closed, got {other:#?}"),
+    }
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.catalog_id.as_str() == catalog_id),
+        "{diagnostics:#?}"
+    );
+}
+
+/// A populated retype is steered to a transform: it fails closed with
+/// `TypeChangeRequiresTransform` and a diagnostic naming the member.
 fn assert_retype_steered(
     value_id: &str,
     result: &EvolutionWitness,
     diagnostics: &[RepairDiagnostic],
 ) {
-    assert!(
-        matches!(
-            verdict_for(result, value_id),
-            Verdict::RepairRequired {
-                reason: RepairReason::TypeChangeRequiresTransform
-            }
-        ),
-        "{:#?}",
-        result.verdicts
-    );
-    assert!(
-        !matches!(verdict_for(result, value_id), Verdict::DataProof),
-        "a retype must not be blessed as a data proof"
-    );
-    assert!(!result.is_activatable(), "{result:#?}");
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.catalog_id.as_str() == value_id),
-        "{diagnostics:#?}"
+    assert_fails_closed(
+        result,
+        diagnostics,
+        value_id,
+        RepairReason::TypeChangeRequiresTransform,
     );
 }
 
@@ -1286,23 +1265,19 @@ fn retype_optional_member_with_data_is_transform_required() {
              pub fn add(): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
-            vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                entry(CatalogEntryKind::Store, "books::^books", &hex_id(2)),
-                member_entry("books::Book::value", &value_id, "int"),
-            ],
+            "books::Book",
+            "books::^books",
+            None,
+            vec![member_entry("books::Book::value", &value_id, "int")],
         );
         write_catalog(root, &accepted);
     });
     let program = checked(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member_by_id(1, &value_id, Scalar::Int(1));
 
@@ -1328,11 +1303,12 @@ fn retype_optional_member_without_data_is_no_op() {
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
+            "books::Book",
+            "books::^books",
+            None,
             vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                entry(CatalogEntryKind::Store, "books::^books", &hex_id(2)),
                 member_entry("books::Book::title", &hex_id(5), "string"),
                 member_entry("books::Book::value", &value_id, "int"),
             ],
@@ -1342,10 +1318,7 @@ fn retype_optional_member_without_data_is_no_op() {
     let program = checked(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // A record exists and carries the unchanged required `title`, but no `value` cell —
     // so the retyped optional member has no bytes to reinterpret.
     seed.record(1);
@@ -1379,23 +1352,19 @@ fn unchanged_type_still_proves_data() {
              pub fn add(value: int): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
-            vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                entry(CatalogEntryKind::Store, "books::^books", &hex_id(2)),
-                member_entry("books::Book::value", &value_id, "int"),
-            ],
+            "books::Book",
+            "books::^books",
+            None,
+            vec![member_entry("books::Book::value", &value_id, "int")],
         );
         write_catalog(root, &accepted);
     });
     let program = checked(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member_by_id(1, &value_id, Scalar::Int(7));
 
@@ -1432,10 +1401,7 @@ fn brand_new_member_is_not_a_retype() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member(1, "title", Scalar::Str("Dune".into()));
 
@@ -1470,23 +1436,19 @@ fn retype_scalar_to_enum_is_transform_required() {
              pub fn add(value: Status): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
-            vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                entry(CatalogEntryKind::Store, "books::^books", &hex_id(2)),
-                member_entry("books::Book::value", &value_id, "int"),
-            ],
+            "books::Book",
+            "books::^books",
+            None,
+            vec![member_entry("books::Book::value", &value_id, "int")],
         );
         write_catalog(root, &accepted);
     });
     let program = checked(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // Seed the integer bytes the old `int` schema wrote under the preserved member id.
     seed.record(1);
     seed.member_by_id(1, &value_id, Scalar::Int(1));
@@ -1513,23 +1475,19 @@ fn retype_scalar_to_identity_is_transform_required() {
              pub fn add(value: Id(^books)): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
-            vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                entry(CatalogEntryKind::Store, "books::^books", &hex_id(2)),
-                member_entry("books::Book::value", &value_id, "int"),
-            ],
+            "books::Book",
+            "books::^books",
+            None,
+            vec![member_entry("books::Book::value", &value_id, "int")],
         );
         write_catalog(root, &accepted);
     });
     let program = checked(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member_by_id(1, &value_id, Scalar::Int(1));
 
@@ -1562,11 +1520,12 @@ fn retype_enum_to_identity_is_transform_required() {
         // The accepted catalog records the member's leaf as the enum's stable identity; the
         // source now types it `Id(^books)`, so the identity-aware tokens differ and it is a
         // retype across two non-scalar leaf kinds.
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
+            "books::Book",
+            "books::^books",
+            None,
             vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                entry(CatalogEntryKind::Store, "books::^books", &hex_id(2)),
                 entry(CatalogEntryKind::Enum, "books::Status", &enum_stable),
                 entry(
                     CatalogEntryKind::EnumMember,
@@ -1590,10 +1549,7 @@ fn retype_enum_to_identity_is_transform_required() {
     let program = checked(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // Seed an identity payload — valid bytes for the NEW type — so the case turns on the
     // declared-type change, not on a decode failure: even bytes the new decoder accepts
     // must steer to a transform when the leaf kind changed.
@@ -1625,27 +1581,23 @@ fn populated_member_with_unknown_accepted_leaf_fails_closed() {
         // The accepted member entry exists but records no structural signature, so its leaf
         // token reads back as unknown: an entry minted before signatures were recorded. Its
         // prior type cannot be proven.
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
-            vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                entry(CatalogEntryKind::Store, "books::^books", &hex_id(2)),
-                entry(
-                    CatalogEntryKind::ResourceMember,
-                    "books::Book::value",
-                    &value_id,
-                ),
-            ],
+            "books::Book",
+            "books::^books",
+            None,
+            vec![entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::value",
+                &value_id,
+            )],
         );
         write_catalog(root, &accepted);
     });
     let program = checked(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member_by_id(1, &value_id, Scalar::Bool(true));
 
@@ -1672,11 +1624,12 @@ fn retire_of_populated_member_requires_scoped_approval() {
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             6,
+            "books::Book",
+            "books::^books",
+            None,
             vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                entry(CatalogEntryKind::Store, "books::^books", &hex_id(2)),
                 entry(
                     CatalogEntryKind::ResourceMember,
                     "books::Book::title",
@@ -1735,10 +1688,7 @@ fn new_unique_index_over_clean_data_rebuilds() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member(1, "isbn", Scalar::Str("111".into()));
     seed.index_entry("byIsbn", Scalar::Str("111".into()), 1);
@@ -1776,10 +1726,7 @@ fn new_unique_index_over_colliding_data_fails() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // Two records claim the same unique key: a collision the index cannot publish.
     seed.record(1);
     seed.member(1, "isbn", Scalar::Str("dup".into()));
@@ -1825,10 +1772,7 @@ fn transform_from_decodable_sibling_is_applyable() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member(1, "price", Scalar::Int(3));
     seed.member(1, "priceCents", Scalar::Int(300));
@@ -1872,10 +1816,7 @@ fn transform_undecodable_read_member_fails_closed() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // `price` was written as a string under its old type; it cannot decode as the
     // current `int`, so reading `old.price` is unsound and the transform must block.
     seed.record(1);
@@ -2158,10 +2099,7 @@ fn witness_composes_catalog_and_store_fingerprints() {
     let (_report, program) = check_project(&root, &config()).expect("re-check with new member");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member(1, "title", Scalar::Str("Dune".into()));
 
@@ -2188,17 +2126,7 @@ fn witness_composes_catalog_and_store_fingerprints() {
     // The subtitle member the proposal newly adds is among the affected ids. Its
     // bound place id is empty until the proposal is accepted, so read the minted
     // stable id from the proposal entries.
-    let subtitle_id = program
-        .catalog
-        .proposal
-        .as_ref()
-        .expect("proposal")
-        .entries
-        .iter()
-        .find(|entry| entry.path == "books::Book::subtitle")
-        .expect("subtitle entry")
-        .stable_id
-        .clone();
+    let subtitle_id = new_member_proposal_id(&program, "books::Book::subtitle");
     assert!(
         witness
             .changed_root_catalog_ids
@@ -2224,11 +2152,12 @@ fn dropped_sparse_field_is_no_op_not_error() {
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             11,
+            "books::Book",
+            "books::^books",
+            None,
             vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                entry(CatalogEntryKind::Store, "books::^books", &hex_id(2)),
                 entry(
                     CatalogEntryKind::ResourceMember,
                     "books::Book::title",
@@ -2281,11 +2210,12 @@ fn dropped_field_an_index_needs_requires_retire() {
              pub fn add(title: string, isbn: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             12,
+            "books::Book",
+            "books::^books",
+            None,
             vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                entry(CatalogEntryKind::Store, "books::^books", &hex_id(2)),
                 entry(
                     CatalogEntryKind::ResourceMember,
                     "books::Book::title",
@@ -2357,11 +2287,12 @@ fn dropped_field_ignores_same_named_index_on_another_resource() {
              \x20   subtitle: string\n\
              \x20   index bySubtitle(subtitle) unique\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             12,
+            "media::Book",
+            "media::^books",
+            None,
             vec![
-                entry(CatalogEntryKind::Resource, "media::Book", &hex_id(1)),
-                entry(CatalogEntryKind::Store, "media::^books", &hex_id(2)),
                 entry(
                     CatalogEntryKind::ResourceMember,
                     "media::Book::title",
@@ -2443,11 +2374,12 @@ fn dropped_index_is_index_dropped() {
              pub fn add(title: string, isbn: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             13,
+            "books::Book",
+            "books::^books",
+            None,
             vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                entry(CatalogEntryKind::Store, "books::^books", &hex_id(2)),
                 entry(
                     CatalogEntryKind::ResourceMember,
                     "books::Book::title",
@@ -2526,10 +2458,7 @@ fn composite_unique_index_distinct_tuples_rebuild() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member(1, "a", Scalar::Str("shared".into()));
     seed.member(1, "b", Scalar::Str("one".into()));
@@ -2557,10 +2486,7 @@ fn composite_unique_index_duplicate_tuple_collides() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member(1, "a", Scalar::Str("same".into()));
     seed.member(1, "b", Scalar::Str("same".into()));
@@ -2602,10 +2528,7 @@ fn new_unique_index_no_cells_clean_rebuilds() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // Records exist with distinct member values, but no index cells were ever
     // written: the index is being declared over a pre-existing store.
     seed.record(1);
@@ -2644,10 +2567,7 @@ fn new_unique_index_no_cells_duplicate_collides() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member(1, "isbn", Scalar::Str("dup".into()));
     seed.record(2);
@@ -2689,10 +2609,7 @@ fn required_nested_group_leaf_missing_fails_closed() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "people");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // The old record carries `name.first` but predates required `name.last`.
     seed.record(1);
     seed.nested_member(1, "name", "first", Scalar::Str("Ada".into()));
@@ -2741,10 +2658,7 @@ fn required_keyed_layer_leaf_missing_fails_closed() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // The record exists with one keyed entry that predates required `body`: a sibling
     // `note` cell marks the entry as existing while `body` is absent.
     seed.record(1);
@@ -2800,10 +2714,7 @@ fn keyed_layer_leaf_present_in_every_entry_proves() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.keyed_member(
         1,
@@ -3333,11 +3244,12 @@ fn enum_rename_is_not_a_retype() {
         // The accepted catalog records the enum under the OLD spelling `Status` with the
         // stable id the rename preserves, and the member's accepted leaf token references
         // that same enum identity.
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
+            "books::Book",
+            "books::^books",
+            None,
             vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                entry(CatalogEntryKind::Store, "books::^books", &hex_id(2)),
                 entry(CatalogEntryKind::Enum, "books::Status", &enum_stable),
                 entry(
                     CatalogEntryKind::EnumMember,
@@ -3367,10 +3279,7 @@ fn enum_rename_is_not_a_retype() {
         "rename preserves the enum stable id"
     );
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // Seed the stored `draft` value written under the prior member identity. The decisive
     // check is the leaf token: the enum's stable id is preserved across the rename, so this
     // is not a retype and the populated record proves cleanly.
@@ -3410,11 +3319,12 @@ fn enum_member_removed_fails_closed() {
              pub fn add(value: Status): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
+            "books::Book",
+            "books::^books",
+            None,
             vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                entry(CatalogEntryKind::Store, "books::^books", &hex_id(2)),
                 entry(CatalogEntryKind::Enum, "books::Status", &enum_stable),
                 entry(
                     CatalogEntryKind::EnumMember,
@@ -3433,10 +3343,7 @@ fn enum_member_removed_fails_closed() {
     let program = checked(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // Seed a stored value whose member id is NOT a member of the current `Status`: a
     // removed `shipped`. A made-up member catalog id stands in for the retired member.
     let removed_member = hex_id(9);
@@ -3493,10 +3400,7 @@ fn required_enum_leaf_missing_fails_closed() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // The record carries `title` but no `state` cell: the required enum is missing.
     seed.record(1);
     seed.member(1, "title", Scalar::Str("Dune".into()));
@@ -3539,10 +3443,7 @@ fn required_identity_leaf_missing_fails_closed() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // The record carries `title` but no `author` cell: the required identity is missing.
     seed.record(1);
     seed.member(1, "title", Scalar::Str("Dune".into()));
@@ -3586,10 +3487,7 @@ fn required_enum_leaf_present_proves_data() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     let state_id = member_catalog_id(&place, "state");
     let enum_id = enum_catalog_id(&program, "Status");
     let draft = enum_member_catalog_id(&program, "Status", "draft");
@@ -3629,11 +3527,12 @@ fn retype_enum_a_to_enum_b_is_transform_required() {
              pub fn add(value: Kind): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
+            "books::Book",
+            "books::^books",
+            None,
             vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                entry(CatalogEntryKind::Store, "books::^books", &hex_id(2)),
                 entry(CatalogEntryKind::Enum, "books::Status", &status_stable),
                 entry(
                     CatalogEntryKind::EnumMember,
@@ -3652,10 +3551,7 @@ fn retype_enum_a_to_enum_b_is_transform_required() {
     let program = checked(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // Seed a stored value of the OLD enum `Status`; its bytes must not be reread as `Kind`.
     seed.record(1);
     seed.member_bytes_by_id(1, &value_id, enum_value_bytes(&status_stable, &hex_id(8)));
@@ -3688,17 +3584,16 @@ fn store_rename_behind_identity_leaf_is_not_a_retype() {
              pub fn add(parent: Id(^library)): Id(^library)\n\
              \x20   return nextId(^library)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
-            vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                entry(CatalogEntryKind::Store, "books::^books", &store_stable),
-                member_entry(
-                    "books::Book::parent",
-                    &value_id,
-                    &format!("id:{store_stable}:1"),
-                ),
-            ],
+            "books::Book",
+            "books::^books",
+            None,
+            vec![member_entry(
+                "books::Book::parent",
+                &value_id,
+                &format!("id:{store_stable}:1"),
+            )],
         );
         write_catalog(root, &accepted);
     });
@@ -3710,10 +3605,7 @@ fn store_rename_behind_identity_leaf_is_not_a_retype() {
         "store rename preserves the store stable id"
     );
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // Seed a valid identity payload for the renamed store.
     seed.record(1);
     seed.member_bytes_by_id(1, &value_id, encode_identity_payload(&[SavedKey::Int(1)]));
@@ -3749,23 +3641,23 @@ fn keyed_leaf_map_value_retype_over_populated_map_fails_closed() {
              pub fn add(): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             3,
-            vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                store_entry("books::^books", &hex_id(2), "int"),
-                member_entry("books::Book::tags", &map_stable, "[int]string"),
-            ],
+            "books::Book",
+            "books::^books",
+            Some("int"),
+            vec![member_entry(
+                "books::Book::tags",
+                &map_stable,
+                "[int]string",
+            )],
         );
         write_catalog(root, &accepted);
     });
     let program = checked(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // One record with a map entry whose value was stored as a `string`.
     seed.record(1);
     seed.keyed_leaf(
@@ -3823,10 +3715,7 @@ fn keyed_leaf_map_value_unchanged_proves() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.keyed_leaf(
         1,
@@ -3864,23 +3753,19 @@ fn brand_new_required_member_over_populated_store_fails_closed() {
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             3,
-            vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                store_entry("books::^books", &hex_id(2), "int"),
-                member_entry("books::Book::title", &title_stable, "string"),
-            ],
+            "books::Book",
+            "books::^books",
+            Some("int"),
+            vec![member_entry("books::Book::title", &title_stable, "string")],
         );
         write_catalog(root, &accepted);
     });
     let program = checked(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // Old records carry `title` but predate the brand-new required `pages`.
     seed.record(1);
     seed.member_by_id(1, &title_stable, Scalar::Str("Dune".into()));
@@ -3933,23 +3818,19 @@ fn brand_new_required_member_with_default_backfills() {
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             3,
-            vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                store_entry("books::^books", &hex_id(2), "int"),
-                member_entry("books::Book::title", &title_stable, "string"),
-            ],
+            "books::Book",
+            "books::^books",
+            Some("int"),
+            vec![member_entry("books::Book::title", &title_stable, "string")],
         );
         write_catalog(root, &accepted);
     });
     let program = checked(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member_by_id(1, &title_stable, Scalar::Str("Dune".into()));
 
@@ -3986,13 +3867,12 @@ fn brand_new_required_member_over_empty_store_activates() {
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             3,
-            vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                store_entry("books::^books", &hex_id(2), "int"),
-                member_entry("books::Book::title", &title_stable, "string"),
-            ],
+            "books::Book",
+            "books::^books",
+            Some("int"),
+            vec![member_entry("books::Book::title", &title_stable, "string")],
         );
         write_catalog(root, &accepted);
     });
@@ -4041,10 +3921,7 @@ fn stored_enum_value_naming_now_category_member_fails_closed() {
     let tiger_member_id = enum_member_catalog_id(&program, "Cat", "tiger");
 
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // A record whose `kind` was stored as `Cat::tiger`, now a category.
     seed.record(1);
     seed.member_bytes_by_id(
@@ -4098,11 +3975,12 @@ fn brand_new_required_keyed_leaf_over_populated_layer_fails_closed() {
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
+            "policies::Policy",
+            "policies::^policies",
+            Some("int"),
             vec![
-                entry(CatalogEntryKind::Resource, "policies::Policy", &hex_id(1)),
-                store_entry("policies::^policies", &hex_id(2), "int"),
                 entry(
                     CatalogEntryKind::ResourceMember,
                     "policies::Policy::versions",
@@ -4116,10 +3994,7 @@ fn brand_new_required_keyed_leaf_over_populated_layer_fails_closed() {
     let program = checked(&root);
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // An existing keyed entry that predates required `body`: a sibling `note` marks the
     // entry as existing while `body` is absent.
     seed.record(1);
@@ -4177,11 +4052,12 @@ fn brand_new_required_keyed_leaf_with_default_backfills() {
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
+            "policies::Policy",
+            "policies::^policies",
+            Some("int"),
             vec![
-                entry(CatalogEntryKind::Resource, "policies::Policy", &hex_id(1)),
-                store_entry("policies::^policies", &hex_id(2), "int"),
                 entry(
                     CatalogEntryKind::ResourceMember,
                     "policies::Policy::versions",
@@ -4195,10 +4071,7 @@ fn brand_new_required_keyed_leaf_with_default_backfills() {
     let program = checked(&root);
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.keyed_member(
         1,
@@ -4239,23 +4112,19 @@ fn retype_scalar_to_sequence_over_populated_data_fails_closed() {
              pub fn add(): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
-            vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                store_entry("books::^books", &hex_id(2), "int"),
-                member_entry("books::Book::value", &value_id, "string"),
-            ],
+            "books::Book",
+            "books::^books",
+            Some("int"),
+            vec![member_entry("books::Book::value", &value_id, "string")],
         );
         write_catalog(root, &accepted);
     });
     let program = checked(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member_by_id(1, &value_id, Scalar::Str("draft".into()));
 
@@ -4307,11 +4176,12 @@ fn optional_enum_leaf_with_dropped_member_fails_closed() {
              pub fn add(): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
+            "books::Book",
+            "books::^books",
+            Some("int"),
             vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                store_entry("books::^books", &hex_id(2), "int"),
                 entry(CatalogEntryKind::Enum, "books::Status", &enum_stable),
                 entry(
                     CatalogEntryKind::EnumMember,
@@ -4335,10 +4205,7 @@ fn optional_enum_leaf_with_dropped_member_fails_closed() {
     let program = checked(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // A record whose optional `state` was stored as the now-removed `shipped`.
     seed.record(1);
     seed.member_bytes_by_id(1, &value_id, enum_value_bytes(&enum_stable, &hex_id(9)));
@@ -4393,10 +4260,7 @@ fn optional_enum_leaf_with_unchanged_enum_proves() {
     let program = commit_then_check(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     let state_id = member_catalog_id(&place, "state");
     let enum_id = enum_catalog_id(&program, "Status");
     let shipped = enum_member_catalog_id(&program, "Status", "shipped");
@@ -4413,44 +4277,40 @@ fn optional_enum_leaf_with_unchanged_enum_proves() {
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");
 }
 
-/// A member that WAS a plain leaf becoming a GROUP over populated data fails closed. The
-/// accepted catalog recorded `value` as a `string` leaf; source now declares `value` as a
-/// group of sub-fields, so the current declaration produces no leaf token at the member's
-/// path. The disappearance of the leaf token is itself a retype: old bytes still live under
-/// the member cell the group now occupies, and the new group shape would orphan them, so the
-/// change is steered to a transform rather than silently activated.
-#[test]
-fn leaf_member_becoming_a_group_over_populated_data_fails_closed() {
+/// Reshape the accepted `string` leaf `value` over a single populated record and assert the
+/// change fails closed for `expected_reason`. The accepted catalog records `value` as a leaf;
+/// `value_decl` re-declares it (as a group, a keyed layer, or another shape) so the current
+/// declaration produces no leaf token at the member's path, while the old `string` cell still
+/// lives under the member position the new shape now occupies. The reshaped member keeps its
+/// accepted stable id, so the populated bytes the new shape cannot address steer the change to
+/// a transform rather than a silent activation.
+fn assert_leaf_reshape_fails_closed(name: &str, value_decl: &str, expected_reason: RepairReason) {
     let value_id = hex_id(3);
-    let root = temp_project("discharge-leaf-to-group", |root| {
+    let root = temp_project(name, |root| {
         write(
             root,
             "src/books.mw",
-            "module books\n\
-             resource Book at ^books(id: int)\n\
-             \x20   value\n\
-             \x20       required first: string\n\
-             pub fn add(): Id(^books)\n\
-             \x20   return nextId(^books)\n",
+            &format!(
+                "module books\n\
+                 resource Book at ^books(id: int)\n\
+                 {value_decl}\
+                 pub fn add(): Id(^books)\n\
+                 \x20   return nextId(^books)\n"
+            ),
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
-            vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                store_entry("books::^books", &hex_id(2), "int"),
-                member_entry("books::Book::value", &value_id, "string"),
-            ],
+            "books::Book",
+            "books::^books",
+            Some("int"),
+            vec![member_entry("books::Book::value", &value_id, "string")],
         );
         write_catalog(root, &accepted);
     });
     let program = checked(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
-    // The old record carries a `string` cell at the member position the group now occupies.
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member_bytes_by_id(
         1,
@@ -4458,108 +4318,35 @@ fn leaf_member_becoming_a_group_over_populated_data_fails_closed() {
         encode_value(&Scalar::Str("draft".into())).unwrap(),
     );
 
-    let group_id = group_member_catalog_id(&place, "value");
+    let reshaped_id = group_member_catalog_id(&place, "value");
     assert_eq!(
-        group_id, value_id,
-        "a leaf becoming a group keeps the member's accepted stable id"
+        reshaped_id, value_id,
+        "a reshaped leaf keeps the member's accepted stable id"
     );
     let (result, diagnostics) = preview(&program, &store).expect("preview");
+    assert_fails_closed(&result, &diagnostics, &reshaped_id, expected_reason);
+}
 
-    assert!(
-        !result.is_activatable(),
-        "a leaf becoming a group over populated data must block activation: {:#?}",
-        result.verdicts
-    );
-    assert!(
-        matches!(
-            verdict_for(&result, &group_id),
-            Verdict::RepairRequired {
-                reason: RepairReason::TypeChangeRequiresTransform
-            }
-        ),
-        "a leaf-to-group shape change must steer to a transform, got {:#?}",
-        verdict_for(&result, &group_id)
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == group_id),
-        "a fail-closed diagnostic must name the now-group member, got {diagnostics:#?}"
+/// A member that WAS a plain leaf becoming a GROUP over populated data fails closed: the new
+/// group shape would orphan the old single-cell bytes, so it is steered to a transform.
+#[test]
+fn leaf_member_becoming_a_group_over_populated_data_fails_closed() {
+    assert_leaf_reshape_fails_closed(
+        "discharge-leaf-to-group",
+        "\x20   value\n\x20       required first: string\n",
+        RepairReason::TypeChangeRequiresTransform,
     );
 }
 
-/// A member that WAS a plain leaf becoming a KEYED LAYER over populated data fails closed.
-/// The accepted catalog recorded `value` as a `string` leaf; source now declares `value` as a
-/// keyed group (`value(version: int)`), so the current declaration produces no leaf token at
-/// the member's path. The old single-cell bytes live under the member position the keyed layer
-/// now occupies; the new keyed shape addresses entries by a key those bytes were never written
-/// at, so the change is steered to a transform rather than silently activated.
+/// A member that WAS a plain leaf becoming a KEYED LAYER over populated data fails closed: the
+/// new keyed shape addresses entries by a key the old bytes were never written at, so it is
+/// steered to a transform.
 #[test]
 fn leaf_member_becoming_a_keyed_layer_over_populated_data_fails_closed() {
-    let value_id = hex_id(3);
-    let root = temp_project("discharge-leaf-to-keyed", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book at ^books(id: int)\n\
-             \x20   value(version: int)\n\
-             \x20       required body: string\n\
-             pub fn add(): Id(^books)\n\
-             \x20   return nextId(^books)\n",
-        );
-        let accepted = CatalogMetadata::new(
-            4,
-            vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                store_entry("books::^books", &hex_id(2), "int"),
-                member_entry("books::Book::value", &value_id, "string"),
-            ],
-        );
-        write_catalog(root, &accepted);
-    });
-    let program = checked(&root);
-    let place = root_place(&program, "books");
-    let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
-    // The old record carries a `string` cell at the member position the keyed layer now occupies.
-    seed.record(1);
-    seed.member_bytes_by_id(
-        1,
-        &value_id,
-        encode_value(&Scalar::Str("draft".into())).unwrap(),
-    );
-
-    let layer_id = group_member_catalog_id(&place, "value");
-    assert_eq!(
-        layer_id, value_id,
-        "a leaf becoming a keyed layer keeps the member's accepted stable id"
-    );
-    let (result, diagnostics) = preview(&program, &store).expect("preview");
-
-    assert!(
-        !result.is_activatable(),
-        "a leaf becoming a keyed layer over populated data must block activation: {:#?}",
-        result.verdicts
-    );
-    assert!(
-        matches!(
-            verdict_for(&result, &layer_id),
-            Verdict::RepairRequired {
-                reason: RepairReason::TypeChangeRequiresTransform
-            }
-        ),
-        "a leaf-to-keyed-layer shape change must steer to a transform, got {:#?}",
-        verdict_for(&result, &layer_id)
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == layer_id),
-        "a fail-closed diagnostic must name the now-keyed-layer member, got {diagnostics:#?}"
+    assert_leaf_reshape_fails_closed(
+        "discharge-leaf-to-keyed",
+        "\x20   value(version: int)\n\x20       required body: string\n",
+        RepairReason::TypeChangeRequiresTransform,
     );
 }
 
@@ -4583,11 +4370,12 @@ fn retype_of_leaf_nested_in_populated_keyed_group_fails_closed() {
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
+            "policies::Policy",
+            "policies::^policies",
+            Some("int"),
             vec![
-                entry(CatalogEntryKind::Resource, "policies::Policy", &hex_id(1)),
-                store_entry("policies::^policies", &hex_id(2), "int"),
                 entry(
                     CatalogEntryKind::ResourceMember,
                     "policies::Policy::versions",
@@ -4601,10 +4389,7 @@ fn retype_of_leaf_nested_in_populated_keyed_group_fails_closed() {
     let program = checked(&root);
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // One keyed entry whose `body` cell was written under the old `string` type.
     seed.record(1);
     seed.keyed_member(
@@ -4664,11 +4449,12 @@ fn retype_of_keyed_nested_leaf_with_overlapping_byte_fails_closed() {
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
+            "policies::Policy",
+            "policies::^policies",
+            Some("int"),
             vec![
-                entry(CatalogEntryKind::Resource, "policies::Policy", &hex_id(1)),
-                store_entry("policies::^policies", &hex_id(2), "int"),
                 entry(
                     CatalogEntryKind::ResourceMember,
                     "policies::Policy::versions",
@@ -4682,10 +4468,7 @@ fn retype_of_keyed_nested_leaf_with_overlapping_byte_fails_closed() {
     let program = checked(&root);
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // The entry's `body` cell was written as `int` `1`, a byte the new `bool` decoder accepts.
     seed.record(1);
     seed.keyed_member(1, "versions", SavedKey::Int(7), "body", Scalar::Int(1));
@@ -4732,11 +4515,12 @@ fn unchanged_leaf_nested_in_populated_keyed_group_proves() {
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
+            "policies::Policy",
+            "policies::^policies",
+            Some("int"),
             vec![
-                entry(CatalogEntryKind::Resource, "policies::Policy", &hex_id(1)),
-                store_entry("policies::^policies", &hex_id(2), "int"),
                 entry(
                     CatalogEntryKind::ResourceMember,
                     "policies::Policy::versions",
@@ -4750,10 +4534,7 @@ fn unchanged_leaf_nested_in_populated_keyed_group_proves() {
     let program = checked(&root);
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.keyed_member(
         1,
@@ -4797,11 +4578,12 @@ fn keyed_layer_key_type_change_over_populated_entries_fails_closed() {
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
+            "policies::Policy",
+            "policies::^policies",
+            Some("int"),
             vec![
-                entry(CatalogEntryKind::Resource, "policies::Policy", &hex_id(1)),
-                store_entry("policies::^policies", &hex_id(2), "int"),
                 keyed_group_entry("policies::Policy::versions", &versions_id, "int"),
                 member_entry("policies::Policy::versions::body", &body_id, "string"),
             ],
@@ -4811,10 +4593,7 @@ fn keyed_layer_key_type_change_over_populated_entries_fails_closed() {
     let program = checked(&root);
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // One existing keyed entry under the old `int` key shape.
     seed.record(1);
     seed.keyed_member(
@@ -4876,11 +4655,12 @@ fn plain_group_reshaped_to_keyed_layer_over_populated_data_fails_closed() {
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
+            "policies::Policy",
+            "policies::^policies",
+            Some("int"),
             vec![
-                entry(CatalogEntryKind::Resource, "policies::Policy", &hex_id(1)),
-                store_entry("policies::^policies", &hex_id(2), "int"),
                 group_entry("policies::Policy::versions", &versions_id),
                 member_entry("policies::Policy::versions::body", &body_id, "string"),
             ],
@@ -4890,37 +4670,18 @@ fn plain_group_reshaped_to_keyed_layer_over_populated_data_fails_closed() {
     let program = checked(&root);
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // The old record carries `versions.body` as an unkeyed-group sub-member cell.
     seed.record(1);
     seed.nested_member(1, "versions", "body", Scalar::Str("draft".into()));
 
     let layer_id = group_member_catalog_id(&place, "versions");
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-
-    assert!(
-        !result.is_activatable(),
-        "a group reshaped to a keyed layer over populated data must block activation: {:#?}",
-        result.verdicts
-    );
-    assert!(
-        matches!(
-            verdict_for(&result, &layer_id),
-            Verdict::RepairRequired {
-                reason: RepairReason::KeyedLayerKeyShapeChange
-            }
-        ),
-        "a group-to-keyed-layer reshape must fail closed, got {:#?}",
-        verdict_for(&result, &layer_id)
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == layer_id),
-        "a fail-closed diagnostic must name the reshaped member, got {diagnostics:#?}"
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &layer_id,
+        RepairReason::KeyedLayerKeyShapeChange,
     );
 }
 
@@ -4943,11 +4704,12 @@ fn keyed_layer_reshaped_to_plain_group_over_populated_data_fails_closed() {
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
+            "policies::Policy",
+            "policies::^policies",
+            Some("int"),
             vec![
-                entry(CatalogEntryKind::Resource, "policies::Policy", &hex_id(1)),
-                store_entry("policies::^policies", &hex_id(2), "int"),
                 keyed_group_entry("policies::Policy::versions", &versions_id, "int"),
                 member_entry("policies::Policy::versions::body", &body_id, "string"),
             ],
@@ -4957,10 +4719,7 @@ fn keyed_layer_reshaped_to_plain_group_over_populated_data_fails_closed() {
     let program = checked(&root);
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // One existing keyed entry under the old `int` key shape.
     seed.record(1);
     seed.keyed_member(
@@ -4973,27 +4732,11 @@ fn keyed_layer_reshaped_to_plain_group_over_populated_data_fails_closed() {
 
     let group_id = group_member_catalog_id(&place, "versions");
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-
-    assert!(
-        !result.is_activatable(),
-        "a keyed layer reshaped to a plain group over populated data must block activation: {:#?}",
-        result.verdicts
-    );
-    assert!(
-        matches!(
-            verdict_for(&result, &group_id),
-            Verdict::RepairRequired {
-                reason: RepairReason::KeyedLayerKeyShapeChange
-            }
-        ),
-        "a keyed-layer-to-group reshape must fail closed, got {:#?}",
-        verdict_for(&result, &group_id)
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == group_id),
-        "a fail-closed diagnostic must name the reshaped member, got {diagnostics:#?}"
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &group_id,
+        RepairReason::KeyedLayerKeyShapeChange,
     );
 }
 
@@ -5018,11 +4761,12 @@ fn leaf_to_group_adding_required_submember_over_empty_cell_fails_closed() {
              pub fn add(): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
+            "books::Book",
+            "books::^books",
+            Some("int"),
             vec![
-                entry(CatalogEntryKind::Resource, "books::Book", &hex_id(1)),
-                store_entry("books::^books", &hex_id(2), "int"),
                 member_entry("books::Book::marker", &hex_id(5), "string"),
                 member_entry("books::Book::value", &value_id, "string"),
             ],
@@ -5032,10 +4776,7 @@ fn leaf_to_group_adding_required_submember_over_empty_cell_fails_closed() {
     let program = checked(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // The record exists (a sibling `marker` cell) but its old `value` leaf cell was never
     // populated, so the disappeared-leaf probe sees nothing; the new required `value.first`
     // sub-member is missing and must fail closed.
@@ -5085,11 +4826,12 @@ fn keyed_layer_arity_change_fails_closed_via_backstop() {
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
+            "policies::Policy",
+            "policies::^policies",
+            Some("int"),
             vec![
-                entry(CatalogEntryKind::Resource, "policies::Policy", &hex_id(1)),
-                store_entry("policies::^policies", &hex_id(2), "int"),
                 keyed_group_entry("policies::Policy::versions", &versions_id, "int"),
                 member_entry("policies::Policy::versions::body", &body_id, "string"),
             ],
@@ -5099,10 +4841,7 @@ fn keyed_layer_arity_change_fails_closed_via_backstop() {
     let program = checked(&root);
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // One existing entry under the old one-column key shape.
     seed.record(1);
     seed.keyed_member(
@@ -5157,23 +4896,23 @@ fn renamed_keyed_layer_with_unchanged_shape_does_not_overfire() {
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
-            vec![
-                entry(CatalogEntryKind::Resource, "policies::Policy", &hex_id(1)),
-                store_entry("policies::^policies", &hex_id(2), "int"),
-                member_entry("policies::Policy::tags", &tags_id, "[int]string"),
-            ],
+            "policies::Policy",
+            "policies::^policies",
+            Some("int"),
+            vec![member_entry(
+                "policies::Policy::tags",
+                &tags_id,
+                "[int]string",
+            )],
         );
         write_catalog(root, &accepted);
     });
     let program = checked(&root);
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.keyed_leaf(
         1,
@@ -5217,11 +4956,12 @@ fn reordered_keyed_layer_members_do_not_overfire() {
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
+            "policies::Policy",
+            "policies::^policies",
+            Some("int"),
             vec![
-                entry(CatalogEntryKind::Resource, "policies::Policy", &hex_id(1)),
-                store_entry("policies::^policies", &hex_id(2), "int"),
                 keyed_group_entry("policies::Policy::versions", &versions_id, "int"),
                 member_entry("policies::Policy::versions::note", &note_id, "string"),
                 member_entry("policies::Policy::versions::body", &body_id, "string"),
@@ -5232,10 +4972,7 @@ fn reordered_keyed_layer_members_do_not_overfire() {
     let program = checked(&root);
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.keyed_member(
         1,
@@ -5290,11 +5027,12 @@ fn optional_add_beside_unchanged_keyed_layer_does_not_overfire() {
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             4,
+            "policies::Policy",
+            "policies::^policies",
+            Some("int"),
             vec![
-                entry(CatalogEntryKind::Resource, "policies::Policy", &hex_id(1)),
-                store_entry("policies::^policies", &hex_id(2), "int"),
                 keyed_group_entry("policies::Policy::versions", &versions_id, "int"),
                 member_entry("policies::Policy::versions::body", &body_id, "string"),
             ],
@@ -5304,10 +5042,7 @@ fn optional_add_beside_unchanged_keyed_layer_does_not_overfire() {
     let program = checked(&root);
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.keyed_member(
         1,
@@ -5336,7 +5071,7 @@ fn optional_add_beside_unchanged_keyed_layer_does_not_overfire() {
     );
 }
 
-/// DEPTH-TOTAL (a): a keyed layer nested BELOW another keyed layer, re-keyed by KEY TYPE over
+/// A keyed layer nested BELOW another keyed layer, re-keyed by KEY TYPE over
 /// populated entries, fails closed. The accepted catalog records the inner layer `revisions`
 /// keyed by `rev: int`; source re-keys it `rev: string`. The inner layer's own structural
 /// signature diverged, but it sits below the outer keyed layer `versions`, whose own shape did
@@ -5361,11 +5096,12 @@ fn nested_keyed_layer_rekey_below_keyed_ancestor_fails_closed() {
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             5,
+            "policies::Policy",
+            "policies::^policies",
+            Some("int"),
             vec![
-                entry(CatalogEntryKind::Resource, "policies::Policy", &hex_id(1)),
-                store_entry("policies::^policies", &hex_id(2), "int"),
                 keyed_group_entry("policies::Policy::versions", &versions_id, "int"),
                 keyed_group_entry(
                     "policies::Policy::versions::revisions",
@@ -5384,10 +5120,7 @@ fn nested_keyed_layer_rekey_below_keyed_ancestor_fails_closed() {
     let program = checked(&root);
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // One existing inner entry under the old `int` rev key, two layers deep.
     seed.record(1);
     seed.deep_keyed_member(
@@ -5441,7 +5174,7 @@ fn nested_keyed_layer_rekey_below_keyed_ancestor_fails_closed() {
     );
 }
 
-/// DEPTH-TOTAL (b): a keyed-layer ARITY change two levels deep fails closed. The accepted
+/// A keyed-layer ARITY change two levels deep fails closed. The accepted
 /// catalog records the inner layer `revisions` keyed by one column `rev: int`; source makes it
 /// composite `rev: int, draft: int`. The inner layer's signature diverged below the unchanged
 /// outer keyed layer, so the backstop must descend to it per entry and fail it closed: every
@@ -5464,11 +5197,12 @@ fn nested_keyed_layer_arity_change_two_levels_deep_fails_closed() {
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             5,
+            "policies::Policy",
+            "policies::^policies",
+            Some("int"),
             vec![
-                entry(CatalogEntryKind::Resource, "policies::Policy", &hex_id(1)),
-                store_entry("policies::^policies", &hex_id(2), "int"),
                 keyed_group_entry("policies::Policy::versions", &versions_id, "int"),
                 keyed_group_entry(
                     "policies::Policy::versions::revisions",
@@ -5487,10 +5221,7 @@ fn nested_keyed_layer_arity_change_two_levels_deep_fails_closed() {
     let program = checked(&root);
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.deep_keyed_member(
         1,
@@ -5526,7 +5257,7 @@ fn nested_keyed_layer_arity_change_two_levels_deep_fails_closed() {
     );
 }
 
-/// DEPTH-TOTAL (c): a structurally-diverged INTERIOR member arbitrarily deep fails closed. A
+/// A structurally-diverged INTERIOR member arbitrarily deep fails closed. A
 /// plain unkeyed group `meta` nested under two keyed layers is reshaped into a keyed layer, so
 /// its signature moves from `group` to `keyed-group:[int]` with no leaf token on either side —
 /// a structural divergence no leaf-type, store-key, or per-entry leaf classifier claims, reached
@@ -5552,11 +5283,12 @@ fn deep_interior_member_structural_divergence_fails_closed() {
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             6,
+            "policies::Policy",
+            "policies::^policies",
+            Some("int"),
             vec![
-                entry(CatalogEntryKind::Resource, "policies::Policy", &hex_id(1)),
-                store_entry("policies::^policies", &hex_id(2), "int"),
                 keyed_group_entry("policies::Policy::versions", &versions_id, "int"),
                 keyed_group_entry(
                     "policies::Policy::versions::revisions",
@@ -5576,10 +5308,7 @@ fn deep_interior_member_structural_divergence_fails_closed() {
     let program = checked(&root);
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     // The old `meta.body` cell sits as an unkeyed-group sub-member two keyed layers deep, with
     // no `tag` entry key, so the reshaped keyed `meta` addresses none of it.
     seed.record(1);
@@ -5643,11 +5372,12 @@ fn unchanged_nested_keyed_layer_does_not_overfire() {
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
-        let accepted = CatalogMetadata::new(
+        let accepted = accepted_catalog(
             5,
+            "policies::Policy",
+            "policies::^policies",
+            Some("int"),
             vec![
-                entry(CatalogEntryKind::Resource, "policies::Policy", &hex_id(1)),
-                store_entry("policies::^policies", &hex_id(2), "int"),
                 keyed_group_entry("policies::Policy::versions", &versions_id, "int"),
                 keyed_group_entry(
                     "policies::Policy::versions::revisions",
@@ -5666,10 +5396,7 @@ fn unchanged_nested_keyed_layer_does_not_overfire() {
     let program = checked(&root);
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
+    let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.deep_keyed_member(
         1,
