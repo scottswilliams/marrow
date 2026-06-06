@@ -342,7 +342,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow-schema/src/lib.rs` - status: complete; owner: L04 schema; notes: typed `SchemaErrorKind` payloads added for schema diagnostics; duplicate-index render mismatch fixed.
 - `crates/marrow-schema/src/stdlib.rs` - status: complete; owner: L04 schema; notes: reviewed-clean; `clock.now` sediment hit is domain text.
 - `crates/marrow-schema/tests/compile_enum.rs` - status: complete; owner: L04 schema; notes: enum schema diagnostics assert typed facts instead of prose fragments.
-- `crates/marrow-schema/tests/compile_resource.rs` - status: complete; owner: L04 schema; notes: resource/store schema diagnostics assert typed facts instead of `message.contains`; duplicate-index render has exact output coverage.
+- `crates/marrow-schema/tests/compile_resource_*.rs` - status: complete; owner: L04 schema; notes: resource/store schema diagnostics assert typed facts instead of `message.contains`; duplicate-index render has exact output coverage; split by concern into `compile_resource_book/collisions/index/keys/members/sugar/unknown.rs`.
 - `crates/marrow-schema/tests/resolve_type.rs` - status: complete; owner: L04 schema; notes: reviewed-clean; pre-existing `string`/`Str` bridge comment is durable type-spelling rationale.
 
 ### crates/marrow-store
