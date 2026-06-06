@@ -1,0 +1,494 @@
+mod support;
+
+use std::fs;
+use std::hash::{Hash, Hasher};
+
+use marrow_check::{CHECK_CATALOG_INTENT, DiagnosticPayload, check_project};
+use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
+
+use support::catalog::{catalog_path, entry as literal_entry, write_catalog};
+use support::{config, temp_project, write};
+
+fn catalog(entries: Vec<CatalogEntry>) -> CatalogMetadata {
+    CatalogMetadata::new(7, entries)
+}
+
+/// A catalog entry whose stable id is minted deterministically from `label`, so a
+/// fixture refers to a member by a readable name and still gets a `cat_`-shaped id the
+/// catalog parser accepts. Tests that need a specific literal id call
+/// [`literal_entry`] (the shared builder) directly.
+fn entry(
+    kind: CatalogEntryKind,
+    canonical_path: &str,
+    label: &str,
+    aliases: &[&str],
+) -> CatalogEntry {
+    literal_entry(kind, canonical_path, &derived_id(label), aliases)
+}
+
+/// Mint a deterministic `cat_<32 hex>` stable id from a readable label, so fixtures and
+/// the assertions that look the id back up agree without sharing a literal constant.
+fn derived_id(label: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    label.hash(&mut hasher);
+    let first = hasher.finish();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (label, "catalog-presence-fixture").hash(&mut hasher);
+    let second = hasher.finish();
+    format!("cat_{first:016x}{second:016x}")
+}
+
+#[test]
+fn first_source_check_proposes_catalog_ids_without_writing_accepted_catalog() {
+    let root = temp_project("catalog-proposal", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             \x20   tags(pos: int): string\n\
+             \x20   index byTitle(title) unique\n\
+             enum Status\n\
+             \x20   active\n\
+             \x20   archived\n",
+        );
+    });
+
+    let (report, program) = check_project(&root, &config()).expect("check");
+    let accepted_path = catalog_path(&root);
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert!(
+        !accepted_path.exists(),
+        "source-only check must not generate the accepted catalog file"
+    );
+    let proposal = program.catalog.proposal.expect("catalog proposal");
+    assert_eq!(proposal.epoch, 1);
+    let module = program.facts.module_id("books").expect("books module");
+    let resource = program.facts.resource_id(module, "Book").expect("Book");
+    assert_eq!(
+        program.facts.resource(resource).catalog_id,
+        None,
+        "unaccepted proposal IDs stay proposal-only"
+    );
+    assert!(
+        proposal
+            .entries
+            .iter()
+            .any(|entry| entry.kind == CatalogEntryKind::Resource && entry.path == "books::Book")
+    );
+    assert!(
+        proposal
+            .entries
+            .iter()
+            .any(|entry| entry.kind == CatalogEntryKind::Store && entry.path == "books::^books")
+    );
+}
+
+#[test]
+fn source_only_check_leaves_accepted_catalog_epoch_unchanged() {
+    let root = temp_project("catalog-epoch", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\nresource Book at ^books(id: int)\n    title: string\n",
+        );
+        let metadata = catalog(vec![
+            entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+            entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::title",
+                "member-title",
+                &[],
+            ),
+        ]);
+        write_catalog(root, &metadata);
+    });
+    let before = fs::read_to_string(catalog_path(&root)).expect("read before");
+
+    let (report, program) = check_project(&root, &config()).expect("check");
+    let after = fs::read_to_string(catalog_path(&root)).expect("read after");
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_eq!(program.catalog.accepted_epoch, Some(7));
+    assert_eq!(before, after);
+}
+
+#[test]
+fn non_active_catalog_entries_and_aliases_do_not_bind_live_source_facts() {
+    let root = temp_project("catalog-non-active", |root| {
+        write(
+            root,
+            "src/library.mw",
+            "module library\nresource Book at ^books(id: int)\n    title: string\n",
+        );
+        let metadata = catalog(vec![
+            CatalogEntry {
+                lifecycle: CatalogLifecycle::Reserved,
+                ..entry(
+                    CatalogEntryKind::Resource,
+                    "books::ReservedBook",
+                    "reserved-book",
+                    &["library::Book"],
+                )
+            },
+            entry(
+                CatalogEntryKind::Store,
+                "library::^books",
+                "store-books",
+                &[],
+            ),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "library::Book::title",
+                "member-title",
+                &[],
+            ),
+        ]);
+        write_catalog(root, &metadata);
+    });
+
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_CATALOG_INTENT),
+        "{:#?}",
+        report.diagnostics
+    );
+    let module = program.facts.module_id("library").expect("module");
+    let resource = program.facts.resource_id(module, "Book").expect("resource");
+    assert_eq!(program.facts.resource(resource).catalog_id, None);
+    let proposal = program.catalog.proposal.expect("proposal");
+    CatalogMetadata::from_json(&proposal.to_json_pretty()).expect("proposal validates");
+}
+
+#[test]
+fn reserved_catalog_path_blocks_source_reuse_without_intent() {
+    let root = temp_project("catalog-reserved-path", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   title: string\n",
+        );
+        let metadata = catalog(vec![
+            entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+            entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+            CatalogEntry {
+                lifecycle: CatalogLifecycle::Reserved,
+                ..entry(
+                    CatalogEntryKind::ResourceMember,
+                    "books::Book::title",
+                    "member-title-old",
+                    &[],
+                )
+            },
+        ]);
+        write_catalog(root, &metadata);
+    });
+
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    let expected_payload = DiagnosticPayload::ReservedCatalogPathReuse {
+        source_kind: CatalogEntryKind::ResourceMember,
+        source_path: "books::Book::title".to_string(),
+        reserved_stable_id: derived_id("member-title-old"),
+    };
+    assert!(
+        report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == CHECK_CATALOG_INTENT && diagnostic.payload == expected_payload
+        }),
+        "reserved path reuse must carry exact payload: {:#?}",
+        report.diagnostics
+    );
+    let proposal = program.catalog.proposal.expect("proposal");
+    let title_entries: Vec<_> = proposal
+        .entries
+        .iter()
+        .filter(|entry| {
+            entry.kind == CatalogEntryKind::ResourceMember && entry.path == "books::Book::title"
+        })
+        .collect();
+    assert_eq!(1, title_entries.len(), "{:#?}", proposal.entries);
+    assert_eq!(CatalogLifecycle::Reserved, title_entries[0].lifecycle);
+}
+
+#[test]
+fn retire_reserves_the_path_spelling_against_future_reuse() {
+    let root = temp_project("catalog-retire-reserves-path", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   subtitle: string\n\
+             evolve\n\
+             \x20   retire Book.title\n",
+        );
+        let metadata = catalog(vec![
+            entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+            entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::title",
+                "member-title",
+                &[],
+            ),
+        ]);
+        write_catalog(root, &metadata);
+    });
+
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let proposal = program.catalog.proposal.expect("proposal");
+    let title = proposal
+        .entries
+        .iter()
+        .find(|entry| {
+            entry.kind == CatalogEntryKind::ResourceMember && entry.path == "books::Book::title"
+        })
+        .unwrap_or_else(|| panic!("proposal keeps retired title: {:#?}", proposal.entries));
+    assert_eq!(CatalogLifecycle::Reserved, title.lifecycle);
+    assert_eq!(derived_id("member-title"), title.stable_id);
+}
+
+#[test]
+fn catalog_proposal_ids_do_not_collide_with_accepted_stable_ids() {
+    let colliding_id = "cat_00000000000000000f32222e2032f199";
+    let root = temp_project("catalog-proposal-id-collision", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   title: string\n\
+             \x20   subtitle: string\n",
+        );
+        let metadata = catalog(vec![
+            entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+            entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+            literal_entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::title",
+                colliding_id,
+                &[],
+            ),
+        ]);
+        write_catalog(root, &metadata);
+    });
+
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_CATALOG_INTENT),
+        "{:#?}",
+        report.diagnostics
+    );
+    let proposal = program.catalog.proposal.expect("proposal");
+    CatalogMetadata::from_json(&proposal.to_json_pretty()).expect("proposal validates");
+    assert!(
+        proposal
+            .entries
+            .iter()
+            .filter(|entry| entry.stable_id == colliding_id)
+            .count()
+            == 1,
+        "{:#?}",
+        proposal.entries
+    );
+}
+
+#[test]
+fn source_rename_without_accepted_catalog_intent_fails_closed() {
+    let root = temp_project("catalog-rename-reject", |root| {
+        write(
+            root,
+            "src/library.mw",
+            "module library\nresource Book at ^books(id: int)\n    title: string\n",
+        );
+        let metadata = catalog(vec![
+            entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+            entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::title",
+                "member-title",
+                &[],
+            ),
+        ]);
+        write_catalog(root, &metadata);
+    });
+
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_CATALOG_INTENT),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn accepted_catalog_alias_does_not_authorize_source_rollback() {
+    let root = temp_project("catalog-rollback-reject", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\nresource Book at ^books(id: int)\n    title: string\n",
+        );
+        let metadata = catalog(vec![
+            entry(
+                CatalogEntryKind::Resource,
+                "library::Book",
+                "res-book",
+                &["books::Book"],
+            ),
+            entry(
+                CatalogEntryKind::Store,
+                "library::^books",
+                "store-books",
+                &["books::^books"],
+            ),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "library::Book::title",
+                "member-title",
+                &["books::Book::title"],
+            ),
+        ]);
+        write_catalog(root, &metadata);
+    });
+
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_CATALOG_INTENT),
+        "{:#?}",
+        report.diagnostics
+    );
+    let module = program.facts.module_id("books").expect("module");
+    let resource = program.facts.resource_id(module, "Book").expect("resource");
+    assert_eq!(program.facts.resource(resource).catalog_id, None);
+}
+
+#[test]
+fn accepted_catalog_rename_preserves_stable_id() {
+    let root = temp_project("catalog-rename-preserve", |root| {
+        write(
+            root,
+            "src/library.mw",
+            "module library\nresource Book at ^books(id: int)\n    title: string\n",
+        );
+        let metadata = catalog(vec![
+            entry(
+                CatalogEntryKind::Resource,
+                "library::Book",
+                "res-book",
+                &["books::Book"],
+            ),
+            entry(
+                CatalogEntryKind::Store,
+                "library::^books",
+                "store-books",
+                &["books::^books"],
+            ),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "library::Book::title",
+                "member-title",
+                &["books::Book::title"],
+            ),
+        ]);
+        write_catalog(root, &metadata);
+    });
+
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let module = program.facts.module_id("library").expect("module");
+    let resource = program.facts.resource_id(module, "Book").expect("resource");
+    assert_eq!(
+        program.facts.resource(resource).catalog_id.as_deref(),
+        Some(derived_id("res-book").as_str())
+    );
+}
+
+#[test]
+fn catalog_proposals_preserve_accepted_aliases_and_lifecycle() {
+    let root = temp_project("catalog-proposal-preserve", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   title: string\n\
+             \x20   subtitle: string\n",
+        );
+        let metadata = catalog(vec![
+            entry(
+                CatalogEntryKind::Resource,
+                "books::Book",
+                "res-book",
+                &["library::Book"],
+            ),
+            entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::title",
+                "member-title",
+                &[],
+            ),
+            CatalogEntry {
+                kind: CatalogEntryKind::Enum,
+                path: "books::OldStatus".to_string(),
+                stable_id: derived_id("enum-old-status"),
+                aliases: vec!["books::Status".to_string()],
+                lifecycle: CatalogLifecycle::Deprecated,
+                accepted_key_shape: None,
+                accepted_struct: None,
+            },
+        ]);
+        write_catalog(root, &metadata);
+    });
+
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_CATALOG_INTENT),
+        "{:#?}",
+        report.diagnostics
+    );
+    let proposal = program.catalog.proposal.expect("proposal");
+    let resource = proposal
+        .entries
+        .iter()
+        .find(|entry| entry.kind == CatalogEntryKind::Resource && entry.path == "books::Book")
+        .expect("resource proposal");
+    assert_eq!(resource.aliases, ["library::Book"]);
+    let deprecated = proposal
+        .entries
+        .iter()
+        .find(|entry| entry.stable_id == derived_id("enum-old-status"))
+        .expect("deprecated entry");
+    assert_eq!(deprecated.lifecycle, CatalogLifecycle::Deprecated);
+    assert_eq!(deprecated.aliases, ["books::Status"]);
+}

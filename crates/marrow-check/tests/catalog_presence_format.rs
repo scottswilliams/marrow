@@ -1,0 +1,245 @@
+mod support;
+
+use std::fs;
+use std::hash::{Hash, Hasher};
+
+use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
+
+use support::catalog::{catalog_path, entry as literal_entry, write_catalog};
+use support::{config, temp_project};
+
+fn catalog(entries: Vec<CatalogEntry>) -> CatalogMetadata {
+    CatalogMetadata::new(7, entries)
+}
+
+/// A catalog entry whose stable id is minted deterministically from `label`, so a
+/// fixture refers to a member by a readable name and still gets a `cat_`-shaped id the
+/// catalog parser accepts. Tests that need a specific literal id call
+/// [`literal_entry`] (the shared builder) directly.
+fn entry(
+    kind: CatalogEntryKind,
+    canonical_path: &str,
+    label: &str,
+    aliases: &[&str],
+) -> CatalogEntry {
+    literal_entry(kind, canonical_path, &derived_id(label), aliases)
+}
+
+/// Mint a deterministic `cat_<32 hex>` stable id from a readable label, so fixtures and
+/// the assertions that look the id back up agree without sharing a literal constant.
+fn derived_id(label: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    label.hash(&mut hasher);
+    let first = hasher.finish();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (label, "catalog-presence-fixture").hash(&mut hasher);
+    let second = hasher.finish();
+    format!("cat_{first:016x}{second:016x}")
+}
+
+/// The accepted catalog is the durable ABI: a torn write would brick the project, so
+/// `write_accepted_catalog` must be all-or-nothing. After a successful write the only
+/// catalog artifact in the directory is the complete target file — no temp staging file
+/// is left behind, and overwriting a prior catalog never exposes a partial file. The
+/// written bytes round-trip back to the same metadata.
+#[test]
+fn write_accepted_catalog_is_atomic_and_leaves_no_temp() {
+    let root = temp_project("catalog-atomic", |_| {});
+
+    // A prior, smaller catalog sits at the target. The overwrite with a larger catalog
+    // must replace it wholesale, never leaving a half-written file or a stray temp.
+    let prior = catalog(vec![entry(
+        CatalogEntryKind::Resource,
+        "books::Book",
+        "res-book",
+        &[],
+    )]);
+    write_catalog(&root, &prior);
+
+    let next = catalog(vec![
+        entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+        entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+        entry(
+            CatalogEntryKind::ResourceMember,
+            "books::Book.title",
+            "member-title",
+            &[],
+        ),
+    ]);
+    marrow_check::write_accepted_catalog(&root, &config(), &next).expect("write accepted catalog");
+
+    let entries: Vec<String> = fs::read_dir(&*root)
+        .expect("read project root")
+        .map(|entry| {
+            entry
+                .expect("dir entry")
+                .file_name()
+                .to_string_lossy()
+                .into()
+        })
+        .collect();
+    assert_eq!(
+        entries,
+        vec![String::from("marrow.catalog.json")],
+        "a successful write leaves only the target file, with no temp staging artifact"
+    );
+
+    let bytes = fs::read_to_string(catalog_path(&root)).expect("read catalog");
+    let round_tripped = CatalogMetadata::from_json(&bytes).expect("complete, parseable catalog");
+    assert_eq!(
+        round_tripped, next,
+        "the written file is the complete catalog, not a truncated prefix"
+    );
+}
+
+#[test]
+fn accepted_catalog_rejects_alias_and_stable_id_collisions() {
+    for metadata in [
+        catalog(vec![
+            entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+            entry(
+                CatalogEntryKind::Resource,
+                "library::Book",
+                "res-library",
+                &["books::Book"],
+            ),
+        ]),
+        catalog(vec![
+            entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+            entry(CatalogEntryKind::Store, "books::^books", "res-book", &[]),
+        ]),
+    ] {
+        let json = metadata.to_json_pretty();
+        let error = CatalogMetadata::from_json(&json).expect_err("collision is rejected");
+
+        assert_eq!(error.code, marrow_project::CATALOG_INVALID);
+    }
+}
+
+#[test]
+fn accepted_catalog_round_trips_stable_ids_aliases_lifecycle_epoch_and_digest() {
+    let metadata = catalog(vec![
+        entry(
+            CatalogEntryKind::Resource,
+            "books::Book",
+            "res-book",
+            &["library::Book"],
+        ),
+        CatalogEntry {
+            kind: CatalogEntryKind::EnumMember,
+            path: "books::Status::archived".to_string(),
+            stable_id: derived_id("enum-member-archived"),
+            aliases: vec!["books::Status::inactive".to_string()],
+            lifecycle: CatalogLifecycle::Deprecated,
+            accepted_key_shape: None,
+            accepted_struct: None,
+        },
+    ]);
+
+    let json = metadata.to_json_pretty();
+    let parsed = CatalogMetadata::from_json(&json).expect("catalog parses");
+
+    assert_eq!(parsed.epoch, 7);
+    assert!(
+        parsed.digest.starts_with("sha256:"),
+        "catalog digest must be collision-resistant: {}",
+        parsed.digest
+    );
+    assert_eq!("sha256:".len() + 64, parsed.digest.len());
+    assert_eq!(parsed.digest, metadata.digest);
+    assert_eq!(parsed.entries, metadata.entries);
+}
+
+#[test]
+fn accepted_catalog_round_trips_reserved_lifecycle() {
+    let metadata = catalog(vec![CatalogEntry {
+        lifecycle: CatalogLifecycle::Reserved,
+        ..entry(
+            CatalogEntryKind::ResourceMember,
+            "books::Book::oldTitle",
+            "member-old-title",
+            &[],
+        )
+    }]);
+
+    let json = metadata.to_json_pretty();
+    assert!(json.contains("\"lifecycle\": \"reserved\""), "{json}");
+    let parsed = CatalogMetadata::from_json(&json).expect("catalog parses");
+
+    assert_eq!(parsed.entries[0].lifecycle, CatalogLifecycle::Reserved);
+}
+
+#[test]
+fn non_sha_catalog_digest_is_rejected() {
+    let metadata = catalog(vec![entry(
+        CatalogEntryKind::Resource,
+        "books::Book",
+        "res-book",
+        &[],
+    )]);
+    let json = metadata.to_json_pretty().replacen(
+        &format!("\"digest\": \"{}\"", metadata.digest),
+        "\"digest\": \"weak:0000000000000000\"",
+        1,
+    );
+
+    let error = CatalogMetadata::from_json(&json).expect_err("non-SHA digest rejected");
+
+    assert_eq!(error.code, marrow_project::CATALOG_INVALID);
+}
+
+#[test]
+fn removed_catalog_lifecycle_is_rejected() {
+    let json = r#"{
+  "epoch": 7,
+  "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "entries": [
+    {
+      "kind": "resource",
+      "path": "books::Book",
+      "stableId": "cat_00000000000000000000000000000001",
+      "aliases": [],
+      "lifecycle": "removed",
+      "acceptedKeyShape": null,
+      "acceptedStruct": null
+    }
+  ]
+}"#;
+
+    let error = CatalogMetadata::from_json(json).expect_err("removed lifecycle rejected");
+
+    assert_eq!(error.code, marrow_project::CATALOG_INVALID);
+    assert!(
+        error.message.contains("removed"),
+        "wrong rejection: {error:?}"
+    );
+}
+
+#[test]
+fn parallel_catalog_additions_merge_without_regenerating_ids() {
+    let branch_a_id = "cat_11111111111111111111111111111111";
+    let branch_b_id = "cat_22222222222222222222222222222222";
+    let metadata = CatalogMetadata::new(
+        9,
+        vec![
+            literal_entry(
+                CatalogEntryKind::Resource,
+                "branch_a::Book",
+                branch_a_id,
+                &[],
+            ),
+            literal_entry(
+                CatalogEntryKind::Resource,
+                "branch_b::Magazine",
+                branch_b_id,
+                &[],
+            ),
+        ],
+    );
+
+    let parsed = CatalogMetadata::from_json(&metadata.to_json_pretty()).expect("catalog parses");
+
+    assert_eq!(parsed.entries[0].stable_id, branch_a_id);
+    assert_eq!(parsed.entries[1].stable_id, branch_b_id);
+    assert!(parsed.digest.starts_with("sha256:"));
+}
