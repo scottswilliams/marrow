@@ -1,0 +1,527 @@
+mod support;
+
+use marrow_check::{DiagnosticPayload, MarrowType, ScalarType, check_project};
+use marrow_schema::{SchemaErrorKind, SchemaUnsupportedTypeTarget};
+
+use support::{
+    assert_clean, check_module, check_module_report, check_script, config, temp_project, with_code,
+    write,
+};
+
+#[test]
+fn reports_unknown_types_in_signatures_and_consts() {
+    let found = check_module(
+        "unknown-type",
+        "module m\nconst X: Nope = 1\nfn f(a: Booook): Alsobad\n    return 1\n",
+        "check.unknown_type",
+    );
+    assert_eq!(found.len(), 3, "{found:#?}");
+    for name in ["Booook", "Alsobad", "Nope"] {
+        assert!(
+            found
+                .iter()
+                .any(|d| d.payload == DiagnosticPayload::UnknownType(name.into())),
+            "{name}: {found:#?}"
+        );
+    }
+}
+
+#[test]
+fn map_annotations_outside_resource_members_are_not_supported_types() {
+    let report = check_module_report(
+        "map-type-annotation",
+        "module m\nresource Draft\n    scores: map[string, int]\nconst X: map[string, int] = 1\nfn f(a: map[string, int]): map[string, int]\n    return 1\nfn g()\n    const c: map[string, int] = 1\n    var v: map[string, int]\n    var counts(k: map[string, int]): int\n    try\n        return\n    catch e: map[string, int]\n        return\n",
+    );
+
+    let found = with_code(&report, "check.unknown_type");
+    assert_eq!(found.len(), 7, "{:#?}", report.diagnostics);
+    assert!(
+        found.iter().all(|diagnostic| diagnostic.payload
+            == DiagnosticPayload::UnknownType("map[string,int]".into())),
+        "{found:#?}"
+    );
+    let schema = with_code(&report, "schema.unsupported_type");
+    assert_eq!(schema.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(
+        schema[0].payload,
+        DiagnosticPayload::Schema(SchemaErrorKind::UnsupportedType {
+            target: SchemaUnsupportedTypeTarget::Field,
+            name: "scores".into(),
+        }),
+        "{schema:#?}"
+    );
+}
+
+#[test]
+fn known_types_are_not_flagged_as_unknown() {
+    let root = temp_project("known-types", |root| {
+        // Primitive, sequence, identity, the module's own resource, `unknown`, and
+        // a qualified cross-module reference are all accepted.
+        write(
+            root,
+            "src/m.mw",
+            "module m\nresource Book at ^books(id: int)\n    required title: string\n\nfn f(a: int, b: sequence[string], c: Id(^books), d: Book, e: unknown, g: shelf::Thing): bool\n    return true\n",
+        );
+        write(
+            root,
+            "src/shelf.mw",
+            "module shelf\nresource Thing\n    name: string\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    assert!(
+        with_code(&report, "check.unknown_type").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn reports_a_bare_return_in_a_value_returning_function() {
+    // The bare `return` (inside the `if`) leaves a value-returning function without a
+    // value on that path.
+    let found = check_module(
+        "bare-return",
+        "module m\nfn f(c: bool): int\n    if c\n        return\n    return 1\n",
+        "check.return_value",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn reports_a_value_return_in_a_void_function() {
+    let found = check_module(
+        "void-return",
+        "module m\nfn g()\n    return 1\n",
+        "check.return_value",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn matching_returns_are_not_flagged() {
+    let found = check_module(
+        "ok-return",
+        "module m\nfn ok(c: bool): int\n    if c\n        return 1\n    return 2\n\nfn void_fn(c: bool)\n    if c\n        return\n",
+        "check.return_value",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn reports_a_value_function_that_may_not_return() {
+    // `f` falls through the `if` (no else) without returning; `g` ends in an
+    // assignment.
+    let found = check_module(
+        "missing-return",
+        "module m\nfn f(c: bool): int\n    if c\n        return 1\n\nfn g(): int\n    var x = 1\n",
+        "check.missing_return",
+    );
+    assert_eq!(found.len(), 2, "{found:#?}");
+}
+
+#[test]
+fn functions_that_return_on_all_paths_are_not_flagged() {
+    // Exhaustive if/else; ends in return; void; ends in a call; ends in a loop.
+    let found = check_module(
+        "returns-all-paths",
+        "module m\n\
+         fn a(c: bool): int\n    if c\n        return 1\n    else\n        return 2\n\n\
+         fn b(): int\n    return 7\n\n\
+         fn c()\n    var x = 1\n\n\
+         fn d(): int\n    helper()\n\n\
+         fn e(c: bool): int\n    while c\n        return 1\n",
+        "check.missing_return",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+/// Each operator enforces its operand types: a single `check.operator_type` fires when
+/// a `var x = ...` body mixes types the operator does not accept. The rows cover the
+/// arithmetic, concatenation, logical, comparison, and unary operators in turn.
+#[test]
+fn rejects_an_operator_on_wrongly_typed_operands() {
+    let cases: &[(&str, &str)] = &[
+        // `+` needs matching numeric operands; `1 + true` adds an int and a bool.
+        ("op-arith", "fn f()\n    var x = 1 + true\n"),
+        // `_` concatenates strings; `1 _ 2` joins two ints.
+        ("op-concat", "fn f()\n    var x = 1 _ 2\n"),
+        // `and` needs bool operands; `true and 1` mixes in an int.
+        ("op-logical", "fn f()\n    var x = true and 1\n"),
+        // Ordering compares same-typed values; `1 < "a"` mixes int and string.
+        ("op-compare", "fn f()\n    var x = 1 < \"a\"\n"),
+        // `not` needs a bool operand; `not 1` negates an int.
+        ("op-unary", "fn f()\n    var x = not 1\n"),
+    ];
+    for (name, source) in cases {
+        let found = check_script(name, source, "check.operator_type");
+        assert_eq!(found.len(), 1, "{name}: {found:#?}");
+    }
+}
+
+#[test]
+fn bytes_interpolation_is_a_check_error() {
+    let found = check_module(
+        "interp-bytes",
+        "module m\nfn f(): string\n    const b: bytes = b\"hi\"\n    return $\"<{b}>\"\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::InterpolationUnsupportedSource {
+            source: MarrowType::Primitive(ScalarType::Bytes),
+        }
+    );
+}
+
+#[test]
+fn infers_parameter_types_for_operator_checks() {
+    // `b` is declared `bool`, so `b + 1` adds a bool to an int.
+    let found = check_script(
+        "op-param",
+        "fn f(b: bool): int\n    return b + 1\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn well_typed_operators_are_not_flagged() {
+    // Every operator here has correctly typed operands.
+    let found = check_script(
+        "op-ok",
+        "fn ok(a: int, b: int, s: string, t: string, p: bool, q: bool): bool\n\
+         \x20   const sum = a + b\n\
+         \x20   const quot = a / b\n\
+         \x20   const cat = s _ t\n\
+         \x20   const cmp = a < b\n\
+         \x20   const ne = a != b\n\
+         \x20   const both = p and q\n\
+         \x20   const neg = -a\n\
+         \x20   const inv = not p\n\
+         \x20   return both\n",
+        "check.operator_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn operators_on_unknown_operands_are_not_flagged() {
+    // `mystery()` calls an unresolved function, so its result type is unknown; the
+    // checker only flags an operator when both operand types are known to be
+    // incompatible. (A bare name would itself be a `check.unresolved_name` error,
+    // so a call is used here to isolate the operator behavior.)
+    let found = check_script(
+        "op-unknown",
+        "fn f()\n    var x = mystery() + 1\n",
+        "check.operator_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn a_bare_undefined_name_is_flagged() {
+    // Strict typing: `mystery` is not a parameter, local, loop binding, catch
+    // binding, or module constant, so it is genuinely undefined.
+    let found = check_script(
+        "name-undefined",
+        "fn f()\n    var x = mystery\n",
+        "check.unresolved_name",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_defined_name_is_not_flagged() {
+    // A parameter is in scope, so referencing it is not an unresolved name.
+    let found = check_script(
+        "name-defined",
+        "fn f(a: int)\n    var x = a\n",
+        "check.unresolved_name",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_unresolved_call_is_not_flagged_as_a_name() {
+    // A bare name in callee position names a function, not a value. An unresolved
+    // function call is a separate concern, so it is not a `check.unresolved_name`.
+    let found = check_script(
+        "name-callee",
+        "fn f()\n    var x = mystery()\n",
+        "check.unresolved_name",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_assignment_to_an_undeclared_name_is_flagged() {
+    // Assigning to a name that was never declared targets an unresolved name. The
+    // runtime faults the same way (`run.unbound_name`), so the checker catches it
+    // earlier rather than weaker than its own runtime.
+    let found = check_script(
+        "name-assign-undeclared",
+        "fn f()\n    x = 1\n",
+        "check.unresolved_name",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn rejects_mixing_int_and_decimal_arithmetic() {
+    // Numeric operands must match exactly; there is no implicit int-to-decimal
+    // promotion, so `1.0 + 1` is an error.
+    let found = check_script(
+        "op-promote",
+        "fn f()\n    var x = 1.0 + 1\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_nested_operator_error_is_reported_once() {
+    // `1 + true` is the error; the outer `+ 2` sees an unknown left operand (the
+    // flagged subexpression) and does not fire a second diagnostic.
+    let found = check_script(
+        "op-nested",
+        "fn f()\n    var x = 1 + true + 2\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn rejects_a_non_bool_if_condition() {
+    // `if 1` tests an int where a bool is required.
+    let found = check_script(
+        "cond-if",
+        "fn f()\n    if 1\n        return\n",
+        "check.condition_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn rejects_a_non_bool_while_condition() {
+    // `while "go"` tests a string where a bool is required.
+    let found = check_script(
+        "cond-while",
+        "fn f()\n    while \"go\"\n        break\n",
+        "check.condition_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn rejects_a_non_bool_else_if_condition() {
+    // The `else if 2` clause tests an int condition.
+    let found = check_script(
+        "cond-elseif",
+        "fn f(c: bool)\n    if c\n        return\n    else if 2\n        return\n",
+        "check.condition_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn bool_conditions_are_not_flagged() {
+    // A bool binding and a comparison both yield bool conditions.
+    let found = check_script(
+        "cond-ok",
+        "fn f(a: int, b: int, c: bool)\n    if a < b\n        return\n    while c\n        break\n",
+        "check.condition_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_unresolved_condition_is_flagged() {
+    // Strict typing: `mystery` is unbound (unknown type), so the condition cannot
+    // be shown to be `bool` — a `check.untyped_value` error (not a
+    // `check.condition_type` non-bool mismatch).
+    let found = check_script(
+        "cond-unknown",
+        "fn f()\n    if mystery\n        return\n",
+        "check.untyped_value",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    let non_bool = check_script(
+        "cond-unknown",
+        "fn f()\n    if mystery\n        return\n",
+        "check.condition_type",
+    );
+    assert!(non_bool.is_empty(), "{non_bool:#?}");
+}
+
+#[test]
+fn an_exists_condition_is_not_flagged() {
+    // `exists(...)` resolves to `bool`, so a presence-check condition is clean.
+    let found = check_module(
+        "cond-exists",
+        "module m\n\
+         resource Book at ^books(id: int)\n    title: string\n\n\
+         fn f()\n    if exists(^books(1))\n        return\n",
+        "check.untyped_value",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn rejects_a_call_with_the_wrong_argument_count() {
+    // `add` takes two parameters; `add(1)` and `add(1, 2, 3)` are both arity errors.
+    let found = check_module(
+        "call-arity",
+        "module m\n\
+         fn add(a: int, b: int): int\n    return a\n\n\
+         fn caller()\n    var x = add(1)\n    var y = add(1, 2, 3)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 2, "{found:#?}");
+}
+
+#[test]
+fn rejects_a_named_argument_that_is_not_a_parameter() {
+    // `add` has no parameter `c`.
+    let found = check_module(
+        "call-named",
+        "module m\n\
+         fn add(a: int, b: int): int\n    return a\n\n\
+         fn caller()\n    var x = add(a: 1, c: 2)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn rejects_duplicate_named_arguments() {
+    // The second `a:` cannot stand in for the missing `c:` parameter.
+    let found = check_module(
+        "call-duplicate-named",
+        "module m\n\
+         fn add(a: int, b: int, c: int): int\n    return a + b + c\n\n\
+         fn caller()\n    var x = add(a: 1, a: 2, b: 3)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::DuplicateNamedArgument("a".into())
+    );
+}
+
+#[test]
+fn correct_calls_are_not_flagged() {
+    // Positional and named calls that match the signature are accepted.
+    let found = check_module(
+        "call-ok",
+        "module m\n\
+         fn add(a: int, b: int): int\n    return a\n\n\
+         fn caller()\n    var x = add(1, 2)\n    var y = add(a: 5, b: 6)\n",
+        "check.call_argument",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn inout_calls_keep_their_declared_return_types() {
+    let report = check_module_report(
+        "inout-return-types",
+        "module m\n\
+         fn parse(inout value: int): bool\n    value = 7\n    return true\n\
+         fn take(inout remaining: int, unit: int): string\n    remaining = remaining - unit\n    return \"ok\"\n\n\
+         fn caller(): string\n    var n: int = 0\n    if parse(inout n)\n        const piece: string = take(inout n, 1)\n        return piece\n    return \"no\"\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
+fn read_only_parameters_are_not_assignment_targets() {
+    let found = check_module(
+        "readonly-param",
+        "module m\n\
+         fn bump(value: int): int\n    value = value + 1\n    return value\n",
+        "check.invalid_assign_target",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn read_only_parameter_checks_respect_local_shadowing() {
+    let report = check_module_report(
+        "readonly-param-shadow",
+        "module m\n\
+         fn set_to(inout value: int)\n    value = 1\n\
+         fn caller(value: int): int\n    if true\n        var value: int = 0\n        value = value + 1\n        set_to(inout value)\n        return value\n    return value\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
+fn read_only_parameters_are_not_inout_arguments() {
+    let found = check_module(
+        "readonly-param-inout-arg",
+        "module m\n\
+         fn set_to(inout value: int)\n    value = 1\n\
+         fn caller(value: int): int\n    set_to(inout value)\n    return value\n",
+        "check.invalid_assign_target",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn inout_parameters_can_be_relayed_by_inout_calls() {
+    let report = check_module_report(
+        "inout-call-relay",
+        "module m\n\
+         fn set_to(inout value: int)\n    value = 1\n\
+         fn relay(inout value: int)\n    set_to(inout value)\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
+fn inout_call_markers_must_match_parameters() {
+    let missing = check_module(
+        "inout-marker-missing",
+        "module m\n\
+         fn set_to(inout value: int, src: int)\n    value = src\n\
+         fn caller(src: int): int\n    var n: int = 0\n    set_to(n, src)\n    return n\n",
+        "check.call_argument",
+    );
+    assert_eq!(missing.len(), 1, "{missing:#?}");
+
+    let wrong = check_module(
+        "inout-marker-wrong",
+        "module m\n\
+         fn add(value: int, src: int): int\n    return value + src\n\
+         fn caller(src: int): int\n    var n: int = 0\n    n = add(inout n, src)\n    return n\n",
+        "check.call_argument",
+    );
+    assert_eq!(wrong.len(), 1, "{wrong:#?}");
+}
+
+#[test]
+fn inout_arguments_must_be_writable_places() {
+    let found = check_module(
+        "inout-literal",
+        "module m\n\
+         fn set_to(inout value: int, src: int)\n    value = src\n\
+         fn caller(src: int): int\n    set_to(inout 5, src)\n    return src\n",
+        "check.invalid_assign_target",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn inout_markers_are_rejected_on_plain_call_targets() {
+    let found = check_module(
+        "inout-marker-plain-calls",
+        "module m\n\
+         fn caller()\n    var s: string = \"abc\"\n    var id: int = 1\n    print(inout 5)\n    const len: int = std::text::length(inout s)\n    const converted: int = int(inout id)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 3, "{found:#?}");
+}
