@@ -30,6 +30,7 @@ pub mod resolve;
 mod rules;
 pub mod tooling;
 mod typerules;
+mod walk;
 
 pub use analysis::{AnalysisSnapshot, AnalyzedFile, analyze_project, scope_at, type_at};
 pub use binding::{BindingIndex, RenameSafety, SymbolKind, SymbolRef, build_binding_index};
@@ -262,20 +263,28 @@ pub enum ConversionTarget {
     Decimal,
 }
 
+/// The source spelling of each conversion builtin, paired with the variant it
+/// names. This is the single owner of the spelling vocabulary that `from_name`
+/// searches; `spelling` matches the same vocabulary exhaustively, and the
+/// round-trip test pins the two directions together.
+const CONVERSION_SPELLINGS: &[(&str, ConversionTarget)] = &[
+    ("bool", ConversionTarget::Bool),
+    ("int", ConversionTarget::Int),
+    ("string", ConversionTarget::Str),
+    ("ErrorCode", ConversionTarget::ErrorCode),
+    ("bytes", ConversionTarget::Bytes),
+    ("date", ConversionTarget::Date),
+    ("instant", ConversionTarget::Instant),
+    ("duration", ConversionTarget::Duration),
+    ("decimal", ConversionTarget::Decimal),
+];
+
 impl ConversionTarget {
     pub(crate) fn from_name(name: &str) -> Option<Self> {
-        Some(match name {
-            "bool" => Self::Bool,
-            "int" => Self::Int,
-            "string" => Self::Str,
-            "ErrorCode" => Self::ErrorCode,
-            "bytes" => Self::Bytes,
-            "date" => Self::Date,
-            "instant" => Self::Instant,
-            "duration" => Self::Duration,
-            "decimal" => Self::Decimal,
-            _ => return None,
-        })
+        CONVERSION_SPELLINGS
+            .iter()
+            .find(|(spelling, _)| *spelling == name)
+            .map(|(_, target)| *target)
     }
 
     pub(crate) fn spelling(self) -> &'static str {
@@ -859,7 +868,7 @@ fn is_builtin_name(name: &str) -> bool {
 /// `append(layer, value): int`. `nextId` is handled in [`check_next_id`], which
 /// has the `^root` argument it needs to type the identity. The absence-default
 /// `??` is an operator, not a builtin, and is typed in [`check_coalesce`].
-fn builtin_return_type(segments: &[String], _arg_types: &[MarrowType]) -> Option<MarrowType> {
+fn builtin_return_type(segments: &[String]) -> Option<MarrowType> {
     let [name] = segments else {
         return None;
     };
@@ -1672,26 +1681,12 @@ fn statement_touches_saved_data(statement: &marrow_syntax::Statement) -> bool {
 }
 
 fn expr_touches_saved_data(expr: &marrow_syntax::Expression) -> bool {
-    use marrow_syntax::{Expression, InterpolationPart};
-    match expr {
-        Expression::SavedRoot { .. } => true,
-        Expression::Literal { .. } | Expression::Name { .. } => false,
-        Expression::Call { callee, args, .. } => {
-            expr_touches_saved_data(callee)
-                || args.iter().any(|arg| expr_touches_saved_data(&arg.value))
-        }
-        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
-            expr_touches_saved_data(base)
-        }
-        Expression::Unary { operand, .. } => expr_touches_saved_data(operand),
-        Expression::Binary { left, right, .. } => {
-            expr_touches_saved_data(left) || expr_touches_saved_data(right)
-        }
-        Expression::Interpolation { parts, .. } => parts.iter().any(|part| match part {
-            InterpolationPart::Text { .. } => false,
-            InterpolationPart::Expr(expr) => expr_touches_saved_data(expr),
-        }),
+    if matches!(expr, marrow_syntax::Expression::SavedRoot { .. }) {
+        return true;
     }
+    let mut touches = false;
+    walk::for_each_child_expr(expr, |child| touches |= expr_touches_saved_data(child));
+    touches
 }
 
 /// Build the per-file short→full alias map from a file's full import paths
@@ -1858,6 +1853,26 @@ fn check_duplicate_declarations(
             None => {
                 first_seen.insert(name, *span);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ConversionTarget;
+
+    /// The conversion spelling table must hold every variant so the two
+    /// directions stay in lockstep: `spelling` finds each variant, and
+    /// `from_name` maps that spelling back to the same variant.
+    #[test]
+    fn conversion_spelling_round_trips_every_variant() {
+        use ConversionTarget::{
+            Bool, Bytes, Date, Decimal, Duration, ErrorCode, Instant, Int, Str,
+        };
+        for target in [
+            Bool, Int, Str, ErrorCode, Bytes, Date, Instant, Duration, Decimal,
+        ] {
+            assert_eq!(ConversionTarget::from_name(target.spelling()), Some(target));
         }
     }
 }

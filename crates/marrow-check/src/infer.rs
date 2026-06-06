@@ -40,7 +40,7 @@ pub(crate) fn infer_only(
 
 /// The declared type of a binding: its annotation when written, otherwise the
 /// inferred type of its initializer.
-pub(crate) fn binding_type(
+fn binding_type(
     annotation: Option<&marrow_syntax::TypeRef>,
     value_type: MarrowType,
     program: &CheckedProgram,
@@ -541,7 +541,7 @@ fn singleton_resource_type(program: &CheckedProgram, root: &str) -> MarrowType {
 /// keyless singleton store addressed by its root —
 /// the saved root `^root` itself. Group-layer fields and keyed-leaf reads are not
 /// resolved here.
-pub(crate) fn saved_field_type(
+fn saved_field_type(
     program: &CheckedProgram,
     base: &marrow_syntax::Expression,
     field: &str,
@@ -566,7 +566,7 @@ pub(crate) fn saved_field_type(
 /// the saved root, and the value is the owning resource (mirrors the runtime's
 /// whole-resource read producing a `Value::Resource`). Lets field access off a
 /// saved read stored in a local be typed.
-pub(crate) fn saved_resource_type(
+fn saved_resource_type(
     program: &CheckedProgram,
     callee: &marrow_syntax::Expression,
 ) -> Option<MarrowType> {
@@ -609,7 +609,7 @@ pub(crate) fn saved_group_entry_type(
 /// lookup path, so reading it yields that identity (mirrors the runtime's
 /// `eval_index_lookup`). A non-unique index has no single identity in value
 /// position, so it is not typed here. `callee` is the `^root.index` field.
-pub(crate) fn saved_index_identity_type(
+fn saved_index_identity_type(
     program: &CheckedProgram,
     callee: &marrow_syntax::Expression,
 ) -> Option<MarrowType> {
@@ -631,7 +631,7 @@ pub(crate) fn saved_index_identity_type(
 /// The declared type of a field read off a resource-typed value, e.g. `book.title`
 /// where `book: Book`. `base_type` must be a known resource type; the field is
 /// looked up in that resource's schema.
-pub(crate) fn local_field_type(
+fn local_field_type(
     program: &CheckedProgram,
     base_type: &MarrowType,
     field: &str,
@@ -667,7 +667,7 @@ fn error_field_type(field: &str) -> Option<MarrowType> {
 /// keyed layers (`^root(key…).layer(key…)….field`) or unkeyed groups
 /// (`^root(key…).name.field`). `base` is the group entry — the part before the
 /// leaf field.
-pub(crate) fn saved_group_field_type(
+fn saved_group_field_type(
     program: &CheckedProgram,
     base: &marrow_syntax::Expression,
     field: &str,
@@ -809,7 +809,7 @@ pub(crate) fn saved_layer_chain(expr: &marrow_syntax::Expression) -> Option<(&st
 /// field. Resolves through the shared schema walk and lifts the result to the
 /// checker's lattice. `owning_module` is the module that declares the resource, so
 /// an enum-typed field reads as that module's enum rather than `Unknown`.
-pub(crate) fn field_member_type(
+fn field_member_type(
     program: &CheckedProgram,
     resource: &marrow_schema::ResourceSchema,
     chain: &[&str],
@@ -824,7 +824,7 @@ pub(crate) fn field_member_type(
 /// outermost first. Resolves through the same shared schema walk as
 /// [`field_member_type`], differing only in that the terminal name is a keyed-leaf
 /// layer rather than a field.
-pub(crate) fn leaf_member_type(
+fn leaf_member_type(
     program: &CheckedProgram,
     resource: &marrow_schema::ResourceSchema,
     layers: &[&str],
@@ -890,7 +890,7 @@ fn resolve_member_enum_name(
 /// Look up a name's binding, innermost scope frame first; `None` when unbound.
 /// A bound name may still be [`MarrowType::Unknown`] (an `unknown`-typed binding
 /// or one whose type could not be inferred), which is distinct from being unbound.
-pub(crate) fn lookup_opt(scope: &[HashMap<String, MarrowType>], name: &str) -> Option<MarrowType> {
+fn lookup_opt(scope: &[HashMap<String, MarrowType>], name: &str) -> Option<MarrowType> {
     scope
         .iter()
         .rev()
@@ -901,12 +901,12 @@ pub(crate) fn lookup_opt(scope: &[HashMap<String, MarrowType>], name: &str) -> O
 /// Whether an expression is a bare single-segment name (`foo`, not `a::b` or
 /// `^books`). In callee position such a name is a function name resolved by
 /// `check_call`, so it is not treated as an unresolved value reference.
-pub(crate) fn is_bare_name(expr: &marrow_syntax::Expression) -> bool {
+fn is_bare_name(expr: &marrow_syntax::Expression) -> bool {
     matches!(expr, marrow_syntax::Expression::Name { segments, .. } if segments.len() == 1)
 }
 
 /// The type of a literal by its lexical kind.
-pub(crate) fn literal_type(kind: marrow_syntax::LiteralKind) -> MarrowType {
+fn literal_type(kind: marrow_syntax::LiteralKind) -> MarrowType {
     use marrow_syntax::LiteralKind;
     MarrowType::Primitive(match kind {
         LiteralKind::Integer => ScalarType::Int,
@@ -940,10 +940,7 @@ fn count_builtin_type(
     }
 }
 
-pub(crate) fn is_saved_path_expression(
-    program: &CheckedProgram,
-    expr: &marrow_syntax::Expression,
-) -> bool {
+fn is_saved_path_expression(program: &CheckedProgram, expr: &marrow_syntax::Expression) -> bool {
     use marrow_syntax::Expression;
     match expr {
         Expression::SavedRoot { name, .. } => resolve_store_by_root(program, name).is_some(),
@@ -974,10 +971,7 @@ fn is_saved_path_callee(program: &CheckedProgram, callee: &marrow_syntax::Expres
     }
 }
 
-pub(crate) fn starts_from_bare_keyed_root(
-    program: &CheckedProgram,
-    expr: &marrow_syntax::Expression,
-) -> bool {
+fn starts_from_bare_keyed_root(program: &CheckedProgram, expr: &marrow_syntax::Expression) -> bool {
     starts_from_bare_saved_root(expr)
         .and_then(|root| resolve_store_by_root(program, root))
         .is_some_and(|store| !store.store.identity_keys.is_empty())

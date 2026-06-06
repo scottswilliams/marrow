@@ -12,8 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use marrow_syntax::{
-    Argument, Block, Declaration, EvolveStep, Expression, InterpolationPart, ParsedSource,
-    Severity, SourceSpan, Statement,
+    Block, Declaration, EvolveStep, Expression, ParsedSource, Severity, SourceSpan, Statement,
 };
 
 use crate::catalog::{SourceCatalogEntry, source_catalog_entries};
@@ -21,6 +20,7 @@ use crate::checks::{FilePrelude, check_block_types, file_prelude};
 use crate::infer::infer_type;
 use crate::program::TypeNames;
 use crate::typerules::{marrow_type_name, type_compatible};
+use crate::walk::for_each_child_expr;
 use crate::{
     CHECK_EVOLVE_TARGET, CHECK_EVOLVE_TRANSFORM, CHECK_EVOLVE_TYPE, CheckDiagnostic, CheckedBody,
     CheckedModule, CheckedProgram, DiagnosticPayload, MarrowType,
@@ -748,30 +748,7 @@ fn walk_statement_expressions(statement: &Statement, visit: &mut impl FnMut(&Exp
 
 fn walk_expression(expr: &Expression, visit: &mut impl FnMut(&Expression)) {
     visit(expr);
-    match expr {
-        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
-            walk_expression(base, visit);
-        }
-        Expression::Call { callee, args, .. } => {
-            walk_expression(callee, visit);
-            for Argument { value, .. } in args {
-                walk_expression(value, visit);
-            }
-        }
-        Expression::Unary { operand, .. } => walk_expression(operand, visit),
-        Expression::Binary { left, right, .. } => {
-            walk_expression(left, visit);
-            walk_expression(right, visit);
-        }
-        Expression::Interpolation { parts, .. } => {
-            for part in parts {
-                if let InterpolationPart::Expr(expr) = part {
-                    walk_expression(expr, visit);
-                }
-            }
-        }
-        Expression::Literal { .. } | Expression::Name { .. } | Expression::SavedRoot { .. } => {}
-    }
+    for_each_child_expr(expr, |child| walk_expression(child, visit));
 }
 
 fn is_old_name(expr: &Expression) -> bool {

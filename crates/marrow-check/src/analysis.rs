@@ -12,6 +12,7 @@ use crate::checks::{
 };
 use crate::enums::{normalize_program_named_types, resolve_type};
 use crate::infer::{bind, infer_type, local_binding};
+use crate::walk::for_each_child_expr;
 use crate::{
     CHECK_DUPLICATE_MODULE, CHECK_MULTIPLE_SCRIPTS, CheckDiagnostic, CheckReport, CheckedFile,
     CheckedModule, CheckedProgram, DiagnosticPayload, IO_READ, MarrowType, ProjectSources,
@@ -783,7 +784,6 @@ pub(crate) fn collect_expression<'e>(
     offset: usize,
     best: &mut Option<&'e marrow_syntax::Expression>,
 ) {
-    use marrow_syntax::Expression;
     let span = expr.span();
     if !span_covers(span, offset) {
         return;
@@ -796,28 +796,5 @@ pub(crate) fn collect_expression<'e>(
     if replace {
         *best = Some(expr);
     }
-    match expr {
-        Expression::Unary { operand, .. } => collect_expression(operand, offset, best),
-        Expression::Binary { left, right, .. } => {
-            collect_expression(left, offset, best);
-            collect_expression(right, offset, best);
-        }
-        Expression::Call { callee, args, .. } => {
-            collect_expression(callee, offset, best);
-            for arg in args {
-                collect_expression(&arg.value, offset, best);
-            }
-        }
-        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
-            collect_expression(base, offset, best);
-        }
-        Expression::Interpolation { parts, .. } => {
-            for part in parts {
-                if let marrow_syntax::InterpolationPart::Expr(inner) = part {
-                    collect_expression(inner, offset, best);
-                }
-            }
-        }
-        Expression::Literal { .. } | Expression::Name { .. } | Expression::SavedRoot { .. } => {}
-    }
+    for_each_child_expr(expr, |child| collect_expression(child, offset, best));
 }

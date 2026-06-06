@@ -16,6 +16,7 @@ use marrow_syntax::{
 
 use crate::checks::check_range_value;
 use crate::typerules::check_literal_range;
+use crate::walk::for_each_child_expr;
 use crate::{CHECK_TRY_HANDLER, CheckDiagnostic, DiagnosticPayload};
 
 /// A `finally` block must not let control flow escape it via `return`, `break`,
@@ -285,34 +286,22 @@ fn check_expr_inout_argument_targets(
     read_only_params: &HashSet<String>,
     out: &mut Vec<CheckDiagnostic>,
 ) {
-    match expr {
-        Expression::Call { callee, args, .. } => {
-            check_expr_inout_argument_targets(file, callee, read_only_params, out);
-            for arg in args {
-                if arg.mode.is_some() {
-                    check_read_only_inout_argument(file, &arg.value, read_only_params, out);
-                }
-                check_expr_inout_argument_targets(file, &arg.value, read_only_params, out);
+    // A moded argument's read-only check must land in source position: the callee
+    // precedes the arguments in source, so its subtree is walked first, then each
+    // argument is checked and recursed in turn. Non-call expressions carry no moded
+    // arguments and defer their child shape to the shared visitor.
+    if let Expression::Call { callee, args, .. } = expr {
+        check_expr_inout_argument_targets(file, callee, read_only_params, out);
+        for arg in args {
+            if arg.mode.is_some() {
+                check_read_only_inout_argument(file, &arg.value, read_only_params, out);
             }
+            check_expr_inout_argument_targets(file, &arg.value, read_only_params, out);
         }
-        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
-            check_expr_inout_argument_targets(file, base, read_only_params, out);
-        }
-        Expression::Unary { operand, .. } => {
-            check_expr_inout_argument_targets(file, operand, read_only_params, out);
-        }
-        Expression::Binary { left, right, .. } => {
-            check_expr_inout_argument_targets(file, left, read_only_params, out);
-            check_expr_inout_argument_targets(file, right, read_only_params, out);
-        }
-        Expression::Interpolation { parts, .. } => {
-            for part in parts {
-                if let InterpolationPart::Expr(expr) = part {
-                    check_expr_inout_argument_targets(file, expr, read_only_params, out);
-                }
-            }
-        }
-        Expression::Literal { .. } | Expression::Name { .. } | Expression::SavedRoot { .. } => {}
+    } else {
+        for_each_child_expr(expr, |child| {
+            check_expr_inout_argument_targets(file, child, read_only_params, out)
+        });
     }
 }
 

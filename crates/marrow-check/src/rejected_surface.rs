@@ -1,12 +1,12 @@
 use std::path::Path;
 
 use marrow_syntax::{
-    ArgMode, Block, Declaration, EvolveStep, Expression, InterpolationPart, Severity, SourceSpan,
-    Statement,
+    ArgMode, Block, Declaration, EvolveStep, Expression, Severity, SourceSpan, Statement,
 };
 
 use crate::infer::saved_layer_chain;
 use crate::resolve::resolve_store_by_root;
+use crate::walk::for_each_child_expr;
 use crate::{
     CHECK_REJECTED_SURFACE, CheckDiagnostic, CheckedProgram, DiagnosticPayload, RejectedSurface,
 };
@@ -159,57 +159,52 @@ fn check_expr(
     expr: &Expression,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    match expr {
-        Expression::Call {
-            callee, args, span, ..
-        } => {
-            if let Some(method) = rejected_traversal_method(program, callee) {
+    // Rejected-surface diagnostics must land in source position: the traversal-method
+    // push sits at the call span, then the callee subtree is walked, then each
+    // argument is flagged and recursed in turn. Non-call expressions carry no rejected
+    // call surface and defer their child shape to the shared visitor.
+    if let Expression::Call {
+        callee, args, span, ..
+    } = expr
+    {
+        if let Some(method) = rejected_traversal_method(program, callee) {
+            push(
+                file,
+                *span,
+                &format!(
+                    "saved traversal method `.{method}(...)` is not a v0.1 source surface; stream durable iterables with ordinary `for` loops"
+                ),
+                DiagnosticPayload::RejectedSurface(RejectedSurface::SavedTraversalMethod {
+                    method: method.to_string(),
+                }),
+                diagnostics,
+            );
+        }
+        check_expr(program, file, callee, diagnostics);
+        for arg in args {
+            if matches!(arg.mode, Some(ArgMode::InOut)) && saved_path_like_syntax(&arg.value) {
                 push(
                     file,
-                    *span,
-                    &format!(
-                        "saved traversal method `.{method}(...)` is not a v0.1 source surface; stream durable iterables with ordinary `for` loops"
-                    ),
-                    DiagnosticPayload::RejectedSurface(RejectedSurface::SavedTraversalMethod {
-                        method: method.to_string(),
-                    }),
+                    arg.value.span(),
+                    "saved `inout` is not a v0.1 source surface; saved writes must be explicit checked effects",
+                    DiagnosticPayload::RejectedSurface(RejectedSurface::SavedInout),
                     diagnostics,
                 );
             }
-            check_expr(program, file, callee, diagnostics);
-            for arg in args {
-                if matches!(arg.mode, Some(ArgMode::InOut)) && saved_path_like_syntax(&arg.value) {
-                    push(
-                        file,
-                        arg.value.span(),
-                        "saved `inout` is not a v0.1 source surface; saved writes must be explicit checked effects",
-                        DiagnosticPayload::RejectedSurface(RejectedSurface::SavedInout),
-                        diagnostics,
-                    );
-                }
-                check_expr(program, file, &arg.value, diagnostics);
-            }
+            check_expr(program, file, &arg.value, diagnostics);
         }
-        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
-            check_expr(program, file, base, diagnostics);
-        }
-        Expression::Unary { operand, .. } => {
-            check_expr(program, file, operand, diagnostics);
-        }
-        Expression::Binary { left, right, .. } => {
-            check_expr(program, file, left, diagnostics);
-            check_expr(program, file, right, diagnostics);
-        }
-        Expression::Interpolation { parts, .. } => {
-            for part in parts {
-                if let InterpolationPart::Expr(expr) = part {
-                    check_expr(program, file, expr, diagnostics);
-                }
-            }
-        }
-        Expression::Literal { .. } | Expression::Name { .. } | Expression::SavedRoot { .. } => {}
+    } else {
+        for_each_child_expr(expr, |child| check_expr(program, file, child, diagnostics));
     }
 }
+
+/// The saved-traversal operators rejected as v0.1 source surface. This slice is the
+/// single owner of that vocabulary: a call whose method name appears here against a
+/// saved path is flagged, and durable iterables are streamed with ordinary `for`
+/// loops instead.
+const REJECTED_TRAVERSAL_METHODS: &[&str] = &[
+    "take", "window", "after", "from", "until", "resume", "reverse",
+];
 
 fn rejected_traversal_method<'a>(
     program: &CheckedProgram,
@@ -224,11 +219,9 @@ fn rejected_traversal_method<'a>(
     if *quoted || !saved_path_like_syntax(base) || declared_saved_member_or_index(program, callee) {
         return None;
     }
-    matches!(
-        name.as_str(),
-        "take" | "window" | "after" | "from" | "until" | "resume" | "reverse"
-    )
-    .then_some(name.as_str())
+    REJECTED_TRAVERSAL_METHODS
+        .contains(&name.as_str())
+        .then_some(name.as_str())
 }
 
 fn declared_saved_member_or_index(program: &CheckedProgram, callee: &Expression) -> bool {

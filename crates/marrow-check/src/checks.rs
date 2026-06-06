@@ -21,6 +21,7 @@ use crate::typerules::{
     as_primitive, binary_symbol, expects_conversion, is_concrete_nonscalar, is_numeric, is_ordered,
     is_steppable, marrow_type_name, mismatch_display, type_compatible, unary_symbol,
 };
+use crate::walk::for_each_child_expr;
 use crate::{
     AppendTargetDiagnostic, CHECK_AMBIGUOUS_CALL, CHECK_ASSIGNMENT_TYPE, CHECK_CALL_ARGUMENT,
     CHECK_COLLECTION_UNSUPPORTED, CHECK_CONDITION_TYPE, CHECK_KEY_TYPE, CHECK_MISSING_RETURN,
@@ -1474,48 +1475,23 @@ pub(crate) fn check_range_value(
     expr: &marrow_syntax::Expression,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    use marrow_syntax::{BinaryOp, Expression, InterpolationPart};
-    match expr {
-        Expression::Binary {
-            op: BinaryOp::RangeExclusive | BinaryOp::RangeInclusive,
-            left,
-            right,
-            span,
-        } => {
-            diagnostics.push(CheckDiagnostic {
-                code: CHECK_RANGE_VALUE,
-                severity: Severity::Error,
-                file: file.to_path_buf(),
-                message: "a range can only be used as a `for` iterable".to_string(),
-                span: *span,
-                payload: DiagnosticPayload::None,
-            });
-            check_range_value(file, left, diagnostics);
-            check_range_value(file, right, diagnostics);
-        }
-        Expression::Binary { left, right, .. } => {
-            check_range_value(file, left, diagnostics);
-            check_range_value(file, right, diagnostics);
-        }
-        Expression::Unary { operand, .. } => check_range_value(file, operand, diagnostics),
-        Expression::Call { callee, args, .. } => {
-            check_range_value(file, callee, diagnostics);
-            for arg in args {
-                check_range_value(file, &arg.value, diagnostics);
-            }
-        }
-        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
-            check_range_value(file, base, diagnostics);
-        }
-        Expression::Interpolation { parts, .. } => {
-            for part in parts {
-                if let InterpolationPart::Expr(expr) = part {
-                    check_range_value(file, expr, diagnostics);
-                }
-            }
-        }
-        Expression::Literal { .. } | Expression::Name { .. } | Expression::SavedRoot { .. } => {}
+    use marrow_syntax::{BinaryOp, Expression};
+    if let Expression::Binary {
+        op: BinaryOp::RangeExclusive | BinaryOp::RangeInclusive,
+        span,
+        ..
+    } = expr
+    {
+        diagnostics.push(CheckDiagnostic {
+            code: CHECK_RANGE_VALUE,
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: "a range can only be used as a `for` iterable".to_string(),
+            span: *span,
+            payload: DiagnosticPayload::None,
+        });
     }
+    for_each_child_expr(expr, |child| check_range_value(file, child, diagnostics));
 }
 
 fn check_range_iterable_value_parts(
@@ -1855,15 +1831,22 @@ fn duration_or_int_magnitude(text: &str) -> Option<i64> {
         .or(Some(if digits.is_empty() { 0 } else { i64::MAX }))
 }
 
-fn range_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckDiagnostic {
+/// Build a payload-free error diagnostic at `span` carrying `code` and `message`.
+/// The single-code constructors name their code and delegate here so the struct
+/// shape lives in one place.
+fn error_at(code: &'static str, file: &Path, span: SourceSpan, message: String) -> CheckDiagnostic {
     CheckDiagnostic {
-        code: CHECK_RANGE,
+        code,
         severity: Severity::Error,
         file: file.to_path_buf(),
         message,
         span,
         payload: DiagnosticPayload::None,
     }
+}
+
+fn range_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckDiagnostic {
+    error_at(CHECK_RANGE, file, span, message)
 }
 
 /// Type-check an `if`/`while` condition. Inferring it also operator-checks it;
@@ -2278,14 +2261,7 @@ pub(crate) fn key_type_diagnostic(
     span: SourceSpan,
     message: String,
 ) -> CheckDiagnostic {
-    CheckDiagnostic {
-        code: CHECK_KEY_TYPE,
-        severity: Severity::Error,
-        file: file.to_path_buf(),
-        message,
-        span,
-        payload: DiagnosticPayload::None,
-    }
+    error_at(CHECK_KEY_TYPE, file, span, message)
 }
 
 /// Validate a unary operator against its operand type, returning the result type,
@@ -2640,14 +2616,7 @@ pub(crate) fn operator_diagnostic(
     span: SourceSpan,
     message: String,
 ) -> CheckDiagnostic {
-    CheckDiagnostic {
-        code: CHECK_OPERATOR_TYPE,
-        severity: Severity::Error,
-        file: file.to_path_buf(),
-        message,
-        span,
-        payload: DiagnosticPayload::None,
-    }
+    error_at(CHECK_OPERATOR_TYPE, file, span, message)
 }
 
 pub(crate) struct CallCheck<'a> {
@@ -2796,7 +2765,7 @@ fn check_builtin_call(
     }
     std_call_return_type(segments)
         .or_else(|| conversion_return_type(segments))
-        .or_else(|| builtin_return_type(segments, arg_types))
+        .or_else(|| builtin_return_type(segments))
         .or_else(|| (segments == ["Error"]).then_some(MarrowType::Error))
         .unwrap_or(MarrowType::Unknown)
 }
@@ -3562,14 +3531,7 @@ pub(crate) fn check_arity(
 
 /// A `check.call_argument` diagnostic located at a call's span.
 pub(crate) fn call_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckDiagnostic {
-    CheckDiagnostic {
-        code: CHECK_CALL_ARGUMENT,
-        severity: Severity::Error,
-        file: file.to_path_buf(),
-        message,
-        span,
-        payload: DiagnosticPayload::None,
-    }
+    error_at(CHECK_CALL_ARGUMENT, file, span, message)
 }
 
 /// Whether `file` contributes a module to the program — a library module or a
