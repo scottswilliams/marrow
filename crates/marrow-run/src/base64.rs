@@ -58,6 +58,12 @@ pub fn decode(text: &str) -> Option<Vec<u8>> {
         }
         let third = if pad_third { 0 } else { value(chunk[2])? };
         let fourth = if pad_fourth { 0 } else { value(chunk[3])? };
+        if pad_third && value(chunk[1])? & 0b1111 != 0 {
+            return None;
+        }
+        if pad_fourth && !pad_third && third & 0b11 != 0 {
+            return None;
+        }
         let bits = (value(chunk[0])? << 18) | (value(chunk[1])? << 12) | (third << 6) | fourth;
         out.push((bits >> 16) as u8);
         if !pad_third {
@@ -113,6 +119,10 @@ mod tests {
         // Unpadded and over-padded inputs are rejected: only the canonical,
         // fully-padded form decodes.
         for text in ["Zm8", "Zg", "Zm9vYg", "Zg===="] {
+            assert_eq!(decode(text), None, "{text:?}");
+        }
+        // Padded forms must also have zero unused bits in the final real sextet.
+        for text in ["Zh==", "Zm9="] {
             assert_eq!(decode(text), None, "{text:?}");
         }
         // And so are genuinely invalid characters and misplaced padding.

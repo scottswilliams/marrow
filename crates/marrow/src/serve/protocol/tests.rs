@@ -465,7 +465,7 @@ fn base64_round_trips_arbitrary_bytes() {
 
 #[test]
 fn serve_base64_decode_rejects_non_canonical_padding() {
-    for text in ["Zm8", "Zg", "Zm9vYg", "Zg===="] {
+    for text in ["Zm8", "Zg", "Zm9vYg", "Zg====", "Zh==", "Zm9="] {
         assert!(
             decode_base64_field(&json!(text), "key").is_err(),
             "non-canonical base64 {text:?} must be rejected"
