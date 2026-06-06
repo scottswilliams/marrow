@@ -21,11 +21,7 @@ pub(super) struct ApplyArgs {
 }
 
 pub(super) fn preview_args(args: &[String]) -> Result<PreviewArgs, ParseStop> {
-    let parsed = common(args, "evolve preview", false)?;
-    if parsed.maintenance || parsed.approval.is_some() {
-        eprintln!("evolve preview does not accept apply-only approval flags");
-        return Err(ParseStop::Usage);
-    }
+    let parsed = common(args, Command::Preview)?;
     Ok(PreviewArgs {
         format: parsed.format,
         dir: parsed.dir,
@@ -33,7 +29,7 @@ pub(super) fn preview_args(args: &[String]) -> Result<PreviewArgs, ParseStop> {
 }
 
 pub(super) fn apply_args(args: &[String]) -> Result<ApplyArgs, ParseStop> {
-    let parsed = common(args, "evolve apply", true)?;
+    let parsed = common(args, Command::Apply)?;
     Ok(ApplyArgs {
         format: parsed.format,
         maintenance: parsed.maintenance,
@@ -49,11 +45,22 @@ struct CommonArgs {
     approval: Option<Approval>,
 }
 
-fn common(
-    args: &[String],
-    command: &str,
-    allow_apply_flags: bool,
-) -> Result<CommonArgs, ParseStop> {
+#[derive(Clone, Copy)]
+enum Command {
+    Preview,
+    Apply,
+}
+
+impl Command {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Preview => "evolve preview",
+            Self::Apply => "evolve apply",
+        }
+    }
+}
+
+fn common(args: &[String], command: Command) -> Result<CommonArgs, ParseStop> {
     let mut format = CheckFormat::Text;
     let mut saw_format = false;
     let mut maintenance = false;
@@ -61,13 +68,13 @@ fn common(
     let mut dir = None;
     let mut index = 0;
     while index < args.len() {
-        match args[index].as_str() {
-            "--format" => {
+        match (command, args[index].as_str()) {
+            (_, "--format") => {
                 crate::parse_format_flag(args, &mut index, &mut saw_format, &mut format)
                     .map_err(|_| ParseStop::Usage)?;
             }
-            "--maintenance" if allow_apply_flags => maintenance = true,
-            "--approve-retire" if allow_apply_flags => {
+            (Command::Apply, "--maintenance") => maintenance = true,
+            (Command::Apply, "--approve-retire") => {
                 index += 1;
                 let Some(value) = args.get(index) else {
                     eprintln!("missing value for --approve-retire");
@@ -75,21 +82,24 @@ fn common(
                 };
                 retires.push(parse_retire(value)?);
             }
-            "--maintenance" | "--approve-retire" => {
-                eprintln!("{command} does not accept apply-only approval flags");
+            (Command::Preview, "--maintenance" | "--approve-retire") => {
+                eprintln!(
+                    "{} does not accept apply-only approval flags",
+                    command.name()
+                );
                 return Err(ParseStop::Usage);
             }
-            "--help" | "-h" => {
+            (_, "--help" | "-h") => {
                 super::print_help();
                 return Err(ParseStop::Help);
             }
-            value if value.starts_with('-') => {
-                eprintln!("unknown {command} option: {value}");
+            (_, value) if value.starts_with('-') => {
+                eprintln!("unknown {} option: {value}", command.name());
                 return Err(ParseStop::Usage);
             }
-            value => {
+            (_, value) => {
                 if dir.replace(value.to_string()).is_some() {
-                    eprintln!("{command} accepts one project directory");
+                    eprintln!("{} accepts one project directory", command.name());
                     return Err(ParseStop::Usage);
                 }
             }
