@@ -101,6 +101,7 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
                 | DiagnosticPayload::DuplicateRootOwner { .. }
                 | DiagnosticPayload::RejectedSurface(_)
                 | DiagnosticPayload::Enum(_)
+                | DiagnosticPayload::PrivateEnum(_)
                 | DiagnosticPayload::None => true,
             });
     }
@@ -388,7 +389,7 @@ fn check_type_annotation(
                 "enum `{private}` is private to its module; mark it `pub` to use it from another module"
             ),
             span,
-            payload: DiagnosticPayload::None,
+            payload: DiagnosticPayload::PrivateEnum(private),
         });
         return;
     }

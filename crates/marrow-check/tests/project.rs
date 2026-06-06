@@ -1093,6 +1093,33 @@ fn is_against_a_different_enum_is_rejected() {
 }
 
 #[test]
+fn is_operand_private_enum_diagnostic_carries_payload() {
+    let root = temp_project("is-private-enum-payload", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "module a\n\
+             enum Hidden\n    one\n    two\n\
+             pub fn hidden(): Hidden\n    return Hidden::one\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\nuse a\n\
+             fn f(): bool\n    return a::hidden() is a::Hidden::one\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let found = with_code(&report, "check.private_enum");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::PrivateEnum("a::Hidden".into())
+    );
+}
+
+#[test]
 fn a_category_is_not_selectable_in_value_position() {
     let errors = check_module(
         "category-not-selectable",
@@ -5425,7 +5452,8 @@ fn cross_module_use_of_a_private_enum_is_a_visibility_error() {
     assert!(
         found
             .iter()
-            .all(|diagnostic| diagnostic.message.contains("a::Hidden")),
+            .all(|diagnostic| diagnostic.payload
+                == DiagnosticPayload::PrivateEnum("a::Hidden".into())),
         "{found:#?}"
     );
     assert!(

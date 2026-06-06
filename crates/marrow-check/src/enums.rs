@@ -454,7 +454,7 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
                 "enum `{private}` is private to its module; mark it `pub` to use it from another module"
             ),
             span,
-            payload: DiagnosticPayload::None,
+            payload: DiagnosticPayload::PrivateEnum(private),
         });
         return bool_type;
     }

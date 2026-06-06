@@ -276,7 +276,8 @@ pub enum EnumDiagnostic {
 /// declared module name and expected path-derived name when one exists.
 /// Duplicate root ownership names the saved root and first owning file.
 /// Rejected-source-surface diagnostics name the rejected surface. Enum diagnostics
-/// carry the member or coverage fact. Other diagnostics carry
+/// carry the member or coverage fact. Private enum diagnostics name the
+/// inaccessible enum. Other diagnostics carry
 /// [`DiagnosticPayload::None`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DiagnosticPayload {
@@ -309,6 +310,8 @@ pub enum DiagnosticPayload {
     RejectedSurface(RejectedSurface),
     /// Enum-member and enum-match diagnostic facts.
     Enum(EnumDiagnostic),
+    /// `check.private_enum`: the private enum's fully-qualified name.
+    PrivateEnum(String),
 }
 
 /// A problem found while checking a project, located in a specific file.
@@ -870,6 +873,7 @@ impl TestResolutionSuppression {
             | DiagnosticPayload::DuplicateRootOwner { .. }
             | DiagnosticPayload::RejectedSurface(_)
             | DiagnosticPayload::Enum(_)
+            | DiagnosticPayload::PrivateEnum(_)
             | DiagnosticPayload::None => false,
         }
     }

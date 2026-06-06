@@ -364,7 +364,7 @@ fn enum_member_value_type(
                 "enum `{private}` is private to its module; mark it `pub` to use it from another module"
             ),
             span,
-            payload: DiagnosticPayload::None,
+            payload: DiagnosticPayload::PrivateEnum(private),
         });
         return MarrowType::Invalid;
     }
