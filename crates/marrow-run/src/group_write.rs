@@ -13,8 +13,7 @@ use crate::path::{lower, lower_keys};
 use crate::store::{DataAddress, LayerAddress};
 use crate::value::{Value, identity_keys_of, value_to_leaf};
 use crate::write::{
-    NestedLayerTarget, WriteError, plan_layer_group_write, plan_layer_identity_leaf_write,
-    plan_layer_leaf_write, plan_nested_layer_identity_leaf_write, plan_nested_layer_leaf_write,
+    WriteError, plan_layer_group_write, plan_layer_identity_leaf_write, plan_layer_leaf_write,
 };
 use crate::write_dispatch::{created_required_paths_for_value, resource_value_of};
 use crate::write_plan::WritePlan;
@@ -139,22 +138,10 @@ fn identity_layer_leaf_plan(
     arity: usize,
 ) -> Result<Result<WritePlan, WriteError>, RuntimeError> {
     let identity_keys = identity_keys_of(input.value, store_root, input.span)?;
-    if input.layers.len() == 1 {
-        return Ok(plan_layer_identity_leaf_write(
-            input.place,
-            input.identity,
-            input.layers,
-            &identity_keys,
-            arity,
-            input.span,
-        ));
-    }
-    Ok(plan_nested_layer_identity_leaf_write(
+    Ok(plan_layer_identity_leaf_write(
         input.place,
         input.identity,
-        NestedLayerTarget {
-            layers: input.layers,
-        },
+        input.layers,
         &identity_keys,
         arity,
         input.span,
@@ -165,21 +152,10 @@ fn scalar_layer_leaf_plan(
     input: LeafPlanInput<'_>,
 ) -> Result<Result<WritePlan, WriteError>, RuntimeError> {
     let saved = value_to_leaf(input.value, &input.leaf, input.span)?;
-    if input.layers.len() == 1 {
-        return Ok(plan_layer_leaf_write(
-            input.place,
-            input.identity,
-            input.layers,
-            &saved,
-            input.span,
-        ));
-    }
-    Ok(plan_nested_layer_leaf_write(
+    Ok(plan_layer_leaf_write(
         input.place,
         input.identity,
-        NestedLayerTarget {
-            layers: input.layers,
-        },
+        input.layers,
         &saved,
         input.span,
     ))

@@ -8,7 +8,7 @@ use marrow_syntax::SourceSpan;
 
 use crate::collection::{Direction, MaterializeKind, values_or_entries};
 use crate::env::{Env, Flow, TraversedLayer};
-use crate::error::{RuntimeError, unsupported};
+use crate::error::{RuntimeError, overflow, unsupported};
 use crate::read::{IterableLayer, iterable_layer, keys_argument, reversed_argument};
 use crate::stdlib::{check_key_collection, unique_index_lookup};
 use crate::value::Value;
@@ -22,6 +22,9 @@ use child_layer::ChildLayerScan;
 use index::IndexScan;
 use root::RootScan;
 use unique::UniqueIndexScan;
+
+pub(crate) use index::IndexCursor;
+pub(crate) use root::RecordCursor;
 
 #[derive(Clone, Copy)]
 pub(super) enum LoopShape {
@@ -105,6 +108,29 @@ pub(super) fn walk_keyed_children(
         child = cursor.next(env, query_prefix, &anchor)?;
     }
     Ok(Flow::Normal)
+}
+
+/// Sum, with overflow guarding, the records reachable by walking `depth` keyed levels
+/// under `query_prefix`. `leaf_count` reports how many records each walked leaf prefix
+/// contributes, letting a record walk fold a bulk child count into its final level while
+/// an index walk counts one per leaf. The same depth-bounded walk that drives iteration
+/// drives counting, so there is one tree-walk owner per concept.
+pub(crate) fn count_keyed_children(
+    cursor: &dyn ChildCursor,
+    depth: usize,
+    query_prefix: &[SavedKey],
+    env: &mut Env<'_>,
+    span: SourceSpan,
+    leaf_count: impl Fn(&[SavedKey], &mut Env<'_>) -> Result<usize, RuntimeError>,
+) -> Result<usize, RuntimeError> {
+    let mut count = 0usize;
+    let flow = walk_keyed_children(cursor, depth, query_prefix, &[], env, &mut |keys, env| {
+        let leaf = leaf_count(&keys, env)?;
+        count = count.checked_add(leaf).ok_or_else(|| overflow(span))?;
+        Ok(ControlFlow::Continue(()))
+    })?;
+    debug_assert!(matches!(flow, Flow::Normal));
+    Ok(count)
 }
 
 pub(crate) struct SavedLoopSpec<'a> {

@@ -57,11 +57,7 @@ impl RootScan {
         env: &mut Env<'_>,
         visit: &mut impl FnMut(SavedLoopRow, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
     ) -> Result<Flow, RuntimeError> {
-        let cursor = RecordCursor {
-            store: &self.store,
-            dir: self.dir,
-            span: self.span,
-        };
+        let cursor = RecordCursor::new(&self.store, self.dir, self.span);
         let mut visit_identity =
             |identity: Vec<SavedKey>, env: &mut Env<'_>| self.visit_identity(identity, env, visit);
         walk_keyed_children(&cursor, self.arity, &[], &[], env, &mut visit_identity)
@@ -81,10 +77,20 @@ impl RootScan {
     }
 }
 
-struct RecordCursor<'a> {
+pub(crate) struct RecordCursor<'a> {
     store: &'a marrow_store::cell::CatalogId,
     dir: Direction,
     span: SourceSpan,
+}
+
+impl<'a> RecordCursor<'a> {
+    pub(crate) fn new(
+        store: &'a marrow_store::cell::CatalogId,
+        dir: Direction,
+        span: SourceSpan,
+    ) -> Self {
+        Self { store, dir, span }
+    }
 }
 
 impl ChildCursor for RecordCursor<'_> {

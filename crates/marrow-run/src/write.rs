@@ -378,31 +378,6 @@ pub(crate) fn plan_layer_identity_leaf_write(
     })
 }
 
-pub(crate) struct NestedLayerTarget<'a> {
-    pub layers: &'a [LayerAddress],
-}
-
-pub(crate) fn plan_nested_layer_leaf_write(
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
-    target: NestedLayerTarget<'_>,
-    value: &LeafValue,
-    span: SourceSpan,
-) -> Result<WritePlan, WriteError> {
-    plan_layer_leaf_write(place, identity, target.layers, value, span)
-}
-
-pub(crate) fn plan_nested_layer_identity_leaf_write(
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
-    target: NestedLayerTarget<'_>,
-    keys: &[SavedKey],
-    referenced_arity: usize,
-    span: SourceSpan,
-) -> Result<WritePlan, WriteError> {
-    plan_layer_identity_leaf_write(place, identity, target.layers, keys, referenced_arity, span)
-}
-
 pub(crate) fn plan_nested_field_write(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
@@ -516,16 +491,6 @@ pub(crate) fn next_layer_pos(
         .filter(|&pos| pos >= 1)
         .unwrap_or(0);
     next_after(highest)
-}
-
-pub(crate) fn next_nested_layer_pos(
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
-    target: NestedLayerTarget<'_>,
-    store: &TreeStore,
-    span: SourceSpan,
-) -> Result<i64, WriteError> {
-    next_layer_pos(place, identity, target.layers, store, span)
 }
 
 fn resolve_store_identity(

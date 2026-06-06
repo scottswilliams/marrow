@@ -10,10 +10,7 @@ use crate::expr::eval_expr;
 use crate::path::{direct_root_place, lower};
 use crate::store::{DataAddress, LayerAddress};
 use crate::value::{LeafValue, Value, identity_value, value_to_leaf};
-use crate::write::{
-    WriteError, next_id, next_layer_pos, next_nested_layer_pos, plan_layer_leaf_write,
-    plan_nested_layer_leaf_write,
-};
+use crate::write::{WriteError, next_id, next_layer_pos, plan_layer_leaf_write};
 use crate::write_plan::WritePlan;
 
 pub(crate) fn eval_next_id(
@@ -137,18 +134,8 @@ fn next_append_position(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<i64, RuntimeError> {
-    let pos = if layers.len() == 1 {
-        next_layer_pos(place, identity, layers, env.store, span)
-    } else {
-        next_nested_layer_pos(
-            place,
-            identity,
-            crate::write::NestedLayerTarget { layers },
-            env.store,
-            span,
-        )
-    };
-    pos.map_err(|error| write_fault(error, span))
+    next_layer_pos(place, identity, layers, env.store, span)
+        .map_err(|error| write_fault(error, span))
 }
 
 fn append_write_plan(
@@ -158,15 +145,5 @@ fn append_write_plan(
     saved: &LeafValue,
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
-    if layers.len() == 1 {
-        plan_layer_leaf_write(place, identity, layers, saved, span)
-    } else {
-        plan_nested_layer_leaf_write(
-            place,
-            identity,
-            crate::write::NestedLayerTarget { layers },
-            saved,
-            span,
-        )
-    }
+    plan_layer_leaf_write(place, identity, layers, saved, span)
 }

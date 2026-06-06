@@ -8218,6 +8218,62 @@ fn count_over_a_composite_root_matches_direct_iteration() {
     assert_eq!(call("test::iterRoot"), Some(Value::Int(3)));
 }
 
+#[test]
+fn count_over_a_partial_index_branch_matches_direct_iteration() {
+    let program = checked_program(&format!(
+        "{ENROLLMENT_STATUS}\
+pub fn activeCount(): int\n    return count(^enrollments.byStatus(\"active\"))\n\n\
+pub fn activeCountForStudent(student: string): int\n    return count(^enrollments.byStatus(\"active\", student))\n\n\
+pub fn iterActive(): int\n    var n = 0\n    for id in ^enrollments.byStatus(\"active\")\n        n = n + 1\n    return n\n\n\
+pub fn iterActiveForStudent(student: string): int\n    var n = 0\n    for id in ^enrollments.byStatus(\"active\", student)\n        n = n + 1\n    return n\n"
+    ));
+    let store = TreeStore::memory();
+    for (s, c, st) in [
+        ("student-1", "course-8", "active"),
+        ("student-1", "course-9", "active"),
+        ("student-2", "course-8", "active"),
+        ("student-2", "course-7", "dropped"),
+    ] {
+        run_entry(
+            &store,
+            checked_entry!(
+                &program,
+                "test::enroll",
+                Value::Str(s.into()),
+                Value::Str(c.into()),
+                Value::Str(st.into()),
+            ),
+        )
+        .expect("enroll");
+    }
+    let int = |entry: &str, arg: Option<&str>| {
+        let entry = match arg {
+            Some(student) => checked_entry!(&program, entry, Value::Str(student.into())),
+            None => checked_entry!(&program, entry),
+        };
+        run_entry(&store, entry).expect("run").value
+    };
+
+    // Walking two index levels (studentId, then courseId) counts every active
+    // enrollment, matching what direct iteration yields.
+    assert_eq!(int("test::activeCount", None), Some(Value::Int(3)));
+    assert_eq!(int("test::iterActive", None), Some(Value::Int(3)));
+
+    // Pinning the first identity key narrows the walk to one level (courseId).
+    assert_eq!(
+        int("test::activeCountForStudent", Some("student-1")),
+        Some(Value::Int(2))
+    );
+    assert_eq!(
+        int("test::iterActiveForStudent", Some("student-1")),
+        Some(Value::Int(2))
+    );
+    assert_eq!(
+        int("test::activeCountForStudent", Some("student-2")),
+        Some(Value::Int(1))
+    );
+}
+
 /// A resource carrying both a keyed-leaf layer (`tags(pos: int): string`) and a
 /// GROUP layer (`versions(version: int)` with member fields). Used to prove that
 /// `exists`, `count`, and `std::assert::absent` agree with the actual stored path

@@ -59,11 +59,7 @@ impl IndexScan {
             .arg_keys
             .get(self.branch.identity_start..)
             .map_or_else(Vec::new, |keys| keys.to_vec());
-        let cursor = IndexCursor {
-            index: &self.branch.index.index,
-            dir: self.dir,
-            span: self.span,
-        };
+        let cursor = IndexCursor::new(&self.branch.index.index, self.dir, self.span);
         walk_keyed_children(
             &cursor,
             self.branch.depth,
@@ -96,10 +92,20 @@ impl IndexScan {
     }
 }
 
-struct IndexCursor<'a> {
+pub(crate) struct IndexCursor<'a> {
     index: &'a marrow_store::cell::CatalogId,
     dir: Direction,
     span: SourceSpan,
+}
+
+impl<'a> IndexCursor<'a> {
+    pub(crate) fn new(
+        index: &'a marrow_store::cell::CatalogId,
+        dir: Direction,
+        span: SourceSpan,
+    ) -> Self {
+        Self { index, dir, span }
+    }
 }
 
 impl ChildCursor for IndexCursor<'_> {

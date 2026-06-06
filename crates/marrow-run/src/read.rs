@@ -16,6 +16,7 @@ use crate::error::{
 };
 use crate::expr::eval_expr;
 use crate::path::{direct_root_place, lower};
+use crate::saved_iter::{IndexCursor, RecordCursor, count_keyed_children};
 use crate::store::{DataAddress, IndexAddress, LayerAddress};
 use crate::value::{Value, saved_key_to_value, value_to_key};
 
@@ -144,7 +145,7 @@ pub(crate) fn count_iterable_layer(
                 ));
             }
             let store = crate::store::catalog_id(&place.store_catalog_id, "store", path.span())?;
-            count_record_identity_children(&store, arity, &[], path.span(), env)
+            count_record_identities(&store, arity, path.span(), env)
         }
         IterableLayer::Index(_, branch) => count_index_branch(&branch, path.span(), env),
         IterableLayer::ChildLayer => {
@@ -180,91 +181,47 @@ pub(crate) fn iterable_index_branch_present(
     index_branch_present(&branch, path.span(), env).map(Some)
 }
 
-fn count_record_identity_children(
+/// Count every record identity under a root of `arity` identity keys. A single-key root
+/// reads the child count of one level directly; a composite root walks the first `arity - 1`
+/// levels through the shared keyed-child walk and folds the bulk child count of the final
+/// level into each walked prefix.
+fn count_record_identities(
     store: &CatalogId,
-    depth: usize,
-    keys: &[SavedKey],
+    arity: usize,
     span: SourceSpan,
-    env: &Env<'_>,
+    env: &mut Env<'_>,
 ) -> Result<usize, RuntimeError> {
-    if depth <= 1 {
+    if arity <= 1 {
         return env
             .store
-            .record_child_count(store, keys)
+            .record_child_count(store, &[])
             .map_err(|error| error.located(span));
     }
-    let mut count = 0usize;
-    let mut child = first_record_child(env.store, store, keys, Direction::Ascending, span)?;
-    while let Some(key) = child {
-        let anchor = key.clone();
-        let mut keys = keys.to_vec();
-        keys.push(key);
-        count = checked_count_add(
-            count,
-            count_record_identity_children(store, depth - 1, &keys, span, env)?,
-            span,
-        )?;
-        child = next_record_child(
-            env.store,
-            store,
-            &keys[..keys.len() - 1],
-            &anchor,
-            Direction::Ascending,
-            span,
-        )?;
-    }
-    Ok(count)
+    let cursor = RecordCursor::new(store, Direction::Ascending, span);
+    count_keyed_children(&cursor, arity - 1, &[], env, span, |prefix, env| {
+        env.store
+            .record_child_count(store, prefix)
+            .map_err(|error| error.located(span))
+    })
 }
 
 fn count_index_branch(
     branch: &IndexBranchAddress,
     span: SourceSpan,
-    env: &Env<'_>,
+    env: &mut Env<'_>,
 ) -> Result<usize, RuntimeError> {
     if branch.depth == 0 {
         return count_exact_index_tuple(branch, span, env);
     }
-    count_index_identity_children(branch, branch.depth, &branch.arg_keys, span, env)
-}
-
-fn count_index_identity_children(
-    branch: &IndexBranchAddress,
-    depth: usize,
-    query_keys: &[SavedKey],
-    span: SourceSpan,
-    env: &Env<'_>,
-) -> Result<usize, RuntimeError> {
-    let mut count = 0usize;
-    let mut child = first_index_child(
-        env.store,
-        &branch.index.index,
-        query_keys,
-        Direction::Ascending,
+    let cursor = IndexCursor::new(&branch.index.index, Direction::Ascending, span);
+    count_keyed_children(
+        &cursor,
+        branch.depth,
+        &branch.arg_keys,
+        env,
         span,
-    )?;
-    while let Some(key) = child {
-        let anchor = key.clone();
-        let mut query_keys = query_keys.to_vec();
-        query_keys.push(key);
-        count = if depth <= 1 {
-            checked_count_add(count, 1, span)?
-        } else {
-            checked_count_add(
-                count,
-                count_index_identity_children(branch, depth - 1, &query_keys, span, env)?,
-                span,
-            )?
-        };
-        child = next_index_child(
-            env.store,
-            &branch.index.index,
-            &query_keys[..query_keys.len() - 1],
-            &anchor,
-            Direction::Ascending,
-            span,
-        )?;
-    }
-    Ok(count)
+        |_, _| Ok(1),
+    )
 }
 
 fn count_exact_index_tuple(

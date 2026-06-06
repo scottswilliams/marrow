@@ -4,7 +4,7 @@ use marrow_syntax::SourceSpan;
 use crate::env::Env;
 use crate::error::RuntimeError;
 use crate::store::{DataAddress, LayerAddress, data_exists};
-use crate::write::ResourceValue;
+use crate::write::{ResourceValue, materialized_plain_fields};
 
 pub(super) fn created_required_field_path(
     place: &CheckedSavedPlace,
@@ -43,7 +43,7 @@ pub(crate) fn created_required_paths_for_value(
         return Ok(Vec::new());
     }
     let mut paths = Vec::new();
-    for field in checked_materialized_plain_fields(members) {
+    for field in materialized_plain_fields(members) {
         if !field.required || !resource_value_supplies(value, &field.path) {
             continue;
         }
@@ -53,37 +53,6 @@ pub(crate) fn created_required_paths_for_value(
         }
     }
     Ok(paths)
-}
-
-struct CheckedMaterializedField {
-    path: Vec<String>,
-    required: bool,
-}
-
-fn checked_materialized_plain_fields(
-    members: &[CheckedSavedMember],
-) -> Vec<CheckedMaterializedField> {
-    let mut fields = Vec::new();
-    collect_checked_materialized_plain_fields(members, &mut Vec::new(), &mut fields);
-    fields
-}
-
-fn collect_checked_materialized_plain_fields(
-    members: &[CheckedSavedMember],
-    prefix: &mut Vec<String>,
-    fields: &mut Vec<CheckedMaterializedField>,
-) {
-    for member in members {
-        if let Some((_, required)) = member.plain_field() {
-            let mut path = prefix.clone();
-            path.push(member.name.clone());
-            fields.push(CheckedMaterializedField { path, required });
-        } else if member.is_unkeyed_group() {
-            prefix.push(member.name.clone());
-            collect_checked_materialized_plain_fields(&member.group_members, prefix, fields);
-            prefix.pop();
-        }
-    }
 }
 
 fn resource_value_supplies(value: &ResourceValue, field: &[String]) -> bool {
@@ -119,7 +88,7 @@ pub(super) fn required_paths_under_group(
     group: &CheckedSavedMember,
     span: SourceSpan,
 ) -> Result<Vec<DataAddress>, RuntimeError> {
-    checked_materialized_plain_fields(&group.group_members)
+    materialized_plain_fields(&group.group_members)
         .into_iter()
         .filter(|field| field.required)
         .map(|field| {
@@ -144,7 +113,7 @@ pub(super) fn checked_member_exists(members: &[CheckedSavedMember], field: &str)
 }
 
 pub(super) fn checked_group_has_required_materialized_field(group: &CheckedSavedMember) -> bool {
-    checked_materialized_plain_fields(&group.group_members)
+    materialized_plain_fields(&group.group_members)
         .into_iter()
         .any(|field| field.required)
 }
