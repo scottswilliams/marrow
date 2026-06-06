@@ -1713,6 +1713,11 @@ pub(crate) fn build_alias_map(
         .collect()
 }
 
+/// Split a `::`-separated type or name path into its owned segments.
+pub(crate) fn split_type_path(path: &str) -> Vec<String> {
+    path.split("::").map(str::to_string).collect()
+}
+
 /// Expand a call/name's leading segment through the file's import aliases, applied
 /// once up front before any builtin/std/function resolution. `clock::now` with
 /// `{clock → [std,clock]}` becomes `[std,clock,now]`. A single-segment name is

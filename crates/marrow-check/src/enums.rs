@@ -18,7 +18,7 @@ use crate::{
     CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_ENUM_MEMBER, CheckDiagnostic, CheckedModule, CheckedProgram,
     Def, DefItem, DiagnosticPayload, EnumDiagnostic, MarrowType, Resolution, ResolvableKind,
     TypeNames, build_alias_map, expand_alias, expand_module_alias, module_of_file, resolve,
-    resource_type_name,
+    resource_type_name, split_type_path,
 };
 
 /// Re-resolve every named signature slot in the assembled program against the
@@ -308,6 +308,11 @@ pub(crate) struct ResolvedMemberPath<'p> {
     pub member_label: String,
     pub schema: &'p marrow_schema::EnumSchema,
     pub private: Option<String>,
+    /// The index of the enum segment within the original `Name` segments: `0` for a
+    /// bare `Enum::a::b`, the split point for a qualified `mod::Enum::a::b`. The member
+    /// path begins at `enum_index + 1`, so a consumer that needs the written member
+    /// segments reads them without recomputing the prefix split.
+    pub enum_index: usize,
     /// The walk of the member segments after the enum, by the schema's shared
     /// member-path walk. Each caller applies its own position rule (a value rejects
     /// a category; an `is` operand admits one) and reports ambiguity the same way.
@@ -349,6 +354,7 @@ pub(crate) fn resolve_enum_member_path<'p>(
             member_label: segments[1..].join("::"),
             schema,
             private,
+            enum_index: 0,
         });
     }
     // The qualified case: the enum name sits at some index, its module is every
@@ -372,6 +378,7 @@ pub(crate) fn resolve_enum_member_path<'p>(
                 member_label: segments[enum_index + 1..].join("::"),
                 schema,
                 private,
+                enum_index,
             });
         }
     }
@@ -517,21 +524,6 @@ fn member_path_label(expr: &marrow_syntax::Expression) -> String {
     }
 }
 
-/// Resolve a bare enum `name` referenced from `referencing_module`, returning the
-/// owning module's qualified name and its schema. The referencing module's own
-/// enum wins; otherwise the first project-wide match, mirroring how a bare
-/// function name resolves (same-module declarations before the rest). A
-/// module-less or unknown referencing module (`None`) has only the project-wide
-/// fallback.
-pub(crate) fn resolve_enum<'p>(
-    program: &'p CheckedProgram,
-    referencing_module: Option<&'p str>,
-    name: &str,
-) -> Option<(&'p str, &'p marrow_schema::EnumSchema)> {
-    resolve_enum_with_visibility(program, referencing_module, name)
-        .and_then(|(module, schema, private)| private.is_none().then_some((module, schema)))
-}
-
 fn resolve_enum_with_visibility<'p>(
     program: &'p CheckedProgram,
     referencing_module: Option<&'p str>,
@@ -642,17 +634,17 @@ fn resolve_resource_annotation(
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
 ) -> Option<MarrowType> {
-    resolve_resource_type(&Type::resolve(ty), program, aliases, file)
+    resolve_resource_type_ref(&Type::resolve(ty), program, aliases, file)
 }
 
-pub(crate) fn resolve_resource_type(
+fn resolve_resource_type_ref(
     ty: &Type,
     program: &CheckedProgram,
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
 ) -> Option<MarrowType> {
     match ty {
-        Type::Sequence(element) => resolve_resource_type(element, program, aliases, file)
+        Type::Sequence(element) => resolve_resource_type_ref(element, program, aliases, file)
             .map(|element_type| MarrowType::Sequence(Box::new(element_type))),
         Type::Identity(store_root) => resolve_store_by_root(program, store_root)
             .map(|_| MarrowType::Identity(store_root.clone())),
@@ -666,10 +658,6 @@ pub(crate) fn resolve_resource_type(
         }
         _ => None,
     }
-}
-
-fn split_type_path(path: &str) -> Vec<String> {
-    path.split("::").map(str::to_string).collect()
 }
 
 fn resolve_resource_path<'p>(
@@ -702,7 +690,7 @@ fn resolve_resource_path<'p>(
 /// the same enum. A `sequence[...]` recurses on its element: `sequence[Status]`
 /// resolves to `Sequence(Enum { … })` so an enum element keeps its owner, and an
 /// element that is not an enum leaves the whole sequence to the structural resolver.
-pub(crate) fn resolve_enum_annotation(
+fn resolve_enum_annotation(
     ty: &marrow_syntax::TypeRef,
     program: &CheckedProgram,
     aliases: &HashMap<String, Vec<String>>,
@@ -724,43 +712,44 @@ pub(crate) fn resolve_enum_type(
         Type::Sequence(element) => resolve_enum_type(element, program, aliases, file)
             .map(|element_type| MarrowType::Sequence(Box::new(element_type))),
         Type::Named(name) => {
-            // Split on the *last* `::` so a nested module keeps all but the final
-            // segment: `a::b::Status` names module `a::b`'s enum `Status`, not
-            // module `a`'s `b::Status` (which matches nothing, leaving the slot
-            // `Unknown` and every boundary failing open).
-            if let Some((module, enum_name)) = name.rsplit_once("::") {
-                // Expand a short module alias (`c::Status` under `use a::b::c`)
-                // through the file's imports first, mirroring call dispatch, so an
-                // aliased annotation resolves to the imported module's enum instead
-                // of failing open. A non-alias prefix passes through unchanged.
-                let module = expand_module_alias(module, aliases);
-                return enum_schema_in(program, &module, enum_name).map(|_| {
-                    if enum_visible_from(program, module_of_file(program, file), &module, enum_name)
-                    {
-                        MarrowType::Enum {
-                            module,
-                            name: enum_name.to_string(),
-                        }
-                    } else {
-                        MarrowType::Invalid
-                    }
-                });
-            }
-            resolve_enum_with_visibility(program, module_of_file(program, file), name).map(
-                |(module, _, private)| {
-                    if private.is_some() {
-                        MarrowType::Invalid
-                    } else {
-                        MarrowType::Enum {
-                            module: module.to_string(),
-                            name: name.clone(),
-                        }
-                    }
-                },
-            )
+            let (module, enum_name, private) =
+                resolve_named_enum_with_visibility(name, program, aliases, file)?;
+            Some(if private.is_some() {
+                MarrowType::Invalid
+            } else {
+                MarrowType::Enum {
+                    module,
+                    name: enum_name,
+                }
+            })
         }
         _ => None,
     }
+}
+
+/// Resolve a named enum annotation to its owning `(module, enum_name, private)`, where
+/// `private` carries the qualified spelling when the enum is not visible from `file`.
+/// A qualified `a::b::Status` splits on the *last* `::` so a nested module keeps all
+/// but the final segment (`a::b`'s `Status`, not `a`'s `b::Status`), expanding a short
+/// module alias through the file's imports first the way call dispatch does. A bare
+/// `Status` resolves same-module-first then to the project-wide owner. Both callers
+/// project the visibility split from this single owner.
+fn resolve_named_enum_with_visibility(
+    name: &str,
+    program: &CheckedProgram,
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+) -> Option<(String, String, Option<String>)> {
+    if let Some((module, enum_name)) = name.rsplit_once("::") {
+        let module = expand_module_alias(module, aliases);
+        enum_schema_in(program, &module, enum_name)?;
+        let private =
+            (!enum_visible_from(program, module_of_file(program, file), &module, enum_name))
+                .then(|| format!("{module}::{enum_name}"));
+        return Some((module, enum_name.to_string(), private));
+    }
+    resolve_enum_with_visibility(program, module_of_file(program, file), name)
+        .map(|(module, _, private)| (module.to_string(), name.to_string(), private))
 }
 
 pub(crate) fn private_enum_type_reference(
@@ -780,17 +769,7 @@ fn private_enum_type(
 ) -> Option<String> {
     match ty {
         Type::Sequence(element) => private_enum_type(element, program, aliases, file),
-        Type::Named(name) => {
-            if let Some((module, enum_name)) = name.rsplit_once("::") {
-                let module = expand_module_alias(module, aliases);
-                return enum_schema_in(program, &module, enum_name).and_then(|_| {
-                    (!enum_visible_from(program, module_of_file(program, file), &module, enum_name))
-                        .then(|| format!("{module}::{enum_name}"))
-                });
-            }
-            resolve_enum_with_visibility(program, module_of_file(program, file), name)
-                .and_then(|(_, _, private)| private)
-        }
+        Type::Named(name) => resolve_named_enum_with_visibility(name, program, aliases, file)?.2,
         _ => None,
     }
 }

@@ -15,7 +15,7 @@ use crate::catalog::{
 };
 use crate::executable::CheckedParamMode;
 use crate::program::{CheckedModule, MarrowType};
-use crate::{build_alias_map, expand_alias};
+use crate::{build_alias_map, expand_alias, split_type_path};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ModuleId(pub u32);
@@ -85,27 +85,28 @@ impl CheckedFacts {
             });
         }
 
-        for (module_index, module) in modules.iter().enumerate() {
-            let module_id = ModuleId(module_index as u32);
-            let parsed = sources.get(&module.source_file);
-            facts.collect_enum_facts(module_id, module, parsed.copied());
-        }
+        // Resolve each module's id and parsed source once, then drive every collector
+        // over the same triples. Module facts must already exist so the collectors can
+        // resolve cross-module references through `module_id`.
+        let bindings: Vec<(ModuleId, &CheckedModule, Option<&ParsedSource>)> = modules
+            .iter()
+            .enumerate()
+            .map(|(module_index, module)| {
+                let parsed = sources.get(&module.source_file).copied();
+                (ModuleId(module_index as u32), module, parsed)
+            })
+            .collect();
 
-        for (module_index, module) in modules.iter().enumerate() {
-            let module_id = ModuleId(module_index as u32);
-            let parsed = sources.get(&module.source_file);
-            facts.collect_resource_facts(module_id, module, parsed.copied());
+        for &(module_id, module, parsed) in &bindings {
+            facts.collect_enum_facts(module_id, module, parsed);
         }
-
-        for (module_index, module) in modules.iter().enumerate() {
-            let module_id = ModuleId(module_index as u32);
-            let parsed = sources.get(&module.source_file);
-            facts.collect_store_facts(module_id, module, parsed.copied());
+        for &(module_id, module, parsed) in &bindings {
+            facts.collect_resource_facts(module_id, module, parsed);
         }
-
-        for (module_index, module) in modules.iter().enumerate() {
-            let module_id = ModuleId(module_index as u32);
-            let parsed = sources.get(&module.source_file).copied();
+        for &(module_id, module, parsed) in &bindings {
+            facts.collect_store_facts(module_id, module, parsed);
+        }
+        for &(module_id, module, parsed) in &bindings {
             for function in &module.functions {
                 if let Some(function) = facts.function_fact(module_id, module, function, parsed) {
                     facts.functions.push(function);
@@ -1257,10 +1258,6 @@ fn flatten_enum_member_spans(members: &[marrow_syntax::EnumMember], spans: &mut 
         spans.push(member.span);
         flatten_enum_member_spans(&member.members, spans);
     }
-}
-
-fn split_type_path(path: &str) -> Vec<String> {
-    path.split("::").map(str::to_string).collect()
 }
 
 fn catalog_id(

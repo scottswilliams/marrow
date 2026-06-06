@@ -30,10 +30,11 @@ pub fn preview(
         .as_ref()
         .map(|commit| commit.source_digest.clone())
         .filter(|digest| !digest.is_empty());
+    let (source_digest, evolution_digest) = crate::catalog::source_and_evolution_digests(program);
     let witness =
         EvolutionWitness {
-            source_digest: crate::catalog::analyzed_source_digest(program),
-            evolution_digest: crate::catalog::evolution_digest(program),
+            source_digest,
+            evolution_digest,
             accepted_catalog: CatalogFingerprint {
                 epoch: program.catalog.accepted_epoch.unwrap_or(0),
                 digest: program.catalog.accepted_digest.clone().unwrap_or_default(),

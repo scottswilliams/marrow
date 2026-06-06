@@ -68,15 +68,16 @@ pub(crate) fn bind_catalog(
     program.catalog.proposal = binding.proposal;
 }
 
-/// The current source's identity-key shape token for each store, keyed by its bound stable
-/// catalog id. The token is the comma-joined key types in order, so discharge can detect a
-/// key arity or key-type change even when the program is otherwise unchanged and emits no
-/// proposal. A store with no bound identity (pending first-run identity) is omitted, the same
-/// way a member with no bound identity is.
-fn declared_store_key_shapes(
+/// The single owner of each store's `(stable_id, identity-key shape token)` from source,
+/// for every store whose identity is bound in `ids`. The token is the comma-joined key
+/// types in order, so a key arity or key-type change is recorded even when the program is
+/// otherwise unchanged. A store with no bound identity (pending first-run identity) is
+/// omitted. Both the fact-binding map and the proposal recorder read these pairs, so the
+/// store-key-shape derivation has one source of truth.
+fn store_key_shapes(
     program: &CheckedProgram,
     ids: &HashMap<CatalogKey, String>,
-) -> HashMap<String, String> {
+) -> Vec<(String, String)> {
     program
         .modules
         .iter()
@@ -93,18 +94,18 @@ fn declared_store_key_shapes(
         .collect()
 }
 
-/// The current source's identity-aware structural signature for each resource member, keyed
-/// by its bound stable catalog id. The signature records the member's kind, its key shape if a
-/// keyed layer, and its leaf token if a leaf, so discharge compares it against the accepted
-/// signature and fails closed on a structural divergence the leaf-token, reshape, rename,
-/// default, transform, and retire classifiers all leave unclaimed. Read from source so a
-/// divergence is detected even when the program is otherwise unchanged and emits no proposal. A
-/// member with no bound identity (a pending first-run identity) or an unresolved leaf referent
-/// is omitted, the same way the store key shapes are.
-fn declared_member_structs(
+/// The single owner of each resource member's `(stable_id, structural signature token)` from
+/// source, for every member whose identity is bound in `ids`. The signature records the
+/// member's kind, its key shape if a keyed layer, and its leaf token if a leaf, so discharge
+/// fails closed on a structural divergence the leaf-token, reshape, rename, default, transform,
+/// and retire classifiers all leave unclaimed. The token is `None` when a leaf member's value
+/// type cannot be tokenized yet (a pending first-run referent); the recorder still writes that
+/// `None` forward, while the fact-binding map omits it. Both paths read these pairs, so the
+/// member-structure derivation has one source of truth.
+fn member_structs(
     program: &CheckedProgram,
     ids: &HashMap<CatalogKey, String>,
-) -> HashMap<String, String> {
+) -> Vec<(String, Option<String>)> {
     source_catalog_entries(program)
         .into_iter()
         .filter(|source| source.kind == CatalogEntryKind::ResourceMember)
@@ -112,10 +113,33 @@ fn declared_member_structs(
             let module = member_struct_module(&source);
             let leaf = source.leaf.as_ref().map(|leaf| &leaf.ty);
             let token =
-                leaf_type::member_struct_token(program, module, leaf, &source.key_params, ids)?;
+                leaf_type::member_struct_token(program, module, leaf, &source.key_params, ids);
             let catalog_id = ids.get(&CatalogKey::new(source.kind, source.path))?;
             Some((catalog_id.clone(), token))
         })
+        .collect()
+}
+
+/// The current source's identity-key shape token for each store, keyed by its bound stable
+/// catalog id, derived from the single [`store_key_shapes`] owner.
+fn declared_store_key_shapes(
+    program: &CheckedProgram,
+    ids: &HashMap<CatalogKey, String>,
+) -> HashMap<String, String> {
+    store_key_shapes(program, ids).into_iter().collect()
+}
+
+/// The current source's identity-aware structural signature for each resource member, keyed by
+/// its bound stable catalog id, derived from the single [`member_structs`] owner. A member with
+/// no bound identity or an unresolved leaf referent is omitted, the same way the store key
+/// shapes are.
+fn declared_member_structs(
+    program: &CheckedProgram,
+    ids: &HashMap<CatalogKey, String>,
+) -> HashMap<String, String> {
+    member_structs(program, ids)
+        .into_iter()
+        .filter_map(|(id, token)| Some((id, token?)))
         .collect()
 }
 
@@ -159,13 +183,29 @@ fn read_accepted_catalog(
     }
 }
 
+/// A catalog-intent diagnostic with no source span, for a project-level failure (a
+/// missing or malformed accepted catalog) that is not tied to one declaration.
 fn catalog_diagnostic(file: std::path::PathBuf, message: String) -> CheckDiagnostic {
+    catalog_intent(Severity::Error, file, SourceSpan::default(), message)
+}
+
+/// A catalog-intent error attached to a declaration's source span.
+fn catalog_error(file: std::path::PathBuf, span: SourceSpan, message: String) -> CheckDiagnostic {
+    catalog_intent(Severity::Error, file, span, message)
+}
+
+fn catalog_intent(
+    severity: Severity,
+    file: std::path::PathBuf,
+    span: SourceSpan,
+    message: String,
+) -> CheckDiagnostic {
     CheckDiagnostic {
         code: CHECK_CATALOG_INTENT,
-        severity: Severity::Error,
+        severity,
         file,
         message,
-        span: SourceSpan::default(),
+        span,
         payload: DiagnosticPayload::None,
     }
 }
@@ -202,14 +242,10 @@ fn catalog_binding(
     if let Some(proposal) = &proposal
         && let Err(error) = proposal.validate()
     {
-        diagnostics.push(CheckDiagnostic {
-            code: CHECK_CATALOG_INTENT,
-            severity: Severity::Error,
-            file: first_source_file(&source_entries),
-            message: format!("proposed catalog metadata is not valid: {}", error.message),
-            span: SourceSpan::default(),
-            payload: DiagnosticPayload::None,
-        });
+        diagnostics.push(catalog_diagnostic(
+            first_source_file(&source_entries),
+            format!("proposed catalog metadata is not valid: {}", error.message),
+        ));
     }
 
     // The leaf token resolves a member's referent enum or store to its stable id. When a
@@ -245,33 +281,56 @@ fn bind_against_accepted(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> Option<CatalogMetadata> {
     let accepted_index = AcceptedCatalog::new(catalog);
-    // Each current source catalog path mapped to the kind the source declares
-    // there, computed once and shared by rename resolution and retire
-    // admission so both read the same source view.
+    // `source_kinds` is the source view both rename resolution and retire admission read, so
+    // they agree on the kind each path declares. The rename map is an injective partial map
+    // keyed by the new path; its unresolved targets are reported after the source loop.
     let source_kinds = source_kinds(source_entries);
-    // A rename declares that the entity now at `to_path` is the accepted
-    // entry formerly at `from_path`. Resolution is keyed by the new path so
-    // the source loop can find the matching intent, and is an injective
-    // partial map: a duplicate source or target, a source still declared, or
-    // a target with no accepted identity to carry is a closed-by-default
-    // error rather than a silent relocation.
     let mut renames = resolve_renames(&accepted_index, &source_kinds, &evolve.renames, diagnostics);
     let mut proposal_entries = catalog.entries.clone();
-    // An accepted Active entry whose source declaration has disappeared but
-    // is neither renamed nor retired stays Active here with no source
-    // backing. Dropping a sparse field is a legal no-op (its data simply
-    // lingers), so this is not a check-time error; classifying such an entry
-    // (deprecate it, or require a retire intent when an index, invariant, or
-    // alias still depends on it) is a discharge obligation, not catalog
-    // binding's concern.
-    let mut allocator = StableIdAllocator::over(&proposal_entries);
+    let mut changed = bind_source_entries(
+        &accepted_index,
+        source_entries,
+        &mut renames,
+        ids,
+        &mut proposal_entries,
+        diagnostics,
+    );
+    report_unresolved_renames(&renames, diagnostics);
+    if apply_retires(
+        &mut proposal_entries,
+        &evolve.retires,
+        &source_kinds,
+        diagnostics,
+    ) {
+        changed = true;
+    }
+    if record_signatures_into(program, &mut proposal_entries, Some(catalog)) {
+        changed = true;
+    }
+    changed.then(|| CatalogMetadata::new(catalog.epoch + 1, proposal_entries))
+}
+
+/// Resolve each current source entry to its identity: carry an accepted active entry's id
+/// forward, relocate a renamed one, or mint identity for a genuinely new entity. Binds the
+/// resolved id into `ids` and returns whether any entry is a real change. An accepted active
+/// entry whose source declaration has disappeared but is neither renamed nor retired stays
+/// active here with no source backing — dropping a sparse field is a legal no-op, so that is
+/// a discharge obligation rather than a binding error.
+fn bind_source_entries(
+    accepted_index: &AcceptedCatalog<'_>,
+    source_entries: &[SourceCatalogEntry],
+    renames: &mut HashMap<String, ResolvedRename>,
+    ids: &mut HashMap<CatalogKey, String>,
+    proposal_entries: &mut Vec<CatalogEntry>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> bool {
+    let mut allocator = StableIdAllocator::over(proposal_entries);
     let mut changed = false;
     for source in source_entries {
         let rename = renames.remove(&source.path);
         if let Some(binding) = accepted_index.active_entry(source.kind, &source.path) {
-            // A rename onto a path that already names a live accepted entity
-            // cannot move identity there; the declared intent is a no-op the
-            // author must resolve, so report it instead of dropping it.
+            // A rename onto a path that already names a live accepted entity cannot move
+            // identity there; report the no-op intent instead of dropping it.
             if rename.is_some() {
                 push_rename_target_live(source, diagnostics);
             }
@@ -281,52 +340,45 @@ fn bind_against_accepted(
             push_reserved_reuse(source, reserved.entry, diagnostics);
             changed = true;
         } else if let Some(rename) = rename {
-            apply_rename(&mut proposal_entries, source, &rename.from_path, ids);
+            apply_rename(proposal_entries, source, &rename.from_path, ids);
             changed = true;
         } else {
             push_pending_identity(source, diagnostics);
-            prepare_proposal_path(&mut proposal_entries, source.kind, &source.path);
+            prepare_proposal_path(proposal_entries, source.kind, &source.path);
             proposal_entries.push(proposed_catalog_entry(source, &mut allocator));
             changed = true;
         }
     }
-    // A rename whose target the source never declares relocates nothing; the
-    // declared intent must not vanish silently.
+    changed
+}
+
+/// Report every rename whose target the source never declares: it relocates nothing, so the
+/// declared intent must not vanish silently.
+fn report_unresolved_renames(
+    renames: &HashMap<String, ResolvedRename>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
     for rename in renames.values() {
         report_unresolved_intent(&rename.file, rename.span, diagnostics);
     }
-    if apply_retires(
-        &mut proposal_entries,
-        &evolve.retires,
-        &source_kinds,
-        diagnostics,
-    ) {
-        changed = true;
-    }
-    // Record each store's identity-key shape and each member's structural signature into
-    // the proposal once every referent's id is bound, so a renamed enum or store resolves
-    // to its preserved identity. The proposal id map covers freshly-minted referents the
-    // accepted-only `ids` map does not, without binding proposal ids onto live facts. A
-    // signature that differs from the accepted snapshot is a real change that advances the
-    // proposal; backfilling an unknown one is not.
-    let leaf_token_ids = proposal_id_map(&proposal_entries);
-    if record_store_key_shapes(
-        program,
-        &mut proposal_entries,
-        &leaf_token_ids,
-        Some(catalog),
-    ) {
-        changed = true;
-    }
-    if record_member_structs(
-        program,
-        &mut proposal_entries,
-        &leaf_token_ids,
-        Some(catalog),
-    ) {
-        changed = true;
-    }
-    changed.then(|| CatalogMetadata::new(catalog.epoch + 1, proposal_entries))
+}
+
+/// Record each store's identity-key shape and each member's structural signature into the
+/// proposal, once every referent's id is bound so a renamed enum or store resolves to its
+/// preserved identity. The proposal id map covers freshly-minted referents the accepted-only
+/// `ids` map omits, and is never bound onto live facts. Returns whether any signature is a
+/// real change relative to `accepted`.
+fn record_signatures_into(
+    program: &CheckedProgram,
+    proposal_entries: &mut [CatalogEntry],
+    accepted: Option<&CatalogMetadata>,
+) -> bool {
+    let leaf_token_ids = proposal_id_map(proposal_entries);
+    let key_shapes_changed =
+        record_store_key_shapes(program, proposal_entries, &leaf_token_ids, accepted);
+    let structs_changed =
+        record_member_structs(program, proposal_entries, &leaf_token_ids, accepted);
+    key_shapes_changed || structs_changed
 }
 
 /// Bind current source with no accepted catalog yet: every entity mints fresh identity, and
@@ -349,9 +401,7 @@ fn bind_first_run(
         .iter()
         .map(|source| proposed_catalog_entry(source, &mut allocator))
         .collect();
-    let leaf_token_ids = proposal_id_map(&proposal_entries);
-    record_store_key_shapes(program, &mut proposal_entries, &leaf_token_ids, None);
-    record_member_structs(program, &mut proposal_entries, &leaf_token_ids, None);
+    record_signatures_into(program, &mut proposal_entries, None);
     CatalogMetadata::new(1, proposal_entries)
 }
 
@@ -384,11 +434,12 @@ pub(crate) fn active_proposal_id_map(program: &CheckedProgram) -> HashMap<Catalo
         .unwrap_or_default()
 }
 
+/// A regenerated proposal could not be rebound to the recorded activation ids: either there
+/// is no current proposal to rebind, or the recorded id count does not match the proposal's
+/// freshly-minted entries. Both leave the resume drifted, so callers fail closed identically
+/// rather than branching on which.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ActivationResumeRebindError {
-    MissingProposal,
-    ProposalIdCountMismatch,
-}
+pub struct ActivationResumeRebindError;
 
 pub(crate) fn rebind_activation_resume_program(
     program: &CheckedProgram,
@@ -398,94 +449,142 @@ pub(crate) fn rebind_activation_resume_program(
         .catalog
         .proposal
         .clone()
-        .ok_or(ActivationResumeRebindError::MissingProposal)?;
+        .ok_or(ActivationResumeRebindError)?;
     let current_entries = current_proposal.entries.clone();
+    let mut entries = current_proposal.entries;
+    reassign_proposal_ids(program, &mut entries, proposal_ids)?;
+
+    let accepted = CatalogMetadata::new(
+        program.catalog.accepted_epoch.unwrap_or_default(),
+        program.catalog.accepted_entries.clone(),
+    );
+    record_signatures_into(program, &mut entries, Some(&accepted));
+    let proposal = CatalogMetadata::new(current_proposal.epoch, entries);
+    let replacement_ids = proposal_id_map(&proposal.entries);
+    let current_paths = active_id_paths(&current_entries);
+
+    let mut rebound = program.clone();
+    rebound.catalog.evolve_defaults = rebind_defaults(
+        &rebound.catalog.evolve_defaults,
+        &current_paths,
+        &replacement_ids,
+    );
+    rebound.catalog.evolve_transforms = rebind_transforms(
+        &rebound.catalog.evolve_transforms,
+        &current_paths,
+        &replacement_ids,
+    );
+    rebound.catalog.proposal = Some(proposal);
+    rebound.catalog.declared_store_key_shapes =
+        declared_store_key_shapes(&rebound, &replacement_ids);
+    rebound.catalog.declared_member_structs = declared_member_structs(&rebound, &replacement_ids);
+    Ok(rebound)
+}
+
+/// Overwrite each proposal-only entry's stable id with the next recorded activation id, in
+/// proposal-entry order. An accepted entry keeps its id (its identity is already committed).
+/// Fails closed when the recorded id count does not match the proposal's freshly-minted
+/// entries, so a drifted resume never publishes a half-rebound proposal.
+fn reassign_proposal_ids(
+    program: &CheckedProgram,
+    entries: &mut [CatalogEntry],
+    proposal_ids: &[CatalogId],
+) -> Result<(), ActivationResumeRebindError> {
     let accepted_ids: HashSet<_> = program
         .catalog
         .accepted_entries
         .iter()
         .map(|entry| entry.stable_id.as_str())
         .collect();
-    let mut entries = current_proposal.entries;
     let mut proposal_ids = proposal_ids.iter();
-    for entry in &mut entries {
+    for entry in entries.iter_mut() {
         if !accepted_ids.contains(entry.stable_id.as_str()) {
             entry.stable_id = proposal_ids
                 .next()
-                .ok_or(ActivationResumeRebindError::ProposalIdCountMismatch)?
+                .ok_or(ActivationResumeRebindError)?
                 .as_str()
                 .to_string();
         }
     }
     if proposal_ids.next().is_some() {
-        return Err(ActivationResumeRebindError::ProposalIdCountMismatch);
+        return Err(ActivationResumeRebindError);
     }
+    Ok(())
+}
 
-    let replacement_ids = proposal_id_map(&entries);
-    let accepted = CatalogMetadata::new(
-        program.catalog.accepted_epoch.unwrap_or_default(),
-        program.catalog.accepted_entries.clone(),
-    );
-    record_store_key_shapes(program, &mut entries, &replacement_ids, Some(&accepted));
-    record_member_structs(program, &mut entries, &replacement_ids, Some(&accepted));
-    let proposal = CatalogMetadata::new(current_proposal.epoch, entries);
-    let replacement_ids = proposal_id_map(&proposal.entries);
-    let current_paths = active_id_paths(&current_entries);
-
-    let mut rebound = program.clone();
-    rebound.catalog.evolve_defaults = rebound
-        .catalog
-        .evolve_defaults
+fn rebind_defaults(
+    defaults: &[EvolveDefault],
+    current_paths: &HashMap<(CatalogEntryKind, String), String>,
+    replacement_ids: &HashMap<CatalogKey, String>,
+) -> Vec<EvolveDefault> {
+    defaults
         .iter()
         .map(|default| {
-            let mut rebound_default = default.clone();
-            rebound_default.catalog_id = rebind_catalog_id(
+            let mut rebound = default.clone();
+            rebound.catalog_id = rebind_catalog_id(
                 CatalogEntryKind::ResourceMember,
                 &default.catalog_id,
-                &current_paths,
-                &replacement_ids,
+                current_paths,
+                replacement_ids,
             );
-            rebound_default
+            rebound
         })
-        .collect();
-    rebound.catalog.evolve_transforms = rebound
-        .catalog
-        .evolve_transforms
+        .collect()
+}
+
+fn rebind_transforms(
+    transforms: &[EvolveTransform],
+    current_paths: &HashMap<(CatalogEntryKind, String), String>,
+    replacement_ids: &HashMap<CatalogKey, String>,
+) -> Vec<EvolveTransform> {
+    transforms
         .iter()
         .map(|transform| {
-            let mut rebound_transform = transform.clone();
-            rebound_transform.catalog_id =
-                member_target_id(&transform.target_path, &replacement_ids).or_else(|| {
-                    transform.catalog_id.as_deref().map(|catalog_id| {
-                        rebind_catalog_id(
-                            CatalogEntryKind::ResourceMember,
-                            catalog_id,
-                            &current_paths,
-                            &replacement_ids,
-                        )
-                    })
-                });
-            rebound_transform.reads = transform
-                .reads
-                .iter()
-                .filter_map(|read| {
-                    let rebound = rebind_catalog_id(
-                        CatalogEntryKind::ResourceMember,
-                        read.as_str(),
-                        &current_paths,
-                        &replacement_ids,
-                    );
-                    CatalogId::new(rebound).ok()
-                })
-                .collect();
-            rebound_transform
+            let mut rebound = transform.clone();
+            rebound.catalog_id = rebind_transform_target(transform, current_paths, replacement_ids);
+            rebound.reads = rebind_reads(&transform.reads, current_paths, replacement_ids);
+            rebound
         })
-        .collect();
-    rebound.catalog.proposal = Some(proposal);
-    rebound.catalog.declared_store_key_shapes =
-        declared_store_key_shapes(&rebound, &replacement_ids);
-    rebound.catalog.declared_member_structs = declared_member_structs(&rebound, &replacement_ids);
-    Ok(rebound)
+        .collect()
+}
+
+/// The transform's rebound target id: its current target path's replacement id when the
+/// target still names a member, else the rebound of its recorded id. A transform whose target
+/// names no member keeps `None`.
+fn rebind_transform_target(
+    transform: &EvolveTransform,
+    current_paths: &HashMap<(CatalogEntryKind, String), String>,
+    replacement_ids: &HashMap<CatalogKey, String>,
+) -> Option<String> {
+    member_target_id(&transform.target_path, replacement_ids).or_else(|| {
+        transform.catalog_id.as_deref().map(|catalog_id| {
+            rebind_catalog_id(
+                CatalogEntryKind::ResourceMember,
+                catalog_id,
+                current_paths,
+                replacement_ids,
+            )
+        })
+    })
+}
+
+fn rebind_reads(
+    reads: &[CatalogId],
+    current_paths: &HashMap<(CatalogEntryKind, String), String>,
+    replacement_ids: &HashMap<CatalogKey, String>,
+) -> Vec<CatalogId> {
+    reads
+        .iter()
+        .filter_map(|read| {
+            let rebound = rebind_catalog_id(
+                CatalogEntryKind::ResourceMember,
+                read.as_str(),
+                current_paths,
+                replacement_ids,
+            );
+            CatalogId::new(rebound).ok()
+        })
+        .collect()
 }
 
 fn active_id_paths(entries: &[CatalogEntry]) -> HashMap<(CatalogEntryKind, String), String> {
@@ -706,55 +805,23 @@ fn apply_rename(
 /// Record each store's identity-key shape into its proposal entry, once its id is bound.
 /// Returns whether any store's shape is a real change relative to the accepted snapshot, so
 /// an otherwise-unchanged program that only re-keyed a store still advances the proposal.
-///
-/// A store accepted before key shapes were recorded carries no accepted shape; filling it
-/// from current source is not a re-key, since the durable keys are unchanged. With no accepted
-/// snapshot (a first-run catalog) every shape is recorded without flagging change, because the
-/// whole catalog is new. The discharge fail-closes on a real re-key; this only freezes the
-/// shape so a later change has a baseline to compare against.
 fn record_store_key_shapes(
     program: &CheckedProgram,
     entries: &mut [CatalogEntry],
     ids: &HashMap<CatalogKey, String>,
     accepted: Option<&CatalogMetadata>,
 ) -> bool {
-    let accepted_shapes: HashMap<&str, &Option<String>> = accepted
-        .map(|catalog| {
-            catalog
-                .entries
-                .iter()
-                .filter(|entry| entry.kind == CatalogEntryKind::Store)
-                .map(|entry| (entry.stable_id.as_str(), &entry.accepted_key_shape))
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut changed = false;
-    for module in &program.modules {
-        for store in &module.stores {
-            let key = CatalogKey::new(
-                CatalogEntryKind::Store,
-                store_path(&module.name, &store.root),
-            );
-            let Some(stable_id) = ids.get(&key) else {
-                continue;
-            };
-            let Some(entry) = entries
-                .iter_mut()
-                .find(|entry| &entry.stable_id == stable_id)
-            else {
-                continue;
-            };
-            let shape = Some(leaf_type::store_key_shape_token(&store.identity_keys));
-            let accepted_shape = accepted_shapes.get(stable_id.as_str()).copied();
-            if let Some(Some(_)) = accepted_shape
-                && accepted_shape != Some(&shape)
-            {
-                changed = true;
-            }
-            entry.accepted_key_shape = shape;
-        }
-    }
-    changed
+    let pairs = store_key_shapes(program, ids)
+        .into_iter()
+        .map(|(id, shape)| (id, Some(shape)));
+    record_signatures(
+        entries,
+        pairs,
+        accepted_field(accepted, CatalogEntryKind::Store, |entry| {
+            &entry.accepted_key_shape
+        }),
+        |entry| &mut entry.accepted_key_shape,
+    )
 }
 
 /// Record each resource member's identity-aware structural signature into its proposal entry,
@@ -763,56 +830,68 @@ fn record_store_key_shapes(
 /// as a different signature. Returns whether any member's signature is a real change relative to
 /// the accepted snapshot, so an otherwise-unchanged program that only reshaped a member still
 /// advances the proposal.
-///
-/// A member accepted before signatures were recorded carries none; filling it from current
-/// source is not a change, since the durable shape is unchanged. With no accepted snapshot (a
-/// first-run catalog) every signature is recorded without flagging change, because the whole
-/// catalog is new. The discharge fail-closes on a real divergence; this only freezes the
-/// signature so a later change has a baseline to compare against.
 fn record_member_structs(
     program: &CheckedProgram,
     entries: &mut [CatalogEntry],
     ids: &HashMap<CatalogKey, String>,
     accepted: Option<&CatalogMetadata>,
 ) -> bool {
-    let accepted_structs: HashMap<&str, &Option<String>> = accepted
+    record_signatures(
+        entries,
+        member_structs(program, ids),
+        accepted_field(accepted, CatalogEntryKind::ResourceMember, |entry| {
+            &entry.accepted_struct
+        }),
+        |entry| &mut entry.accepted_struct,
+    )
+}
+
+/// The accepted-snapshot signature field for every entry of `kind`, keyed by stable id. Empty
+/// when there is no accepted snapshot (a first-run catalog), so every signature records without
+/// flagging change.
+fn accepted_field<'a>(
+    accepted: Option<&'a CatalogMetadata>,
+    kind: CatalogEntryKind,
+    field: impl Fn(&'a CatalogEntry) -> &'a Option<String>,
+) -> HashMap<&'a str, &'a Option<String>> {
+    accepted
         .map(|catalog| {
             catalog
                 .entries
                 .iter()
-                .filter(|entry| entry.kind == CatalogEntryKind::ResourceMember)
-                .map(|entry| (entry.stable_id.as_str(), &entry.accepted_struct))
+                .filter(|entry| entry.kind == kind)
+                .map(|entry| (entry.stable_id.as_str(), field(entry)))
                 .collect()
         })
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+/// Record each `(stable_id, signature)` pair into the matching proposal entry's signature field
+/// and report whether any is a real change. A signature differing from a *known* accepted one is
+/// a real change; backfilling an entry with no recorded accepted signature (minted before
+/// signatures, or fresh this cycle) is not, since its durable shape is unchanged. This is the one
+/// implementation of the record-or-diff rule the store-key and member-structure recorders share.
+fn record_signatures(
+    entries: &mut [CatalogEntry],
+    pairs: impl IntoIterator<Item = (String, Option<String>)>,
+    accepted: HashMap<&str, &Option<String>>,
+    field: impl Fn(&mut CatalogEntry) -> &mut Option<String>,
+) -> bool {
     let mut changed = false;
-    for source in source_catalog_entries(program) {
-        if source.kind != CatalogEntryKind::ResourceMember {
-            continue;
-        }
-        let module = member_struct_module(&source);
-        let leaf = source.leaf.as_ref().map(|leaf| &leaf.ty);
-        let token = leaf_type::member_struct_token(program, module, leaf, &source.key_params, ids);
-        let Some(stable_id) = ids.get(&CatalogKey::new(source.kind, source.path.clone())) else {
-            continue;
-        };
+    for (stable_id, signature) in pairs {
         let Some(entry) = entries
             .iter_mut()
-            .find(|entry| &entry.stable_id == stable_id)
+            .find(|entry| entry.stable_id == stable_id)
         else {
             continue;
         };
-        let accepted_struct = accepted_structs.get(stable_id.as_str()).copied();
-        // A signature differing from a known accepted one is a real structural change. A member
-        // with no recorded accepted signature (minted before signatures, or a fresh entry this
-        // cycle) has an unchanged durable shape, so recording its signature forward is not a
-        // change.
-        if let Some(Some(_)) = accepted_struct
-            && accepted_struct != Some(&token)
+        let accepted_signature = accepted.get(stable_id.as_str()).copied();
+        if let Some(Some(_)) = accepted_signature
+            && accepted_signature != Some(&signature)
         {
             changed = true;
         }
-        entry.accepted_struct = token;
+        *field(entry) = signature;
     }
     changed
 }
@@ -1058,73 +1137,59 @@ fn member_leaf(module: &crate::CheckedModule, node: &marrow_schema::Node) -> Opt
 /// informational, not a failure: `check` stays read-only and exits clean while
 /// telling the author durable identity for the entity is not yet frozen.
 fn push_pending_identity(source: &SourceCatalogEntry, diagnostics: &mut Vec<CheckDiagnostic>) {
-    diagnostics.push(CheckDiagnostic {
-        code: CHECK_CATALOG_INTENT,
-        severity: Severity::Warning,
-        file: source.file.clone(),
-        message: format!(
+    diagnostics.push(catalog_intent(
+        Severity::Warning,
+        source.file.clone(),
+        source.span,
+        format!(
             "durable identity for `{}` is not yet recorded; running the program or applying an evolution will record it",
             source.path
         ),
-        span: source.span,
-        payload: DiagnosticPayload::None,
-    });
+    ));
 }
 
 fn push_rename_source_declared(rename: &RenameIntent, diagnostics: &mut Vec<CheckDiagnostic>) {
-    diagnostics.push(CheckDiagnostic {
-        code: CHECK_CATALOG_INTENT,
-        severity: Severity::Error,
-        file: rename.file.clone(),
-        message: format!(
+    diagnostics.push(catalog_error(
+        rename.file.clone(),
+        rename.span,
+        format!(
             "rename source `{}` is still declared; a rename must remove the old spelling",
             rename.from_path
         ),
-        span: rename.span,
-        payload: DiagnosticPayload::None,
-    });
+    ));
 }
 
 fn push_retire_source_declared(retire: &RetireIntent, diagnostics: &mut Vec<CheckDiagnostic>) {
-    diagnostics.push(CheckDiagnostic {
-        code: CHECK_CATALOG_INTENT,
-        severity: Severity::Error,
-        file: retire.file.clone(),
-        message: format!(
+    diagnostics.push(catalog_error(
+        retire.file.clone(),
+        retire.span,
+        format!(
             "retire target `{}` is still declared by source; remove the declaration before retiring it",
             retire.path
         ),
-        span: retire.span,
-        payload: DiagnosticPayload::None,
-    });
+    ));
 }
 
 fn push_rename_conflict(rename: &RenameIntent, diagnostics: &mut Vec<CheckDiagnostic>) {
-    diagnostics.push(CheckDiagnostic {
-        code: CHECK_CATALOG_INTENT,
-        severity: Severity::Error,
-        file: rename.file.clone(),
-        message: format!(
+    diagnostics.push(catalog_error(
+        rename.file.clone(),
+        rename.span,
+        format!(
             "rename `{}` -> `{}` conflicts with another rename of the same source or target",
             rename.from_path, rename.to_path
         ),
-        span: rename.span,
-        payload: DiagnosticPayload::None,
-    });
+    ));
 }
 
 fn push_rename_target_live(source: &SourceCatalogEntry, diagnostics: &mut Vec<CheckDiagnostic>) {
-    diagnostics.push(CheckDiagnostic {
-        code: CHECK_CATALOG_INTENT,
-        severity: Severity::Error,
-        file: source.file.clone(),
-        message: format!(
+    diagnostics.push(catalog_error(
+        source.file.clone(),
+        source.span,
+        format!(
             "rename target `{}` already names a live entity; identity cannot be moved onto it",
             source.path
         ),
-        span: source.span,
-        payload: DiagnosticPayload::None,
-    });
+    ));
 }
 
 fn push_reserved_reuse(
@@ -1364,7 +1429,17 @@ mod tests {
 /// so a formatter change that moved it for an unchanged shape must be handled as a
 /// store-format decision rather than silently re-reading every committed snapshot as drift.
 pub(crate) fn analyzed_source_digest(program: &CheckedProgram) -> String {
-    digest_of(render_declarations(program, DigestScope::Shape))
+    digest_of(&render_declarations(program), DigestScope::Shape)
+}
+
+/// Both the shape and shape-plus-evolve digests from a single render pass, so a caller that
+/// needs both (the evolution preview witness) reads and parses each module's source once.
+pub(crate) fn source_and_evolution_digests(program: &CheckedProgram) -> (String, String) {
+    let renderings = render_declarations(program);
+    (
+        digest_of(&renderings, DigestScope::Shape),
+        digest_of(&renderings, DigestScope::ShapeAndEvolve),
+    )
 }
 
 /// A stable digest of the analyzed shape *and* the evolve decision surface, in the same
@@ -1377,7 +1452,7 @@ pub(crate) fn analyzed_source_digest(program: &CheckedProgram) -> String {
 /// the store fences on shape so a consumed block is deletable, and the witness fences on
 /// shape-plus-intent so the preview-to-apply transition cannot silently change.
 pub(crate) fn evolution_digest(program: &CheckedProgram) -> String {
-    digest_of(render_declarations(program, DigestScope::ShapeAndEvolve))
+    digest_of(&render_declarations(program), DigestScope::ShapeAndEvolve)
 }
 
 /// Which declarations a digest binds. The shape digest the store stamps excludes the
@@ -1398,14 +1473,15 @@ impl DigestScope {
     }
 }
 
-/// Render the digest-bound declarations at `scope` into the deterministically ordered
-/// renderings a digest hashes.
+/// Render every durable declaration of the program into the deterministically ordered
+/// renderings the digests hash. Each scope hashes a subset of this single pass, so the source
+/// is read and parsed once per render rather than once per digest.
 ///
 /// The rendering reads each module's source file because the formatter operates on the
 /// syntax tree, which the checked program drops. A source file that no longer reads or
 /// parses (a checked-program invariant violation) contributes a path-tagged marker so
 /// the digest stays deterministic and never silently collides with a clean rendering.
-fn render_declarations(program: &CheckedProgram, scope: DigestScope) -> Vec<DurableRendering> {
+fn render_declarations(program: &CheckedProgram) -> Vec<DurableRendering> {
     let mut entries: Vec<DurableRendering> = Vec::new();
     for module in &program.modules {
         let source = std::fs::read_to_string(&module.source_file).ok();
@@ -1413,8 +1489,7 @@ fn render_declarations(program: &CheckedProgram, scope: DigestScope) -> Vec<Dura
         match (&source, &parsed) {
             (Some(source), Some(parsed)) => {
                 for declaration in &parsed.file.declarations {
-                    let Some(kind) = durable_kind(declaration).filter(|&kind| scope.binds(kind))
-                    else {
+                    let Some(kind) = durable_kind(declaration) else {
                         continue;
                     };
                     entries.push(DurableRendering {
@@ -1439,10 +1514,11 @@ fn render_declarations(program: &CheckedProgram, scope: DigestScope) -> Vec<Dura
     entries
 }
 
-/// Hash the ordered renderings into the canonical `sha256:<hex>` digest.
-fn digest_of(entries: Vec<DurableRendering>) -> String {
+/// Hash the renderings that bind at `scope` into the canonical `sha256:<hex>` digest.
+fn digest_of(entries: &[DurableRendering], scope: DigestScope) -> String {
     let payload = entries
         .iter()
+        .filter(|entry| scope.binds(entry.kind))
         .map(|entry| {
             format!(
                 "{}\0{}\0{}\0{}",

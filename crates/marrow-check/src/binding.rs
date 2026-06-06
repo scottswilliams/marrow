@@ -33,12 +33,13 @@ use marrow_syntax::{
 };
 
 use crate::MarrowType;
+use crate::analysis::span_covers;
 use crate::checks::{file_prelude, for_frame};
-use crate::enums::{enum_schema_in, resolve_enum, resolve_enum_member_path, resolve_type};
+use crate::enums::{enum_schema_in, resolve_enum_member_path, resolve_type};
 use crate::infer::{infer_only, local_binding};
 use crate::{
     AnalysisSnapshot, CheckedProgram, Def, DefItem, Resolution, ResolvableKind, expand_alias,
-    expand_module_alias, find_resource_schema, resolve, resolve_function_in_module,
+    find_resource_schema, resolve, resolve_function_in_module, split_type_path,
 };
 
 /// What a [`SymbolRef`] names. The kinds the index resolves, grouped by where they
@@ -1094,8 +1095,7 @@ impl UseWalker<'_, '_> {
             .into_iter()
             .map(str::to_string)
             .collect::<Vec<_>>();
-        let enum_index =
-            self.resolved_enum_index(segments, &resolved.module, &resolved.enum_name)?;
+        let enum_index = resolved.enum_index;
         let enum_def = self
             .builder
             .module_scope
@@ -1135,33 +1135,6 @@ impl UseWalker<'_, '_> {
             enum_index,
             member_defs,
         })
-    }
-
-    fn resolved_enum_index(
-        &self,
-        segments: &[String],
-        resolved_module: &str,
-        resolved_enum: &str,
-    ) -> Option<usize> {
-        if segments.first()? == resolved_enum
-            && resolve_enum(self.builder.program, Some(self.module), &segments[0])
-                .is_some_and(|(module, _)| module == resolved_module)
-        {
-            return Some(0);
-        }
-
-        for enum_index in (1..segments.len().saturating_sub(1)).rev() {
-            if segments[enum_index] != resolved_enum {
-                continue;
-            }
-            let module = expand_module_alias(&segments[..enum_index].join("::"), self.aliases);
-            if module == resolved_module
-                && enum_schema_in(self.builder.program, &module, &segments[enum_index]).is_some()
-            {
-                return Some(enum_index);
-            }
-        }
-        None
     }
 
     fn enum_member_def(&self, module: &str, enum_name: &str, path: &[String]) -> Option<DefId> {
@@ -1360,10 +1333,6 @@ fn enum_identity(ty: &MarrowType) -> Option<(&str, &str)> {
     }
 }
 
-fn split_type_path(path: &str) -> Vec<String> {
-    path.split("::").map(str::to_string).collect()
-}
-
 fn type_ref_enum_leaf_span(source: &str, ty: &TypeRef, enum_name: &str) -> Option<SourceSpan> {
     let end_byte = ty.span.end_byte.min(source.len());
     let text = source.get(ty.span.start_byte..end_byte)?;
@@ -1451,11 +1420,6 @@ fn match_arm_header_span(arm: &MatchArm) -> SourceSpan {
     }
 }
 
-/// Whether `span` covers `offset`, inclusive of the end byte.
-fn span_covers(span: SourceSpan, offset: usize) -> bool {
-    span.start_byte <= offset && offset <= span.end_byte
-}
-
 fn span_width(span: SourceSpan) -> usize {
     span.end_byte.saturating_sub(span.start_byte)
 }
@@ -1533,7 +1497,10 @@ fn saved_field_chain(expr: &Expression) -> Option<(&str, Vec<&str>)> {
 
 /// The `(root, [layer..])` chain to a keyed layer base `^root(..).layer`, with
 /// layer names outermost first. Each `Field` peels one layer; its base is the
-/// keyed record `^root(..)` or a deeper keyed layer entry.
+/// keyed record `^root(..)` or a deeper keyed layer entry. This stays stricter
+/// than the inference-side layer decoder: it requires a keyed `Call` base, so a
+/// bare saved root `^root.layer` does not resolve to a layer symbol here, which
+/// keeps editor symbol resolution from widening.
 fn saved_layer_base(expr: &Expression) -> Option<(&str, Vec<&str>)> {
     let Expression::Field {
         base, name: layer, ..
