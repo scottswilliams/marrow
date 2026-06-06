@@ -22,15 +22,15 @@ use crate::typerules::{
     is_steppable, marrow_type_name, mismatch_display, type_compatible, unary_symbol,
 };
 use crate::{
-    CHECK_AMBIGUOUS_CALL, CHECK_ASSIGNMENT_TYPE, CHECK_CALL_ARGUMENT, CHECK_COLLECTION_UNSUPPORTED,
-    CHECK_CONDITION_TYPE, CHECK_KEY_TYPE, CHECK_MISSING_RETURN, CHECK_NEIGHBOR_UNSUPPORTED,
-    CHECK_NEXT_ID_REQUIRES_SINGLE_INT, CHECK_OPERATOR_TYPE, CHECK_PRIVATE_ENUM,
-    CHECK_PRIVATE_FUNCTION, CHECK_RANGE, CHECK_RANGE_VALUE, CHECK_RETURN_TYPE, CHECK_RETURN_VALUE,
-    CHECK_THROW_TYPE, CHECK_UNKNOWN_TYPE, CHECK_UNRESOLVED_CALL, CHECK_UNRESOLVED_IMPORT,
-    CHECK_UNTYPED_VALUE, CheckDiagnostic, CheckReport, CheckedProgram, Def, DefItem,
-    DiagnosticPayload, MarrowType, Resolution, ResolvableKind, TypeNames, build_alias_map,
-    builtin_return_type, check_rejected_surface, conversion_return_type, expand_alias,
-    identity_type_for_store, is_builtin_call, is_resolved_import, module_of_file,
+    AppendTargetDiagnostic, CHECK_AMBIGUOUS_CALL, CHECK_ASSIGNMENT_TYPE, CHECK_CALL_ARGUMENT,
+    CHECK_COLLECTION_UNSUPPORTED, CHECK_CONDITION_TYPE, CHECK_KEY_TYPE, CHECK_MISSING_RETURN,
+    CHECK_NEIGHBOR_UNSUPPORTED, CHECK_NEXT_ID_REQUIRES_SINGLE_INT, CHECK_OPERATOR_TYPE,
+    CHECK_PRIVATE_ENUM, CHECK_PRIVATE_FUNCTION, CHECK_RANGE, CHECK_RANGE_VALUE, CHECK_RETURN_TYPE,
+    CHECK_RETURN_VALUE, CHECK_THROW_TYPE, CHECK_UNKNOWN_TYPE, CHECK_UNRESOLVED_CALL,
+    CHECK_UNRESOLVED_IMPORT, CHECK_UNTYPED_VALUE, CheckDiagnostic, CheckReport, CheckedProgram,
+    Def, DefItem, DiagnosticPayload, MarrowType, Resolution, ResolvableKind, TypeNames,
+    build_alias_map, builtin_return_type, check_rejected_surface, conversion_return_type,
+    expand_alias, identity_type_for_store, is_builtin_call, is_resolved_import, module_of_file,
     push_schema_error, resolve, resolve_resource_schema_type, resource_type_name, std_call_params,
     std_call_return_type,
 };
@@ -103,6 +103,7 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
                 | DiagnosticPayload::Enum(_)
                 | DiagnosticPayload::PrivateEnum(_)
                 | DiagnosticPayload::DuplicateNamedArgument(_)
+                | DiagnosticPayload::AppendTarget(_)
                 | DiagnosticPayload::None => true,
             });
     }
@@ -3014,12 +3015,16 @@ fn check_append_args(
         return;
     };
     if matches!(node.kind, marrow_schema::NodeKind::Group) {
-        diagnostics.push(call_diagnostic(
-            file,
+        diagnostics.push(CheckDiagnostic {
+            code: CHECK_CALL_ARGUMENT,
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message:
+                "`append` target must be a keyed leaf layer, but this path names a group layer"
+                    .to_string(),
             span,
-            "`append` target must be a keyed leaf layer, but this path names a group layer"
-                .to_string(),
-        ));
+            payload: DiagnosticPayload::AppendTarget(AppendTargetDiagnostic::GroupLayer),
+        });
     }
 }
 
@@ -3578,14 +3583,19 @@ pub(crate) fn check_append(
         return;
     };
     if !matches!(as_primitive(&key_type), Some(ScalarType::Int)) {
-        diagnostics.push(call_diagnostic(
-            file,
-            span,
-            format!(
+        diagnostics.push(CheckDiagnostic {
+            code: CHECK_CALL_ARGUMENT,
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: format!(
                 "`append` requires an int-keyed layer, but this layer is keyed by `{}`",
                 marrow_type_name(&key_type)
             ),
-        ));
+            span,
+            payload: DiagnosticPayload::AppendTarget(AppendTargetDiagnostic::NonIntKeyedLayer {
+                key_type,
+            }),
+        });
     }
 }
 

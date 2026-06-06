@@ -237,6 +237,15 @@ pub enum RejectedSurface {
     SavedTraversalMethod { method: String },
 }
 
+/// Structured facts for `append` target diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppendTargetDiagnostic {
+    /// The target path names a keyed group layer instead of a leaf layer.
+    GroupLayer,
+    /// The target layer's key is not the integer position `append` allocates.
+    NonIntKeyedLayer { key_type: MarrowType },
+}
+
 /// Structured facts for enum-member and enum-match diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnumDiagnostic {
@@ -278,7 +287,8 @@ pub enum EnumDiagnostic {
 /// Rejected-source-surface diagnostics name the rejected surface. Enum diagnostics
 /// carry the member or coverage fact. Private enum diagnostics name the
 /// inaccessible enum. Duplicate named arguments carry the repeated argument or
-/// field name. Other diagnostics carry
+/// field name. Append target diagnostics carry the rejected target shape. Other
+/// diagnostics carry
 /// [`DiagnosticPayload::None`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DiagnosticPayload {
@@ -315,6 +325,8 @@ pub enum DiagnosticPayload {
     PrivateEnum(String),
     /// `check.call_argument`: a named argument or constructor field repeated.
     DuplicateNamedArgument(String),
+    /// `check.call_argument`: an `append` target is not an int-keyed leaf layer.
+    AppendTarget(AppendTargetDiagnostic),
 }
 
 /// A problem found while checking a project, located in a specific file.
@@ -878,6 +890,7 @@ impl TestResolutionSuppression {
             | DiagnosticPayload::Enum(_)
             | DiagnosticPayload::PrivateEnum(_)
             | DiagnosticPayload::DuplicateNamedArgument(_)
+            | DiagnosticPayload::AppendTarget(_)
             | DiagnosticPayload::None => false,
         }
     }

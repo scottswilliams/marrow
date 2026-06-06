@@ -3,7 +3,8 @@ mod support;
 use std::path::Path;
 
 use marrow_check::{
-    CheckDiagnostic, DiagnosticPayload, EnumDiagnostic, RejectedSurface, check_project, check_tests,
+    AppendTargetDiagnostic, CheckDiagnostic, DiagnosticPayload, EnumDiagnostic, MarrowType,
+    RejectedSurface, ScalarType, check_project, check_tests,
 };
 use marrow_project::parse_config;
 use marrow_schema::{SchemaErrorKind, SchemaKeyTarget, SchemaUnsupportedTypeTarget, Type};
@@ -3619,7 +3620,11 @@ fn append_to_a_group_layer_is_a_check_error() {
         "check.call_argument",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
-    assert!(found[0].message.contains("leaf layer"), "{found:#?}");
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::AppendTarget(AppendTargetDiagnostic::GroupLayer),
+        "{found:#?}"
+    );
 }
 
 #[test]
@@ -5283,6 +5288,13 @@ fn appending_to_a_string_keyed_layer_is_rejected() {
         "check.call_argument",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::AppendTarget(AppendTargetDiagnostic::NonIntKeyedLayer {
+            key_type: MarrowType::Primitive(ScalarType::Str),
+        }),
+        "{found:#?}"
+    );
 }
 
 #[test]
