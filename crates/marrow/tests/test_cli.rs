@@ -1,37 +1,15 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 
 mod support;
 
-fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&root).expect("create project root");
-    build(&root);
-    support::commit_catalog_if_clean(&root);
-    root
-}
+use support::{marrow_sub, temp_project, write};
 
-fn write(root: &Path, relative: &str, contents: &str) {
-    let path = root.join(relative);
-    fs::create_dir_all(path.parent().unwrap()).expect("create dirs");
-    fs::write(path, contents).expect("write file");
-}
-
-fn run_test(dir: &Path) -> std::process::Output {
-    run_test_args(&[dir.to_str().expect("project path utf8")])
+fn run_test(dir: impl AsRef<Path>) -> std::process::Output {
+    run_test_args(&[dir.as_ref().to_str().expect("project path utf8")])
 }
 
 fn run_test_args(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .arg("test")
-        .args(args)
-        .output()
-        .expect("run marrow test")
+    marrow_sub("test", args)
 }
 
 const CONFIG: &str = r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#;
@@ -52,7 +30,6 @@ fn runs_passing_tests_and_reports_a_summary() {
         );
     });
     let output = run_test(&root);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
@@ -87,7 +64,6 @@ fn a_failed_assertion_is_a_located_failure() {
         );
     });
     let output = run_test(&root);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
@@ -113,7 +89,6 @@ fn a_runtime_fault_is_reported_as_an_error() {
         );
     });
     let output = run_test(&root);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
@@ -136,7 +111,6 @@ fn reports_when_no_tests_are_found() {
         // No `tests/` directory exists.
     });
     let output = run_test(&root);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
@@ -151,7 +125,6 @@ fn refuses_to_run_tests_when_the_project_does_not_check() {
         write(root, "src/shelf/books.mw", "module shelf::other\n");
     });
     let output = run_test(&root);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
@@ -176,7 +149,6 @@ fn each_test_runs_against_a_fresh_store() {
         );
     });
     let output = run_test(&root);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");

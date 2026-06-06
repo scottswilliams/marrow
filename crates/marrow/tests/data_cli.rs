@@ -1,6 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 
 use marrow_check::tooling::{DataQuerySegment, QueryError, ToolingError, data_children};
 use marrow_check::{
@@ -12,22 +11,11 @@ use marrow_store::tree::{DataPathSegment, TreeStore};
 
 mod support;
 
-fn temp_dir(name: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&root).expect("create dir");
-    root
-}
+use support::{TempProject, write};
 
-fn write(root: &Path, relative: &str, contents: &str) {
-    let path = root.join(relative);
-    fs::create_dir_all(path.parent().unwrap()).expect("create dirs");
-    fs::write(path, contents).expect("write file");
-}
-
+/// Run the binary, first committing the pending catalog of any directory argument
+/// so `data`'s read-only commands observe a frozen catalog the way a prior `run`
+/// would have left it.
 fn marrow(args: &[&str]) -> std::process::Output {
     for arg in args {
         let path = Path::new(arg);
@@ -35,10 +23,7 @@ fn marrow(args: &[&str]) -> std::process::Output {
             support::commit_catalog_if_clean(path);
         }
     }
-    Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .args(args)
-        .output()
-        .expect("run marrow")
+    support::marrow(args)
 }
 
 fn json(output: std::process::Output) -> serde_json::Value {
@@ -55,24 +40,11 @@ fn integrity_problem(value: &serde_json::Value, code: &str) -> serde_json::Value
         .unwrap_or_else(|| panic!("{code} not found in {value:#?}"))
 }
 
-const CONFIG: &str =
-    r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#;
-const SRC: &str = "module app\n\
-                   \n\
-                   resource Counter at ^counter(id: int)\n\
-                   \x20\x20\x20\x20required value: int\n\
-                   \n\
-                   pub fn seed()\n\
-                   \x20\x20\x20\x20var c: Counter\n\
-                   \x20\x20\x20\x20c.value = 42\n\
-                   \x20\x20\x20\x20transaction\n\
-                   \x20\x20\x20\x20\x20\x20\x20\x20^counter(1) = c\n";
-
-fn native_project(name: &str) -> PathBuf {
-    let root = temp_dir(name);
-    write(&root, "marrow.json", CONFIG);
-    write(&root, "src/app.mw", SRC);
-    root
+fn native_project(name: &str) -> TempProject {
+    support::temp_project_uncommitted(name, |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", support::counter_source());
+    })
 }
 
 #[test]
@@ -84,7 +56,6 @@ fn data_roots_lists_stored_roots() {
         Some(0)
     );
     let output = marrow(&["data", "roots", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
@@ -100,7 +71,6 @@ fn data_stats_counts_roots_and_records() {
         Some(0)
     );
     let output = marrow(&["data", "stats", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
@@ -118,7 +88,6 @@ fn inspecting_an_unseeded_project_reports_no_data_and_creates_nothing() {
     let output = marrow(&["data", "roots", &dir]);
     // Inspection is read-only: it must not create the store file.
     let created = project.join(".data").join("marrow.redb").exists();
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
@@ -128,7 +97,7 @@ fn inspecting_an_unseeded_project_reports_no_data_and_creates_nothing() {
 
 /// Seed the `native_project` fixture and return its directory string. The fixture
 /// stores one record, `^counter(1).value = 42`.
-fn seeded_project(name: &str) -> (PathBuf, String) {
+fn seeded_project(name: &str) -> (TempProject, String) {
     let project = native_project(name);
     let dir = project.to_str().unwrap().to_string();
     assert_eq!(
@@ -152,7 +121,6 @@ fn shared_data_children_rejects_zero_limit() {
         None,
     )
     .expect_err("shared child pages reject a zero limit");
-    fs::remove_dir_all(&project).ok();
 
     assert!(
         matches!(error, ToolingError::Query(QueryError::ZeroLimit)),
@@ -162,9 +130,8 @@ fn shared_data_children_rejects_zero_limit() {
 
 #[test]
 fn data_dump_prints_each_record_as_path_and_value() {
-    let (project, dir) = seeded_project("data-dump");
+    let (_project, dir) = seeded_project("data-dump");
     let output = marrow(&["data", "dump", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
@@ -179,7 +146,6 @@ fn data_dump_of_an_unseeded_project_prints_empty_and_creates_nothing() {
     let dir = project.to_str().unwrap().to_string();
     let output = marrow(&["data", "dump", &dir]);
     let created = project.join(".data").join("marrow.redb").exists();
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
@@ -187,7 +153,8 @@ fn data_dump_of_an_unseeded_project_prints_empty_and_creates_nothing() {
     assert!(!created, "dump must not create the store");
 }
 
-fn checked_program(project: &Path) -> CheckedProgram {
+fn checked_program(project: impl AsRef<Path>) -> CheckedProgram {
+    let project = project.as_ref();
     support::commit_catalog_if_clean(project);
     let config_text = fs::read_to_string(project.join("marrow.json")).expect("read config");
     let config = marrow_project::parse_config(&config_text).expect("parse config");
@@ -199,7 +166,7 @@ fn checked_program(project: &Path) -> CheckedProgram {
     program
 }
 
-fn checked_place(project: &Path, root: &str) -> CheckedSavedPlace {
+fn checked_place(project: impl AsRef<Path>, root: &str) -> CheckedSavedPlace {
     checked_saved_root_place(
         &checked_program(project),
         root,
@@ -265,9 +232,8 @@ fn encode_identity_keys(keys: &[SavedKey]) -> Vec<u8> {
 
 #[test]
 fn data_integrity_passes_on_a_healthy_seeded_project() {
-    let (project, dir) = seeded_project("data-integrity-ok");
+    let (_project, dir) = seeded_project("data-integrity-ok");
     let output = marrow(&["data", "integrity", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
@@ -276,7 +242,7 @@ fn data_integrity_passes_on_a_healthy_seeded_project() {
 
 #[test]
 fn data_integrity_accepts_singleton_fields_and_keyed_tree_members() {
-    let project = temp_dir("data-integrity-singleton-members");
+    let project = support::temp_dir("data-integrity-singleton-members");
     write(
         &project,
         "marrow.json",
@@ -304,7 +270,6 @@ fn data_integrity_accepts_singleton_fields_and_keyed_tree_members() {
     );
 
     let output = marrow(&["data", "integrity", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
@@ -342,7 +307,6 @@ fn data_integrity_reports_an_undeclared_store_cell_as_data_orphan() {
     );
 
     let output = marrow(&["data", "integrity", "--format", "json", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let value = json(output);
@@ -378,7 +342,6 @@ fn data_integrity_reports_an_undeclared_member_cell_as_data_orphan() {
     );
 
     let output = marrow(&["data", "integrity", "--format", "json", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let value = json(output);
@@ -409,7 +372,6 @@ fn data_integrity_reports_an_extra_key_below_a_scalar_field_as_data_orphan() {
     );
 
     let output = marrow(&["data", "integrity", "--format", "json", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let value = json(output);
@@ -422,7 +384,7 @@ fn data_integrity_reports_an_extra_key_below_a_scalar_field_as_data_orphan() {
 
 #[test]
 fn data_integrity_reports_a_keyed_member_value_without_its_key_as_data_orphan() {
-    let project = temp_dir("data-integrity-orphan-missing-key");
+    let project = support::temp_dir("data-integrity-orphan-missing-key");
     write(
         &project,
         "marrow.json",
@@ -446,7 +408,6 @@ fn data_integrity_reports_a_keyed_member_value_without_its_key_as_data_orphan() 
     );
 
     let output = marrow(&["data", "integrity", "--format", "json", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let value = json(output);
@@ -467,7 +428,6 @@ fn data_integrity_reports_an_orphan_problem_with_a_tooling_kind() {
     );
 
     let output = marrow(&["data", "integrity", "--format", "json", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let value = json(output);
@@ -506,7 +466,6 @@ fn data_integrity_reports_a_non_canonical_value_as_data_decode() {
     );
 
     let output = marrow(&["data", "integrity", "--format", "json", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let value = json(output);
@@ -519,7 +478,7 @@ fn data_integrity_reports_a_non_canonical_value_as_data_decode() {
 
 #[test]
 fn data_integrity_reports_a_corrupt_identity_leaf_as_data_decode() {
-    let project = temp_dir("data-integrity-identity");
+    let project = support::temp_dir("data-integrity-identity");
     write(
         &project,
         "marrow.json",
@@ -548,7 +507,6 @@ fn data_integrity_reports_a_corrupt_identity_leaf_as_data_decode() {
     );
 
     let output = marrow(&["data", "integrity", "--format", "json", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let value = json(output);
@@ -561,7 +519,7 @@ fn data_integrity_reports_a_corrupt_identity_leaf_as_data_decode() {
 
 #[test]
 fn data_integrity_reports_a_wrong_typed_identity_leaf_as_data_key_type() {
-    let project = temp_dir("data-integrity-identity-key-type");
+    let project = support::temp_dir("data-integrity-identity-key-type");
     write(
         &project,
         "marrow.json",
@@ -589,7 +547,6 @@ fn data_integrity_reports_a_wrong_typed_identity_leaf_as_data_key_type() {
     );
 
     let output = marrow(&["data", "integrity", "--format", "json", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let value = json(output);
@@ -602,7 +559,7 @@ fn data_integrity_reports_a_wrong_typed_identity_leaf_as_data_key_type() {
 
 #[test]
 fn data_integrity_reports_a_wrong_typed_keyed_member_key_as_data_key_type() {
-    let project = temp_dir("data-integrity-layer-key-type");
+    let project = support::temp_dir("data-integrity-layer-key-type");
     write(
         &project,
         "marrow.json",
@@ -626,7 +583,6 @@ fn data_integrity_reports_a_wrong_typed_keyed_member_key_as_data_key_type() {
     );
 
     let output = marrow(&["data", "integrity", "--format", "json", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let value = json(output);
@@ -651,7 +607,6 @@ fn data_integrity_reports_a_wrong_typed_record_key_as_data_key_type() {
     );
 
     let output = marrow(&["data", "integrity", "--format", "json", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let value = json(output);
@@ -660,11 +615,10 @@ fn data_integrity_reports_a_wrong_typed_record_key_as_data_key_type() {
 
 #[test]
 fn data_get_reads_a_path_value_and_reports_absence() {
-    let (project, dir) = seeded_project("data-get");
+    let (_project, dir) = seeded_project("data-get");
     let present = marrow(&["data", "get", &dir, "^counter(1).value"]);
     let absent = marrow(&["data", "get", &dir, "^counter(2).value"]);
     let malformed = marrow(&["data", "get", &dir, "counter(1)"]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(present.status.code(), Some(0), "{present:?}");
     assert!(
@@ -688,9 +642,8 @@ fn data_get_reads_a_path_value_and_reports_absence() {
 fn data_get_distinguishes_a_children_only_path_from_absent() {
     // `^counter(1)` is a record identity node: it has a `.value` child but no
     // direct value, so `get` must report it differently from a truly absent path.
-    let (project, dir) = seeded_project("data-get-children");
+    let (_project, dir) = seeded_project("data-get-children");
     let children = marrow(&["data", "get", &dir, "^counter(1)"]);
-    fs::remove_dir_all(&project).ok();
     assert_eq!(children.status.code(), Some(0), "{children:?}");
     let out = String::from_utf8(children.stdout).unwrap();
     assert!(
@@ -707,7 +660,6 @@ fn data_get_and_integrity_on_an_unseeded_project_create_nothing() {
     let integrity = marrow(&["data", "integrity", &dir]);
     // Read-only: no command may create the store file.
     let created = project.join(".data").join("marrow.redb").exists();
-    fs::remove_dir_all(&project).ok();
 
     // An absent path on an empty store is a successful, queryable absence.
     assert_eq!(get.status.code(), Some(0), "{get:?}");
@@ -722,9 +674,8 @@ fn data_get_and_integrity_on_an_unseeded_project_create_nothing() {
 
 #[test]
 fn data_roots_format_json_emits_a_structured_envelope() {
-    let (project, dir) = seeded_project("data-roots-json");
+    let (_project, dir) = seeded_project("data-roots-json");
     let output = marrow(&["data", "roots", "--format", "json", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
@@ -735,9 +686,8 @@ fn data_roots_format_json_emits_a_structured_envelope() {
 
 #[test]
 fn data_stats_format_json_emits_counts() {
-    let (project, dir) = seeded_project("data-stats-json");
+    let (_project, dir) = seeded_project("data-stats-json");
     let output = marrow(&["data", "stats", "--format", "json", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
@@ -767,7 +717,6 @@ fn data_commands_page_through_large_native_store() {
     let stats = marrow(&["data", "stats", "--format", "json", &dir]);
     let dump = marrow(&["data", "dump", "--format", "jsonl", &dir]);
     let integrity = marrow(&["data", "integrity", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(stats.status.code(), Some(0), "{stats:?}");
     let stats_json: serde_json::Value = serde_json::from_slice(&stats.stdout).expect("stats json");
@@ -790,9 +739,8 @@ fn data_commands_page_through_large_native_store() {
 
 #[test]
 fn data_dump_format_jsonl_emits_a_record_then_a_summary() {
-    let (project, dir) = seeded_project("data-dump-jsonl");
+    let (_project, dir) = seeded_project("data-dump-jsonl");
     let output = marrow(&["data", "dump", "--format", "jsonl", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
@@ -820,7 +768,6 @@ fn data_integrity_format_json_problems_carry_a_tooling_kind() {
     );
 
     let output = marrow(&["data", "integrity", "--format", "json", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");

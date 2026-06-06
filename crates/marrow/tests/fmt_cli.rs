@@ -1,23 +1,11 @@
 use std::fs;
-use std::process::Command;
 
-fn temp_source(name: &str, source: &str) -> std::path::PathBuf {
-    let mut path = std::env::temp_dir();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_nanos();
-    path.push(format!("marrow-{name}-{}-{nanos}.mw", std::process::id()));
-    fs::write(&path, source).expect("write source");
-    path
-}
+mod support;
+
+use support::temp_source;
 
 fn run_fmt(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .arg("fmt")
-        .args(args)
-        .output()
-        .expect("run marrow fmt")
+    support::marrow_sub("fmt", args)
 }
 
 #[test]
@@ -123,18 +111,11 @@ fn fmt_write_refuses_unexpected_indentation_without_rewriting() {
 
 /// A temp project directory with a `marrow.json` selecting `src` and one `.mw`
 /// file written there.
-fn temp_project(name: &str, relative: &str, source: &str) -> std::path::PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&root).expect("create project");
-    fs::write(root.join("marrow.json"), r#"{ "sourceRoots": ["src"] }"#).expect("write config");
-    let file = root.join(relative);
-    fs::create_dir_all(file.parent().unwrap()).expect("create dirs");
-    fs::write(&file, source).expect("write source");
-    root
+fn temp_project(name: &str, relative: &str, source: &str) -> support::TempProject {
+    support::temp_project_uncommitted(name, |root| {
+        support::write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        support::write(root, relative, source);
+    })
 }
 
 #[test]
@@ -145,7 +126,6 @@ fn fmt_check_on_a_project_directory_passes_when_all_files_are_formatted() {
         "module app\n\nconst Max: int = 5\n",
     );
     let output = run_fmt(&["--check", project.to_str().unwrap()]);
-    fs::remove_dir_all(&project).ok();
     assert_eq!(output.status.code(), Some(0), "{output:?}");
 }
 
@@ -157,7 +137,6 @@ fn fmt_check_on_a_project_directory_fails_when_a_file_is_unformatted() {
         "module app\nconst Max:int=5\n",
     );
     let output = run_fmt(&["--check", project.to_str().unwrap()]);
-    fs::remove_dir_all(&project).ok();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
     assert!(stderr.contains("not formatted"), "{stderr}");
@@ -172,24 +151,14 @@ fn fmt_write_on_a_project_directory_rewrites_each_changed_file() {
     );
     let output = run_fmt(&["--write", project.to_str().unwrap()]);
     let written = fs::read_to_string(project.join("src/app.mw")).expect("read back");
-    fs::remove_dir_all(&project).ok();
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert_eq!(written, "module app\n\nconst Max: int = 5\n");
 }
 
 #[test]
 fn fmt_on_a_directory_with_no_config_reports_a_typed_error_not_is_a_directory() {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "marrow-fmt-noconfig-{}-{nanos}",
-        std::process::id()
-    ));
-    fs::create_dir_all(&dir).expect("create dir");
+    let dir = support::temp_dir("fmt-noconfig");
     let output = run_fmt(&["--check", dir.to_str().unwrap()]);
-    fs::remove_dir_all(&dir).ok();
 
     // A directory with no marrow.json is a typed error about the config file
     // (exit 1, matching `check`'s `io.read` precedent), not a raw OS "Is a
@@ -206,7 +175,6 @@ fn fmt_on_a_directory_with_invalid_config_reports_a_config_error() {
     // Overwrite with an invalid config (no source roots) to force a `config.*`.
     fs::write(project.join("marrow.json"), r#"{ "sourceRoots": [] }"#).expect("write config");
     let output = run_fmt(&["--check", project.to_str().unwrap()]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
@@ -217,7 +185,6 @@ fn fmt_on_a_directory_with_invalid_config_reports_a_config_error() {
 fn fmt_of_a_bare_directory_requires_check_or_write() {
     let project = temp_project("fmt-proj-bare", "src/app.mw", "module app\n");
     let output = run_fmt(&[project.to_str().unwrap()]);
-    fs::remove_dir_all(&project).ok();
     // Concatenating many formatted files to stdout is meaningless; require a mode.
     assert_eq!(output.status.code(), Some(2), "{output:?}");
 }

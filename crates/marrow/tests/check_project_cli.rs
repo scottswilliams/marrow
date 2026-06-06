@@ -1,46 +1,19 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
 use serde_json::Value;
 
 mod support;
 
-fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&root).expect("create project root");
-    build(&root);
-    root
-}
-
-fn write(root: &Path, relative: &str, contents: &str) {
-    let path = root.join(relative);
-    fs::create_dir_all(path.parent().unwrap()).expect("create dirs");
-    fs::write(path, contents).expect("write file");
-}
+use support::{temp_project_uncommitted as temp_project, write};
 
 fn run_check(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .arg("check")
-        .args(args)
-        .output()
-        .expect("run marrow check")
-}
-
-fn codes(records: &[Value]) -> Vec<&str> {
-    support::codes(records)
+    support::marrow_sub("check", args)
 }
 
 fn assert_has_code(records: &[Value], code: &str) {
-    assert!(codes(records).contains(&code), "{records:#?}");
+    assert!(support::codes(records).contains(&code), "{records:#?}");
 }
 
 fn assert_lacks_code(records: &[Value], code: &str) {
-    assert!(!codes(records).contains(&code), "{records:#?}");
+    assert!(!support::codes(records).contains(&code), "{records:#?}");
 }
 
 fn assert_has_file(records: &[Value], suffix: &str) {
@@ -60,7 +33,6 @@ fn checks_a_clean_project_directory() {
         write(root, "src/main.mw", "fn main()\n    return\n");
     });
     let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let records = support::jsonl(output.stdout);
@@ -75,7 +47,6 @@ fn reports_project_module_path_mismatch() {
         write(root, "src/shelf/books.mw", "module shelf::other\n");
     });
     let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1));
     let records = support::jsonl(output.stdout);
@@ -89,7 +60,6 @@ fn reports_project_check_as_jsonl() {
         write(root, "src/shelf/books.mw", "module shelf::other\n");
     });
     let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1));
     let records = support::jsonl(output.stdout);
@@ -115,7 +85,6 @@ fn surfaces_a_parse_error_in_a_project_file_with_its_path() {
         write(root, "src/bad.mw", "module bad\n\tconst X: int = 1\n");
     });
     let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1));
     let records = support::jsonl(output.stdout);
@@ -143,7 +112,6 @@ fn project_check_reports_parse_errors_in_configured_tests() {
         );
     });
     let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let records = support::jsonl(output.stdout);
@@ -171,7 +139,6 @@ fn project_check_reports_type_errors_in_configured_tests() {
         );
     });
     let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let records = support::jsonl(output.stdout);
@@ -192,7 +159,6 @@ fn surfaces_a_parse_error_in_configured_test_files() {
         write(root, "tests/bad_test.mw", "pub fn t()\n\tapp::noop()\n");
     });
     let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let records = support::jsonl(output.stdout);
@@ -217,7 +183,6 @@ fn reports_configured_test_files_when_source_files_have_errors() {
         write(root, "tests/bad_test.mw", "pub fn t()\n\treturn\n");
     });
     let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let records = support::jsonl(output.stdout);
@@ -253,7 +218,6 @@ fn suppresses_configured_test_resolution_noise_when_source_parse_fails() {
         );
     });
     let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let records = support::jsonl(output.stdout);
@@ -285,7 +249,6 @@ fn keeps_configured_test_local_resolution_diagnostics_when_source_parse_fails() 
         );
     });
     let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let records = support::jsonl(output.stdout);
@@ -311,7 +274,6 @@ fn keeps_configured_test_local_bare_call_matching_hidden_source_module() {
         );
     });
     let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let records = support::jsonl(output.stdout);
@@ -339,7 +301,6 @@ fn keeps_configured_test_local_submodule_import_matching_hidden_source_prefix() 
         },
     );
     let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let records = support::jsonl(output.stdout);
@@ -369,7 +330,6 @@ fn keeps_configured_test_local_unresolved_call_when_another_test_has_parse_error
         );
     });
     let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let records = support::jsonl(output.stdout);
@@ -400,7 +360,6 @@ fn suppresses_unresolved_import_when_broken_configured_test_is_imported() {
         );
     });
     let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let records = support::jsonl(output.stdout);
@@ -437,7 +396,6 @@ fn ignores_declared_modules_in_broken_configured_tests_for_call_suppression() {
         },
     );
     let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let records = support::jsonl(output.stdout);
@@ -467,7 +425,6 @@ fn keeps_source_module_calls_when_broken_test_path_collides() {
         );
     });
     let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let records = support::jsonl(output.stdout);
@@ -493,7 +450,6 @@ fn keeps_test_module_calls_when_broken_source_path_collides() {
         );
     });
     let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let records = support::jsonl(output.stdout);
@@ -523,7 +479,6 @@ fn reports_duplicate_when_test_module_collides_with_source_module() {
         );
     });
     let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let records = support::jsonl(output.stdout);
@@ -557,7 +512,6 @@ fn suppresses_unknown_types_from_broken_configured_test_declarations() {
         );
     });
     let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let records = support::jsonl(output.stdout);
@@ -589,7 +543,6 @@ fn keeps_configured_test_local_type_syntax_diagnostics_when_hidden_type_names_ma
         );
     });
     let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let records = support::jsonl(output.stdout);
@@ -604,7 +557,6 @@ fn reports_missing_marrow_json() {
         write(root, "src/main.mw", "fn main()\n    return\n");
     });
     let output = run_check(&["--format", "json", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1));
     let record = support::json(output.stdout);
@@ -620,7 +572,6 @@ fn project_diagnostics_carry_the_documented_kind_envelope_field() {
         write(root, "src/shelf/books.mw", "module shelf::other\n");
     });
     let output = run_check(&["--format", "json", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
@@ -638,7 +589,6 @@ fn a_simple_config_error_carries_the_documented_kind_envelope_field() {
         write(root, "marrow.json", r#"{ "sourceRoots": [] }"#);
     });
     let output = run_check(&["--format", "json", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");

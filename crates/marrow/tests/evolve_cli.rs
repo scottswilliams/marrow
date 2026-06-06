@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use marrow_check::{
     CheckedProgram, CheckedSavedMemberKind, CheckedSavedPlace, ProjectConfig, check_project,
@@ -13,36 +12,15 @@ use marrow_store::value::{Scalar, ScalarType, decode_value, encode_value};
 
 mod support;
 
-fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&root).expect("create project root");
-    build(&root);
-    root
-}
+use support::{TempProject, marrow, temp_project_uncommitted as temp_project, write};
 
-fn write(root: &Path, relative: &str, contents: &str) {
-    let path = root.join(relative);
-    fs::create_dir_all(path.parent().unwrap()).expect("create dirs");
-    fs::write(path, contents).expect("write file");
-}
-
-fn marrow(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .args(args)
-        .output()
-        .expect("run marrow")
-}
-
-fn config(root: &Path) -> ProjectConfig {
-    let text = fs::read_to_string(root.join("marrow.json")).expect("read config");
+fn config(root: impl AsRef<Path>) -> ProjectConfig {
+    let text = fs::read_to_string(root.as_ref().join("marrow.json")).expect("read config");
     marrow_project::parse_config(&text).expect("parse config")
 }
 
-fn commit_catalog(root: &Path) -> CheckedProgram {
+fn commit_catalog(root: impl AsRef<Path>) -> CheckedProgram {
+    let root = root.as_ref();
     let config = config(root);
     let (report, program) = check_project(root, &config).expect("check for proposal");
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
@@ -53,11 +31,11 @@ fn commit_catalog(root: &Path) -> CheckedProgram {
     program
 }
 
-fn native_store_path(root: &Path) -> PathBuf {
-    root.join(".data").join("marrow.redb")
+fn native_store_path(root: impl AsRef<Path>) -> PathBuf {
+    root.as_ref().join(".data").join("marrow.redb")
 }
 
-fn open_native_store(root: &Path) -> TreeStore {
+fn open_native_store(root: impl AsRef<Path>) -> TreeStore {
     let path = native_store_path(root);
     fs::create_dir_all(path.parent().unwrap()).expect("create data dir");
     TreeStore::open(&path).expect("open native store")
@@ -156,13 +134,9 @@ fn read_scalar_by_catalog_id(
         .map(|bytes| decode_value(&bytes, ty).expect("decode value"))
 }
 
-fn native_books_project(name: &str, source: &str) -> PathBuf {
+fn native_books_project(name: &str, source: &str) -> TempProject {
     temp_project(name, |root| {
-        write(
-            root,
-            "marrow.json",
-            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
-        );
+        write(root, "marrow.json", support::native_config());
         write(root, "src/books.mw", source);
     })
 }
@@ -239,7 +213,6 @@ fn check_data_reports_repair_required_from_attached_store() {
         "json",
         root.to_str().unwrap(),
     ]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let record = support::json(output.stdout);
@@ -261,7 +234,6 @@ fn evolve_preview_reports_the_exact_witness_counts() {
     }
 
     let output = marrow(&["evolve", "preview", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
@@ -288,7 +260,6 @@ fn evolve_apply_consumes_preview_witness_and_backfills() {
         .read_commit_metadata()
         .expect("read commit")
         .expect("commit stamp");
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
@@ -334,7 +305,6 @@ fn evolve_apply_backfills_proposal_required_default_before_accepting_catalog() {
         .expect("read commit")
         .expect("commit stamp");
     let stamped_epoch = store.read_catalog_epoch().expect("store epoch");
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(catalog_epoch, baseline_epoch + 1);
     assert_eq!(commit.catalog_epoch, baseline_epoch + 1);
@@ -389,7 +359,6 @@ fn evolve_apply_resumes_proposal_default_after_store_commit() {
     }
     assert_eq!(accepted_catalog(&root).epoch, baseline_epoch + 1);
     assert_eq!(store_epoch(&root), Some(baseline_epoch + 1));
-    fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -428,7 +397,6 @@ fn evolve_apply_resumes_existing_optional_default_with_preserved_value() {
     let defaulted =
         read_scalar_by_catalog_id(&store, &accepted_place, 2, &pages_id, ScalarType::Int);
     let catalog_epoch = accepted_catalog(&root).epoch;
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(preserved, Some(Scalar::Int(7)));
     assert_eq!(defaulted, Some(Scalar::Int(0)));
@@ -467,7 +435,6 @@ fn evolve_apply_resumes_redundant_existing_optional_default_without_backfill() {
     let second_pages =
         read_scalar_by_catalog_id(&store, &accepted_place, 2, &pages_id, ScalarType::Int);
     let catalog_epoch = accepted_catalog(&root).epoch;
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(resume.status.code(), Some(0), "{resume:?}");
     assert_eq!(first_pages, Some(Scalar::Int(7)));
@@ -510,7 +477,6 @@ fn evolve_apply_resumes_proposal_transform_after_store_commit() {
     let cents =
         read_scalar_by_catalog_id(&store, &accepted_place, 1, &price_cents_id, ScalarType::Int);
     let catalog_epoch = accepted_catalog(&root).epoch;
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(cents, Some(Scalar::Int(300)));
     assert_eq!(catalog_epoch, baseline_epoch + 1);
@@ -534,7 +500,6 @@ fn evolve_apply_rejects_repair_required_witness() {
     ]);
     let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
     let pages = read_scalar(&store, &place, 1, "pages", ScalarType::Int);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let record = support::json(output.stdout);
@@ -591,7 +556,6 @@ fn evolve_preview_reports_destructive_approval_requirement() {
         "json",
         root.to_str().unwrap(),
     ]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(json.status.code(), Some(1), "{json:?}");
     let value = support::json(json.stdout);
@@ -668,7 +632,6 @@ fn evolve_apply_accepts_two_repeated_approve_retire_flags() {
     let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
     let subtitle_present = read_scalar(&store, &accepted_place, 1, "subtitle", ScalarType::Str);
     let notes_present = read_scalar(&store, &accepted_place, 1, "notes", ScalarType::Str);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
@@ -677,12 +640,13 @@ fn evolve_apply_accepts_two_repeated_approve_retire_flags() {
     assert_eq!(notes_present, None, "notes was retired");
 }
 
-fn accepted_catalog(root: &Path) -> marrow_project::CatalogMetadata {
-    let json = fs::read_to_string(root.join("marrow.catalog.json")).expect("read accepted catalog");
+fn accepted_catalog(root: impl AsRef<Path>) -> marrow_project::CatalogMetadata {
+    let json = fs::read_to_string(root.as_ref().join("marrow.catalog.json"))
+        .expect("read accepted catalog");
     marrow_project::CatalogMetadata::from_json(&json).expect("parse accepted catalog")
 }
 
-fn accepted_catalog_entry_id(root: &Path, path: &str) -> String {
+fn accepted_catalog_entry_id(root: impl AsRef<Path>, path: &str) -> String {
     accepted_catalog(root)
         .entries
         .into_iter()
@@ -691,7 +655,7 @@ fn accepted_catalog_entry_id(root: &Path, path: &str) -> String {
         .stable_id
 }
 
-fn store_epoch(root: &Path) -> Option<u64> {
+fn store_epoch(root: impl AsRef<Path>) -> Option<u64> {
     let store = TreeStore::open(&native_store_path(root)).expect("reopen native store");
     store.read_catalog_epoch().expect("read store epoch")
 }
@@ -826,7 +790,6 @@ fn evolve_apply_advances_accepted_catalog_in_lockstep_for_retire() {
     // later run as `run.store_evolved` with no recovery; the lockstep advance keeps the
     // file and store at one epoch, so the fence never reports the store as evolved.
     let run = marrow(&["run", "--entry", "books::add", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
     let stderr = String::from_utf8(run.stderr).expect("stderr utf8");
     assert!(
         !stderr.contains("run.store_evolved"),
@@ -892,7 +855,6 @@ fn evolve_apply_advances_accepted_catalog_in_lockstep_for_rename() {
     );
 
     let run = marrow(&["run", "--entry", "books::add", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
     let stderr = String::from_utf8(run.stderr).expect("stderr utf8");
     assert!(
         !stderr.contains("run.store_evolved"),
@@ -942,7 +904,6 @@ fn run_succeeds_after_rename_apply_with_block_present_or_deleted() {
 
     write(&root, "src/books.mw", RENAME_BLOCK_DELETED_SOURCE);
     let deleted = marrow(&["run", "--entry", "books::seed", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
     assert_eq!(
         deleted.status.code(),
         Some(0),
@@ -998,7 +959,6 @@ fn run_succeeds_after_retire_apply_with_block_present_or_deleted() {
 
     write(&root, "src/books.mw", RETIRE_BLOCK_DELETED_SOURCE);
     let deleted = marrow(&["run", "--entry", "books::seed", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
     assert_eq!(
         deleted.status.code(),
         Some(0),
@@ -1073,7 +1033,6 @@ fn evolve_apply_resumes_a_half_applied_store_by_writing_the_file_only() {
     );
 
     let run = marrow(&["run", "--entry", "books::add", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
     let stderr = String::from_utf8(run.stderr).expect("stderr utf8");
     assert!(
         !stderr.contains("run.store_evolved"),
@@ -1144,7 +1103,6 @@ fn evolve_apply_resume_fails_closed_when_source_diverges_from_the_store_commit()
     assert_eq!(store_epoch(&root), Some(baseline_epoch + 1));
     let code = resume.status.code();
     let record = support::json(resume.stdout);
-    fs::remove_dir_all(&root).ok();
     assert_eq!(code, Some(1), "resume fails closed: {code:?} {record}");
     assert_eq!(
         record["code"],
@@ -1189,7 +1147,6 @@ fn evolve_apply_noop_when_store_and_file_already_at_target() {
         .expect("read commit")
         .expect("commit stamp")
         .commit_id;
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(before, after, "no-op apply does not churn the catalog file");
     assert_eq!(
@@ -1203,7 +1160,6 @@ fn legacy_evolution_subcommands_are_absent() {
     let root = native_books_project("evolve-legacy", REQUIRED_DEFAULT_SOURCE);
 
     let output = marrow(&["evolve", "migrate", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");

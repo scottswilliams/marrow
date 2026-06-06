@@ -1,60 +1,30 @@
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 
 mod support;
 
-fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&root).expect("create project root");
-    build(&root);
-    support::commit_catalog_if_clean(&root);
-    root
-}
-
-fn write(root: &Path, relative: &str, contents: &str) {
-    let path = root.join(relative);
-    fs::create_dir_all(path.parent().unwrap()).expect("create dirs");
-    fs::write(path, contents).expect("write file");
-}
-
-fn run_run(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .arg("run")
-        .args(args)
-        .output()
-        .expect("run marrow run")
-}
+use support::{TempProject, marrow, marrow_sub, temp_project, write};
 
 /// A native-store project with a saved root but no committed catalog: checking it
-/// proposes durable identity that no flow has frozen yet. Built without the support
-/// helper so the catalog stays pending until a run commits it.
-fn pending_native_project(name: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&root).expect("create project root");
-    write(
-        &root,
-        "marrow.json",
-        r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
-    );
-    write(
-        &root,
-        "src/app.mw",
-        "module app\n\
-         resource Book at ^books(id: int)\n\
-         \x20   required title: string\n\
-         pub fn main()\n\
-         \x20   print(\"ran\")\n",
-    );
-    root
+/// proposes durable identity that no flow has frozen yet. Built without committing
+/// so the catalog stays pending until a run commits it.
+fn pending_native_project(name: &str) -> TempProject {
+    support::temp_project_uncommitted(name, |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             pub fn main()\n\
+             \x20   print(\"ran\")\n",
+        );
+    })
 }
 
 #[test]
@@ -64,7 +34,6 @@ fn check_on_a_pending_project_exits_zero_and_writes_no_catalog() {
 
     let output = marrow(&["check", root.to_str().unwrap()]);
     let catalog_written = catalog.exists();
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert!(
@@ -82,9 +51,8 @@ fn run_commits_the_pending_catalog_transparently() {
         "fixture starts with no committed catalog"
     );
 
-    let output = run_run(&[root.to_str().unwrap()]);
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
     let committed = fs::read_to_string(&catalog).ok();
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
@@ -98,13 +66,12 @@ fn a_second_run_on_an_accepted_catalog_does_not_churn_it() {
     let root = pending_native_project("run-accepted-noop");
     let catalog = root.join("marrow.catalog.json");
 
-    let first = run_run(&[root.to_str().unwrap()]);
+    let first = marrow_sub("run", &[root.to_str().unwrap()]);
     assert_eq!(first.status.code(), Some(0), "{first:?}");
     let after_first = fs::read_to_string(&catalog).expect("first run commits the catalog");
 
-    let second = run_run(&[root.to_str().unwrap()]);
+    let second = marrow_sub("run", &[root.to_str().unwrap()]);
     let after_second = fs::read_to_string(&catalog).expect("catalog still present");
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(second.status.code(), Some(0), "{second:?}");
     assert_eq!(
@@ -127,8 +94,7 @@ fn runs_the_default_entry_and_prints_its_output() {
             "module app\n\npub fn main()\n    print(\"hello from marrow\")\n",
         );
     });
-    let output = run_run(&[root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
@@ -149,8 +115,7 @@ fn entry_flag_overrides_the_default_entry() {
             "module app\n\npub fn main()\n    print(\"main\")\n\npub fn greet()\n    print(\"greet\")\n",
         );
     });
-    let output = run_run(&["--entry", "app::greet", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
+    let output = marrow_sub("run", &["--entry", "app::greet", root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
@@ -167,8 +132,7 @@ fn bare_entry_flag_resolves_a_unique_public_function() {
             "module util\n\npub fn helper(): int\n    print(\"helper ran\")\n    return 1\n",
         );
     });
-    let output = run_run(&["--entry", "helper", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
+    let output = marrow_sub("run", &["--entry", "helper", root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
@@ -190,8 +154,7 @@ fn bare_entry_flag_rejects_ambiguous_public_functions() {
             "module admin\n\npub fn main()\n    print(\"admin\")\n",
         );
     });
-    let output = run_run(&["--entry", "main", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
+    let output = marrow_sub("run", &["--entry", "main", root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
@@ -208,8 +171,7 @@ fn entry_flag_rejects_private_functions() {
             "module app\n\nfn main()\n    print(\"private\")\n",
         );
     });
-    let output = run_run(&["--entry", "app::main", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
+    let output = marrow_sub("run", &["--entry", "app::main", root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
@@ -218,7 +180,10 @@ fn entry_flag_rejects_private_functions() {
 
 #[test]
 fn run_rejects_duplicate_format_flag() {
-    let output = run_run(&["--format", "json", "--format", "text", "missing-project"]);
+    let output = marrow_sub(
+        "run",
+        &["--format", "json", "--format", "text", "missing-project"],
+    );
 
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
@@ -230,7 +195,7 @@ fn a_plain_run_rejects_format_because_it_shapes_no_report() {
     // A plain run's only output is the program's own stream, which `--format` cannot
     // shape, so the flag is a usage error rather than silently ignored. Only `--trace`
     // and `--dry-run` emit a report that `--format` controls.
-    let output = run_run(&["--format", "json", "missing-project"]);
+    let output = marrow_sub("run", &["--format", "json", "missing-project"]);
 
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
@@ -256,8 +221,7 @@ fn module_constants_are_bound_at_runtime() {
              \x20\x20\x20\x20print($\"{Label}={Base + Offset}\")\n",
         );
     });
-    let output = run_run(&[root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
@@ -296,9 +260,8 @@ fn native_store_persists_writes_across_runs() {
     let dir = root.to_str().unwrap().to_string();
     // One process writes the counter; a second process reads it back. Only a
     // persistent store carries the write across the two runs.
-    let first = run_run(&["--entry", "shelf::bump", &dir]);
-    let second = run_run(&["--entry", "shelf::show", &dir]);
-    fs::remove_dir_all(&root).ok();
+    let first = marrow_sub("run", &["--entry", "shelf::bump", &dir]);
+    let second = marrow_sub("run", &["--entry", "shelf::show", &dir]);
 
     assert_eq!(first.status.code(), Some(0), "bump: {first:?}");
     assert_eq!(second.status.code(), Some(0), "show: {second:?}");
@@ -316,8 +279,7 @@ fn reports_a_missing_entry() {
             "module app\n\npub fn main()\n    print(\"hi\")\n",
         );
     });
-    let output = run_run(&[root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
@@ -331,8 +293,7 @@ fn refuses_to_run_a_project_that_does_not_check() {
         // The path implies module `shelf::books`, but the file declares another.
         write(root, "src/shelf/books.mw", "module shelf::other\n");
     });
-    let output = run_run(&[root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
@@ -353,8 +314,7 @@ fn native_store_requires_a_data_dir() {
             "module app\n\npub fn main()\n    print(\"hi\")\n",
         );
     });
-    let output = run_run(&[root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
@@ -377,8 +337,7 @@ fn an_uncaught_throw_exits_one_with_the_thrown_code_on_stderr() {
             "module app\n\npub fn main()\n    throw Error(code: \"book.absent\", message: \"no book\")\n",
         );
     });
-    let output = run_run(&[root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
@@ -404,8 +363,7 @@ fn an_uncaught_unique_conflict_exits_one_with_its_write_code_on_stderr() {
              pub fn main()\n    ^books(1).title = \"Mort\"\n    ^books(1).isbn = \"978-0\"\n    ^books(2).title = \"Pyramids\"\n    ^books(2).isbn = \"978-0\"\n",
         );
     });
-    let output = run_run(&[root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
@@ -422,8 +380,7 @@ fn maps_an_unknown_entry_to_a_runtime_code() {
             "module app\n\npub fn main()\n    print(\"hi\")\n",
         );
     });
-    let output = run_run(&["--entry", "app::nope", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
+    let output = marrow_sub("run", &["--entry", "app::nope", root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
@@ -455,8 +412,7 @@ fn run_cli_executes_identity_oriented_collection_loops() {
              \x20\x20\x20\x20\x20\x20\x20\x20print(^books(1).tags(pos))\n",
         );
     });
-    let output = run_run(&[root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
@@ -494,11 +450,11 @@ fn maintenance_flag_gates_a_whole_root_drop() {
     });
     let dir = root.to_str().unwrap().to_string();
 
-    let seed = run_run(&["--entry", "app::seed", &dir]);
+    let seed = marrow_sub("run", &["--entry", "app::seed", &dir]);
     assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
 
     // Default run cannot drop the whole root.
-    let denied = run_run(&["--entry", "app::drop_root", &dir]);
+    let denied = marrow_sub("run", &["--entry", "app::drop_root", &dir]);
     assert_eq!(denied.status.code(), Some(1), "denied: {denied:?}");
     let denied_err = String::from_utf8(denied.stderr).expect("stderr utf8");
     assert!(
@@ -507,12 +463,11 @@ fn maintenance_flag_gates_a_whole_root_drop() {
     );
 
     // Explicit maintenance opt-in performs the drop.
-    let allowed = run_run(&["--maintenance", "--entry", "app::drop_root", &dir]);
+    let allowed = marrow_sub("run", &["--maintenance", "--entry", "app::drop_root", &dir]);
     assert_eq!(allowed.status.code(), Some(0), "allowed: {allowed:?}");
 
     // After the drop, no records remain.
-    let after = run_run(&["--entry", "app::countRecords", &dir]);
-    fs::remove_dir_all(&root).ok();
+    let after = marrow_sub("run", &["--entry", "app::countRecords", &dir]);
     assert_eq!(after.status.code(), Some(0), "count: {after:?}");
     let after_out = String::from_utf8(after.stdout).expect("stdout utf8");
     assert_eq!(after_out, "count=0\n");
@@ -520,18 +475,11 @@ fn maintenance_flag_gates_a_whole_root_drop() {
 
 #[test]
 fn maintenance_flag_appears_in_help() {
-    let output = run_run(&["--help"]);
+    let output = marrow_sub("run", &["--help"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
     assert!(stdout.contains("--maintenance"), "{stdout}");
     assert!(stdout.contains("data evolution"), "{stdout}");
-}
-
-fn marrow(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .args(args)
-        .output()
-        .expect("run marrow")
 }
 
 #[test]
@@ -565,11 +513,10 @@ fn a_same_named_enum_in_another_module_does_not_alias() {
         );
     });
     let dir = root.to_str().unwrap().to_string();
-    let run = run_run(&[&dir]);
+    let run = marrow_sub("run", &[&dir]);
     assert_eq!(run.status.code(), Some(0), "seed: {run:?}");
 
-    let got = run_run(&["--entry", "b::show", &dir]);
-    fs::remove_dir_all(&root).ok();
+    let got = marrow_sub("run", &["--entry", "b::show", &dir]);
     assert_eq!(got.status.code(), Some(0), "show: {got:?}");
     let stdout = String::from_utf8(got.stdout).expect("stdout utf8");
     assert_eq!(stdout, "active\n");
@@ -606,9 +553,8 @@ fn a_match_over_a_saved_enum_field_dispatches_through_the_real_pipeline() {
         );
     });
     let dir = root.to_str().unwrap().to_string();
-    let seed = run_run(&["--entry", "app::seed", &dir]);
-    let label = run_run(&["--entry", "app::label", &dir]);
-    fs::remove_dir_all(&root).ok();
+    let seed = marrow_sub("run", &["--entry", "app::seed", &dir]);
+    let label = marrow_sub("run", &["--entry", "app::label", &dir]);
 
     assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
     assert_eq!(label.status.code(), Some(0), "label: {label:?}");
@@ -643,9 +589,8 @@ fn equality_on_a_saved_enum_field_dispatches_through_the_real_pipeline() {
         );
     });
     let dir = root.to_str().unwrap().to_string();
-    let seed = run_run(&["--entry", "app::seed", &dir]);
-    let check = run_run(&["--entry", "app::check", &dir]);
-    fs::remove_dir_all(&root).ok();
+    let seed = marrow_sub("run", &["--entry", "app::seed", &dir]);
+    let check = marrow_sub("run", &["--entry", "app::check", &dir]);
 
     assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
     assert_eq!(check.status.code(), Some(0), "check: {check:?}");
@@ -676,8 +621,7 @@ fn a_qualified_enum_member_literal_resolves_to_the_owning_enum() {
         );
     });
     let dir = root.to_str().unwrap().to_string();
-    let show = run_run(&["--entry", "a::show", &dir]);
-    fs::remove_dir_all(&root).ok();
+    let show = marrow_sub("run", &["--entry", "a::show", &dir]);
 
     assert_eq!(show.status.code(), Some(0), "show: {show:?}");
     let stdout = String::from_utf8(show.stdout).expect("stdout utf8");
@@ -715,8 +659,7 @@ fn a_nested_module_qualified_enum_program_checks_and_runs() {
         );
     });
     let dir = root.to_str().unwrap().to_string();
-    let run = run_run(&[&dir]);
-    fs::remove_dir_all(&root).ok();
+    let run = marrow_sub("run", &[&dir]);
 
     assert_eq!(run.status.code(), Some(0), "run: {run:?}");
     let stdout = String::from_utf8(run.stdout).expect("stdout utf8");
@@ -765,7 +708,6 @@ fn an_aliased_annotation_rejects_a_foreign_enum_argument() {
     });
     let dir = root.to_str().unwrap().to_string();
     let check = marrow(&["check", &dir]);
-    fs::remove_dir_all(&root).ok();
     assert_eq!(check.status.code(), Some(1), "check: {check:?}");
     let stderr = String::from_utf8(check.stderr).expect("stderr utf8");
     assert!(
@@ -800,8 +742,7 @@ fn an_aliased_enum_literal_checks_and_runs() {
         );
     });
     let dir = root.to_str().unwrap().to_string();
-    let run = run_run(&[&dir]);
-    fs::remove_dir_all(&root).ok();
+    let run = marrow_sub("run", &[&dir]);
     assert_eq!(run.status.code(), Some(0), "run: {run:?}");
     let stdout = String::from_utf8(run.stdout).expect("stdout utf8");
     assert_eq!(stdout, "1\n");
@@ -836,8 +777,7 @@ fn an_aliased_enum_literal_binds_to_the_imported_module_not_a_top_level_homonym(
         );
     });
     let dir = root.to_str().unwrap().to_string();
-    let run = run_run(&[&dir]);
-    fs::remove_dir_all(&root).ok();
+    let run = marrow_sub("run", &[&dir]);
     assert_eq!(run.status.code(), Some(0), "run: {run:?}");
     // The imported module returns 0; the top-level homonym returns 1.
     let stdout = String::from_utf8(run.stdout).expect("stdout utf8");
@@ -872,7 +812,6 @@ fn a_cross_module_same_named_enum_mismatch_names_both_modules() {
     });
     let dir = root.to_str().unwrap().to_string();
     let check = marrow(&["check", &dir]);
-    fs::remove_dir_all(&root).ok();
     assert_eq!(check.status.code(), Some(1), "check: {check:?}");
     let stderr = String::from_utf8(check.stderr).expect("stderr utf8");
     assert!(
@@ -898,8 +837,7 @@ fn an_uncaught_fault_is_located_on_stderr() {
             "module app\n\npub fn main(): int\n    var n: int = 1\n    return n % 0\n",
         );
     });
-    let output = run_run(&[root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
@@ -933,8 +871,7 @@ fn a_cross_module_fault_names_the_callee_file() {
             "module lib\n\npub fn boom(): int\n    var n: int = 1\n    return n % 0\n",
         );
     });
-    let output = run_run(&[root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
@@ -959,8 +896,7 @@ fn an_overflow_fault_is_located() {
             "module app\n\npub fn main(): int\n    var n: int = 9223372036854775807\n    return n + 1\n",
         );
     });
-    let output = run_run(&[root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
@@ -985,8 +921,7 @@ fn an_absent_element_fault_is_located() {
              pub fn main(): string\n    return ^books(99).title\n",
         );
     });
-    let output = run_run(&[root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
@@ -1010,8 +945,7 @@ fn an_uncaught_throw_is_located() {
             "module app\n\npub fn main()\n    throw Error(code: \"book.absent\", message: \"no book\")\n",
         );
     });
-    let output = run_run(&[root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
@@ -1033,8 +967,7 @@ fn a_fault_with_no_origin_keeps_the_bare_fallback() {
             "module app\n\npub fn main()\n    print(\"hi\")\n",
         );
     });
-    let output = run_run(&["--entry", "app::nope", root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
+    let output = marrow_sub("run", &["--entry", "app::nope", root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
@@ -1061,8 +994,7 @@ fn runs_a_module_less_script_bare_entry() {
             "pub fn main()\n    print(\"from a script\")\n",
         );
     });
-    let output = run_run(&[root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
@@ -1105,8 +1037,7 @@ fn run_is_fenced_when_store_evolved_past_the_project_epoch() {
             .expect("stamp profile");
     }
 
-    let output = run_run(&[root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
@@ -1136,7 +1067,7 @@ fn run_rejects_populated_unstamped_accepted_store() {
     });
     let config_text = fs::read_to_string(root.join("marrow.json")).expect("read config");
     let config = marrow_project::parse_config(&config_text).expect("parse config");
-    let (report, program) = marrow_check::check_project(&root, &config).expect("check");
+    let (report, program) = marrow_check::check_project(root.path(), &config).expect("check");
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let place = marrow_check::checked_saved_root_place(
         &program,
@@ -1177,8 +1108,7 @@ fn run_rejects_populated_unstamped_accepted_store() {
             .expect("write value");
     }
 
-    let output = run_run(&[root.to_str().unwrap()]);
-    fs::remove_dir_all(&root).ok();
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");

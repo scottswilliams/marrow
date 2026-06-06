@@ -1,9 +1,13 @@
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use serde_json::{Value, json};
+
+mod support;
+
+use support::{temp_dir as temp_project, write};
 
 /// Frame one JSON-RPC body the way LSP expects: a `Content-Length` header (byte
 /// length), a blank line, then the JSON.
@@ -78,24 +82,8 @@ fn shutdown_exit() -> Vec<u8> {
     bytes
 }
 
-fn temp_project(name: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_nanos())
-        .unwrap_or(0);
-    let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&root).expect("create project root");
-    root
-}
-
-fn write(root: &Path, relative: &str, contents: &str) {
-    let path = root.join(relative);
-    fs::create_dir_all(path.parent().unwrap()).expect("create dirs");
-    fs::write(path, contents).expect("write file");
-}
-
-fn file_uri(path: &Path) -> String {
-    format!("file://{}", path.display())
+fn file_uri(path: impl AsRef<Path>) -> String {
+    format!("file://{}", path.as_ref().display())
 }
 
 #[test]
@@ -849,7 +837,7 @@ fn did_open_outside_project_sources_falls_back_to_parse_diagnostics() {
     write(&root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
     write(&root, "src/app.mw", "module app\n");
     let root_uri = file_uri(&root);
-    let file_uri = file_uri(&root.join("scratch.mw"));
+    let file_uri = file_uri(root.join("scratch.mw"));
 
     let mut input = initialize_with_root(&root_uri);
     input.extend(frame(&json!({

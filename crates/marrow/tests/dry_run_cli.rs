@@ -1,33 +1,6 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
 mod support;
 
-fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&root).expect("create project root");
-    build(&root);
-    support::commit_catalog_if_clean(&root);
-    root
-}
-
-fn write(root: &Path, relative: &str, contents: &str) {
-    let path = root.join(relative);
-    fs::create_dir_all(path.parent().unwrap()).expect("create dirs");
-    fs::write(path, contents).expect("write file");
-}
-
-fn marrow(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .args(args)
-        .output()
-        .expect("run marrow")
-}
+use support::{marrow, temp_project, write};
 
 /// A native-store project whose entry writes one field inside a `transaction`,
 /// plus a reader that dumps the store and a second writer for the dry-vs-real
@@ -41,7 +14,7 @@ const SRC: &str = "module app\n\n\
                    \x20\x20\x20\x20\x20\x20\x20\x20^books(1).title = \"Mort\"\n\
                    \x20\x20\x20\x20\x20\x20\x20\x20^books(1).pages = 272\n";
 
-fn native_project(name: &str) -> PathBuf {
+fn native_project(name: &str) -> support::TempProject {
     temp_project(name, |root| {
         write(
             root,
@@ -72,7 +45,6 @@ fn dry_run_leaves_the_store_byte_for_byte_unchanged() {
 
     // The store is unchanged: the dump after matches the dump before.
     let after = marrow(&["data", "dump", &dir]);
-    fs::remove_dir_all(&project).ok();
     assert_eq!(after.status.code(), Some(0), "after: {after:?}");
     assert_eq!(
         before.stdout, after.stdout,
@@ -110,8 +82,6 @@ fn dry_run_plan_matches_a_real_run() {
     );
     let real_dump = marrow(&["data", "dump", &real_dir]);
     let real_out = String::from_utf8(real_dump.stdout).expect("utf8");
-    fs::remove_dir_all(&dry_project).ok();
-    fs::remove_dir_all(&real_project).ok();
 
     // Every planned field write the dry run reported is present in the real store.
     for path in &planned_paths {
@@ -150,7 +120,6 @@ fn dry_run_renders_a_bool_write_as_its_typed_value() {
     });
     let dir = project.to_str().unwrap().to_string();
     let output = marrow(&["run", "--dry-run", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("utf8");
@@ -232,7 +201,6 @@ fn dry_run_reports_maintenance_whole_root_deletes() {
     );
 
     let dump = marrow(&["data", "dump", &dir]);
-    fs::remove_dir_all(&project).ok();
     assert_eq!(dump.status.code(), Some(0), "dump: {dump:?}");
     let dump_out = String::from_utf8(dump.stdout).expect("utf8");
     assert!(
@@ -300,7 +268,6 @@ fn dry_run_reports_non_root_deletes() {
     );
 
     let dump = marrow(&["data", "dump", &dir]);
-    fs::remove_dir_all(&project).ok();
     assert_eq!(dump.status.code(), Some(0), "dump: {dump:?}");
     let dump_out = String::from_utf8(dump.stdout).expect("utf8");
     assert!(
@@ -332,7 +299,6 @@ fn dry_run_keeps_the_program_output_on_stdout() {
     });
     let dir = project.to_str().unwrap().to_string();
     let output = marrow(&["run", "--dry-run", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
@@ -356,7 +322,6 @@ fn dry_run_composes_with_trace() {
 
     // The store is still empty after the composed dry run.
     let dump = marrow(&["data", "dump", &dir]);
-    fs::remove_dir_all(&project).ok();
     let dump_out = String::from_utf8(dump.stdout).expect("utf8");
     assert!(
         dump_out.contains("(no saved data)"),

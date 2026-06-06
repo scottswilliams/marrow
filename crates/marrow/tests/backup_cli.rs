@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::Output;
 
 use marrow_check::checked_saved_root_place;
 use marrow_store::cell::CatalogId;
@@ -9,41 +9,20 @@ use marrow_store::tree::{DataPathSegment, TreeStore};
 
 mod support;
 
-fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&root).expect("create project root");
-    build(&root);
-    support::commit_catalog_if_clean(&root);
-    root
-}
+use support::{TempProject, marrow, temp_project, write};
 
-fn write(root: &Path, relative: &str, contents: &str) {
-    let path = root.join(relative);
-    fs::create_dir_all(path.parent().unwrap()).expect("create dirs");
-    fs::write(path, contents).expect("write file");
-}
-
-fn marrow(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .args(args)
-        .output()
-        .expect("run marrow")
-}
-
-fn json_code(output: &std::process::Output) -> String {
-    let value: serde_json::Value =
-        serde_json::from_slice(&output.stdout).expect("json error output");
-    value["code"].as_str().expect("json error code").to_string()
+/// The `code` field of a single JSON error record printed to stdout.
+fn json_code(output: &Output) -> String {
+    support::json(output.stdout.clone())["code"]
+        .as_str()
+        .expect("json error code")
+        .to_string()
 }
 
 /// A native-store project whose `seed` entry writes one book, plus its committed
 /// catalog. Running `seed` populates the store; the data directory can then be
 /// removed to model an empty restore target with the same source and catalog.
-fn seeded_project(name: &str) -> (PathBuf, PathBuf) {
+fn seeded_project(name: &str) -> (TempProject, PathBuf) {
     let root = temp_project(name, |root| {
         write(
             root,
@@ -71,7 +50,7 @@ fn seeded_project(name: &str) -> (PathBuf, PathBuf) {
     (root, data_dir)
 }
 
-fn evolution_default_project(name: &str) -> (PathBuf, PathBuf) {
+fn evolution_default_project(name: &str) -> (TempProject, PathBuf) {
     let root = temp_project(name, |root| {
         write(
             root,
@@ -97,9 +76,9 @@ fn evolution_default_project(name: &str) -> (PathBuf, PathBuf) {
     (root, data_dir)
 }
 
-fn add_pages_default_evolution(root: &Path) {
+fn add_pages_default_evolution(root: impl AsRef<Path>) {
     write(
-        root,
+        root.as_ref(),
         "src/shelf.mw",
         "module shelf\n\
          \n\
@@ -117,8 +96,8 @@ fn add_pages_default_evolution(root: &Path) {
     );
 }
 
-fn dump(root: &Path) -> String {
-    let out = marrow(&["data", "dump", root.to_str().unwrap()]);
+fn dump(root: impl AsRef<Path>) -> String {
+    let out = marrow(&["data", "dump", root.as_ref().to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(0), "data dump: {out:?}");
     String::from_utf8(out.stdout).expect("dump utf8")
 }
@@ -149,7 +128,6 @@ fn backup_then_restore_round_trips_saved_data() {
     assert_eq!(restore.status.code(), Some(0), "restore: {restore:?}");
 
     let after = dump(&root);
-    fs::remove_dir_all(&root).ok();
     assert_eq!(after, before, "restored data matches the original");
 }
 
@@ -187,7 +165,6 @@ fn restore_crash_window_backup_then_evolve_resume_completes() {
     );
 
     let after = dump(&root);
-    fs::remove_dir_all(&root).ok();
     assert!(
         after.contains("Mort") && after.contains('0'),
         "restored data survives resume: {after}"
@@ -207,7 +184,6 @@ fn restore_refuses_a_non_empty_target() {
     );
     // The store still holds the seeded data, so restore must refuse it.
     let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
-    fs::remove_dir_all(&root).ok();
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
     assert_eq!(json_code(&restore), "restore.not_empty");
 }
@@ -233,7 +209,6 @@ fn restore_rejects_a_corrupt_backup() {
 
     fs::remove_dir_all(&data_dir).expect("remove store data");
     let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
-    fs::remove_dir_all(&root).ok();
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
     assert_eq!(json_code(&restore), "restore.corrupt_chunk");
 }
@@ -241,7 +216,7 @@ fn restore_rejects_a_corrupt_backup() {
 /// A native-store project with both a non-unique and a unique index over a keyed
 /// root, plus a `seed` entry that writes several books and lookups that read through
 /// each index. Running `seed` populates the data and the maintained indexes.
-fn indexed_project(name: &str) -> (PathBuf, PathBuf) {
+fn indexed_project(name: &str) -> (TempProject, PathBuf) {
     let root = temp_project(name, |root| {
         write(
             root,
@@ -314,7 +289,6 @@ fn restore_rebuilds_indexes_usable_through_lookups() {
     // The non-unique index resolves both fiction books.
     let count = marrow(&["run", "--entry", "shelf::count_shelf", &dir]);
     let count_out = String::from_utf8_lossy(&count.stdout).to_string();
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(unique.status.code(), Some(0), "find_isbn run: {unique:?}");
     assert!(
@@ -328,7 +302,8 @@ fn restore_rebuilds_indexes_usable_through_lookups() {
     );
 }
 
-fn checked_books_place(root: &Path) -> marrow_check::CheckedSavedPlace {
+fn checked_books_place(root: impl AsRef<Path>) -> marrow_check::CheckedSavedPlace {
+    let root = root.as_ref();
     support::commit_catalog_if_clean(root);
     let config_text = fs::read_to_string(root.join("marrow.json")).expect("read config");
     let config = marrow_project::parse_config(&config_text).expect("parse config");
@@ -340,7 +315,7 @@ fn checked_books_place(root: &Path) -> marrow_check::CheckedSavedPlace {
 
 /// The real store catalog id of `^books`, read through the production check path so
 /// an orphan cell can be written under the live store but an undeclared member.
-fn store_catalog_id(root: &Path) -> CatalogId {
+fn store_catalog_id(root: impl AsRef<Path>) -> CatalogId {
     let place = checked_books_place(root);
     CatalogId::new(place.store_catalog_id.expect("accepted store catalog id"))
         .expect("store catalog id")
@@ -396,7 +371,6 @@ fn restore_rejects_a_backup_carrying_an_orphan_cell() {
     fs::remove_dir_all(&data_dir).expect("remove store data");
     let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
     let roots_after_failed_restore = marrow(&["data", "roots", &dir]);
-    fs::remove_dir_all(&root).ok();
     assert_eq!(
         restore.status.code(),
         Some(1),
@@ -447,7 +421,6 @@ fn restore_rejects_a_backup_carrying_an_impossible_data_cell_shape() {
     fs::remove_dir_all(&data_dir).expect("remove store data");
     let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
     let roots_after_failed_restore = marrow(&["data", "roots", &dir]);
-    fs::remove_dir_all(&root).ok();
     assert_eq!(
         restore.status.code(),
         Some(1),
@@ -481,7 +454,6 @@ fn restore_rejects_trailing_bytes() {
 
     fs::remove_dir_all(&data_dir).expect("remove store data");
     let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
-    fs::remove_dir_all(&root).ok();
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
     assert_eq!(json_code(&restore), "restore.corrupt_chunk");
 }
@@ -542,7 +514,6 @@ fn restore_continues_next_id_from_the_restored_data() {
 
     // After restore, nextId continues from the restored data: still 4.
     let after = marrow(&["run", "--entry", "shelf::peek_next", &dir]);
-    fs::remove_dir_all(&root).ok();
     assert!(
         String::from_utf8_lossy(&after.stdout).contains('4'),
         "nextId after restore continues from the restored data: {after:?}"
@@ -571,7 +542,6 @@ fn backup_of_an_unseeded_project_restores_empty() {
     assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
 
     let restore = marrow(&["restore", &dir, &archive_arg]);
-    fs::remove_dir_all(&root).ok();
     assert_eq!(restore.status.code(), Some(0), "restore: {restore:?}");
     assert!(
         String::from_utf8_lossy(&restore.stdout).contains("restored 0 record(s)"),

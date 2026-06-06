@@ -1,7 +1,5 @@
-use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
-use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -9,48 +7,13 @@ use serde_json::{Value, json};
 
 mod support;
 
-fn temp_dir(name: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&root).expect("create dir");
-    root
-}
+use support::{TempProject, marrow};
 
-fn write(root: &Path, relative: &str, contents: &str) {
-    let path = root.join(relative);
-    fs::create_dir_all(path.parent().unwrap()).expect("create dirs");
-    fs::write(path, contents).expect("write file");
-}
-
-const CONFIG: &str =
-    r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#;
-const SRC: &str = "module app\n\
-                   \n\
-                   resource Counter at ^counter(id: int)\n\
-                   \x20\x20\x20\x20required value: int\n\
-                   \n\
-                   pub fn seed()\n\
-                   \x20\x20\x20\x20var c: Counter\n\
-                   \x20\x20\x20\x20c.value = 42\n\
-                   \x20\x20\x20\x20transaction\n\
-                   \x20\x20\x20\x20\x20\x20\x20\x20^counter(1) = c\n";
-
-fn native_project(name: &str) -> PathBuf {
-    let root = temp_dir(name);
-    write(&root, "marrow.json", CONFIG);
-    write(&root, "src/app.mw", SRC);
-    support::commit_catalog_if_clean(&root);
-    root
-}
-
-fn marrow(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .args(args)
-        .output()
-        .expect("run marrow")
+fn native_project(name: &str) -> TempProject {
+    support::temp_project(name, |root| {
+        support::write(root, "marrow.json", support::native_config());
+        support::write(root, "src/app.mw", support::counter_source());
+    })
 }
 
 /// Spawn `marrow serve --port 0 <dir>` and return the child plus the loopback
@@ -112,7 +75,6 @@ fn serve_answers_debug_data_roots_over_a_loopback_socket() {
     let reply = request(&address, &json!({ "id": 1, "op": "debug_data_roots" }));
     child.kill().ok();
     child.wait().ok();
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(reply["id"], json!(1), "{reply}");
     assert_eq!(reply["ok"]["roots"], json!(["counter"]), "{reply}");
@@ -145,7 +107,6 @@ fn serve_answers_path_addressed_reads_over_a_loopback_socket() {
     );
     child.kill().ok();
     child.wait().ok();
-    fs::remove_dir_all(&project).ok();
 
     // The stored int 42 encodes canonically as "42", which is base64 "NDI=".
     assert_eq!(get["ok"]["presence"], json!("value_only"), "{get}");
@@ -175,7 +136,6 @@ fn serving_an_unseeded_project_serves_empty_roots_and_creates_no_store() {
     child.wait().ok();
     // Serving is read-only: it must not materialize the store file.
     let created = project.join(".data").join("marrow.redb").exists();
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(reply["ok"]["roots"], json!([]), "{reply}");
     assert!(!created, "serve must not create the store");

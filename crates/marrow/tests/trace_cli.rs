@@ -1,33 +1,6 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
 mod support;
 
-fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&root).expect("create project root");
-    build(&root);
-    support::commit_catalog_if_clean(&root);
-    root
-}
-
-fn write(root: &Path, relative: &str, contents: &str) {
-    let path = root.join(relative);
-    fs::create_dir_all(path.parent().unwrap()).expect("create dirs");
-    fs::write(path, contents).expect("write file");
-}
-
-fn marrow(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .args(args)
-        .output()
-        .expect("run marrow")
-}
+use support::{marrow, temp_project, write};
 
 #[test]
 fn run_trace_interleaves_steps_and_writes() {
@@ -54,7 +27,6 @@ fn run_trace_interleaves_steps_and_writes() {
     });
     let dir = project.to_str().unwrap().to_string();
     let output = marrow(&["run", "--trace", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
@@ -100,7 +72,6 @@ fn run_trace_renders_a_bool_write_as_its_typed_value() {
     });
     let dir = project.to_str().unwrap().to_string();
     let output = marrow(&["run", "--trace", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("utf8");
@@ -136,7 +107,6 @@ fn run_trace_renders_an_int_write_as_canonical_digits() {
     });
     let dir = project.to_str().unwrap().to_string();
     let output = marrow(&["run", "--trace", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("utf8");
@@ -172,7 +142,6 @@ fn run_trace_reports_non_root_deletes() {
     let seed = marrow(&["run", "--entry", "app::seed", &dir]);
     assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
     let output = marrow(&["run", "--trace", "--entry", "app::dropDetails", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("utf8");
@@ -201,7 +170,6 @@ fn an_untraced_run_emits_no_trace_and_matches_plain_run() {
     let dir = project.to_str().unwrap().to_string();
     let plain = marrow(&["run", &dir]);
     let traced_off = marrow(&["run", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(plain.stdout, traced_off.stdout);
     let stdout = String::from_utf8(plain.stdout).expect("utf8");
@@ -234,7 +202,6 @@ fn run_trace_json_emits_step_and_write_records() {
     });
     let dir = project.to_str().unwrap().to_string();
     let output = marrow(&["run", "--trace", "--format", "jsonl", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
@@ -269,7 +236,6 @@ fn test_trace_labels_each_test() {
     });
     let dir = project.to_str().unwrap().to_string();
     let output = marrow(&["test", "--trace", &dir]);
-    fs::remove_dir_all(&project).ok();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let combined = format!(

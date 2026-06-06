@@ -1,29 +1,14 @@
 use std::fs;
-use std::process::Command;
 
 use serde_json::Value;
 
 mod support;
 
-fn temp_source(name: &str, source: &str) -> std::path::PathBuf {
-    let mut path = std::env::temp_dir();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_nanos();
-    path.push(format!("marrow-{name}-{}-{nanos}.mw", std::process::id(),));
-    fs::write(&path, source).expect("write source");
-    path
-}
+use support::temp_source;
 
 fn check_json(path: impl AsRef<std::ffi::OsStr>) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .arg("check")
-        .arg("--format")
-        .arg("json")
-        .arg(path)
-        .output()
-        .expect("run marrow check")
+    let path = path.as_ref().to_str().expect("utf8 path");
+    support::marrow_sub("check", &["--format", "json", path])
 }
 
 fn diagnostic_codes(report: &Value) -> Vec<&str> {
@@ -49,11 +34,7 @@ pub fn main()
 "#,
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .arg("check")
-        .arg(&path)
-        .output()
-        .expect("run marrow check");
+    let output = support::marrow_sub("check", &[path.to_str().unwrap()]);
 
     fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(0));
@@ -65,11 +46,7 @@ pub fn main()
 fn check_reports_parse_diagnostics() {
     let path = temp_source("invalid", "module app\n\tpub fn main()\n");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .arg("check")
-        .arg(&path)
-        .output()
-        .expect("run marrow check");
+    let output = support::marrow_sub("check", &[path.to_str().unwrap()]);
 
     fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(1));
@@ -88,13 +65,8 @@ fn check_reserved_word_binding_reports_parse_errors_without_control_flow_cascade
     )
     .expect("write source");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .arg("check")
-        .arg(&dir)
-        .output()
-        .expect("run marrow check");
+    let output = support::marrow_sub("check", &[dir.to_str().unwrap()]);
 
-    fs::remove_dir_all(&dir).ok();
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
     assert!(stderr.contains("expected variable name"), "{stderr}");
@@ -113,11 +85,7 @@ fn check_reports_obsolete_operators_in_function_bodies() {
         "module app\nfn main()\n    return a && b\n",
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .arg("check")
-        .arg(&path)
-        .output()
-        .expect("run marrow check");
+    let output = support::marrow_sub("check", &[path.to_str().unwrap()]);
 
     fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(1));
@@ -131,13 +99,7 @@ fn check_reports_obsolete_operators_in_function_bodies() {
 fn check_jsonl_reports_diagnostics_and_summary() {
     let path = temp_source("jsonl-invalid", "module app\n\tpub fn main()\n");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .arg("check")
-        .arg("--format")
-        .arg("jsonl")
-        .arg(&path)
-        .output()
-        .expect("run marrow check");
+    let output = support::marrow_sub("check", &["--format", "jsonl", path.to_str().unwrap()]);
 
     fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(1));
@@ -161,15 +123,12 @@ fn check_jsonl_reports_diagnostics_and_summary() {
     assert_eq!(records[2]["diagnostics"], 2);
 }
 
-/// Create an empty temporary project directory (caller fills it).
-fn temp_project_dir(name: &str) -> std::path::PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(dir.join("src")).expect("create project src dir");
-    dir
+/// A temporary project directory with an empty `src` (caller fills it), left
+/// uncommitted so the checker runs against pending durable identity.
+fn temp_project_dir(name: &str) -> support::TempProject {
+    support::temp_project_uncommitted(name, |root| {
+        fs::create_dir_all(root.join("src")).expect("create project src dir");
+    })
 }
 
 #[test]
@@ -184,9 +143,8 @@ fn check_reports_schema_diagnostics_for_a_project_directory() {
     )
     .expect("write source");
 
-    let output = check_json(&dir);
+    let output = check_json(dir.path());
 
-    fs::remove_dir_all(&dir).ok();
     assert_eq!(output.status.code(), Some(1));
     let report = support::json(output.stdout);
     assert_has_code(&report, "schema.unknown_in_saved");
@@ -204,13 +162,8 @@ fn check_reports_reserved_merge_and_lock_as_parse_errors() {
     )
     .expect("write source");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .arg("check")
-        .arg(&dir)
-        .output()
-        .expect("run marrow check");
+    let output = support::marrow_sub("check", &[dir.to_str().unwrap()]);
 
-    fs::remove_dir_all(&dir).ok();
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
     assert!(stderr.contains("parse.syntax"), "{stderr}");
@@ -232,9 +185,8 @@ fn check_rejects_saved_inout_for_a_project_directory() {
     )
     .expect("write source");
 
-    let output = check_json(&dir);
+    let output = check_json(dir.path());
 
-    fs::remove_dir_all(&dir).ok();
     assert_eq!(output.status.code(), Some(1));
     let report = support::json(output.stdout);
     assert_has_code(&report, "check.rejected_surface");
@@ -318,11 +270,7 @@ fn check_accepts_a_type_correct_single_file() {
         "module m\nfn f(): int\n    return 1\n\nfn g()\n    var x: int = f()\n",
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .arg("check")
-        .arg(&path)
-        .output()
-        .expect("run marrow check");
+    let output = support::marrow_sub("check", &[path.to_str().unwrap()]);
 
     fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(0));
@@ -339,13 +287,7 @@ fn check_json_reports_type_errors_for_a_single_file() {
         "module m\nfn f(): int\n    return \"nope\"\n",
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .arg("check")
-        .arg("--format")
-        .arg("json")
-        .arg(&path)
-        .output()
-        .expect("run marrow check");
+    let output = support::marrow_sub("check", &["--format", "json", path.to_str().unwrap()]);
 
     fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(1));
@@ -394,9 +336,8 @@ fn check_rejects_a_project_with_two_module_less_scripts() {
     )
     .expect("write two");
 
-    let output = check_json(&dir);
+    let output = check_json(dir.path());
 
-    fs::remove_dir_all(&dir).ok();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let report = support::json(output.stdout);
     assert_has_code(&report, "check.multiple_scripts");
@@ -412,9 +353,8 @@ fn check_rejects_module_declarations_named_like_builtins() {
     )
     .expect("write source");
 
-    let output = check_json(&dir);
+    let output = check_json(dir.path());
 
-    fs::remove_dir_all(&dir).ok();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let report = support::json(output.stdout);
     assert_has_code(&report, "check.duplicate_declaration");

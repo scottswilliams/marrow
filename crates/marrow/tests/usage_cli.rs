@@ -3,31 +3,16 @@
 //! leave nothing created or executed.
 
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::path::Path;
 
-fn marrow(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .args(args)
-        .output()
-        .expect("run marrow")
-}
+mod support;
 
-fn temp_dir(name: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&dir).expect("create dir");
-    dir
-}
+use support::marrow;
 
 #[test]
 fn an_unknown_subcommand_is_a_usage_failure() {
     let output = marrow(&["frobnicate"]);
     assert_eq!(output.status.code(), Some(2), "{output:?}");
-    // Nothing executed: the help banner (the success path) was not printed.
     assert!(
         output.stdout.is_empty(),
         "unexpected stdout: {:?}",
@@ -57,7 +42,6 @@ fn the_catalog_command_is_absent() {
 fn run_with_no_project_dir_is_a_usage_failure() {
     let output = marrow(&["run"]);
     assert_eq!(output.status.code(), Some(2), "{output:?}");
-    // The command body never ran, so it produced no program output.
     assert!(
         output.stdout.is_empty(),
         "unexpected stdout: {:?}",
@@ -84,7 +68,7 @@ fn run_entry_with_no_value_is_a_usage_failure() {
 fn an_unknown_data_subcommand_is_a_usage_failure_that_opens_no_store() {
     // A native-store project: if the body ran, `data` would open/create the
     // store. The unknown subcommand must be rejected before any store access.
-    let dir = temp_dir("usage-data");
+    let dir = support::temp_dir("usage-data");
     fs::write(
         dir.join("marrow.json"),
         r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": "data" } }"#,
@@ -92,8 +76,7 @@ fn an_unknown_data_subcommand_is_a_usage_failure_that_opens_no_store() {
     .expect("write config");
 
     let output = marrow(&["data", "bogus", dir.to_str().unwrap()]);
-    let store_created = Path::new(&dir).join("data").exists();
-    fs::remove_dir_all(&dir).ok();
+    let store_created = Path::new(dir.path()).join("data").exists();
 
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
