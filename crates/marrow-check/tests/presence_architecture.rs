@@ -4,7 +4,7 @@
 //! classification; sibling modules consume those facts instead of redefining
 //! them — are not expressible as a Rust type boundary, so they live as tidy
 //! source scans. Each is paired with positive behavior coverage of the
-//! canonical classifiers in `catalog_presence.rs` and `evolution_discharge.rs`.
+//! canonical classifiers in `catalog_presence.rs` and the `discharge_*.rs` suites.
 //!
 //! The scans match on identifiers, not bare substrings: a `fn` definition is
 //! found only when the name is followed by a non-identifier character (so a
