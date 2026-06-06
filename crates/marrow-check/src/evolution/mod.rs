@@ -49,13 +49,7 @@ pub fn default_value_for_bound_member(
     let leaf = checked_activation_root_places(program)
         .iter()
         .find_map(|place| member_leaf(&place.root_members, catalog_id))?;
-    let StoreLeafKind::Scalar(scalar) = leaf else {
-        return Some(Err(
-            "evolve default targets a non-scalar member; use a transform for computed values"
-                .to_string(),
-        ));
-    };
-    Some(const_default::eval_const_default(value, scalar).map_err(|error| error.message()))
+    Some(const_default::default_value_for_leaf(value, Some(&leaf)))
 }
 
 /// Rebind a freshly regenerated proposal to the random IDs recorded by an activation

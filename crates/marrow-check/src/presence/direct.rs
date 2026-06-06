@@ -161,6 +161,9 @@ fn collect_expr_reads(facts: &CheckedFacts, expr: &CheckedExpr, effects: &mut Di
                 }
                 return;
             }
+            if matches!(target, CheckedCallTarget::Function(_)) {
+                effects.calls_user_function = true;
+            }
             collect_expr_reads(facts, callee, effects);
             for arg in args {
                 collect_expr_reads(facts, &arg.value, effects);

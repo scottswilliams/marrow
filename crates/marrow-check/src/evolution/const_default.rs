@@ -12,6 +12,25 @@ use marrow_store::value::{Scalar, ScalarType, decode_value, encode_value};
 use marrow_syntax::{Argument, Expression, LiteralKind, UnaryOp, decode_string_literal};
 
 use super::witness::DefaultValue;
+use crate::StoreLeafKind;
+
+/// The single owner of the const-default rule applied to a member leaf: a non-scalar leaf
+/// (an enum, an identity, or a non-tokenizable position with no leaf kind) cannot take a
+/// constant default, because a computed fill is a transform, not a default; a scalar leaf
+/// evaluates its value through [`eval_const_default`]. Both the discharge accumulator and
+/// the resume verifier route through here so the gate and the eval never drift.
+pub(crate) fn default_value_for_leaf(
+    value: &Expression,
+    leaf: Option<&StoreLeafKind>,
+) -> Result<DefaultValue, String> {
+    let Some(StoreLeafKind::Scalar(scalar)) = leaf else {
+        return Err(
+            "evolve default targets a non-scalar member; use a transform for computed values"
+                .to_string(),
+        );
+    };
+    eval_const_default(value, *scalar).map_err(|error| error.message())
+}
 
 /// Why a default value cannot be carried as a typed constant.
 pub(crate) enum ConstDefaultError {
@@ -45,7 +64,7 @@ impl ConstDefaultError {
 /// Evaluate `value` to the encoded constant a defaulting obligation backfills, typed
 /// by the member's leaf scalar type. A non-constant expression, a type mismatch, or
 /// an unencodable value is reported so discharge can fail the default closed.
-pub(crate) fn eval_const_default(
+fn eval_const_default(
     value: &Expression,
     leaf: ScalarType,
 ) -> Result<DefaultValue, ConstDefaultError> {

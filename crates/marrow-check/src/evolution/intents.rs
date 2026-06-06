@@ -126,10 +126,6 @@ where
                         }),
                         None => report_target(file, *span, diagnostics),
                     },
-                    // A default does not move catalog identity, but discharge needs
-                    // its target and value to evaluate the constant fill; record both
-                    // here and let the catalog binding resolve the path to a stable
-                    // id. A non-reference target is reported by the type pass.
                     EvolveStep::Default { target, value, .. } => {
                         if let Some(path) = target_path(module, target) {
                             intents.defaults.push(DefaultIntent {
@@ -138,10 +134,6 @@ where
                             });
                         }
                     }
-                    // A transform recomputes its target from the members its body reads
-                    // via `old.<member>`. The target and read paths flow to the catalog
-                    // binding for stable-id resolution and to discharge; the body flows
-                    // through for apply to execute. It carries no catalog identity move.
                     EvolveStep::Transform { target, body, .. } => {
                         if let Some(path) = target_path(module, target) {
                             let read_paths = transform_read_paths(&path, body);
@@ -273,108 +265,9 @@ fn impurity_reason(program: &CheckedProgram, body: &CheckedBody) -> Option<&'sta
     if effects.transactions {
         return Some("it opens a transaction");
     }
-    block_calls_function(body).then_some("it calls a function; inline the computation over `old`")
-}
-
-/// Whether a lowered block calls any user-defined function. A pure transform computes
-/// its target from `old` with operators and pure builtins; a call into a user function
-/// is rejected because its effects are not propagated into the transform.
-fn block_calls_function(body: &CheckedBody) -> bool {
-    body.statements().iter().any(statement_calls_function)
-}
-
-fn statement_calls_function(statement: &crate::CheckedStmt) -> bool {
-    use crate::CheckedStmt;
-    match statement {
-        CheckedStmt::Const { value, .. }
-        | CheckedStmt::Throw { value, .. }
-        | CheckedStmt::Expr { value, .. } => expr_calls_function(value),
-        CheckedStmt::Var { value, .. } | CheckedStmt::Return { value, .. } => {
-            value.as_ref().is_some_and(expr_calls_function)
-        }
-        CheckedStmt::Assign { target, value, .. } => {
-            expr_calls_function(target) || expr_calls_function(value)
-        }
-        CheckedStmt::Delete { path, .. } => expr_calls_function(path),
-        CheckedStmt::If {
-            condition,
-            then_block,
-            else_ifs,
-            else_block,
-            ..
-        } => {
-            condition.as_ref().is_some_and(expr_calls_function)
-                || block_calls_function(then_block)
-                || else_ifs.iter().any(|else_if| {
-                    else_if.condition.as_ref().is_some_and(expr_calls_function)
-                        || block_calls_function(&else_if.block)
-                })
-                || else_block.as_ref().is_some_and(block_calls_function)
-        }
-        CheckedStmt::While {
-            condition, body, ..
-        } => condition.as_ref().is_some_and(expr_calls_function) || block_calls_function(body),
-        CheckedStmt::For {
-            iterable,
-            step,
-            body,
-            ..
-        } => {
-            expr_calls_function(iterable)
-                || step.as_ref().is_some_and(expr_calls_function)
-                || block_calls_function(body)
-        }
-        CheckedStmt::Transaction { body, .. } => block_calls_function(body),
-        CheckedStmt::Try {
-            body,
-            catch,
-            finally,
-            ..
-        } => {
-            block_calls_function(body)
-                || catch
-                    .as_ref()
-                    .is_some_and(|catch| block_calls_function(&catch.block))
-                || finally.as_ref().is_some_and(block_calls_function)
-        }
-        CheckedStmt::Match {
-            scrutinee, arms, ..
-        } => {
-            scrutinee.as_ref().is_some_and(expr_calls_function)
-                || arms.iter().any(|arm| block_calls_function(&arm.block))
-        }
-        CheckedStmt::Break { .. } | CheckedStmt::Continue { .. } => false,
-    }
-}
-
-fn expr_calls_function(expr: &crate::CheckedExpr) -> bool {
-    use crate::{CheckedCallTarget, CheckedExpr, CheckedInterpolationPart};
-    match expr {
-        CheckedExpr::Call {
-            callee,
-            args,
-            target,
-            ..
-        } => {
-            matches!(target, CheckedCallTarget::Function(_))
-                || expr_calls_function(callee)
-                || args.iter().any(|arg| expr_calls_function(&arg.value))
-        }
-        CheckedExpr::Field { base, .. } | CheckedExpr::OptionalField { base, .. } => {
-            expr_calls_function(base)
-        }
-        CheckedExpr::Unary { operand, .. } => expr_calls_function(operand),
-        CheckedExpr::Binary { left, right, .. } => {
-            expr_calls_function(left) || expr_calls_function(right)
-        }
-        CheckedExpr::Interpolation { parts, .. } => parts.iter().any(|part| match part {
-            CheckedInterpolationPart::Expr(expr) => expr_calls_function(expr),
-            CheckedInterpolationPart::Text { .. } => false,
-        }),
-        CheckedExpr::Literal { .. } | CheckedExpr::Name { .. } | CheckedExpr::SavedRoot { .. } => {
-            false
-        }
-    }
+    effects
+        .calls_user_function
+        .then_some("it calls a function; inline the computation over `old`")
 }
 
 /// The catalog paths every `evolve default` and `evolve transform` step targets, across
@@ -483,9 +376,11 @@ impl TypeContext<'_> {
             ));
             return;
         }
-        let (Some(member_type), Some(resource)) =
-            (self.member_type(target), self.resource_of_target(target))
-        else {
+        let resolved = self.target_module_resource(target);
+        let (Some(member_type), Some(resource)) = (
+            resolved.and_then(|(module, resource)| self.member_type_in(target, module, resource)),
+            resolved.map(|(_, resource)| self.resource_name_of(resource)),
+        ) else {
             diagnostics.push(self.transform_error(
                 target_span(target, span),
                 "an evolve transform must target a top-level saved resource member".to_string(),
@@ -573,20 +468,29 @@ impl TypeContext<'_> {
         member_chain(target).is_some_and(|(_, chain)| chain.len() == 1)
     }
 
-    /// The qualified resource type name a member target belongs to, when it names a
-    /// member of a resource declared in this block's module and file.
-    fn resource_of_target(&self, target: &Expression) -> Option<String> {
+    /// The module and resource a member target belongs to, when it names a member of a
+    /// resource declared in this block's module and file. The one lookup both the
+    /// resource-name and member-type derivations share.
+    fn target_module_resource(
+        &self,
+        target: &Expression,
+    ) -> Option<(&CheckedModule, &marrow_schema::ResourceSchema)> {
         let (resource_name, _) = member_chain(target)?;
         let module = self
             .program
             .modules
             .iter()
             .find(|module| module.name == self.module && module.source_file == self.file)?;
-        module
+        let resource = module
             .resources
             .iter()
-            .find(|resource| resource.name == resource_name)
-            .map(|resource| crate::resource_type_name(self.module, &resource.name))
+            .find(|resource| resource.name == resource_name)?;
+        Some((module, resource))
+    }
+
+    /// The qualified type name of an already-resolved resource schema.
+    fn resource_name_of(&self, resource: &marrow_schema::ResourceSchema) -> String {
+        crate::resource_type_name(self.module, &resource.name)
     }
 
     fn resolves_in_source(&self, target: &Expression) -> bool {
@@ -597,16 +501,18 @@ impl TypeContext<'_> {
     /// The declared type of a resource-member target, if it names one in a resource
     /// still declared in this block's module and file.
     fn member_type(&self, target: &Expression) -> Option<MarrowType> {
-        let (resource_name, member_chain) = member_chain(target)?;
-        let module = self
-            .program
-            .modules
-            .iter()
-            .find(|module| module.name == self.module && module.source_file == self.file)?;
-        let resource = module
-            .resources
-            .iter()
-            .find(|resource| resource.name == resource_name)?;
+        let (module, resource) = self.target_module_resource(target)?;
+        self.member_type_in(target, module, resource)
+    }
+
+    /// The declared type of a member target within an already-resolved resource.
+    fn member_type_in(
+        &self,
+        target: &Expression,
+        module: &CheckedModule,
+        resource: &marrow_schema::ResourceSchema,
+    ) -> Option<MarrowType> {
+        let (_, member_chain) = member_chain(target)?;
         let chain: Vec<&str> = member_chain.iter().map(String::as_str).collect();
         let field = resource.field_type(&chain)?;
         let names = TypeNames {
@@ -722,36 +628,54 @@ struct OldFieldRead {
     span: SourceSpan,
 }
 
-/// Collect every `old.<field>` read in a transform body, in source order. This walks
-/// the whole body — every statement, condition, and sub-expression — so a read buried
-/// in a branch or interpolation is still found.
+/// Collect every `old.<field>` read in a transform body, in source order. The body is
+/// walked through the shared expression visitor, so a read buried in a branch,
+/// interpolation, or call argument is still found.
 fn old_field_reads(body: &Block) -> Vec<OldFieldRead> {
     let mut reads = Vec::new();
-    walk_block_reads(body, &mut reads);
+    walk_block_expressions(body, &mut |expr| {
+        if let Expression::Field {
+            base, name, span, ..
+        }
+        | Expression::OptionalField {
+            base, name, span, ..
+        } = expr
+            && is_old_name(base)
+        {
+            reads.push(OldFieldRead {
+                field: name.clone(),
+                span: *span,
+            });
+        }
+    });
     reads
 }
 
-fn walk_block_reads(block: &Block, reads: &mut Vec<OldFieldRead>) {
+/// Visit every sub-expression of every statement in a block in source order. One
+/// structural walker the read collectors share rather than each re-deriving the same
+/// statement-and-expression descent. The visitor sees each `Expression` node before its
+/// children, so a collector that wants both an outer node and its operands gets both.
+fn walk_block_expressions(block: &Block, visit: &mut impl FnMut(&Expression)) {
     for statement in &block.statements {
-        walk_statement_reads(statement, reads);
+        walk_statement_expressions(statement, visit);
     }
 }
 
-fn walk_statement_reads(statement: &Statement, reads: &mut Vec<OldFieldRead>) {
+fn walk_statement_expressions(statement: &Statement, visit: &mut impl FnMut(&Expression)) {
     match statement {
         Statement::Const { value, .. }
         | Statement::Throw { value, .. }
-        | Statement::Expr { value, .. } => walk_expr_reads(value, reads),
+        | Statement::Expr { value, .. } => walk_expression(value, visit),
         Statement::Var { value, .. } | Statement::Return { value, .. } => {
             if let Some(value) = value {
-                walk_expr_reads(value, reads);
+                walk_expression(value, visit);
             }
         }
         Statement::Assign { target, value, .. } => {
-            walk_expr_reads(target, reads);
-            walk_expr_reads(value, reads);
+            walk_expression(target, visit);
+            walk_expression(value, visit);
         }
-        Statement::Delete { path, .. } => walk_expr_reads(path, reads),
+        Statement::Delete { path, .. } => walk_expression(path, visit),
         Statement::If {
             condition,
             then_block,
@@ -760,26 +684,26 @@ fn walk_statement_reads(statement: &Statement, reads: &mut Vec<OldFieldRead>) {
             ..
         } => {
             if let Some(condition) = condition {
-                walk_expr_reads(condition, reads);
+                walk_expression(condition, visit);
             }
-            walk_block_reads(then_block, reads);
+            walk_block_expressions(then_block, visit);
             for else_if in else_ifs {
                 if let Some(condition) = &else_if.condition {
-                    walk_expr_reads(condition, reads);
+                    walk_expression(condition, visit);
                 }
-                walk_block_reads(&else_if.block, reads);
+                walk_block_expressions(&else_if.block, visit);
             }
             if let Some(block) = else_block {
-                walk_block_reads(block, reads);
+                walk_block_expressions(block, visit);
             }
         }
         Statement::While {
             condition, body, ..
         } => {
             if let Some(condition) = condition {
-                walk_expr_reads(condition, reads);
+                walk_expression(condition, visit);
             }
-            walk_block_reads(body, reads);
+            walk_block_expressions(body, visit);
         }
         Statement::For {
             iterable,
@@ -787,72 +711,62 @@ fn walk_statement_reads(statement: &Statement, reads: &mut Vec<OldFieldRead>) {
             body,
             ..
         } => {
-            walk_expr_reads(iterable, reads);
+            walk_expression(iterable, visit);
             if let Some(step) = step {
-                walk_expr_reads(step, reads);
+                walk_expression(step, visit);
             }
-            walk_block_reads(body, reads);
+            walk_block_expressions(body, visit);
         }
-        Statement::Transaction { body, .. } => walk_block_reads(body, reads),
+        Statement::Transaction { body, .. } => walk_block_expressions(body, visit),
         Statement::Try {
             body,
             catch,
             finally,
             ..
         } => {
-            walk_block_reads(body, reads);
+            walk_block_expressions(body, visit);
             if let Some(catch) = catch {
-                walk_block_reads(&catch.block, reads);
+                walk_block_expressions(&catch.block, visit);
             }
             if let Some(finally) = finally {
-                walk_block_reads(finally, reads);
+                walk_block_expressions(finally, visit);
             }
         }
         Statement::Match {
             scrutinee, arms, ..
         } => {
             if let Some(scrutinee) = scrutinee {
-                walk_expr_reads(scrutinee, reads);
+                walk_expression(scrutinee, visit);
             }
             for arm in arms {
-                walk_block_reads(&arm.block, reads);
+                walk_block_expressions(&arm.block, visit);
             }
         }
         Statement::Break { .. } | Statement::Continue { .. } => {}
     }
 }
 
-fn walk_expr_reads(expr: &Expression, reads: &mut Vec<OldFieldRead>) {
+fn walk_expression(expr: &Expression, visit: &mut impl FnMut(&Expression)) {
+    visit(expr);
     match expr {
-        Expression::Field {
-            base, name, span, ..
-        }
-        | Expression::OptionalField {
-            base, name, span, ..
-        } => {
-            if is_old_name(base) {
-                reads.push(OldFieldRead {
-                    field: name.clone(),
-                    span: *span,
-                });
-            }
-            walk_expr_reads(base, reads);
+        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
+            walk_expression(base, visit);
         }
         Expression::Call { callee, args, .. } => {
-            walk_expr_reads(callee, reads);
+            walk_expression(callee, visit);
             for Argument { value, .. } in args {
-                walk_expr_reads(value, reads);
+                walk_expression(value, visit);
             }
         }
-        Expression::Unary { operand, .. } => walk_expr_reads(operand, reads),
+        Expression::Unary { operand, .. } => walk_expression(operand, visit),
         Expression::Binary { left, right, .. } => {
-            walk_expr_reads(left, reads);
-            walk_expr_reads(right, reads);
+            walk_expression(left, visit);
+            walk_expression(right, visit);
         }
         Expression::Interpolation { parts, .. } => {
             for part in parts {
                 if let InterpolationPart::Expr(expr) = part {
-                    walk_expr_reads(expr, reads);
+                    walk_expression(expr, visit);
                 }
             }
         }

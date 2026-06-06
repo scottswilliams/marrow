@@ -1174,6 +1174,10 @@ pub struct DirectEffectFacts {
     pub transactions: bool,
     pub host_calls: Vec<HostEffect>,
     pub throws: bool,
+    /// Whether the body calls a user-defined function. The direct summary does not expand
+    /// callee effects, so a caller that requires a self-contained body (an evolve transform)
+    /// reads this bit rather than re-walking the AST to find the call.
+    pub calls_user_function: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

@@ -29,7 +29,7 @@ use marrow_store::cell::CatalogId;
 use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::{DataPathSegment, TreeStore};
 
-use super::const_default::eval_const_default;
+use super::const_default::default_value_for_leaf;
 use super::transform_reads::{TransformReadMember, transform_read_members};
 use super::witness::{DefaultValue, ObligationVerdict, RepairReason, Verdict};
 use crate::StoreLeafKind;
@@ -96,12 +96,9 @@ pub(crate) fn discharge(
     }
     let places = checked_activation_root_places(program);
     for place in &places {
-        // An identity-key shape change orphans every record addressed by the old key
-        // bytes, which v0.1 cannot migrate, so it fails closed ahead of any per-record
-        // scan. The old records are unreachable under the new key shape, so a per-member
-        // presence scan would read them under a key arity they were never written at and
-        // report meaningless verdicts; the store-level repair subsumes them, so the scan
-        // is skipped for a re-keyed store.
+        // A re-keyed store fails closed ahead of the per-record scan: its old records are
+        // unreachable under the new key shape, so a presence scan would read them at a key
+        // arity they were never written at, and the store-level repair already subsumes them.
         if classify_store_key_shape(program, place, &accepted_key_shapes, &mut acc)? {
             continue;
         }
@@ -219,7 +216,7 @@ fn transform_places<'a>(
         .iter()
         .flat_map(|module| {
             module.stores.iter().filter_map(|store| {
-                let resource_path = crate::resource_type_name(&module.name, &store.resource);
+                let resource_path = crate::catalog::resource_path(&module.name, &store.resource);
                 (resource_path == transform.resource).then_some(store.root.as_str())
             })
         })
@@ -655,7 +652,7 @@ fn classify_structural_backstop(
     acc: &mut Accumulator,
 ) -> Result<(), StoreError> {
     let mut candidates = Vec::new();
-    collect_structural_candidates(place, &place.root_members, &[], &[], acc, &mut candidates)?;
+    collect_structural_candidates(place, &place.root_members, &[], acc, &mut candidates)?;
     if candidates.is_empty() {
         return Ok(());
     }
@@ -722,18 +719,35 @@ fn descend_path(
         DescentStep::KeyedLayer(layer_id) => {
             let mut layer_path = prefix.to_vec();
             layer_path.push(DataPathSegment::Member(layer_id.clone()));
-            let mut next = store.data_first_child(store_id, identity, &layer_path)?;
-            while let Some(entry_key) = next {
+            for_each_entry_key(store, store_id, identity, &layer_path, |entry_key| {
                 let mut entry_path = layer_path.clone();
                 entry_path.push(DataPathSegment::Key(entry_key.clone()));
-                if descend_path(store, store_id, identity, &entry_path, rest)? {
-                    return Ok(true);
-                }
-                next = store.data_next_child(store_id, identity, &layer_path, &entry_key)?;
-            }
-            Ok(false)
+                descend_path(store, store_id, identity, &entry_path, rest)
+            })
         }
     }
+}
+
+/// Page every existing entry key under `layer_path` through the store's paged child
+/// cursor, calling `visit` once per entry in key order. The visitor returns `true` to stop
+/// the scan early (a match was found), so the keyed paging cursor lives in one place rather
+/// than being re-spelled at each keyed-layer descent. The loop holds only the current entry
+/// key, so an arbitrarily wide layer is paged without materializing its keys.
+fn for_each_entry_key(
+    store: &TreeStore,
+    store_id: &CatalogId,
+    identity: &[SavedKey],
+    layer_path: &[DataPathSegment],
+    mut visit: impl FnMut(&SavedKey) -> Result<bool, StoreError>,
+) -> Result<bool, StoreError> {
+    let mut next = store.data_first_child(store_id, identity, layer_path)?;
+    while let Some(entry_key) = next {
+        if visit(&entry_key)? {
+            return Ok(true);
+        }
+        next = store.data_next_child(store_id, identity, layer_path, &entry_key)?;
+    }
+    Ok(false)
 }
 
 /// Walk the member tree collecting a backstop candidate for each member whose structural
@@ -749,14 +763,11 @@ fn collect_structural_candidates(
     place: &CheckedSavedPlace,
     members: &[CheckedSavedMember],
     descent: &[DescentStep],
-    names: &[&str],
     acc: &Accumulator,
     candidates: &mut Vec<StructuralCandidate>,
 ) -> Result<(), StoreError> {
     for member in members {
-        let mut member_names = names.to_vec();
-        member_names.push(member.name.as_str());
-        let Some(raw_id) = resolved_member_id(member) else {
+        let Some(raw_id) = member.catalog_id.clone() else {
             continue;
         };
         let member_id = catalog_id(&raw_id)?;
@@ -787,7 +798,6 @@ fn collect_structural_candidates(
             place,
             &member.group_members,
             &child_descent,
-            &member_names,
             acc,
             candidates,
         )?;
@@ -926,12 +936,6 @@ struct LeafObligation {
     retyped: bool,
 }
 
-/// The invariant context of a member-tree walk: the saved place being discharged.
-/// Bundling it keeps each recursive walker to its varying arguments.
-struct LeafWalk<'a> {
-    place: &'a CheckedSavedPlace,
-}
-
 /// The required-leaf obligations at the root and inside unkeyed groups: leaves whose
 /// presence cell sits directly under the record node. A required leaf inside a keyed
 /// layer is required per existing entry, not for the record, so it is scanned and
@@ -940,9 +944,8 @@ fn required_leaf_obligations(
     place: &CheckedSavedPlace,
     acc: &mut Accumulator,
 ) -> Result<Vec<LeafObligation>, StoreError> {
-    let walk = LeafWalk { place };
     let mut obligations = Vec::new();
-    collect_required_leaves(&walk, &place.root_members, &[], &[], &mut obligations, acc)?;
+    collect_required_leaves(place, &place.root_members, &[], &mut obligations, acc)?;
     Ok(obligations)
 }
 
@@ -951,10 +954,9 @@ fn required_leaf_obligations(
 /// unkeyed group. A transform-targeted member is classified eagerly and not scanned.
 /// A keyed member is left to the keyed-layer check.
 fn collect_required_leaves(
-    walk: &LeafWalk,
+    place: &CheckedSavedPlace,
     members: &[CheckedSavedMember],
     prefix: &[DataPathSegment],
-    names: &[&str],
     obligations: &mut Vec<LeafObligation>,
     acc: &mut Accumulator,
 ) -> Result<(), StoreError> {
@@ -962,9 +964,7 @@ fn collect_required_leaves(
         if !member.key_params.is_empty() {
             continue;
         }
-        let mut member_names = names.to_vec();
-        member_names.push(member.name.as_str());
-        let Some(raw_id) = resolved_member_id(member) else {
+        let Some(raw_id) = member.catalog_id.clone() else {
             continue;
         };
         let member_id = catalog_id(&raw_id)?;
@@ -982,59 +982,22 @@ fn collect_required_leaves(
             // sub-member rather than activating over an unpopulated old cell. So the walk emits
             // the disappeared-leaf probe AND descends into the new group's members.
             CheckedSavedMemberKind::Group if acc.leaf_disappeared(&raw_id) => {
-                emit_disappeared_leaf(
-                    walk.place,
-                    member,
-                    &raw_id,
-                    member_id,
-                    path.clone(),
-                    obligations,
-                );
-                collect_required_leaves(
-                    walk,
-                    &member.group_members,
-                    &path,
-                    &member_names,
-                    obligations,
-                    acc,
-                )?;
+                emit_disappeared_leaf(place, member, &raw_id, member_id, path.clone(), obligations);
+                collect_required_leaves(place, &member.group_members, &path, obligations, acc)?;
             }
             // An unkeyed group whose own structural signature diverged is owned whole by the
             // backstop; descending into it would re-judge a deeper required leaf the enclosing
             // failure already subsumes, so its interior is left unwalked here.
             CheckedSavedMemberKind::Group if acc.prunes_interior(&raw_id, &member_id) => {}
             CheckedSavedMemberKind::Group => {
-                collect_required_leaves(
-                    walk,
-                    &member.group_members,
-                    &path,
-                    &member_names,
-                    obligations,
-                    acc,
-                )?;
+                collect_required_leaves(place, &member.group_members, &path, obligations, acc)?;
             }
             CheckedSavedMemberKind::Field { .. } => {
-                // The cell sits directly under the record node, so the obligation path
-                // is the full nested member chain to it.
-                emit_member_leaf(
-                    walk.place,
-                    member,
-                    &raw_id,
-                    member_id,
-                    path,
-                    obligations,
-                    acc,
-                )?;
+                emit_member_leaf(place, member, &raw_id, member_id, path, obligations, acc)?;
             }
         }
     }
     Ok(())
-}
-
-/// The raw catalog id to scan a member under. Activation places carry accepted
-/// IDs and proposal-only IDs; a member with neither anchors no durable obligation.
-fn resolved_member_id(member: &CheckedSavedMember) -> Option<String> {
-    member.catalog_id.clone()
 }
 
 /// One leaf and the decision discharge makes about it before the scan, shared by the
@@ -1236,7 +1199,7 @@ fn discharge_keyed_layers(
     };
     let mut flat_state: Vec<LeafScan> = flat_retyped.iter().map(|_| LeafScan::default()).collect();
     store.for_each_record(&store_id, place.identity_keys.len(), &mut |identity| {
-        scan.descend(identity, &place.root_members, &[], &[])?;
+        scan.descend(identity, &place.root_members, &[])?;
         for (leaf, state) in flat_retyped.iter().zip(flat_state.iter_mut()) {
             if store.data_subtree_exists(&store_id, identity, &leaf.path)? {
                 state.record_present();
@@ -1278,12 +1241,9 @@ impl KeyedScan<'_> {
         identity: &[SavedKey],
         members: &[CheckedSavedMember],
         prefix: &[DataPathSegment],
-        names: &[&str],
     ) -> Result<(), StoreError> {
         for member in members {
-            let mut member_names = names.to_vec();
-            member_names.push(member.name.as_str());
-            let Some(raw_id) = resolved_member_id(member) else {
+            let Some(raw_id) = member.catalog_id.clone() else {
                 continue;
             };
             let member_id = catalog_id(&raw_id)?;
@@ -1294,37 +1254,25 @@ impl KeyedScan<'_> {
                 // recurses into each entry to reach its sub-members; a keyed-leaf-map
                 // (`map[K, V]`) holds its value directly under the entry key, so the value
                 // cell at the key path is recorded against the map member's own obligation.
-                let mut next =
-                    self.store
-                        .data_first_child(self.store_id, identity, &member_path)?;
-                while let Some(entry_key) = next {
+                let (store, store_id) = (self.store, self.store_id);
+                for_each_entry_key(store, store_id, identity, &member_path, |entry_key| {
                     let mut entry_path = member_path.clone();
                     entry_path.push(DataPathSegment::Key(entry_key.clone()));
                     match &member.kind {
                         CheckedSavedMemberKind::Group => {
-                            self.descend(
-                                identity,
-                                &member.group_members,
-                                &entry_path,
-                                &member_names,
-                            )?;
+                            self.descend(identity, &member.group_members, &entry_path)?;
                         }
                         CheckedSavedMemberKind::Field { .. } => {
                             self.record_leaf(&member_id, identity, &entry_path)?;
                         }
                     }
-                    next = self.store.data_next_child(
-                        self.store_id,
-                        identity,
-                        &member_path,
-                        &entry_key,
-                    )?;
-                }
+                    Ok(false)
+                })?;
                 continue;
             }
             match &member.kind {
                 CheckedSavedMemberKind::Group => {
-                    self.descend(identity, &member.group_members, &member_path, &member_names)?;
+                    self.descend(identity, &member.group_members, &member_path)?;
                 }
                 CheckedSavedMemberKind::Field { .. } => {
                     self.record_leaf(&member_id, identity, &member_path)?;
@@ -1368,13 +1316,11 @@ fn keyed_leaf_obligations(
     place: &CheckedSavedPlace,
     acc: &mut Accumulator,
 ) -> Result<Vec<LeafObligation>, StoreError> {
-    let walk = LeafWalk { place };
     let mut obligations = Vec::new();
     collect_keyed_leaves(
-        &walk,
+        place,
         &place.root_members,
         false,
-        &[],
         &[],
         &mut obligations,
         acc,
@@ -1393,18 +1339,15 @@ fn keyed_leaf_obligations(
 /// retype probe can find old data of a different shape, while a leaf below a keyed ancestor
 /// carries none (its path contains an unknown entry key) and relies on the per-entry scan.
 fn collect_keyed_leaves(
-    walk: &LeafWalk,
+    place: &CheckedSavedPlace,
     members: &[CheckedSavedMember],
     in_keyed: bool,
     prefix: &[DataPathSegment],
-    names: &[&str],
     obligations: &mut Vec<LeafObligation>,
     acc: &mut Accumulator,
 ) -> Result<(), StoreError> {
     for member in members {
-        let mut member_names = names.to_vec();
-        member_names.push(member.name.as_str());
-        let Some(raw_id) = resolved_member_id(member) else {
+        let Some(raw_id) = member.catalog_id.clone() else {
             continue;
         };
         let member_id = catalog_id(&raw_id)?;
@@ -1431,7 +1374,7 @@ fn collect_keyed_leaves(
             // unkeyed group. Its keyed sub-members are subsumed, so the scan does not descend.
             CheckedSavedMemberKind::Group if keyed_here && acc.leaf_disappeared(&raw_id) => {
                 emit_disappeared_leaf(
-                    walk.place,
+                    place,
                     member,
                     &raw_id,
                     member_id,
@@ -1446,11 +1389,10 @@ fn collect_keyed_leaves(
             CheckedSavedMemberKind::Group if acc.prunes_interior(&raw_id, &member_id) => {}
             CheckedSavedMemberKind::Group => {
                 collect_keyed_leaves(
-                    walk,
+                    place,
                     &member.group_members,
                     keyed_here,
                     &static_path,
-                    &member_names,
                     obligations,
                     acc,
                 )?;
@@ -1460,7 +1402,7 @@ fn collect_keyed_leaves(
                 // value cell through each entry's key path; the obligation carries a static
                 // member path only when no keyed ancestor sits above it.
                 emit_member_leaf(
-                    walk.place,
+                    place,
                     member,
                     &raw_id,
                     member_id,
@@ -1571,20 +1513,13 @@ fn classify_leaf(
     if !leaf.required {
         if state.invalid_count > 0 {
             acc.counts.records_lacking_member += state.invalid_count;
-            acc.diagnostic(
-                id.clone(),
+            return acc.invalid_stored_value(
+                id,
                 format!(
                     "member `{}` has {} record(s) whose stored value is not valid under the current type (it names an enum member the current enum no longer has); repair before activating",
                     leaf.label, state.invalid_count
                 ),
             );
-            acc.push_leaf(
-                id,
-                Verdict::RepairRequired {
-                    reason: RepairReason::InvalidStoredValue,
-                },
-            )?;
-            return Ok(());
         }
         let verdict = if leaf.renamed {
             Verdict::CatalogOnly
@@ -1608,20 +1543,13 @@ fn classify_leaf(
         reason: RepairReason::MissingRequiredMember,
     };
     if state.invalid_count > 0 {
-        acc.diagnostic(
-            id.clone(),
+        return acc.invalid_stored_value(
+            id,
             format!(
                 "required member `{}` has {} record(s) whose stored value is not valid under the current type (it does not decode, or names an enum member the current enum no longer has); repair before activating",
                 leaf.label, state.invalid_count
             ),
         );
-        acc.push_leaf(
-            id,
-            Verdict::RepairRequired {
-                reason: RepairReason::InvalidStoredValue,
-            },
-        )?;
-        return Ok(());
     }
     let verdict = match acc.default_value_for(&leaf.raw_catalog_id, leaf.leaf.as_ref()) {
         Some(Ok(value)) => {
@@ -2067,13 +1995,7 @@ impl Accumulator {
         leaf: Option<&StoreLeafKind>,
     ) -> Option<Result<super::witness::DefaultValue, String>> {
         let value = self.defaults.get(raw_catalog_id)?;
-        let Some(StoreLeafKind::Scalar(scalar)) = leaf else {
-            return Some(Err(
-                "evolve default targets a non-scalar member; use a transform for computed values"
-                    .to_string(),
-            ));
-        };
-        Some(eval_const_default(value, *scalar).map_err(|error| error.message()))
+        Some(default_value_for_leaf(value, leaf))
     }
 
     fn insert_affected(
@@ -2186,6 +2108,20 @@ impl Accumulator {
             catalog_id: id,
             message,
         });
+    }
+
+    /// Fail a leaf closed because some record's stored value is not valid under its current
+    /// type: emit `message` keyed by `id` and record the [`RepairReason::InvalidStoredValue`]
+    /// verdict. The required and optional leaf arms share this so the verdict construction
+    /// lives in one place even though their prose differs.
+    fn invalid_stored_value(&mut self, id: CatalogId, message: String) -> Result<(), StoreError> {
+        self.diagnostic(id.clone(), message);
+        self.push_leaf(
+            id,
+            Verdict::RepairRequired {
+                reason: RepairReason::InvalidStoredValue,
+            },
+        )
     }
 
     fn changed_set(&mut self, is_index: bool) -> &mut BTreeSet<CatalogId> {

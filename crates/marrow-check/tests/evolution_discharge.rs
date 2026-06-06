@@ -1996,6 +1996,40 @@ fn transform_reading_saved_root_is_check_error() {
     );
 }
 
+/// A transform body that calls a user-defined function is impure and rejected at check
+/// time: this narrow model evaluates a transform as a self-contained pure expression over
+/// `old` and does not propagate the callee's own effects into the transform, so the call
+/// fails closed.
+#[test]
+fn transform_calling_user_function_is_check_error() {
+    let root = temp_project("discharge-transform-callsfn", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required price: int\n\
+             \x20   required priceCents: int\n\
+             evolve\n\
+             \x20   transform Book.priceCents\n\
+             \x20       return cents(old.price)\n\
+             fn cents(price: int): int\n\
+             \x20   return price * 100\n\
+             pub fn add(price: int): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == marrow_check::CHECK_EVOLVE_TRANSFORM),
+        "expected a user-function-call impurity error: {:#?}",
+        report.diagnostics
+    );
+}
+
 /// Reading `old.<member>` of a member a `default` in the same evolve block rewrites is
 /// a check error: `old` exposes the pre-evolution value, not the post-default value the
 /// developer intends, so the transform would compute from a value the same evolution is
