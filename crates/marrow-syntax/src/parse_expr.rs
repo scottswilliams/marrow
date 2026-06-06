@@ -61,7 +61,6 @@ impl<'a> ExprParser<'a> {
     ) {
         self.diagnostics.push(Diagnostic {
             code: PARSE_SYNTAX,
-            kind: "parse",
             reason: DiagnosticReason::Parser(reason),
             severity: Severity::Error,
             message,

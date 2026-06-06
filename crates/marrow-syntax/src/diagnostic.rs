@@ -6,7 +6,6 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     pub code: &'static str,
-    pub kind: &'static str,
     pub reason: DiagnosticReason,
     pub severity: Severity,
     pub message: String,
@@ -147,11 +146,6 @@ impl Diagnose for Diagnostic {
     }
     fn help(&self) -> Option<&str> {
         self.help.as_deref()
-    }
-    // A parse diagnostic stores its kind verbatim (always "parse"); return it
-    // rather than deriving it, so the rendered kind never depends on the map.
-    fn kind(&self) -> &str {
-        self.kind
     }
 }
 

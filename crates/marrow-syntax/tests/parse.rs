@@ -1,9 +1,11 @@
 use marrow_syntax::{
-    ArgMode, BinaryOp, Declaration, Diagnostic, DiagnosticReason, ExpectedSyntax, Expression,
-    InterpolationPart, LexerDiagnosticReason, LiteralKind, ObsoleteOperator, ParseDiagnosticReason,
-    ReservedSyntax, ResourceMember, Statement, UnaryOp, UnsupportedSyntax, format_expression,
-    parse_source,
+    ArgMode, BinaryOp, Declaration, Diagnose, Diagnostic, DiagnosticReason, ExpectedSyntax,
+    Expression, InterpolationPart, LexerDiagnosticReason, LiteralKind, ObsoleteOperator,
+    ParseDiagnosticReason, ReservedSyntax, ResourceMember, Statement, UnaryOp, UnsupportedSyntax,
+    format_expression, parse_source,
 };
+
+mod common;
 
 fn parse_reason(reason: ParseDiagnosticReason) -> DiagnosticReason {
     DiagnosticReason::Parser(reason)
@@ -30,60 +32,10 @@ fn member_names(decl: &marrow_syntax::EnumDecl) -> Vec<&str> {
     decl.members.iter().map(|m| m.name.as_str()).collect()
 }
 
-fn reference_sample() -> &'static str {
-    r#"module shelf::sample
-
-resource Book at ^books(id: int)
-    required title: string
-    required author: string
-    required shelf: string
-    required currentVersion: int
-    loanedTo: string
-    tags(pos: int): string
-
-    notes(noteId: string)
-        text: string
-
-    versions(version: int)
-        required title: string
-        required shelf: string
-        required changedAt: instant
-
-    index byShelf(shelf, id)
-
-pub fn add(title: string, author: string, shelf: string, changedAt: instant): Id(^books)
-    var book: Book
-    book.title = title
-    book.author = author
-    book.shelf = shelf
-    book.currentVersion = 1
-
-    const id: Id(^books) = nextId(^books)
-
-    transaction
-        ^books(id) = book
-        ^books(id).versions(1).title = title
-        ^books(id).versions(1).shelf = shelf
-        ^books(id).versions(1).changedAt = changedAt
-
-    return id
-
-pub fn printShelf(shelf: string)
-    for id in keys(^books.byShelf(shelf))
-        print($"{id}: {^books(id).title}")
-"#
-}
-
 #[test]
 fn parses_documented_reference_sample() {
-    let sample_doc = include_str!("../../../docs/language/sample.md");
-    let sample = sample_doc
-        .split("```mw")
-        .nth(1)
-        .and_then(|tail| tail.split("```").next())
-        .expect("sample.md should contain a Marrow code block");
-
-    let parsed = parse_source(sample);
+    let sample = common::reference_sample();
+    let parsed = parse_source(&sample);
 
     assert!(
         parsed.diagnostics.is_empty(),
@@ -189,7 +141,7 @@ fn parses_all_documented_module_files() {
     // file and must parse without diagnostics. Signature-only and fragment
     // examples (bare statements, body-less functions) are illustrative and not
     // included here; the lexer fixture covers all blocks.
-    let blocks = documented_module_blocks();
+    let blocks = common::documented_module_blocks();
     assert!(
         blocks.len() >= 5,
         "expected several documented module files, found {}",
@@ -206,60 +158,6 @@ fn parses_all_documented_module_files() {
             block.source
         );
     }
-}
-
-struct MwBlock {
-    path: String,
-    index: usize,
-    source: String,
-}
-
-fn documented_module_blocks() -> Vec<MwBlock> {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("docs")
-        .join("language");
-    let mut blocks = Vec::new();
-    let mut entries = std::fs::read_dir(&dir)
-        .expect("read docs/language")
-        .map(|entry| entry.expect("language doc entry").path())
-        .collect::<Vec<_>>();
-    entries.sort();
-
-    for path in entries {
-        if path.extension().and_then(|extension| extension.to_str()) != Some("md") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path).expect("read language doc");
-        let mut in_block = false;
-        let mut index = 0usize;
-        let mut source = String::new();
-        for line in text.lines() {
-            if line.trim() == "```mw" {
-                in_block = true;
-                index += 1;
-                source.clear();
-                continue;
-            }
-            if line.trim() == "```" && in_block {
-                if source.trim_start().starts_with("module ") {
-                    blocks.push(MwBlock {
-                        path: path.file_name().unwrap().to_string_lossy().into_owned(),
-                        index,
-                        source: source.clone(),
-                    });
-                }
-                in_block = false;
-                continue;
-            }
-            if in_block {
-                source.push_str(line);
-                source.push('\n');
-            }
-        }
-    }
-    blocks
 }
 
 #[test]
@@ -931,7 +829,7 @@ fn statement_spanning_open_delimiters_stays_one_statement() {
 
 #[test]
 fn parses_reference_sample_structure() {
-    let parsed = parse_source(reference_sample());
+    let parsed = parse_source(&common::reference_sample());
 
     assert!(
         parsed.diagnostics.is_empty(),
@@ -1056,7 +954,7 @@ fn reports_malformed_body_statements_with_a_diagnostic() {
             .iter()
             .find(|diagnostic| diagnostic.code == "parse.syntax" && diagnostic.span.line == 3)
             .unwrap_or_else(|| panic!("expected a line-3 parse.syntax diagnostic for {source:?}"));
-        assert_eq!(syntax.kind, "parse", "{source:?}");
+        assert_eq!(syntax.kind(), "parse", "{source:?}");
     }
 }
 
@@ -1141,7 +1039,7 @@ fn surfaces_lexer_diagnostics_for_function_body_tokens() {
         })
         .expect("expected obsolete operator diagnostic");
     assert_eq!(obsolete.code, "parse.syntax");
-    assert_eq!(obsolete.kind, "parse");
+    assert_eq!(obsolete.kind(), "parse");
     assert_eq!(obsolete.span.line, 3);
     assert_eq!(
         obsolete.help.as_deref(),
@@ -1543,7 +1441,7 @@ fn positional_argument_after_named_is_rejected() {
             )
         });
     assert_eq!(diagnostic.code, "parse.syntax");
-    assert_eq!(diagnostic.kind, "parse");
+    assert_eq!(diagnostic.kind(), "parse");
     // The diagnostic points at the offending positional argument, not the call.
     assert_eq!(
         &source[diagnostic.span.start_byte..diagnostic.span.end_byte],
@@ -1733,7 +1631,7 @@ fn rejects_parameter_defaults() {
         })
         .expect("expected parameter-defaults diagnostic");
     assert_eq!(diagnostic.code, "parse.syntax");
-    assert_eq!(diagnostic.kind, "parse");
+    assert_eq!(diagnostic.kind(), "parse");
     assert_eq!(diagnostic.span.line, 2);
     assert!(
         diagnostic.reason

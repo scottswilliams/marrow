@@ -7,10 +7,10 @@
 //! the minimum needed to preserve operator precedence and associativity.
 
 use crate::{
-    ArgMode, Argument, BinaryOp, Block, Comment, CommentMarker, CommentPlacement, ConstDecl,
-    Declaration, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression, FunctionDecl,
-    InterpolationPart, KeyParam, ParamDecl, ParamMode, ResourceDecl, ResourceMember, Statement,
-    StoreDecl, TypeRef, UnaryOp,
+    ArgMode, Argument, BinaryOp, Block, CatchClause, Comment, CommentMarker, CommentPlacement,
+    ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression,
+    ForBinding, FunctionDecl, InterpolationPart, KeyParam, MatchArm, ParamDecl, ParamMode,
+    ResourceDecl, ResourceMember, Statement, StoreDecl, TypeRef, UnaryOp,
 };
 
 /// Precedence of an expression, tightest-binding last. Used to decide where
@@ -138,17 +138,12 @@ fn declaration_span(declaration: &Declaration) -> crate::SourceSpan {
     }
 }
 
-/// Render one top-level declaration to canonical Marrow source with a fixed
-/// layout, independent of how the declaration was spelled in the input. `source`
-/// supplies the original text for any statement body the declaration carries.
-pub fn format_declaration_normalized(source: &str, declaration: &Declaration) -> String {
-    format_declaration(source, declaration)
-}
-
-/// Format a top-level declaration (const, resource, or function) as canonical
-/// Marrow source, including its documentation comments. The returned text has
-/// no trailing newline.
-fn format_declaration(source: &str, declaration: &Declaration) -> String {
+/// Render one top-level declaration (const, resource, store, function, enum, or
+/// evolve) to canonical Marrow source with a fixed layout, independent of how the
+/// declaration was spelled in the input, including its documentation comments.
+/// `source` supplies the original text for any statement body the declaration
+/// carries. The returned text has no trailing newline.
+pub fn format_declaration(source: &str, declaration: &Declaration) -> String {
     match declaration {
         Declaration::Const(decl) => format_const(decl),
         Declaration::Resource(decl) => format_resource(decl),
@@ -207,7 +202,7 @@ fn format_const(decl: &ConstDecl) -> String {
         "const {}{} = {}",
         decl.name,
         format_type_annotation(&decl.ty),
-        format_opt_expression(decl.value.as_ref())
+        format_opt_expression_at(decl.value.as_ref(), 0)
     ));
     out
 }
@@ -271,63 +266,50 @@ fn format_enum_member(member: &EnumMember, level: usize) -> String {
 }
 
 fn format_resource_body(members: &[ResourceMember], comments: &[Comment], level: usize) -> String {
-    let mut lines = Vec::new();
-    for comment in comments {
-        lines.push(FormattedBodyLine {
-            span: comment.span,
-            text: format_comment(comment),
-        });
-    }
-    for member in members {
-        lines.push(FormattedBodyLine {
-            span: resource_member_span(member),
-            text: format_resource_member(member, level),
-        });
-    }
-    lines.sort_by_key(|line| line.span.start_byte);
-    lines
-        .into_iter()
-        .map(|line| line.text)
-        .collect::<Vec<_>>()
-        .join("\n")
+    format_body(
+        comments,
+        members.iter().map(|member| {
+            (
+                resource_member_span(member),
+                format_resource_member(member, level),
+            )
+        }),
+    )
 }
 
 fn format_store_body(indexes: &[crate::IndexDecl], comments: &[Comment], level: usize) -> String {
-    let mut lines = Vec::new();
-    for comment in comments {
-        lines.push(FormattedBodyLine {
-            span: comment.span,
-            text: format_comment(comment),
-        });
-    }
-    for index in indexes {
-        lines.push(FormattedBodyLine {
-            span: index.span,
-            text: format_index_decl(index, level),
-        });
-    }
-    lines.sort_by_key(|line| line.span.start_byte);
-    lines
-        .into_iter()
-        .map(|line| line.text)
-        .collect::<Vec<_>>()
-        .join("\n")
+    format_body(
+        comments,
+        indexes
+            .iter()
+            .map(|index| (index.span, format_index_decl(index, level))),
+    )
 }
 
 fn format_enum_body(members: &[EnumMember], comments: &[Comment], level: usize) -> String {
-    let mut lines = Vec::new();
-    for comment in comments {
-        lines.push(FormattedBodyLine {
+    format_body(
+        comments,
+        members
+            .iter()
+            .map(|member| (member.span, format_enum_member(member, level))),
+    )
+}
+
+/// Merge a body's own-line `comments` with its already-formatted items, ordering
+/// both by source position so a comment between two items keeps its place, and
+/// join them one per line. Each item supplies its own span and rendered text.
+fn format_body(
+    comments: &[Comment],
+    items: impl Iterator<Item = (crate::SourceSpan, String)>,
+) -> String {
+    let mut lines: Vec<FormattedBodyLine> = comments
+        .iter()
+        .map(|comment| FormattedBodyLine {
             span: comment.span,
             text: format_comment(comment),
-        });
-    }
-    for member in members {
-        lines.push(FormattedBodyLine {
-            span: member.span,
-            text: format_enum_member(member, level),
-        });
-    }
+        })
+        .collect();
+    lines.extend(items.map(|(span, text)| FormattedBodyLine { span, text }));
     lines.sort_by_key(|line| line.span.start_byte);
     lines
         .into_iter()
@@ -399,7 +381,7 @@ fn format_function(source: &str, decl: &FunctionDecl) -> String {
         "{visibility}fn {}({}){}",
         decl.name,
         format_params(&decl.params),
-        format_return_type(&decl.return_type)
+        format_type_annotation(&decl.return_type)
     ));
     let body = format_block(source, &decl.body, 1);
     if !body.is_empty() {
@@ -437,13 +419,6 @@ fn format_param(param: &ParamDecl) -> String {
         None => "",
     };
     format!("{mode}{}: {}", param.name, param.ty)
-}
-
-fn format_return_type(return_type: &Option<TypeRef>) -> String {
-    match return_type {
-        Some(ty) => format!(": {ty}"),
-        None => String::new(),
-    }
 }
 
 /// Render documentation comments as `;; ...` lines at `level`, each ending in a
@@ -596,27 +571,14 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
             else_ifs,
             else_block,
             ..
-        } => {
-            let mut out = format!(
-                "{pad}if {}\n{}",
-                format_opt_expression_at(condition.as_ref(), level),
-                format_block(source, then_block, level + 1)
-            );
-            for else_if in else_ifs {
-                out.push_str(&format!(
-                    "\n{pad}else if {}\n{}",
-                    format_opt_expression_at(else_if.condition.as_ref(), level),
-                    format_block(source, &else_if.block, level + 1)
-                ));
-            }
-            if let Some(else_block) = else_block {
-                out.push_str(&format!(
-                    "\n{pad}else\n{}",
-                    format_block(source, else_block, level + 1)
-                ));
-            }
-            out
-        }
+        } => format_if(
+            source,
+            condition.as_ref(),
+            then_block,
+            else_ifs,
+            else_block.as_ref(),
+            level,
+        ),
         Statement::While {
             label,
             condition,
@@ -635,22 +597,7 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
             step,
             body,
             ..
-        } => {
-            let binding = match &binding.second {
-                Some(second) => format!("{}, {second}", binding.first),
-                None => binding.first.clone(),
-            };
-            let step = match step {
-                Some(step) => format!(" by {}", format_expression_at(step, level)),
-                None => String::new(),
-            };
-            format!(
-                "{pad}{}for {binding} in {}{step}\n{}",
-                format_label_prefix(label),
-                format_expression_at(iterable, level),
-                format_block(source, body, level + 1)
-            )
-        }
+        } => format_for(source, label, binding, iterable, step.as_ref(), body, level),
         Statement::Transaction { body, .. } => {
             format!(
                 "{pad}transaction\n{}",
@@ -662,42 +609,120 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
             catch,
             finally,
             ..
-        } => {
-            let mut out = format!("{pad}try\n{}", format_block(source, body, level + 1));
-            if let Some(catch) = catch {
-                out.push_str(&format!(
-                    "\n{pad}catch {}{}\n{}",
-                    catch.name,
-                    format_type_annotation(&catch.ty),
-                    format_block(source, &catch.block, level + 1)
-                ));
-            }
-            if let Some(finally) = finally {
-                out.push_str(&format!(
-                    "\n{pad}finally\n{}",
-                    format_block(source, finally, level + 1)
-                ));
-            }
-            out
-        }
+        } => format_try(source, body, catch.as_ref(), finally.as_ref(), level),
         Statement::Match {
             scrutinee, arms, ..
-        } => {
-            let arm_pad = INDENT.repeat(level + 1);
-            let mut out = format!(
-                "{pad}match {}",
-                format_opt_expression_at(scrutinee.as_ref(), level)
-            );
-            for arm in arms {
-                out.push_str(&format!(
-                    "\n{arm_pad}{}\n{}",
-                    arm.path.join("::"),
-                    format_block(source, &arm.block, level + 2)
-                ));
-            }
-            out
-        }
+        } => format_match(source, scrutinee.as_ref(), arms, level),
     }
+}
+
+/// Format an `if`/`else if`/`else` chain. The condition and each else-if
+/// condition sit on their header line; each block indents one level deeper.
+fn format_if(
+    source: &str,
+    condition: Option<&Expression>,
+    then_block: &Block,
+    else_ifs: &[ElseIf],
+    else_block: Option<&Block>,
+    level: usize,
+) -> String {
+    let pad = INDENT.repeat(level);
+    let mut out = format!(
+        "{pad}if {}\n{}",
+        format_opt_expression_at(condition, level),
+        format_block(source, then_block, level + 1)
+    );
+    for else_if in else_ifs {
+        out.push_str(&format!(
+            "\n{pad}else if {}\n{}",
+            format_opt_expression_at(else_if.condition.as_ref(), level),
+            format_block(source, &else_if.block, level + 1)
+        ));
+    }
+    if let Some(else_block) = else_block {
+        out.push_str(&format!(
+            "\n{pad}else\n{}",
+            format_block(source, else_block, level + 1)
+        ));
+    }
+    out
+}
+
+/// Format a `for` loop header (optional label, binding, iterable, optional `by`
+/// step) and its body one level deeper.
+fn format_for(
+    source: &str,
+    label: &Option<String>,
+    binding: &ForBinding,
+    iterable: &Expression,
+    step: Option<&Expression>,
+    body: &Block,
+    level: usize,
+) -> String {
+    let pad = INDENT.repeat(level);
+    let binding = match &binding.second {
+        Some(second) => format!("{}, {second}", binding.first),
+        None => binding.first.clone(),
+    };
+    let step = match step {
+        Some(step) => format!(" by {}", format_expression_at(step, level)),
+        None => String::new(),
+    };
+    format!(
+        "{pad}{}for {binding} in {}{step}\n{}",
+        format_label_prefix(label),
+        format_expression_at(iterable, level),
+        format_block(source, body, level + 1)
+    )
+}
+
+/// Format a `try` block with its optional `catch` and `finally` clauses, each
+/// header on its own line and each block one level deeper.
+fn format_try(
+    source: &str,
+    body: &Block,
+    catch: Option<&CatchClause>,
+    finally: Option<&Block>,
+    level: usize,
+) -> String {
+    let pad = INDENT.repeat(level);
+    let mut out = format!("{pad}try\n{}", format_block(source, body, level + 1));
+    if let Some(catch) = catch {
+        out.push_str(&format!(
+            "\n{pad}catch {}{}\n{}",
+            catch.name,
+            format_type_annotation(&catch.ty),
+            format_block(source, &catch.block, level + 1)
+        ));
+    }
+    if let Some(finally) = finally {
+        out.push_str(&format!(
+            "\n{pad}finally\n{}",
+            format_block(source, finally, level + 1)
+        ));
+    }
+    out
+}
+
+/// Format a `match` header and its arms. Each arm header is a member path one
+/// level deeper than the `match`, with the arm block one level deeper again.
+fn format_match(
+    source: &str,
+    scrutinee: Option<&Expression>,
+    arms: &[MatchArm],
+    level: usize,
+) -> String {
+    let pad = INDENT.repeat(level);
+    let arm_pad = INDENT.repeat(level + 1);
+    let mut out = format!("{pad}match {}", format_opt_expression_at(scrutinee, level));
+    for arm in arms {
+        out.push_str(&format!(
+            "\n{arm_pad}{}\n{}",
+            arm.path.join("::"),
+            format_block(source, &arm.block, level + 2)
+        ));
+    }
+    out
 }
 
 fn format_type_annotation(ty: &Option<TypeRef>) -> String {
@@ -775,24 +800,18 @@ fn format_expression_at(expression: &Expression, level: usize) -> String {
         }
         Expression::Field {
             base, name, quoted, ..
-        } => {
-            let segment = if *quoted {
-                format!("\"{name}\"")
-            } else {
-                name.clone()
-            };
-            format!("{}.{}", format_child_at(base, PREC_ATOM, level), segment)
-        }
+        } => format!(
+            "{}.{}",
+            format_child_at(base, PREC_ATOM, level),
+            field_segment(name, *quoted)
+        ),
         Expression::OptionalField {
             base, name, quoted, ..
-        } => {
-            let segment = if *quoted {
-                format!("\"{name}\"")
-            } else {
-                name.clone()
-            };
-            format!("{}?.{}", format_child_at(base, PREC_ATOM, level), segment)
-        }
+        } => format!(
+            "{}?.{}",
+            format_child_at(base, PREC_ATOM, level),
+            field_segment(name, *quoted)
+        ),
         Expression::Unary { op, operand, .. } => {
             let operand = format_child_at(operand, PREC_UNARY, level);
             match op {
@@ -807,12 +826,9 @@ fn format_expression_at(expression: &Expression, level: usize) -> String {
     }
 }
 
-/// Format an optional value-position expression, rendering nothing when the
-/// value did not parse (a syntax error was already reported at parse time).
-fn format_opt_expression(expression: Option<&Expression>) -> String {
-    expression.map(format_expression).unwrap_or_default()
-}
-
+/// Format an optional value-position expression at `level`, rendering nothing
+/// when the value did not parse (a syntax error was already reported at parse
+/// time).
 fn format_opt_expression_at(expression: Option<&Expression>, level: usize) -> String {
     expression
         .map(|expression| format_expression_at(expression, level))
@@ -844,6 +860,16 @@ fn format_child_at(child: &Expression, min_precedence: u8, level: usize) -> Stri
         format!("({rendered})")
     } else {
         rendered
+    }
+}
+
+/// Render a field-access segment, quoting a name that was written quoted (a
+/// segment that is not a bare identifier, such as `"old-title"`).
+fn field_segment(name: &str, quoted: bool) -> String {
+    if quoted {
+        format!("\"{name}\"")
+    } else {
+        name.to_string()
     }
 }
 

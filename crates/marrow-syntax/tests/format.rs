@@ -1,53 +1,12 @@
 use marrow_syntax::{Declaration, format_expression, format_source, parse_source};
 
-/// Read every `module`-starting `.mw` block from the language reference (the
-/// complete library files used as parser fixtures).
-fn documented_module_files() -> Vec<String> {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("docs")
-        .join("language");
-    let mut files = Vec::new();
-    let mut entries = std::fs::read_dir(&dir)
-        .expect("read docs/language")
-        .map(|entry| entry.expect("entry").path())
-        .collect::<Vec<_>>();
-    entries.sort();
-    for path in entries {
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path).expect("read doc");
-        let (mut in_block, mut src) = (false, String::new());
-        for line in text.lines() {
-            if line.trim() == "```mw" {
-                in_block = true;
-                src.clear();
-                continue;
-            }
-            if line.trim() == "```" && in_block {
-                if src.trim_start().starts_with("module ") {
-                    files.push(src.clone());
-                }
-                in_block = false;
-                continue;
-            }
-            if in_block {
-                src.push_str(line);
-                src.push('\n');
-            }
-        }
-    }
-    files
-}
+mod common;
 
 /// Format a single-declaration `module app` source through `format_source` and
 /// return just that declaration's canonical text. `format_source` wraps the file
 /// as `module app\n\n<decl>\n`, so stripping that frame exercises the same
 /// declaration-formatting path the public entry point uses.
-fn format_decl(source: &str, index: usize) -> String {
-    assert_eq!(index, 0, "helper only supports a single declaration");
+fn format_decl(source: &str) -> String {
     let formatted = format_source(source);
     formatted
         .strip_prefix("module app\n\n")
@@ -57,10 +16,9 @@ fn format_decl(source: &str, index: usize) -> String {
 }
 
 /// Format a single-function `module app` source through `format_source` and
-/// return just the function body (the indented statements under the `fn` header),
-/// matching what the old block-level helper produced.
+/// return just the function body: the indented statements under the `fn` header.
 fn format_function_body(source: &str) -> String {
-    let decl = format_decl(source, 0);
+    let decl = format_decl(source);
     // `format_decl` yields `fn run(...)\n<body>`; drop the header line to leave
     // the body block the test asserts on.
     decl.split_once('\n')
@@ -301,7 +259,7 @@ fn formats_const_declaration_with_docs() {
          const MaxLoans: int = 5\n";
     let expected = ";; The maximum number of loans.\n\
          const MaxLoans: int = 5";
-    assert_eq!(format_decl(source, 0), expected);
+    assert_eq!(format_decl(source), expected);
 }
 
 #[test]
@@ -315,7 +273,7 @@ fn formats_empty_doc_comment_lines_without_trailing_whitespace() {
          ;;\n\
          ;; Second paragraph.\n\
          const MaxLoans: int = 5";
-    let formatted = format_decl(source, 0);
+    let formatted = format_decl(source);
     assert_eq!(formatted, expected);
     assert!(
         formatted.lines().all(|line| !line.ends_with(' ')),
@@ -355,7 +313,7 @@ fn formats_function_declaration_with_params() {
     let expected = "pub fn add(title: string, inout total: int): int\n\
          \x20   total = total + 1\n\
          \x20   return total";
-    assert_eq!(format_decl(source, 0), expected);
+    assert_eq!(format_decl(source), expected);
 }
 
 #[test]
@@ -409,9 +367,10 @@ fn structural_fingerprint(source: &str) -> String {
 
 #[test]
 fn format_source_preserves_structure_and_reparses_cleanly() {
-    let files = documented_module_files();
-    assert!(files.len() >= 5, "expected several module files");
-    for source in files {
+    let blocks = common::documented_module_blocks();
+    assert!(blocks.len() >= 5, "expected several module files");
+    for block in blocks {
+        let source = block.source;
         let once = format_source(&source);
         let twice = format_source(&once);
         assert_eq!(
@@ -552,7 +511,7 @@ fn documented_parameters_format_one_per_line() {
          \x20   shelf: string,\n\
          )\n\
          \x20   return\n";
-    let decl = format_decl(source, 0);
+    let decl = format_decl(source);
     let expected = "fn f(\n\
          \x20   ;; the book to file\n\
          \x20   book: int,\n\

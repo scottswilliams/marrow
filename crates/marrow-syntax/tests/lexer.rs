@@ -1,7 +1,17 @@
 use marrow_syntax::{
-    DiagnosticReason, Keyword, LexerDiagnosticReason, ObsoleteOperator, TokenKind, lex_source,
+    Diagnose, DiagnosticReason, Keyword, LexedSource, LexerDiagnosticReason, ObsoleteOperator,
+    Severity, TokenKind, lex_source,
 };
-use std::path::Path;
+
+mod common;
+
+/// Whether the lexed source carries any error-severity diagnostic.
+fn has_errors(lexed: &LexedSource) -> bool {
+    lexed
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error)
+}
 
 fn kinds(source: &str) -> Vec<TokenKind> {
     lex_source(source)
@@ -349,13 +359,12 @@ fn reports_lexical_errors_with_parse_syntax_diagnostics() {
     let source = "fn main()\n\treturn \"unterminated\n    ~\n";
     let lexed = lex_source(source);
 
-    assert!(lexed.has_errors());
+    assert!(has_errors(&lexed));
     assert_eq!(lexed.diagnostics.len(), 3, "{:#?}", lexed.diagnostics);
     assert!(
-        lexed
-            .diagnostics
-            .iter()
-            .all(|diagnostic| { diagnostic.code == "parse.syntax" && diagnostic.kind == "parse" })
+        lexed.diagnostics.iter().all(|diagnostic| {
+            diagnostic.code == "parse.syntax" && diagnostic.kind() == "parse"
+        })
     );
     assert_eq!(
         lexed.diagnostics[0].reason,
@@ -377,7 +386,7 @@ fn reports_lexical_errors_with_parse_syntax_diagnostics() {
 fn reserves_tilde_for_ephemeral_roots() {
     let lexed = lex_source("fn main()\n    return ~cache\n");
 
-    assert!(lexed.has_errors());
+    assert!(has_errors(&lexed));
     let diagnostic = lexed
         .diagnostics
         .iter()
@@ -406,7 +415,7 @@ fn rejects_obsolete_operators_with_marrow_guidance() {
     for (source, expected_operator, expected_help, expected_len) in cases {
         let lexed = lex_source(source);
         assert!(
-            lexed.has_errors(),
+            has_errors(&lexed),
             "expected {expected_operator:?} to be rejected by the lexer, got {:#?}",
             lexed.diagnostics
         );
@@ -421,7 +430,7 @@ fn rejects_obsolete_operators_with_marrow_guidance() {
             })
             .unwrap_or_else(|| panic!("expected diagnostic for {expected_operator:?}"));
         assert_eq!(diagnostic.code, "parse.syntax");
-        assert_eq!(diagnostic.kind, "parse");
+        assert_eq!(diagnostic.kind(), "parse");
         assert_eq!(
             diagnostic.span.end_byte - diagnostic.span.start_byte,
             *expected_len,
@@ -444,7 +453,7 @@ fn keeps_valid_operators_after_obsolete_check() {
     let lexed = lex_source(source);
 
     assert!(
-        !lexed.has_errors(),
+        !has_errors(&lexed),
         "valid `!=` should still lex cleanly, got {:#?}",
         lexed.diagnostics
     );
@@ -463,7 +472,7 @@ fn lexes_equality_operator() {
     let lexed = lex_source(source);
 
     assert!(
-        !lexed.has_errors(),
+        !has_errors(&lexed),
         "`==` should lex cleanly as the equality operator, got {:#?}",
         lexed.diagnostics
     );
@@ -491,7 +500,7 @@ fn lexes_absence_operators() {
     // `?.` and `??` each lex as a single multi-character punctuation token.
     let lexed = lex_source("write(a?.b ?? c)\n");
     assert!(
-        !lexed.has_errors(),
+        !has_errors(&lexed),
         "`?.` and `??` should lex cleanly, got {:#?}",
         lexed.diagnostics
     );
@@ -526,70 +535,22 @@ fn rejects_a_bare_question_mark() {
 
 #[test]
 fn lexes_all_language_reference_mw_blocks_without_errors() {
-    for fixture in language_reference_mw_blocks() {
-        let lexed = lex_source(&fixture.source);
+    for block in common::mw_blocks() {
+        let lexed = lex_source(&block.source);
         assert!(
-            !lexed.has_errors(),
+            !has_errors(&lexed),
             "{} fenced mw block {} produced diagnostics:\n{:#?}\n{}",
-            fixture.path,
-            fixture.block,
+            block.path,
+            block.index,
             lexed.diagnostics,
-            fixture.source
+            block.source
         );
         assert_eq!(
             lexed.tokens.last().map(|token| token.kind),
             Some(TokenKind::Eof),
             "{} fenced mw block {} did not end with EOF",
-            fixture.path,
-            fixture.block
+            block.path,
+            block.index
         );
     }
-}
-
-struct MwFixture {
-    path: String,
-    block: usize,
-    source: String,
-}
-
-fn language_reference_mw_blocks() -> Vec<MwFixture> {
-    let docs_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("docs")
-        .join("language");
-    let mut fixtures = Vec::new();
-    for entry in std::fs::read_dir(docs_dir).expect("read docs/language") {
-        let path = entry.expect("language doc entry").path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("md") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path).expect("read language doc");
-        let mut in_mw = false;
-        let mut block = 0usize;
-        let mut source = String::new();
-
-        for line in text.lines() {
-            if line.trim() == "```mw" {
-                in_mw = true;
-                block += 1;
-                source.clear();
-                continue;
-            }
-            if line.trim() == "```" && in_mw {
-                fixtures.push(MwFixture {
-                    path: path.display().to_string(),
-                    block,
-                    source: source.clone(),
-                });
-                in_mw = false;
-                continue;
-            }
-            if in_mw {
-                source.push_str(line);
-                source.push('\n');
-            }
-        }
-    }
-    fixtures
 }

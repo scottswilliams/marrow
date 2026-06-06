@@ -245,7 +245,6 @@ impl<'a> Lexer<'a> {
         let span = self.span(line, index, end);
         self.diagnostics.push(Diagnostic {
             code: PARSE_SYNTAX,
-            kind: "parse",
             reason: DiagnosticReason::Lexer(LexerDiagnosticReason::ObsoleteOperator(reason)),
             severity: Severity::Error,
             message: message.to_string(),
@@ -644,7 +643,6 @@ impl<'a> Lexer<'a> {
     ) {
         self.diagnostics.push(Diagnostic {
             code: PARSE_SYNTAX,
-            kind: "parse",
             reason: DiagnosticReason::Lexer(reason),
             severity: Severity::Error,
             message: message.into(),

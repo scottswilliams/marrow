@@ -1417,7 +1417,7 @@ fn render_declarations(program: &CheckedProgram, scope: DigestScope) -> Vec<Dura
                         module: module.name.clone(),
                         kind,
                         name: declaration_name(declaration),
-                        text: marrow_syntax::format_declaration_normalized(source, declaration),
+                        text: marrow_syntax::format_declaration(source, declaration),
                     });
                 }
             }

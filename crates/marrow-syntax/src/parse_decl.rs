@@ -43,6 +43,17 @@ enum MemberHead {
     },
 }
 
+/// The classification of the next line in an indented member block, after the
+/// shared trivia (dedent, blank lines, comments, stray indents) has been handled.
+enum MemberBlockFrame {
+    /// The block closed on its `DEDENT`; stop the loop.
+    Done,
+    /// A trivia line was consumed; continue without parsing a member.
+    Trivia,
+    /// A member header is in place for the caller to parse.
+    Member,
+}
+
 #[derive(Debug, Clone)]
 struct ParseError {
     reason: ParseDiagnosticReason,
@@ -57,23 +68,14 @@ impl ParseError {
 
 type ParseResult<T> = Result<T, ParseError>;
 
-/// Statement keywords that introduce one or more indented blocks. Most have
-/// dedicated parsers; this guards the fallback that swallows a block-introducing
-/// keyword appearing where it cannot be structured (such as a stray `else`),
-/// reporting it and consuming its nested block so following statements still
-/// parse.
-fn is_compound_statement_keyword(keyword: Keyword) -> bool {
-    matches!(
-        keyword,
-        Keyword::If
-            | Keyword::Else
-            | Keyword::While
-            | Keyword::For
-            | Keyword::Transaction
-            | Keyword::Try
-            | Keyword::Catch
-            | Keyword::Finally
-    )
+/// A block-introducing keyword that has no statement of its own and only ever
+/// appears as a clause of one (`else`, `catch`, `finally`). Standing alone it
+/// cannot be structured, so the statement parser swallows it and its nested
+/// block, reporting the stray keyword so the following statements still parse.
+/// The keywords with dedicated statement parsers (`if`, `while`, …) are matched
+/// before this guard and never reach it.
+fn is_stray_block_clause_keyword(keyword: Keyword) -> bool {
+    matches!(keyword, Keyword::Else | Keyword::Catch | Keyword::Finally)
 }
 
 /// Parses the statements of a function body over the file-wide token stream.
@@ -190,7 +192,7 @@ impl<'a> StmtParser<'a> {
             }
             TokenKind::Keyword(Keyword::Try) => return Some(self.try_stmt()),
             TokenKind::Keyword(Keyword::Match) => return Some(self.match_stmt()),
-            TokenKind::Keyword(keyword) if is_compound_statement_keyword(keyword) => {
+            TokenKind::Keyword(keyword) if is_stray_block_clause_keyword(keyword) => {
                 self.skip_compound();
                 return None;
             }
@@ -202,9 +204,7 @@ impl<'a> StmtParser<'a> {
         let line = &self.tokens[self.pos..content_end];
         let before = self.diagnostics.len();
         let statement = parse_simple_statement(self.source, line, &mut self.diagnostics);
-        // The generic fallback only fires when nothing more specific was raised
-        // for the line: a keyword field name or another inline syntax-rule
-        // diagnostic already explains the failure, and a single line reports once.
+        // Suppress the generic fallback when an inline syntax rule already reported.
         if statement.is_none() && self.diagnostics.len() == before {
             let span = line_span(&self.tokens[self.pos..content_end]);
             self.error_span_reason(
@@ -497,9 +497,7 @@ impl<'a> StmtParser<'a> {
         let line = &self.tokens[self.pos..content_end];
         let before = self.diagnostics.len();
         let expr = expr_of(self.source, line, &mut self.diagnostics);
-        // The generic fallback only fires when nothing more specific was raised:
-        // a keyword field name or another inline syntax-rule diagnostic already
-        // explains the failure, so a single header reports once.
+        // Suppress the generic fallback when an inline syntax rule already reported.
         if expr.is_none() && self.diagnostics.len() == before {
             self.error_span_reason(
                 line_span(&self.tokens[self.pos..content_end]),
@@ -580,16 +578,7 @@ impl<'a> StmtParser<'a> {
 
     /// Index of the `NEWLINE` (or layout token) that ends the current line.
     fn find_line_end(&self) -> usize {
-        let mut index = self.pos;
-        while index < self.tokens.len()
-            && !matches!(
-                self.tokens[index].kind,
-                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent | TokenKind::Eof
-            )
-        {
-            index += 1;
-        }
-        index
+        line_end(&self.tokens, self.pos)
     }
 
     fn report_unexpected_indented_block(&mut self) {
@@ -639,25 +628,7 @@ impl<'a> StmtParser<'a> {
     /// cannot be structured. Report it and consume its header and nested block
     /// so the following statements still parse.
     fn skip_compound(&mut self) {
-        let start = self.tokens[self.pos].span;
-        let mut end = start;
-        // Consume the header up to its NEWLINE.
-        while let Some(kind) = self.peek() {
-            match kind {
-                TokenKind::Newline => {
-                    end = self.advance().span;
-                    break;
-                }
-                TokenKind::Indent | TokenKind::Dedent => break,
-                _ => end = self.advance().span,
-            }
-        }
-        // Consume an immediately following indented block, if any.
-        if matches!(self.peek(), Some(TokenKind::Indent)) {
-            end = self.skip_block();
-        }
-        self.error_span_reason(
-            join_spans(start, end),
+        self.swallow_block_statement(
             ParseDiagnosticReason::Expected(ExpectedSyntax::Statement),
             "expected a statement",
         );
@@ -667,6 +638,20 @@ impl<'a> StmtParser<'a> {
     /// grammar. Consume the header and nested block so its body does not leak
     /// into the surrounding statement list.
     fn skip_reserved_compound(&mut self, word: &str) {
+        self.swallow_block_statement(
+            ParseDiagnosticReason::Reserved(ReservedSyntax::LockStatement),
+            format!("`{word}` is reserved and is not a v0.1 statement"),
+        );
+    }
+
+    /// Consume a block-shaped statement that cannot be structured — its header up
+    /// to the `NEWLINE` and any immediately following indented block — and report
+    /// the given diagnostic over the whole span so following statements parse.
+    fn swallow_block_statement(
+        &mut self,
+        reason: ParseDiagnosticReason,
+        message: impl Into<String>,
+    ) {
         let start = self.tokens[self.pos].span;
         let mut end = start;
         while let Some(kind) = self.peek() {
@@ -682,11 +667,7 @@ impl<'a> StmtParser<'a> {
         if matches!(self.peek(), Some(TokenKind::Indent)) {
             end = self.skip_block();
         }
-        self.error_span_reason(
-            join_spans(start, end),
-            ParseDiagnosticReason::Reserved(ReservedSyntax::LockStatement),
-            format!("`{word}` is reserved and is not a v0.1 statement"),
-        );
+        self.error_span_reason(join_spans(start, end), reason, message);
     }
 
     fn error_span_reason(
@@ -697,7 +678,6 @@ impl<'a> StmtParser<'a> {
     ) {
         self.diagnostics.push(Diagnostic {
             code: PARSE_SYNTAX,
-            kind: "parse",
             reason: DiagnosticReason::Parser(reason),
             severity: Severity::Error,
             message: message.into(),
@@ -706,9 +686,11 @@ impl<'a> StmtParser<'a> {
         });
     }
 
-    /// Consume a balanced `INDENT … DEDENT` run starting at the current
-    /// `INDENT`, returning the span of the last token consumed. Tolerates a
-    /// missing trailing `DEDENT` at the end of the body token slice.
+    /// Skip a malformed statement block, returning the span of the last token
+    /// consumed. This stays a separate owner from `consume_balanced_block`: it
+    /// tracks and returns the closing span the caller needs, and on an unmatched
+    /// leading `DEDENT` it breaks without consuming the token, leaving the
+    /// enclosing block's close for the caller instead of swallowing it.
     fn skip_block(&mut self) -> SourceSpan {
         let mut depth = 0usize;
         let mut end = self.tokens[self.pos].span;
@@ -764,7 +746,6 @@ fn parse_simple_statement(
         TokenKind::Keyword(Keyword::Merge) => {
             diagnostics.push(Diagnostic {
                 code: PARSE_SYNTAX,
-                kind: "parse",
                 reason: DiagnosticReason::Parser(ParseDiagnosticReason::Reserved(
                     ReservedSyntax::MergeStatement,
                 )),
@@ -810,7 +791,8 @@ impl<'a> DeclParser<'a> {
 
         while let Some(kind) = self.peek() {
             match kind {
-                TokenKind::Newline => {
+                TokenKind::Eof => break,
+                TokenKind::Newline | TokenKind::Dedent => {
                     self.advance();
                 }
                 TokenKind::Comment => {
@@ -825,88 +807,8 @@ impl<'a> DeclParser<'a> {
                 TokenKind::DocComment => {
                     self.push_pending_doc(&mut docs, &mut file.comments);
                 }
-                TokenKind::Eof => break,
-                // Indentation where a top-level declaration was expected: report
-                // each stray indented line.
-                TokenKind::Indent => {
-                    self.report_stray_indented_lines();
-                    saw_top_level_item = true;
-                }
-                TokenKind::Dedent => {
-                    self.advance();
-                }
-                // Each declaration keyword introduces its kind only when followed
-                // by a space. A bare keyword (or one glued to the next token,
-                // like `module::x`) is an unknown top-level declaration.
-                TokenKind::Keyword(Keyword::Module) if self.keyword_introduces_decl() => {
-                    self.flush_docs_as_comments(&mut docs, &mut file.comments);
-                    self.parse_module(&mut file, saw_top_level_item);
-                    saw_top_level_item = true;
-                }
-                TokenKind::Keyword(Keyword::Use) if self.keyword_introduces_decl() => {
-                    self.flush_docs_as_comments(&mut docs, &mut file.comments);
-                    self.parse_use(&mut file);
-                    saw_top_level_item = true;
-                }
-                TokenKind::Keyword(Keyword::Const) if self.keyword_introduces_decl() => {
-                    let decl_docs = self.take_docs_for_current_item(&mut docs, &mut file.comments);
-                    let decl = self.parse_const(decl_docs);
-                    file.declarations.push(Declaration::Const(decl));
-                    saw_top_level_item = true;
-                }
-                TokenKind::Keyword(Keyword::Resource) if self.keyword_introduces_decl() => {
-                    let decl_docs = self.take_docs_for_current_item(&mut docs, &mut file.comments);
-                    let (resource, store) = self.parse_resource(decl_docs);
-                    file.declarations.push(Declaration::Resource(resource));
-                    if let Some(store) = store {
-                        file.declarations.push(Declaration::Store(store));
-                    }
-                    saw_top_level_item = true;
-                }
-                TokenKind::Keyword(Keyword::Store) if self.keyword_introduces_decl() => {
-                    let decl_docs = self.take_docs_for_current_item(&mut docs, &mut file.comments);
-                    let store = self.parse_store(decl_docs);
-                    file.declarations.push(Declaration::Store(store));
-                    saw_top_level_item = true;
-                }
-                // `evolve` opens an indented block of evolution steps. It needs no
-                // trailing-space gate: the header is the bare keyword, with the
-                // steps in the block below.
-                TokenKind::Keyword(Keyword::Evolve) => {
-                    self.flush_docs_as_comments(&mut docs, &mut file.comments);
-                    let evolve = self.parse_evolve();
-                    file.declarations.push(Declaration::Evolve(evolve));
-                    saw_top_level_item = true;
-                }
-                _ if self.starts_enum_header() => {
-                    let decl_docs = self.take_docs_for_current_item(&mut docs, &mut file.comments);
-                    let decl = self.parse_enum(decl_docs);
-                    file.declarations.push(Declaration::Enum(decl));
-                    saw_top_level_item = true;
-                }
-                _ if self.starts_function_header() => {
-                    let decl_docs = self.take_docs_for_current_item(&mut docs, &mut file.comments);
-                    let function = self.parse_function(decl_docs);
-                    file.declarations.push(Declaration::Function(function));
-                    saw_top_level_item = true;
-                }
-                // `type` is not a keyword in Marrow; it lexes as an identifier.
-                TokenKind::Identifier
-                    if self.identifier_is(self.pos, "type") && self.keyword_introduces_decl() =>
-                {
-                    self.flush_docs_as_comments(&mut docs, &mut file.comments);
-                    self.error_header(
-                        ParseDiagnosticReason::Unsupported(UnsupportedSyntax::TypeAliases),
-                        "type aliases are not used in Marrow; declare a resource or use a builtin type directly",
-                );
-                    saw_top_level_item = true;
-                }
                 _ => {
-                    self.flush_docs_as_comments(&mut docs, &mut file.comments);
-                    self.error_header(
-                        ParseDiagnosticReason::Expected(ExpectedSyntax::Declaration),
-                        "expected module, use, const, resource, store, or fn declaration",
-                    );
+                    self.dispatch_top_level(&mut file, &mut docs, saw_top_level_item);
                     saw_top_level_item = true;
                 }
             }
@@ -916,6 +818,84 @@ impl<'a> DeclParser<'a> {
         ParsedSource {
             file,
             diagnostics: self.diagnostics,
+        }
+    }
+
+    /// Parse one top-level construct at the current header line: a declaration
+    /// keyword, an enum or function header, a stray indented region, or an
+    /// unknown declaration. Each declaration keyword introduces its kind only
+    /// when a space follows it, so a bare or glued keyword (such as `module::x`)
+    /// falls through to the unknown-declaration arm.
+    fn dispatch_top_level(
+        &mut self,
+        file: &mut SourceFile,
+        docs: &mut Vec<Token>,
+        saw_top_level_item: bool,
+    ) {
+        match self.peek() {
+            // Indentation where a top-level declaration was expected: report each
+            // stray indented line.
+            Some(TokenKind::Indent) => self.report_stray_indented_lines(),
+            Some(TokenKind::Keyword(Keyword::Module)) if self.keyword_introduces_decl() => {
+                self.flush_docs_as_comments(docs, &mut file.comments);
+                self.parse_module(file, saw_top_level_item);
+            }
+            Some(TokenKind::Keyword(Keyword::Use)) if self.keyword_introduces_decl() => {
+                self.flush_docs_as_comments(docs, &mut file.comments);
+                self.parse_use(file);
+            }
+            Some(TokenKind::Keyword(Keyword::Const)) if self.keyword_introduces_decl() => {
+                let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
+                let decl = self.parse_const(decl_docs);
+                file.declarations.push(Declaration::Const(decl));
+            }
+            Some(TokenKind::Keyword(Keyword::Resource)) if self.keyword_introduces_decl() => {
+                let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
+                let (resource, store) = self.parse_resource(decl_docs);
+                file.declarations.push(Declaration::Resource(resource));
+                if let Some(store) = store {
+                    file.declarations.push(Declaration::Store(store));
+                }
+            }
+            Some(TokenKind::Keyword(Keyword::Store)) if self.keyword_introduces_decl() => {
+                let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
+                let store = self.parse_store(decl_docs);
+                file.declarations.push(Declaration::Store(store));
+            }
+            // `evolve` needs no trailing-space gate: its header is the bare
+            // keyword, with the steps in the indented block below.
+            Some(TokenKind::Keyword(Keyword::Evolve)) => {
+                self.flush_docs_as_comments(docs, &mut file.comments);
+                let evolve = self.parse_evolve();
+                file.declarations.push(Declaration::Evolve(evolve));
+            }
+            _ if self.starts_enum_header() => {
+                let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
+                let decl = self.parse_enum(decl_docs);
+                file.declarations.push(Declaration::Enum(decl));
+            }
+            _ if self.starts_function_header() => {
+                let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
+                let function = self.parse_function(decl_docs);
+                file.declarations.push(Declaration::Function(function));
+            }
+            // `type` is not a keyword in Marrow; it lexes as an identifier.
+            Some(TokenKind::Identifier)
+                if self.identifier_is(self.pos, "type") && self.keyword_introduces_decl() =>
+            {
+                self.flush_docs_as_comments(docs, &mut file.comments);
+                self.error_header(
+                    ParseDiagnosticReason::Unsupported(UnsupportedSyntax::TypeAliases),
+                    "type aliases are not used in Marrow; declare a resource or use a builtin type directly",
+                );
+            }
+            _ => {
+                self.flush_docs_as_comments(docs, &mut file.comments);
+                self.error_header(
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::Declaration),
+                    "expected module, use, const, resource, store, or fn declaration",
+                );
+            }
         }
     }
 
@@ -1329,16 +1309,12 @@ impl<'a> DeclParser<'a> {
             );
             return None;
         }
-        let before = self.diagnostics.len();
-        let parsed = ExprParser::new(self.source, tokens).parse_complete(&mut self.diagnostics);
-        if parsed.is_none() && self.diagnostics.len() == before {
-            self.error_span(
-                err,
-                ParseDiagnosticReason::Expected(ExpectedSyntax::EvolveTargetPath),
-                "expected an evolve target path",
-            );
-        }
-        parsed
+        self.parse_expr_with_fallback(
+            tokens,
+            err,
+            ParseDiagnosticReason::Expected(ExpectedSyntax::EvolveTargetPath),
+            "expected an evolve target path",
+        )
     }
 
     /// Parse the value expression of a `default` step, reporting against `err`.
@@ -1351,14 +1327,30 @@ impl<'a> DeclParser<'a> {
             );
             return None;
         }
+        self.parse_expr_with_fallback(
+            tokens,
+            err,
+            ParseDiagnosticReason::Expected(ExpectedSyntax::DefaultValue),
+            "expected a default value expression",
+        )
+    }
+
+    /// Parse `tokens` as one complete expression. When it does not parse and the
+    /// expression parser raised nothing more specific, report `reason`/`message`
+    /// against `err`. The diagnostic-count guard suppresses this generic fallback
+    /// whenever an inline syntax rule (a keyword field name, a reserved form)
+    /// already explained the failure, so each position reports once.
+    fn parse_expr_with_fallback(
+        &mut self,
+        tokens: &[Token],
+        err: SourceSpan,
+        reason: ParseDiagnosticReason,
+        message: &'static str,
+    ) -> Option<Expression> {
         let before = self.diagnostics.len();
         let parsed = ExprParser::new(self.source, tokens).parse_complete(&mut self.diagnostics);
         if parsed.is_none() && self.diagnostics.len() == before {
-            self.error_span(
-                err,
-                ParseDiagnosticReason::Expected(ExpectedSyntax::DefaultValue),
-                "expected a default value expression",
-            );
+            self.error_span(err, reason, message);
         }
         parsed
     }
@@ -1375,6 +1367,59 @@ impl<'a> DeclParser<'a> {
         (indexes, comments)
     }
 
+    /// Advance over the trivia at the head of an indented member block — a
+    /// closing `DEDENT`, blank `NEWLINE`s, own-line comments, accumulated doc
+    /// comments, and a stray deeper indent (reported as `stray_indent` and
+    /// skipped) — and report what the next token is. A `Member` frame leaves the
+    /// member header in place for the caller to parse; this owns only the layout
+    /// shared by the resource and enum member loops.
+    fn next_member_block_frame(
+        &mut self,
+        docs: &mut Vec<Token>,
+        comments: &mut Vec<Comment>,
+        stray_indent: &ParseError,
+    ) -> MemberBlockFrame {
+        match self.peek() {
+            Some(TokenKind::Dedent) => {
+                self.advance();
+                MemberBlockFrame::Done
+            }
+            Some(TokenKind::Newline) => {
+                self.advance();
+                MemberBlockFrame::Trivia
+            }
+            Some(TokenKind::Comment) => {
+                let token = self.advance();
+                comments.push(comment_from_token(
+                    self.source,
+                    token,
+                    CommentPlacement::OwnLine,
+                    CommentMarker::Line,
+                ));
+                MemberBlockFrame::Trivia
+            }
+            Some(TokenKind::DocComment) => {
+                self.push_pending_doc(docs, comments);
+                MemberBlockFrame::Trivia
+            }
+            Some(TokenKind::Indent) => {
+                self.advance(); // INDENT
+                if self.peek().is_some_and(|kind| {
+                    !matches!(
+                        kind,
+                        TokenKind::Dedent | TokenKind::Newline | TokenKind::Eof
+                    )
+                }) {
+                    let err = self.content_span();
+                    self.error_span(err, stray_indent.reason.clone(), stray_indent.message);
+                }
+                self.skip_to_block_end();
+                MemberBlockFrame::Trivia
+            }
+            _ => MemberBlockFrame::Member,
+        }
+    }
+
     /// Parse an `INDENT … DEDENT` block of resource members. Nested groups recurse
     /// on their own child block. Each member's span is its whole header line.
     fn parse_resource_members(
@@ -1387,47 +1432,15 @@ impl<'a> DeclParser<'a> {
         let mut docs: Vec<Token> = Vec::new();
         self.advance(); // INDENT
 
+        let stray_indent = ParseError::new(
+            ParseDiagnosticReason::UnexpectedIndentation,
+            "unexpected indentation in resource body; only groups introduce nested resource members",
+        );
         while let Some(kind) = self.peek() {
-            match kind {
-                TokenKind::Dedent => {
-                    self.advance();
-                    break;
-                }
-                TokenKind::Newline => {
-                    self.advance();
-                }
-                TokenKind::Comment => {
-                    let token = self.advance();
-                    comments.push(comment_from_token(
-                        self.source,
-                        token,
-                        CommentPlacement::OwnLine,
-                        CommentMarker::Line,
-                    ));
-                }
-                TokenKind::DocComment => {
-                    self.push_pending_doc(&mut docs, &mut comments);
-                }
-                // A deeper indent under a field (rather than a group) is stray:
-                // report at the deeper line's content and skip the whole block.
-                TokenKind::Indent => {
-                    self.advance(); // INDENT
-                    if self.peek().is_some_and(|kind| {
-                        !matches!(
-                            kind,
-                            TokenKind::Dedent | TokenKind::Newline | TokenKind::Eof
-                        )
-                    }) {
-                        let err = self.content_span();
-                        self.error_span(
-                            err,
-                            ParseDiagnosticReason::UnexpectedIndentation,
-                            "unexpected indentation in resource body; only groups introduce nested resource members",
-                        );
-                    }
-                    self.skip_to_block_end();
-                }
-                _ => {
+            match self.next_member_block_frame(&mut docs, &mut comments, &stray_indent) {
+                MemberBlockFrame::Done => break,
+                MemberBlockFrame::Trivia => continue,
+                MemberBlockFrame::Member => {
                     // The node carries the whole-line span (column 1); a member
                     // error points at the content after the indentation.
                     let span = self.header_span();
@@ -1566,48 +1579,17 @@ impl<'a> DeclParser<'a> {
         let mut docs: Vec<Token> = Vec::new();
         self.advance(); // INDENT
 
-        while let Some(kind) = self.peek() {
-            match kind {
-                TokenKind::Dedent => {
-                    self.advance();
-                    break;
-                }
-                TokenKind::Newline => {
-                    self.advance();
-                }
-                TokenKind::Comment => {
-                    let token = self.advance();
-                    comments.push(comment_from_token(
-                        self.source,
-                        token,
-                        CommentPlacement::OwnLine,
-                        CommentMarker::Line,
-                    ));
-                }
-                TokenKind::DocComment => {
-                    self.push_pending_doc(&mut docs, &mut comments);
-                }
-                // An indent that opens before any member on this level is stray:
-                // there is no member header for it to nest under. A member's own
-                // nested block is consumed right after its header, below.
-                TokenKind::Indent => {
-                    self.advance(); // INDENT
-                    if self.peek().is_some_and(|kind| {
-                        !matches!(
-                            kind,
-                            TokenKind::Dedent | TokenKind::Newline | TokenKind::Eof
-                        )
-                    }) {
-                        let err = self.content_span();
-                        self.error_span(
-                            err,
-                            ParseDiagnosticReason::EnumMemberMustBeBareName,
-                            "an enum member has no nested body",
-                        );
-                    }
-                    self.skip_to_block_end();
-                }
-                _ => {
+        // A stray indent here opens before any member header to nest under; a
+        // member's own nested block is consumed right after its header, below.
+        let stray_indent = ParseError::new(
+            ParseDiagnosticReason::EnumMemberMustBeBareName,
+            "an enum member has no nested body",
+        );
+        while self.peek().is_some() {
+            match self.next_member_block_frame(&mut docs, &mut comments, &stray_indent) {
+                MemberBlockFrame::Done => break,
+                MemberBlockFrame::Trivia => continue,
+                MemberBlockFrame::Member => {
                     let span = self.header_span();
                     let err = self.content_span();
                     let member_docs = self.take_docs_for_current_item(&mut docs, &mut comments);
@@ -1725,19 +1707,12 @@ impl<'a> DeclParser<'a> {
         if tokens.is_empty() {
             return None;
         }
-        let before = self.diagnostics.len();
-        let parsed = ExprParser::new(self.source, tokens).parse_complete(&mut self.diagnostics);
-        // The generic fallback only fires when nothing more specific was raised:
-        // a keyword field name or another inline syntax-rule diagnostic already
-        // explains the failure, so a single value reports once.
-        if parsed.is_none() && self.diagnostics.len() == before {
-            self.error_span(
-                value_span(tokens),
-                ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
-                "expected an expression",
-            );
-        }
-        parsed
+        self.parse_expr_with_fallback(
+            tokens,
+            line_span(tokens),
+            ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
+            "expected an expression",
+        )
     }
 
     /// Collect the tokens of the current header line (up to the next
@@ -1758,16 +1733,7 @@ impl<'a> DeclParser<'a> {
     }
 
     fn header_end(&self) -> usize {
-        let mut index = self.pos;
-        while index < self.tokens.len()
-            && !matches!(
-                self.tokens[index].kind,
-                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent | TokenKind::Eof
-            )
-        {
-            index += 1;
-        }
-        index
+        line_end(self.tokens, self.pos)
     }
 
     /// The span of the current declaration's first physical line at column 1.
@@ -1801,7 +1767,21 @@ impl<'a> DeclParser<'a> {
     /// Consume a balanced `INDENT … DEDENT` run starting at the current `INDENT`,
     /// returning the exclusive index just past the matching `DEDENT`.
     fn consume_block(&mut self) -> usize {
-        let mut depth = 0usize;
+        self.consume_balanced_block(0)
+    }
+
+    /// Consume the rest of an indented block whose opening `INDENT` was already
+    /// advanced, stopping after its matching `DEDENT`.
+    fn skip_to_block_end(&mut self) {
+        self.consume_balanced_block(1);
+    }
+
+    /// Consume tokens until the `INDENT`/`DEDENT` depth returns to zero, seeded at
+    /// `open_depth` (zero when the opening `INDENT` is still ahead, one when it was
+    /// already advanced). Returns the exclusive index just past the matching
+    /// `DEDENT`, tolerating end-of-file before the block closes.
+    fn consume_balanced_block(&mut self, open_depth: usize) -> usize {
+        let mut depth = open_depth;
         while let Some(kind) = self.peek() {
             match kind {
                 TokenKind::Indent => {
@@ -1822,31 +1802,6 @@ impl<'a> DeclParser<'a> {
             }
         }
         self.pos
-    }
-
-    /// Consume the rest of an indented block whose opening `INDENT` was already
-    /// advanced, stopping after its matching `DEDENT`.
-    fn skip_to_block_end(&mut self) {
-        let mut depth = 1usize;
-        while let Some(kind) = self.peek() {
-            match kind {
-                TokenKind::Indent => {
-                    depth += 1;
-                    self.advance();
-                }
-                TokenKind::Dedent => {
-                    self.advance();
-                    depth -= 1;
-                    if depth == 0 {
-                        break;
-                    }
-                }
-                TokenKind::Eof => break,
-                _ => {
-                    self.advance();
-                }
-            }
-        }
     }
 
     /// Report one "expected a top-level declaration" per content line of a stray
@@ -1920,21 +1875,15 @@ impl<'a> DeclParser<'a> {
         match lead.kind {
             TokenKind::Keyword(Keyword::Fn) => self.space_after(lead),
             TokenKind::Keyword(Keyword::Pub) => {
-                self.space_after(lead) && self.followed_by_fn_space()
+                self.space_after(lead) && self.followed_by_keyword_space(Keyword::Fn)
             }
             TokenKind::Identifier
                 if lead.text(self.source) == "internal" || lead.text(self.source) == "private" =>
             {
-                self.space_after(lead) && self.followed_by_fn_space()
+                self.space_after(lead) && self.followed_by_keyword_space(Keyword::Fn)
             }
             _ => false,
         }
-    }
-
-    fn followed_by_fn_space(&self) -> bool {
-        self.tokens.get(self.pos + 1).is_some_and(|token| {
-            token.kind == TokenKind::Keyword(Keyword::Fn) && self.space_after(*token)
-        })
     }
 
     /// Whether the current line is an enum header: `enum ` or `pub enum `. The
@@ -1944,15 +1893,17 @@ impl<'a> DeclParser<'a> {
         match lead.kind {
             TokenKind::Keyword(Keyword::Enum) => self.space_after(lead),
             TokenKind::Keyword(Keyword::Pub) => {
-                self.space_after(lead) && self.followed_by_enum_space()
+                self.space_after(lead) && self.followed_by_keyword_space(Keyword::Enum)
             }
             _ => false,
         }
     }
 
-    fn followed_by_enum_space(&self) -> bool {
+    /// Whether the token after the current one is `keyword` followed by a space,
+    /// the trailing-space rule a `pub fn`/`pub enum` header applies to each word.
+    fn followed_by_keyword_space(&self, keyword: Keyword) -> bool {
         self.tokens.get(self.pos + 1).is_some_and(|token| {
-            token.kind == TokenKind::Keyword(Keyword::Enum) && self.space_after(*token)
+            token.kind == TokenKind::Keyword(keyword) && self.space_after(*token)
         })
     }
 
@@ -1971,7 +1922,6 @@ impl<'a> DeclParser<'a> {
     ) {
         self.diagnostics.push(Diagnostic {
             code: PARSE_SYNTAX,
-            kind: "parse",
             reason: DiagnosticReason::Parser(reason),
             severity: Severity::Error,
             message: message.into(),
@@ -2012,15 +1962,6 @@ fn line_text_end_before(source: &str, pos: usize) -> usize {
     let before = before.strip_suffix('\n').unwrap_or(before);
     let before = before.strip_suffix('\r').unwrap_or(before);
     before.len()
-}
-
-/// The fallback span of a value-position expression: the byte range of its
-/// tokens, or an empty span when there are none.
-fn value_span(tokens: &[Token]) -> SourceSpan {
-    match (tokens.first(), tokens.last()) {
-        (Some(first), Some(last)) => join_spans(first.span, last.span),
-        _ => SourceSpan::default(),
-    }
 }
 
 /// The `::`-separated source text spanned by the `module`/`use` name tokens, if
@@ -2095,7 +2036,6 @@ fn enum_member_name(source: &str, tokens: &[Token]) -> ParseResult<(String, bool
         [token] if token.kind == TokenKind::Identifier => {
             Ok((token.text(source).to_string(), category))
         }
-        // A single non-identifier token is a reserved word standing in for a name.
         [_] => Err(ParseError::new(
             ParseDiagnosticReason::EnumMemberMustBeBareName,
             "expected an enum member name",
@@ -2770,7 +2710,6 @@ fn parse_const_or_var(
             let kind = if is_var { "variable" } else { "const" };
             diagnostics.push(Diagnostic {
                 code: PARSE_SYNTAX,
-                kind: "parse",
                 reason: DiagnosticReason::Parser(ParseDiagnosticReason::Expected(if is_var {
                     ExpectedSyntax::VariableName
                 } else {
@@ -2889,7 +2828,6 @@ fn parse_var_keys(
 fn push_parse_error(diagnostics: &mut Vec<Diagnostic>, span: SourceSpan, error: ParseError) {
     diagnostics.push(Diagnostic {
         code: PARSE_SYNTAX,
-        kind: "parse",
         reason: DiagnosticReason::Parser(error.reason),
         severity: Severity::Error,
         message: error.message.to_string(),
@@ -3127,6 +3065,23 @@ fn line_span(tokens: &[Token]) -> SourceSpan {
         (Some(first), Some(last)) => join_spans(first.span, last.span),
         _ => SourceSpan::default(),
     }
+}
+
+/// Index of the layout token (`NEWLINE`/`INDENT`/`DEDENT`/`EOF`) that ends the
+/// line starting at `pos`, or `tokens.len()` if none follows. A header line
+/// continues across newlines suppressed inside open delimiters, so this stops at
+/// the first structural token rather than any newline.
+fn line_end(tokens: &[Token], pos: usize) -> usize {
+    let mut index = pos;
+    while index < tokens.len()
+        && !matches!(
+            tokens[index].kind,
+            TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent | TokenKind::Eof
+        )
+    {
+        index += 1;
+    }
+    index
 }
 
 fn is_line_comment(kind: TokenKind) -> bool {
