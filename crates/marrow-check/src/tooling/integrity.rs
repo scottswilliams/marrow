@@ -13,10 +13,11 @@ use crate::{
 };
 
 use super::data::{
-    DataRecord, checked_places, push_key, validate_member_value_path, visit_data_records_in_places,
+    DataRecord, checked_places, push_key, render_data_path, validate_member_value_path,
+    visit_data_records_in_places,
 };
 
-pub const ORPHAN_INTEGRITY_HELP: &str =
+const ORPHAN_INTEGRITY_HELP: &str =
     "run `marrow data integrity` after source-native evolution or maintenance repair";
 
 pub fn count_integrity_problems(
@@ -43,7 +44,7 @@ fn count_integrity_problems_in_places(
     let mut problems = 0usize;
     let mut records = 0usize;
     visit_integrity_problems_in_places(store, program, places, |outcome| {
-        if let IntegrityOutcomeKind::Record = outcome.kind {
+        if outcome.is_record {
             records += 1;
         }
         if outcome.problem.is_some() {
@@ -56,15 +57,11 @@ fn count_integrity_problems_in_places(
     Ok((records, problems))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IntegrityOutcomeKind {
-    Record,
-    StoredCell,
-}
-
 #[derive(Debug, Clone)]
 pub struct IntegrityOutcome {
-    pub kind: IntegrityOutcomeKind,
+    /// True when this outcome counts a declared record, false when it reports a
+    /// stored cell the schema no longer declares.
+    pub is_record: bool,
     pub problem: Option<IntegrityProblem>,
 }
 
@@ -85,13 +82,13 @@ fn visit_integrity_problems_in_places(
 ) -> Result<(), StoreError> {
     visit_data_records_in_places(places, store, |record| {
         visit(IntegrityOutcome {
-            kind: IntegrityOutcomeKind::Record,
+            is_record: true,
             problem: check_record(program, &record),
         })
     })?;
     visit_orphans_in_places(store, places, |orphan| {
         visit(IntegrityOutcome {
-            kind: IntegrityOutcomeKind::StoredCell,
+            is_record: false,
             problem: Some(orphan),
         })
     })
@@ -293,7 +290,7 @@ impl DeclaredRoot {
         for key in identity {
             push_key(&mut text, key);
         }
-        render_data_path(&mut text, path, Some(&self.names));
+        render_data_path(&mut text, path, &self.names);
         text
     }
 }
@@ -309,32 +306,6 @@ fn orphan_problem(path: String, reason: &'static str) -> IntegrityProblem {
 
 fn render_unknown_path() -> String {
     "<undeclared saved root>".to_string()
-}
-
-fn render_unknown_member(text: &mut String) {
-    text.push_str("<undeclared member>");
-}
-
-fn render_data_path(
-    text: &mut String,
-    path: &[DataPathSegment],
-    names: Option<&HashMap<String, String>>,
-) {
-    for segment in path {
-        match segment {
-            DataPathSegment::Member(member) => {
-                text.push('.');
-                let id = member.as_str();
-                match names.and_then(|names| names.get(id)) {
-                    Some(name) => text.push_str(name),
-                    None => render_unknown_member(text),
-                }
-            }
-            DataPathSegment::Key(key) => {
-                push_key(text, key);
-            }
-        }
-    }
 }
 
 fn collect_member_names(members: &[CheckedSavedMember], names: &mut HashMap<String, String>) {

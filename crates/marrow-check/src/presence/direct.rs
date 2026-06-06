@@ -1,6 +1,7 @@
 use marrow_schema::stdlib::Capability;
 
 use super::target::saved_place;
+use super::util::push_unique;
 use crate::facts::{CheckedFacts, DirectEffectFacts, HostEffect};
 use crate::{
     CheckedBody, CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedInterpolationPart,
@@ -266,14 +267,5 @@ fn host_effect(expr: &CheckedExpr) -> Option<HostEffect> {
             capability => Some(HostEffect::Capability(capability)),
         },
         _ => None,
-    }
-}
-
-fn push_unique<T>(items: &mut Vec<T>, item: T)
-where
-    T: PartialEq,
-{
-    if !items.contains(&item) {
-        items.push(item);
     }
 }

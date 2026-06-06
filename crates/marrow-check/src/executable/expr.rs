@@ -4,8 +4,7 @@ use marrow_schema::{MemberPathResolution, ScalarType};
 use marrow_syntax::{self as syntax, SourceSpan};
 
 use crate::facts::{
-    ModuleId, ResourceId, ResourceMemberId, StoreId, StoreIndexId, StoreIndexKeySource,
-    StoredValueMeaning,
+    ModuleId, ResourceMemberId, StoreId, StoreIndexId, StoreIndexKeySource, StoredValueMeaning,
 };
 use crate::program::{CheckedFunction, CheckedModule, CheckedProgram, MarrowType};
 
@@ -20,7 +19,6 @@ use super::{
 pub struct CheckedSavedPlace {
     pub root: String,
     pub store_id: StoreId,
-    pub resource_id: ResourceId,
     pub store_catalog_id: Option<String>,
     pub resource_name: String,
     pub root_members: Vec<CheckedSavedMember>,
@@ -28,7 +26,6 @@ pub struct CheckedSavedPlace {
     pub indexes: Vec<CheckedSavedIndex>,
     pub identity_args: Vec<CheckedArg>,
     pub identity_keys: Vec<CheckedSavedKeyParam>,
-    pub index_count: usize,
     pub next_id_shape: String,
     pub layers: Vec<CheckedSavedLayer>,
     pub terminal: CheckedSavedTerminal,

@@ -20,7 +20,7 @@ pub use traversal::{count_data_records, data_roots_in_store, visit_data_records}
 pub use walk::walk_data;
 
 pub(crate) use query::StorageDataQuery;
-pub(crate) use render::push_key;
+pub(crate) use render::{push_key, render_data_path};
 pub(crate) use shape::validate_member_value_path;
 pub(crate) use traversal::{checked_places, visit_data_records_in_places};
 
@@ -78,8 +78,7 @@ pub enum DataPresence {
 }
 
 impl DataPresence {
-    /// The snake_case label this presence carries in JSON and protocol replies.
-    /// Render-only: callers branch on the variant and emit this for serialization.
+    /// The snake_case label this presence carries on the JSON wire.
     pub fn as_label(self) -> &'static str {
         match self {
             Self::Absent => "absent",

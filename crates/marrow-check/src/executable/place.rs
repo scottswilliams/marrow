@@ -36,7 +36,6 @@ pub(super) fn checked_root_place(
     Some(CheckedSavedPlace {
         root: root.to_string(),
         store_id,
-        resource_id,
         store_catalog_id: store_fact.catalog_id.clone(),
         resource_name: resource_fact.name.clone(),
         root_members: members.clone(),
@@ -44,12 +43,6 @@ pub(super) fn checked_root_place(
         indexes: checked_saved_indexes(program, store_id),
         identity_args: Vec::new(),
         identity_keys: checked_key_params(&store.store.identity_keys),
-        index_count: program
-            .facts
-            .store_indexes()
-            .iter()
-            .filter(|index| index.store == store_id)
-            .count(),
         next_id_shape: store_fact.next_id_shape.clone(),
         layers: Vec::new(),
         terminal: CheckedSavedTerminal::Record,

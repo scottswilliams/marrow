@@ -39,14 +39,8 @@ pub(crate) enum QueryMemberKind {
 impl QueryMemberKind {
     pub(crate) fn matches(self, member: &CheckedSavedMember) -> bool {
         match self {
-            Self::Field => {
-                member.key_params.is_empty()
-                    && matches!(member.kind, CheckedSavedMemberKind::Field { .. })
-            }
-            Self::Layer => {
-                !member.key_params.is_empty()
-                    || matches!(member.kind, CheckedSavedMemberKind::Group)
-            }
+            Self::Field => member.is_plain_field(),
+            Self::Layer => !member.is_plain_field(),
             Self::SourceText => true,
         }
     }
@@ -61,7 +55,7 @@ impl QueryMemberKind {
 }
 
 pub(crate) fn query_segment_for_member(member: &CheckedSavedMember) -> DataQuerySegment {
-    if member.key_params.is_empty() && matches!(member.kind, CheckedSavedMemberKind::Field { .. }) {
+    if member.is_plain_field() {
         DataQuerySegment::Field(member.name.clone())
     } else {
         DataQuerySegment::Layer(member.name.clone())

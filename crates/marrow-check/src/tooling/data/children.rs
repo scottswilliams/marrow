@@ -2,13 +2,60 @@ use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
 
 use crate::tooling::ToolingError;
-use crate::{CheckedProgram, CheckedSavedMember, CheckedSavedMemberKind, checked_saved_root_place};
+use crate::{CheckedProgram, CheckedSavedMember, checked_saved_root_place};
 
 use super::query::resolve_data_query;
 use super::query_error::QueryError;
 use super::shape::{declared_members_below_path, tooling_catalog_id};
 use super::traversal::data_roots_in_store;
 use super::{DataChild, DataChildrenPage, DataQuery, DataQuerySegment};
+
+/// How a resolved query's children are scanned, decided once so that both the
+/// child listing and its paging predicate read the classification the same way.
+enum ChildScanKind {
+    Roots,
+    RecordChildren(DataQuery),
+    Members {
+        query: DataQuery,
+        members: Vec<CheckedSavedMember>,
+    },
+    KeyChildren(DataQuery),
+    Leaf,
+}
+
+impl ChildScanKind {
+    fn is_paged(&self) -> bool {
+        matches!(self, Self::RecordChildren(_) | Self::KeyChildren(_))
+    }
+}
+
+fn classify_child_scan(
+    program: &CheckedProgram,
+    segments: &[DataQuerySegment],
+) -> Result<ChildScanKind, ToolingError> {
+    if segments.is_empty() {
+        return Ok(ChildScanKind::Roots);
+    }
+    let query = resolve_data_query(program, segments)?;
+    if query.storage.identity.len() < query.storage.identity_arity {
+        return Ok(ChildScanKind::RecordChildren(query));
+    }
+    let Some((DataQuerySegment::Root(root), _)) = segments.split_first() else {
+        return Err(QueryError::MissingRoot.into());
+    };
+    let place = checked_saved_root_place(program, root, marrow_syntax::SourceSpan::default())
+        .ok_or_else(|| QueryError::UnknownRoot { root: root.clone() })?;
+    if let Some(members) =
+        declared_members_below_path(&place.root_members, &query.storage.data_path)
+    {
+        let members = members.to_vec();
+        return Ok(ChildScanKind::Members { query, members });
+    }
+    if query.storage.data_path.is_empty() {
+        return Ok(ChildScanKind::Leaf);
+    }
+    Ok(ChildScanKind::KeyChildren(query))
+}
 
 pub fn data_children(
     program: &CheckedProgram,
@@ -20,61 +67,35 @@ pub fn data_children(
     if limit == 0 {
         return Err(QueryError::ZeroLimit.into());
     }
-    if segments.is_empty() {
-        let children = data_roots_in_store(program, store)?
-            .into_iter()
-            .map(DataChild::Member)
-            .collect();
-        return Ok(DataChildrenPage {
-            children,
-            truncated: false,
-            cursor: None,
-        });
-    }
-
-    let query = resolve_data_query(program, segments)?;
-    if query.storage.identity.len() < query.storage.identity_arity {
-        return record_children(store, &query, limit, resume);
-    }
-    let Some((DataQuerySegment::Root(root), _)) = segments.split_first() else {
-        return Err(QueryError::MissingRoot.into());
-    };
-    let place = checked_saved_root_place(program, root, marrow_syntax::SourceSpan::default())
-        .ok_or_else(|| QueryError::UnknownRoot { root: root.clone() })?;
-    if let Some(members) =
-        declared_members_below_path(&place.root_members, &query.storage.data_path)
-    {
-        if resume.is_some() {
-            return Err(QueryError::MembersTakeNoCursor.into());
+    match classify_child_scan(program, segments)? {
+        ChildScanKind::Roots => {
+            let children = data_roots_in_store(program, store)?
+                .into_iter()
+                .map(DataChild::Member)
+                .collect();
+            Ok(DataChildrenPage {
+                children,
+                truncated: false,
+                cursor: None,
+            })
         }
-        return member_children(store, &query, members);
+        ChildScanKind::RecordChildren(query) => record_children(store, &query, limit, resume),
+        ChildScanKind::Members { query, members } => {
+            if resume.is_some() {
+                return Err(QueryError::MembersTakeNoCursor.into());
+            }
+            member_children(store, &query, &members)
+        }
+        ChildScanKind::Leaf => Err(QueryError::NoChildScan.into()),
+        ChildScanKind::KeyChildren(query) => data_key_children(store, &query, limit, resume),
     }
-    if query.storage.data_path.is_empty() {
-        return Err(QueryError::NoChildScan.into());
-    }
-    data_key_children(store, &query, limit, resume)
 }
 
 pub fn data_children_supports_paging(
     program: &CheckedProgram,
     segments: &[DataQuerySegment],
 ) -> Result<bool, ToolingError> {
-    if segments.is_empty() {
-        return Ok(false);
-    }
-    let query = resolve_data_query(program, segments)?;
-    if query.storage.identity.len() < query.storage.identity_arity {
-        return Ok(true);
-    }
-    let Some((DataQuerySegment::Root(root), _)) = segments.split_first() else {
-        return Err(QueryError::MissingRoot.into());
-    };
-    let place = checked_saved_root_place(program, root, marrow_syntax::SourceSpan::default())
-        .ok_or_else(|| QueryError::UnknownRoot { root: root.clone() })?;
-    Ok(
-        declared_members_below_path(&place.root_members, &query.storage.data_path).is_none()
-            && !query.storage.data_path.is_empty(),
-    )
+    Ok(classify_child_scan(program, segments)?.is_paged())
 }
 
 fn record_children(
@@ -106,19 +127,12 @@ fn member_children(
         let catalog = tooling_catalog_id(&member.catalog_id, "resource member")?;
         let mut path = query.storage.data_path.clone();
         path.push(DataPathSegment::Member(catalog));
-        let present = if !member.key_params.is_empty() {
-            store.data_subtree_exists(&query.storage.store, &query.storage.identity, &path)?
+        let present = if member.is_plain_field() {
+            store
+                .read_data_value(&query.storage.store, &query.storage.identity, &path)?
+                .is_some()
         } else {
-            match &member.kind {
-                CheckedSavedMemberKind::Field { .. } => store
-                    .read_data_value(&query.storage.store, &query.storage.identity, &path)?
-                    .is_some(),
-                CheckedSavedMemberKind::Group => store.data_subtree_exists(
-                    &query.storage.store,
-                    &query.storage.identity,
-                    &path,
-                )?,
-            }
+            store.data_subtree_exists(&query.storage.store, &query.storage.identity, &path)?
         };
         if present {
             children.push(DataChild::Member(member.name.clone()));

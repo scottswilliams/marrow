@@ -2259,8 +2259,7 @@ mod tests {
         CheckedSavedMemberKind, CheckedSavedPlace, CheckedSavedTerminal,
     };
     use crate::facts::{
-        ResourceId, ResourceMemberId, StoreId, StoreIndexId, StoreIndexKeySource,
-        StoredValueMeaning,
+        ResourceMemberId, StoreId, StoreIndexId, StoreIndexKeySource, StoredValueMeaning,
     };
     use marrow_store::cell::CatalogId;
     use marrow_store::value::ScalarType;
@@ -2283,7 +2282,6 @@ mod tests {
         CheckedSavedPlace {
             root: "books".to_string(),
             store_id: StoreId(0),
-            resource_id: ResourceId(0),
             store_catalog_id: Some("cat_000000000000000000000000000000aa".to_string()),
             resource_name: "Book".to_string(),
             root_members: vec![CheckedSavedMember {
@@ -2302,7 +2300,6 @@ mod tests {
                 name: "id".to_string(),
                 scalar: Some(ScalarType::Int),
             }],
-            index_count: 0,
             next_id_shape: String::new(),
             layers: Vec::new(),
             terminal: CheckedSavedTerminal::Record,

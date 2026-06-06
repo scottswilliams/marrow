@@ -14,8 +14,8 @@ pub use data::{
     resolve_data_query, resolve_source_text_data_query, visit_data_records, walk_data,
 };
 pub use integrity::{
-    IntegrityOutcome, IntegrityOutcomeKind, IntegrityProblem, ORPHAN_INTEGRITY_HELP,
-    count_activation_integrity_problems, count_integrity_problems, visit_integrity_problems,
+    IntegrityOutcome, IntegrityProblem, count_activation_integrity_problems,
+    count_integrity_problems, visit_integrity_problems,
 };
 pub use metadata::{ToolingCatalogMetadata, store_is_newer_than_program, tooling_metadata};
 

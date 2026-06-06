@@ -173,9 +173,7 @@ impl<'a> QuerySegment<'a> {
     fn from_source_text(segment: &'a crate::PathSegment) -> Self {
         match segment {
             crate::PathSegment::Root(name) => Self::Root(name),
-            crate::PathSegment::Field(name)
-            | crate::PathSegment::ChildLayer(name)
-            | crate::PathSegment::Index(name) => Self::Member(name, QueryMemberKind::SourceText),
+            crate::PathSegment::Field(name) => Self::Member(name, QueryMemberKind::SourceText),
             crate::PathSegment::RecordKey(key) | crate::PathSegment::IndexKey(key) => {
                 Self::Key(key)
             }
