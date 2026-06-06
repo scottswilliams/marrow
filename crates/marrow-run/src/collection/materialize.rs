@@ -78,7 +78,3 @@ pub(crate) fn reversed_keys(
     check_key_collection(layer, span)?;
     Err(durable_collection_value(span))
 }
-
-pub(crate) fn reversed_saved(span: SourceSpan) -> Result<Value, RuntimeError> {
-    Err(durable_collection_value(span))
-}

@@ -38,21 +38,13 @@ use crate::env::{Context, TransactionState};
 use crate::host::Host;
 use crate::store::DataAddress;
 use crate::value::{Value, decode_leaf, value_to_leaf};
-use crate::write_plan::PlanStep;
 
-use super::apply::{ApplyError, StagedWork, for_each_place_record, store_id};
+use super::apply::{ApplyError, for_each_place_record, store_id};
 
-pub(super) struct TransformStage<'a> {
-    pub(super) target_id: &'a CatalogId,
-    pub(super) witness_reads: &'a [CatalogId],
-    pub(super) program: &'a CheckedProgram,
-    pub(super) runtime: &'a CheckedRuntimeProgram,
-    pub(super) places: &'a [CheckedSavedPlace],
-    pub(super) store: &'a TreeStore,
-    pub(super) steps: &'a mut Vec<PlanStep>,
-    pub(super) staged: &'a mut StagedWork,
-}
-
+/// The read-only inputs a transform staging or verification pass resolves against: the
+/// target member, the witness-proven read members, the checked program and runtime the
+/// body evaluates under, the source places to scan, the live store, and the per-record
+/// effect each recomputed write feeds (a stage in apply, a byte check in completion).
 pub(super) struct TransformVisit<'a> {
     pub(super) target_id: &'a CatalogId,
     pub(super) witness_reads: &'a [CatalogId],
@@ -63,32 +55,15 @@ pub(super) struct TransformVisit<'a> {
     pub(super) visit: &'a mut dyn FnMut(DataAddress, Vec<u8>) -> Result<(), ApplyError>,
 }
 
-/// Stage one `WriteData` of the recomputed value at the transform target cell for every
-/// record. For each record the read members' decoded values bind `old`, the pure body
-/// runs through the runtime evaluator, and the returned value encodes to the target's
-/// leaf type. The body never writes, so the only durable effect is the staged target
-/// write; a body that raises, returns no value, or yields a value the target cannot
-/// encode aborts apply with a typed body fault.
-pub(super) fn stage_transform(ctx: TransformStage<'_>) -> Result<(), ApplyError> {
-    let mut count = 0usize;
-    let mut visit = |address, value| {
-        ctx.steps.push(PlanStep::WriteData { address, value });
-        count += 1;
-        Ok(())
-    };
-    visit_transform_writes(TransformVisit {
-        target_id: ctx.target_id,
-        witness_reads: ctx.witness_reads,
-        program: ctx.program,
-        runtime: ctx.runtime,
-        places: ctx.places,
-        store: ctx.store,
-        visit: &mut visit,
-    })?;
-    ctx.staged.records_transformed += count;
-    Ok(())
-}
-
+/// Visit one recomputed `WriteData` per record for the transform the witness names.
+///
+/// For each record the read members' decoded values bind `old`, the pure body runs
+/// through the runtime evaluator, and the returned value encodes to the target's leaf
+/// type before `visit` consumes the address and bytes. Apply stages each recomputed write
+/// and counts it; completion re-runs the same recompute and checks the stored bytes match.
+/// The body never writes, so the only durable effect flows through `visit`; a body that
+/// raises, returns no value, or yields a value the target cannot encode aborts with a
+/// typed body fault before any record commits.
 pub(super) fn visit_transform_writes(ctx: TransformVisit<'_>) -> Result<(), ApplyError> {
     let transform = ctx
         .program

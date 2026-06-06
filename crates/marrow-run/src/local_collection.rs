@@ -94,13 +94,7 @@ pub(crate) fn enumerate_local_collection_dir(
     span: SourceSpan,
 ) -> Result<Vec<Value>, RuntimeError> {
     let mut keys = match value {
-        Value::Sequence(items) => (1..=items.len())
-            .map(|pos| {
-                i64::try_from(pos)
-                    .map(Value::Int)
-                    .map_err(|_| overflow(span))
-            })
-            .collect::<Result<Vec<_>, _>>()?,
+        Value::Sequence(items) => sequence_positions(items.len(), span)?,
         Value::LocalTree(entries) => {
             let mut seen = Vec::<SavedKey>::new();
             for entry in entries {
@@ -114,13 +108,11 @@ pub(crate) fn enumerate_local_collection_dir(
             seen.into_iter()
                 .map(saved_key_to_value)
                 .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| unsupported("iterating keys of this type", span))?
+                .ok_or_else(|| iterable_key_type_error(span))?
         }
         _ => return Err(unsupported("keys over this value", span)),
     };
-    if dir == Direction::Descending {
-        keys.reverse();
-    }
+    apply_direction(&mut keys, dir);
     Ok(keys)
 }
 
@@ -130,14 +122,10 @@ pub(crate) fn materialize_local_collection_dir(
     span: SourceSpan,
 ) -> Result<Vec<(Value, Value)>, RuntimeError> {
     let mut rows = match value {
-        Value::Sequence(items) => items
+        Value::Sequence(items) => sequence_positions(items.len(), span)?
             .into_iter()
-            .enumerate()
-            .map(|(index, value)| {
-                let pos = i64::try_from(index + 1).map_err(|_| overflow(span))?;
-                Ok((Value::Int(pos), value))
-            })
-            .collect::<Result<Vec<_>, RuntimeError>>()?,
+            .zip(items)
+            .collect(),
         Value::LocalTree(entries) => entries
             .into_iter()
             .map(|entry| {
@@ -146,16 +134,40 @@ pub(crate) fn materialize_local_collection_dir(
                     .first()
                     .cloned()
                     .and_then(saved_key_to_value)
-                    .ok_or_else(|| unsupported("iterating keys of this type", span))?;
+                    .ok_or_else(|| iterable_key_type_error(span))?;
                 Ok((key, entry.value))
             })
             .collect::<Result<Vec<_>, RuntimeError>>()?,
         _ => return Err(unsupported("values/entries over this value", span)),
     };
+    apply_direction(&mut rows, dir);
+    Ok(rows)
+}
+
+/// The implicit one-based positions of a local sequence as int keys, the shared key
+/// derivation both the keys-only and the keyed materialization of a sequence use.
+fn sequence_positions(len: usize, span: SourceSpan) -> Result<Vec<Value>, RuntimeError> {
+    (1..=len)
+        .map(|pos| {
+            i64::try_from(pos)
+                .map(Value::Int)
+                .map_err(|_| overflow(span))
+        })
+        .collect()
+}
+
+/// Reverse an ascending materialization in place for a descending walk. The whole walk
+/// reverses as one, so the keyed entries stay paired with their values.
+fn apply_direction<T>(rows: &mut [T], dir: Direction) {
     if dir == Direction::Descending {
         rows.reverse();
     }
-    Ok(rows)
+}
+
+/// The fault a local tree raises when its first key column is not a value-representable
+/// key type, shared so the keys-only and keyed paths report it identically.
+fn iterable_key_type_error(span: SourceSpan) -> RuntimeError {
+    unsupported("iterating keys of this type", span)
 }
 
 fn read_local_sequence(
@@ -182,12 +194,7 @@ fn eval_local_sequence_index(
     let [arg] = args else {
         return Err(type_error("a local sequence lookup takes one key", span));
     };
-    if arg.mode.is_some() || arg.name.is_some() {
-        return Err(unsupported(
-            "named or inout arguments in a local collection lookup",
-            span,
-        ));
-    }
+    reject_named_or_inout(arg, span)?;
     let Value::Int(pos) = eval_expr(&arg.value, env)? else {
         return Err(type_error("a local sequence key must be an int", span));
     };
@@ -204,14 +211,22 @@ fn eval_local_keys(
 ) -> Result<Vec<SavedKey>, RuntimeError> {
     args.iter()
         .map(|arg| {
-            if arg.mode.is_some() || arg.name.is_some() {
-                return Err(unsupported(
-                    "named or inout arguments in a local collection lookup",
-                    span,
-                ));
-            }
+            reject_named_or_inout(arg, span)?;
             value_to_key(eval_expr(&arg.value, env)?)
                 .ok_or_else(|| unsupported("a key of this type", span))
         })
         .collect()
+}
+
+/// A local-collection lookup takes only positional value keys: a named or inout argument
+/// has no meaning addressing an in-memory sequence or tree, so both lookup helpers reject
+/// it through this one owner of the local-lookup argument contract.
+fn reject_named_or_inout(arg: &ExecArg, span: SourceSpan) -> Result<(), RuntimeError> {
+    if arg.mode.is_some() || arg.name.is_some() {
+        return Err(unsupported(
+            "named or inout arguments in a local collection lookup",
+            span,
+        ));
+    }
+    Ok(())
 }

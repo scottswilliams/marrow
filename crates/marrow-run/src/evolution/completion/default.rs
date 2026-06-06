@@ -7,8 +7,11 @@ use marrow_store::tree::TreeStore;
 
 use crate::value::decode_leaf;
 
+use marrow_store::key::SavedKey;
+use marrow_store::tree::DataPathSegment;
+
 use super::super::apply::{ApplyError, for_each_place_record, store_id};
-use super::super::backfill::{locations, visit_member_cell_paths};
+use super::super::backfill::{fold_default_cell, locations, visit_member_cell_paths};
 use super::super::evidence::{ACTIVATION_DEFAULT_DIGEST, EvidenceDigest};
 use super::{catalog_id, incomplete};
 
@@ -47,27 +50,17 @@ pub(super) fn verify_default_completion(
                 target_leaf = Some(leaf.clone());
             }
             let steps = location.steps;
+            let cell = DefaultCell {
+                runtime: &runtime,
+                proposal_new,
+                expected: &value.encoded,
+                leaf: &leaf,
+            };
             for_each_place_record(store, place, &mut |identity| {
                 visit_member_cell_paths(store, &sid, identity, &steps, &mut |path| {
-                    let current = store.read_data_value(&sid, identity, path)?;
                     target_records += 1;
-                    if proposal_new {
-                        if current.as_deref() != Some(value.encoded.as_slice()) {
-                            return Err(incomplete());
-                        }
-                    } else if !stored_default_cell_valid(&runtime, &leaf, &current) {
-                        return Err(incomplete());
-                    }
-                    let Some(bytes) = current.as_deref() else {
-                        return Err(incomplete());
-                    };
-                    cell_digest.catalog_id(&sid);
-                    cell_digest.saved_keys(identity);
-                    cell_digest.data_path(path);
-                    cell_digest.bytes(bytes);
-                    Ok(())
-                })?;
-                Ok(())
+                    verify_default_cell(&cell, store, &sid, identity, path, &mut cell_digest)
+                })
             })?;
         }
         if target_leaf.is_none() {
@@ -81,6 +74,43 @@ pub(super) fn verify_default_completion(
         });
     }
     Ok(completed)
+}
+
+/// The per-cell completion contract for one default: a proposal-new default must hold the
+/// exact encoded constant at every target cell, while an accepted optional default must
+/// hold any byte string that decodes under the member's current leaf type.
+struct DefaultCell<'a> {
+    runtime: &'a CheckedRuntimeProgram,
+    proposal_new: bool,
+    expected: &'a [u8],
+    leaf: &'a StoreLeafKind,
+}
+
+/// Verify one stored default cell and fold it into the completion digest, or report the
+/// activation incomplete when the cell is missing or does not satisfy its contract. The
+/// folded fields match the staging recipe exactly, so a completed activation reproduces
+/// the digest its stamp recorded.
+fn verify_default_cell(
+    cell: &DefaultCell<'_>,
+    store: &TreeStore,
+    store_id: &CatalogId,
+    identity: &[SavedKey],
+    path: &[DataPathSegment],
+    digest: &mut EvidenceDigest,
+) -> Result<(), marrow_store::StoreError> {
+    let current = store.read_data_value(store_id, identity, path)?;
+    if cell.proposal_new {
+        if current.as_deref() != Some(cell.expected) {
+            return Err(incomplete());
+        }
+    } else if !stored_default_cell_valid(cell.runtime, cell.leaf, &current) {
+        return Err(incomplete());
+    }
+    let Some(bytes) = current.as_deref() else {
+        return Err(incomplete());
+    };
+    fold_default_cell(digest, store_id, identity, path, bytes);
+    Ok(())
 }
 
 fn stored_default_cell_valid(

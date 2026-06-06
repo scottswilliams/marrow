@@ -317,9 +317,6 @@ fn proposal_required_default_backfills_before_catalog_acceptance() {
     assert_eq!(w.counts.records_to_backfill, 2);
 
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
-    assert_eq!(outcome.records_backfilled, 2);
-    assert_eq!(outcome.catalog_epoch, proposal_epoch);
-    assert_eq!(outcome.receipt.commit_id, outcome.committed_commit_id);
     assert_eq!(outcome.receipt.catalog_epoch, proposal_epoch);
     assert_eq!(outcome.receipt.store_commit_id_before, w.store_commit_id);
     assert_eq!(outcome.receipt.source_digest, w.source_digest);
@@ -595,7 +592,6 @@ fn proposal_transform_writes_target_before_catalog_acceptance() {
     assert_eq!(w.counts.records_to_transform, 2);
 
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
-    assert_eq!(outcome.records_transformed, 2);
     assert_eq!(outcome.receipt.records_transformed, 2);
 
     let store_id = CatalogId::new(accepted_catalog_id(
@@ -724,7 +720,6 @@ fn proposal_index_rebuild_writes_entries_before_catalog_acceptance() {
     assert!(w.is_activatable(), "{w:#?}");
 
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
-    assert_eq!(outcome.indexes_rebuilt, 1);
     assert_eq!(outcome.receipt.indexes_rebuilt, 1);
 
     for (isbn, id) in [("111", 1), ("222", 2)] {
@@ -844,8 +839,8 @@ fn proposal_index_rebuild_reads_defaulted_member_before_catalog_acceptance() {
     assert!(w.is_activatable(), "{w:#?}");
 
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
-    assert_eq!(outcome.records_backfilled, 2);
-    assert_eq!(outcome.indexes_rebuilt, 1);
+    assert_eq!(outcome.receipt.records_backfilled, 2);
+    assert_eq!(outcome.receipt.indexes_rebuilt, 1);
 
     for id in [1, 2] {
         let scan = store
@@ -949,8 +944,8 @@ fn proposal_index_rebuild_reads_transform_target_before_catalog_acceptance() {
     assert!(w.is_activatable(), "{w:#?}");
 
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
-    assert_eq!(outcome.records_transformed, 2);
-    assert_eq!(outcome.indexes_rebuilt, 1);
+    assert_eq!(outcome.receipt.records_transformed, 2);
+    assert_eq!(outcome.receipt.indexes_rebuilt, 1);
 
     for (cents, id) in [(300, 1), (700, 2)] {
         let scan = store
@@ -1062,7 +1057,7 @@ fn proposal_default_backfills_every_store_using_the_resource() {
     assert_eq!(w.counts.records_to_backfill, 2);
 
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
-    assert_eq!(outcome.records_backfilled, 2);
+    assert_eq!(outcome.receipt.records_backfilled, 2);
 
     let int = marrow_store::value::ScalarType::Int;
     let books_store_id =
@@ -1137,7 +1132,7 @@ fn proposal_transform_updates_every_store_using_the_resource() {
     assert_eq!(w.counts.records_to_transform, 2);
 
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
-    assert_eq!(outcome.records_transformed, 2);
+    assert_eq!(outcome.receipt.records_transformed, 2);
 
     let int = marrow_store::value::ScalarType::Int;
     let books_store_id =
@@ -1202,8 +1197,8 @@ fn required_with_default_backfills_exactly_k_and_stamps_epoch() {
     let target_epoch = w.accepted_catalog.epoch;
 
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
-    assert_eq!(outcome.records_backfilled, 2);
-    assert_eq!(outcome.catalog_epoch, target_epoch);
+    assert_eq!(outcome.receipt.records_backfilled, 2);
+    assert_eq!(outcome.receipt.catalog_epoch, target_epoch);
 
     let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
     let pages_id = member_catalog_id(&place, "pages");
@@ -1236,7 +1231,7 @@ fn required_with_default_backfills_exactly_k_and_stamps_epoch() {
     // to a no-op for pages (every record carries it) and re-applying succeeds.
     let resumed = witness(&program, &store);
     let second = apply(&resumed, &program, &store, false, None).expect("re-apply succeeds");
-    assert_eq!(second.records_backfilled, 0);
+    assert_eq!(second.receipt.records_backfilled, 0);
     assert_eq!(
         read_scalar(&store, &store_id, 1, &pages_id, int),
         Some(Scalar::Int(0))
@@ -1278,10 +1273,6 @@ fn optional_add_stamps_epoch_without_data_step() {
         .as_ref()
         .map(|catalog| catalog.digest.clone());
     let outcome = apply(&witness, &program, &store, false, None).expect("apply");
-    assert_eq!(outcome.records_backfilled, 0);
-    assert_eq!(outcome.records_transformed, 0);
-    assert_eq!(outcome.indexes_rebuilt, 0);
-    assert_eq!(outcome.records_retired, 0);
     assert_eq!(outcome.receipt.records_backfilled, 0);
     assert_eq!(outcome.receipt.default_records_by_id.len(), 0);
     assert_eq!(outcome.receipt.records_transformed, 0);
@@ -1350,10 +1341,10 @@ fn completion_fails_when_no_effect_resume_recomputes_repair_required() {
     assert_eq!(w.counts.records_to_transform, 0);
 
     let outcome = apply(&w, &program, &store, false, None).expect("apply");
-    assert_eq!(outcome.records_backfilled, 0);
-    assert_eq!(outcome.records_transformed, 0);
-    assert_eq!(outcome.indexes_rebuilt, 0);
-    assert_eq!(outcome.records_retired, 0);
+    assert_eq!(outcome.receipt.records_backfilled, 0);
+    assert_eq!(outcome.receipt.records_transformed, 0);
+    assert_eq!(outcome.receipt.indexes_rebuilt, 0);
+    assert_eq!(outcome.receipt.records_retired, 0);
 
     let store_id = CatalogId::new(accepted_catalog_id(
         &accepted_place.store_catalog_id,
@@ -1420,7 +1411,7 @@ fn new_index_rebuild_writes_entries_and_stamps() {
         .expect("seed stale index entry");
 
     let outcome = apply(&witness, &program, &store, false, None).expect("apply");
-    assert_eq!(outcome.indexes_rebuilt, 1);
+    assert_eq!(outcome.receipt.indexes_rebuilt, 1);
 
     let one = store
         .scan_index_tuple(&index_id, &[SavedKey::Str("111".into())], 2)
@@ -1474,7 +1465,10 @@ fn new_non_unique_index_rebuild_writes_entries() {
 
     let w = witness(&program, &store);
     let outcome = apply(&w, &program, &store, false, None).expect("apply");
-    assert_eq!(outcome.indexes_rebuilt, 1, "the non-unique index rebuilds");
+    assert_eq!(
+        outcome.receipt.indexes_rebuilt, 1,
+        "the non-unique index rebuilds"
+    );
 
     // A non-unique index ends with the identity keys, so each record publishes exactly
     // one entry under its full `(genre, id)` tuple.
@@ -1575,7 +1569,7 @@ fn dropped_index_apply_deletes_index_cells() {
     fs::remove_dir_all(&root).ok();
 
     // The drop leaves no index cells under the dropped id.
-    assert_eq!(outcome.catalog_epoch, w.accepted_catalog.epoch);
+    assert_eq!(outcome.receipt.catalog_epoch, w.accepted_catalog.epoch);
     assert!(
         !index_has_children(&store, &index_id, &[]),
         "the dropped index must have no remaining cells"
@@ -1673,7 +1667,7 @@ fn explicit_index_retire_deletes_index_cells() {
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
     fs::remove_dir_all(&root).ok();
 
-    assert_eq!(outcome.records_retired, 0);
+    assert_eq!(outcome.receipt.records_retired, 0);
     assert!(
         !index_has_children(&store, &index_id, &[]),
         "an explicit index retire must leave no index cells"
@@ -1736,7 +1730,7 @@ fn destructive_retire_with_matching_approval_deletes() {
         retires: vec![(CatalogId::new(subtitle_id.clone()).unwrap(), 2)],
     };
     let outcome = apply(&witness, &program, &store, true, Some(&approval)).expect("apply");
-    assert_eq!(outcome.records_retired, 2);
+    assert_eq!(outcome.receipt.records_retired, 2);
 
     let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
     for id in [1, 2] {
@@ -1960,7 +1954,7 @@ fn destructive_multi_retire_approval_is_matched_per_id() {
         ],
     };
     let outcome = apply(&witness, &program, &store, true, Some(&scoped)).expect("apply");
-    assert_eq!(outcome.records_retired, 3);
+    assert_eq!(outcome.receipt.records_retired, 3);
     fs::remove_dir_all(&root).ok();
 }
 
@@ -2035,7 +2029,7 @@ fn transform_computes_new_member_per_record_and_stamps() {
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
-    assert_eq!(outcome.records_transformed, 2);
+    assert_eq!(outcome.receipt.records_transformed, 2);
 
     let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
     let cents_id = member_catalog_id(&place, "priceCents");
@@ -2209,7 +2203,7 @@ fn activatable_transform_with_total_body_applies() {
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
-    assert_eq!(outcome.records_transformed, 1);
+    assert_eq!(outcome.receipt.records_transformed, 1);
 
     let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
     let cents_id = member_catalog_id(&place, "priceCents");
@@ -2290,9 +2284,9 @@ fn transform_composes_with_default_and_retire() {
         retires: vec![(CatalogId::new(subtitle_id.clone()).unwrap(), 1)],
     };
     let outcome = apply(&w, &program, &store, true, Some(&approval)).expect("apply");
-    assert_eq!(outcome.records_transformed, 1);
-    assert_eq!(outcome.records_backfilled, 1);
-    assert_eq!(outcome.records_retired, 1);
+    assert_eq!(outcome.receipt.records_transformed, 1);
+    assert_eq!(outcome.receipt.records_backfilled, 1);
+    assert_eq!(outcome.receipt.records_retired, 1);
 
     let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
     let cents_id = member_catalog_id(&place, "priceCents");
@@ -2661,7 +2655,7 @@ fn failed_apply_rolls_back_and_resumes_idempotently() {
         let rw = TreeStore::open(&store_path).expect("reopen store");
         let witness = witness(&program, &rw);
         let outcome = apply(&witness, &program, &rw, false, None).expect("resumed apply");
-        assert_eq!(outcome.records_backfilled, 2);
+        assert_eq!(outcome.receipt.records_backfilled, 2);
         assert_eq!(
             read_scalar(&rw, &store_id, 1, &pages_id, int),
             Some(Scalar::Int(0))
@@ -2957,7 +2951,7 @@ fn applied_store_passes_same_binary_fence_and_locks_out_older() {
 
     let w = witness(&program, &store);
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
-    let stamped_epoch = outcome.catalog_epoch;
+    let stamped_epoch = outcome.receipt.catalog_epoch;
     let accepted = program.catalog.accepted_epoch.expect("accepted epoch");
     assert_eq!(stamped_epoch, accepted);
 
@@ -3167,14 +3161,14 @@ fn no_op_apply_does_not_churn_the_commit_id() {
         .expect("commit")
         .expect("a stamp")
         .commit_id;
-    assert_eq!(first.committed_commit_id, stamped_commit);
+    assert_eq!(first.receipt.commit_id, stamped_commit);
 
     // Second apply over the now-applied store has nothing to do and the epoch already
     // matches: it reports the existing commit id and writes no new stamp.
     let second =
         apply(&witness(&program, &store), &program, &store, false, None).expect("re-apply");
-    assert_eq!(second.records_backfilled, 0);
-    assert_eq!(second.committed_commit_id, stamped_commit);
+    assert_eq!(second.receipt.records_backfilled, 0);
+    assert_eq!(second.receipt.commit_id, stamped_commit);
     assert_eq!(
         store
             .read_commit_metadata()
@@ -3188,7 +3182,7 @@ fn no_op_apply_does_not_churn_the_commit_id() {
     // A third apply is still a stable no-op.
     let third =
         apply(&witness(&program, &store), &program, &store, false, None).expect("third apply");
-    assert_eq!(third.committed_commit_id, stamped_commit);
+    assert_eq!(third.receipt.commit_id, stamped_commit);
 
     fs::remove_dir_all(&root).ok();
 }

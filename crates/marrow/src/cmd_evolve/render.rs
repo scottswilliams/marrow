@@ -192,25 +192,26 @@ fn generic_blocking_report() -> BlockingReport {
 }
 
 pub(super) fn apply_success(outcome: &ApplyOutcome, format: CheckFormat) {
+    let receipt = &outcome.receipt;
     match format {
         CheckFormat::Text => {
             println!("applied evolution");
-            println!("catalog epoch: {}", outcome.catalog_epoch);
-            println!("commit id: {}", outcome.committed_commit_id);
-            println!("records backfilled: {}", outcome.records_backfilled);
-            println!("records transformed: {}", outcome.records_transformed);
-            println!("records retired: {}", outcome.records_retired);
-            println!("indexes rebuilt: {}", outcome.indexes_rebuilt);
+            println!("catalog epoch: {}", receipt.catalog_epoch);
+            println!("commit id: {}", receipt.commit_id);
+            println!("records backfilled: {}", receipt.records_backfilled);
+            println!("records transformed: {}", receipt.records_transformed);
+            println!("records retired: {}", receipt.records_retired);
+            println!("indexes rebuilt: {}", receipt.indexes_rebuilt);
         }
         CheckFormat::Json | CheckFormat::Jsonl => write_json(serde_json::json!({
             "kind": "evolve_apply",
             "status": "applied",
-            "catalog_epoch": outcome.catalog_epoch,
-            "commit_id": outcome.committed_commit_id,
-            "records_backfilled": outcome.records_backfilled,
-            "records_transformed": outcome.records_transformed,
-            "records_retired": outcome.records_retired,
-            "indexes_rebuilt": outcome.indexes_rebuilt,
+            "catalog_epoch": receipt.catalog_epoch,
+            "commit_id": receipt.commit_id,
+            "records_backfilled": receipt.records_backfilled,
+            "records_transformed": receipt.records_transformed,
+            "records_retired": receipt.records_retired,
+            "indexes_rebuilt": receipt.indexes_rebuilt,
         })),
     }
 }

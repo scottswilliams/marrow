@@ -1,16 +1,17 @@
 use std::ops::ControlFlow;
 
 use marrow_check::CheckedSavedPlace;
-use marrow_store::key::{SavedKey, decode_identity_payload_arity};
+use marrow_store::key::SavedKey;
 use marrow_syntax::SourceSpan;
 
 use crate::durable_read::read_resource;
 use crate::env::{Env, Flow, TraversedLayer};
-use crate::error::{Located, RUN_TYPE, RuntimeError, unsupported};
+use crate::error::{Located, RuntimeError, unsupported};
+use crate::stdlib::decode_unique_index_identity;
 use crate::store::IndexAddress;
 use crate::value::identity_value;
 
-use super::{LoopShape, SavedLoopRow, SavedLoopSpec};
+use super::{LoopShape, SavedLoopRow, SavedLoopSpec, shape_row};
 
 pub(super) struct UniqueIndexScan {
     place: CheckedSavedPlace,
@@ -64,17 +65,12 @@ impl UniqueIndexScan {
         let Some(entry) = page.entries.first() else {
             return Ok(Flow::Normal);
         };
-        let identity = decode_identity_payload_arity(&entry.value, self.identity_arity)
-            .ok_or_else(|| RuntimeError {
-                throw: None,
-                origin: None,
-                code: RUN_TYPE,
-                message: format!(
-                    "the `{}` index entry did not decode to an identity",
-                    self.index_name
-                ),
-                span: self.span,
-            })?;
+        let identity = decode_unique_index_identity(
+            &entry.value,
+            self.identity_arity,
+            &self.index_name,
+            self.span,
+        )?;
         match self.visit_identity(identity, env, visit)? {
             ControlFlow::Continue(()) => Ok(Flow::Normal),
             ControlFlow::Break(flow) => Ok(flow),
@@ -88,13 +84,10 @@ impl UniqueIndexScan {
         visit: &mut impl FnMut(SavedLoopRow, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
     ) -> Result<ControlFlow<Flow>, RuntimeError> {
         let key = identity_value(&self.place.root, identity.clone());
-        match self.shape {
-            LoopShape::Keys => visit(SavedLoopRow::Single(key), env),
+        let row = shape_row(self.shape, key, || match self.shape {
             LoopShape::Values => Err(unsupported("values over a unique index lookup", self.span)),
-            LoopShape::Entries => {
-                let value = read_resource(&self.place, &identity, self.span, env)?;
-                visit(SavedLoopRow::Pair(key, value), env)
-            }
-        }
+            _ => read_resource(&self.place, &identity, self.span, env),
+        })?;
+        visit(row, env)
     }
 }

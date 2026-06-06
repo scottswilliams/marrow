@@ -118,18 +118,29 @@ fn read_unique_index_value(
     let Some(entry) = page.entries.first() else {
         return Ok(None);
     };
-    let identity =
-        decode_identity_payload_arity(&entry.value, lookup.identity_arity).ok_or_else(|| {
-            RuntimeError {
-                throw: None,
-                origin: None,
-                code: RUN_TYPE,
-                message: format!(
-                    "the `{}` index entry did not decode to an identity",
-                    lookup.index_name
-                ),
-                span,
-            }
-        })?;
+    let identity = decode_unique_index_identity(
+        &entry.value,
+        lookup.identity_arity,
+        &lookup.index_name,
+        span,
+    )?;
     Ok(Some(identity_value(&lookup.root, identity)))
+}
+
+/// Decode a unique-index entry's stored value into the identity it points at, or the
+/// single canonical store-corruption fault both unique-index read paths raise when the
+/// bytes do not decode to an identity of the expected arity.
+pub(crate) fn decode_unique_index_identity(
+    entry_value: &[u8],
+    identity_arity: usize,
+    index_name: &str,
+    span: SourceSpan,
+) -> Result<Vec<SavedKey>, RuntimeError> {
+    decode_identity_payload_arity(entry_value, identity_arity).ok_or_else(|| {
+        RuntimeError::fault(
+            RUN_TYPE,
+            format!("the `{index_name}` index entry did not decode to an identity"),
+            span,
+        )
+    })
 }

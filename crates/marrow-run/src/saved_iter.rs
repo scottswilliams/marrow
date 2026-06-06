@@ -3,6 +3,7 @@
 use std::ops::ControlFlow;
 
 use marrow_check::CheckedExpr as ExecExpr;
+use marrow_store::key::SavedKey;
 use marrow_syntax::SourceSpan;
 
 use crate::collection::{Direction, MaterializeKind, values_or_entries};
@@ -32,6 +33,78 @@ pub(super) enum LoopShape {
 pub(crate) enum SavedLoopRow {
     Single(Value),
     Pair(Value, Value),
+}
+
+/// Build the loop row a scan yields for one identity under `shape`: the key alone for
+/// `Keys`, the value alone for `Values`, the key/value pair for `Entries`. `read_value`
+/// is consulted only when the shape needs the value, so a scan whose values are
+/// unsupported (or gated) reports that through its reader and pays nothing for `Keys`.
+/// Keeping this dispatch here is the single owner of the Keys/Values/Entries row contract.
+pub(super) fn shape_row(
+    shape: LoopShape,
+    key: Value,
+    read_value: impl FnOnce() -> Result<Value, RuntimeError>,
+) -> Result<SavedLoopRow, RuntimeError> {
+    match shape {
+        LoopShape::Keys => Ok(SavedLoopRow::Single(key)),
+        LoopShape::Values => Ok(SavedLoopRow::Single(read_value()?)),
+        LoopShape::Entries => Ok(SavedLoopRow::Pair(key, read_value()?)),
+    }
+}
+
+/// One level of a saved-tree child walk: the first child under a key prefix and the next
+/// child after an anchor, in the scan's direction. Record iteration and index iteration
+/// both seek over keyed tree levels with this same first/next contract; only the cell kind
+/// they address (records vs index entries) differs.
+pub(super) trait ChildCursor {
+    fn first(
+        &self,
+        env: &mut Env<'_>,
+        prefix: &[SavedKey],
+    ) -> Result<Option<SavedKey>, RuntimeError>;
+
+    fn next(
+        &self,
+        env: &mut Env<'_>,
+        prefix: &[SavedKey],
+        anchor: &SavedKey,
+    ) -> Result<Option<SavedKey>, RuntimeError>;
+}
+
+/// Walk `depth` keyed levels under `query_prefix`, yielding each leaf's accumulated
+/// identity to `visit`. The cursor prefix (`query_prefix`) and the visited identity
+/// (`identity_prefix`) are threaded separately so an index walk can seek over its full
+/// argument-plus-identity prefix while yielding only the identity suffix; a record walk
+/// passes the same slice for both. A `Break` from `visit` stops the whole walk.
+pub(super) fn walk_keyed_children(
+    cursor: &dyn ChildCursor,
+    depth: usize,
+    query_prefix: &[SavedKey],
+    identity_prefix: &[SavedKey],
+    env: &mut Env<'_>,
+    visit: &mut impl FnMut(Vec<SavedKey>, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
+) -> Result<Flow, RuntimeError> {
+    let mut child = cursor.first(env, query_prefix)?;
+    while let Some(key) = child {
+        let anchor = key.clone();
+        let mut next_query = query_prefix.to_vec();
+        next_query.push(key.clone());
+        let mut next_identity = identity_prefix.to_vec();
+        next_identity.push(key);
+        if depth <= 1 {
+            match visit(next_identity, env)? {
+                ControlFlow::Continue(()) => {}
+                ControlFlow::Break(flow) => return Ok(flow),
+            }
+        } else {
+            match walk_keyed_children(cursor, depth - 1, &next_query, &next_identity, env, visit)? {
+                Flow::Normal => {}
+                flow => return Ok(flow),
+            }
+        }
+        child = cursor.next(env, query_prefix, &anchor)?;
+    }
+    Ok(Flow::Normal)
 }
 
 pub(crate) struct SavedLoopSpec<'a> {

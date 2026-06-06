@@ -22,13 +22,11 @@ pub(crate) fn eval_next_id(
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     let [arg] = args else {
-        return Err(RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_TYPE,
-            message: "`nextId` takes one argument".into(),
+        return Err(RuntimeError::fault(
+            RUN_TYPE,
+            "`nextId` takes one argument".into(),
             span,
-        });
+        ));
     };
     let Some(place) = direct_root_place(&arg.value) else {
         return Err(unsupported("`nextId` of this path", span));
@@ -44,13 +42,11 @@ pub(crate) fn eval_append(
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     let [target, value] = args else {
-        return Err(RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_TYPE,
-            message: "`append` takes a layer path and a value".into(),
+        return Err(RuntimeError::fault(
+            RUN_TYPE,
+            "`append` takes a layer path and a value".into(),
             span,
-        });
+        ));
     };
     if let Some(value) = eval_local_append(&target.value, &value.value, span, env)? {
         return Ok(value);

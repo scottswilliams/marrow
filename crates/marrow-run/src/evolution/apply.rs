@@ -12,14 +12,14 @@ use marrow_store::tree::{ActivationDefaultRecordCount, TreeStore};
 
 use crate::write_plan::{PlanStep, WritePlan};
 
-use super::admission::{expected_retire_counts, gate_obligations};
+use super::admission::{catalog_id_order, expected_retire_counts, gate_obligations};
 use super::backfill::{
     stage_default_backfill, stage_default_presence_receipt, stage_index_drop, stage_index_rebuild,
     stage_retire_deletes,
 };
 use super::evidence::retire_evidence_digest;
 use super::lifecycle::retired_proposal_ids;
-use super::transform::{TransformStage, stage_transform};
+use super::transform::{TransformVisit, visit_transform_writes};
 use super::validate::{assert_commit_pin, validate_witness};
 use super::window::{
     ActivationStampFacts, FenceError, StampFacts, current_engine_profile, fence, metadata_stamp,
@@ -36,12 +36,6 @@ pub struct Approval {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplyOutcome {
-    pub committed_commit_id: u64,
-    pub catalog_epoch: u64,
-    pub records_backfilled: usize,
-    pub indexes_rebuilt: usize,
-    pub records_retired: usize,
-    pub records_transformed: usize,
     pub receipt: ActivationReceipt,
 }
 
@@ -123,9 +117,8 @@ pub fn apply(
     };
     validate_witness(witness, program, store)?;
     // Fence against the shape the store already holds, not the shape apply is about to
-    // stamp: an evolution that changes shape must verify the store still sits at its
-    // pre-apply shape before advancing it, or every shape-changing apply would fence
-    // itself as drift. The new shape is what apply stamps once the fence passes.
+    // stamp: a shape-changing apply must confirm the store still sits at its pre-apply
+    // shape before advancing it, or it would fence itself as drift.
     let expected_digest = witness.store_source_digest.clone().unwrap_or_default();
     fence(
         Some(accepted_epoch),
@@ -172,73 +165,117 @@ pub fn apply(
     }
     stage_redundant_default_receipts(program, &places, store, &mut staged)?;
 
-    if staged.records_backfilled != witness.counts.records_to_backfill {
-        return Err(ApplyError::PlanMismatch {
-            expected: witness.counts.records_to_backfill,
-            staged: staged.records_backfilled,
-        });
-    }
-
     let destructive_retire_counts = expected_retire_counts(witness);
-    let approved_retire = destructive_retire_counts
-        .iter()
-        .map(|(_id, count)| *count)
-        .sum::<usize>();
-    if staged.records_retired != approved_retire {
-        return Err(ApplyError::PlanMismatch {
-            expected: approved_retire,
-            staged: staged.records_retired,
-        });
-    }
-
-    if staged.records_transformed != witness.counts.records_to_transform {
-        return Err(ApplyError::PlanMismatch {
-            expected: witness.counts.records_to_transform,
-            staged: staged.records_transformed,
-        });
-    }
+    reconcile_counts(&staged, witness, &destructive_retire_counts)?;
 
     // Nothing to write and the store already sits at the target epoch: applying again
     // would only churn the commit id and restamp the same epoch. Leave the store
     // untouched and report the current commit id rather than advancing it.
     if steps.is_empty() && current_epoch == Some(target_epoch) {
-        let committed_commit_id = witness.store_commit_id.unwrap_or(0);
-        let retire_counts = retire_receipt_counts(program, &destructive_retire_counts)?;
-        let retire_digest = retire_evidence_digest(
-            committed_commit_id,
-            staged.records_retired as u64,
-            &retire_counts_u64(&retire_counts)?,
-        );
-        let proposal_new_catalog_ids = proposal_new_catalog_ids(program);
-        return Ok(ApplyOutcome {
-            committed_commit_id,
-            catalog_epoch: target_epoch,
-            records_backfilled: staged.records_backfilled,
-            indexes_rebuilt: staged.indexes_rebuilt,
-            records_retired: staged.records_retired,
-            records_transformed: staged.records_transformed,
-            receipt: activation_receipt(
-                witness,
-                committed_commit_id,
-                target_epoch,
-                &staged,
-                &retire_counts,
-                proposal_new_catalog_ids,
-                retire_digest,
-            ),
-        });
+        let commit_id = witness.store_commit_id.unwrap_or(0);
+        let parts = receipt_parts(program, commit_id, &staged, &destructive_retire_counts)?;
+        return Ok(build_outcome(
+            witness,
+            commit_id,
+            target_epoch,
+            &staged,
+            parts,
+        ));
     }
 
     let commit_id = witness.store_commit_id.unwrap_or(0) + 1;
-    let retire_receipt_counts = retire_receipt_counts(program, &destructive_retire_counts)?;
-    let retire_receipt_counts_u64 = retire_counts_u64(&retire_receipt_counts)?;
-    let proposal_new_catalog_ids = proposal_new_catalog_ids(program);
-    let retire_digest = retire_evidence_digest(
+    let parts = receipt_parts(program, commit_id, &staged, &destructive_retire_counts)?;
+    steps.push(activation_stamp(
+        witness,
         commit_id,
-        staged.records_retired as u64,
-        &retire_receipt_counts_u64,
-    );
-    steps.push(metadata_stamp(StampFacts {
+        target_epoch,
+        &staged,
+        &parts,
+    ));
+    commit_apply_plan(witness, store, steps)?;
+    Ok(build_outcome(
+        witness,
+        commit_id,
+        target_epoch,
+        &staged,
+        parts,
+    ))
+}
+
+/// Confirm the staged work matches the counts the witness proved, failing closed before any
+/// commit. The backfill and transform totals come straight from the witness; the retire
+/// total is the sum the approved destructive set authorizes, so a divergence on any of the
+/// three means staging derived different work than the witness was discharged against.
+fn reconcile_counts(
+    staged: &StagedWork,
+    witness: &EvolutionWitness,
+    destructive_retire_counts: &[(CatalogId, usize)],
+) -> Result<(), ApplyError> {
+    let approved_retire = destructive_retire_counts
+        .iter()
+        .map(|(_id, count)| *count)
+        .sum::<usize>();
+    let checks = [
+        (
+            staged.records_backfilled,
+            witness.counts.records_to_backfill,
+        ),
+        (staged.records_retired, approved_retire),
+        (
+            staged.records_transformed,
+            witness.counts.records_to_transform,
+        ),
+    ];
+    for (staged_count, expected) in checks {
+        if staged_count != expected {
+            return Err(ApplyError::PlanMismatch {
+                expected,
+                staged: staged_count,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// The receipt fields a committed (or already-committed no-op) activation shares between its
+/// stamp and its outcome: the per-id retire counts, their digest at this commit, and the
+/// proposal-new catalog ids. Computed once so the stamp and the returned receipt agree by
+/// construction on the same commit id.
+struct ReceiptParts {
+    retire_counts: Vec<(CatalogId, usize)>,
+    retire_counts_u64: Vec<(CatalogId, u64)>,
+    retire_digest: String,
+    proposal_new_catalog_ids: Vec<CatalogId>,
+}
+
+fn receipt_parts(
+    program: &CheckedProgram,
+    commit_id: u64,
+    staged: &StagedWork,
+    destructive_retire_counts: &[(CatalogId, usize)],
+) -> Result<ReceiptParts, ApplyError> {
+    let retire_counts = retire_receipt_counts(program, destructive_retire_counts)?;
+    let retire_counts_u64 = retire_counts_u64(&retire_counts)?;
+    let retire_digest =
+        retire_evidence_digest(commit_id, staged.records_retired as u64, &retire_counts_u64);
+    Ok(ReceiptParts {
+        retire_counts,
+        retire_counts_u64,
+        retire_digest,
+        proposal_new_catalog_ids: proposal_new_catalog_ids(program),
+    })
+}
+
+/// The metadata stamp a committing activation appends to its plan, carrying the activation
+/// facts the commit records at `commit_id`.
+fn activation_stamp(
+    witness: &EvolutionWitness,
+    commit_id: u64,
+    target_epoch: u64,
+    staged: &StagedWork,
+    parts: &ReceiptParts,
+) -> PlanStep {
+    metadata_stamp(StampFacts {
         catalog_epoch: target_epoch,
         commit_id,
         source_digest: witness.source_digest.clone(),
@@ -250,35 +287,36 @@ pub fn apply(
                 .proposal_catalog
                 .as_ref()
                 .map(|catalog| catalog.digest.clone()),
-            proposal_new_catalog_ids: proposal_new_catalog_ids.clone(),
+            proposal_new_catalog_ids: parts.proposal_new_catalog_ids.clone(),
             records_backfilled: staged.records_backfilled as u64,
             default_records_by_id: staged.default_records_by_id.clone(),
             indexes_rebuilt: staged.indexes_rebuilt as u64,
             records_retired: staged.records_retired as u64,
-            retire_evidence_digest: retire_digest.clone(),
-            records_retired_by_id: retire_receipt_counts_u64,
+            retire_evidence_digest: parts.retire_digest.clone(),
+            records_retired_by_id: parts.retire_counts_u64.clone(),
             records_transformed: staged.records_transformed as u64,
         }),
-    }));
-    commit_apply_plan(witness, store, steps)?;
+    })
+}
 
-    Ok(ApplyOutcome {
-        committed_commit_id: commit_id,
-        catalog_epoch: target_epoch,
-        records_backfilled: staged.records_backfilled,
-        indexes_rebuilt: staged.indexes_rebuilt,
-        records_retired: staged.records_retired,
-        records_transformed: staged.records_transformed,
+fn build_outcome(
+    witness: &EvolutionWitness,
+    commit_id: u64,
+    target_epoch: u64,
+    staged: &StagedWork,
+    parts: ReceiptParts,
+) -> ApplyOutcome {
+    ApplyOutcome {
         receipt: activation_receipt(
             witness,
             commit_id,
             target_epoch,
-            &staged,
-            &retire_receipt_counts,
-            proposal_new_catalog_ids,
-            retire_digest,
+            staged,
+            &parts.retire_counts,
+            parts.proposal_new_catalog_ids,
+            parts.retire_digest,
         ),
-    })
+    }
 }
 
 fn proposal_new_catalog_ids(program: &CheckedProgram) -> Vec<CatalogId> {
@@ -311,7 +349,7 @@ fn retire_receipt_counts(
             .unwrap_or(0);
         counts.push((id, count));
     }
-    counts.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+    counts.sort_by(catalog_id_order);
     counts.dedup();
     Ok(counts)
 }
@@ -462,16 +500,25 @@ fn stage_obligation(
         Verdict::DestructiveDecisionRequired { .. } => {
             stage_retire_deletes(catalog_id, places, store, steps, staged)
         }
-        Verdict::Transform { reads } => stage_transform(TransformStage {
-            target_id: catalog_id,
-            witness_reads: reads,
-            program,
-            runtime,
-            places,
-            store,
-            steps,
-            staged,
-        }),
+        Verdict::Transform { reads } => {
+            let mut count = 0usize;
+            let mut stage = |address, value| {
+                steps.push(PlanStep::WriteData { address, value });
+                count += 1;
+                Ok(())
+            };
+            visit_transform_writes(TransformVisit {
+                target_id: catalog_id,
+                witness_reads: reads,
+                program,
+                runtime,
+                places,
+                store,
+                visit: &mut stage,
+            })?;
+            staged.records_transformed += count;
+            Ok(())
+        }
         Verdict::NoOp
         | Verdict::CatalogOnly
         | Verdict::DataProof

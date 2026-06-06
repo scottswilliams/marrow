@@ -16,7 +16,7 @@ mod materialize;
 
 pub(crate) use append::{eval_append, eval_next_id};
 pub(crate) use materialize::{
-    MaterializeKind, reversed_keys, reversed_materialized, reversed_saved, values_or_entries,
+    MaterializeKind, reversed_keys, reversed_materialized, values_or_entries,
 };
 
 /// Where a saved read sits, which decides how an absent element fails. A
@@ -60,26 +60,37 @@ pub(crate) fn durable_collection_value(span: SourceSpan) -> RuntimeError {
     )
 }
 
+/// The single path argument a `keys`/`values`/`entries` builtin takes, or the per-builtin
+/// arity fault naming `builtin`.
+fn single_path_arg<'a>(
+    args: &'a [ExecArg],
+    builtin: &str,
+    span: SourceSpan,
+) -> Result<&'a ExecExpr, RuntimeError> {
+    let [path] = args else {
+        return Err(RuntimeError::fault(
+            RUN_TYPE,
+            format!("`{builtin}` takes one argument"),
+            span,
+        ));
+    };
+    Ok(&path.value)
+}
+
 pub(crate) fn eval_keys(
     args: &[ExecArg],
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    let [path] = args else {
-        return Err(RuntimeError::fault(
-            RUN_TYPE,
-            "`keys` takes one argument".into(),
-            span,
-        ));
-    };
-    if path.value.saved_place().is_none() {
+    let path = single_path_arg(args, "keys", span)?;
+    if path.saved_place().is_none() {
         return Ok(Value::Sequence(enumerate_local_collection_dir(
-            eval_expr(&path.value, env)?,
+            eval_expr(path, env)?,
             Direction::Ascending,
             span,
         )?));
     }
-    check_key_collection(&path.value, span)?;
+    check_key_collection(path, span)?;
     Err(durable_collection_value(span))
 }
 
@@ -88,25 +99,12 @@ pub(crate) fn eval_values(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    let [path] = args else {
-        return Err(RuntimeError::fault(
-            RUN_TYPE,
-            "`values` takes one argument".into(),
-            span,
-        ));
-    };
-    if path.value.saved_place().is_none() {
-        let values = materialize_local_collection_dir(
-            eval_expr(&path.value, env)?,
-            Direction::Ascending,
-            span,
-        )?
-        .into_iter()
-        .map(|(_, value)| value)
-        .collect();
-        return Ok(Value::Sequence(values));
-    }
-    Err(durable_collection_value(span))
+    eval_materialized(
+        single_path_arg(args, "values", span)?,
+        MaterializeKind::Values,
+        span,
+        env,
+    )
 }
 
 pub(crate) fn eval_entries(
@@ -114,25 +112,35 @@ pub(crate) fn eval_entries(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    let [path] = args else {
-        return Err(RuntimeError::fault(
-            RUN_TYPE,
-            "`entries` takes one argument".into(),
-            span,
-        ));
-    };
-    if path.value.saved_place().is_none() {
-        let entries = materialize_local_collection_dir(
-            eval_expr(&path.value, env)?,
-            Direction::Ascending,
-            span,
-        )?
-        .into_iter()
-        .map(|(key, value)| Value::Sequence(vec![key, value]))
-        .collect();
-        return Ok(Value::Sequence(entries));
+    eval_materialized(
+        single_path_arg(args, "entries", span)?,
+        MaterializeKind::Entries,
+        span,
+        env,
+    )
+}
+
+/// Materialize a local keyed collection in ascending order as a value sequence, projecting
+/// each `(key, value)` row by `kind`: `Values` yields the value, `Entries` yields a
+/// `[key, value]` pair. Durable saved data is never materialized as a value.
+fn eval_materialized(
+    path: &ExecExpr,
+    kind: MaterializeKind,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    if path.saved_place().is_some() {
+        return Err(durable_collection_value(span));
     }
-    Err(durable_collection_value(span))
+    let rows = materialize_local_collection_dir(eval_expr(path, env)?, Direction::Ascending, span)?;
+    let values = match kind {
+        MaterializeKind::Values => rows.into_iter().map(|(_, value)| value).collect(),
+        MaterializeKind::Entries => rows
+            .into_iter()
+            .map(|(key, value)| Value::Sequence(vec![key, value]))
+            .collect(),
+    };
+    Ok(Value::Sequence(values))
 }
 
 pub(crate) fn eval_reversed(
@@ -154,7 +162,7 @@ pub(crate) fn eval_reversed(
         return reversed_keys(layer, span, env);
     }
     if arg.value.saved_place().is_some() {
-        return reversed_saved(span);
+        return Err(durable_collection_value(span));
     }
     reversed_in_memory(&arg.value, span, env)
 }

@@ -36,6 +36,7 @@ pub(crate) struct StampFacts {
     pub(crate) activation: Option<ActivationStampFacts>,
 }
 
+#[derive(Default)]
 pub(crate) struct ActivationStampFacts {
     pub(crate) evolution_digest: String,
     pub(crate) proposal_catalog_digest: Option<String>,
@@ -55,7 +56,10 @@ pub(crate) struct ActivationStampFacts {
 /// construction: the fence reads exactly the layout and digest this stamp wrote.
 pub(crate) fn metadata_stamp(facts: StampFacts) -> PlanStep {
     let profile = current_engine_profile();
-    let activation = facts.activation;
+    // A non-activation managed write carries no activation facts, so the absent case is
+    // expressed once as the all-default activation rather than per field. The activation
+    // columns then stamp the same zero/empty values an unstamped activation would.
+    let activation = facts.activation.unwrap_or_default();
     let commit = CommitMetadata {
         commit_id: facts.commit_id,
         catalog_epoch: facts.catalog_epoch,
@@ -64,45 +68,16 @@ pub(crate) fn metadata_stamp(facts: StampFacts) -> PlanStep {
         engine_profile_digest: profile.digest_bytes(),
         changed_root_catalog_ids: facts.changed_root_catalog_ids,
         changed_index_catalog_ids: facts.changed_index_catalog_ids,
-        activation_evolution_digest: activation
-            .as_ref()
-            .map(|activation| activation.evolution_digest.clone())
-            .unwrap_or_default(),
-        activation_proposal_catalog_digest: activation
-            .as_ref()
-            .and_then(|activation| activation.proposal_catalog_digest.clone()),
-        activation_proposal_new_catalog_ids: activation
-            .as_ref()
-            .map(|activation| activation.proposal_new_catalog_ids.clone())
-            .unwrap_or_default(),
-        activation_records_backfilled: activation
-            .as_ref()
-            .map(|activation| activation.records_backfilled)
-            .unwrap_or(0),
-        activation_default_records_by_id: activation
-            .as_ref()
-            .map(|activation| activation.default_records_by_id.clone())
-            .unwrap_or_default(),
-        activation_indexes_rebuilt: activation
-            .as_ref()
-            .map(|activation| activation.indexes_rebuilt)
-            .unwrap_or(0),
-        activation_records_retired: activation
-            .as_ref()
-            .map(|activation| activation.records_retired)
-            .unwrap_or(0),
-        activation_retire_evidence_digest: activation
-            .as_ref()
-            .map(|activation| activation.retire_evidence_digest.clone())
-            .unwrap_or_default(),
-        activation_records_retired_by_id: activation
-            .as_ref()
-            .map(|activation| activation.records_retired_by_id.clone())
-            .unwrap_or_default(),
-        activation_records_transformed: activation
-            .as_ref()
-            .map(|activation| activation.records_transformed)
-            .unwrap_or(0),
+        activation_evolution_digest: activation.evolution_digest,
+        activation_proposal_catalog_digest: activation.proposal_catalog_digest,
+        activation_proposal_new_catalog_ids: activation.proposal_new_catalog_ids,
+        activation_records_backfilled: activation.records_backfilled,
+        activation_default_records_by_id: activation.default_records_by_id,
+        activation_indexes_rebuilt: activation.indexes_rebuilt,
+        activation_records_retired: activation.records_retired,
+        activation_retire_evidence_digest: activation.retire_evidence_digest,
+        activation_records_retired_by_id: activation.records_retired_by_id,
+        activation_records_transformed: activation.records_transformed,
     };
     PlanStep::StampMetadata {
         catalog_epoch: facts.catalog_epoch,

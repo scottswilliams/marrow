@@ -59,7 +59,13 @@ pub(crate) fn eval_conversion(
             ScalarType::Int => convert_to_int(value, span),
             ScalarType::Decimal => convert_to_decimal(value, span),
             ScalarType::Str => convert_to_string(value, span),
-            ScalarType::Bytes => convert_to_bytes(value, span),
+            // The `bytes` builtin resolves to its own `CheckedBuiltinCall::Bytes`, never a
+            // `Conversion`, so the bytes target reaches the runtime only through
+            // `eval_bytes_conversion`. A `Conversion(ScalarType::Bytes)` would be a checker
+            // regression, not a value the runtime can be asked to produce.
+            ScalarType::Bytes => {
+                unreachable!("bytes conversions route through eval_bytes_conversion")
+            }
             ScalarType::Date | ScalarType::Instant | ScalarType::Duration => {
                 convert_to_canonical_scalar(value, scalar, span)
             }

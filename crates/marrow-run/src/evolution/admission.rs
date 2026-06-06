@@ -1,9 +1,22 @@
 //! Repair and destructive-decision admission for evolution apply.
 
+use std::cmp::Ordering;
+
 use marrow_check::evolution::{EvolutionWitness, Verdict};
 use marrow_store::cell::CatalogId;
 
 use super::apply::{ApplyError, Approval};
+
+/// Whether the witness carries any `RepairRequired` verdict. A repair obligation makes a
+/// catalog not activatable. The resumed-completion check rejects on this predicate; the
+/// apply gate rejects on the same verdict inside its obligation loop, where the first
+/// gating obligation in witness order decides which error the write path returns.
+pub(super) fn has_repair_verdict(witness: &EvolutionWitness) -> bool {
+    witness
+        .verdicts
+        .iter()
+        .any(|obligation| matches!(obligation.verdict, Verdict::RepairRequired { .. }))
+}
 
 pub(super) fn gate_obligations(
     witness: &EvolutionWitness,
@@ -13,9 +26,7 @@ pub(super) fn gate_obligations(
     let destructive = expected_retire_counts(witness);
     for obligation in &witness.verdicts {
         match &obligation.verdict {
-            Verdict::RepairRequired { .. } => {
-                return Err(ApplyError::NotActivatable);
-            }
+            Verdict::RepairRequired { .. } => return Err(ApplyError::NotActivatable),
             Verdict::DestructiveDecisionRequired { populated } => {
                 if !maintenance {
                     return Err(ApplyError::MaintenanceRequired);
@@ -63,9 +74,16 @@ pub(super) fn expected_retire_counts(witness: &EvolutionWitness) -> Vec<(Catalog
     sorted_retire_counts(&counts)
 }
 
+/// The total order retire-count and retire-id collections sort under so the digest,
+/// approval, and witness comparisons agree on one stable order. Catalog ids are globally
+/// unique, so ordering by id string is a total order over any keyed collection.
+pub(super) fn catalog_id_order<T>(a: &(CatalogId, T), b: &(CatalogId, T)) -> Ordering {
+    a.0.as_str().cmp(b.0.as_str())
+}
+
 fn sorted_retire_counts(counts: &[(CatalogId, usize)]) -> Vec<(CatalogId, usize)> {
     let mut counts = counts.to_vec();
-    counts.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+    counts.sort_by(catalog_id_order);
     counts.dedup();
     counts
 }

@@ -9,14 +9,13 @@
 //! transaction, leaving the commit to the caller.
 
 use marrow_check::{CheckedProgram, CheckedSavedPlace, checked_activation_root_places};
-use marrow_store::cell::CatalogId;
 use marrow_store::tree::TreeStore;
 
-use crate::index_maintenance::stage_index_rebuild_entry;
-use crate::store::IndexAddress;
+use crate::index_maintenance::EmptyStagedData;
 use crate::write_plan::{PlanStep, WritePlan};
 
-use super::apply::{ApplyError, for_each_place_record};
+use super::apply::ApplyError;
+use super::backfill::stage_index_subtree_rebuild;
 
 /// Rebuild every declared index for every saved store in `program` from the records
 /// currently in `store`, staging and executing the index writes inside the caller's
@@ -47,41 +46,17 @@ fn indexed_places(program: &CheckedProgram) -> Vec<CheckedSavedPlace> {
         .collect()
 }
 
-/// Stage a full rebuild of every index on `place`: clear the index subtree, then
-/// stage the entry each record contributes.
+/// Stage a full rebuild of every index on `place`: clear the index subtree, then stage the
+/// entry each record contributes. Restore replays committed data only, so each index is
+/// derived against an empty staged-data view.
 fn stage_place_indexes(
     place: &CheckedSavedPlace,
     store: &TreeStore,
     steps: &mut Vec<PlanStep>,
 ) -> Result<(), ApplyError> {
     for index in &place.indexes {
-        let index_id = index
-            .catalog_id
-            .as_ref()
-            .ok_or_else(|| ApplyError::Store(corruption()))
-            .and_then(|raw| {
-                CatalogId::new(raw.clone()).map_err(|_| ApplyError::Store(corruption()))
-            })?;
-        steps.push(PlanStep::DeleteIndexSubtree {
-            address: IndexAddress {
-                index: index_id,
-                keys: Vec::new(),
-            },
-        });
-        let index = index.clone();
-        for_each_place_record(store, place, &mut |identity| {
-            stage_index_rebuild_entry(steps, &index, place, identity, store, Default::default())
-                .map(|_| ())
-                .map_err(|error| marrow_store::StoreError::Corruption {
-                    message: error.message,
-                })
-        })?;
+        let index_steps = stage_index_subtree_rebuild(index, place, store, &EmptyStagedData)?;
+        steps.extend(index_steps);
     }
     Ok(())
-}
-
-fn corruption() -> marrow_store::StoreError {
-    marrow_store::StoreError::Corruption {
-        message: "index rebuild saw an invalid index catalog id".to_string(),
-    }
 }

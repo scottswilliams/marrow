@@ -13,7 +13,7 @@ use crate::read::{
     next_index_child,
 };
 
-use super::{LoopShape, SavedLoopRow, SavedLoopSpec};
+use super::{ChildCursor, LoopShape, SavedLoopRow, SavedLoopSpec, shape_row, walk_keyed_children};
 
 pub(super) struct IndexScan {
     place: CheckedSavedPlace,
@@ -59,12 +59,13 @@ impl IndexScan {
             .arg_keys
             .get(self.branch.identity_start..)
             .map_or_else(Vec::new, |keys| keys.to_vec());
-        stream_index_identities(
-            IndexWalk {
-                index: &self.branch.index.index,
-                dir: self.dir,
-                span: self.span,
-            },
+        let cursor = IndexCursor {
+            index: &self.branch.index.index,
+            dir: self.dir,
+            span: self.span,
+        };
+        walk_keyed_children(
+            &cursor,
             self.branch.depth,
             &self.branch.arg_keys,
             &identity_prefix,
@@ -81,69 +82,43 @@ impl IndexScan {
     ) -> Result<ControlFlow<Flow>, RuntimeError> {
         let identity_root = self.yields_identity.then_some(self.place.root.as_str());
         let key = collected_identity_value(&keys, identity_root, self.span)?;
-        match self.shape {
-            LoopShape::Keys => visit(SavedLoopRow::Single(key), env),
-            LoopShape::Values if self.yields_identity => {
-                let value = read_resource(&self.place, &keys, self.span, env)?;
-                visit(SavedLoopRow::Single(value), env)
+        let row = shape_row(self.shape, key, || {
+            if self.yields_identity {
+                read_resource(&self.place, &keys, self.span, env)
+            } else {
+                Err(unsupported(
+                    "values/entries over this index branch",
+                    self.span,
+                ))
             }
-            LoopShape::Entries if self.yields_identity => {
-                let value = read_resource(&self.place, &keys, self.span, env)?;
-                visit(SavedLoopRow::Pair(key, value), env)
-            }
-            LoopShape::Values | LoopShape::Entries => Err(unsupported(
-                "values/entries over this index branch",
-                self.span,
-            )),
-        }
+        })?;
+        visit(row, env)
     }
 }
 
-#[derive(Clone, Copy)]
-struct IndexWalk<'a> {
+struct IndexCursor<'a> {
     index: &'a marrow_store::cell::CatalogId,
     dir: Direction,
     span: SourceSpan,
 }
 
-fn stream_index_identities(
-    walk: IndexWalk<'_>,
-    depth: usize,
-    query_keys: &[SavedKey],
-    identity_keys: &[SavedKey],
-    env: &mut Env<'_>,
-    visit: &mut impl FnMut(Vec<SavedKey>, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
-) -> Result<Flow, RuntimeError> {
-    let mut child = first_index_child(env.store, walk.index, query_keys, walk.dir, walk.span)?;
-    while let Some(key) = child {
-        let anchor = key.clone();
-        let mut next_query_keys = query_keys.to_vec();
-        next_query_keys.push(key.clone());
-        let mut next_identity_keys = identity_keys.to_vec();
-        next_identity_keys.push(key);
-        if depth <= 1 {
-            match visit(next_identity_keys, env)? {
-                ControlFlow::Continue(()) => {}
-                ControlFlow::Break(flow) => return Ok(flow),
-            }
-        } else {
-            match stream_index_identities(
-                walk,
-                depth - 1,
-                &next_query_keys,
-                &next_identity_keys,
-                env,
-                visit,
-            )? {
-                Flow::Normal => {}
-                flow => return Ok(flow),
-            }
-        }
-        child = next_index_child(
-            env.store, walk.index, query_keys, &anchor, walk.dir, walk.span,
-        )?;
+impl ChildCursor for IndexCursor<'_> {
+    fn first(
+        &self,
+        env: &mut Env<'_>,
+        prefix: &[SavedKey],
+    ) -> Result<Option<SavedKey>, RuntimeError> {
+        first_index_child(env.store, self.index, prefix, self.dir, self.span)
     }
-    Ok(Flow::Normal)
+
+    fn next(
+        &self,
+        env: &mut Env<'_>,
+        prefix: &[SavedKey],
+        anchor: &SavedKey,
+    ) -> Result<Option<SavedKey>, RuntimeError> {
+        next_index_child(env.store, self.index, prefix, anchor, self.dir, self.span)
+    }
 }
 
 fn stream_exact_index_tuple(
