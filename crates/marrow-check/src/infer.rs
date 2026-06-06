@@ -20,9 +20,9 @@ use crate::typerules::{check_literal_range, marrow_type_name, type_compatible};
 use crate::{
     CHECK_AMBIGUOUS_MEMBER, CHECK_CATEGORY_NOT_SELECTABLE, CHECK_COLLECTION_UNSUPPORTED,
     CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_ENUM_MEMBER, CHECK_UNRESOLVED_NAME, CheckDiagnostic,
-    CheckedProgram, DiagnosticPayload, MarrowType, build_alias_map, expand_module_alias,
-    identity_type_for_store, resolve_resource_schema_type, resolve_resource_type,
-    resource_type_name,
+    CheckedProgram, DiagnosticPayload, EnumDiagnostic, MarrowType, build_alias_map,
+    expand_module_alias, identity_type_for_store, resolve_resource_schema_type,
+    resolve_resource_type, resource_type_name,
 };
 
 /// Infer an expression's type without recording diagnostics. Resolution runs after
@@ -380,7 +380,9 @@ fn enum_member_value_type(
                     segments.join("::")
                 ),
                 span,
-                payload: DiagnosticPayload::None,
+                payload: DiagnosticPayload::Enum(EnumDiagnostic::CategoryNotSelectable {
+                    label: resolved.member_label.clone(),
+                }),
             });
             MarrowType::Invalid
         }
@@ -399,7 +401,11 @@ fn enum_member_value_type(
                     join_or(&paths)
                 ),
                 span,
-                payload: DiagnosticPayload::None,
+                payload: DiagnosticPayload::Enum(EnumDiagnostic::AmbiguousMember {
+                    enum_name: enum_name.clone(),
+                    label: resolved.member_label,
+                    candidates: paths,
+                }),
             });
             MarrowType::Invalid
         }
@@ -413,7 +419,10 @@ fn enum_member_value_type(
                     segments[segments.len() - 1]
                 ),
                 span,
-                payload: DiagnosticPayload::None,
+                payload: DiagnosticPayload::Enum(EnumDiagnostic::UnknownMember {
+                    enum_name: enum_name.clone(),
+                    member: resolved.member_label,
+                }),
             });
             MarrowType::Invalid
         }

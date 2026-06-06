@@ -3,7 +3,7 @@ mod support;
 use std::path::Path;
 
 use marrow_check::{
-    CheckDiagnostic, DiagnosticPayload, RejectedSurface, check_project, check_tests,
+    CheckDiagnostic, DiagnosticPayload, EnumDiagnostic, RejectedSurface, check_project, check_tests,
 };
 use marrow_project::parse_config;
 use marrow_schema::{SchemaErrorKind, SchemaKeyTarget, SchemaUnsupportedTypeTarget, Type};
@@ -1165,10 +1165,12 @@ fn a_match_missing_a_leaf_is_nonexhaustive() {
         "check.nonexhaustive_match",
     );
     assert_eq!(errors.len(), 1, "{errors:#?}");
-    assert!(
-        errors[0].message.contains("tiger::siberian"),
-        "{:#?}",
-        errors[0].message
+    assert_enum_payload(
+        &errors[0],
+        EnumDiagnostic::NonexhaustiveMatch {
+            enum_name: "Cat".into(),
+            missing: vec!["tiger::siberian".into()],
+        },
     );
 }
 
@@ -1319,7 +1321,7 @@ fn a_full_member_path_to_a_duplicated_leaf_resolves_in_value_position() {
 #[test]
 fn a_bare_duplicated_member_in_value_position_is_ambiguous() {
     // Bare `Cat::paw` names `paw` under both `tiger` and `lion`; the value cannot
-    // pick one. The message must name the qualifying paths.
+    // pick one. The diagnostic payload records the qualifying paths.
     let errors = check_module(
         "dup-value-bare",
         &format!(
@@ -1330,10 +1332,13 @@ fn a_bare_duplicated_member_in_value_position_is_ambiguous() {
         "check.ambiguous_member",
     );
     assert_eq!(errors.len(), 1, "{errors:#?}");
-    assert!(
-        errors[0].message.contains("tiger::paw") && errors[0].message.contains("lion::paw"),
-        "{:#?}",
-        errors[0].message
+    assert_enum_payload(
+        &errors[0],
+        EnumDiagnostic::AmbiguousMember {
+            enum_name: "Cat".into(),
+            label: "paw".into(),
+            candidates: vec!["tiger::paw".into(), "lion::paw".into()],
+        },
     );
 }
 
@@ -1382,8 +1387,8 @@ fn a_match_with_qualified_arms_over_duplicated_leaves_is_exhaustive() {
 
 #[test]
 fn a_bare_duplicated_match_arm_is_actionably_ambiguous() {
-    // A bare `paw` arm cannot pick a subtree; the diagnostic names the qualifying
-    // paths so the dev can disambiguate.
+    // A bare `paw` arm cannot pick a subtree; the diagnostic payload records the
+    // qualifying paths so the dev can disambiguate.
     let errors = check_module(
         "dup-match-bare-arm",
         &format!(
@@ -1398,10 +1403,13 @@ fn a_bare_duplicated_match_arm_is_actionably_ambiguous() {
         "check.ambiguous_match_arm",
     );
     assert_eq!(errors.len(), 1, "{errors:#?}");
-    assert!(
-        errors[0].message.contains("tiger::paw") && errors[0].message.contains("lion::paw"),
-        "{:#?}",
-        errors[0].message
+    assert_enum_payload(
+        &errors[0],
+        EnumDiagnostic::AmbiguousMatchArm {
+            enum_name: "Cat".into(),
+            label: "paw".into(),
+            candidates: vec!["tiger::paw".into(), "lion::paw".into()],
+        },
     );
 }
 
@@ -1444,8 +1452,8 @@ fn a_category_arm_overlapping_a_qualified_leaf_arm_is_a_duplicate() {
 
 #[test]
 fn a_match_missing_a_duplicated_leaf_reports_its_full_path() {
-    // Dropping `lion::mane` leaves it uncovered; the non-exhaustive message names it
-    // by its full path so a bare `mane` is unambiguous to the reader.
+    // Dropping `lion::mane` leaves it uncovered; the payload records the full path
+    // so a bare `mane` is unambiguous to the reader.
     let errors = check_module(
         "dup-match-nonexhaustive",
         &format!(
@@ -1460,10 +1468,12 @@ fn a_match_missing_a_duplicated_leaf_reports_its_full_path() {
         "check.nonexhaustive_match",
     );
     assert_eq!(errors.len(), 1, "{errors:#?}");
-    assert!(
-        errors[0].message.contains("lion::mane"),
-        "{:#?}",
-        errors[0].message
+    assert_enum_payload(
+        &errors[0],
+        EnumDiagnostic::NonexhaustiveMatch {
+            enum_name: "Cat".into(),
+            missing: vec!["lion::mane".into()],
+        },
     );
 }
 
@@ -1486,7 +1496,7 @@ fn is_with_a_full_member_path_is_exact_and_a_category_is_a_subtree_test() {
 #[test]
 fn is_with_a_bare_duplicated_member_is_ambiguous() {
     // A bare `Cat::paw` as an `is` operand is the symmetric footgun; reject it with
-    // the qualifying paths, like value position.
+    // the same qualifying-path payload as value position.
     let errors = check_module(
         "dup-is-bare",
         &format!(
@@ -1497,10 +1507,13 @@ fn is_with_a_bare_duplicated_member_is_ambiguous() {
         "check.ambiguous_member",
     );
     assert_eq!(errors.len(), 1, "{errors:#?}");
-    assert!(
-        errors[0].message.contains("tiger::paw") && errors[0].message.contains("lion::paw"),
-        "{:#?}",
-        errors[0].message
+    assert_enum_payload(
+        &errors[0],
+        EnumDiagnostic::AmbiguousMember {
+            enum_name: "Cat".into(),
+            label: "paw".into(),
+            candidates: vec!["tiger::paw".into(), "lion::paw".into()],
+        },
     );
 }
 
@@ -4655,6 +4668,14 @@ fn assert_schema_payload(diagnostic: &CheckDiagnostic, expected: SchemaErrorKind
     );
 }
 
+fn assert_enum_payload(diagnostic: &CheckDiagnostic, expected: EnumDiagnostic) {
+    assert_eq!(
+        diagnostic.payload,
+        DiagnosticPayload::Enum(expected),
+        "{diagnostic:#?}"
+    );
+}
+
 /// Check a single script `src` and return its diagnostics with `code`.
 fn check_script(name: &str, src: &str, code: &str) -> Vec<marrow_check::CheckDiagnostic> {
     let root = temp_project(name, |root| write(root, "src/app.mw", src));
@@ -5557,7 +5578,13 @@ fn reports_an_unknown_enum_member() {
         "check.unknown_enum_member",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
-    assert!(found[0].message.contains("deleted"), "{}", found[0].message);
+    assert_enum_payload(
+        &found[0],
+        EnumDiagnostic::UnknownMember {
+            enum_name: "Status".into(),
+            member: "deleted".into(),
+        },
+    );
 }
 
 #[test]
@@ -5673,7 +5700,13 @@ fn a_nonexhaustive_match_is_a_check_error() {
         "check.nonexhaustive_match",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
-    assert!(found[0].message.contains("banned"), "{}", found[0].message);
+    assert_enum_payload(
+        &found[0],
+        EnumDiagnostic::NonexhaustiveMatch {
+            enum_name: "Status".into(),
+            missing: vec!["banned".into()],
+        },
+    );
 }
 
 #[test]
@@ -5688,7 +5721,13 @@ fn a_match_arm_for_an_unknown_member_is_a_check_error() {
         "check.unknown_enum_member",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
-    assert!(found[0].message.contains("deleted"), "{}", found[0].message);
+    assert_enum_payload(
+        &found[0],
+        EnumDiagnostic::UnknownMember {
+            enum_name: "Status".into(),
+            member: "deleted".into(),
+        },
+    );
 }
 
 #[test]
@@ -5905,7 +5944,13 @@ fn a_match_over_an_enum_saved_field_enforces_exhaustiveness() {
         "check.nonexhaustive_match",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
-    assert!(found[0].message.contains("banned"), "{}", found[0].message);
+    assert_enum_payload(
+        &found[0],
+        EnumDiagnostic::NonexhaustiveMatch {
+            enum_name: "Status".into(),
+            missing: vec!["banned".into()],
+        },
+    );
 }
 
 #[test]
@@ -5962,7 +6007,13 @@ fn a_nonexhaustive_match_over_a_qualified_enum_scrutinee_is_a_check_error() {
     let (report, _program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.nonexhaustive_match");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
-    assert!(found[0].message.contains("closed"), "{}", found[0].message);
+    assert_enum_payload(
+        found[0],
+        EnumDiagnostic::NonexhaustiveMatch {
+            enum_name: "Status".into(),
+            missing: vec!["closed".into()],
+        },
+    );
 }
 
 #[test]
@@ -6238,6 +6289,20 @@ fn a_match_over_a_sequence_enum_element_enforces_its_identity() {
         "check.unknown_enum_member",
     );
     assert_eq!(found.len(), 2, "{found:#?}");
+    assert_enum_payload(
+        &found[0],
+        EnumDiagnostic::UnknownMember {
+            enum_name: "Status".into(),
+            member: "red".into(),
+        },
+    );
+    assert_enum_payload(
+        &found[1],
+        EnumDiagnostic::UnknownMember {
+            enum_name: "Status".into(),
+            member: "green".into(),
+        },
+    );
 }
 
 #[test]
@@ -6418,10 +6483,12 @@ fn a_nonexhaustive_match_over_a_nested_module_enum_scrutinee_is_a_check_error() 
     let (report, _program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.nonexhaustive_match");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
-    assert!(
-        found[0].message.contains("archived"),
-        "{}",
-        found[0].message
+    assert_enum_payload(
+        found[0],
+        EnumDiagnostic::NonexhaustiveMatch {
+            enum_name: "Status".into(),
+            missing: vec!["archived".into()],
+        },
     );
 }
 
@@ -6446,7 +6513,13 @@ fn an_unknown_member_of_a_nested_module_enum_literal_is_a_check_error() {
     let (report, _program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.unknown_enum_member");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
-    assert!(found[0].message.contains("bogus"), "{}", found[0].message);
+    assert_enum_payload(
+        found[0],
+        EnumDiagnostic::UnknownMember {
+            enum_name: "Status".into(),
+            member: "bogus".into(),
+        },
+    );
 }
 
 #[test]

@@ -237,6 +237,35 @@ pub enum RejectedSurface {
     SavedTraversalMethod { method: String },
 }
 
+/// Structured facts for enum-member and enum-match diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnumDiagnostic {
+    UnknownMember {
+        enum_name: String,
+        member: String,
+    },
+    AmbiguousMember {
+        enum_name: String,
+        label: String,
+        candidates: Vec<String>,
+    },
+    AmbiguousMatchArm {
+        enum_name: String,
+        label: String,
+        candidates: Vec<String>,
+    },
+    NonexhaustiveMatch {
+        enum_name: String,
+        missing: Vec<String>,
+    },
+    DuplicateMatchArm {
+        label: String,
+    },
+    CategoryNotSelectable {
+        label: String,
+    },
+}
+
 /// Structured data attached to diagnostics whose consumers need more than the
 /// rendered message. Resolution-suppression branches on typed identities: an
 /// import names the module it failed to resolve, an unresolved call names the
@@ -246,8 +275,9 @@ pub enum RejectedSurface {
 /// duplicated name and first source file. Module-path diagnostics carry the
 /// declared module name and expected path-derived name when one exists.
 /// Duplicate root ownership names the saved root and first owning file.
-/// Rejected-source-surface diagnostics name the rejected surface. Other
-/// diagnostics carry [`DiagnosticPayload::None`].
+/// Rejected-source-surface diagnostics name the rejected surface. Enum diagnostics
+/// carry the member or coverage fact. Other diagnostics carry
+/// [`DiagnosticPayload::None`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DiagnosticPayload {
     /// No resolution identity is attached.
@@ -277,6 +307,8 @@ pub enum DiagnosticPayload {
     DuplicateRootOwner { root: String, first_owner: PathBuf },
     /// `check.rejected_surface`: the rejected source surface.
     RejectedSurface(RejectedSurface),
+    /// Enum-member and enum-match diagnostic facts.
+    Enum(EnumDiagnostic),
 }
 
 /// A problem found while checking a project, located in a specific file.
@@ -837,6 +869,7 @@ impl TestResolutionSuppression {
             | DiagnosticPayload::ModulePath { .. }
             | DiagnosticPayload::DuplicateRootOwner { .. }
             | DiagnosticPayload::RejectedSurface(_)
+            | DiagnosticPayload::Enum(_)
             | DiagnosticPayload::None => false,
         }
     }

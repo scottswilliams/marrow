@@ -16,8 +16,8 @@ use crate::{
     CHECK_AMBIGUOUS_MATCH_ARM, CHECK_AMBIGUOUS_MEMBER, CHECK_DUPLICATE_MATCH_ARM,
     CHECK_IS_REQUIRES_ENUM, CHECK_IS_TYPE, CHECK_MATCH_REQUIRES_ENUM, CHECK_NONEXHAUSTIVE_MATCH,
     CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_ENUM_MEMBER, CheckDiagnostic, CheckedModule, CheckedProgram,
-    Def, DefItem, DiagnosticPayload, MarrowType, Resolution, ResolvableKind, TypeNames,
-    build_alias_map, expand_alias, expand_module_alias, module_of_file, resolve,
+    Def, DefItem, DiagnosticPayload, EnumDiagnostic, MarrowType, Resolution, ResolvableKind,
+    TypeNames, build_alias_map, expand_alias, expand_module_alias, module_of_file, resolve,
     resource_type_name,
 };
 
@@ -223,7 +223,10 @@ fn check_match_coverage(
                     file: env.file.to_path_buf(),
                     message: format!("`{enum_name}` has no member `{arm_label}`"),
                     span: arm.span,
-                    payload: DiagnosticPayload::None,
+                    payload: DiagnosticPayload::Enum(EnumDiagnostic::UnknownMember {
+                        enum_name: enum_name.to_string(),
+                        member: arm_label,
+                    }),
                 });
                 continue;
             }
@@ -237,7 +240,11 @@ fn check_match_coverage(
                         join_or(&paths)
                     ),
                     span: arm.span,
-                    payload: DiagnosticPayload::None,
+                    payload: DiagnosticPayload::Enum(EnumDiagnostic::AmbiguousMatchArm {
+                        enum_name: enum_name.to_string(),
+                        label: arm_label,
+                        candidates: paths,
+                    }),
                 });
                 continue;
             }
@@ -253,7 +260,9 @@ fn check_match_coverage(
                 file: env.file.to_path_buf(),
                 message: format!("`match` has a duplicate arm for `{arm_label}`"),
                 span: arm.span,
-                payload: DiagnosticPayload::None,
+                payload: DiagnosticPayload::Enum(EnumDiagnostic::DuplicateMatchArm {
+                    label: arm_label,
+                }),
             });
             had_overlap = true;
             continue;
@@ -280,7 +289,10 @@ fn check_match_coverage(
                     .join(", ")
             ),
             span,
-            payload: DiagnosticPayload::None,
+            payload: DiagnosticPayload::Enum(EnumDiagnostic::NonexhaustiveMatch {
+                enum_name: enum_name.to_string(),
+                missing,
+            }),
         });
     }
 }
@@ -293,6 +305,7 @@ fn check_match_coverage(
 pub(crate) struct ResolvedMemberPath<'p> {
     pub module: String,
     pub enum_name: String,
+    pub member_label: String,
     pub schema: &'p marrow_schema::EnumSchema,
     pub private: Option<String>,
     /// The walk of the member segments after the enum, by the schema's shared
@@ -333,6 +346,7 @@ pub(crate) fn resolve_enum_member_path<'p>(
             member: schema.walk_member_path(&path),
             module,
             enum_name: segments[0].clone(),
+            member_label: segments[1..].join("::"),
             schema,
             private,
         });
@@ -355,6 +369,7 @@ pub(crate) fn resolve_enum_member_path<'p>(
                 member: schema.walk_member_path(&path),
                 module,
                 enum_name: segments[enum_index].clone(),
+                member_label: segments[enum_index + 1..].join("::"),
                 schema,
                 private,
             });
@@ -475,7 +490,11 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
                 join_or(&paths)
             ),
             span,
-            payload: DiagnosticPayload::None,
+            payload: DiagnosticPayload::Enum(EnumDiagnostic::AmbiguousMember {
+                enum_name: left_name.clone(),
+                label: resolved.member_label,
+                candidates: paths,
+            }),
         }),
         MemberPathResolution::NotFound => diagnostics.push(CheckDiagnostic {
             code: CHECK_IS_TYPE,
