@@ -510,7 +510,13 @@ fn production_runtime_uses_checked_index_place_facts() {
     let runtime_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut violations = Vec::new();
 
-    for name in ["stdlib.rs", "read.rs"] {
+    for name in [
+        "durable_read.rs",
+        "path.rs",
+        "saved_iter.rs",
+        "stdlib/count.rs",
+        "stdlib/index_lookup.rs",
+    ] {
         collect_forbidden(
             &runtime_src.join(name),
             &[
@@ -530,12 +536,28 @@ fn production_runtime_uses_checked_index_place_facts() {
 }
 
 #[test]
+fn durable_reads_use_stdlib_unique_index_lookup_owner() {
+    let runtime_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+
+    assert_file_free_of(
+        "durable index value reads still duplicate unique-index lookup ownership",
+        &runtime_src.join("durable_read.rs"),
+        &[
+            "fn checked_unique_index_lookup(",
+            "fn index_lookup_keys(",
+            "struct IndexLookup",
+            "decode_identity_payload_arity",
+        ],
+    );
+}
+
+#[test]
 fn production_runtime_uses_checked_root_identity_facts_for_count() {
     let runtime_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
 
     assert_file_free_of(
         "production runtime count still rediscovers root schema facts",
-        &runtime_src.join("stdlib.rs"),
+        &runtime_src.join("stdlib/count.rs"),
         &["find_store_resource", "let Expression::SavedRoot"],
     );
 }

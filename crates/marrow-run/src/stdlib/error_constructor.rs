@@ -1,10 +1,11 @@
 use marrow_check::CheckedArg as ExecArg;
+use marrow_schema::Type;
 use marrow_syntax::SourceSpan;
 
 use crate::env::Env;
 use crate::error::{RuntimeError, type_error};
 use crate::expr::eval_expr;
-use crate::value::Value;
+use crate::value::{Value, value_scalar_type};
 
 pub(crate) fn eval_error_constructor(
     args: &[ExecArg],
@@ -16,16 +17,23 @@ pub(crate) fn eval_error_constructor(
         let Some(name) = &arg.name else {
             return Err(type_error("`Error(...)` takes named arguments", span));
         };
-        if marrow_schema::error::field(name).is_none() {
+        let Some(field) = marrow_schema::error::field(name) else {
             return Err(type_error(&format!("`Error` has no field `{name}`"), span));
-        }
+        };
         if fields.iter().any(|(existing, _)| existing == name) {
             return Err(type_error(
                 &format!("`{name}` is supplied more than once"),
                 span,
             ));
         }
-        fields.push((name.clone(), eval_expr(&arg.value, env)?));
+        let value = eval_expr(&arg.value, env)?;
+        if !value_matches_type(&value, &field.ty) {
+            return Err(type_error(
+                &format!("`Error.{name}` expects {}", field.ty),
+                span,
+            ));
+        }
+        fields.push((name.clone(), value));
     }
     for required in marrow_schema::error::fields()
         .iter()
@@ -37,4 +45,12 @@ pub(crate) fn eval_error_constructor(
         }
     }
     Ok(Value::Resource(fields))
+}
+
+fn value_matches_type(value: &Value, ty: &Type) -> bool {
+    match ty {
+        Type::Unknown => true,
+        Type::Scalar(scalar) => value_scalar_type(value) == Some(*scalar),
+        Type::Sequence(_) | Type::Identity(_) | Type::Named(_) => false,
+    }
 }

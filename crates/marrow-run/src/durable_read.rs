@@ -1,20 +1,20 @@
 //! Durable saved-place reads and materialization.
 
 use marrow_check::{
-    CheckedArg, CheckedExpr as ExecExpr, CheckedRuntimeProgram, CheckedSavedLayer,
-    CheckedSavedMember, CheckedSavedPlace, CheckedSavedTerminal,
+    CheckedExpr as ExecExpr, CheckedRuntimeProgram, CheckedSavedLayer, CheckedSavedMember,
+    CheckedSavedPlace, CheckedSavedTerminal,
 };
-use marrow_store::key::{SavedKey, decode_identity_payload_arity};
+use marrow_store::key::SavedKey;
 use marrow_syntax::SourceSpan;
 
 use crate::collection::{ReadPosition, absent_read};
 use crate::env::Env;
-use crate::error::{Located, RUN_TYPE, RUN_UNSUPPORTED, RuntimeError, type_error, unsupported};
-use crate::expr::eval_expr;
+use crate::error::{RUN_TYPE, RuntimeError, type_error, unsupported};
 use crate::path::{lower, lower_keys};
 use crate::read::eval_local_field_get;
-use crate::store::{DataAddress, IndexAddress, LayerAddress, read_data};
-use crate::value::{Value, decode_leaf, identity_value, value_to_key};
+use crate::stdlib::read_exact_unique_index_lookup_value;
+use crate::store::{DataAddress, LayerAddress, read_data};
+use crate::value::{Value, decode_leaf};
 
 pub(crate) fn eval_saved_field(expr: &ExecExpr, env: &mut Env<'_>) -> Result<Value, RuntimeError> {
     let ExecExpr::Field { .. } = expr else {
@@ -57,109 +57,7 @@ pub(crate) fn eval_index_lookup(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    let lookup = checked_unique_index_lookup(place, span)?;
-    let keys = index_lookup_keys(lookup, span, env)?;
-    let address = IndexAddress::from_place(place, lookup.name, keys, span)?;
-    let page = env
-        .store
-        .scan_index_tuple(&address.index, &address.keys, 1)
-        .map_err(|error| error.located(span))?;
-    let Some(entry) = page.entries.first() else {
-        return Err(absent_read(
-            ReadPosition::Value,
-            format!("`{}` has no entry for that key", lookup.name),
-            span,
-        ));
-    };
-    decode_identity_payload_arity(&entry.value, place.identity_keys.len())
-        .map(|keys| identity_value(&place.root, keys))
-        .ok_or_else(|| RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_TYPE,
-            message: format!(
-                "the `{}` index entry did not decode to an identity",
-                lookup.name
-            ),
-            span,
-        })
-}
-
-#[derive(Clone, Copy)]
-struct IndexLookup<'a> {
-    name: &'a str,
-    args: &'a [CheckedArg],
-    arg_count: usize,
-}
-
-fn checked_unique_index_lookup<'a>(
-    place: &'a CheckedSavedPlace,
-    span: SourceSpan,
-) -> Result<IndexLookup<'a>, RuntimeError> {
-    let CheckedSavedTerminal::Index {
-        name,
-        args,
-        unique,
-        arg_count,
-        ..
-    } = &place.terminal
-    else {
-        return Err(unsupported("a checked saved index lookup", span));
-    };
-    if !unique {
-        return Err(RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_UNSUPPORTED,
-            message: format!(
-                "non-unique index `{}` has no single identity in value position; \
-                 iterate it with `keys(...)`",
-                name
-            ),
-            span,
-        });
-    }
-    if args.len() != *arg_count {
-        return Err(RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_TYPE,
-            message: format!(
-                "unique index `{}` expects {} key argument(s), but {} were given",
-                name,
-                arg_count,
-                args.len()
-            ),
-            span,
-        });
-    }
-    Ok(IndexLookup {
-        name,
-        args,
-        arg_count: *arg_count,
-    })
-}
-
-fn index_lookup_keys(
-    lookup: IndexLookup<'_>,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Vec<SavedKey>, RuntimeError> {
-    debug_assert_eq!(lookup.args.len(), lookup.arg_count);
-    let mut keys = Vec::with_capacity(lookup.args.len());
-    for arg in lookup.args {
-        if arg.mode.is_some() || arg.name.is_some() {
-            return Err(unsupported(
-                "an index lookup with named or inout arguments",
-                span,
-            ));
-        }
-        keys.push(
-            value_to_key(eval_expr(&arg.value, env)?)
-                .ok_or_else(|| unsupported("an index key of this type", span))?,
-        );
-    }
-    Ok(keys)
+    read_exact_unique_index_lookup_value(place, span, env)
 }
 
 pub(crate) fn eval_saved_layer_read(

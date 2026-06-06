@@ -302,6 +302,39 @@ fn error_constructor_rejects_an_unknown_field() {
 }
 
 #[test]
+fn error_constructor_rejects_non_string_builtin_fields() {
+    for (field, source) in [
+        (
+            "code",
+            "pub fn bad()\n    throw Error(code: true, message: \"m\")\n",
+        ),
+        (
+            "message",
+            "pub fn bad()\n    throw Error(code: \"x\", message: true)\n",
+        ),
+        (
+            "help",
+            "pub fn bad()\n    throw Error(code: \"x\", message: \"m\", help: true)\n",
+        ),
+    ] {
+        let program = checked_program(source);
+        let error = run_expecting_error(checked_entry!(&program, "test::bad"));
+        assert_eq!(error.code, RUN_TYPE, "{field}");
+    }
+}
+
+#[test]
+fn error_constructor_accepts_open_data_payload() {
+    let program = checked_program(
+        "pub fn safe(): string\n    try\n        throw Error(code: \"x.y\", message: \"m\", data: true)\n    catch err: Error\n        return err.code\n    return \"none\"\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::safe")),
+        Ok(Some(Value::Str("x.y".into())))
+    );
+}
+
+#[test]
 fn error_fields_keep_their_declared_types() {
     // `help` is a string scalar and `data` is the open `unknown` payload; reading
     // each off a caught error must type and run as the descriptor declares.
