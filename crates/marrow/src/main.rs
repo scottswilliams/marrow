@@ -94,29 +94,45 @@ pub(crate) fn report_project(
                 }
             }
         }
+        CheckFormat::Json | CheckFormat::Jsonl => report_diagnostic_records(
+            format,
+            report.diagnostics.iter().map(check_diagnostic_record),
+            serde_json::Map::from_iter([
+                ("project".into(), json!(target)),
+                ("status".into(), json!(status)),
+            ]),
+        ),
+    }
+}
+
+/// Emit a diagnostic report under `json`/`jsonl`, the single owner of the
+/// array-versus-stream-plus-summary shape both reporters share. `json` nests the
+/// records under `diagnostics` in one `envelope` object; `jsonl` streams each record
+/// and then a `summary` line carrying the record count. `envelope` supplies the
+/// per-report fields (`project`/`file`, `status`, and any `declarations`) common to
+/// both shapes. Callers route only `json`/`jsonl` here; text stays caller-specific.
+fn report_diagnostic_records(
+    format: CheckFormat,
+    records: impl Iterator<Item = serde_json::Value>,
+    envelope: serde_json::Map<String, serde_json::Value>,
+) {
+    let records: Vec<serde_json::Value> = records.collect();
+    match format {
         CheckFormat::Json => {
-            let diagnostics = report
-                .diagnostics
-                .iter()
-                .map(check_diagnostic_record)
-                .collect::<Vec<_>>();
-            write_json(json!({
-                "project": target,
-                "status": status,
-                "diagnostics": diagnostics,
-            }));
+            let mut record = envelope;
+            record.insert("diagnostics".into(), json!(records));
+            write_json(serde_json::Value::Object(record));
         }
         CheckFormat::Jsonl => {
-            for diagnostic in &report.diagnostics {
-                write_json(check_diagnostic_record(diagnostic));
+            for record in &records {
+                write_json(record.clone());
             }
-            write_json(json!({
-                "kind": "summary",
-                "project": target,
-                "status": status,
-                "diagnostics": report.diagnostics.len(),
-            }));
+            let mut summary = envelope;
+            summary.insert("kind".into(), json!("summary"));
+            summary.insert("diagnostics".into(), json!(records.len()));
+            write_json(serde_json::Value::Object(summary));
         }
+        CheckFormat::Text => {}
     }
 }
 
@@ -186,19 +202,12 @@ pub(crate) fn dir_and_path_args(
 ) -> Result<(String, String, CheckFormat), ExitCode> {
     let mut positionals = Vec::new();
     let mut format = CheckFormat::Text;
+    let mut saw_format = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
             "--format" => {
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    eprintln!("missing value for --format");
-                    return Err(ExitCode::from(2));
-                };
-                format = CheckFormat::parse(value).ok_or_else(|| {
-                    eprintln!("unknown format: {value}");
-                    ExitCode::from(2)
-                })?;
+                parse_format_flag(args, &mut index, &mut saw_format, &mut format)?;
             }
             "--help" | "-h" => {
                 print!(
@@ -206,10 +215,7 @@ pub(crate) fn dir_and_path_args(
                 );
                 return Err(ExitCode::SUCCESS);
             }
-            value if value.starts_with('-') => {
-                eprintln!("unknown {command} option: {value}");
-                return Err(ExitCode::from(2));
-            }
+            value if value.starts_with('-') => return Err(unknown_option(command, value)),
             value => positionals.push(value.to_string()),
         }
         index += 1;
@@ -422,6 +428,58 @@ impl CheckFormat {
     }
 }
 
+/// Parse a `--format <value>` flag, the single owner of the `--format` grammar
+/// shared by every command. `index` points at the `--format` token and is advanced
+/// past its value. `saw_format` rejects a repeated flag, and `format` receives the
+/// parsed value. A missing value, an unknown format, or a duplicate flag is a usage
+/// error (exit code 2) with a uniform message.
+pub(crate) fn parse_format_flag(
+    args: &[String],
+    index: &mut usize,
+    saw_format: &mut bool,
+    format: &mut CheckFormat,
+) -> Result<(), ExitCode> {
+    if *saw_format {
+        eprintln!("duplicate --format");
+        return Err(ExitCode::from(2));
+    }
+    *saw_format = true;
+    *index += 1;
+    let Some(value) = args.get(*index) else {
+        eprintln!("missing value for --format");
+        return Err(ExitCode::from(2));
+    };
+    let Some(parsed) = CheckFormat::parse(value) else {
+        eprintln!("unknown format: {value}");
+        return Err(ExitCode::from(2));
+    };
+    *format = parsed;
+    Ok(())
+}
+
+/// Report an unknown `-`-prefixed option for `command`, the single owner of the
+/// usage error every command's catch-all option arm shares.
+pub(crate) fn unknown_option(command: &str, value: &str) -> ExitCode {
+    eprintln!("unknown {command} option: {value}");
+    ExitCode::from(2)
+}
+
+/// Record one positional `target` into `slot`, rejecting a second one. `target_label`
+/// names what the command takes (a project directory, or a source file or directory)
+/// so the duplicate-target error reads naturally for each command.
+pub(crate) fn take_single_target(
+    slot: &mut Option<String>,
+    target: &str,
+    command: &str,
+    target_label: &str,
+) -> Result<(), ExitCode> {
+    if slot.replace(target.to_string()).is_some() {
+        eprintln!("marrow {command} accepts one {target_label}");
+        return Err(ExitCode::from(2));
+    }
+    Ok(())
+}
+
 pub(crate) fn report_check(file: &str, parsed: &marrow_syntax::ParsedSource, format: CheckFormat) {
     match format {
         CheckFormat::Text => {
@@ -444,31 +502,21 @@ pub(crate) fn report_check(file: &str, parsed: &marrow_syntax::ParsedSource, for
                 }
             }
         }
-        CheckFormat::Json => {
-            let diagnostics = parsed
+        CheckFormat::Json | CheckFormat::Jsonl => report_diagnostic_records(
+            format,
+            parsed
                 .diagnostics
                 .iter()
-                .map(|diagnostic| diagnostic_record(file, diagnostic))
-                .collect::<Vec<_>>();
-            write_json(json!({
-                "file": file,
-                "status": if parsed.has_errors() { "failed" } else { "ok" },
-                "diagnostics": diagnostics,
-                "declarations": parsed.file.declarations.len(),
-            }));
-        }
-        CheckFormat::Jsonl => {
-            for diagnostic in &parsed.diagnostics {
-                write_json(diagnostic_record(file, diagnostic));
-            }
-            write_json(json!({
-                "kind": "summary",
-                "file": file,
-                "status": if parsed.has_errors() { "failed" } else { "ok" },
-                "diagnostics": parsed.diagnostics.len(),
-                "declarations": parsed.file.declarations.len(),
-            }));
-        }
+                .map(|diagnostic| diagnostic_record(file, diagnostic)),
+            serde_json::Map::from_iter([
+                ("file".into(), json!(file)),
+                (
+                    "status".into(),
+                    json!(if parsed.has_errors() { "failed" } else { "ok" }),
+                ),
+                ("declarations".into(), json!(parsed.file.declarations.len())),
+            ]),
+        ),
     }
 }
 
@@ -514,5 +562,27 @@ pub(crate) fn push_hex(out: &mut String, bytes: &[u8]) {
     use std::fmt::Write;
     for byte in bytes {
         let _ = write!(out, "{byte:02x}");
+    }
+}
+
+/// The lowercase hexadecimal of `bytes` as an owned string, two digits per byte, with
+/// no separator or `0x` prefix. The single owner of the digest-to-hex conversion.
+pub(crate) fn hex_string(bytes: &[u8]) -> String {
+    let mut text = String::with_capacity(bytes.len() * 2);
+    push_hex(&mut text, bytes);
+    text
+}
+
+/// Render saved value bytes as the text a developer reads: UTF-8 text when the bytes
+/// are valid UTF-8, otherwise `0x<hex>`. The single owner of the value-byte display
+/// contract shared by `data dump`, `data get`, and the execution trace.
+pub(crate) fn render_value_bytes(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => text.to_string(),
+        Err(_) => {
+            let mut text = String::from("0x");
+            push_hex(&mut text, bytes);
+            text
+        }
     }
 }

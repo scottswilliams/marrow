@@ -63,21 +63,8 @@ fn common(
     while index < args.len() {
         match args[index].as_str() {
             "--format" => {
-                if saw_format {
-                    eprintln!("duplicate --format");
-                    return Err(ParseStop::Usage);
-                }
-                saw_format = true;
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    eprintln!("missing value for --format");
-                    return Err(ParseStop::Usage);
-                };
-                let Some(parsed) = CheckFormat::parse(value) else {
-                    eprintln!("unknown {command} format: {value}");
-                    return Err(ParseStop::Usage);
-                };
-                format = parsed;
+                crate::parse_format_flag(args, &mut index, &mut saw_format, &mut format)
+                    .map_err(|_| ParseStop::Usage)?;
             }
             "--maintenance" if allow_apply_flags => maintenance = true,
             "--approve-retire" if allow_apply_flags => {

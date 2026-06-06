@@ -20,11 +20,11 @@
 //! operations live in their own modules.
 
 mod archive;
-pub mod create;
-pub mod restore;
+mod create;
+mod restore;
 
-pub use create::create_backup;
-pub use restore::restore_backup;
+pub(crate) use create::create_backup;
+pub(crate) use restore::restore_backup;
 
 use marrow_store::tree::{CommitMetadata, EngineProfile, EngineProfileDigest};
 
@@ -39,32 +39,32 @@ pub(crate) const ENGINE_NAME: &str = "marrow-tree-cell";
 /// The typed header binding a backup's data to the program and engine that wrote
 /// it. Restore validates every field before replaying a single cell.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BackupManifest {
-    pub format_version: u32,
+pub(crate) struct BackupManifest {
+    pub(crate) format_version: u32,
     /// The schema-bearing source digest of the program that wrote the data.
-    pub source_digest: String,
+    pub(crate) source_digest: String,
     /// The store's stamped catalog epoch, or `None` for an unstamped store.
-    pub catalog_epoch: Option<u64>,
+    pub(crate) catalog_epoch: Option<u64>,
     /// The engine profile the data was written under, so restore refuses a layout
     /// or codec it cannot reproduce (reporting an engine recompile is required).
-    pub engine: EngineDescriptor,
+    pub(crate) engine: EngineDescriptor,
     /// The commit the snapshot observed, replayed so the restored store fences
     /// exactly like the original. `None` for an unstamped store.
-    pub commit: Option<CommitDescriptor>,
+    pub(crate) commit: Option<CommitDescriptor>,
     /// How many tree cells the data stream carries.
-    pub record_count: u64,
+    pub(crate) record_count: u64,
     /// A checksum over the canonical cell stream, so a corrupt chunk is rejected.
-    pub data_checksum: u64,
+    pub(crate) data_checksum: u64,
 }
 
 /// The engine identity a restore must match to replay bytes verbatim.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EngineDescriptor {
-    pub name: String,
-    pub layout_epoch: u64,
-    pub key_profile_version: u8,
-    pub value_codec_version: u32,
-    pub profile_digest: EngineProfileDigest,
+pub(crate) struct EngineDescriptor {
+    pub(crate) name: String,
+    pub(crate) layout_epoch: u64,
+    pub(crate) key_profile_version: u8,
+    pub(crate) value_codec_version: u32,
+    pub(crate) profile_digest: EngineProfileDigest,
 }
 
 impl EngineDescriptor {
@@ -108,38 +108,38 @@ impl EngineDescriptor {
 /// The commit metadata a backup records and a restore restamps, mirroring
 /// [`CommitMetadata`] with catalog ids carried as their opaque text.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommitDescriptor {
-    pub commit_id: u64,
-    pub catalog_epoch: u64,
-    pub layout_epoch: u64,
-    pub source_digest: String,
-    pub engine_profile_digest: EngineProfileDigest,
-    pub changed_root_catalog_ids: Vec<String>,
-    pub changed_index_catalog_ids: Vec<String>,
-    pub activation_evolution_digest: String,
-    pub activation_proposal_catalog_digest: Option<String>,
-    pub activation_proposal_new_catalog_ids: Vec<String>,
-    pub activation_records_backfilled: u64,
-    pub activation_default_records_by_id: Vec<DefaultCountDescriptor>,
-    pub activation_indexes_rebuilt: u64,
-    pub activation_records_retired: u64,
-    pub activation_retire_evidence_digest: String,
-    pub activation_records_retired_by_id: Vec<RetireCountDescriptor>,
-    pub activation_records_transformed: u64,
+pub(crate) struct CommitDescriptor {
+    pub(crate) commit_id: u64,
+    pub(crate) catalog_epoch: u64,
+    pub(crate) layout_epoch: u64,
+    pub(crate) source_digest: String,
+    pub(crate) engine_profile_digest: EngineProfileDigest,
+    pub(crate) changed_root_catalog_ids: Vec<String>,
+    pub(crate) changed_index_catalog_ids: Vec<String>,
+    pub(crate) activation_evolution_digest: String,
+    pub(crate) activation_proposal_catalog_digest: Option<String>,
+    pub(crate) activation_proposal_new_catalog_ids: Vec<String>,
+    pub(crate) activation_records_backfilled: u64,
+    pub(crate) activation_default_records_by_id: Vec<DefaultCountDescriptor>,
+    pub(crate) activation_indexes_rebuilt: u64,
+    pub(crate) activation_records_retired: u64,
+    pub(crate) activation_retire_evidence_digest: String,
+    pub(crate) activation_records_retired_by_id: Vec<RetireCountDescriptor>,
+    pub(crate) activation_records_transformed: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DefaultCountDescriptor {
-    pub catalog_id: String,
-    pub records_backfilled: u64,
-    pub target_records: u64,
-    pub evidence_digest: String,
+pub(crate) struct DefaultCountDescriptor {
+    pub(crate) catalog_id: String,
+    pub(crate) records_backfilled: u64,
+    pub(crate) target_records: u64,
+    pub(crate) evidence_digest: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RetireCountDescriptor {
-    pub catalog_id: String,
-    pub records: u64,
+pub(crate) struct RetireCountDescriptor {
+    pub(crate) catalog_id: String,
+    pub(crate) records: u64,
 }
 
 impl CommitDescriptor {
@@ -291,17 +291,19 @@ fn sha256_digest_spelling(digest: &str) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
+/// Rebuild one catalog id from its manifest text, rejecting a malformed id as a
+/// corrupt manifest. The single construction site for `MalformedCatalogId`.
+fn catalog_id(text: &str) -> Result<marrow_store::cell::CatalogId, BackupError> {
+    marrow_store::cell::CatalogId::new(text.to_string()).map_err(|_| {
+        BackupError::corrupt(
+            BackupCorruptProblem::MalformedCatalogId,
+            "manifest carries a malformed catalog id",
+        )
+    })
+}
+
 fn catalog_ids(ids: &[String]) -> Result<Vec<marrow_store::cell::CatalogId>, BackupError> {
-    ids.iter()
-        .map(|id| {
-            marrow_store::cell::CatalogId::new(id.clone()).map_err(|_| {
-                BackupError::corrupt(
-                    BackupCorruptProblem::MalformedCatalogId,
-                    "manifest carries a malformed catalog id",
-                )
-            })
-        })
-        .collect()
+    ids.iter().map(|id| catalog_id(id)).collect()
 }
 
 fn default_counts(
@@ -310,15 +312,8 @@ fn default_counts(
     counts
         .iter()
         .map(|count| {
-            let id =
-                marrow_store::cell::CatalogId::new(count.catalog_id.clone()).map_err(|_| {
-                    BackupError::corrupt(
-                        BackupCorruptProblem::MalformedCatalogId,
-                        "manifest carries a malformed catalog id",
-                    )
-                })?;
             Ok(marrow_store::tree::ActivationDefaultRecordCount {
-                catalog_id: id,
+                catalog_id: catalog_id(&count.catalog_id)?,
                 records_backfilled: count.records_backfilled,
                 target_records: count.target_records,
                 evidence_digest: count.evidence_digest.clone(),
@@ -332,32 +327,28 @@ fn retire_counts(
 ) -> Result<Vec<(marrow_store::cell::CatalogId, u64)>, BackupError> {
     counts
         .iter()
-        .map(|count| {
-            let id =
-                marrow_store::cell::CatalogId::new(count.catalog_id.clone()).map_err(|_| {
-                    BackupError::corrupt(
-                        BackupCorruptProblem::MalformedCatalogId,
-                        "manifest carries a malformed catalog id",
-                    )
-                })?;
-            Ok((id, count.records))
-        })
+        .map(|count| Ok((catalog_id(&count.catalog_id)?, count.records)))
         .collect()
 }
 
 /// A backup or restore failure, carrying a stable dotted code for tools.
 #[derive(Debug)]
-pub enum BackupError {
+pub(crate) enum BackupError {
     /// The backup file could not be read or written.
     Io(std::io::Error),
     /// A store read or write failed.
     Store(marrow_store::StoreError),
     /// The backup header or manifest is not a Marrow backup this build understands.
+    /// Production reports only `code()` and `message`; the typed `problem` is a
+    /// test-observable discriminator (tests assert the precise framing fault and its
+    /// flagged field), not a production-consumed value, so it is never rendered.
     FormatVersion {
         problem: BackupFormatProblem,
         message: String,
     },
-    /// A cell chunk failed its checksum or framing.
+    /// A cell chunk failed its checksum or framing. As with `FormatVersion`, the typed
+    /// `problem` is a test-observable discriminator only; production reports `code()`
+    /// and `message`.
     CorruptChunk {
         problem: BackupCorruptProblem,
         message: String,
@@ -375,7 +366,7 @@ pub enum BackupError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BackupFormatProblem {
+pub(crate) enum BackupFormatProblem {
     NotBackupFile,
     UnsupportedVersion {
         found: u32,
@@ -406,7 +397,7 @@ pub enum BackupFormatProblem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BackupCorruptProblem {
+pub(crate) enum BackupCorruptProblem {
     CellStreamEndedEarly,
     CellTooLarge,
     MalformedCell,
@@ -429,7 +420,7 @@ impl BackupError {
     }
 
     /// The stable dotted code a tool reports for this failure.
-    pub fn code(&self) -> &'static str {
+    pub(crate) fn code(&self) -> &'static str {
         match self {
             Self::Io(_) => "io.write",
             Self::Store(error) => error.code(),

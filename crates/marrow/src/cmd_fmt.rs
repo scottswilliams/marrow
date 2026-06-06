@@ -45,14 +45,15 @@ place. `marrow fmt` does not read from stdin.
                 eprintln!("marrow fmt does not read from stdin; pass a file or project directory");
                 return ExitCode::from(2);
             }
-            value if value.starts_with('-') => {
-                eprintln!("unknown fmt option: {value}");
-                return ExitCode::from(2);
-            }
+            value if value.starts_with('-') => return crate::unknown_option("fmt", value),
             value => {
-                if target.replace(value.to_string()).is_some() {
-                    eprintln!("marrow fmt accepts one source file or project directory");
-                    return ExitCode::from(2);
+                if let Err(code) = crate::take_single_target(
+                    &mut target,
+                    value,
+                    "fmt",
+                    "source file or project directory",
+                ) {
+                    return code;
                 }
             }
         }

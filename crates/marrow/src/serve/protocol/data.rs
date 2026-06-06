@@ -51,6 +51,9 @@ pub(super) fn op_debug_data_children(
             "`debug_data_children` declared-member listings take no `limit` or `cursor`",
         ));
     }
+    // A paged listing decodes the resume cursor and encodes the next cursor against
+    // the same query scope, so it is computed once here and reused for both.
+    let scope = supports_paging.then(|| marrow_check::tooling::render_query_segments(&segments));
     let limit = if supports_paging {
         request_limit(
             request,
@@ -63,14 +66,12 @@ pub(super) fn op_debug_data_children(
     } else {
         MAX_WALK
     };
-    let resume = if supports_paging {
-        let scope = marrow_check::tooling::render_query_segments(&segments);
-        request
+    let resume = match &scope {
+        Some(scope) => request
             .get("cursor")
-            .map(|value| cursors.decode_children_cursor(value, &scope))
-            .transpose()?
-    } else {
-        None
+            .map(|value| cursors.decode_children_cursor(value, scope))
+            .transpose()?,
+        None => None,
     };
     let page =
         data_children(program, store, &segments, limit, resume.as_ref()).map_err(tooling_error)?;
@@ -83,9 +84,11 @@ pub(super) fn op_debug_data_children(
         })
         .collect();
     let cursor = match page.cursor {
+        // A non-null page cursor only arises from a paging listing, so the scope is
+        // present here.
         Some(anchor) => {
-            let scope = marrow_check::tooling::render_query_segments(&segments);
-            json!(cursors.encode_children_cursor(&scope, &anchor))
+            let scope = scope.as_ref().expect("a paged listing computed its scope");
+            json!(cursors.encode_children_cursor(scope, &anchor))
         }
         None => Value::Null,
     };

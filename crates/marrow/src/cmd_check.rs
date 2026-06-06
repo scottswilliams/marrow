@@ -16,21 +16,11 @@ pub(crate) fn check(args: &[String]) -> ExitCode {
         match args[index].as_str() {
             "--data" => data = true,
             "--format" => {
-                if saw_format {
-                    eprintln!("duplicate --format");
-                    return ExitCode::from(2);
+                if let Err(code) =
+                    crate::parse_format_flag(args, &mut index, &mut saw_format, &mut format)
+                {
+                    return code;
                 }
-                saw_format = true;
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    eprintln!("missing value for --format");
-                    return ExitCode::from(2);
-                };
-                let Some(parsed) = CheckFormat::parse(value) else {
-                    eprintln!("unknown check format: {value}");
-                    return ExitCode::from(2);
-                };
-                format = parsed;
             }
             "--help" | "-h" => {
                 print!(
@@ -45,14 +35,15 @@ project store read-only and prove data-evolution obligations.
                 );
                 return ExitCode::SUCCESS;
             }
-            value if value.starts_with('-') => {
-                eprintln!("unknown check option: {value}");
-                return ExitCode::from(2);
-            }
+            value if value.starts_with('-') => return crate::unknown_option("check", value),
             value => {
-                if file.replace(value.to_string()).is_some() {
-                    eprintln!("marrow check accepts one source file or project directory");
-                    return ExitCode::from(2);
+                if let Err(code) = crate::take_single_target(
+                    &mut file,
+                    value,
+                    "check",
+                    "source file or project directory",
+                ) {
+                    return code;
                 }
             }
         }

@@ -19,34 +19,30 @@ pub(crate) mod get;
 pub(crate) mod integrity;
 
 /// Parse one positional project directory plus an optional `--format` flag, for
-/// the `data` inspection commands. Reuses `check`'s `--format` grammar so the
-/// flag is uniform across the CLI; text is the default.
+/// the `data` inspection commands. Reuses the shared `--format` grammar so the flag
+/// is uniform across the CLI; text is the default.
 fn one_positional_with_format(
     command: &str,
     args: &[String],
 ) -> Result<(String, CheckFormat), ExitCode> {
     let mut dir = None;
     let mut format = CheckFormat::Text;
+    let mut saw_format = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
             "--format" => {
-                index += 1;
-                format = parse_format_value(args.get(index))?;
+                crate::parse_format_flag(args, &mut index, &mut saw_format, &mut format)?;
             }
             "--help" | "-h" => {
                 print!("Usage:\n  marrow {command} [--format text|json|jsonl] <projectdir>\n");
                 return Err(ExitCode::SUCCESS);
             }
             value if value.starts_with('-') => {
-                eprintln!("unknown {command} option: {value}");
-                return Err(ExitCode::from(2));
+                return Err(crate::unknown_option(command, value));
             }
             value => {
-                if dir.replace(value.to_string()).is_some() {
-                    eprintln!("marrow {command} accepts one project directory");
-                    return Err(ExitCode::from(2));
-                }
+                crate::take_single_target(&mut dir, value, command, "project directory")?;
             }
         }
         index += 1;
@@ -58,29 +54,27 @@ fn one_positional_with_format(
     Ok((dir, format))
 }
 
-/// Parse a `--format` value (the argument after the flag), or a usage error when
-/// it is missing or not a known format. Shared by the `data` command parsers.
-fn parse_format_value(value: Option<&String>) -> Result<CheckFormat, ExitCode> {
-    let Some(value) = value else {
-        eprintln!("missing value for --format");
-        return Err(ExitCode::from(2));
-    };
-    CheckFormat::parse(value).ok_or_else(|| {
-        eprintln!("unknown format: {value}");
-        ExitCode::from(2)
-    })
-}
-
 fn report_store_error(error: StoreError, format: CheckFormat) -> ExitCode {
     report_simple_error(error.code(), &error.to_string(), format);
     ExitCode::FAILURE
 }
 
-fn open_tree_store(
-    dir: &str,
-    config: &marrow_project::ProjectConfig,
-) -> Result<Option<TreeStore>, ExitCode> {
-    open_store_for_inspection(dir, config)
+/// Pin a coherent read snapshot over an opened store, so every pass an inspection
+/// command runs observes one version of saved data. An empty (`None`) store has
+/// nothing to pin and yields `Ok(None)`. The returned guard must be held for the
+/// duration of the reads it covers; a snapshot failure is reported and returns the
+/// exit code. The shared coherent-read scaffold for the `data` inspection commands.
+pub(super) fn pin_snapshot(
+    store: &Option<TreeStore>,
+    format: CheckFormat,
+) -> Result<Option<marrow_store::tree::ReadSnapshot<'_>>, ExitCode> {
+    match store {
+        Some(store) => match store.read_snapshot() {
+            Ok(snapshot) => Ok(Some(snapshot)),
+            Err(error) => Err(report_store_error(error, format)),
+        },
+        None => Ok(None),
+    }
 }
 
 /// Inspect a project's saved data, read-only:
@@ -105,9 +99,7 @@ Usage:
   marrow data get [--format text|json|jsonl] <projectdir> <path> read one path's value
 
 Read-only inspection of a project's saved data; it never creates or modifies the
-store. `diff` and `load` are deferred: they overlap typed data-evolution and
-repair workflows and need source fingerprinting; they will route through the
-maintenance capability when implemented.
+store.
 "
             );
             ExitCode::SUCCESS
@@ -136,7 +128,7 @@ fn data_roots(args: &[String]) -> ExitCode {
         Ok(checked) => checked,
         Err(code) => return code,
     };
-    let store = match open_tree_store(&dir, &config) {
+    let store = match open_store_for_inspection(&dir, &config) {
         Ok(store) => store,
         Err(code) => return code,
     };
@@ -177,18 +169,18 @@ fn data_stats(args: &[String]) -> ExitCode {
         Ok(checked) => checked,
         Err(code) => return code,
     };
-    let store = match open_tree_store(&dir, &config) {
+    let store = match open_store_for_inspection(&dir, &config) {
         Ok(store) => store,
+        Err(code) => return code,
+    };
+    // One snapshot spans both passes, so the root count and the record count describe
+    // the same coherent version of the store.
+    let _snapshot = match pin_snapshot(&store, format) {
+        Ok(snapshot) => snapshot,
         Err(code) => return code,
     };
     let (roots, records) = match &store {
         Some(store) => {
-            // One snapshot spans both passes, so the root count and the record count
-            // describe the same coherent version of the store.
-            let _snapshot = match store.read_snapshot() {
-                Ok(snapshot) => snapshot,
-                Err(error) => return report_store_error(error, format),
-            };
             let roots = match data_roots_in_store(&program, store) {
                 Ok(roots) => roots.len(),
                 Err(error) => return report_store_error(error, format),
@@ -224,18 +216,15 @@ fn data_dump(args: &[String]) -> ExitCode {
         Ok(checked) => checked,
         Err(code) => return code,
     };
-    let store = match open_tree_store(&dir, &config) {
+    let store = match open_store_for_inspection(&dir, &config) {
         Ok(store) => store,
         Err(code) => return code,
     };
     // One snapshot spans the count and the dump traversal, so the emitted records
     // and the trailing count describe the same coherent version of the store.
-    let _snapshot = match &store {
-        Some(store) => match store.read_snapshot() {
-            Ok(snapshot) => Some(snapshot),
-            Err(error) => return report_store_error(error, format),
-        },
-        None => None,
+    let _snapshot = match pin_snapshot(&store, format) {
+        Ok(snapshot) => snapshot,
+        Err(code) => return code,
     };
     let records = match &store {
         Some(store) => match count_data_records(&program, store) {
@@ -244,47 +233,70 @@ fn data_dump(args: &[String]) -> ExitCode {
         },
         None => 0,
     };
-    match format {
-        CheckFormat::Text => {
-            if records == 0 {
-                println!("(no saved data)");
-            } else {
-                let store = store.as_ref().expect("non-empty data dump has a store");
-                if let Err(error) = visit_data_records(&program, store, |record| {
-                    println!(
-                        "{}\t{}",
-                        record.path,
-                        render_value_bytes(record.payload.as_bytes())
-                    );
-                    Ok(())
-                }) {
-                    return report_store_error(error, format);
-                }
-            }
-        }
-        CheckFormat::Json => {
-            if let Some(store) = &store {
-                if let Err(error) = write_dump_json(&dir, &program, store) {
-                    return report_store_error(error, format);
-                }
-            } else {
-                write_json(json!({ "project": dir, "records": [] }));
-            }
-        }
-        CheckFormat::Jsonl => {
-            if let Some(store) = &store {
-                let result = visit_data_records(&program, store, |record| {
-                    write_json(dump_record(&record.path, record.payload.as_bytes()));
-                    Ok(())
-                });
-                if let Err(error) = result {
-                    return report_store_error(error, format);
-                }
-            }
-            write_json(json!({ "kind": "summary", "records": records }));
+    let result = match format {
+        CheckFormat::Text => render_dump_text(&program, &store, records),
+        CheckFormat::Json => render_dump_json(&dir, &program, &store),
+        CheckFormat::Jsonl => render_dump_jsonl(&program, &store, records),
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => report_store_error(error, format),
+    }
+}
+
+/// Print each stored `(path, value)` as a tab-separated line, the value rendered as
+/// its canonical bytes (UTF-8 text or `0x<hex>`). An empty store prints a placeholder.
+fn render_dump_text(
+    program: &CheckedProgram,
+    store: &Option<TreeStore>,
+    records: usize,
+) -> Result<(), StoreError> {
+    let Some(store) = store.as_ref().filter(|_| records > 0) else {
+        println!("(no saved data)");
+        return Ok(());
+    };
+    visit_data_records(program, store, |record| {
+        println!(
+            "{}\t{}",
+            record.path,
+            crate::render_value_bytes(record.payload.as_bytes())
+        );
+        Ok(())
+    })
+    .map(|_| ())
+}
+
+/// Stream the dump as one `{ project, records: [...] }` JSON object. An empty store
+/// emits the same envelope with no records.
+fn render_dump_json(
+    dir: &str,
+    program: &CheckedProgram,
+    store: &Option<TreeStore>,
+) -> Result<(), StoreError> {
+    match store {
+        Some(store) => write_dump_json(dir, program, store),
+        None => {
+            write_json(json!({ "project": dir, "records": [] }));
+            Ok(())
         }
     }
-    ExitCode::SUCCESS
+}
+
+/// Stream the dump as one JSON record per line, followed by a `summary` line with the
+/// record count.
+fn render_dump_jsonl(
+    program: &CheckedProgram,
+    store: &Option<TreeStore>,
+    records: usize,
+) -> Result<(), StoreError> {
+    if let Some(store) = store {
+        visit_data_records(program, store, |record| {
+            write_json(dump_record(&record.path, record.payload.as_bytes()));
+            Ok(())
+        })?;
+    }
+    write_json(json!({ "kind": "summary", "records": records }));
+    Ok(())
 }
 
 fn write_dump_json(
@@ -294,23 +306,49 @@ fn write_dump_json(
 ) -> Result<(), StoreError> {
     let stdout = io::stdout();
     let mut out = stdout.lock();
-    write!(out, "{{\"project\":").expect("write dump JSON");
-    serde_json::to_writer(&mut out, dir).expect("serialize project path");
-    write!(out, ",\"records\":[").expect("write dump JSON");
-    let mut first = true;
-    visit_data_records(program, store, |record| {
-        if !first {
-            write!(out, ",").expect("write dump JSON separator");
-        }
-        first = false;
-        serde_json::to_writer(
-            &mut out,
-            &dump_record(&record.path, record.payload.as_bytes()),
-        )
-        .expect("serialize dump record");
-        Ok(())
-    })?;
-    writeln!(out, "]}}").expect("write dump JSON");
+    write_json_array_envelope(
+        &mut out,
+        |out| {
+            write!(out, "\"project\":").expect("write dump JSON");
+            serde_json::to_writer(out, dir).expect("serialize project path");
+        },
+        "records",
+        |emit| {
+            visit_data_records(program, store, |record| {
+                emit(&dump_record(&record.path, record.payload.as_bytes()));
+                Ok(())
+            })
+            .map(|_| ())
+        },
+    )
+}
+
+/// Stream a `{ <prefix>, "<array_field>": [ <items> ] }` JSON object to `out` in
+/// bounded memory. `write_prefix` emits the leading object fields, and `visit` runs
+/// the record traversal, calling `emit` once per item; this helper owns the `[`, the
+/// comma separators between items, and the closing `]}`. The single owner of the
+/// streaming JSON-array envelope shared by `data dump` and `data integrity`.
+pub(super) fn write_json_array_envelope(
+    out: &mut impl Write,
+    write_prefix: impl FnOnce(&mut dyn Write),
+    array_field: &str,
+    visit: impl FnOnce(&mut dyn FnMut(&serde_json::Value)) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    write!(out, "{{").expect("write JSON envelope");
+    write_prefix(out);
+    write!(out, ",\"{array_field}\":[").expect("write JSON envelope");
+    {
+        let mut first = true;
+        let mut emit = |item: &serde_json::Value| {
+            if !first {
+                write!(out, ",").expect("write JSON envelope separator");
+            }
+            first = false;
+            serde_json::to_writer(&mut *out, item).expect("serialize JSON envelope item");
+        };
+        visit(&mut emit)?;
+    }
+    writeln!(out, "]}}").expect("write JSON envelope");
     Ok(())
 }
 
@@ -320,17 +358,4 @@ fn dump_record(path: &str, value: &[u8]) -> serde_json::Value {
         "path": path,
         "value_b64": marrow_run::base64::encode(value),
     })
-}
-
-fn render_value_bytes(bytes: &[u8]) -> String {
-    match std::str::from_utf8(bytes) {
-        Ok(text) => text.to_string(),
-        Err(_) => {
-            let mut text = String::from("0x");
-            for byte in bytes {
-                text.push_str(&format!("{byte:02x}"));
-            }
-            text
-        }
-    }
 }

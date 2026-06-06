@@ -246,7 +246,7 @@ const MAX_REQUEST_BYTES: u64 = 64 * 1024 * 1024;
 /// bound closes that connection and the accept loop moves on.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub fn run(args: &[String]) -> ExitCode {
+pub(crate) fn run(args: &[String]) -> ExitCode {
     let mut port: u16 = 0;
     let mut dir: Option<String> = None;
     let mut index = 0;
@@ -270,14 +270,12 @@ pub fn run(args: &[String]) -> ExitCode {
                     }
                 }
             }
-            value if value.starts_with('-') => {
-                eprintln!("unknown serve option: {value}");
-                return ExitCode::from(2);
-            }
+            value if value.starts_with('-') => return crate::unknown_option("serve", value),
             value => {
-                if dir.replace(value.to_string()).is_some() {
-                    eprintln!("marrow serve accepts one project directory");
-                    return ExitCode::from(2);
+                if let Err(code) =
+                    crate::take_single_target(&mut dir, value, "serve", "project directory")
+                {
+                    return code;
                 }
             }
         }

@@ -18,7 +18,7 @@ use std::process::ExitCode;
 use marrow_syntax::{Severity, SourceSpan, parse_source};
 use serde_json::{Value, json};
 
-pub fn run(args: &[String]) -> ExitCode {
+pub(crate) fn run(args: &[String]) -> ExitCode {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         print!(
             "\

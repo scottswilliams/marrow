@@ -115,6 +115,38 @@ fn run_trace_renders_a_bool_write_as_its_typed_value() {
 }
 
 #[test]
+fn run_trace_renders_an_int_write_as_canonical_digits() {
+    // A managed write of a non-bool scalar renders straight from its stored bytes,
+    // with no decode/encode round-trip: an `int` traces as its canonical digits.
+    let project = temp_project("trace-int", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             resource Counter at ^counters(id: int)\n\
+             \x20\x20\x20\x20total: int\n\n\
+             pub fn main()\n\
+             \x20\x20\x20\x20^counters(1).total = 42\n",
+        );
+    });
+    let dir = project.to_str().unwrap().to_string();
+    let output = marrow(&["run", "--trace", &dir]);
+    fs::remove_dir_all(&project).ok();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8");
+    assert!(
+        stderr.contains("write ^counters(1).total = 42"),
+        "an int must trace as its canonical digits: {stderr}"
+    );
+}
+
+#[test]
 fn run_trace_reports_non_root_deletes() {
     let project = temp_project("trace-delete", |root| {
         write(

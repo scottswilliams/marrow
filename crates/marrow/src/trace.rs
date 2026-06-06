@@ -14,7 +14,7 @@ use marrow_check::CheckedRuntimeProgram;
 use marrow_check::StoredValueMeaning;
 use marrow_run::{Frame, RuntimeError, StepHook, WriteDataSegment, WriteOp, WriteTarget};
 use marrow_store::key::SavedKey;
-use marrow_store::value::{SavedValue, decode_value, encode_value};
+use marrow_store::value::{SavedValue, ScalarType, decode_value, encode_value};
 use marrow_syntax::SourceSpan;
 use serde_json::json;
 
@@ -215,17 +215,19 @@ impl WriteTargetNames {
     }
 
     /// Render a managed write's leaf value as its declared typed scalar, looked up
-    /// by the write's leaf member: a `bool` reads `true`/`false`, an int/date/etc.
-    /// reads its canonical typed text. A value whose meaning is not a scalar (an
-    /// identity reference or enum member) or that does not decode falls back to the
-    /// raw byte rendering. The JSON `value_b64` field stays the raw bytes.
+    /// by the write's leaf member. The canonical saved text of every non-bool scalar
+    /// is its stored bytes (an int as its digits, a date as `YYYY-MM-DD`, raw bytes
+    /// as `0x<hex>`), so only a `bool` needs decoding to read `true`/`false`; every
+    /// other value renders straight from its bytes with no decode/encode round-trip.
+    /// A value whose meaning is not a scalar (an identity reference or enum member)
+    /// also renders from its raw bytes. The JSON `value_b64` field stays the raw bytes.
     pub(crate) fn render_leaf_value(&self, target: &WriteTarget, value: &[u8]) -> String {
-        if let Some(StoredValueMeaning::Scalar(ty)) = self.leaf_meaning(target)
-            && let Some(scalar) = decode_value(value, *ty)
+        if let Some(StoredValueMeaning::Scalar(ScalarType::Bool)) = self.leaf_meaning(target)
+            && let Some(SavedValue::Bool(flag)) = decode_value(value, ScalarType::Bool)
         {
-            return render_scalar(&scalar);
+            return flag.to_string();
         }
-        render_value_bytes(value)
+        crate::render_value_bytes(value)
     }
 
     fn leaf_meaning(&self, target: &WriteTarget) -> Option<&StoredValueMeaning> {
@@ -237,29 +239,6 @@ impl WriteTargetNames {
             WriteDataSegment::Key(_) => None,
         })?;
         self.member_meanings.get(member)
-    }
-}
-
-/// Render a decoded scalar as the typed text a developer reads: a `bool` as
-/// `true`/`false`, and every other scalar through its canonical saved bytes (an int
-/// as its digits, a date as `YYYY-MM-DD`, raw bytes as `0x<hex>`).
-fn render_scalar(value: &SavedValue) -> String {
-    match value {
-        SavedValue::Bool(value) => value.to_string(),
-        other => render_value_bytes(&encode_value(other).unwrap_or_default()),
-    }
-}
-
-fn render_value_bytes(bytes: &[u8]) -> String {
-    match std::str::from_utf8(bytes) {
-        Ok(text) => text.to_string(),
-        Err(_) => {
-            let mut text = String::from("0x");
-            for byte in bytes {
-                text.push_str(&format!("{byte:02x}"));
-            }
-            text
-        }
     }
 }
 

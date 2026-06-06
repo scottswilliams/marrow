@@ -14,15 +14,17 @@ use marrow_store::tree::TreeStore;
 use serde_json::{Value, json};
 
 /// A request was malformed: not an object, or missing a string `op`.
-pub const PROTOCOL_MALFORMED: &str = "protocol.malformed";
+pub(crate) const PROTOCOL_MALFORMED: &str = "protocol.malformed";
 /// A request named an operation the server does not support.
-pub const PROTOCOL_UNKNOWN_OP: &str = "protocol.unknown_op";
+pub(crate) const PROTOCOL_UNKNOWN_OP: &str = "protocol.unknown_op";
 /// A known operation received malformed arguments.
-pub const PROTOCOL_BAD_REQUEST: &str = "protocol.bad_request";
+pub(crate) const PROTOCOL_BAD_REQUEST: &str = "protocol.bad_request";
 /// The store has evolved past the schema this serve binary was checked against, so
 /// a data op cannot render its data under the stale schema.
-pub const PROTOCOL_STALE_EPOCH: &str = "protocol.stale_epoch";
+pub(crate) const PROTOCOL_STALE_EPOCH: &str = "protocol.stale_epoch";
 
+/// Error types derive `Debug` by convention; production reports the error through
+/// its wire envelope (`code`/`message`), never its `Debug` shape.
 #[derive(Debug)]
 pub(super) struct ProtocolError {
     code: &'static str,
@@ -67,18 +69,17 @@ impl ProtocolSession {
         store: &TreeStore,
         request: &Value,
     ) -> Result<Value, ProtocolError> {
-        let op = request
+        let name = request
             .get("op")
             .and_then(Value::as_str)
             .ok_or_else(|| ProtocolError {
                 code: PROTOCOL_MALFORMED,
                 message: "request is missing a string `op`".to_string(),
             })?;
-        let is_data_op = matches!(
-            op,
-            "debug_data_roots" | "debug_data_get" | "debug_data_children" | "debug_data_walk"
-        );
-        if is_data_op && self.stale_epoch {
+        let op = Op::parse(name);
+        // A data op reads saved data, so the stale-epoch gate and the dispatcher both
+        // derive from the parsed op rather than re-matching the operation names.
+        if op.reads_data() && self.stale_epoch {
             return Err(ProtocolError {
                 code: PROTOCOL_STALE_EPOCH,
                 message:
@@ -88,17 +89,47 @@ impl ProtocolSession {
             });
         }
         match op {
-            "debug_data_roots" => data::op_debug_data_roots(program, store),
-            "debug_data_get" => data::op_debug_data_get(program, store, request),
-            "debug_data_children" => {
+            Op::DataRoots => data::op_debug_data_roots(program, store),
+            Op::DataGet => data::op_debug_data_get(program, store, request),
+            Op::DataChildren => {
                 data::op_debug_data_children(program, store, request, &self.cursors)
             }
-            "debug_data_walk" => walk::op_debug_data_walk(program, store, request, &self.cursors),
-            other => Err(ProtocolError {
+            Op::DataWalk => walk::op_debug_data_walk(program, store, request, &self.cursors),
+            Op::Other(other) => Err(ProtocolError {
                 code: PROTOCOL_UNKNOWN_OP,
                 message: format!("unknown operation `{other}`"),
             }),
         }
+    }
+}
+
+/// A parsed protocol operation. The data ops read saved data and so are gated by the
+/// stale-epoch check; `Other` carries the unrecognized name for its error reply. The
+/// one source of truth for which operations exist and which read data.
+enum Op<'a> {
+    DataRoots,
+    DataGet,
+    DataChildren,
+    DataWalk,
+    Other(&'a str),
+}
+
+impl<'a> Op<'a> {
+    fn parse(name: &'a str) -> Self {
+        match name {
+            "debug_data_roots" => Self::DataRoots,
+            "debug_data_get" => Self::DataGet,
+            "debug_data_children" => Self::DataChildren,
+            "debug_data_walk" => Self::DataWalk,
+            other => Self::Other(other),
+        }
+    }
+
+    fn reads_data(&self) -> bool {
+        matches!(
+            self,
+            Self::DataRoots | Self::DataGet | Self::DataChildren | Self::DataWalk
+        )
     }
 }
 

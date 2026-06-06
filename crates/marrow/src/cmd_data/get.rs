@@ -6,9 +6,7 @@ use marrow_check::tooling::{
 };
 use serde_json::json;
 
-use crate::{CheckFormat, load_checked_project, write_json};
-
-use super::render_value_bytes;
+use crate::{CheckFormat, load_checked_project, render_value_bytes, write_json};
 
 pub(super) fn data_get(args: &[String]) -> ExitCode {
     let (dir, path_text, format) = match crate::dir_and_path_args("data get", "path", args) {
@@ -36,7 +34,7 @@ pub(super) fn data_get(args: &[String]) -> ExitCode {
         }
         Err(ToolingError::Store(error)) => return super::report_store_error(error, format),
     };
-    let store = match super::open_tree_store(&dir, &config) {
+    let store = match crate::open_store_for_inspection(&dir, &config) {
         Ok(store) => store,
         Err(code) => return code,
     };

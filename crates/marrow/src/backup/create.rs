@@ -12,9 +12,9 @@ use super::archive::{self, CHECKSUM_SEED, checksum_cell};
 use super::{BackupError, BackupManifest, CommitDescriptor, EngineDescriptor, FORMAT_VERSION};
 
 /// What a completed backup wrote.
-pub struct BackupReport {
-    pub record_count: u64,
-    pub catalog_epoch: Option<u64>,
+pub(crate) struct BackupReport {
+    pub(crate) record_count: u64,
+    pub(crate) catalog_epoch: Option<u64>,
 }
 
 /// Write a backup of `store` (read through one pinned snapshot) to `out`. The
@@ -22,7 +22,7 @@ pub struct BackupReport {
 /// snapshot — once to size and checksum the stream, once to write it — so the
 /// whole backup streams in bounded memory and the manifest's checksum matches the
 /// bytes that follow it.
-pub fn create_backup(
+pub(crate) fn create_backup(
     program: &CheckedProgram,
     store: &TreeStore,
     out: &mut impl Write,

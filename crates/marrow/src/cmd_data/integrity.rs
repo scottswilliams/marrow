@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io;
 use std::process::ExitCode;
 
 use marrow_check::tooling::{IntegrityProblem, count_integrity_problems, visit_integrity_problems};
@@ -17,16 +17,13 @@ pub(super) fn data_integrity(args: &[String]) -> ExitCode {
         Ok(checked) => checked,
         Err(code) => return code,
     };
-    let store = match super::open_tree_store(&dir, &config) {
+    let store = match crate::open_store_for_inspection(&dir, &config) {
         Ok(store) => store,
         Err(code) => return code,
     };
-    let _snapshot = match &store {
-        Some(store) => match store.read_snapshot() {
-            Ok(snapshot) => Some(snapshot),
-            Err(error) => return super::report_store_error(error, format),
-        },
-        None => None,
+    let _snapshot = match super::pin_snapshot(&store, format) {
+        Ok(snapshot) => snapshot,
+        Err(code) => return code,
     };
     let (records, problems) = match &store {
         Some(store) => match count_integrity_problems(store, &program) {
@@ -130,23 +127,23 @@ fn write_integrity_json(
 ) -> Result<(), StoreError> {
     let stdout = io::stdout();
     let mut out = stdout.lock();
-    write!(out, "{{\"project\":").expect("write integrity JSON");
-    serde_json::to_writer(&mut out, dir).expect("serialize project path");
-    write!(out, ",\"records\":{records},\"problems\":[").expect("write integrity JSON");
-    let mut first = true;
-    visit_integrity_problems(store, program, |outcome| {
-        if let Some(problem) = outcome.problem {
-            if !first {
-                write!(out, ",").expect("write integrity JSON separator");
-            }
-            first = false;
-            serde_json::to_writer(&mut out, &integrity_record(&problem))
-                .expect("serialize integrity problem");
-        }
-        Ok(())
-    })?;
-    writeln!(out, "]}}").expect("write integrity JSON");
-    Ok(())
+    super::write_json_array_envelope(
+        &mut out,
+        |out| {
+            write!(out, "\"project\":").expect("write integrity JSON");
+            serde_json::to_writer(&mut *out, dir).expect("serialize project path");
+            write!(out, ",\"records\":{records}").expect("write integrity JSON");
+        },
+        "problems",
+        |emit| {
+            visit_integrity_problems(store, program, |outcome| {
+                if let Some(problem) = outcome.problem {
+                    emit(&integrity_record(&problem));
+                }
+                Ok(())
+            })
+        },
+    )
 }
 
 fn integrity_record(problem: &IntegrityProblem) -> serde_json::Value {

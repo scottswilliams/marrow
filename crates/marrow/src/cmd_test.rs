@@ -20,21 +20,11 @@ pub(crate) fn test(args: &[String]) -> ExitCode {
             // attributed to the test by name.
             "--trace" => trace = true,
             "--format" => {
-                if saw_format {
-                    eprintln!("duplicate --format");
-                    return ExitCode::from(2);
+                if let Err(code) =
+                    crate::parse_format_flag(args, &mut index, &mut saw_format, &mut format)
+                {
+                    return code;
                 }
-                saw_format = true;
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    eprintln!("missing value for --format");
-                    return ExitCode::from(2);
-                };
-                let Some(parsed) = CheckFormat::parse(value) else {
-                    eprintln!("unknown format: {value}");
-                    return ExitCode::from(2);
-                };
-                format = parsed;
             }
             "--help" | "-h" => {
                 print!(
@@ -52,14 +42,12 @@ in-memory store; a `std::assert::*` failure is a located test failure.
                 );
                 return ExitCode::SUCCESS;
             }
-            value if value.starts_with('-') => {
-                eprintln!("unknown test option: {value}");
-                return ExitCode::from(2);
-            }
+            value if value.starts_with('-') => return crate::unknown_option("test", value),
             value => {
-                if dir.replace(value.to_string()).is_some() {
-                    eprintln!("marrow test accepts one project directory");
-                    return ExitCode::from(2);
+                if let Err(code) =
+                    crate::take_single_target(&mut dir, value, "test", "project directory")
+                {
+                    return code;
                 }
             }
         }
@@ -130,11 +118,7 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
 
     // Tests get the same host capabilities as a run; their `std::log` output goes
     // to a discard sink so it stays out of the pass/fail report.
-    let host = marrow_run::Host::new()
-        .with_system_clock()
-        .with_system_environment()
-        .with_log_sink(std::rc::Rc::new(RefCell::new(String::new())))
-        .with_filesystem();
+    let host = crate::cmd_run::base_host(std::rc::Rc::new(RefCell::new(String::new())));
     let mut passed = 0usize;
     let mut failed = 0usize;
     let mut errored = 0usize;

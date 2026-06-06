@@ -226,6 +226,18 @@ fn run_rejects_duplicate_format_flag() {
 }
 
 #[test]
+fn a_plain_run_rejects_format_because_it_shapes_no_report() {
+    // A plain run's only output is the program's own stream, which `--format` cannot
+    // shape, so the flag is a usage error rather than silently ignored. Only `--trace`
+    // and `--dry-run` emit a report that `--format` controls.
+    let output = run_run(&["--format", "json", "missing-project"]);
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("--format"), "{stderr}");
+}
+
+#[test]
 fn module_constants_are_bound_at_runtime() {
     let root = temp_project("run-module-const", |root| {
         write(

@@ -133,7 +133,7 @@ fn manifest_to_json(manifest: &BackupManifest) -> Value {
             "layout_epoch": manifest.engine.layout_epoch,
             "key_profile_version": manifest.engine.key_profile_version,
             "value_codec_version": manifest.engine.value_codec_version,
-            "profile_digest": hex(&manifest.engine.profile_digest),
+            "profile_digest": crate::hex_string(&manifest.engine.profile_digest),
         },
         "commit": manifest.commit.as_ref().map(commit_to_json),
         "record_count": manifest.record_count,
@@ -147,7 +147,7 @@ fn commit_to_json(commit: &CommitDescriptor) -> Value {
         "catalog_epoch": commit.catalog_epoch,
         "layout_epoch": commit.layout_epoch,
         "source_digest": commit.source_digest,
-        "engine_profile_digest": hex(&commit.engine_profile_digest),
+        "engine_profile_digest": crate::hex_string(&commit.engine_profile_digest),
         "changed_root_catalog_ids": commit.changed_root_catalog_ids,
         "changed_index_catalog_ids": commit.changed_index_catalog_ids,
         "activation_evolution_digest": commit.activation_evolution_digest,
@@ -344,10 +344,14 @@ fn str_array_field(value: &Value, field: &'static str) -> Result<Vec<String>, Ba
         .collect()
 }
 
-fn default_counts_field(
+/// Decode an array-of-object manifest field, parsing each entry with `parse_entry`.
+/// This owns the array/object-shape validation shared by the typed-count fields; the
+/// per-type field extraction is the only thing each caller supplies.
+fn object_array_field<T>(
     value: &Value,
     field: &'static str,
-) -> Result<Vec<DefaultCountDescriptor>, BackupError> {
+    parse_entry: impl Fn(&Value) -> Result<T, BackupError>,
+) -> Result<Vec<T>, BackupError> {
     match value.get(field).ok_or_else(missing(field))? {
         Value::Array(entries) => entries
             .iter()
@@ -355,37 +359,37 @@ fn default_counts_field(
                 if !entry.is_object() {
                     return Err(wrong_type(field, "object"));
                 }
-                Ok(DefaultCountDescriptor {
-                    catalog_id: str_field(entry, "catalog_id")?.to_string(),
-                    records_backfilled: u64_field(entry, "records_backfilled")?,
-                    target_records: u64_field(entry, "target_records")?,
-                    evidence_digest: str_field(entry, "evidence_digest")?.to_string(),
-                })
+                parse_entry(entry)
             })
             .collect(),
         _ => Err(wrong_type(field, "array")),
     }
 }
 
+fn default_counts_field(
+    value: &Value,
+    field: &'static str,
+) -> Result<Vec<DefaultCountDescriptor>, BackupError> {
+    object_array_field(value, field, |entry| {
+        Ok(DefaultCountDescriptor {
+            catalog_id: str_field(entry, "catalog_id")?.to_string(),
+            records_backfilled: u64_field(entry, "records_backfilled")?,
+            target_records: u64_field(entry, "target_records")?,
+            evidence_digest: str_field(entry, "evidence_digest")?.to_string(),
+        })
+    })
+}
+
 fn retire_counts_field(
     value: &Value,
     field: &'static str,
 ) -> Result<Vec<RetireCountDescriptor>, BackupError> {
-    match value.get(field).ok_or_else(missing(field))? {
-        Value::Array(entries) => entries
-            .iter()
-            .map(|entry| {
-                if !entry.is_object() {
-                    return Err(wrong_type(field, "object"));
-                }
-                Ok(RetireCountDescriptor {
-                    catalog_id: str_field(entry, "catalog_id")?.to_string(),
-                    records: u64_field(entry, "records")?,
-                })
-            })
-            .collect(),
-        _ => Err(wrong_type(field, "array")),
-    }
+    object_array_field(value, field, |entry| {
+        Ok(RetireCountDescriptor {
+            catalog_id: str_field(entry, "catalog_id")?.to_string(),
+            records: u64_field(entry, "records")?,
+        })
+    })
 }
 
 fn digest_field(value: &Value, field: &'static str) -> Result<EngineProfileDigest, BackupError> {
@@ -409,20 +413,15 @@ fn digest_field(value: &Value, field: &'static str) -> Result<EngineProfileDiges
     Ok(digest)
 }
 
-fn hex(bytes: &[u8]) -> String {
-    let mut text = String::with_capacity(bytes.len() * 2);
-    crate::push_hex(&mut text, bytes);
-    text
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use super::super::{
-        BackupError, BackupFormatProblem, CommitDescriptor, DefaultCountDescriptor,
+        BackupError, BackupFormatProblem, BackupManifest, CommitDescriptor, DefaultCountDescriptor,
+        EngineDescriptor, RetireCountDescriptor,
     };
-    use super::{commit_from_json, commit_to_json, manifest_from_json};
+    use super::{commit_from_json, commit_to_json, manifest_from_json, manifest_to_json};
 
     fn minimal_manifest() -> serde_json::Value {
         json!({
@@ -440,6 +439,64 @@ mod tests {
             "record_count": 0,
             "data_checksum": 0,
         })
+    }
+
+    /// A fully populated manifest round-trips through `manifest_to_json` and
+    /// `manifest_from_json` unchanged. The hand-written JSON mapping is a second owner
+    /// of the manifest shape; this binds the two so a struct field added without a
+    /// matching mapping (or vice versa) breaks the round-trip rather than silently
+    /// dropping data from a backup.
+    #[test]
+    fn manifest_json_round_trips_every_field() {
+        let digest = |seed: u8| format!("sha256:{}", format!("{seed:02x}").repeat(32));
+        let manifest = BackupManifest {
+            format_version: super::FORMAT_VERSION,
+            source_digest: digest(1),
+            catalog_epoch: Some(7),
+            engine: EngineDescriptor {
+                name: super::super::ENGINE_NAME.to_string(),
+                layout_epoch: 3,
+                key_profile_version: 2,
+                value_codec_version: marrow_store::value::VALUE_CODEC_VERSION,
+                profile_digest: [9, 8, 7, 6, 5, 4, 3, 2],
+            },
+            commit: Some(CommitDescriptor {
+                commit_id: 11,
+                catalog_epoch: 7,
+                layout_epoch: 3,
+                source_digest: digest(1),
+                engine_profile_digest: [9, 8, 7, 6, 5, 4, 3, 2],
+                changed_root_catalog_ids: vec!["cat_00000000000000000000000000000001".to_string()],
+                changed_index_catalog_ids: vec!["cat_00000000000000000000000000000002".to_string()],
+                activation_evolution_digest: digest(2),
+                activation_proposal_catalog_digest: Some(digest(3)),
+                activation_proposal_new_catalog_ids: vec![
+                    "cat_00000000000000000000000000000003".to_string(),
+                ],
+                activation_records_backfilled: 5,
+                activation_default_records_by_id: vec![DefaultCountDescriptor {
+                    catalog_id: "cat_00000000000000000000000000000003".to_string(),
+                    records_backfilled: 5,
+                    target_records: 6,
+                    evidence_digest: digest(4),
+                }],
+                activation_indexes_rebuilt: 1,
+                activation_records_retired: 2,
+                activation_retire_evidence_digest: digest(5),
+                activation_records_retired_by_id: vec![RetireCountDescriptor {
+                    catalog_id: "cat_00000000000000000000000000000004".to_string(),
+                    records: 2,
+                }],
+                activation_records_transformed: 4,
+            }),
+            record_count: 42,
+            data_checksum: 0xdead_beef,
+        };
+
+        let restored =
+            manifest_from_json(&manifest_to_json(&manifest)).expect("manifest round-trips");
+
+        assert_eq!(restored, manifest);
     }
 
     #[test]

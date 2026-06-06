@@ -14,9 +14,9 @@ use super::{BackupCorruptProblem, BackupError, BackupManifest, EngineDescriptor}
 
 /// What a completed restore replayed.
 #[derive(Debug)]
-pub struct RestoreReport {
-    pub record_count: u64,
-    pub catalog_epoch: Option<u64>,
+pub(crate) struct RestoreReport {
+    pub(crate) record_count: u64,
+    pub(crate) catalog_epoch: Option<u64>,
 }
 
 /// Restore the backup in `input` into `store`, an empty native store for
@@ -24,7 +24,7 @@ pub struct RestoreReport {
 /// short stream, or a `verify` failure rolls the target back to empty. `verify`
 /// proves the restored data compiles against the project schema before the
 /// transaction commits.
-pub fn restore_backup(
+pub(crate) fn restore_backup(
     program: &CheckedProgram,
     store: &TreeStore,
     input: &mut impl Read,
@@ -58,12 +58,7 @@ fn restore_program(
     manifest: &BackupManifest,
 ) -> Result<CheckedProgram, BackupError> {
     let current = EngineDescriptor::current(&current_engine_profile());
-    if manifest.engine.name != current.name
-        || manifest.engine.layout_epoch != current.layout_epoch
-        || manifest.engine.key_profile_version != current.key_profile_version
-        || manifest.engine.value_codec_version != current.value_codec_version
-        || manifest.engine.profile_digest != current.profile_digest
-    {
+    if manifest.engine != current {
         return Err(BackupError::EngineRecompileRequired(
             "backup was written under a different engine, layout, or value codec; \
              a cross-engine restore is a future engine recompile"

@@ -830,3 +830,16 @@ fn data_integrity_format_json_problems_carry_a_tooling_kind() {
     // `data.*` integrity problems carry the tooling kind.
     assert_eq!(problem["kind"], serde_json::json!("tooling"));
 }
+
+#[test]
+fn data_rejects_a_duplicate_format_flag() {
+    // The `data` parsers share the one `--format` grammar, which rejects a repeated
+    // flag uniformly rather than silently taking the last one.
+    let output = marrow(&[
+        "data", "roots", "--format", "json", "--format", "text", "missing",
+    ]);
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("--format"), "{stderr}");
+}
