@@ -156,7 +156,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 | L11 runtime-evolution | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l11-runtime-evolution` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L12 store | `/Users/scottwilliams/Dev/marrow-rust-hardening-l12-store` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-store`; review `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-review-soundness` and `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-review-idiom`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-main-integration` | `e3690d46d5cebb760728dfb20b49cd52d0806c2b` | no source commit; tracker evidence recorded | complete | focused store/default/native checks, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings | pass, no findings | no review findings | no source cherry-pick required; main integration gates passed |
 | L13 backup-restore | `/Users/scottwilliams/Dev/marrow-rust-hardening-l13-backup-restore` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-backup-restore`; review `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-review-soundness` and `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-review-idiom`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-main-integration` | `2215296a4de471bf051e15990158e558b9d51bd6` | lane `fdbc324e025b5cd81b7bd97354544552c8e02bb5`; main `b1f0112ed36908535c0d4ef1dc09f198835134c1` | complete | focused backup tests, workspace build/test, workspace clippy, and fmt gates passed | fail on typed wrong-type manifest payload, then pass after fix | pass, then pass after re-review | L13-R001 fixed and re-reviewed | integrated on main after live-main recheck; tracker evidence recorded |
-| L14 cli-tools-server | `/Users/scottwilliams/Dev/marrow-rust-hardening-l14-cli-tools-server`; trace slice `/Users/scottwilliams/Dev/marrow-rust-hardening-l14-trace-cli`; usage/v01 slice `/Users/scottwilliams/Dev/marrow-rust-hardening-l14-usage-v01` | latest no-source lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-usage-v01`; latest reviews `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-soundness-usage-v01` and `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-idiom-usage-v01` | initial CLI slice `13852686ed8317e1b567f941ff160de345738d3b`; trace source `4a3e473bbf6a9465c46e8d0fd05f9966e1fe2f1a`; usage/v01 no-source base `d732ad3a0d395a713f741c8882e0111748763284` | latest source/main `4a3e473bbf6a9465c46e8d0fd05f9966e1fe2f1a`; latest tracker `d732ad3a0d395a713f741c8882e0111748763284` | in-lane | focused CLI, trace, usage, and v0.1 tests, package test, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings after review-fixes | trace slice failed on JSONL order assertion gap, then pass after fix; prior diagnostic slice failed on semantic text assertions and duplicate JSON parsing, then pass after fix | L14-R001, L14-R002, and trace-order finding fixed and re-reviewed; usage/v01 no-source review had no findings | CLI diagnostic test-support and trace JSONL assertion slices integrated; usage/v01 reviewed-clean with no source change; untouched L14 source and sibling CLI files remain unreviewed |
+| L14 cli-tools-server | `/Users/scottwilliams/Dev/marrow-rust-hardening-l14-cli-tools-server`; trace slice `/Users/scottwilliams/Dev/marrow-rust-hardening-l14-trace-cli`; usage/v01 slice `/Users/scottwilliams/Dev/marrow-rust-hardening-l14-usage-v01`; fmt/test slice `/Users/scottwilliams/Dev/marrow-rust-hardening-l14-fmt-test-cli` | latest lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-fmt-test-cli`; latest reviews `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-soundness-fmt-test-2` and `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-idiom-fmt-test-2`; latest main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-fmt-test-main-integration` | initial CLI slice `13852686ed8317e1b567f941ff160de345738d3b`; trace source `4a3e473bbf6a9465c46e8d0fd05f9966e1fe2f1a`; usage/v01 no-source base `d732ad3a0d395a713f741c8882e0111748763284`; fmt/test source base `c1e97e1986d736377e0b0e4e2e2e146c5d2747e5` | latest source/main `d276c6a0841264b7a61b75c9ac7f77a7282139b9` | in-lane | focused CLI, trace, usage, v0.1, fmt, and test CLI tests, package test, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings after review-fixes | fmt/test slice failed on multi-file fmt coverage, OS-prose negative assertion, and low-value comments, then pass after fix; trace slice failed on JSONL order assertion gap, then pass after fix; prior diagnostic slice failed on semantic text assertions and duplicate JSON parsing, then pass after fix | L14-R001, L14-R002, trace-order finding, and L14-IDIOM-001 through L14-IDIOM-003 fixed and re-reviewed; usage/v01 no-source review had no findings | CLI diagnostic test-support, trace JSONL assertion, and fmt/test coverage cleanup slices integrated; usage/v01 reviewed-clean with no source change; untouched L14 source and sibling CLI files remain unreviewed |
 
 ## File Inventory
 
@@ -415,12 +415,12 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow/tests/data_cli.rs` - status: complete; owner: L14 cli-tools-server; notes: data integrity semantic problem assertions use JSON problem records, stable codes, source paths, tooling kind, and serialized JSON leakage checks.
 - `crates/marrow/tests/dry_run_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/tests/evolve_cli.rs` - status: complete; owner: L14 cli-tools-server; notes: semantic evolution diagnostics assert JSON codes, catalog IDs, populated counts, repair-required, approval-required, and schema-drift facts.
-- `crates/marrow/tests/fmt_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
+- `crates/marrow/tests/fmt_cli.rs` - status: complete; owner: L14 cli-tools-server; notes: project-directory fmt tests now cover multiple source files; no-config directory assertions use stable `io.read` plus `marrow.json`; retained text assertions are render-boundary checks because `marrow fmt` has no structured output mode.
 - `crates/marrow/tests/lsp_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/tests/run_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/tests/serve_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/tests/support/mod.rs` - status: complete; owner: L14 cli-tools-server; notes: shared CLI support provides small JSON/JSONL helpers and production catalog commit fixture helper; function-scoped dead-code allowances are integration-test-crate local.
-- `crates/marrow/tests/test_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
+- `crates/marrow/tests/test_cli.rs` - status: complete; owner: L14 cli-tools-server; notes: reviewed-clean ordinary test-result surface; retained text assertions are render-boundary checks because `marrow test --format` shapes trace output only, not pass/fail summaries.
 - `crates/marrow/tests/tooling_architecture.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/tests/trace_cli.rs` - status: complete; owner: L14 cli-tools-server; notes: trace JSONL tests assert ordered step/write/summary records, structured write target fields, and structured test trace labels; remaining text assertions are render-boundary checks.
 - `crates/marrow/tests/usage_cli.rs` - status: complete; owner: L14 cli-tools-server; notes: reviewed-clean usage/rendering boundary coverage; substring assertions are paired with exit code, empty stdout, and no-store-created checks where applicable.
@@ -1920,3 +1920,51 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
   - `git -C /Users/scottwilliams/Dev/marrow-rust-hardening-l14-usage-v01 diff --name-status d732ad3a0d395a713f741c8882e0111748763284 HEAD` returned no output.
   - `rg -n 'message\.contains|stderr\.contains|stdout\.contains|contains\(|\bunsafe\b' crates/marrow/tests/usage_cli.rs crates/marrow/tests/v01_cli.rs` found only the five intended `stderr.contains` assertions in `usage_cli.rs`, no matches in `v01_cli.rs`, and no unsafe usage.
   - `rg -n 'legacy|prototype|compat|temporary|TODO|FIXME|fallback|bridge' crates/marrow/tests/usage_cli.rs crates/marrow/tests/v01_cli.rs` returned no matches.
+
+## L14 Fmt And Test CLI Evidence
+
+- Worktree: `/Users/scottwilliams/Dev/marrow-rust-hardening-l14-fmt-test-cli`.
+- Target dirs:
+  - Lane: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-fmt-test-cli`.
+  - Initial soundness review: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-soundness-fmt-test`.
+  - Initial idiom/spec review: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-idiom-fmt-test`.
+  - Re-review soundness: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-soundness-fmt-test-2`.
+  - Re-review idiom/spec: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-idiom-fmt-test-2`.
+  - Main integration: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-fmt-test-main-integration`.
+- Base/head:
+  - Lane base: `c1e97e1986d736377e0b0e4e2e2e146c5d2747e5`.
+  - Final lane and main source commit: `d276c6a0841264b7a61b75c9ac7f77a7282139b9`.
+- Changed files:
+  - `crates/marrow/tests/fmt_cli.rs`
+  - `crates/marrow/tests/test_cli.rs`
+- Source/test changes:
+  - `fmt_cli.rs` project-directory fixtures now accept multiple source files.
+  - `fmt_check_on_a_project_directory_passes_when_all_files_are_formatted` covers two formatted project files.
+  - `fmt_write_on_a_project_directory_rewrites_each_changed_file` rewrites and asserts both changed source files.
+  - `fmt_on_a_directory_with_no_config_reports_io_read_for_config` asserts stable `io.read` and `marrow.json` text instead of a negative OS-prose substring.
+  - Low-value restatement comments in the reviewed fmt/test tests were removed.
+  - No production code, shared CLI support, manifests, lockfile, or non-tracker docs changed in the source lane.
+- Focused and lane gates:
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-fmt-test-cli cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l14-fmt-test-cli/Cargo.toml -p marrow --test fmt_cli --test test_cli` passed with 15 `fmt_cli` tests and 7 `test_cli` tests after review fixes.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-fmt-test-cli cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l14-fmt-test-cli/Cargo.toml --all -- --check` passed with no output.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-fmt-test-cli cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l14-fmt-test-cli/Cargo.toml -p marrow --all-targets -- -D warnings` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-fmt-test-cli cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l14-fmt-test-cli/Cargo.toml -p marrow` passed.
+- Source review:
+  - Initial soundness review: pass, no findings. Reviewer verified `marrow fmt --format json` is rejected, `marrow test --format json` still emits text result lines, and `marrow test --trace --format json` shapes only trace output.
+  - Initial idiom/spec review: fail. L14-IDIOM-001 found project-directory fmt tests claimed all-file behavior while using one-file fixtures. L14-IDIOM-002 found a negative OS-prose assertion in the no-config directory test. L14-IDIOM-003 found low-value comments in the reviewed tests.
+  - Re-review soundness: pass, no findings. Reviewer reran the focused tests, probed a two-file project where only `src/lib.mw` was unformatted, and verified the no-config directory reports `io.read` plus `marrow.json`.
+  - Re-review idiom/spec: pass, no findings. Reviewer reran fmt, clippy, and the focused tests; verified L14-IDIOM-001 through L14-IDIOM-003 were fixed; and found no new helper overreach or sediment.
+- Absence and sibling scans:
+  - `git diff --check` returned no output.
+  - `git diff --name-only c1e97e1986d736377e0b0e4e2e2e146c5d2747e5..d276c6a0841264b7a61b75c9ac7f77a7282139b9` listed only `crates/marrow/tests/fmt_cli.rs` and `crates/marrow/tests/test_cli.rs`.
+  - `git diff --name-only c1e97e1986d736377e0b0e4e2e2e146c5d2747e5..d276c6a0841264b7a61b75c9ac7f77a7282139b9 -- Cargo.lock ':(glob)**/Cargo.toml'` returned no output.
+  - `rg -n 'legacy|prototype|compat|temporary|TODO|FIXME|fallback|bridge' crates/marrow/tests/fmt_cli.rs crates/marrow/tests/test_cli.rs` returned no matches.
+  - `rg -n 'Is a directory|raw OS|not_is_a_directory' crates/marrow/tests/fmt_cli.rs crates/marrow/tests/test_cli.rs` returned no matches.
+  - The retained `contains` assertions were reviewed as render-boundary checks: `cmd_fmt` has no structured output mode, and `cmd_test` uses `--format` only for trace output.
+- Integration gates:
+  - Before integration, `origin/main` was `c1e97e1986d736377e0b0e4e2e2e146c5d2747e5`; the reviewed source branch was a direct descendant and `main` fast-forwarded to `d276c6a0841264b7a61b75c9ac7f77a7282139b9`.
+  - On the combined head, `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-fmt-test-main-integration cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --all -- --check` passed with no output.
+  - On the combined head, `rg -n '\bunsafe\b' --glob '*.rs'` returned no matches.
+  - On the combined head, `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-fmt-test-main-integration cargo build --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
+  - On the combined head, `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-fmt-test-main-integration cargo test --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
+  - On the combined head, `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-fmt-test-main-integration cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace --all-targets -- -D warnings` passed.
