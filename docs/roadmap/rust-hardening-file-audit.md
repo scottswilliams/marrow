@@ -156,7 +156,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 | L11 runtime-evolution | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l11-runtime-evolution` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L12 store | `/Users/scottwilliams/Dev/marrow-rust-hardening-l12-store` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-store`; review `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-review-soundness` and `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-review-idiom`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-main-integration` | `e3690d46d5cebb760728dfb20b49cd52d0806c2b` | no source commit; tracker evidence recorded | complete | focused store/default/native checks, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings | pass, no findings | no review findings | no source cherry-pick required; main integration gates passed |
 | L13 backup-restore | `/Users/scottwilliams/Dev/marrow-rust-hardening-l13-backup-restore` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-backup-restore`; review `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-review-soundness` and `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-review-idiom`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-main-integration` | `2215296a4de471bf051e15990158e558b9d51bd6` | lane `fdbc324e025b5cd81b7bd97354544552c8e02bb5`; main `b1f0112ed36908535c0d4ef1dc09f198835134c1` | complete | focused backup tests, workspace build/test, workspace clippy, and fmt gates passed | fail on typed wrong-type manifest payload, then pass after fix | pass, then pass after re-review | L13-R001 fixed and re-reviewed | integrated on main after live-main recheck; tracker evidence recorded |
-| L14 cli-tools-server | `/Users/scottwilliams/Dev/marrow-rust-hardening-l14-cli-tools-server`; trace slice `/Users/scottwilliams/Dev/marrow-rust-hardening-l14-trace-cli` | latest lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-trace-cli`; latest reviews `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-soundness-trace-2` and `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-idiom-trace-2`; latest main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-trace-main-integration` | initial CLI slice `13852686ed8317e1b567f941ff160de345738d3b`; trace slice initial `f54157c4fa3eddcdc4ac102bd5a346488cc64592`; trace integration base `a38c74afdd8456ceecef5deb230e087349c5269c` | latest source/main `4a3e473bbf6a9465c46e8d0fd05f9966e1fe2f1a` | in-lane | focused CLI and trace tests, package test, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings after review-fixes | trace slice failed on JSONL order assertion gap, then pass after fix; prior diagnostic slice failed on semantic text assertions and duplicate JSON parsing, then pass after fix | L14-R001, L14-R002, and trace-order finding fixed and re-reviewed | CLI diagnostic test-support and trace JSONL assertion slices integrated; untouched L14 source and sibling CLI files remain unreviewed |
+| L14 cli-tools-server | `/Users/scottwilliams/Dev/marrow-rust-hardening-l14-cli-tools-server`; trace slice `/Users/scottwilliams/Dev/marrow-rust-hardening-l14-trace-cli`; usage/v01 slice `/Users/scottwilliams/Dev/marrow-rust-hardening-l14-usage-v01` | latest no-source lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-usage-v01`; latest reviews `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-soundness-usage-v01` and `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-idiom-usage-v01` | initial CLI slice `13852686ed8317e1b567f941ff160de345738d3b`; trace source `4a3e473bbf6a9465c46e8d0fd05f9966e1fe2f1a`; usage/v01 no-source base `d732ad3a0d395a713f741c8882e0111748763284` | latest source/main `4a3e473bbf6a9465c46e8d0fd05f9966e1fe2f1a`; latest tracker `d732ad3a0d395a713f741c8882e0111748763284` | in-lane | focused CLI, trace, usage, and v0.1 tests, package test, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings after review-fixes | trace slice failed on JSONL order assertion gap, then pass after fix; prior diagnostic slice failed on semantic text assertions and duplicate JSON parsing, then pass after fix | L14-R001, L14-R002, and trace-order finding fixed and re-reviewed; usage/v01 no-source review had no findings | CLI diagnostic test-support and trace JSONL assertion slices integrated; usage/v01 reviewed-clean with no source change; untouched L14 source and sibling CLI files remain unreviewed |
 
 ## File Inventory
 
@@ -423,8 +423,8 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow/tests/test_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/tests/tooling_architecture.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/tests/trace_cli.rs` - status: complete; owner: L14 cli-tools-server; notes: trace JSONL tests assert ordered step/write/summary records, structured write target fields, and structured test trace labels; remaining text assertions are render-boundary checks.
-- `crates/marrow/tests/usage_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
-- `crates/marrow/tests/v01_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
+- `crates/marrow/tests/usage_cli.rs` - status: complete; owner: L14 cli-tools-server; notes: reviewed-clean usage/rendering boundary coverage; substring assertions are paired with exit code, empty stdout, and no-store-created checks where applicable.
+- `crates/marrow/tests/v01_cli.rs` - status: complete; owner: L14 cli-tools-server; notes: reviewed-clean end-to-end v0.1 fixture check through production CLI pipeline with exact final stdout.
 
 ### docs/root
 - `docs/README.md` - status: complete; owner: L02 docs-meta; notes: future-docs pointer no longer implies a complete placeholder mirror.
@@ -1890,3 +1890,33 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
   - On the combined head, `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-trace-main-integration cargo test --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
   - On the combined head, `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-trace-main-integration cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace --all-targets -- -D warnings` passed.
   - `git -C /Users/scottwilliams/Dev/marrow push origin main rust-hardening-l14-trace-cli` pushed `main` from `a38c74a` to `4a3e473` and created `origin/rust-hardening-l14-trace-cli` at `4a3e473`.
+
+## L14 Usage And V01 CLI Evidence
+
+- Worktree: `/Users/scottwilliams/Dev/marrow-rust-hardening-l14-usage-v01`.
+- Target dirs:
+  - Lane: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-usage-v01`.
+  - Soundness review: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-soundness-usage-v01`.
+  - Idiom/spec review: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-idiom-usage-v01`.
+- Base/head:
+  - No-source lane base/head: `d732ad3a0d395a713f741c8882e0111748763284`.
+  - No source commit was created.
+- Reviewed files:
+  - `crates/marrow/tests/usage_cli.rs`
+  - `crates/marrow/tests/v01_cli.rs`
+- Scope decision:
+  - `usage_cli.rs` is CLI usage-failure boundary coverage. The retained `stderr.contains` assertions check user-facing usage strings where no structured output surface exists, and they are paired with exit code 2, empty stdout for top-level/run usage cases, and no-store-created coverage for the unknown `data` subcommand.
+  - `v01_cli.rs` is an end-to-end durable v0.1 fixture test through the production CLI pipeline. It checks the project, seeds the native store through `marrow run`, and asserts exact final stdout from the print entry.
+  - No production code, tests, shared support, manifests, lockfile, or docs changed in the source lane.
+- Focused and lane gates:
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-usage-v01 cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l14-usage-v01/Cargo.toml -p marrow --test usage_cli --test v01_cli` passed with 5 `usage_cli` tests and 1 `v01_cli` test.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-usage-v01 cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l14-usage-v01/Cargo.toml --all -- --check` passed with no output.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-usage-v01 cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l14-usage-v01/Cargo.toml -p marrow --all-targets -- -D warnings` passed.
+- Source review:
+  - Soundness review: pass, no findings. Reviewer reran the focused `usage_cli` and `v01_cli` tests, verified the worktree had no source diff, confirmed no manifest/lock/source churn, and checked that the usage text assertions are render-boundary checks rather than semantic diagnostics.
+  - Idiom/spec review: pass, no findings. Reviewer reran fmt, clippy, and the focused tests, confirmed `usage_cli.rs` pairs usage text checks with exit/no-output/no-store assertions, and confirmed `v01_cli.rs` is a production-pipeline fixture test with exact final stdout.
+- Absence scans:
+  - `git -C /Users/scottwilliams/Dev/marrow-rust-hardening-l14-usage-v01 status --short` returned no output.
+  - `git -C /Users/scottwilliams/Dev/marrow-rust-hardening-l14-usage-v01 diff --name-status d732ad3a0d395a713f741c8882e0111748763284 HEAD` returned no output.
+  - `rg -n 'message\.contains|stderr\.contains|stdout\.contains|contains\(|\bunsafe\b' crates/marrow/tests/usage_cli.rs crates/marrow/tests/v01_cli.rs` found only the five intended `stderr.contains` assertions in `usage_cli.rs`, no matches in `v01_cli.rs`, and no unsafe usage.
+  - `rg -n 'legacy|prototype|compat|temporary|TODO|FIXME|fallback|bridge' crates/marrow/tests/usage_cli.rs crates/marrow/tests/v01_cli.rs` returned no matches.
