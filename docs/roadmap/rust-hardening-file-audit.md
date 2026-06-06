@@ -156,7 +156,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 | L11 runtime-evolution | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l11-runtime-evolution` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L12 store | `/Users/scottwilliams/Dev/marrow-rust-hardening-l12-store` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-store`; review `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-review-soundness` and `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-review-idiom`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-main-integration` | `e3690d46d5cebb760728dfb20b49cd52d0806c2b` | no source commit; tracker evidence recorded | complete | focused store/default/native checks, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings | pass, no findings | no review findings | no source cherry-pick required; main integration gates passed |
 | L13 backup-restore | `/Users/scottwilliams/Dev/marrow-rust-hardening-l13-backup-restore` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-backup-restore`; review `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-review-soundness` and `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-review-idiom`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-main-integration` | `2215296a4de471bf051e15990158e558b9d51bd6` | lane `fdbc324e025b5cd81b7bd97354544552c8e02bb5`; main `b1f0112ed36908535c0d4ef1dc09f198835134c1` | complete | focused backup tests, workspace build/test, workspace clippy, and fmt gates passed | fail on typed wrong-type manifest payload, then pass after fix | pass, then pass after re-review | L13-R001 fixed and re-reviewed | integrated on main after live-main recheck; tracker evidence recorded |
-| L14 cli-tools-server | `/Users/scottwilliams/Dev/marrow-rust-hardening-l14-cli-tools-server` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-cli-tools-server`; review `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-soundness-4` and `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-idiom-4`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-main-integration` | `13852686ed8317e1b567f941ff160de345738d3b` | lane `86ff6e4f4647e5f88f2ea8abe9a0598961fb5c94` and `79adda94db4aae1e733f1d17a5582d971cce1293`; main `14f71ea` and `1b22287` | in-lane | focused CLI tests, package test, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings after review-fix | fail on semantic text assertions and duplicate JSON parsing, then pass after fix | L14-R001 and L14-R002 fixed and re-reviewed | CLI diagnostic test-support slice integrated; untouched L14 source and sibling CLI files remain unreviewed |
+| L14 cli-tools-server | `/Users/scottwilliams/Dev/marrow-rust-hardening-l14-cli-tools-server`; trace slice `/Users/scottwilliams/Dev/marrow-rust-hardening-l14-trace-cli` | latest lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-trace-cli`; latest reviews `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-soundness-trace-2` and `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-idiom-trace-2`; latest main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-trace-main-integration` | initial CLI slice `13852686ed8317e1b567f941ff160de345738d3b`; trace slice initial `f54157c4fa3eddcdc4ac102bd5a346488cc64592`; trace integration base `a38c74afdd8456ceecef5deb230e087349c5269c` | latest source/main `4a3e473bbf6a9465c46e8d0fd05f9966e1fe2f1a` | in-lane | focused CLI and trace tests, package test, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings after review-fixes | trace slice failed on JSONL order assertion gap, then pass after fix; prior diagnostic slice failed on semantic text assertions and duplicate JSON parsing, then pass after fix | L14-R001, L14-R002, and trace-order finding fixed and re-reviewed | CLI diagnostic test-support and trace JSONL assertion slices integrated; untouched L14 source and sibling CLI files remain unreviewed |
 
 ## File Inventory
 
@@ -422,7 +422,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow/tests/support/mod.rs` - status: complete; owner: L14 cli-tools-server; notes: shared CLI support provides small JSON/JSONL helpers and production catalog commit fixture helper; function-scoped dead-code allowances are integration-test-crate local.
 - `crates/marrow/tests/test_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/tests/tooling_architecture.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
-- `crates/marrow/tests/trace_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
+- `crates/marrow/tests/trace_cli.rs` - status: complete; owner: L14 cli-tools-server; notes: trace JSONL tests assert ordered step/write/summary records, structured write target fields, and structured test trace labels; remaining text assertions are render-boundary checks.
 - `crates/marrow/tests/usage_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/tests/v01_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 
@@ -1838,3 +1838,55 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
   - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-main-integration cargo build --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
   - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-main-integration cargo test --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
   - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-main-integration cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace --all-targets -- -D warnings` passed.
+
+## L14 Trace JSONL Evidence
+
+- Worktree: `/Users/scottwilliams/Dev/marrow-rust-hardening-l14-trace-cli`.
+- Target dirs:
+  - Lane: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-trace-cli`.
+  - Initial soundness review: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-soundness-trace-1`.
+  - Initial idiom/spec review: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-idiom-trace-1`.
+  - Re-review soundness: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-soundness-trace-2`.
+  - Re-review idiom/spec: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-idiom-trace-2`.
+  - Main integration: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-trace-main-integration`.
+- Base/head:
+  - Initial lane base: `f54157c4fa3eddcdc4ac102bd5a346488cc64592`.
+  - Live rebase/integration base: `a38c74afdd8456ceecef5deb230e087349c5269c`.
+  - Final lane and main source commit: `4a3e473bbf6a9465c46e8d0fd05f9966e1fe2f1a`.
+- Changed files:
+  - `crates/marrow/tests/trace_cli.rs`
+- Failing-or-focused checks:
+  - Initial RED: after changing `run_trace_json_emits_step_and_write_records` to call a not-yet-added `trace_record` helper, the focused test failed with `E0425 cannot find function trace_record in this scope`.
+  - GREEN: after adding structured JSONL assertions and the local mixed-output helper, the focused JSONL run trace and test trace label tests passed.
+  - Review fix: idiom/spec review found the JSONL run trace test selected records by kind and could miss write-before-step ordering regressions. The test was fixed to destructure the records as `[step, write, summary]` and assert each record's kind at that position.
+- Source/test changes:
+  - Replaced ad hoc JSONL parsing in `run_trace_json_emits_step_and_write_records` with `support::jsonl` and exact structured assertions for the ordered step, write, and summary records.
+  - Added exact checks for trace label, source line, depth, write op/path, base64 value, target kind/store/identity/path, and summary event count.
+  - Migrated `test_trace_labels_each_test` to `marrow test --trace --format jsonl` and asserted structured step and summary trace labels for both tests.
+  - Left text `contains` checks in `trace_cli.rs` only for render-boundary coverage: text trace ordering, bool/int value rendering, delete rendering, help text, and plain-run no-trace behavior.
+  - No production code, shared CLI support, manifests, lockfile, or docs changed in the source lane.
+- Focused and lane gates:
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-trace-cli cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l14-trace-cli/Cargo.toml -p marrow --test trace_cli run_trace_json_emits_step_and_write_records` passed after the initial implementation and again after the order fix.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-trace-cli cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l14-trace-cli/Cargo.toml -p marrow --test trace_cli test_trace_labels_each_test` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-trace-cli cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l14-trace-cli/Cargo.toml -p marrow --test trace_cli` passed with 8 tests.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-trace-cli cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l14-trace-cli/Cargo.toml --all -- --check` passed with no output.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-trace-cli cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l14-trace-cli/Cargo.toml -p marrow` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-trace-cli cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l14-trace-cli/Cargo.toml -p marrow --all-targets -- -D warnings` passed.
+- Source review:
+  - Soundness review: pass, no findings. Reviewer reran the two focused migrated tests and the full `trace_cli` binary, verified only `trace_cli.rs` changed, and confirmed no old ad hoc parser or test-label substring assertions remained.
+  - Idiom/spec review: first failed on the missing JSONL event-order assertion. After the test destructured the records as `[step, write, summary]`, re-review passed with no findings. Reviewer reran fmt, clippy, and the full `trace_cli` binary.
+- Absence and sibling scans:
+  - `git diff --check` returned no output.
+  - `git diff --name-only` listed only `crates/marrow/tests/trace_cli.rs`.
+  - `git diff --name-only -- Cargo.lock ':(glob)**/Cargo.toml'` returned no output.
+  - `rg -n 'trace_record|serde_json::from_str|let kinds|combined|contains\("::first"|contains\("::second"|\bunsafe\b' crates/marrow/tests/trace_cli.rs` found only the retained `jsonl_trace_records` helper and its call site, with no old ad hoc parser, label substring checks, or unsafe usage.
+  - `git diff -- crates/marrow/tests/trace_cli.rs | rg -n '^\+\s*//'` returned no matches, so the slice introduced no comments.
+- Integration gates:
+  - Before integration, `origin/main` had advanced to `a38c74afdd8456ceecef5deb230e087349c5269c`; the reviewed source commit rebased cleanly to `4a3e473bbf6a9465c46e8d0fd05f9966e1fe2f1a`.
+  - Main fast-forwarded to `origin/main` `a38c74afdd8456ceecef5deb230e087349c5269c`, then fast-forwarded to `4a3e473bbf6a9465c46e8d0fd05f9966e1fe2f1a`.
+  - On the combined head, `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-trace-main-integration cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --all -- --check` passed with no output.
+  - On the combined head, `rg -n '\bunsafe\b' --glob '*.rs' /Users/scottwilliams/Dev/marrow` returned no matches.
+  - On the combined head, `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-trace-main-integration cargo build --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
+  - On the combined head, `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-trace-main-integration cargo test --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
+  - On the combined head, `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-trace-main-integration cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace --all-targets -- -D warnings` passed.
+  - `git -C /Users/scottwilliams/Dev/marrow push origin main rust-hardening-l14-trace-cli` pushed `main` from `a38c74a` to `4a3e473` and created `origin/rust-hardening-l14-trace-cli` at `4a3e473`.
