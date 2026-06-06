@@ -132,7 +132,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 | Duplicate semantic classifiers | Targeted scan found classifier families in checker/runtime; owner lanes must prove one semantic owner. | needs-lane | L06-L11 |
 | Public raw/string APIs | L12 store raw archive constructors are `pub(crate)` typed backup boundaries or test-gated constructors; redb raw byte checks are native substrate tests. L13 backup/restore raw cell helpers are test-only malformed-archive constructors; production archive errors now carry typed payloads. Other raw/catalog hits require production-boundary review. | needs-lane | L10, L14 |
 | Fallback branches and legacy modes | L00 root-fixtures hits are AGENTS policy prohibitions. L01 language-doc hits are v0.1/reserved boundary text rather than compatibility fallback behavior. L12 store hits are version-refusal and table-initialization comments or tests rejecting legacy manifest spellings. L13 legacy digest hits are rejection tests for old digest spelling, not compatibility behavior. Other term scan hits require lane-local review. | needs-lane | L06-L11, L14 |
-| Message-parsing logic | L03 syntax, L04 schema, L05 project-model, L12 store, and L13 backup/restore have no `message.contains` semantic assertions after integration. L06 schema-payload, duplicate-root, duplicate-declaration, duplicate-module, module-path, rejected-surface, schema-unsupported-map, enum-payload, parent-not-category, script-import, private-enum, duplicate-named-argument, append-target, conversion-source, interpolation-source, type-mismatch, and reserved-catalog payload slices migrated the checker assertions they touched; remaining checker/runtime/tooling areas still need lane-local migration. | needs-lane | L06-L11, L14 |
+| Message-parsing logic | L03 syntax, L04 schema, L05 project-model, L12 store, and L13 backup/restore have no `message.contains` semantic assertions after integration. L06 schema-payload, duplicate-root, duplicate-declaration, duplicate-module, module-path, rejected-surface, schema-unsupported-map, enum-payload, parent-not-category, script-import, private-enum, duplicate-named-argument, append-target, conversion-source, interpolation-source, type-mismatch, and reserved-catalog payload slices migrated the checker assertions they touched. L10 runtime throw-field slice removed `message.contains` assertions from `crates/marrow-run/tests/eval.rs`; remaining checker/runtime/tooling areas still need lane-local migration. | needs-lane | L06-L11, L14 |
 | Source-text architecture scans | Existing scans identified in architecture tests. | needs-lane | L08, L10, L14 |
 | Comment sediment | L00 root-fixtures hits are durable AGENTS policy prohibitions and repository operating rules. L01 language-doc hits were triaged as durable `migration DSL` negative scope, `std::clock::now()` examples, and `rename ... now spelled` evolution wording. L02 removed empty future placeholder pages; remaining L02 hits were triaged as durable data-evolution compatibility/migration contracts, `std::clock::now`, old path aliases, bridge wording for host-system extensions, and protocol cursor text. L03 syntax hits were triaged as durable `rename ... now spelled` semantics and `now` sample text; L04 schema hits were triaged as `clock.now` domain text and a pre-existing `string`/`Str` bridge comment; L05 project-model hits were triaged as durable store-key migration wording and a `SystemTime::now()` false positive; L12 store hits were durable redb format/version comments, native substrate raw-byte tests, and internal byte-decoder variable names; L13 backup/restore hits were durable legacy-digest rejection tests, raw-engine-copy contract docs, and test/output wording. | needs-lane | L06-L11, L14 |
 | Cargo target isolation | Completed lanes spell lane-specific `CARGO_TARGET_DIR`; future lane commands must keep doing so. | needs-lane | L06-L11, L14 |
@@ -152,7 +152,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 | L07 checker-evolution | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l07-checker-evolution` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L08 checker-presence | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l08-checker-presence` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L09 checker-tooling | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l09-checker-tooling` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
-| L10 runtime-core | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-runtime-core` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
+| L10 runtime-core | `/Users/scottwilliams/Dev/marrow-rust-hardening-l10-runtime-core` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-runtime-core`; reviews `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-review-soundness-1` and `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-review-idiom-1`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-main-integration` | initial `f7501f90c77edc95ae08297ac9d39583c79e6cac`; live rebase base `fe51bc62435437251607f77938150c766bbde7e6` | source/main `c428dd58c5af38de73623f3b806cbc842783c9c0` | in-lane | focused throw-field tests, `eval.rs`, `marrow-run`, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings | pass, no findings | no review findings | runtime throw-field test slice integrated; broader L10 files remain unreviewed |
 | L11 runtime-evolution | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l11-runtime-evolution` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L12 store | `/Users/scottwilliams/Dev/marrow-rust-hardening-l12-store` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-store`; review `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-review-soundness` and `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-review-idiom`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-main-integration` | `e3690d46d5cebb760728dfb20b49cd52d0806c2b` | no source commit; tracker evidence recorded | complete | focused store/default/native checks, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings | pass, no findings | no review findings | no source cherry-pick required; main integration gates passed |
 | L13 backup-restore | `/Users/scottwilliams/Dev/marrow-rust-hardening-l13-backup-restore` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-backup-restore`; review `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-review-soundness` and `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-review-idiom`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-main-integration` | `2215296a4de471bf051e15990158e558b9d51bd6` | lane `fdbc324e025b5cd81b7bd97354544552c8e02bb5`; main `b1f0112ed36908535c0d4ef1dc09f198835134c1` | complete | focused backup tests, workspace build/test, workspace clippy, and fmt gates passed | fail on typed wrong-type manifest payload, then pass after fix | pass, then pass after re-review | L13-R001 fixed and re-reviewed | integrated on main after live-main recheck; tracker evidence recorded |
@@ -333,7 +333,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow-run/src/write_dispatch/resource.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
 - `crates/marrow-run/src/write_plan.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
 - `crates/marrow-run/tests/architecture.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
-- `crates/marrow-run/tests/eval.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
+- `crates/marrow-run/tests/eval.rs` - status: in-lane; owner: L10 runtime-core; notes: runtime throw-field slice migrated `RuntimeError.message.contains` assertions to typed Error resource field assertions; oversized suite still requires broader L10 cleanup.
 - `crates/marrow-run/tests/evolution_apply.rs` - status: unreviewed; owner: L11 runtime-evolution; notes: initial inventory.
 
 ### crates/marrow-schema
@@ -1732,6 +1732,59 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
   - After a final `git -C /Users/scottwilliams/Dev/marrow fetch origin`, `git -C /Users/scottwilliams/Dev/marrow status --short --branch` showed `## main...origin/main [ahead 1]` plus unrelated untracked `docs/roadmap/release-hardening-operating-plan.md` and `docs/superpowers/`.
   - `git -C /Users/scottwilliams/Dev/marrow push origin main` pushed `main` from `6d9a8b2` to `28afaf1`.
   - `git -C /Users/scottwilliams/Dev/marrow-rust-hardening-l06-checker-core push origin rust-hardening-l06-checker-core` pushed the lane branch from `3d6cf68` to `28afaf1`.
+
+## L10 Runtime Throw Field Evidence
+
+- Worktree: `/Users/scottwilliams/Dev/marrow-rust-hardening-l10-runtime-core`.
+- Target dirs:
+  - Lane: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-runtime-core`.
+  - Soundness review: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-review-soundness-1`.
+  - Idiom/spec review: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-review-idiom-1`.
+  - Main integration: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-main-integration`.
+- Base/head:
+  - Initial worker base: `f7501f90c77edc95ae08297ac9d39583c79e6cac`.
+  - Live rebase/integration base: `fe51bc62435437251607f77938150c766bbde7e6`.
+  - Final lane and main source commit: `c428dd58c5af38de73623f3b806cbc842783c9c0`.
+- Changed files:
+  - `crates/marrow-run/tests/eval.rs`
+- Failing-or-focused checks:
+  - Initial RED: after changing `std_assert_fail_raises_with_its_message` to call `error_throw_fields`, the focused test failed because the helper did not exist.
+  - GREEN: after adding the helper and migrating all seven targeted assertions, each focused runtime throw-field test passed.
+- Source/test changes:
+  - Added a small `error_throw_fields` test helper that reads `RuntimeError.throw` as `Value::Resource` and fails closed for missing throws, non-resource throws, missing `code` or `message`, and non-string fields.
+  - Migrated `std_assert_fail_raises_with_its_message`, `finally_runs_after_a_fault_and_can_replace_it`, `a_throw_in_finally_replaces_the_outcome`, and four `run_entry_rejects_host_values_*` tests from rendered `RuntimeError.message.contains` checks to exact Error resource `code` and `message` field assertions.
+  - No production code, manifests, lockfile, or docs changed in the source lane.
+- Focused and lane gates:
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-runtime-core cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l10-runtime-core/Cargo.toml -p marrow-run --test eval std_assert_fail_raises_with_its_message` passed with 1 test.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-runtime-core cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l10-runtime-core/Cargo.toml -p marrow-run --test eval finally_runs_after_a_fault_and_can_replace_it` passed with 1 test.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-runtime-core cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l10-runtime-core/Cargo.toml -p marrow-run --test eval a_throw_in_finally_replaces_the_outcome` passed with 1 test.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-runtime-core cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l10-runtime-core/Cargo.toml -p marrow-run --test eval run_entry_rejects_host_values_that_do_not_match_checked_parameters` passed with 1 test.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-runtime-core cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l10-runtime-core/Cargo.toml -p marrow-run --test eval run_entry_rejects_host_values_for_moded_parameters` passed with 1 test.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-runtime-core cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l10-runtime-core/Cargo.toml -p marrow-run --test eval run_entry_rejects_host_values_for_identity_parameters` passed with 1 test.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-runtime-core cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l10-runtime-core/Cargo.toml -p marrow-run --test eval run_entry_rejects_host_values_for_resource_parameters` passed with 1 test.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-runtime-core cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l10-runtime-core/Cargo.toml -p marrow-run --test eval` passed with 422 tests.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-runtime-core cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l10-runtime-core/Cargo.toml -p marrow-run` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-runtime-core cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l10-runtime-core/Cargo.toml --all -- --check` passed with no output.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-runtime-core cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l10-runtime-core/Cargo.toml -p marrow-run --all-targets -- -D warnings` passed.
+- Source review:
+  - Soundness review: pass, no findings. Reviewer reran focused throw-field tests, checked the helper fails closed for malformed throw values, verified the targeted `message.contains` assertions were absent, and confirmed only `crates/marrow-run/tests/eval.rs` changed.
+  - Idiom/spec review: pass, no findings. Reviewer reran fmt, clippy, and the exact seven focused tests, inspected the helper shape and local style, found no stronger public typed helper available to integration tests, and confirmed no production or manifest churn.
+- Absence and sibling scans:
+  - `git diff --check` returned no output.
+  - `git diff --name-only` listed only `crates/marrow-run/tests/eval.rs`.
+  - `git diff --name-only -- Cargo.lock ':(glob)**/Cargo.toml'` returned no output.
+  - `rg -n 'message\.contains\("boom"\)|message\.contains\("cleanup\.failed"\)|message\.contains\("from\.finally"\)|message\.contains\("entry argument `n`"\)|message\.contains\("inout"\)|message\.contains\("entry argument `id`"\)|message\.contains\("entry argument `book`"\)' crates/marrow-run/tests/eval.rs` returned no matches.
+  - `rg -n 'message\.contains' crates/marrow-run/tests/eval.rs` returned no matches.
+  - `rg -n '\bunsafe\b' crates/marrow-run/tests/eval.rs` returned no matches.
+- Integration gates:
+  - After source review, `origin/main` had advanced to `fe51bc62435437251607f77938150c766bbde7e6`; the reviewed lane commit rebased cleanly to `c428dd58c5af38de73623f3b806cbc842783c9c0`.
+  - Main fast-forwarded to `origin/main` `fe51bc62435437251607f77938150c766bbde7e6`, then fast-forwarded to `c428dd58c5af38de73623f3b806cbc842783c9c0`.
+  - On the combined head, `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-main-integration cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --all -- --check` passed with no output.
+  - On the combined head, `rg -n '\bunsafe\b' --glob '*.rs' /Users/scottwilliams/Dev/marrow` returned no matches.
+  - On the combined head, `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-main-integration cargo build --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
+  - On the combined head, `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-main-integration cargo test --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
+  - On the combined head, `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-main-integration cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace --all-targets -- -D warnings` passed.
+  - `git -C /Users/scottwilliams/Dev/marrow push origin main rust-hardening-l10-runtime-core` pushed `main` from `fe51bc6` to `c428dd5` and created `origin/rust-hardening-l10-runtime-core` at `c428dd5`.
 
 ## L14 CLI Diagnostic Test-Support Evidence
 
