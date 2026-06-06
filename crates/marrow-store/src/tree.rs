@@ -7,7 +7,7 @@ use crate::cell::{
     CatalogId, CellKey, MetaCell, NODE_MARKER, SequencePosition, decode_data_child_key,
     decode_index_child_key, decode_index_entry_key, decode_index_identity, decode_record_child_key,
 };
-use crate::key::{SavedKey, decode_key_value};
+use crate::key::SavedKey;
 use crate::metadata::{decode_commit_metadata, encode_commit_metadata};
 
 pub use crate::backup::{TreeBackupCell, TreeBackupCellBuf, TreeBackupCellReadError};
@@ -20,7 +20,6 @@ pub use crate::metadata::{
 /// streamed in bounded chunks rather than materialized at once.
 const BACKUP_SCAN_PAGE: usize = 1024;
 const TREE_VALUE_VERSION_V0: u8 = 0;
-const MIN_LENGTH_PREFIX_BYTES: usize = 4;
 const CHILD_SCAN_PAGE_LIMIT: usize = 128;
 type IndexEntryVisitor<'a> =
     dyn FnMut(&[SavedKey], &[SavedKey], &[u8]) -> Result<(), StoreError> + 'a;
@@ -44,27 +43,6 @@ pub struct IndexPage {
     pub entries: Vec<IndexEntry>,
     pub cursor: Option<IndexCursor>,
     pub truncated: bool,
-}
-
-/// A typed reference to a stored identity in another catalog-backed store.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TreeReference {
-    store: CatalogId,
-    identity: Vec<SavedKey>,
-}
-
-impl TreeReference {
-    pub fn new(store: CatalogId, identity: Vec<SavedKey>) -> Self {
-        Self { store, identity }
-    }
-
-    pub fn store(&self) -> &CatalogId {
-        &self.store
-    }
-
-    pub fn identity(&self) -> &[SavedKey] {
-        &self.identity
-    }
 }
 
 /// A catalog-backed enum member value.
@@ -142,6 +120,11 @@ impl TreeStore {
         self.with_cell(|cell| cell.read_catalog_epoch())
     }
 
+    /// Stamps the layout epoch on its own, without the engine-profile digest that
+    /// `write_engine_profile` also records. This reproduces the pre-digest on-disk
+    /// shape that the layout-epoch drift fence must still defend against, so the
+    /// standalone stamp is the only way to construct a store carrying a layout
+    /// epoch but no profile digest.
     pub fn write_layout_epoch(&self, epoch: u64) -> Result<(), StoreError> {
         self.with_cell(|cell| cell.write_layout_epoch(epoch))
     }
@@ -170,14 +153,6 @@ impl TreeStore {
         self.with_cell(|cell| cell.write_node(store, identity))
     }
 
-    pub fn node_exists(
-        &self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-    ) -> Result<bool, StoreError> {
-        self.with_cell(|cell| cell.node_exists(store, identity))
-    }
-
     pub fn write_leaf(
         &self,
         store: &CatalogId,
@@ -186,24 +161,6 @@ impl TreeStore {
         value: Vec<u8>,
     ) -> Result<(), StoreError> {
         self.with_cell(|cell| cell.write_leaf(store, identity, member, value))
-    }
-
-    pub fn read_leaf(
-        &self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        member: &CatalogId,
-    ) -> Result<Option<Vec<u8>>, StoreError> {
-        self.with_cell(|cell| cell.read_leaf(store, identity, member))
-    }
-
-    pub fn delete_leaf(
-        &self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        member: &CatalogId,
-    ) -> Result<(), StoreError> {
-        self.with_cell(|cell| cell.delete_leaf(store, identity, member))
     }
 
     pub fn write_sequence_position(
@@ -217,26 +174,6 @@ impl TreeStore {
         self.with_cell(|cell| {
             cell.write_sequence_position(store, identity, member, position, value)
         })
-    }
-
-    pub fn read_sequence_position(
-        &self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        member: &CatalogId,
-        position: SequencePosition,
-    ) -> Result<Option<Vec<u8>>, StoreError> {
-        self.with_cell(|cell| cell.read_sequence_position(store, identity, member, position))
-    }
-
-    pub fn delete_sequence_position(
-        &self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        member: &CatalogId,
-        position: SequencePosition,
-    ) -> Result<(), StoreError> {
-        self.with_cell(|cell| cell.delete_sequence_position(store, identity, member, position))
     }
 
     pub fn write_data_value(
@@ -434,15 +371,6 @@ impl TreeStore {
         value: Vec<u8>,
     ) -> Result<(), StoreError> {
         self.with_cell(|cell| cell.write_index_entry(index, index_keys, identity, value))
-    }
-
-    pub fn read_index_entry(
-        &self,
-        index: &CatalogId,
-        index_keys: &[SavedKey],
-        identity: &[SavedKey],
-    ) -> Result<Option<Vec<u8>>, StoreError> {
-        self.with_cell(|cell| cell.read_index_entry(index, index_keys, identity))
     }
 
     pub fn delete_index_entry(
@@ -678,17 +606,6 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         )
     }
 
-    fn node_exists(&self, store: &CatalogId, identity: &[SavedKey]) -> Result<bool, StoreError> {
-        match self
-            .backend
-            .read(CellKey::node(store, identity).as_bytes())?
-        {
-            Some(value) if value == NODE_MARKER => Ok(true),
-            Some(value) => Err(corrupt_cell(&value)),
-            None => Ok(false),
-        }
-    }
-
     fn write_leaf(
         &mut self,
         store: &CatalogId,
@@ -698,26 +615,6 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
     ) -> Result<(), StoreError> {
         self.backend
             .write(CellKey::leaf(store, identity, member).as_bytes(), value)
-    }
-
-    fn read_leaf(
-        &self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        member: &CatalogId,
-    ) -> Result<Option<Vec<u8>>, StoreError> {
-        self.backend
-            .read(CellKey::leaf(store, identity, member).as_bytes())
-    }
-
-    fn delete_leaf(
-        &mut self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        member: &CatalogId,
-    ) -> Result<(), StoreError> {
-        self.backend
-            .delete(CellKey::leaf(store, identity, member).as_bytes())
     }
 
     fn write_sequence_position(
@@ -732,28 +629,6 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
             CellKey::sequence(store, identity, member, position).as_bytes(),
             value,
         )
-    }
-
-    fn read_sequence_position(
-        &self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        member: &CatalogId,
-        position: SequencePosition,
-    ) -> Result<Option<Vec<u8>>, StoreError> {
-        self.backend
-            .read(CellKey::sequence(store, identity, member, position).as_bytes())
-    }
-
-    fn delete_sequence_position(
-        &mut self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        member: &CatalogId,
-        position: SequencePosition,
-    ) -> Result<(), StoreError> {
-        self.backend
-            .delete(CellKey::sequence(store, identity, member, position).as_bytes())
     }
 
     fn write_data_value(
@@ -940,16 +815,6 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         )
     }
 
-    fn read_index_entry(
-        &self,
-        index: &CatalogId,
-        index_keys: &[SavedKey],
-        identity: &[SavedKey],
-    ) -> Result<Option<Vec<u8>>, StoreError> {
-        self.backend
-            .read(CellKey::index(index, index_keys, identity).as_bytes())
-    }
-
     fn delete_index_entry(
         &mut self,
         index: &CatalogId,
@@ -1042,34 +907,13 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         visit: &mut IndexEntryVisitor<'_>,
     ) -> Result<(), StoreError> {
         let prefix = CellKey::index_key_prefix(index, &[]);
-        let mut cursor: Option<Vec<u8>> = None;
-        loop {
-            let page = match cursor.as_ref() {
-                Some(cursor) => {
-                    self.backend
-                        .scan_after(prefix.as_bytes(), cursor, CHILD_SCAN_PAGE_LIMIT)?
-                }
-                None => self
-                    .backend
-                    .scan(prefix.as_bytes(), CHILD_SCAN_PAGE_LIMIT)?,
-            };
-            cursor = page.entries.last().map(|(key, _)| key.clone());
-            for (key, value) in page.entries {
-                let rest = key.get(prefix.as_bytes().len()..).unwrap_or_default();
-                let (index_keys, identity) =
-                    decode_index_entry_key(rest).map_err(|_| corrupt_cell(&key))?;
-                visit(&index_keys, &identity, &value)?;
-            }
-            if !page.truncated {
-                break;
-            }
-            if cursor.is_none() {
-                return Err(StoreError::InvalidCursor {
-                    message: "index scan page was truncated without a cursor".into(),
-                });
-            }
-        }
-        Ok(())
+        self.for_each_page_entry(prefix.as_bytes(), |key, value| {
+            let rest = key.get(prefix.as_bytes().len()..).unwrap_or_default();
+            let (index_keys, identity) =
+                decode_index_entry_key(rest).map_err(|_| corrupt_cell(key))?;
+            visit(&index_keys, &identity, value)?;
+            Ok(std::ops::ControlFlow::Continue(()))
+        })
     }
 
     fn scan_index_tuple_from(
@@ -1144,11 +988,11 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         decode: fn(&[u8]) -> Result<Option<SavedKey>, StoreError>,
     ) -> Result<usize, StoreError> {
         let mut count = 0;
-        self.scan_children(
+        self.scan_children_until(
             prefix,
-            |child| {
-                let _ = child;
+            |_| {
                 count += 1;
+                std::ops::ControlFlow::Continue(())
             },
             decode,
         )?;
@@ -1171,14 +1015,17 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         )
     }
 
-    fn scan_children_until(
+    /// Drive a bounded prefix scan to exhaustion, paging by [`CHILD_SCAN_PAGE_LIMIT`]
+    /// and resuming each page from the previous page's last key. `visit` sees every
+    /// raw `(key, value)` under `prefix` in order and may stop the walk early. A
+    /// backend that reports a truncated page but yields no key to resume from is a
+    /// corrupt scan state, surfaced as [`StoreError::InvalidCursor`].
+    fn for_each_page_entry(
         &self,
         prefix: &[u8],
-        mut visit: impl FnMut(SavedKey) -> std::ops::ControlFlow<()>,
-        decode: fn(&[u8]) -> Result<Option<SavedKey>, StoreError>,
+        mut visit: impl FnMut(&[u8], &[u8]) -> Result<std::ops::ControlFlow<()>, StoreError>,
     ) -> Result<(), StoreError> {
         let mut cursor: Option<Vec<u8>> = None;
-        let mut last_child: Option<SavedKey> = None;
         loop {
             let page = match cursor.as_ref() {
                 Some(cursor) => self
@@ -1187,16 +1034,9 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
                 None => self.backend.scan(prefix, CHILD_SCAN_PAGE_LIMIT)?,
             };
             cursor = page.entries.last().map(|(key, _)| key.clone());
-            for (key, _) in page.entries {
-                let rest = key.get(prefix.len()..).unwrap_or_default();
-                if let Some(child) = decode(rest)? {
-                    if last_child.as_ref() == Some(&child) {
-                        continue;
-                    }
-                    last_child = Some(child.clone());
-                    if visit(child).is_break() {
-                        return Ok(());
-                    }
+            for (key, value) in &page.entries {
+                if visit(key, value)?.is_break() {
+                    return Ok(());
                 }
             }
             if !page.truncated {
@@ -1204,11 +1044,31 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
             }
             if cursor.is_none() {
                 return Err(StoreError::InvalidCursor {
-                    message: "child scan page was truncated without a cursor".into(),
+                    message: "scan page was truncated without a cursor".into(),
                 });
             }
         }
         Ok(())
+    }
+
+    fn scan_children_until(
+        &self,
+        prefix: &[u8],
+        mut visit: impl FnMut(SavedKey) -> std::ops::ControlFlow<()>,
+        decode: fn(&[u8]) -> Result<Option<SavedKey>, StoreError>,
+    ) -> Result<(), StoreError> {
+        let mut last_child: Option<SavedKey> = None;
+        self.for_each_page_entry(prefix, |key, _| {
+            let rest = key.get(prefix.len()..).unwrap_or_default();
+            let Some(child) = decode(rest)? else {
+                return Ok(std::ops::ControlFlow::Continue(()));
+            };
+            if last_child.as_ref() == Some(&child) {
+                return Ok(std::ops::ControlFlow::Continue(()));
+            }
+            last_child = Some(child.clone());
+            Ok(visit(child))
+        })
     }
 
     fn next_child_after(
@@ -1348,24 +1208,6 @@ fn decode_index_child(bytes: &[u8]) -> Result<Option<SavedKey>, StoreError> {
     decode_index_child_key(bytes).map_err(|_| corrupt_cell(bytes))
 }
 
-pub fn encode_tree_reference(value: &TreeReference) -> Result<Vec<u8>, StoreError> {
-    let mut bytes = vec![TREE_VALUE_VERSION_V0];
-    put_catalog_id(&value.store, &mut bytes)?;
-    put_saved_keys(&value.identity, &mut bytes)?;
-    Ok(bytes)
-}
-
-pub fn decode_tree_reference(bytes: &[u8]) -> Result<TreeReference, StoreError> {
-    let mut cursor = Cursor::new(bytes);
-    cursor.take_version()?;
-    let store = cursor.take_catalog_id()?;
-    let identity = cursor.take_saved_keys()?;
-    if !cursor.is_empty() {
-        return Err(corrupt_cell(bytes));
-    }
-    Ok(TreeReference { store, identity })
-}
-
 pub fn encode_tree_enum_member(value: &TreeEnumMember) -> Result<Vec<u8>, StoreError> {
     let mut bytes = vec![TREE_VALUE_VERSION_V0];
     put_catalog_id(&value.enum_id, &mut bytes)?;
@@ -1395,17 +1237,6 @@ fn put_bytes(value: &[u8], out: &mut Vec<u8>) -> Result<(), StoreError> {
 
 fn put_catalog_id(id: &CatalogId, out: &mut Vec<u8>) -> Result<(), StoreError> {
     put_bytes(id.as_str().as_bytes(), out)
-}
-
-fn put_saved_keys(keys: &[SavedKey], out: &mut Vec<u8>) -> Result<(), StoreError> {
-    let len = u32::try_from(keys.len()).map_err(|_| StoreError::LimitExceeded {
-        limit: "tree cell value key count",
-    })?;
-    out.extend_from_slice(&len.to_be_bytes());
-    for key in keys {
-        put_bytes(&crate::key::encode_key_value(key), out)?;
-    }
-    Ok(())
 }
 
 fn decode_u64(bytes: &[u8]) -> Result<u64, StoreError> {
@@ -1448,23 +1279,6 @@ impl<'a> Cursor<'a> {
         let raw = self.take_bytes()?;
         let id = std::str::from_utf8(raw).map_err(|_| corrupt_cell(raw))?;
         CatalogId::new(id).map_err(|_| corrupt_cell(raw))
-    }
-
-    fn take_saved_keys(&mut self) -> Result<Vec<SavedKey>, StoreError> {
-        let len = self.take_u32()? as usize;
-        if len > self.bytes.len() / MIN_LENGTH_PREFIX_BYTES {
-            return Err(corrupt_cell(self.bytes));
-        }
-        let mut keys = Vec::new();
-        for _ in 0..len {
-            let raw = self.take_bytes()?;
-            let (key, consumed) = decode_key_value(raw).ok_or_else(|| corrupt_cell(raw))?;
-            if consumed != raw.len() {
-                return Err(corrupt_cell(raw));
-            }
-            keys.push(key);
-        }
-        Ok(keys)
     }
 
     fn take_u32(&mut self) -> Result<u32, StoreError> {
@@ -1622,21 +1436,6 @@ mod tests {
             None,
             "no metadata stamp may land when the plan aborts"
         );
-    }
-
-    #[test]
-    fn node_exists_reports_a_malformed_node_marker_as_corruption() {
-        let store_id = catalog("cat_00000000000000000000000000000001");
-        let mut backend = MemStore::default();
-        Backend::write(
-            &mut backend,
-            CellKey::node(&store_id, &[SavedKey::Int(1)]).as_bytes(),
-            b"not-a-node-marker".to_vec(),
-        )
-        .expect("seed malformed marker");
-        let store = TreeStore::from_backend(Box::new(backend));
-
-        assert_corruption(store.node_exists(&store_id, &[SavedKey::Int(1)]));
     }
 
     #[test]

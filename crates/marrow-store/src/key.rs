@@ -67,7 +67,7 @@ impl Ord for SavedKey {
             (SavedKey::Duration(left), SavedKey::Duration(right)) => left.cmp(right),
             (SavedKey::Str(left), SavedKey::Str(right)) => left.cmp(right),
             (SavedKey::Bytes(left), SavedKey::Bytes(right)) => left.cmp(right),
-            _ => Ordering::Equal,
+            _ => unreachable!("equal order tags imply the same SavedKey variant"),
         }
     }
 }
@@ -92,9 +92,10 @@ pub(crate) fn encode_key_value(key: &SavedKey) -> Vec<u8> {
     bytes
 }
 
-/// Decode one scalar key from the front of private key bytes.
+/// Decode one scalar key from the front of private key bytes, returning the value
+/// and the number of bytes it consumed in a single walk.
 pub(crate) fn decode_key_value(bytes: &[u8]) -> Option<(SavedKey, usize)> {
-    Some((decode_key(bytes)?, key_len(bytes)?))
+    decode_key(bytes)
 }
 
 /// Encode identity keys into the canonical tree-cell payload form.
@@ -151,57 +152,52 @@ pub(crate) fn encode_key_into(key: &SavedKey, out: &mut Vec<u8>) {
     }
 }
 
-pub(crate) fn decode_key(bytes: &[u8]) -> Option<SavedKey> {
+fn decode_key(bytes: &[u8]) -> Option<(SavedKey, usize)> {
     match *bytes.first()? {
-        KEY_BOOL => match *bytes.get(1)? {
-            0 => Some(SavedKey::Bool(false)),
-            1 => Some(SavedKey::Bool(true)),
-            _ => None,
-        },
+        KEY_BOOL => {
+            let value = match *bytes.get(1)? {
+                0 => false,
+                1 => true,
+                _ => return None,
+            };
+            Some((SavedKey::Bool(value), 2))
+        }
         KEY_INT => {
             let raw: [u8; 8] = bytes.get(1..9)?.try_into().ok()?;
-            Some(SavedKey::Int(
-                (u64::from_be_bytes(raw) ^ (1u64 << 63)) as i64,
+            Some((
+                SavedKey::Int((u64::from_be_bytes(raw) ^ (1u64 << 63)) as i64),
+                9,
             ))
         }
         KEY_DATE => {
             let raw: [u8; 4] = bytes.get(1..5)?.try_into().ok()?;
-            Some(SavedKey::Date(
-                (u32::from_be_bytes(raw) ^ (1u32 << 31)) as i32,
+            Some((
+                SavedKey::Date((u32::from_be_bytes(raw) ^ (1u32 << 31)) as i32),
+                5,
             ))
         }
         KEY_DURATION => {
             let raw: [u8; 16] = bytes.get(1..17)?.try_into().ok()?;
-            Some(SavedKey::Duration(
-                (u128::from_be_bytes(raw) ^ (1u128 << 127)) as i128,
+            Some((
+                SavedKey::Duration((u128::from_be_bytes(raw) ^ (1u128 << 127)) as i128),
+                17,
             ))
         }
         KEY_INSTANT => {
             let raw: [u8; 16] = bytes.get(1..17)?.try_into().ok()?;
-            Some(SavedKey::Instant(
-                (u128::from_be_bytes(raw) ^ (1u128 << 127)) as i128,
+            Some((
+                SavedKey::Instant((u128::from_be_bytes(raw) ^ (1u128 << 127)) as i128),
+                17,
             ))
         }
         KEY_STR => {
-            let (decoded, _) = read_escaped_str(bytes.get(1..)?)?;
-            Some(SavedKey::Str(String::from_utf8(decoded).ok()?))
+            let (decoded, used) = read_escaped_str(bytes.get(1..)?)?;
+            Some((SavedKey::Str(String::from_utf8(decoded).ok()?), 1 + used))
         }
         KEY_BYTES => {
-            let (decoded, _) = read_escaped_str(bytes.get(1..)?)?;
-            Some(SavedKey::Bytes(decoded))
+            let (decoded, used) = read_escaped_str(bytes.get(1..)?)?;
+            Some((SavedKey::Bytes(decoded), 1 + used))
         }
-        _ => None,
-    }
-}
-
-pub(crate) fn key_len(bytes: &[u8]) -> Option<usize> {
-    let fixed = |len: usize| (bytes.len() >= len).then_some(len);
-    match *bytes.first()? {
-        KEY_BOOL => fixed(2),
-        KEY_INT => fixed(9),
-        KEY_DATE => fixed(5),
-        KEY_DURATION | KEY_INSTANT => fixed(17),
-        KEY_STR | KEY_BYTES => Some(1 + read_escaped_str(bytes.get(1..)?)?.1),
         _ => None,
     }
 }

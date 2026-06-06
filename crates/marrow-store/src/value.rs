@@ -246,17 +246,20 @@ fn parse_date(bytes: &[u8]) -> Option<i32> {
     if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
         return None;
     }
-    let field = |slice: &[u8]| -> Option<u32> {
-        if slice.iter().all(u8::is_ascii_digit) {
-            std::str::from_utf8(slice).ok()?.parse().ok()
-        } else {
-            None
-        }
-    };
-    let year = field(&bytes[0..4])?;
-    let month = field(&bytes[5..7])?;
-    let day = field(&bytes[8..10])?;
+    let year = parse_digit_field(&bytes[0..4])?;
+    let month = parse_digit_field(&bytes[5..7])?;
+    let day = parse_digit_field(&bytes[8..10])?;
     date_days(year as i32, month, day)
+}
+
+/// Parse a fixed-width all-ASCII-digit field as a `u32`, rejecting any non-digit
+/// byte (so unpadded or signed fields never parse).
+fn parse_digit_field(slice: &[u8]) -> Option<u32> {
+    if slice.iter().all(u8::is_ascii_digit) {
+        std::str::from_utf8(slice).ok()?.parse().ok()
+    } else {
+        None
+    }
 }
 
 /// Days from the Unix epoch to a proleptic-Gregorian date (Howard Hinnant's
@@ -264,9 +267,9 @@ fn parse_date(bytes: &[u8]) -> Option<i32> {
 fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
     let year = year as i64 - i64::from(month <= 2);
     let era = (if year >= 0 { year } else { year - 399 }) / 400;
-    let year_of_era = year - era * 400; // [0, 399]
-    let month_part = (if month > 2 { month - 3 } else { month + 9 }) as i64; // [0, 11]
-    let day_of_year = (153 * month_part + 2) / 5 + day as i64 - 1; // [0, 365]
+    let year_of_era = year - era * 400;
+    let month_part = (if month > 2 { month - 3 } else { month + 9 }) as i64;
+    let day_of_year = (153 * month_part + 2) / 5 + day as i64 - 1;
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     era * 146097 + day_of_era - 719468
 }
@@ -276,24 +279,53 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
 fn civil_from_days(days: i64) -> (i32, u32, u32) {
     let days = days + 719468;
     let era = (if days >= 0 { days } else { days - 146096 }) / 146097;
-    let day_of_era = days - era * 146097; // [0, 146096]
+    let day_of_era = days - era * 146097;
     let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146096) / 365; // [0, 399]
+        (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146096) / 365;
     let year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100); // [0, 365]
-    let month_part = (5 * day_of_year + 2) / 153; // [0, 11]
-    let day = (day_of_year - (153 * month_part + 2) / 5 + 1) as u32; // [1, 31]
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_part = (5 * day_of_year + 2) / 153;
+    let day = (day_of_year - (153 * month_part + 2) / 5 + 1) as u32;
     let month = (if month_part < 10 {
         month_part + 3
     } else {
         month_part - 9
-    }) as u32; // [1, 12]
+    }) as u32;
     let year = year + i64::from(month <= 2);
     (year as i32, month, day)
 }
 
 const NANOS_PER_SEC: i128 = 1_000_000_000;
 const NANOS_PER_DAY: i128 = 86_400 * NANOS_PER_SEC;
+
+/// Append the canonical sub-second fraction of `nanos_fraction` (a value in
+/// `[0, 10^9)`) to `out`: nothing when it is zero, otherwise a `.` and the
+/// nine-digit fraction with trailing zeros trimmed. Shared by the duration and
+/// instant codecs so they format sub-second fractions identically.
+fn push_nanos_fraction(out: &mut String, nanos_fraction: u32) {
+    if nanos_fraction > 0 {
+        out.push('.');
+        out.push_str(format!("{nanos_fraction:09}").trim_end_matches('0'));
+    }
+}
+
+/// Parse a canonical sub-second fraction (the digits after the `.`) to its
+/// left-padded nanosecond value. The one canonical form is one to nine ASCII
+/// digits with no trailing zero, so an empty, over-long, trailing-zero, or
+/// non-digit fraction is rejected. Shared by the duration and instant codecs so
+/// the canonical-fraction rule has a single owner.
+fn parse_canonical_fraction(fraction: &[u8]) -> Option<i128> {
+    if fraction.is_empty()
+        || fraction.len() > 9
+        || fraction.last() == Some(&b'0')
+        || !fraction.iter().all(u8::is_ascii_digit)
+    {
+        return None;
+    }
+    format!("{:0<9}", std::str::from_utf8(fraction).ok()?)
+        .parse()
+        .ok()
+}
 
 /// Format a signed nanosecond span as the canonical `PT<seconds>S`: an optional
 /// `-`, whole seconds with no leading zeros, and a trailing-zero-trimmed
@@ -304,10 +336,7 @@ fn format_duration(nanos: i128) -> String {
     let seconds = magnitude / NANOS_PER_SEC as u128;
     let fraction = (magnitude % NANOS_PER_SEC as u128) as u32;
     let mut out = format!("{sign}PT{seconds}");
-    if fraction > 0 {
-        out.push('.');
-        out.push_str(format!("{fraction:09}").trim_end_matches('0'));
-    }
+    push_nanos_fraction(&mut out, fraction);
     out.push('S');
     out
 }
@@ -337,16 +366,7 @@ fn parse_duration(bytes: &[u8]) -> Option<i128> {
 
     let fraction_nanos: i128 = match fraction_text {
         None => 0,
-        Some(fraction) => {
-            if fraction.is_empty()
-                || fraction.len() > 9
-                || fraction.ends_with('0')
-                || !fraction.bytes().all(|b| b.is_ascii_digit())
-            {
-                return None; // empty, too long, trailing zero, or non-digit
-            }
-            format!("{fraction:0<9}").parse().ok()?
-        }
+        Some(fraction) => parse_canonical_fraction(fraction.as_bytes())?,
     };
 
     let magnitude = seconds
@@ -377,10 +397,7 @@ fn format_instant(nanos: i128) -> Result<String, ValueError> {
         total_seconds % 60,
     );
     let mut out = format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}");
-    if fraction > 0 {
-        out.push('.');
-        out.push_str(format!("{fraction:09}").trim_end_matches('0'));
-    }
+    push_nanos_fraction(&mut out, fraction);
     out.push('Z');
     Ok(out)
 }
@@ -397,16 +414,9 @@ fn parse_instant(bytes: &[u8]) -> Option<i128> {
     if time.len() < 8 || time[2] != b':' || time[5] != b':' {
         return None;
     }
-    let field = |slice: &[u8]| -> Option<u32> {
-        if slice.iter().all(u8::is_ascii_digit) {
-            std::str::from_utf8(slice).ok()?.parse().ok()
-        } else {
-            None
-        }
-    };
-    let hours = field(&time[0..2])?;
-    let minutes = field(&time[3..5])?;
-    let seconds = field(&time[6..8])?;
+    let hours = parse_digit_field(&time[0..2])?;
+    let minutes = parse_digit_field(&time[3..5])?;
+    let seconds = parse_digit_field(&time[6..8])?;
     if hours > 23 || minutes > 59 || seconds > 59 {
         return None;
     }
@@ -416,17 +426,7 @@ fn parse_instant(bytes: &[u8]) -> Option<i128> {
         if time[8] != b'.' {
             return None;
         }
-        let fraction = &time[9..];
-        if fraction.is_empty()
-            || fraction.len() > 9
-            || fraction.last() == Some(&b'0')
-            || !fraction.iter().all(u8::is_ascii_digit)
-        {
-            return None;
-        }
-        format!("{:0<9}", std::str::from_utf8(fraction).ok()?)
-            .parse()
-            .ok()?
+        parse_canonical_fraction(&time[9..])?
     };
     let seconds_of_day = i128::from(hours * 3600 + minutes * 60 + seconds);
     Some(days * NANOS_PER_DAY + seconds_of_day * NANOS_PER_SEC + fraction_nanos)

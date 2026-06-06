@@ -22,6 +22,37 @@ pub enum StoreError {
 }
 
 impl StoreError {
+    /// A write was attempted while a read snapshot pinned the handle.
+    pub(crate) fn write_while_snapshot_pinned() -> Self {
+        Self::snapshot_conflict("cannot write while a read snapshot is pinned")
+    }
+
+    /// A delete was attempted while a read snapshot pinned the handle.
+    pub(crate) fn delete_while_snapshot_pinned() -> Self {
+        Self::snapshot_conflict("cannot delete while a read snapshot is pinned")
+    }
+
+    /// A write transaction was begun while a read snapshot pinned the handle.
+    pub(crate) fn begin_while_snapshot_pinned() -> Self {
+        Self::snapshot_conflict("cannot begin a write transaction while a read snapshot is pinned")
+    }
+
+    /// A read snapshot was requested while a write transaction was open.
+    pub(crate) fn snapshot_while_transaction_open() -> Self {
+        Self::snapshot_conflict("cannot pin a read snapshot while a write transaction is open")
+    }
+
+    /// A second read snapshot was requested on a handle that already pinned one.
+    pub(crate) fn snapshot_already_pinned() -> Self {
+        Self::snapshot_conflict("cannot pin a second read snapshot on the same store handle")
+    }
+
+    fn snapshot_conflict(message: &'static str) -> Self {
+        Self::InvalidTransaction {
+            message: message.to_string(),
+        }
+    }
+
     /// The stable dotted code a tool reports for this error.
     pub fn code(&self) -> &'static str {
         match self {

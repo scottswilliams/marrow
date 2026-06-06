@@ -1,19 +1,49 @@
-use marrow_store::cell::{CatalogId, DataCellKind, SequencePosition};
+use marrow_store::cell::{CatalogId, DataCellKind};
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{
-    CommitMetadata, DataPathSegment, EngineProfile, IndexPage, TreeEnumMember, TreeReference,
-    TreeStore, decode_tree_enum_member, decode_tree_reference, encode_tree_enum_member,
-    encode_tree_reference,
+    CommitMetadata, DataPathSegment, EngineProfile, IndexPage, TreeEnumMember, TreeStore,
+    decode_tree_enum_member, encode_tree_enum_member,
 };
 
-fn catalog_id(hex: &str) -> CatalogId {
-    CatalogId::new(format!("cat_{hex:0>32}")).unwrap()
-}
+mod common;
+use common::{catalog_id, collect_children};
 
 fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
         .any(|window| window == needle)
+}
+
+/// A commit metadata record whose activation receipt block is the empty/zero
+/// default, parameterized on the fields the round-trip tests vary.
+fn sample_commit_metadata(
+    commit_id: u64,
+    catalog_epoch: u64,
+    layout_epoch: u64,
+    source_digest: &str,
+    engine_profile_digest: [u8; 8],
+    roots: Vec<CatalogId>,
+    indexes: Vec<CatalogId>,
+) -> CommitMetadata {
+    CommitMetadata {
+        commit_id,
+        catalog_epoch,
+        layout_epoch,
+        source_digest: source_digest.to_string(),
+        engine_profile_digest,
+        changed_root_catalog_ids: roots,
+        changed_index_catalog_ids: indexes,
+        activation_evolution_digest: String::new(),
+        activation_proposal_catalog_digest: None,
+        activation_proposal_new_catalog_ids: Vec::new(),
+        activation_records_backfilled: 0,
+        activation_default_records_by_id: Vec::new(),
+        activation_indexes_rebuilt: 0,
+        activation_records_retired: 0,
+        activation_retire_evidence_digest: String::new(),
+        activation_records_retired_by_id: Vec::new(),
+        activation_records_transformed: 0,
+    }
 }
 
 fn index_rows(page: IndexPage) -> Vec<(Vec<SavedKey>, Vec<u8>)> {
@@ -33,17 +63,10 @@ fn data_children(
     identity: &[SavedKey],
     path: &[DataPathSegment],
 ) -> Vec<SavedKey> {
-    let mut children = Vec::new();
-    let mut next = store
-        .data_first_child(root, identity, path)
-        .expect("first data child");
-    while let Some(child) = next {
-        children.push(child.clone());
-        next = store
-            .data_next_child(root, identity, path, &child)
-            .expect("next data child");
-    }
-    children
+    collect_children(
+        || store.data_first_child(root, identity, path),
+        |child| store.data_next_child(root, identity, path, child),
+    )
 }
 
 fn data_children_rev(
@@ -52,85 +75,24 @@ fn data_children_rev(
     identity: &[SavedKey],
     path: &[DataPathSegment],
 ) -> Vec<SavedKey> {
-    let mut children = Vec::new();
-    let mut next = store
-        .data_last_child(root, identity, path)
-        .expect("last data child");
-    while let Some(child) = next {
-        children.push(child.clone());
-        next = store
-            .data_prev_child(root, identity, path, &child)
-            .expect("previous data child");
-    }
-    children
+    collect_children(
+        || store.data_last_child(root, identity, path),
+        |child| store.data_prev_child(root, identity, path, child),
+    )
 }
 
 fn record_children(store: &TreeStore, root: &CatalogId, prefix: &[SavedKey]) -> Vec<SavedKey> {
-    let mut children = Vec::new();
-    let mut next = store
-        .record_first_child(root, prefix)
-        .expect("first record child");
-    while let Some(child) = next {
-        children.push(child.clone());
-        next = store
-            .record_next_child(root, prefix, &child)
-            .expect("next record child");
-    }
-    children
+    collect_children(
+        || store.record_first_child(root, prefix),
+        |child| store.record_next_child(root, prefix, child),
+    )
 }
 
 fn index_children(store: &TreeStore, index: &CatalogId, prefix: &[SavedKey]) -> Vec<SavedKey> {
-    let mut children = Vec::new();
-    let mut next = store
-        .index_first_child(index, prefix)
-        .expect("first index child");
-    while let Some(child) = next {
-        children.push(child.clone());
-        next = store
-            .index_next_child(index, prefix, &child)
-            .expect("next index child");
-    }
-    children
-}
-
-#[test]
-fn reference_values_store_target_catalog_id_and_identity_keys() {
-    let books = catalog_id("1111111111111111");
-    let library_books = catalog_id("1111111111111111");
-    let authors = catalog_id("2222222222222222");
-
-    let value = TreeReference::new(
-        books.clone(),
-        vec![SavedKey::Str("isbn-9780441172719".into())],
-    );
-    let encoded = encode_tree_reference(&value).expect("encode reference");
-
-    assert_eq!(
-        decode_tree_reference(&encoded).expect("decode reference"),
-        value
-    );
-    assert_eq!(
-        encoded,
-        encode_tree_reference(&TreeReference::new(
-            library_books,
-            vec![SavedKey::Str("isbn-9780441172719".into())],
-        ))
-        .expect("renamed source uses the same catalog-backed bytes")
-    );
-    assert_ne!(
-        encoded,
-        encode_tree_reference(&TreeReference::new(
-            authors,
-            vec![SavedKey::Str("isbn-9780441172719".into())],
-        ))
-        .expect("different store identity changes bytes")
-    );
-    for spelling in ["books", "libraryBooks", "authors"] {
-        assert!(
-            !contains_subslice(&encoded, spelling.as_bytes()),
-            "reference bytes contain source spelling {spelling:?}: {encoded:?}"
-        );
-    }
+    collect_children(
+        || store.index_first_child(index, prefix),
+        |child| store.index_next_child(index, prefix, child),
+    )
 }
 
 #[test]
@@ -181,27 +143,15 @@ fn profile_and_metadata_cells_round_trip_in_memory() {
         .write_engine_profile(&profile)
         .expect("write engine profile");
     store
-        .write_commit_metadata(&CommitMetadata {
-            commit_id: 55,
-            catalog_epoch: 44,
-            layout_epoch: profile.layout_epoch(),
-            source_digest:
-                "sha256:0000000000000000000000000000000000000000000000000000000000000044"
-                    .to_string(),
-            engine_profile_digest: profile.digest_bytes(),
-            changed_root_catalog_ids: vec![root.clone()],
-            changed_index_catalog_ids: vec![index.clone()],
-            activation_evolution_digest: String::new(),
-            activation_proposal_catalog_digest: None,
-            activation_proposal_new_catalog_ids: Vec::new(),
-            activation_records_backfilled: 0,
-            activation_default_records_by_id: Vec::new(),
-            activation_indexes_rebuilt: 0,
-            activation_records_retired: 0,
-            activation_retire_evidence_digest: String::new(),
-            activation_records_retired_by_id: Vec::new(),
-            activation_records_transformed: 0,
-        })
+        .write_commit_metadata(&sample_commit_metadata(
+            55,
+            44,
+            profile.layout_epoch(),
+            "sha256:0000000000000000000000000000000000000000000000000000000000000044",
+            profile.digest_bytes(),
+            vec![root.clone()],
+            vec![index.clone()],
+        ))
         .expect("write commit");
 
     assert_eq!(
@@ -220,100 +170,15 @@ fn profile_and_metadata_cells_round_trip_in_memory() {
     );
     assert_eq!(
         store.read_commit_metadata().expect("read commit"),
-        Some(CommitMetadata {
-            commit_id: 55,
-            catalog_epoch: 44,
-            layout_epoch: profile.layout_epoch(),
-            source_digest:
-                "sha256:0000000000000000000000000000000000000000000000000000000000000044"
-                    .to_string(),
-            engine_profile_digest: profile.digest_bytes(),
-            changed_root_catalog_ids: vec![root],
-            changed_index_catalog_ids: vec![index],
-            activation_evolution_digest: String::new(),
-            activation_proposal_catalog_digest: None,
-            activation_proposal_new_catalog_ids: Vec::new(),
-            activation_records_backfilled: 0,
-            activation_default_records_by_id: Vec::new(),
-            activation_indexes_rebuilt: 0,
-            activation_records_retired: 0,
-            activation_retire_evidence_digest: String::new(),
-            activation_records_retired_by_id: Vec::new(),
-            activation_records_transformed: 0,
-        })
-    );
-}
-
-#[test]
-fn node_and_leaf_operations_are_typed() {
-    let store_id = catalog_id("1111111111111111");
-    let title = catalog_id("2222222222222222");
-    let identity = [SavedKey::Int(7)];
-    let store = TreeStore::memory();
-
-    store.write_node(&store_id, &identity).expect("write node");
-    assert!(
-        store
-            .node_exists(&store_id, &identity)
-            .expect("node exists")
-    );
-    assert_eq!(
-        store
-            .read_leaf(&store_id, &identity, &title)
-            .expect("absent leaf"),
-        None
-    );
-
-    store
-        .write_leaf(&store_id, &identity, &title, b"Dune".to_vec())
-        .expect("write leaf");
-    assert_eq!(
-        store
-            .read_leaf(&store_id, &identity, &title)
-            .expect("read leaf"),
-        Some(b"Dune".to_vec())
-    );
-    store
-        .delete_leaf(&store_id, &identity, &title)
-        .expect("delete leaf");
-    assert_eq!(
-        store
-            .read_leaf(&store_id, &identity, &title)
-            .expect("read leaf"),
-        None
-    );
-}
-
-#[test]
-fn sequence_positions_are_typed_cells() {
-    let store_id = catalog_id("1111111111111111");
-    let tags = catalog_id("3333333333333333");
-    let identity = [SavedKey::Int(7)];
-    let store = TreeStore::memory();
-
-    store
-        .write_sequence_position(
-            &store_id,
-            &identity,
-            &tags,
-            SequencePosition::new(3),
-            b"classic".to_vec(),
-        )
-        .expect("write sequence");
-    assert_eq!(
-        store
-            .read_sequence_position(&store_id, &identity, &tags, SequencePosition::new(3))
-            .expect("read sequence"),
-        Some(b"classic".to_vec())
-    );
-    store
-        .delete_sequence_position(&store_id, &identity, &tags, SequencePosition::new(3))
-        .expect("delete sequence");
-    assert_eq!(
-        store
-            .read_sequence_position(&store_id, &identity, &tags, SequencePosition::new(3))
-            .expect("read sequence"),
-        None
+        Some(sample_commit_metadata(
+            55,
+            44,
+            profile.layout_epoch(),
+            "sha256:0000000000000000000000000000000000000000000000000000000000000044",
+            profile.digest_bytes(),
+            vec![root],
+            vec![index],
+        ))
     );
 }
 
@@ -347,12 +212,6 @@ fn exact_index_tuple_scan_pages_by_identity() {
             b"longer".to_vec(),
         )
         .expect("write longer index");
-    assert_eq!(
-        store
-            .read_index_entry(&by_shelf, &[SavedKey::Str("fiction".into())], &identity)
-            .expect("read index"),
-        Some(b"present".to_vec())
-    );
 
     let first_page = store
         .scan_index_tuple(&by_shelf, &[SavedKey::Str("fiction".into())], 1)
@@ -573,21 +432,13 @@ fn exact_index_tuple_delete_removes_only_the_exact_identity() {
     store
         .delete_index_entry(&by_shelf, &[SavedKey::Str("fiction".into())], &identity)
         .expect("delete index");
+    let remaining = store
+        .scan_index_tuple(&by_shelf, &[SavedKey::Str("fiction".into())], 10)
+        .expect("scan after delete");
     assert_eq!(
-        store
-            .read_index_entry(&by_shelf, &[SavedKey::Str("fiction".into())], &identity)
-            .expect("read index"),
-        None
-    );
-    assert_eq!(
-        store
-            .read_index_entry(
-                &by_shelf,
-                &[SavedKey::Str("fiction".into())],
-                &extended_identity,
-            )
-            .expect("read prefix-related identity"),
-        Some(b"extended".to_vec())
+        index_rows(remaining),
+        vec![(extended_identity.to_vec(), b"extended".to_vec())],
+        "only the exact identity is removed; the prefix-related identity survives"
     );
 }
 
@@ -659,9 +510,32 @@ fn visit_backup_cells_streams_data_only_in_encoded_order() {
 #[test]
 fn is_empty_sees_data_and_index_families() {
     let books = catalog_id("1111111111111111");
+    let title = catalog_id("2222222222222222");
     let by_title = catalog_id("3333333333333333");
     let store = TreeStore::memory();
     assert!(store.is_empty().expect("fresh store is empty"));
+
+    // A data-only store is not empty: is_empty checks the data family.
+    store
+        .write_data_value(
+            &books,
+            &[SavedKey::Int(1)],
+            &[DataPathSegment::Member(title)],
+            b"Mort".to_vec(),
+        )
+        .expect("write data value");
+    assert!(
+        !store.is_empty().expect("data-only store is not empty"),
+        "is_empty checks the data family so a leftover record still blocks restore"
+    );
+    store
+        .delete_record_subtree(&books, &[])
+        .expect("clear data records");
+    assert!(
+        store
+            .is_empty()
+            .expect("store is empty after clearing data")
+    );
 
     // An index-only store is not empty even though a backup carries no cells for it.
     store
@@ -693,14 +567,10 @@ fn is_empty_sees_data_and_index_families() {
         .delete_index_subtree(&by_title, &[])
         .expect("clear index");
     assert!(store.is_empty().expect("store is empty again"));
-    let _ = books;
 }
 
 #[test]
 fn malformed_tree_values_are_store_corruption() {
-    let error = decode_tree_reference(&[0xff]).expect_err("malformed reference is corruption");
-    assert_eq!(error.code(), "store.corruption");
-
     let error = decode_tree_enum_member(&[0xff]).expect_err("malformed enum member is corruption");
     assert_eq!(error.code(), "store.corruption");
 }
@@ -714,12 +584,13 @@ fn facade_transactions_roll_back_data_index_and_metadata_atomically() {
     let identity = [SavedKey::Int(1)];
     let store = TreeStore::memory();
 
+    let path = [DataPathSegment::Member(title.clone())];
     store.write_catalog_epoch(1).expect("seed catalog epoch");
     store.write_engine_profile(&profile).expect("seed profile");
     store.begin().expect("begin");
     store
-        .write_leaf(&store_id, &identity, &title, b"Dune".to_vec())
-        .expect("write leaf");
+        .write_data_value(&store_id, &identity, &path, b"Dune".to_vec())
+        .expect("write data value");
     store
         .write_index_entry(
             &by_shelf,
@@ -732,14 +603,17 @@ fn facade_transactions_roll_back_data_index_and_metadata_atomically() {
     store.rollback().expect("rollback");
 
     assert_eq!(
-        store.read_leaf(&store_id, &identity, &title).expect("leaf"),
+        store
+            .read_data_value(&store_id, &identity, &path)
+            .expect("data value"),
         None
     );
     assert_eq!(
         store
-            .read_index_entry(&by_shelf, &[SavedKey::Str("fiction".into())], &identity)
-            .expect("index"),
-        None
+            .scan_index_tuple(&by_shelf, &[SavedKey::Str("fiction".into())], 10)
+            .expect("index")
+            .entries,
+        Vec::new()
     );
     assert_eq!(store.read_catalog_epoch().expect("catalog epoch"), Some(1));
     assert_eq!(
@@ -765,27 +639,15 @@ fn metadata_survives_native_redb_reopen() {
             .write_engine_profile(&profile)
             .expect("write engine profile");
         store
-            .write_commit_metadata(&CommitMetadata {
-                commit_id: 9,
-                catalog_epoch: 8,
-                layout_epoch: profile.layout_epoch(),
-                source_digest:
-                    "sha256:0000000000000000000000000000000000000000000000000000000000000008"
-                        .to_string(),
-                engine_profile_digest: profile.digest_bytes(),
-                changed_root_catalog_ids: vec![root.clone()],
-                changed_index_catalog_ids: vec![index.clone()],
-                activation_evolution_digest: String::new(),
-                activation_proposal_catalog_digest: None,
-                activation_proposal_new_catalog_ids: Vec::new(),
-                activation_records_backfilled: 0,
-                activation_default_records_by_id: Vec::new(),
-                activation_indexes_rebuilt: 0,
-                activation_records_retired: 0,
-                activation_retire_evidence_digest: String::new(),
-                activation_records_retired_by_id: Vec::new(),
-                activation_records_transformed: 0,
-            })
+            .write_commit_metadata(&sample_commit_metadata(
+                9,
+                8,
+                profile.layout_epoch(),
+                "sha256:0000000000000000000000000000000000000000000000000000000000000008",
+                profile.digest_bytes(),
+                vec![root.clone()],
+                vec![index.clone()],
+            ))
             .expect("write commit metadata");
     }
 
@@ -802,26 +664,14 @@ fn metadata_survives_native_redb_reopen() {
     );
     assert_eq!(
         store.read_commit_metadata().expect("read commit metadata"),
-        Some(CommitMetadata {
-            commit_id: 9,
-            catalog_epoch: 8,
-            layout_epoch: profile.layout_epoch(),
-            source_digest:
-                "sha256:0000000000000000000000000000000000000000000000000000000000000008"
-                    .to_string(),
-            engine_profile_digest: profile.digest_bytes(),
-            changed_root_catalog_ids: vec![root],
-            changed_index_catalog_ids: vec![index],
-            activation_evolution_digest: String::new(),
-            activation_proposal_catalog_digest: None,
-            activation_proposal_new_catalog_ids: Vec::new(),
-            activation_records_backfilled: 0,
-            activation_default_records_by_id: Vec::new(),
-            activation_indexes_rebuilt: 0,
-            activation_records_retired: 0,
-            activation_retire_evidence_digest: String::new(),
-            activation_records_retired_by_id: Vec::new(),
-            activation_records_transformed: 0,
-        })
+        Some(sample_commit_metadata(
+            9,
+            8,
+            profile.layout_epoch(),
+            "sha256:0000000000000000000000000000000000000000000000000000000000000008",
+            profile.digest_bytes(),
+            vec![root],
+            vec![index],
+        ))
     );
 }

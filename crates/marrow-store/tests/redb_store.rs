@@ -3,10 +3,13 @@
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::TreeStore;
+use marrow_store::tree::{DataPathSegment, TreeStore};
 
-fn catalog_id(hex: &str) -> CatalogId {
-    CatalogId::new(format!("cat_{hex:0>32}")).unwrap()
+mod common;
+use common::catalog_id;
+
+fn title_path(title: &CatalogId) -> [DataPathSegment; 1] {
+    [DataPathSegment::Member(title.clone())]
 }
 
 #[test]
@@ -18,14 +21,19 @@ fn native_tree_cells_survive_reopen() {
     {
         let store = TreeStore::open(&path).expect("open");
         store
-            .write_leaf(&books, &[SavedKey::Int(1)], &title, b"Dune".to_vec())
+            .write_data_value(
+                &books,
+                &[SavedKey::Int(1)],
+                &title_path(&title),
+                b"Dune".to_vec(),
+            )
             .expect("write");
     }
 
     let store = TreeStore::open(&path).expect("reopen");
     assert_eq!(
         store
-            .read_leaf(&books, &[SavedKey::Int(1)], &title)
+            .read_data_value(&books, &[SavedKey::Int(1)], &title_path(&title))
             .expect("read"),
         Some(b"Dune".to_vec())
     );
@@ -61,14 +69,19 @@ fn native_read_only_can_read_existing_cells() {
     {
         let store = TreeStore::open(&path).expect("create");
         store
-            .write_leaf(&books, &[SavedKey::Int(1)], &title, b"Dune".to_vec())
+            .write_data_value(
+                &books,
+                &[SavedKey::Int(1)],
+                &title_path(&title),
+                b"Dune".to_vec(),
+            )
             .expect("write");
     }
 
     let store = TreeStore::open_read_only(&path).expect("open read-only");
     assert_eq!(
         store
-            .read_leaf(&books, &[SavedKey::Int(1)], &title)
+            .read_data_value(&books, &[SavedKey::Int(1)], &title_path(&title))
             .expect("read"),
         Some(b"Dune".to_vec())
     );
@@ -114,17 +127,27 @@ fn native_read_only_rejects_write_capability_operations() {
     {
         let store = TreeStore::open(&path).expect("create");
         store
-            .write_leaf(&books, &[SavedKey::Int(1)], &title, b"Dune".to_vec())
+            .write_data_value(
+                &books,
+                &[SavedKey::Int(1)],
+                &title_path(&title),
+                b"Dune".to_vec(),
+            )
             .expect("write");
     }
 
     let store = TreeStore::open_read_only(&path).expect("open read-only");
     assert!(matches!(
-        store.write_leaf(&books, &[SavedKey::Int(2)], &title, b"Other".to_vec()),
+        store.write_data_value(
+            &books,
+            &[SavedKey::Int(2)],
+            &title_path(&title),
+            b"Other".to_vec()
+        ),
         Err(StoreError::ReadOnly { op: "write" })
     ));
     assert!(matches!(
-        store.delete_leaf(&books, &[SavedKey::Int(1)], &title),
+        store.delete_data_subtree(&books, &[SavedKey::Int(1)], &title_path(&title)),
         Err(StoreError::ReadOnly { op: "delete" })
     ));
     assert!(matches!(
@@ -133,7 +156,7 @@ fn native_read_only_rejects_write_capability_operations() {
     ));
     assert_eq!(
         store
-            .read_leaf(&books, &[SavedKey::Int(1)], &title)
+            .read_data_value(&books, &[SavedKey::Int(1)], &title_path(&title))
             .expect("read existing value"),
         Some(b"Dune".to_vec())
     );

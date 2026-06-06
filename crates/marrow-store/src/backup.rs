@@ -30,12 +30,7 @@ pub struct TreeBackupCell<'a> {
 
 impl<'a> TreeBackupCell<'a> {
     pub(crate) fn from_raw(key: &'a [u8], value: &'a [u8]) -> Result<Self, StoreError> {
-        let target = decode_data_cell_key(key).ok_or_else(|| StoreError::Corruption {
-            message: "backup cell key is not a well-formed data cell".into(),
-        })?;
-        validate_target_value(&target, value).map_err(|message| StoreError::Corruption {
-            message: message.to_string(),
-        })?;
+        let target = decode_and_validate(key, value)?;
         Ok(Self { target, value })
     }
 
@@ -83,12 +78,7 @@ impl TreeBackupCellBuf {
 
     #[cfg(test)]
     pub(crate) fn from_raw(key: Vec<u8>, value: Vec<u8>) -> Result<Self, StoreError> {
-        let target = decode_data_cell_key(&key).ok_or_else(|| StoreError::Corruption {
-            message: "backup cell key is not a well-formed data cell".into(),
-        })?;
-        validate_target_value(&target, &value).map_err(|message| StoreError::Corruption {
-            message: message.to_string(),
-        })?;
+        let target = decode_and_validate(&key, &value)?;
         Ok(Self { target, value })
     }
 
@@ -100,8 +90,7 @@ impl TreeBackupCellBuf {
         let target = read_chunk(input, max_cell_bytes)?;
         let target = decode_target_frame(&target)?;
         let value = read_chunk(input, max_cell_bytes)?;
-        validate_target_value(&target, &value)
-            .map_err(|_| TreeBackupCellReadError::MalformedCell)?;
+        validate_target_value(&target, &value).map_err(malformed)?;
         Ok(Self { target, value })
     }
 
@@ -143,6 +132,25 @@ impl std::fmt::Display for TreeBackupCellReadError {
 }
 
 impl std::error::Error for TreeBackupCellReadError {}
+
+/// Name the conversion-to-[`MalformedCell`] mapping once, for the `try_into`,
+/// UTF-8, catalog-id, and key-decode failures a framed cell can carry.
+fn malformed<E>(_: E) -> TreeBackupCellReadError {
+    TreeBackupCellReadError::MalformedCell
+}
+
+/// Decode a raw physical key into its typed data-cell target and check the value
+/// against that target, mapping any failure to [`StoreError::Corruption`]. The
+/// single owner of the from-store backup-cell decode-and-validate step.
+fn decode_and_validate(key: &[u8], value: &[u8]) -> Result<DataCellKey, StoreError> {
+    let target = decode_data_cell_key(key).ok_or_else(|| StoreError::Corruption {
+        message: "backup cell key is not a well-formed data cell".into(),
+    })?;
+    validate_target_value(&target, value).map_err(|message| StoreError::Corruption {
+        message: message.to_string(),
+    })?;
+    Ok(target)
+}
 
 fn validate_target_value(target: &DataCellKey, value: &[u8]) -> Result<(), &'static str> {
     if matches!(target.kind, DataCellKind::Node) && value != NODE_MARKER {
@@ -268,20 +276,12 @@ impl<'a> FrameCursor<'a> {
 
     fn read_u32(&mut self) -> Result<u32, TreeBackupCellReadError> {
         let bytes = self.take(4)?;
-        Ok(u32::from_be_bytes(
-            bytes
-                .try_into()
-                .map_err(|_| TreeBackupCellReadError::MalformedCell)?,
-        ))
+        Ok(u32::from_be_bytes(bytes.try_into().map_err(malformed)?))
     }
 
     fn read_u64(&mut self) -> Result<u64, TreeBackupCellReadError> {
         let bytes = self.take(8)?;
-        Ok(u64::from_be_bytes(
-            bytes
-                .try_into()
-                .map_err(|_| TreeBackupCellReadError::MalformedCell)?,
-        ))
+        Ok(u64::from_be_bytes(bytes.try_into().map_err(malformed)?))
     }
 
     fn read_chunk(&mut self) -> Result<&'a [u8], TreeBackupCellReadError> {
@@ -291,9 +291,8 @@ impl<'a> FrameCursor<'a> {
 
     fn read_catalog_id(&mut self) -> Result<CatalogId, TreeBackupCellReadError> {
         let bytes = self.read_chunk()?;
-        let text =
-            std::str::from_utf8(bytes).map_err(|_| TreeBackupCellReadError::MalformedCell)?;
-        CatalogId::new(text.to_string()).map_err(|_| TreeBackupCellReadError::MalformedCell)
+        let text = std::str::from_utf8(bytes).map_err(malformed)?;
+        CatalogId::new(text.to_string()).map_err(malformed)
     }
 
     fn read_key(&mut self) -> Result<SavedKey, TreeBackupCellReadError> {

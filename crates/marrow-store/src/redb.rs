@@ -17,8 +17,8 @@ use std::ops::Bound;
 use std::path::Path;
 
 use redb::{
-    Database, ReadOnlyDatabase, ReadTransaction, ReadableDatabase, ReadableTable, TableDefinition,
-    WriteTransaction,
+    Database, ReadOnlyDatabase, ReadTransaction, ReadableDatabase, ReadableTable, Table,
+    TableDefinition, WriteTransaction,
 };
 
 use crate::backend::{Backend, ScanPage, StoreError};
@@ -297,6 +297,50 @@ impl RedbStore {
             .expect("a journal while a transaction is open")
             .push(entry);
     }
+
+    /// The shared write prologue: a write-capability operation needs a writable
+    /// handle and no pinned read snapshot. `on_snapshot` names the operation in the
+    /// snapshot-conflict error.
+    fn ensure_writable(
+        &self,
+        op: &'static str,
+        on_snapshot: fn() -> StoreError,
+    ) -> Result<(), StoreError> {
+        self.db.require_write_access(op)?;
+        if self.read_view.is_some() {
+            return Err(on_snapshot());
+        }
+        Ok(())
+    }
+
+    /// Run `mutate` against the current write table and journal the preimages it
+    /// reports. Outside a transaction the mutation is its own short, immediately
+    /// durable redb transaction (the preimages are discarded); inside one it runs
+    /// through the open transaction and each preimage joins the innermost journal so
+    /// a later rollback can undo it.
+    fn mutate(
+        &mut self,
+        op: &'static str,
+        mutate: impl FnOnce(&mut Table<&[u8], &[u8]>) -> Result<Vec<Undo>, StoreError>,
+    ) -> Result<(), StoreError> {
+        if self.txn.is_none() {
+            let write = self.db.begin_write(op)?;
+            {
+                let mut table = write.open_table(TABLE).map_err(io(op))?;
+                mutate(&mut table)?;
+            }
+            return write.commit().map_err(io(op));
+        }
+        let undo = {
+            let write = self.txn.as_ref().expect("an open transaction");
+            let mut table = write.open_table(TABLE).map_err(io(op))?;
+            mutate(&mut table)?
+        };
+        for entry in undo {
+            self.record(entry);
+        }
+        Ok(())
+    }
 }
 
 impl Backend for RedbStore {
@@ -308,68 +352,29 @@ impl Backend for RedbStore {
     }
 
     fn write(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
-        self.db.require_write_access("write")?;
-        if self.read_view.is_some() {
-            return Err(StoreError::InvalidTransaction {
-                message: "cannot write while a read snapshot is pinned".into(),
-            });
-        }
-        if self.txn.is_none() {
-            let write = self.db.begin_write("write")?;
-            {
-                let mut table = write.open_table(TABLE).map_err(io("write"))?;
-                table.insert(key, value.as_slice()).map_err(io("write"))?;
-            }
-            return write.commit().map_err(io("write"));
-        }
-        // In a transaction: write through it and journal the prior value (the
-        // value `insert` returns) so a rollback can restore it.
-        let old = {
-            let write = self.txn.as_ref().expect("an open transaction");
-            let mut table = write.open_table(TABLE).map_err(io("write"))?;
-            table
+        self.ensure_writable("write", StoreError::write_while_snapshot_pinned)?;
+        self.mutate("write", |table| {
+            // The value `insert` returns is the prior value, journaled so a rollback
+            // can restore it.
+            let old = table
                 .insert(key, value.as_slice())
                 .map_err(io("write"))?
-                .map(|guard| guard.value().to_vec())
-        };
-        self.record((key.to_vec(), old));
-        Ok(())
+                .map(|guard| guard.value().to_vec());
+            Ok(vec![(key.to_vec(), old)])
+        })
     }
 
     fn delete(&mut self, prefix: &[u8]) -> Result<(), StoreError> {
-        self.db.require_write_access("delete")?;
-        if self.read_view.is_some() {
-            return Err(StoreError::InvalidTransaction {
-                message: "cannot delete while a read snapshot is pinned".into(),
-            });
-        }
-        if self.txn.is_none() {
-            let write = self.db.begin_write("delete")?;
-            {
-                let mut table = write.open_table(TABLE).map_err(io("delete"))?;
-                loop {
-                    let keys = delete_key_batch(&table, prefix)?;
-                    if keys.is_empty() {
-                        break;
-                    }
-                    for key in keys {
-                        table.remove(key.as_slice()).map_err(io("delete"))?;
-                    }
-                }
-            }
-            return write.commit().map_err(io("delete"));
-        }
-        // In a transaction: journal each removed preimage before advancing to the
-        // next bounded key batch.
-        loop {
-            let undo = {
-                let write = self.txn.as_ref().expect("an open transaction");
-                let mut table = write.open_table(TABLE).map_err(io("delete"))?;
-                let keys = delete_key_batch(&table, prefix)?;
+        self.ensure_writable("delete", StoreError::delete_while_snapshot_pinned)?;
+        self.mutate("delete", |table| {
+            // Remove the prefix in bounded key batches, collecting each removed
+            // preimage so a rollback can restore it.
+            let mut undo = Vec::new();
+            loop {
+                let keys = delete_key_batch(&*table, prefix)?;
                 if keys.is_empty() {
                     break;
                 }
-                let mut undo = Vec::with_capacity(keys.len());
                 for key in keys {
                     let old = table
                         .remove(key.as_slice())
@@ -377,13 +382,9 @@ impl Backend for RedbStore {
                         .map(|guard| guard.value().to_vec());
                     undo.push((key, old));
                 }
-                undo
-            };
-            for entry in undo {
-                self.record(entry);
             }
-        }
-        Ok(())
+            Ok(undo)
+        })
     }
 
     fn scan(&self, prefix: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
@@ -402,12 +403,7 @@ impl Backend for RedbStore {
     }
 
     fn begin(&mut self) -> Result<(), StoreError> {
-        self.db.require_write_access("begin")?;
-        if self.read_view.is_some() {
-            return Err(StoreError::InvalidTransaction {
-                message: "cannot begin a write transaction while a read snapshot is pinned".into(),
-            });
-        }
+        self.ensure_writable("begin", StoreError::begin_while_snapshot_pinned)?;
         if self.txn.is_none() {
             self.txn = Some(self.db.begin_write("begin")?);
         }
@@ -467,14 +463,10 @@ impl Backend for RedbStore {
 
     fn begin_snapshot(&mut self) -> Result<(), StoreError> {
         if self.txn.is_some() {
-            return Err(StoreError::InvalidTransaction {
-                message: "cannot pin a read snapshot while a write transaction is open".into(),
-            });
+            return Err(StoreError::snapshot_while_transaction_open());
         }
         if self.read_view.is_some() {
-            return Err(StoreError::InvalidTransaction {
-                message: "cannot pin a second read snapshot on the same store handle".into(),
-            });
+            return Err(StoreError::snapshot_already_pinned());
         }
         // A read transaction is a stable version, unaffected by later writes. It
         // works on read-only and writable handles alike.

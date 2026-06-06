@@ -120,18 +120,22 @@ impl Decimal {
 
     /// Exact sum, or `None` if it overflows the envelope.
     pub fn checked_add(self, other: Decimal) -> Option<Decimal> {
-        let scale = self.scale.max(other.scale);
-        let left = scaled_coefficient(self.coefficient, scale - self.scale)?;
-        let right = scaled_coefficient(other.coefficient, scale - other.scale)?;
-        Decimal::from_parts(left.checked_add(right)?, scale)
+        self.combine(other, i128::checked_add)
     }
 
     /// Exact difference, or `None` if it overflows the envelope.
     pub fn checked_sub(self, other: Decimal) -> Option<Decimal> {
+        self.combine(other, i128::checked_sub)
+    }
+
+    /// Align both coefficients to the wider scale, combine them with `op`, and
+    /// normalize back into the envelope. `None` if aligning or `op` overflows
+    /// `i128` or the result leaves the envelope.
+    fn combine(self, other: Decimal, op: fn(i128, i128) -> Option<i128>) -> Option<Decimal> {
         let scale = self.scale.max(other.scale);
         let left = scaled_coefficient(self.coefficient, scale - self.scale)?;
         let right = scaled_coefficient(other.coefficient, scale - other.scale)?;
-        Decimal::from_parts(left.checked_sub(right)?, scale)
+        Decimal::from_parts(op(left, right)?, scale)
     }
 
     /// Exact product, or `None` if it overflows the envelope.
@@ -162,41 +166,11 @@ impl Decimal {
         let dividend = self.coefficient.unsigned_abs();
         let by = divisor.coefficient.unsigned_abs();
 
-        // Produce the quotient's significant digits (most significant first) by
-        // long division — the remainder stays below `by`, so nothing overflows —
-        // together with the power of ten of the leading digit.
-        let precision = MAX_DIGITS as usize + 1;
-        let mut digits: Vec<u8> = Vec::new();
-        let mut leading_power: i32;
-        let integer = dividend / by; // <= dividend, so at most 34 digits
-        let mut rem = dividend % by;
-        if integer > 0 {
-            let text = integer.to_string();
-            leading_power = text.len() as i32 - 1;
-            digits.extend(text.bytes().map(|b| b - b'0'));
-        } else {
-            // The value is below 1: walk past leading fractional zeros (at most 34,
-            // since `dividend >= 1` and `by <= 10^34`) to the first nonzero digit.
-            leading_power = -1;
-            loop {
-                rem *= 10;
-                let digit = (rem / by) as u8;
-                rem %= by;
-                if digit != 0 {
-                    digits.push(digit);
-                    break;
-                }
-                leading_power -= 1;
-            }
-        }
-        // Generate one guard digit past the maximum significant precision. The
-        // remaining `rem` is a sticky bit for half-even ties beyond that guard.
-        while digits.len() < precision && rem != 0 {
-            rem *= 10;
-            digits.push((rem / by) as u8);
-            rem %= by;
-        }
-        let inexact = rem != 0;
+        let DividedDigits {
+            mut digits,
+            leading_power,
+            inexact,
+        } = divide_to_digits(dividend, by, MAX_DIGITS as usize + 1);
 
         // value = coefficient * 10^(power), shifted by the operands' scales.
         let power =
@@ -352,6 +326,58 @@ fn split(magnitude: u128, scale: u32) -> (u128, u128) {
 /// `coefficient * 10^power`, or `None` on overflow.
 fn scaled_coefficient(coefficient: i128, power: u32) -> Option<i128> {
     coefficient.checked_mul(10i128.checked_pow(power)?)
+}
+
+/// The significant digits of a quotient produced by long division.
+struct DividedDigits {
+    /// Quotient digits, most significant first, with one guard digit past the
+    /// requested precision.
+    digits: Vec<u8>,
+    /// The power of ten of the leading digit (`0` for a units digit, negative
+    /// below one).
+    leading_power: i32,
+    /// Whether a nonzero remainder survives past the generated digits, the sticky
+    /// bit for half-even ties.
+    inexact: bool,
+}
+
+/// Divide `dividend` by `by` (both nonzero) into up to `precision` significant
+/// digits by long division, generating one guard digit. The remainder stays below
+/// `by`, so nothing overflows.
+fn divide_to_digits(dividend: u128, by: u128, precision: usize) -> DividedDigits {
+    let mut digits: Vec<u8> = Vec::new();
+    let mut leading_power: i32;
+    let integer = dividend / by; // <= dividend, so at most 34 digits
+    let mut rem = dividend % by;
+    if integer > 0 {
+        let text = integer.to_string();
+        leading_power = text.len() as i32 - 1;
+        digits.extend(text.bytes().map(|b| b - b'0'));
+    } else {
+        // The value is below 1: walk past leading fractional zeros (at most 34,
+        // since `dividend >= 1` and `by <= 10^34`) to the first nonzero digit.
+        leading_power = -1;
+        loop {
+            rem *= 10;
+            let digit = (rem / by) as u8;
+            rem %= by;
+            if digit != 0 {
+                digits.push(digit);
+                break;
+            }
+            leading_power -= 1;
+        }
+    }
+    while digits.len() < precision && rem != 0 {
+        rem *= 10;
+        digits.push((rem / by) as u8);
+        rem %= by;
+    }
+    DividedDigits {
+        digits,
+        leading_power,
+        inexact: rem != 0,
+    }
 }
 
 fn exact_digits_to_decimal(mut digits: Vec<u8>, mut scale: u32, negative: bool) -> Option<Decimal> {

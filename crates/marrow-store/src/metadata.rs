@@ -267,9 +267,7 @@ impl<'a> MetadataCursor<'a> {
         }
         let mut ids = Vec::new();
         for _ in 0..len {
-            let raw = self.take_bytes()?;
-            let id = std::str::from_utf8(raw).map_err(|_| corrupt_metadata(raw))?;
-            ids.push(CatalogId::new(id).map_err(|_| corrupt_metadata(raw))?);
+            ids.push(self.take_catalog_id()?);
         }
         Ok(ids)
     }
