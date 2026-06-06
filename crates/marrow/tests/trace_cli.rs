@@ -1,6 +1,18 @@
 mod support;
 
-use support::{marrow, temp_project, write};
+use serde_json::{Value, json};
+
+use support::{jsonl, marrow, temp_project, write};
+
+fn jsonl_trace_records(stdout: Vec<u8>) -> Vec<Value> {
+    let text = String::from_utf8(stdout).expect("stdout utf8");
+    let jsonl_text = text
+        .lines()
+        .filter(|line| line.trim_start().starts_with('{'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    jsonl(jsonl_text.into_bytes())
+}
 
 #[test]
 fn run_trace_interleaves_steps_and_writes() {
@@ -204,14 +216,37 @@ fn run_trace_json_emits_step_and_write_records() {
     let output = marrow(&["run", "--trace", "--format", "jsonl", &dir]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let stdout = String::from_utf8(output.stdout).expect("utf8");
-    let kinds: Vec<String> = stdout
-        .lines()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .filter_map(|value| value["kind"].as_str().map(str::to_string))
-        .collect();
-    assert!(kinds.iter().any(|k| k == "step"), "{stdout}");
-    assert!(kinds.iter().any(|k| k == "write"), "{stdout}");
+    let records = jsonl(output.stdout);
+    let [step, write, summary] = records.as_slice() else {
+        panic!("expected step, write, and summary records: {records:?}");
+    };
+
+    assert_eq!(step["kind"], json!("step"));
+    assert_eq!(step["trace"], json!(""));
+    assert_eq!(step["line"], json!(7));
+    assert_eq!(step["depth"], json!(1));
+    assert!(
+        step["file"]
+            .as_str()
+            .expect("step file")
+            .ends_with("src/app.mw"),
+        "{step}"
+    );
+
+    assert_eq!(write["kind"], json!("write"));
+    assert_eq!(write["trace"], json!(""));
+    assert_eq!(write["op"], json!("write"));
+    assert_eq!(write["path"], json!("^books(1).title"));
+    assert_eq!(write["value_b64"], json!("TW9ydA=="));
+    assert_eq!(write["depth"], json!(1));
+    assert_eq!(write["target"]["kind"], json!("data"));
+    assert_eq!(write["target"]["store"], json!("books"));
+    assert_eq!(write["target"]["identity"], json!(["1"]));
+    assert_eq!(write["target"]["path"], json!([{ "member": "title" }]));
+
+    assert_eq!(summary["kind"], json!("summary"));
+    assert_eq!(summary["trace"], json!(""));
+    assert_eq!(summary["events"], json!(2));
 }
 
 #[test]
@@ -235,16 +270,24 @@ fn test_trace_labels_each_test() {
         );
     });
     let dir = project.to_str().unwrap().to_string();
-    let output = marrow(&["test", "--trace", &dir]);
+    let output = marrow(&["test", "--trace", "--format", "jsonl", &dir]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let combined = format!(
-        "{}{}",
-        String::from_utf8(output.stdout).expect("utf8"),
-        String::from_utf8(output.stderr).expect("utf8")
-    );
-    assert!(combined.contains("::first"), "{combined}");
-    assert!(combined.contains("::second"), "{combined}");
+    let records = jsonl_trace_records(output.stdout);
+    let step_labels = records
+        .iter()
+        .filter(|record| record["kind"] == "step")
+        .filter_map(|record| record["trace"].as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let summary_labels = records
+        .iter()
+        .filter(|record| record["kind"] == "summary")
+        .filter_map(|record| record["trace"].as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for label in ["tests::suite::first", "tests::suite::second"] {
+        assert!(step_labels.contains(label), "{records:?}");
+        assert!(summary_labels.contains(label), "{records:?}");
+    }
 }
 
 #[test]
