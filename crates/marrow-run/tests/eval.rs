@@ -467,6 +467,26 @@ fn run_expecting_error(call: CheckedEntryCall<'_>) -> marrow_run::RuntimeError {
     run(call).expect_err("expected runtime error")
 }
 
+fn error_throw_fields(error: &marrow_run::RuntimeError) -> (&str, &str) {
+    let Some(Value::Resource(fields)) = error.throw.as_deref() else {
+        panic!("expected Error resource throw: {error:?}");
+    };
+    (
+        resource_str_field(fields, "code"),
+        resource_str_field(fields, "message"),
+    )
+}
+
+fn resource_str_field<'a>(fields: &'a [(String, Value)], name: &str) -> &'a str {
+    let Some((_, value)) = fields.iter().find(|(field, _)| field.as_str() == name) else {
+        panic!("expected Error resource field `{name}`: {fields:?}");
+    };
+    let Value::Str(value) = value else {
+        panic!("expected Error resource field `{name}` to be string: {value:?}");
+    };
+    value
+}
+
 /// Evaluate `entry` from a single checked `test` module against an empty store.
 fn eval_source(
     source: &str,
@@ -1450,7 +1470,9 @@ fn std_assert_fail_raises_with_its_message() {
     let program = checked_program("pub fn bad()\n    std::assert::fail(\"boom\")\n");
     let error = run_expecting_error(checked_entry!(&program, "test::bad"));
     assert_eq!(error.code, RUN_ASSERT);
-    assert!(error.message.contains("boom"), "{}", error.message);
+    let (code, message) = error_throw_fields(&error);
+    assert_eq!(code, RUN_ASSERT);
+    assert_eq!(message, "boom");
 }
 
 #[test]
@@ -2216,11 +2238,9 @@ fn finally_runs_after_a_fault_and_can_replace_it() {
     );
     let error = run_expecting_error(checked_entry!(&program, "test::f"));
     assert_eq!(error.code, RUN_UNCAUGHT_THROW);
-    assert!(
-        error.message.contains("cleanup.failed"),
-        "{}",
-        error.message
-    );
+    let (code, message) = error_throw_fields(&error);
+    assert_eq!(code, "cleanup.failed");
+    assert_eq!(message, "x");
 }
 
 #[test]
@@ -2238,7 +2258,9 @@ fn a_throw_in_finally_replaces_the_outcome() {
     );
     let error = run_expecting_error(checked_entry!(&program, "test::f"));
     assert_eq!(error.code, RUN_UNCAUGHT_THROW);
-    assert!(error.message.contains("from.finally"), "{}", error.message);
+    let (code, message) = error_throw_fields(&error);
+    assert_eq!(code, "from.finally");
+    assert_eq!(message, "x");
 }
 
 #[test]
@@ -2854,7 +2876,9 @@ fn run_entry_rejects_host_values_that_do_not_match_checked_parameters() {
     let error = rejected_entry_call(&program, "test::needs_int", vec![Value::Str("x".into())]);
 
     assert_eq!(error.code, RUN_TYPE);
-    assert!(error.message.contains("entry argument `n`"));
+    let (code, message) = error_throw_fields(&error);
+    assert_eq!(code, RUN_TYPE);
+    assert_eq!(message, "entry argument `n` has the wrong type");
 }
 
 #[test]
@@ -2882,7 +2906,12 @@ fn run_entry_rejects_host_values_for_moded_parameters() {
     let error = rejected_entry_call(&program, "test::fill", vec![Value::Int(0)]);
 
     assert_eq!(error.code, RUN_TYPE);
-    assert!(error.message.contains("inout"));
+    let (code, message) = error_throw_fields(&error);
+    assert_eq!(code, RUN_TYPE);
+    assert_eq!(
+        message,
+        "entry parameter `n` is inout and must be called from checked source"
+    );
 }
 
 #[test]
@@ -2894,7 +2923,9 @@ fn run_entry_rejects_host_values_for_identity_parameters() {
     let error = rejected_entry_call(&program, "test::load", vec![Value::Int(1)]);
 
     assert_eq!(error.code, RUN_TYPE);
-    assert!(error.message.contains("entry argument `id`"));
+    let (code, message) = error_throw_fields(&error);
+    assert_eq!(code, RUN_TYPE);
+    assert_eq!(message, "entry argument `id` has the wrong type");
 }
 
 #[test]
@@ -2906,7 +2937,9 @@ fn run_entry_rejects_host_values_for_resource_parameters() {
     let error = rejected_entry_call(&program, "test::show", vec![Value::Resource(vec![])]);
 
     assert_eq!(error.code, RUN_TYPE);
-    assert!(error.message.contains("entry argument `book`"));
+    let (code, message) = error_throw_fields(&error);
+    assert_eq!(code, RUN_TYPE);
+    assert_eq!(message, "entry argument `book` has the wrong type");
 }
 
 #[test]
