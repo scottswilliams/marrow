@@ -102,6 +102,7 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
                 | DiagnosticPayload::RejectedSurface(_)
                 | DiagnosticPayload::Enum(_)
                 | DiagnosticPayload::PrivateEnum(_)
+                | DiagnosticPayload::DuplicateNamedArgument(_)
                 | DiagnosticPayload::None => true,
             });
     }
@@ -2930,14 +2931,17 @@ fn check_user_function_call(
         if let Some(param_index) = param_index {
             let param = &function.params[param_index];
             if supplied[param_index] {
-                env.diagnostics.push(call_diagnostic(
-                    env.file,
-                    env.span,
-                    format!(
+                env.diagnostics.push(CheckDiagnostic {
+                    code: CHECK_CALL_ARGUMENT,
+                    severity: Severity::Error,
+                    file: env.file.to_path_buf(),
+                    message: format!(
                         "function `{callee}` parameter `{}` is supplied more than once",
                         param.name
                     ),
-                ));
+                    span: env.span,
+                    payload: DiagnosticPayload::DuplicateNamedArgument(param.name.clone()),
+                });
                 continue;
             }
             supplied[param_index] = true;
@@ -3303,11 +3307,14 @@ fn check_resource_constructor_args(input: ResourceConstructorCheck<'_>) {
             continue;
         };
         if supplied[index] {
-            diagnostics.push(call_diagnostic(
-                file,
+            diagnostics.push(CheckDiagnostic {
+                code: CHECK_CALL_ARGUMENT,
+                severity: Severity::Error,
+                file: file.to_path_buf(),
+                message: format!("field `{name}` is supplied more than once"),
                 span,
-                format!("field `{name}` is supplied more than once"),
-            ));
+                payload: DiagnosticPayload::DuplicateNamedArgument(name.clone()),
+            });
             continue;
         }
         supplied[index] = true;

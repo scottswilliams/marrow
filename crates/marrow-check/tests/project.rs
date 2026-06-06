@@ -2602,7 +2602,10 @@ fn rejects_duplicate_named_arguments() {
         "check.call_argument",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
-    assert!(found[0].message.contains("a"), "{found:#?}");
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::DuplicateNamedArgument("a".into())
+    );
 }
 
 #[test]
@@ -2945,6 +2948,22 @@ fn a_resource_constructor_rejects_unknown_fields() {
         "check.call_argument",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_resource_constructor_rejects_duplicate_fields() {
+    let found = check_module(
+        "ctor-duplicate-field",
+        "module m\n\
+         resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n\
+         fn caller()\n    var b = Book(title: \"a\", title: \"b\", shelf: \"fiction\")\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::DuplicateNamedArgument("title".into())
+    );
 }
 
 #[test]
