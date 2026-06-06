@@ -418,9 +418,10 @@ pub enum EnumDiagnostic {
 /// field name. Append target diagnostics carry the rejected target shape.
 /// Conversion unsupported-source diagnostics carry the target, rejected source,
 /// and accepted static sources. Interpolation unsupported-source diagnostics
-/// carry the source type that interpolation cannot render directly. Type mismatch
-/// diagnostics carry the expected and found types. Other diagnostics carry
-/// [`DiagnosticPayload::None`].
+/// carry the source type that interpolation cannot render directly. Reserved
+/// catalog path reuse diagnostics carry the reused source identity and reserved
+/// stable id. Type mismatch diagnostics carry the expected and found types.
+/// Other diagnostics carry [`DiagnosticPayload::None`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DiagnosticPayload {
     /// No resolution identity is attached.
@@ -462,6 +463,12 @@ pub enum DiagnosticPayload {
     ConversionUnsupportedSource(ConversionUnsupportedSourceDiagnostic),
     /// `check.operator_type`: interpolation rejects a known source type.
     InterpolationUnsupportedSource { source: MarrowType },
+    /// `check.catalog_intent`: a source declaration reused a reserved catalog path.
+    ReservedCatalogPathReuse {
+        source_kind: CatalogEntryKind,
+        source_path: String,
+        reserved_stable_id: String,
+    },
     /// `check.return_type` or `check.assignment_type`: incompatible known types.
     TypeMismatch {
         expected: MarrowType,
@@ -1033,6 +1040,7 @@ impl TestResolutionSuppression {
             | DiagnosticPayload::AppendTarget(_)
             | DiagnosticPayload::ConversionUnsupportedSource(_)
             | DiagnosticPayload::InterpolationUnsupportedSource { .. }
+            | DiagnosticPayload::ReservedCatalogPathReuse { .. }
             | DiagnosticPayload::TypeMismatch { .. }
             | DiagnosticPayload::None => false,
         }

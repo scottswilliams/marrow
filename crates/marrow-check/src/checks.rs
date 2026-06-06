@@ -106,6 +106,7 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
                 | DiagnosticPayload::AppendTarget(_)
                 | DiagnosticPayload::ConversionUnsupportedSource(_)
                 | DiagnosticPayload::InterpolationUnsupportedSource { .. }
+                | DiagnosticPayload::ReservedCatalogPathReuse { .. }
                 | DiagnosticPayload::TypeMismatch { .. }
                 | DiagnosticPayload::None => true,
             });

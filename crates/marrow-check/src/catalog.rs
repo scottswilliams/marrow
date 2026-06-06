@@ -1141,7 +1141,11 @@ fn push_reserved_reuse(
             source.path, reserved.stable_id
         ),
         span: source.span,
-        payload: DiagnosticPayload::None,
+        payload: DiagnosticPayload::ReservedCatalogPathReuse {
+            source_kind: source.kind,
+            source_path: source.path.clone(),
+            reserved_stable_id: reserved.stable_id.clone(),
+        },
     });
 }
 

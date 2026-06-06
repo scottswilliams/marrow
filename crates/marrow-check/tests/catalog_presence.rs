@@ -4,9 +4,9 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 
 use marrow_check::{
-    CHECK_BARE_MAYBE_PRESENT_READ, CHECK_CATALOG_INTENT, PresenceProofPlace, PresenceProofRead,
-    PresenceProofSource, PresenceProofStatus, StoreIndexKeySource, StoredValueMeaning,
-    check_project,
+    CHECK_BARE_MAYBE_PRESENT_READ, CHECK_CATALOG_INTENT, DiagnosticPayload, PresenceProofPlace,
+    PresenceProofRead, PresenceProofSource, PresenceProofStatus, StoreIndexKeySource,
+    StoredValueMeaning, check_project,
 };
 use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 
@@ -393,13 +393,16 @@ fn reserved_catalog_path_blocks_source_reuse_without_intent() {
 
     let (report, program) = check_project(&root, &config()).expect("check");
 
+    let expected_payload = DiagnosticPayload::ReservedCatalogPathReuse {
+        source_kind: CatalogEntryKind::ResourceMember,
+        source_path: "books::Book::title".to_string(),
+        reserved_stable_id: derived_id("member-title-old"),
+    };
     assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_CATALOG_INTENT
-                && diagnostic.message.contains("reserved")),
-        "reserved path reuse must be diagnosed: {:#?}",
+        report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == CHECK_CATALOG_INTENT && diagnostic.payload == expected_payload
+        }),
+        "reserved path reuse must carry exact payload: {:#?}",
         report.diagnostics
     );
     let proposal = program.catalog.proposal.expect("proposal");
