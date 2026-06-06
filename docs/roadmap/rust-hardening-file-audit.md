@@ -17,7 +17,7 @@ This tracker is the operational source of truth for the Marrow rust-hardening au
 - Main status at audit start: clean, `## main...origin/main`, head `7435c7dbd6ae9817460d5d44ebaa0e54c0aa9b70`
 - Live main integration state is intentionally not frozen here. Re-run `git -C /Users/scottwilliams/Dev/marrow rev-parse HEAD` and `git -C /Users/scottwilliams/Dev/marrow status --short --branch` immediately before every integration, then record that fresh state in the lane evidence packet.
 - Tracked file count at audit start: 279
-- Current tracked file count after L01 language-docs audit: 274
+- Current tracked file count after L10 stdlib-pure integration: 339
 - `docs/roadmap/` did not exist at audit start; this file creates it.
 
 ## Status Values
@@ -116,7 +116,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 
 ## Initial Findings
 
-- F001 oversized test suites: `crates/marrow-run/tests/eval.rs`, `crates/marrow-check/tests/project.rs`, `crates/marrow-check/tests/evolution_discharge.rs`, `crates/marrow-run/tests/evolution_apply.rs`, and `crates/marrow-syntax/tests/parse.rs` are too large for review confidence. Owner lanes must split by invariant or convert to focused fixtures where the area cleanup justifies it.
+- F001 oversized test suites: audit-start hotspots included `crates/marrow-run/tests/eval.rs`, `crates/marrow-check/tests/project.rs`, `crates/marrow-check/tests/evolution_discharge.rs`, `crates/marrow-run/tests/evolution_apply.rs`, and `crates/marrow-syntax/tests/parse.rs`. Current main has split several of those suites by invariant; owner lanes must keep migrated suites focused and continue splitting or fixture-converting remaining oversized files where area cleanup justifies it.
 - F002 broad checker/parser dispatch: `crates/marrow-check/src/checks.rs` and `crates/marrow-syntax/src/parse_decl.rs` have high match density and line counts. Owner lanes must inspect actual Rust shape and split only when it removes real complexity or duplicate semantic ownership.
 - F003 prose assertions: `message.contains`, `stderr.contains`, and `stdout.contains` are widespread. Some CLI boundary assertions are legitimate rendering tests; checker/runtime/schema lanes must migrate semantic tests away from prose matching.
 - F004 source-text architecture tests: existing source scans are useful backstops but cannot substitute for typed boundaries and positive behavior coverage. Lane owners must keep only identifier-aware scans with a reason and pair them with behavior coverage.
@@ -132,7 +132,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 | Duplicate semantic classifiers | Targeted scan found classifier families in checker/runtime; owner lanes must prove one semantic owner. | needs-lane | L06-L11 |
 | Public raw/string APIs | L12 store raw archive constructors are `pub(crate)` typed backup boundaries or test-gated constructors; redb raw byte checks are native substrate tests. L13 backup/restore raw cell helpers are test-only malformed-archive constructors; production archive errors now carry typed payloads. Other raw/catalog hits require production-boundary review. | needs-lane | L10, L14 |
 | Fallback branches and legacy modes | L00 root-fixtures hits are AGENTS policy prohibitions. L01 language-doc hits are v0.1/reserved boundary text rather than compatibility fallback behavior. L12 store hits are version-refusal and table-initialization comments or tests rejecting legacy manifest spellings. L13 legacy digest hits are rejection tests for old digest spelling, not compatibility behavior. Other term scan hits require lane-local review. | needs-lane | L06-L11, L14 |
-| Message-parsing logic | L03 syntax, L04 schema, L05 project-model, L12 store, and L13 backup/restore have no `message.contains` semantic assertions after integration. L06 schema-payload, duplicate-root, duplicate-declaration, duplicate-module, module-path, rejected-surface, schema-unsupported-map, enum-payload, parent-not-category, script-import, private-enum, duplicate-named-argument, append-target, conversion-source, interpolation-source, type-mismatch, and reserved-catalog payload slices migrated the checker assertions they touched. L10 runtime throw-field slice removed `message.contains` assertions from `crates/marrow-run/tests/eval.rs`; remaining checker/runtime/tooling areas still need lane-local migration. | needs-lane | L06-L11, L14 |
+| Message-parsing logic | L03 syntax, L04 schema, L05 project-model, L12 store, and L13 backup/restore have no `message.contains` semantic assertions after integration. L06 schema-payload, duplicate-root, duplicate-declaration, duplicate-module, module-path, rejected-surface, schema-unsupported-map, enum-payload, parent-not-category, script-import, private-enum, duplicate-named-argument, append-target, conversion-source, interpolation-source, type-mismatch, and reserved-catalog payload slices migrated the checker assertions they touched. L10 throw-field and stdlib-pure slices use typed Error resource fields or runtime code assertions in `eval_control_errors.rs`; remaining checker/runtime/tooling areas still need lane-local migration. | needs-lane | L06-L11, L14 |
 | Source-text architecture scans | Existing scans identified in architecture tests. | needs-lane | L08, L10, L14 |
 | Comment sediment | L00 root-fixtures hits are durable AGENTS policy prohibitions and repository operating rules. L01 language-doc hits were triaged as durable `migration DSL` negative scope, `std::clock::now()` examples, and `rename ... now spelled` evolution wording. L02 removed empty future placeholder pages; remaining L02 hits were triaged as durable data-evolution compatibility/migration contracts, `std::clock::now`, old path aliases, bridge wording for host-system extensions, and protocol cursor text. L03 syntax hits were triaged as durable `rename ... now spelled` semantics and `now` sample text; L04 schema hits were triaged as `clock.now` domain text and a pre-existing `string`/`Str` bridge comment; L05 project-model hits were triaged as durable store-key migration wording and a `SystemTime::now()` false positive; L12 store hits were durable redb format/version comments, native substrate raw-byte tests, and internal byte-decoder variable names; L13 backup/restore hits were durable legacy-digest rejection tests, raw-engine-copy contract docs, and test/output wording. | needs-lane | L06-L11, L14 |
 | Cargo target isolation | Completed lanes spell lane-specific `CARGO_TARGET_DIR`; future lane commands must keep doing so. | needs-lane | L06-L11, L14 |
@@ -152,7 +152,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 | L07 checker-evolution | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l07-checker-evolution` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L08 checker-presence | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l08-checker-presence` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L09 checker-tooling | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l09-checker-tooling` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
-| L10 runtime-core | `/Users/scottwilliams/Dev/marrow-rust-hardening-l10-runtime-core`; base64 canonicality slice `/Users/scottwilliams/Dev/marrow-rust-hardening-l14-serve-protocol-source` | base64 lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-serve-protocol-source`; base64 reviews `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-soundness-serve-protocol-source` and `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-idiom-serve-protocol-source`; latest main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-base64-main-integration` | initial `f7501f90c77edc95ae08297ac9d39583c79e6cac`; throw-field live rebase base `fe51bc62435437251607f77938150c766bbde7e6`; base64 slice base `451df5e4256dde7a04a1a015930a99e8fa348fdb` | latest source/main `1735ff618513bc54dcdba99ef5e43c216efe1396` | in-lane | focused throw-field, base64, serve-protocol, `marrow-run`, `marrow`, workspace build/test, workspace clippy, and fmt gates passed | base64 canonicality failed on non-zero base64 pad bits, then pass after fix; throw-field pass, no findings | base64 idiom/spec pass after fix; throw-field pass, no findings | base64 pad-bit finding fixed and re-reviewed; no open in-scope base64 findings | runtime throw-field test slice and shared base64 canonical decoder slice integrated; broader L10 files remain unreviewed |
+| L10 runtime-core | `/Users/scottwilliams/Dev/marrow-rust-hardening-l10-runtime-core`; stdlib-pure slice `/Users/scottwilliams/Dev/marrow-rust-hardening-l10-stdlib-pure`; base64 canonicality slice `/Users/scottwilliams/Dev/marrow-rust-hardening-l14-serve-protocol-source` | stdlib-pure lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-stdlib-pure-rebased`; stdlib-pure main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-main-postmerge`; base64 lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-serve-protocol-source`; base64 reviews `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-soundness-serve-protocol-source` and `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l14-review-idiom-serve-protocol-source` | initial `f7501f90c77edc95ae08297ac9d39583c79e6cac`; throw-field live rebase base `fe51bc62435437251607f77938150c766bbde7e6`; base64 slice base `451df5e4256dde7a04a1a015930a99e8fa348fdb`; stdlib-pure base `944789c323b5ef6d9d4b2e83794e4b7a7efd916e` | latest source/main `b61a11008c04ec5f6df5c526ad86cd59bc3f1657` | in-lane | focused throw-field, base64, stdlib-pure error constructor, `marrow-run`, `marrow`, workspace build/test, workspace clippy, and fmt gates passed | stdlib-pure soundness failed on malformed `Error(code/message/help)` runtime values, then pass after runtime validation; base64 canonicality failed on non-zero base64 pad bits, then pass after fix; throw-field pass, no findings | stdlib-pure idiom/spec failed on duplicate unique-index read ownership, hand-built runtime tests, prose assertion, and duplicate scalar classifier, then pass after fixes; base64 idiom/spec pass after fix; throw-field pass, no findings | stdlib-pure findings fixed and re-reviewed; base64 pad-bit finding fixed and re-reviewed; checker-side `Error(...)` static validation deferred to B008 | runtime throw-field test slice, shared base64 canonical decoder slice, runtime Error field validation, and stdlib unique-index lookup owner integrated; broader L10 files remain unreviewed |
 | L11 runtime-evolution | pending | `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l11-runtime-evolution` | pending | pending | unreviewed | pending | pending | pending | pending | pending |
 | L12 store | `/Users/scottwilliams/Dev/marrow-rust-hardening-l12-store` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-store`; review `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-review-soundness` and `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-review-idiom`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l12-main-integration` | `e3690d46d5cebb760728dfb20b49cd52d0806c2b` | no source commit; tracker evidence recorded | complete | focused store/default/native checks, workspace build/test, workspace clippy, and fmt gates passed | pass, no findings | pass, no findings | no review findings | no source cherry-pick required; main integration gates passed |
 | L13 backup-restore | `/Users/scottwilliams/Dev/marrow-rust-hardening-l13-backup-restore` | lane `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-backup-restore`; review `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-review-soundness` and `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-review-idiom`; main `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l13-main-integration` | `2215296a4de471bf051e15990158e558b9d51bd6` | lane `fdbc324e025b5cd81b7bd97354544552c8e02bb5`; main `b1f0112ed36908535c0d4ef1dc09f198835134c1` | complete | focused backup tests, workspace build/test, workspace clippy, and fmt gates passed | fail on typed wrong-type manifest payload, then pass after fix | pass, then pass after re-review | L13-R001 fixed and re-reviewed | integrated on main after live-main recheck; tracker evidence recorded |
@@ -219,6 +219,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow-check/src/rejected_surface.rs` - status: in-lane; owner: L06 checker-core; notes: rejected-surface payload slice integrated; broader checker-core review remains.
 - `crates/marrow-check/src/resolve.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
 - `crates/marrow-check/src/rules.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
+- `crates/marrow-check/src/walk.rs` - status: unreviewed; owner: L06 checker-core; notes: upstream checker split; lane-local review remains.
 
 ### crates/marrow-check/tooling
 - `crates/marrow-check/src/tooling/data/children.rs` - status: unreviewed; owner: L09 checker-tooling; notes: initial inventory.
@@ -238,15 +239,45 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow-check/src/typerules.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
 - `crates/marrow-check/tests/analysis_api.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
 - `crates/marrow-check/tests/binding_index.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
-- `crates/marrow-check/tests/catalog_presence.rs` - status: in-lane; owner: L06 checker-core; notes: reserved catalog path reuse assertion now uses exact diagnostic payload; broader checker-core test cleanup remains.
-- `crates/marrow-check/tests/checked_program.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
-- `crates/marrow-check/tests/durable_path.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
-- `crates/marrow-check/tests/evolution_discharge.rs` - status: unreviewed; owner: L07 checker-evolution; notes: initial inventory.
+- `crates/marrow-check/tests/catalog_presence_binding.rs` - status: unreviewed; owner: L08 checker-presence; notes: upstream split from the oversized catalog-presence suite; lane-local review remains.
+- `crates/marrow-check/tests/catalog_presence_enum.rs` - status: unreviewed; owner: L08 checker-presence; notes: upstream split from the oversized catalog-presence suite; lane-local review remains.
+- `crates/marrow-check/tests/catalog_presence_evolve.rs` - status: unreviewed; owner: L08 checker-presence; notes: upstream split from the oversized catalog-presence suite; lane-local review remains.
+- `crates/marrow-check/tests/catalog_presence_format.rs` - status: unreviewed; owner: L08 checker-presence; notes: upstream split from the oversized catalog-presence suite; lane-local review remains.
+- `crates/marrow-check/tests/catalog_presence_identity.rs` - status: unreviewed; owner: L08 checker-presence; notes: upstream split from the oversized catalog-presence suite; lane-local review remains.
+- `crates/marrow-check/tests/catalog_presence_narrowing.rs` - status: unreviewed; owner: L08 checker-presence; notes: upstream split from the oversized catalog-presence suite; lane-local review remains.
+- `crates/marrow-check/tests/checked_program_artifact.rs` - status: unreviewed; owner: L06 checker-core; notes: upstream split from the oversized checked-program suite; lane-local review remains.
+- `crates/marrow-check/tests/checked_program_error_value.rs` - status: unreviewed; owner: L06 checker-core; notes: upstream split from the oversized checked-program suite; lane-local review remains.
+- `crates/marrow-check/tests/checked_program_facts.rs` - status: unreviewed; owner: L06 checker-core; notes: upstream split from the oversized checked-program suite; lane-local review remains.
+- `crates/marrow-check/tests/checked_program_identity.rs` - status: unreviewed; owner: L06 checker-core; notes: upstream split from the oversized checked-program suite; lane-local review remains.
+- `crates/marrow-check/tests/checked_program_keys.rs` - status: unreviewed; owner: L06 checker-core; notes: upstream split from the oversized checked-program suite; lane-local review remains.
+- `crates/marrow-check/tests/checked_program_navigation.rs` - status: unreviewed; owner: L06 checker-core; notes: upstream split from the oversized checked-program suite; lane-local review remains.
+- `crates/marrow-check/tests/checked_program_operators.rs` - status: unreviewed; owner: L06 checker-core; notes: upstream split from the oversized checked-program suite; lane-local review remains.
+- `crates/marrow-check/tests/checked_program_stdlib.rs` - status: unreviewed; owner: L06 checker-core; notes: upstream split from the oversized checked-program suite; lane-local review remains.
+- `crates/marrow-check/tests/discharge_defaults.rs` - status: unreviewed; owner: L07 checker-evolution; notes: upstream split from the oversized evolution-discharge suite; lane-local review remains.
+- `crates/marrow-check/tests/discharge_digest.rs` - status: unreviewed; owner: L07 checker-evolution; notes: upstream split from the oversized evolution-discharge suite; lane-local review remains.
+- `crates/marrow-check/tests/discharge_enum.rs` - status: unreviewed; owner: L07 checker-evolution; notes: upstream split from the oversized evolution-discharge suite; lane-local review remains.
+- `crates/marrow-check/tests/discharge_index.rs` - status: unreviewed; owner: L07 checker-evolution; notes: upstream split from the oversized evolution-discharge suite; lane-local review remains.
+- `crates/marrow-check/tests/discharge_nested.rs` - status: unreviewed; owner: L07 checker-evolution; notes: upstream split from the oversized evolution-discharge suite; lane-local review remains.
+- `crates/marrow-check/tests/discharge_retype.rs` - status: unreviewed; owner: L07 checker-evolution; notes: upstream split from the oversized evolution-discharge suite; lane-local review remains.
+- `crates/marrow-check/tests/discharge_store_key.rs` - status: unreviewed; owner: L07 checker-evolution; notes: upstream split from the oversized evolution-discharge suite; lane-local review remains.
+- `crates/marrow-check/tests/discharge_transform.rs` - status: unreviewed; owner: L07 checker-evolution; notes: upstream split from the oversized evolution-discharge suite; lane-local review remains.
 - `crates/marrow-check/tests/presence_architecture.rs` - status: unreviewed; owner: L08 checker-presence; notes: initial inventory.
-- `crates/marrow-check/tests/project.rs` - status: in-lane; owner: L06 checker-core; notes: early schema-family, duplicate-root, duplicate-declaration, duplicate-module, module-path, rejected-surface, schema unsupported-map, enum/member-path, parent-not-category, script-import, private-enum, duplicate-named-argument, append-target, conversion-source, interpolation-source, and type-mismatch assertions now use exact diagnostic payloads for the integrated slices; broader checker-core test cleanup remains.
+- `crates/marrow-check/tests/project_analysis.rs` - status: unreviewed; owner: L06 checker-core; notes: upstream split from the oversized project suite; lane-local review remains.
+- `crates/marrow-check/tests/project_calls.rs` - status: unreviewed; owner: L06 checker-core; notes: upstream split from the oversized project suite; lane-local review remains.
+- `crates/marrow-check/tests/project_control_flow.rs` - status: unreviewed; owner: L06 checker-core; notes: upstream split from the oversized project suite; lane-local review remains.
+- `crates/marrow-check/tests/project_cross_module.rs` - status: unreviewed; owner: L06 checker-core; notes: upstream split from the oversized project suite; lane-local review remains.
+- `crates/marrow-check/tests/project_enum_hierarchy.rs` - status: unreviewed; owner: L06 checker-core; notes: upstream split from the oversized project suite; lane-local review remains.
+- `crates/marrow-check/tests/project_enums.rs` - status: unreviewed; owner: L06 checker-core; notes: upstream split from the oversized project suite; lane-local review remains.
+- `crates/marrow-check/tests/project_modules.rs` - status: unreviewed; owner: L06 checker-core; notes: upstream split from the oversized project suite; lane-local review remains.
+- `crates/marrow-check/tests/project_nested_scripts.rs` - status: unreviewed; owner: L06 checker-core; notes: upstream split from the oversized project suite; lane-local review remains.
+- `crates/marrow-check/tests/project_schema.rs` - status: unreviewed; owner: L06 checker-core; notes: upstream split from the oversized project suite; lane-local review remains.
+- `crates/marrow-check/tests/project_statements.rs` - status: unreviewed; owner: L06 checker-core; notes: upstream split from the oversized project suite; lane-local review remains.
+- `crates/marrow-check/tests/project_type_flow.rs` - status: unreviewed; owner: L06 checker-core; notes: upstream split from the oversized project suite; lane-local review remains.
+- `crates/marrow-check/tests/project_values.rs` - status: unreviewed; owner: L06 checker-core; notes: upstream split from the oversized project suite; lane-local review remains.
 - `crates/marrow-check/tests/ranges.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
 - `crates/marrow-check/tests/resource_store_contract.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
 - `crates/marrow-check/tests/support/mod.rs` - status: unreviewed; owner: L06 checker-core; notes: serialized shared checker test support; L07 and L08 must sequence through L06 or split support before editing.
+- `crates/marrow-check/tests/support_discharge/mod.rs` - status: unreviewed; owner: L07 checker-evolution; notes: upstream split support for discharge fixtures; lane-local review remains.
 - `crates/marrow-check/tests/v01_fixtures.rs` - status: unreviewed; owner: L06 checker-core; notes: initial inventory.
 
 ### crates/marrow-project
@@ -266,7 +297,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow-run/src/collection.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
 - `crates/marrow-run/src/collection/append.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
 - `crates/marrow-run/src/collection/materialize.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
-- `crates/marrow-run/src/durable_read.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
+- `crates/marrow-run/src/durable_read.rs` - status: in-lane; owner: L10 runtime-core; notes: stdlib-pure slice removed duplicate unique-index direct-read ownership; broader durable-read review remains.
 - `crates/marrow-run/src/entry.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
 - `crates/marrow-run/src/env.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
 - `crates/marrow-run/src/error.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
@@ -311,13 +342,13 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow-run/src/saved_iter/unique.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
 - `crates/marrow-run/src/statement.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
 - `crates/marrow-run/src/std_pure.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
-- `crates/marrow-run/src/stdlib.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
+- `crates/marrow-run/src/stdlib.rs` - status: in-lane; owner: L10 runtime-core; notes: stdlib-pure slice exposes the index-lookup owner; broader stdlib dispatch review remains.
 - `crates/marrow-run/src/stdlib/args.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
 - `crates/marrow-run/src/stdlib/assertions.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
 - `crates/marrow-run/src/stdlib/conversion.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
 - `crates/marrow-run/src/stdlib/count.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
-- `crates/marrow-run/src/stdlib/error_constructor.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
-- `crates/marrow-run/src/stdlib/index_lookup.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
+- `crates/marrow-run/src/stdlib/error_constructor.rs` - status: complete; owner: L10 runtime-core; notes: runtime `Error(...)` validates declared field value types through shared value scalar classification and keeps `data` open.
+- `crates/marrow-run/src/stdlib/index_lookup.rs` - status: in-lane; owner: L10 runtime-core; notes: owns exact unique-index direct value reads for runtime and durable-read callers; broader index-lookup stdlib review remains.
 - `crates/marrow-run/src/stdlib/math.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
 - `crates/marrow-run/src/stdlib/output.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
 - `crates/marrow-run/src/stdlib/tests.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
@@ -332,9 +363,23 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow-run/src/write_dispatch/required.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
 - `crates/marrow-run/src/write_dispatch/resource.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
 - `crates/marrow-run/src/write_plan.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
-- `crates/marrow-run/tests/architecture.rs` - status: unreviewed; owner: L10 runtime-core; notes: initial inventory.
-- `crates/marrow-run/tests/eval.rs` - status: in-lane; owner: L10 runtime-core; notes: runtime throw-field slice migrated `RuntimeError.message.contains` assertions to typed Error resource field assertions; oversized suite still requires broader L10 cleanup.
+- `crates/marrow-run/tests/architecture.rs` - status: in-lane; owner: L10 runtime-core; notes: stdlib-pure slice retargeted split module paths and added the unique-index owner absence scan; broader architecture scans remain lane-local.
+- `crates/marrow-run/tests/eval_aggregation.rs` - status: unreviewed; owner: L10 runtime-core; notes: upstream split from the oversized eval suite; lane-local review remains.
+- `crates/marrow-run/tests/eval_basics.rs` - status: unreviewed; owner: L10 runtime-core; notes: upstream split from the oversized eval suite; lane-local review remains.
+- `crates/marrow-run/tests/eval_collections.rs` - status: unreviewed; owner: L10 runtime-core; notes: upstream split from the oversized eval suite; lane-local review remains.
+- `crates/marrow-run/tests/eval_control_errors.rs` - status: complete; owner: L10 runtime-core; notes: throw-field and stdlib-pure slices assert typed Error resource fields or runtime codes without rendered prose parsing.
+- `crates/marrow-run/tests/eval_delete_transactions.rs` - status: unreviewed; owner: L10 runtime-core; notes: upstream split from the oversized eval suite; lane-local review remains.
+- `crates/marrow-run/tests/eval_lowering_debug_dispatch.rs` - status: unreviewed; owner: L10 runtime-core; notes: upstream split from the oversized eval suite; lane-local review remains.
+- `crates/marrow-run/tests/eval_maintenance.rs` - status: unreviewed; owner: L10 runtime-core; notes: upstream split from the oversized eval suite; lane-local review remains.
+- `crates/marrow-run/tests/eval_navigation.rs` - status: unreviewed; owner: L10 runtime-core; notes: upstream split from the oversized eval suite; lane-local review remains.
+- `crates/marrow-run/tests/eval_resources.rs` - status: unreviewed; owner: L10 runtime-core; notes: upstream split from the oversized eval suite; lane-local review remains.
+- `crates/marrow-run/tests/eval_saved_fields.rs` - status: unreviewed; owner: L10 runtime-core; notes: upstream split from the oversized eval suite; lane-local review remains.
+- `crates/marrow-run/tests/eval_storage_identity.rs` - status: unreviewed; owner: L10 runtime-core; notes: upstream split from the oversized eval suite; unique-index behavior was smoke-tested by stdlib-pure review but broader file review remains.
+- `crates/marrow-run/tests/eval_strings_dispatch.rs` - status: unreviewed; owner: L10 runtime-core; notes: upstream split from the oversized eval suite; lane-local review remains.
+- `crates/marrow-run/tests/eval_temporal_conversions.rs` - status: unreviewed; owner: L10 runtime-core; notes: upstream split from the oversized eval suite; lane-local review remains.
+- `crates/marrow-run/tests/eval_values.rs` - status: unreviewed; owner: L10 runtime-core; notes: upstream split from the oversized eval suite; lane-local review remains.
 - `crates/marrow-run/tests/evolution_apply.rs` - status: unreviewed; owner: L11 runtime-evolution; notes: initial inventory.
+- `crates/marrow-run/tests/support/mod.rs` - status: unreviewed; owner: L10 runtime-core; notes: upstream split support for runtime eval tests; lane-local review remains.
 
 ### crates/marrow-schema
 - `crates/marrow-schema/Cargo.toml` - status: complete; owner: L04 schema; notes: reviewed-clean; no manifest churn.
@@ -342,7 +387,13 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow-schema/src/lib.rs` - status: complete; owner: L04 schema; notes: typed `SchemaErrorKind` payloads added for schema diagnostics; duplicate-index render mismatch fixed.
 - `crates/marrow-schema/src/stdlib.rs` - status: complete; owner: L04 schema; notes: reviewed-clean; `clock.now` sediment hit is domain text.
 - `crates/marrow-schema/tests/compile_enum.rs` - status: complete; owner: L04 schema; notes: enum schema diagnostics assert typed facts instead of prose fragments.
-- `crates/marrow-schema/tests/compile_resource_*.rs` - status: complete; owner: L04 schema; notes: resource/store schema diagnostics assert typed facts instead of `message.contains`; duplicate-index render has exact output coverage; split by concern into `compile_resource_book/collisions/index/keys/members/sugar/unknown.rs`.
+- `crates/marrow-schema/tests/compile_resource_book.rs` - status: complete; owner: L04 schema; notes: split resource/store schema coverage asserts typed facts instead of `message.contains`.
+- `crates/marrow-schema/tests/compile_resource_collisions.rs` - status: complete; owner: L04 schema; notes: split resource/store schema coverage asserts typed facts instead of `message.contains`.
+- `crates/marrow-schema/tests/compile_resource_index.rs` - status: complete; owner: L04 schema; notes: split resource/store schema coverage asserts typed facts instead of `message.contains`; duplicate-index render has exact output coverage.
+- `crates/marrow-schema/tests/compile_resource_keys.rs` - status: complete; owner: L04 schema; notes: split resource/store schema coverage asserts typed facts instead of `message.contains`.
+- `crates/marrow-schema/tests/compile_resource_members.rs` - status: complete; owner: L04 schema; notes: split resource/store schema coverage asserts typed facts instead of `message.contains`.
+- `crates/marrow-schema/tests/compile_resource_sugar.rs` - status: complete; owner: L04 schema; notes: split resource/store schema coverage asserts typed facts instead of `message.contains`.
+- `crates/marrow-schema/tests/compile_resource_unknown.rs` - status: complete; owner: L04 schema; notes: split resource/store schema coverage asserts typed facts instead of `message.contains`.
 - `crates/marrow-schema/tests/resolve_type.rs` - status: complete; owner: L04 schema; notes: reviewed-clean; pre-existing `string`/`Str` bridge comment is durable type-spelling rationale.
 
 ### crates/marrow-store
@@ -361,6 +412,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow-store/src/tree.rs` - status: complete; owner: L12 store; notes: reviewed-clean typed tree facade, backup traversal, metadata, and transaction coverage.
 - `crates/marrow-store/src/value.rs` - status: complete; owner: L12 store; notes: reviewed-clean canonical saved-value codec.
 - `crates/marrow-store/tests/redb_store.rs` - status: complete; owner: L12 store; notes: reviewed-clean native redb persistence and handle-boundary coverage.
+- `crates/marrow-store/tests/common/mod.rs` - status: complete; owner: L12 store; notes: shared store test support reviewed with conformance and backend coverage.
 - `crates/marrow-store/tests/tree_store.rs` - status: complete; owner: L12 store; notes: reviewed-clean typed tree-store behavior coverage.
 - `crates/marrow-store/tests/value_encoding.rs` - status: complete; owner: L12 store; notes: reviewed-clean canonical value encoding coverage.
 
@@ -378,6 +430,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow-syntax/tests/format.rs` - status: complete; owner: L03 syntax; notes: reviewed-clean; remaining `contains` checks assert formatted output text, not diagnostics.
 - `crates/marrow-syntax/tests/lexer.rs` - status: complete; owner: L03 syntax; notes: lexer diagnostic tests assert typed reasons instead of `message.contains`.
 - `crates/marrow-syntax/tests/parse.rs` - status: complete; owner: L03 syntax; notes: parser diagnostic tests assert typed reasons instead of `message.contains`; helper-specific expected reasons and keyed-var key-list errors covered.
+- `crates/marrow-syntax/tests/common/mod.rs` - status: complete; owner: L03 syntax; notes: shared syntax test support reviewed with parser and formatter suites.
 
 ### crates/marrow
 - `crates/marrow/Cargo.toml` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
@@ -414,12 +467,24 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - `crates/marrow/tests/check_project_cli.rs` - status: complete; owner: L14 cli-tools-server; notes: project diagnostics and summaries assert JSONL codes, paths, and status instead of prose fragments.
 - `crates/marrow/tests/data_cli.rs` - status: complete; owner: L14 cli-tools-server; notes: data integrity semantic problem assertions use JSON problem records, stable codes, source paths, tooling kind, and serialized JSON leakage checks.
 - `crates/marrow/tests/dry_run_cli.rs` - status: blocked; owner: L14 cli-tools-server; notes: dry-run review requires structured target assertions and a `print(...)` plus `--dry-run --trace --format jsonl` regression; completion is blocked on B005.
-- `crates/marrow/tests/evolve_cli.rs` - status: blocked; owner: L14 cli-tools-server; notes: prior semantic evolution diagnostics assert JSON codes, catalog IDs, populated counts, repair-required, approval-required, and schema-drift facts; B007 requires an additional JSON store-open regression and is blocked while this file is unmerged in `/Users/scottwilliams/Dev/marrow-engine-resident-catalog`.
+- `crates/marrow/tests/evolve_cli_check_data.rs` - status: complete; owner: L14 cli-tools-server; notes: split evolution CLI coverage asserts structured check-data repair-required output.
+- `crates/marrow/tests/evolve_cli_default_backfill.rs` - status: complete; owner: L14 cli-tools-server; notes: split evolution CLI coverage asserts JSON codes, catalog IDs, populated counts, repair-required, and approval-required facts.
+- `crates/marrow/tests/evolve_cli_preview.rs` - status: blocked; owner: L14 cli-tools-server; notes: B007 requires an additional structured store-open regression after dirty evolve files are free.
+- `crates/marrow/tests/evolve_cli_resume.rs` - status: complete; owner: L14 cli-tools-server; notes: split evolution CLI coverage asserts resume and schema-drift facts.
+- `crates/marrow/tests/evolve_cli_retire_rename.rs` - status: complete; owner: L14 cli-tools-server; notes: split evolution CLI coverage asserts retire/rename apply and runtime behavior.
+- `crates/marrow/tests/evolve_cli_subcommands.rs` - status: complete; owner: L14 cli-tools-server; notes: split evolution CLI coverage asserts retired legacy subcommands are absent.
 - `crates/marrow/tests/fmt_cli.rs` - status: complete; owner: L14 cli-tools-server; notes: project-directory fmt tests now cover multiple source files and `--write` failure continuation; no-config directory assertions use stable `io.read` plus `marrow.json`; write failures assert stable `io.write`; retained text assertions are render-boundary checks because `marrow fmt` has no structured output mode.
 - `crates/marrow/tests/lsp_cli.rs` - status: complete; owner: L14 cli-tools-server; notes: LSP tests assert framed JSON-RPC fields, diagnostic codes, severity, source, and representative checker ranges; no `contains` or diagnostic prose matching remains.
-- `crates/marrow/tests/run_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
+- `crates/marrow/tests/run_cli_catalog.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: upstream split from the oversized run CLI suite; lane-local review remains.
+- `crates/marrow/tests/run_cli_entry.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: upstream split from the oversized run CLI suite; lane-local review remains.
+- `crates/marrow/tests/run_cli_enum.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: upstream split from the oversized run CLI suite; lane-local review remains.
+- `crates/marrow/tests/run_cli_exec.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: upstream split from the oversized run CLI suite; lane-local review remains.
+- `crates/marrow/tests/run_cli_faults.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: upstream split from the oversized run CLI suite; lane-local review remains.
+- `crates/marrow/tests/run_cli_fence.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: upstream split from the oversized run CLI suite; lane-local review remains.
+- `crates/marrow/tests/run_cli_maintenance.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: upstream split from the oversized run CLI suite; lane-local review remains.
 - `crates/marrow/tests/serve_cli.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/tests/support/mod.rs` - status: complete; owner: L14 cli-tools-server; notes: shared CLI support provides small JSON/JSONL helpers and production catalog commit fixture helper; function-scoped dead-code allowances are integration-test-crate local.
+- `crates/marrow/tests/support_evolve/mod.rs` - status: complete; owner: L14 cli-tools-server; notes: split evolution CLI support carries shared fixtures for reviewed evolve CLI slices.
 - `crates/marrow/tests/test_cli.rs` - status: complete; owner: L14 cli-tools-server; notes: reviewed-clean ordinary test-result surface; retained text assertions are render-boundary checks because `marrow test --format` shapes trace output only, not pass/fail summaries.
 - `crates/marrow/tests/tooling_architecture.rs` - status: unreviewed; owner: L14 cli-tools-server; notes: initial inventory.
 - `crates/marrow/tests/trace_cli.rs` - status: complete; owner: L14 cli-tools-server; notes: trace JSONL tests assert ordered step/write/summary records, structured write target fields, and structured test trace labels; remaining text assertions are render-boundary checks.
@@ -437,13 +502,10 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 
 ### docs/future
 - `docs/future/README.md` - status: complete; owner: L02 docs-meta; notes: describes selected future surfaces instead of a complete mirror.
-- `docs/future/backend-contract.md` - status: deleted; owner: L02 docs-meta; notes: placeholder-only page removed; no in-scope links remained.
 - `docs/future/cli.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; records retained restore future surface.
 - `docs/future/data-evolution.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; compatibility-window and migration terms are durable future evolution contract text.
 - `docs/future/data-modeling.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; records retained custom identity allocation future surface.
 - `docs/future/data-tools.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; records retained `data diff` and `data load` future surface.
-- `docs/future/error-codes.md` - status: deleted; owner: L02 docs-meta; notes: placeholder-only page removed; no in-scope links remained.
-- `docs/future/implementation.md` - status: deleted; owner: L02 docs-meta; notes: placeholder-only page removed; no in-scope links remained.
 - `docs/future/language/builtins.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; records retained future builtins surfaces.
 - `docs/future/language/control-flow-and-effects.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; records retained future control-flow surface.
 - `docs/future/language/modules-functions.md` - status: complete; owner: L02 docs-meta; notes: reviewed-clean; records retained visibility and parameter-doc future surfaces.
@@ -492,6 +554,7 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
 - B005: Re-run the L14 dry-run/cmd-run source lane after `cmd_run.rs` is free. Required fixes: keep program stdout separate from JSON/JSONL trace and dry-run tooling reports, add a `print(...)` plus `--dry-run --trace --format jsonl` regression, narrow dry-run wording/tests from native file byte identity to logical saved data or implement true byte stability, and integrate the structured dry-run target assertions. Blocking reason: `cmd_run.rs` is currently staged in `/Users/scottwilliams/Dev/marrow-engine-resident-catalog`, so the dry-run lane cannot own the required source fix under file-disjoint integration rules.
 - B006: Re-run the L14 serve connection-framing lane after `serve/mod.rs` is free. Required fix: when a request line exceeds `MAX_REQUEST_BYTES`, drain through the newline or close the connection so the suffix of the over-limit logical frame cannot be parsed as a second request; add a real serve repro with an oversized line followed by a valid JSON request. Blocking reason: `serve/mod.rs` is currently staged in `/Users/scottwilliams/Dev/marrow-engine-resident-catalog`, so the serve-protocol slice could not own the connection-loop fix under file-disjoint integration rules.
 - B007: Re-run the L14 evolve preview store-format lane after `cmd_evolve/mod.rs`, `main.rs`, and `tests/evolve_cli.rs` are free. Required fix: make read-only store-open failures from `marrow evolve preview --format json|jsonl` render through the selected `CheckFormat`, not hard-coded text, without duplicating store-path semantics; add a corrupt/native store regression for the selected structured format. Blocking reason: those files are dirty/unavailable in `/Users/scottwilliams/Dev/marrow-engine-resident-catalog` (`cmd_evolve/mod.rs` and `main.rs` staged; `tests/evolve_cli.rs` unmerged), so the evolve args/store slice could only integrate the local parser-shape fix.
+- B008: Add checker-side static validation for `Error(...)` builtin field argument types. Required fix: reject non-string `code`, `message`, and `help` arguments before runtime while preserving open `data`; assert stable checker diagnostic facts, not prose. Blocking reason: L10 stdlib-pure now fails closed at runtime, but checker core files are shared with active checker lanes and need an L06-owned semantic pass.
 
 ## L00 Tracker Bootstrap Evidence
 
@@ -1788,6 +1851,60 @@ Commands were run from `/Users/scottwilliams/Dev/marrow` at audit start, from `/
   - On the combined head, `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-main-integration cargo test --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
   - On the combined head, `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-main-integration cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace --all-targets -- -D warnings` passed.
   - `git -C /Users/scottwilliams/Dev/marrow push origin main rust-hardening-l10-runtime-core` pushed `main` from `fe51bc6` to `c428dd5` and created `origin/rust-hardening-l10-runtime-core` at `c428dd5`.
+
+## L10 Stdlib Runtime Error And Index Lookup Evidence
+
+- Worktree: `/Users/scottwilliams/Dev/marrow-rust-hardening-l10-stdlib-pure`.
+- Branch: `rust-hardening-l10-stdlib-pure`.
+- Target dirs:
+  - Lane/rebased: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-stdlib-pure-rebased`.
+  - Pre-integration workspace gate: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-stdlib-pure-integration`.
+  - Main post-merge gate: `/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-main-postmerge`.
+- Base/head:
+  - Source base and live integration base: `944789c323b5ef6d9d4b2e83794e4b7a7efd916e`.
+  - Final lane and main source commit: `b61a11008c04ec5f6df5c526ad86cd59bc3f1657`.
+- Changed files:
+  - `crates/marrow-run/src/durable_read.rs`
+  - `crates/marrow-run/src/stdlib.rs`
+  - `crates/marrow-run/src/stdlib/error_constructor.rs`
+  - `crates/marrow-run/src/stdlib/index_lookup.rs`
+  - `crates/marrow-run/tests/architecture.rs`
+  - `crates/marrow-run/tests/eval_control_errors.rs`
+- Failing-or-focused checks:
+  - Soundness review identified malformed `Error(code/message/help)` arguments reaching runtime Error construction without value type validation.
+  - Added source-driven `error_constructor_rejects_non_string_builtin_fields` coverage that exercises the production check/run pipeline and asserts `RUN_TYPE`, not rendered diagnostic prose.
+  - Added `error_constructor_accepts_open_data_payload` coverage proving `data: true` remains accepted.
+- Source changes:
+  - `std::Error(...)` validates declared builtin field runtime values against the schema field type, using shared `value_scalar_type` for scalar classification and leaving `data` open.
+  - `stdlib::index_lookup` owns exact unique-index direct value reads through `read_exact_unique_index_lookup_value`; `durable_read` delegates to that owner instead of duplicating index classification, key evaluation, and identity payload decoding.
+  - Architecture scans now target the split module paths and assert the stdlib unique-index owner boundary.
+- Focused and lane gates:
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-stdlib-pure-rebased cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l10-stdlib-pure/Cargo.toml --all -- --check` passed after formatting.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-stdlib-pure-rebased cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l10-stdlib-pure/Cargo.toml -p marrow-run error_constructor -- --nocapture` passed with 4 selected tests.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-stdlib-pure-rebased cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l10-stdlib-pure/Cargo.toml -p marrow-run --all-targets -- -D warnings` passed.
+  - `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-stdlib-pure-rebased cargo test --manifest-path /Users/scottwilliams/Dev/marrow-rust-hardening-l10-stdlib-pure/Cargo.toml -p marrow-run` passed.
+- Source review:
+  - Soundness review initially failed on malformed `Error(code/message/help)` runtime values, then passed after runtime validation and source-driven regressions.
+  - Idiom/spec review initially failed on duplicate unique-index direct-read ownership in `durable_read`, then on hand-built checked-expression tests, a prose assertion, and a duplicate scalar classifier. Each finding was fixed and re-reviewed to pass.
+  - Final delta soundness and idiom/spec reviews on `b61a11008c04ec5f6df5c526ad86cd59bc3f1657` both passed with no open in-scope findings.
+- Absence and sibling scans:
+  - `rg -n 'value_matches_scalar|ScalarType|fn type_name|type_name\(' crates/marrow-run/src/stdlib/error_constructor.rs` returned no matches.
+  - `rg -n '\bunsafe\b' crates --glob '*.rs'` returned no matches.
+  - `git diff --check` returned no output.
+  - `git diff -- Cargo.toml Cargo.lock crates/marrow-run/Cargo.toml` returned no output.
+  - Architecture coverage asserts `durable_read.rs` no longer owns the duplicate unique-index direct-read helpers and points callers at `stdlib::index_lookup`.
+- Integration gates:
+  - `origin/main` was rechecked at `944789c323b5ef6d9d4b2e83794e4b7a7efd916e`; `git merge-base --is-ancestor origin/main rust-hardening-l10-stdlib-pure` exited 0.
+  - Main fast-forwarded to `origin/main` `944789c323b5ef6d9d4b2e83794e4b7a7efd916e`, then fast-forwarded to `b61a11008c04ec5f6df5c526ad86cd59bc3f1657`.
+  - On the combined head, `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-main-postmerge cargo fmt --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --all -- --check` passed with no output.
+  - On the combined head, `rg -n '\bunsafe\b' crates --glob '*.rs'` returned no matches.
+  - On the combined head, `git diff --check` returned no output.
+  - On the combined head, `git diff -- Cargo.toml Cargo.lock crates/marrow-run/Cargo.toml` returned no output.
+  - On the combined head, `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-main-postmerge cargo build --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
+  - On the combined head, `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-main-postmerge cargo test --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace` passed.
+  - On the combined head, `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/rust-hardening-l10-main-postmerge cargo clippy --manifest-path /Users/scottwilliams/Dev/marrow/Cargo.toml --workspace --all-targets -- -D warnings` passed.
+  - After a final `git -C /Users/scottwilliams/Dev/marrow fetch origin`, `git -C /Users/scottwilliams/Dev/marrow status --short --branch` showed `## main...origin/main [ahead 1]` plus unrelated untracked `docs/roadmap/release-hardening-operating-plan.md` and `docs/superpowers/`.
+  - `git -C /Users/scottwilliams/Dev/marrow push origin main` pushed `main` from `944789c` to `b61a110`.
 
 ## L14 CLI Diagnostic Test-Support Evidence
 
