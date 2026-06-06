@@ -418,8 +418,9 @@ pub enum EnumDiagnostic {
 /// field name. Append target diagnostics carry the rejected target shape.
 /// Conversion unsupported-source diagnostics carry the target, rejected source,
 /// and accepted static sources. Interpolation unsupported-source diagnostics
-/// carry the source type that interpolation cannot render directly. Other
-/// diagnostics carry [`DiagnosticPayload::None`].
+/// carry the source type that interpolation cannot render directly. Type mismatch
+/// diagnostics carry the expected and found types. Other diagnostics carry
+/// [`DiagnosticPayload::None`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DiagnosticPayload {
     /// No resolution identity is attached.
@@ -461,6 +462,11 @@ pub enum DiagnosticPayload {
     ConversionUnsupportedSource(ConversionUnsupportedSourceDiagnostic),
     /// `check.operator_type`: interpolation rejects a known source type.
     InterpolationUnsupportedSource { source: MarrowType },
+    /// `check.return_type` or `check.assignment_type`: incompatible known types.
+    TypeMismatch {
+        expected: MarrowType,
+        found: MarrowType,
+    },
 }
 
 /// A problem found while checking a project, located in a specific file.
@@ -1027,6 +1033,7 @@ impl TestResolutionSuppression {
             | DiagnosticPayload::AppendTarget(_)
             | DiagnosticPayload::ConversionUnsupportedSource(_)
             | DiagnosticPayload::InterpolationUnsupportedSource { .. }
+            | DiagnosticPayload::TypeMismatch { .. }
             | DiagnosticPayload::None => false,
         }
     }

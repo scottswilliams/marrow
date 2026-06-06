@@ -106,6 +106,7 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
                 | DiagnosticPayload::AppendTarget(_)
                 | DiagnosticPayload::ConversionUnsupportedSource(_)
                 | DiagnosticPayload::InterpolationUnsupportedSource { .. }
+                | DiagnosticPayload::TypeMismatch { .. }
                 | DiagnosticPayload::None => true,
             });
     }
@@ -1976,7 +1977,10 @@ pub(crate) fn check_return_type(
                 marrow_type_name(value_type),
             ),
             span,
-            payload: DiagnosticPayload::None,
+            payload: DiagnosticPayload::TypeMismatch {
+                expected: return_type.clone(),
+                found: value_type.clone(),
+            },
         }),
         // Strict typing: a value with no known type returned where a convertible type
         // is declared must be converted first. A void function (unknown return type),
@@ -2030,7 +2034,10 @@ pub(crate) fn check_assignment(
                 file: file.to_path_buf(),
                 message: format!("expected `{expected}`, but the value is `{found}`"),
                 span,
-                payload: DiagnosticPayload::None,
+                payload: DiagnosticPayload::TypeMismatch {
+                    expected: place.clone(),
+                    found: value.clone(),
+                },
             });
         }
         // A value the checker could not resolve, stored into a convertible place. An

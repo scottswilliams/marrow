@@ -4395,9 +4395,12 @@ fn multiple_stores_over_one_resource_keep_distinct_identities() {
     );
     let return_type = with_code(&report, "check.return_type");
     assert_eq!(return_type.len(), 1, "{:#?}", report.diagnostics);
-    assert!(
-        return_type[0].message.contains("Id(^books)")
-            && return_type[0].message.contains("Id(^archivedBooks)"),
+    assert_eq!(
+        return_type[0].payload,
+        DiagnosticPayload::TypeMismatch {
+            expected: MarrowType::Identity("books".into()),
+            found: MarrowType::Identity("archivedBooks".into()),
+        },
         "{return_type:#?}"
     );
     assert!(
@@ -5948,8 +5951,8 @@ fn assigning_a_different_enum_into_an_enum_local_is_a_check_error() {
 }
 
 #[test]
-fn assignment_between_same_named_enums_qualifies_the_message() {
-    let root = temp_project("enum-same-name-assign-message", |root| {
+fn assignment_between_same_named_enums_reports_qualified_payload() {
+    let root = temp_project("enum-same-name-assign-payload", |root| {
         write(root, "src/a.mw", "module a\npub enum Color\n    red\n");
         write(root, "src/b.mw", "module b\npub enum Color\n    blue\n");
         write(
@@ -5962,10 +5965,19 @@ fn assignment_between_same_named_enums_qualifies_the_message() {
     let (report, _program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.assignment_type");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
-    assert!(
-        found[0].message.contains("a::Color") && found[0].message.contains("b::Color"),
-        "{}",
-        found[0].message
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::TypeMismatch {
+            expected: MarrowType::Enum {
+                module: "a".into(),
+                name: "Color".into(),
+            },
+            found: MarrowType::Enum {
+                module: "b".into(),
+                name: "Color".into(),
+            },
+        },
+        "{found:#?}"
     );
 }
 
