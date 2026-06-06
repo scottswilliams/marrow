@@ -1201,7 +1201,12 @@ fn a_non_category_parent_with_children_is_rejected() {
         "schema.parent_not_category",
     );
     assert_eq!(errors.len(), 1, "{errors:#?}");
-    assert!(errors[0].message.contains("tiger"), "{:#?}", errors[0]);
+    assert_schema_payload(
+        &errors[0],
+        SchemaErrorKind::ParentNotCategory {
+            member: "tiger".to_string(),
+        },
+    );
 }
 
 #[test]
