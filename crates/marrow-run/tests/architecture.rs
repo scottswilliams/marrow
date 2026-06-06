@@ -1087,10 +1087,7 @@ fn public_runtime_entrypoints_take_checked_entry_calls() {
 
 #[test]
 fn runtime_eval_helpers_follow_checked_entry_call_shape() {
-    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/eval.rs");
-    let text = fs::read_to_string(&tests).expect("runtime eval tests");
-
-    for forbidden in [
+    let forbidden = [
         "fn run(\n    _program: &CheckedRuntimeProgram",
         "fn run_full(\n    _program: &CheckedRuntimeProgram",
         "fn run_entry(\n    _program: &CheckedRuntimeProgram",
@@ -1101,13 +1098,34 @@ fn runtime_eval_helpers_follow_checked_entry_call_shape() {
         "run_entry(&program,",
         "run_entry_with_host(&program,",
         "run_entry_with_debugger(&program,",
-    ] {
-        assert!(
-            !source_contains(&text, forbidden),
-            "runtime eval tests still preserve obsolete checked entry helper shape `{forbidden}` in {}",
-            tests.display()
-        );
+    ];
+
+    let mut violations = Vec::new();
+    for path in runtime_eval_sources() {
+        collect_forbidden(&path, &forbidden, &mut violations);
     }
+
+    assert_no_violations(
+        "runtime eval tests still preserve obsolete checked entry helper shape",
+        violations,
+    );
+}
+
+/// The runtime-eval suite files: the shared harness and every `eval_*.rs` split.
+fn runtime_eval_sources() -> Vec<std::path::PathBuf> {
+    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let mut sources = vec![tests.join("support/mod.rs")];
+    for entry in fs::read_dir(&tests).expect("runtime tests directory") {
+        let path = entry.expect("runtime test entry").path();
+        let is_eval = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("eval_") && name.ends_with(".rs"));
+        if is_eval {
+            sources.push(path);
+        }
+    }
+    sources
 }
 
 #[test]
