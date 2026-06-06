@@ -202,31 +202,25 @@ pub struct CatalogEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accepted_key_shape: Option<String>,
     /// The identity-aware structural signature a resource member's durable data was accepted
-    /// under: its member kind, plus its key shape if it is a keyed layer and its leaf token if
-    /// it is a leaf. A leaf records `leaf:<token>`, where the token names the member's value
-    /// type by referent identity rather than source spelling — a scalar by name (`int`,
-    /// `string`, ...), an enum by the stable catalog id of the enum it refers to (`enum:<id>`),
-    /// or a store identity by the referenced store's stable catalog id and arity
-    /// (`id:<id>:<arity>`), prefixed by a keyed-leaf layer's key shape. An unkeyed group records
-    /// `group`, and a keyed group records `keyed-group:[<shape>]`. The discharge fails closed
-    /// when a member present in both the accepted snapshot and current source has a signature
-    /// that changed and no explicit obligation already covers it, so any structural transition
-    /// not handled by a targeted classifier cannot silently activate over existing data. A keyed
-    /// layer's key shape lives here rather than in `accepted_key_shape`, which records only store
-    /// identity keys. Only a resource-member entry records it; every other kind leaves it `None`.
+    /// under, decoded through [`structural_signature`] into a [`StructuralSignature`] (which owns
+    /// the wire grammar). It records the member's shape by referent identity rather than source
+    /// spelling, so a leaf token names a type the way it is durably addressed and a keyed layer's
+    /// key shape is recorded here rather than in `accepted_key_shape` (which holds only store
+    /// identity keys). The discharge fails closed when a member present in both the accepted
+    /// snapshot and current source has a signature that changed and no explicit obligation
+    /// already covers it, so a structural transition no targeted classifier handles cannot
+    /// silently activate over existing data. Only a resource-member entry records it; every other
+    /// kind leaves it `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accepted_struct: Option<String>,
 }
 
 impl CatalogEntry {
-    /// The identity-aware leaf token the member's durable bytes were accepted as, derived from
-    /// its accepted structural signature. The token records what type the bytes were last
-    /// accepted as by referent identity rather than source spelling, so a later type change is
-    /// detected across leaf kinds even when the new type's decoder would also accept the old
-    /// bytes (an `int` stored as `1` reads as a `bool` `true`, or as an enum member), while a
-    /// pure enum or store rename is correctly not a type change. `None` for any non-leaf
-    /// member — a group, keyed group, or an entry that records no signature — since only a leaf
-    /// position carries a single value cell with a leaf token.
+    /// The leaf token from this entry's accepted structural signature, or `None` for any non-leaf
+    /// member or one recording no signature. Because the token names the value type by referent
+    /// identity, a later type change is detected even when the new type's decoder would also
+    /// accept the old bytes (an `int` stored as `1` reads as a `bool` `true`), while a pure enum
+    /// or store rename is correctly not a type change.
     pub fn accepted_leaf_token(&self) -> Option<&str> {
         self.accepted_struct
             .as_deref()
@@ -256,7 +250,7 @@ pub enum StructuralSignature<'a> {
 impl<'a> StructuralSignature<'a> {
     /// The leaf token this signature names, or `None` for a non-leaf shape (a group or keyed
     /// group records no leaf token).
-    pub fn leaf_token(self) -> Option<&'a str> {
+    fn leaf_token(self) -> Option<&'a str> {
         match self {
             Self::Leaf(token) => Some(token),
             Self::Group | Self::KeyedGroup(_) => None,
@@ -415,6 +409,11 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 /// Parse and validate the contents of a `marrow.json` file.
+///
+/// The input is parsed both as a [`serde_json::Value`] and as [`RawConfig`]: the
+/// tree pass rejects a non-object root and array-shaped `run`/`store` fields,
+/// which a struct deserialize would otherwise map positionally, while the typed
+/// pass carries the exact serde span in the unknown-field message.
 pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
     let value: Value = serde_json::from_str(json)
         .map_err(|error| ConfigError::new(ConfigErrorKind::InvalidJson, error.to_string()))?;

@@ -367,7 +367,8 @@ fn checked_store_leaf_kind(
             })
         }
         Type::Named(name) => checked_enum_leaf_kind(program, module, name),
-        other => other.stored_scalar().map(crate::StoreLeafKind::Scalar),
+        // A non-named, non-identity leaf decodes to its scalar stored-value envelope.
+        other => other.scalar().map(crate::StoreLeafKind::Scalar),
     }
 }
 

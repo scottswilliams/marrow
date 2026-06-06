@@ -82,14 +82,6 @@ impl Type {
         }
     }
 
-    /// The scalar a saved leaf decodes to, at the store read sites that name the
-    /// stored-value envelope rather than a key projection. It is [`Self::scalar`]:
-    /// the two views coincide while every scalar is both a valid key and a valid
-    /// stored leaf, so this delegates rather than re-deriving the match.
-    pub fn stored_scalar(&self) -> Option<ScalarType> {
-        self.scalar()
-    }
-
     /// Does this type embed `unknown`? A type embeds `unknown` when it is
     /// `unknown` itself or a `sequence[...]` whose element embeds it. Managed
     /// saved schemas reject `unknown` anywhere inside.
@@ -803,85 +795,12 @@ pub fn compile_store(
     let mut errors = Vec::new();
     check_duplicate_key_params(&decl.root.keys, decl.span, &mut errors);
     for key in &decl.root.keys {
-        if let Some(error) = unsupported_map_key_param_error(key, decl.span) {
-            errors.push(error);
-            continue;
-        }
-        let ty = Type::resolve(&key.ty);
-        if ty.embeds_unknown() {
-            errors.push(unknown_error(
-                SchemaSavedUnknownTarget::IdentityKey,
-                &key.name,
-                decl.span,
-            ));
-        } else if let Some(error) = key_type_error(
-            SchemaKeyTarget::IdentityKey {
-                name: key.name.clone(),
-            },
-            &ty,
-            decl.span,
-        ) {
-            errors.push(error);
-        }
-        if resource
-            .members
-            .iter()
-            .any(|member| member.name == key.name)
-        {
-            errors.push(SchemaError {
-                kind: SchemaErrorKind::KeyMemberCollision {
-                    collision: SchemaNameCollision::IdentityKeyWithMember {
-                        key: key.name.clone(),
-                    },
-                },
-                code: SCHEMA_KEY_MEMBER_COLLISION,
-                message: format!(
-                    "identity key `{}` collides with a top-level member of the \
-                     same name; identity keys live in the saved path, not stored \
-                     members",
-                    key.name
-                ),
-                span: decl.span,
-            });
-        }
+        check_identity_key(key, resource, decl.span, &mut errors);
     }
 
     let mut names = Namespace::new(SchemaDuplicateTarget::Index);
     for index in &decl.indexes {
-        names.check(&index.name, index.span, &mut errors);
-        if decl.root.keys.is_empty() {
-            errors.push(SchemaError {
-                kind: SchemaErrorKind::IndexRequiresKeyedRoot {
-                    index: index.name.clone(),
-                },
-                code: SCHEMA_INDEX_REQUIRES_KEYED_ROOT,
-                message: format!(
-                    "index `{}` requires a keyed saved root; a singleton store has \
-                     no identity for an index entry to point to",
-                    index.name
-                ),
-                span: index.span,
-            });
-            continue;
-        }
-        if decl.root.keys.iter().any(|key| key.name == index.name) {
-            errors.push(SchemaError {
-                kind: SchemaErrorKind::KeyMemberCollision {
-                    collision: SchemaNameCollision::IdentityKeyWithIndex {
-                        key: index.name.clone(),
-                        index: index.name.clone(),
-                    },
-                },
-                code: SCHEMA_KEY_MEMBER_COLLISION,
-                message: format!(
-                    "identity key `{}` collides with index `{}`; identity keys and \
-                     indexes share the store namespace",
-                    index.name, index.name
-                ),
-                span: index.span,
-            });
-        }
-        check_store_index_args(index, &decl.root.keys, resource, &mut errors);
+        check_store_index(index, decl, resource, &mut names, &mut errors);
     }
 
     (
@@ -894,6 +813,111 @@ pub fn compile_store(
         },
         errors,
     )
+}
+
+/// Validate one store identity key: its type is a saved key, and its name does not
+/// collide with a stored top-level member. Identity keys carry no span of their
+/// own, so errors point at the store declaration's `span`.
+fn check_identity_key(
+    key: &KeyParam,
+    resource: &ResourceSchema,
+    span: SourceSpan,
+    errors: &mut Vec<SchemaError>,
+) {
+    if let Some(error) = unsupported_map_key_param_error(key, span) {
+        errors.push(error);
+        return;
+    }
+    let ty = Type::resolve(&key.ty);
+    if ty.embeds_unknown() {
+        errors.push(unknown_error(
+            SchemaSavedUnknownTarget::IdentityKey,
+            &key.name,
+            span,
+        ));
+    } else if let Some(error) = key_type_error(
+        SchemaKeyTarget::IdentityKey {
+            name: key.name.clone(),
+        },
+        &ty,
+        span,
+    ) {
+        errors.push(error);
+    }
+    if resource
+        .members
+        .iter()
+        .any(|member| member.name == key.name)
+    {
+        errors.push(key_member_collision_error(&key.name, span));
+    }
+}
+
+/// Validate one declared index: a unique name, a keyed saved root to attach to, no
+/// collision with an identity key, and well-typed arguments.
+fn check_store_index(
+    index: &IndexDecl,
+    decl: &StoreDecl,
+    resource: &ResourceSchema,
+    names: &mut Namespace,
+    errors: &mut Vec<SchemaError>,
+) {
+    names.check(&index.name, index.span, errors);
+    if decl.root.keys.is_empty() {
+        errors.push(index_requires_keyed_root_error(&index.name, index.span));
+        return;
+    }
+    if decl.root.keys.iter().any(|key| key.name == index.name) {
+        errors.push(key_index_collision_error(&index.name, index.span));
+    }
+    check_store_index_args(index, &decl.root.keys, resource, errors);
+}
+
+fn key_member_collision_error(key: &str, span: SourceSpan) -> SchemaError {
+    SchemaError {
+        kind: SchemaErrorKind::KeyMemberCollision {
+            collision: SchemaNameCollision::IdentityKeyWithMember {
+                key: key.to_string(),
+            },
+        },
+        code: SCHEMA_KEY_MEMBER_COLLISION,
+        message: format!(
+            "identity key `{key}` collides with a top-level member of the same \
+             name; identity keys live in the saved path, not stored members"
+        ),
+        span,
+    }
+}
+
+fn index_requires_keyed_root_error(index: &str, span: SourceSpan) -> SchemaError {
+    SchemaError {
+        kind: SchemaErrorKind::IndexRequiresKeyedRoot {
+            index: index.to_string(),
+        },
+        code: SCHEMA_INDEX_REQUIRES_KEYED_ROOT,
+        message: format!(
+            "index `{index}` requires a keyed saved root; a singleton store has no \
+             identity for an index entry to point to"
+        ),
+        span,
+    }
+}
+
+fn key_index_collision_error(index: &str, span: SourceSpan) -> SchemaError {
+    SchemaError {
+        kind: SchemaErrorKind::KeyMemberCollision {
+            collision: SchemaNameCollision::IdentityKeyWithIndex {
+                key: index.to_string(),
+                index: index.to_string(),
+            },
+        },
+        code: SCHEMA_KEY_MEMBER_COLLISION,
+        message: format!(
+            "identity key `{index}` collides with index `{index}`; identity keys \
+             and indexes share the store namespace"
+        ),
+        span,
+    }
 }
 
 /// Report saved-data member rules for a resource attached by a split store
@@ -1002,10 +1026,8 @@ fn flatten_enum_members(
 fn check_member_keys(member: &ResourceMember, errors: &mut Vec<SchemaError>) {
     match member {
         ResourceMember::Field(field) => {
-            if field.keys.is_empty()
-                && let Some((key, _)) = map_entry(&field.ty.text)
-            {
-                check_synthetic_map_key(key, field.span, errors);
+            if let Some(map) = MapLeaf::resolve(field) {
+                check_synthetic_map_key(&map, field.span, errors);
             }
             check_key_params(&field.keys, field.span, errors);
         }
@@ -1046,11 +1068,11 @@ fn check_key_params(keys: &[KeyParam], span: SourceSpan, errors: &mut Vec<Schema
 }
 
 fn unsupported_map_key_param_error(key: &KeyParam, span: SourceSpan) -> Option<SchemaError> {
-    unsupported_map_key_error(&key.name, &key.ty.text, span)
+    contains_map_type(&key.ty.text).then(|| unsupported_map_key_error(&key.name, span))
 }
 
-fn unsupported_map_key_error(name: &str, ty: &str, span: SourceSpan) -> Option<SchemaError> {
-    contains_map_type_syntax(ty).then(|| SchemaError {
+fn unsupported_map_key_error(name: &str, span: SourceSpan) -> SchemaError {
+    SchemaError {
         kind: SchemaErrorKind::UnsupportedType {
             target: SchemaUnsupportedTypeTarget::Key,
             name: name.to_string(),
@@ -1062,22 +1084,24 @@ fn unsupported_map_key_error(name: &str, ty: &str, span: SourceSpan) -> Option<S
             name
         ),
         span,
-    })
+    }
 }
 
-fn check_synthetic_map_key(key: &str, span: SourceSpan, errors: &mut Vec<SchemaError>) {
-    if let Some(error) = unsupported_map_key_error("key", key, span) {
-        errors.push(error);
+/// Validate the synthetic `key: K` of a `map[K, V]` member from its resolved
+/// decomposition: a nested-map key is unsupported, and otherwise the key obeys the
+/// saved-key rules just as a written key parameter does.
+fn check_synthetic_map_key(map: &MapLeaf, span: SourceSpan, errors: &mut Vec<SchemaError>) {
+    if map.key_is_map {
+        errors.push(unsupported_map_key_error("key", span));
         return;
     }
-    let ty = Type::resolve_text(key);
-    if ty.embeds_unknown() {
+    if map.key.embeds_unknown() {
         errors.push(unknown_error(SchemaSavedUnknownTarget::Key, "key", span));
     } else if let Some(error) = key_type_error(
         SchemaKeyTarget::KeyParam {
             name: "key".to_string(),
         },
-        &ty,
+        &map.key,
         span,
     ) {
         errors.push(error);
@@ -1092,13 +1116,8 @@ fn check_member_unknown(member: &ResourceMember, errors: &mut Vec<SchemaError>) 
         ResourceMember::Field(field) => {
             // A keyed leaf carries its value type the same way a plain field
             // does; both reject `unknown`.
-            let (target, ty) = if field.keys.is_empty()
-                && let Some((_, value)) = map_entry(&field.ty.text)
-            {
-                (
-                    SchemaSavedUnknownTarget::KeyedLeaf,
-                    Type::resolve_text(value),
-                )
+            let (target, ty) = if let Some(map) = MapLeaf::resolve(field) {
+                (SchemaSavedUnknownTarget::KeyedLeaf, map.value)
             } else if field.keys.is_empty() {
                 (SchemaSavedUnknownTarget::Field, Type::resolve(&field.ty))
             } else {
@@ -1146,20 +1165,17 @@ fn check_unsupported_map_types(
 /// not a `map[...]` or is an accepted saved keyed-leaf member.
 ///
 /// A top-level `map[K, V]` field under `saved_map_sugar` is accepted exactly when
-/// [`is_supported_map_member`] holds. A required member or a nested value is
+/// [`MapLeaf::is_supported_member`] holds. A required member or a nested value is
 /// rejected here; a nested *key* is left to [`check_synthetic_map_key`], which
 /// owns the key position, so it is not reported twice. Any other `map[...]`
 /// spelling — a local resource, a keyed leaf whose value is a map, or a map under
 /// a `sequence[...]` — is unsupported.
 fn unsupported_map_field(field: &FieldDecl, saved_map_sugar: bool) -> Option<SchemaError> {
-    if saved_map_sugar && field.keys.is_empty() {
-        if is_supported_map_member(field) {
+    if saved_map_sugar && let Some(map) = MapLeaf::resolve(field) {
+        if map.is_supported_member(field) {
             return None;
         }
-        if let Some((_, value)) = map_entry(&field.ty.text) {
-            return (field.required || contains_map_type(value))
-                .then(|| unsupported_map_field_error(field));
-        }
+        return (field.required || map.value_is_map).then(|| unsupported_map_field_error(field));
     }
     contains_map_type(&field.ty.text).then(|| unsupported_map_field_error(field))
 }
@@ -1190,14 +1206,6 @@ fn unsupported_map_field_error(field: &FieldDecl) -> SchemaError {
         ),
         span: field.span,
     }
-}
-
-fn is_supported_map_member(field: &FieldDecl) -> bool {
-    !field.required
-        && field.keys.is_empty()
-        && map_entry(&field.ty.text)
-            .map(|(key, value)| !contains_map_type(key) && !contains_map_type(value))
-            .unwrap_or(false)
 }
 
 /// Apply the saved named-field rule directly to resource members. Split store
@@ -1232,15 +1240,13 @@ fn check_named_field(
 ) {
     match member {
         ResourceMember::Field(field) => {
-            let ty = if contains_map_type(&field.ty.text) {
-                // Only an accepted keyed-leaf member exposes a saved value type to
-                // check; any other `map[...]` spelling is rejected elsewhere.
-                match map_entry(&field.ty.text) {
-                    Some((_, value)) if is_supported_map_member(field) => Type::resolve_text(value),
-                    _ => return,
-                }
-            } else {
-                Type::resolve(&field.ty)
+            // Only an accepted keyed-leaf member exposes a saved value type to
+            // check; any other `map[...]` spelling is rejected elsewhere.
+            let ty = match MapLeaf::resolve(field) {
+                Some(map) if map.is_supported_member(field) => map.value,
+                Some(_) => return,
+                None if contains_map_type(&field.ty.text) => return,
+                None => Type::resolve(&field.ty),
             };
             check_named_field_type(&ty, field, is_declared_enum_name, errors);
         }
@@ -1401,7 +1407,45 @@ fn map_entry(text: &str) -> Option<(&str, &str)> {
     split_top_level_comma(inner).map(|(key, value)| (key.trim(), value.trim()))
 }
 
-/// Whether a type spelling contains the unsupported `map[...]` type form.
+/// An unkeyed field whose declared type is `map[K, V]`, resolved once: its key and
+/// value [`Type`]s, plus whether either spelling is itself a nested `map[...]`. The
+/// single owner of the `map[K, V]` member decomposition — every saved-member rule
+/// (unknown, key, named, unsupported) and the node builder read shape from this
+/// rather than re-parsing `field.ty.text`.
+struct MapLeaf {
+    key: Type,
+    value: Type,
+    key_is_map: bool,
+    value_is_map: bool,
+}
+
+impl MapLeaf {
+    /// Resolve `field`'s `map[K, V]` type, or `None` when the field is keyed or its
+    /// type is not a `map[...]`. A keyed field carries its own key parameters, so
+    /// the `map[...]` member sugar applies only to unkeyed fields.
+    fn resolve(field: &FieldDecl) -> Option<Self> {
+        if !field.keys.is_empty() {
+            return None;
+        }
+        let (key, value) = map_entry(&field.ty.text)?;
+        Some(Self {
+            key: Type::resolve_text(key),
+            value: Type::resolve_text(value),
+            key_is_map: contains_map_type(key),
+            value_is_map: contains_map_type(value),
+        })
+    }
+
+    /// Whether this map is an accepted saved keyed-leaf member: an unrequired field
+    /// whose key and value are themselves not nested `map[...]` types.
+    fn is_supported_member(&self, field: &FieldDecl) -> bool {
+        !field.required && !self.key_is_map && !self.value_is_map
+    }
+}
+
+/// Whether a type spelling contains the unsupported `map[...]` type form. The
+/// public boundary export for the checker; interior schema code calls the
+/// private [`contains_map_type`].
 pub fn contains_map_type_syntax(text: &str) -> bool {
     contains_map_type(text)
 }
@@ -1512,19 +1556,30 @@ fn key_type_error(target: SchemaKeyTarget, ty: &Type, span: SourceSpan) -> Optio
     }
 }
 
+/// The error an index argument of type `resolved` earns, sharing the orderable-key
+/// verdict ([`classify_key_type`]) with identity keys and key parameters. The one
+/// divergence: an index argument may name a field whose declared type is a `Named`
+/// (an enum the checker later resolves to its scalar), so a `Named` is accepted
+/// here where a written key would reject it. Index arguments keep their own message
+/// wording but the same kinds and codes.
 fn index_arg_type_key_error(
     index: &str,
     arg: &str,
     resolved: &Type,
     span: SourceSpan,
 ) -> Option<SchemaError> {
-    match resolved {
-        Type::Scalar(ScalarType::Decimal) => Some(SchemaError {
+    if let Type::Named(_) = resolved {
+        return None;
+    }
+    let target = SchemaKeyTarget::IndexArg {
+        index: index.to_string(),
+        arg: arg.to_string(),
+    };
+    match classify_key_type(resolved) {
+        KeyTypeVerdict::Ok => None,
+        KeyTypeVerdict::Decimal => Some(SchemaError {
             kind: SchemaErrorKind::UnorderableKey {
-                target: SchemaKeyTarget::IndexArg {
-                    index: index.to_string(),
-                    arg: arg.to_string(),
-                },
+                target,
                 ty: resolved.clone(),
             },
             code: SCHEMA_UNORDERABLE_KEY,
@@ -1534,13 +1589,9 @@ fn index_arg_type_key_error(
             ),
             span,
         }),
-        Type::Scalar(_) | Type::Named(_) => None,
-        Type::Sequence(_) | Type::Identity(_) | Type::Unknown => Some(SchemaError {
+        KeyTypeVerdict::NonScalar => Some(SchemaError {
             kind: SchemaErrorKind::NonScalarKey {
-                target: SchemaKeyTarget::IndexArg {
-                    index: index.to_string(),
-                    arg: arg.to_string(),
-                },
+                target,
                 ty: resolved.clone(),
             },
             code: SCHEMA_NONSCALAR_KEY,
@@ -1593,13 +1644,10 @@ fn member_node(member: &ResourceMember, errors: &mut Vec<SchemaError>, map_sugar
             // plain top-level field.
             match Type::resolve(&field.ty) {
                 Type::Sequence(element) => sequence_leaf(field, *element),
-                ty => {
-                    if map_sugar && let Some((key, value)) = map_entry(&field.ty.text) {
-                        map_leaf(field, key, value)
-                    } else {
-                        slot_node(field, ty, vec![], field.required)
-                    }
-                }
+                ty => match MapLeaf::resolve(field) {
+                    Some(map) if map_sugar => map_leaf(field, map),
+                    _ => slot_node(field, ty, vec![], field.required),
+                },
             }
         }
         // A keyed field is a keyed-leaf layer; its declared type is the leaf type
@@ -1654,14 +1702,15 @@ fn sequence_leaf(field: &FieldDecl, element: Type) -> Node {
     )
 }
 
-/// Desugar `name: map[K, V]` into the keyed leaf `name(key: K): V`.
-fn map_leaf(field: &FieldDecl, key: &str, value: &str) -> Node {
+/// Desugar `name: map[K, V]` into the keyed leaf `name(key: K): V` from the
+/// already-resolved key and value types.
+fn map_leaf(field: &FieldDecl, map: MapLeaf) -> Node {
     slot_node(
         field,
-        Type::resolve_text(value),
+        map.value,
         vec![KeyDef {
             name: "key".to_string(),
-            ty: Type::resolve_text(key),
+            ty: map.key,
         }],
         false,
     )
