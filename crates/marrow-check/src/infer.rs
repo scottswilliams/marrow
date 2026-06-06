@@ -9,7 +9,7 @@ use marrow_syntax::{Severity, SourceSpan};
 
 use crate::checks::{
     CallCheck, check_binary, check_call, check_coalesce, check_saved_key_args, check_unary,
-    is_saved_index_branch_path, key_type_diagnostic, operator_diagnostic,
+    is_saved_index_branch_path, key_type_diagnostic,
 };
 use crate::enums::{
     IsCheck, check_is, enum_schema_in, join_or, resolve_enum_member_path, resolve_type,
@@ -19,9 +19,9 @@ use crate::resolve::resolve_store_by_root;
 use crate::typerules::{check_literal_range, marrow_type_name, type_compatible};
 use crate::{
     CHECK_AMBIGUOUS_MEMBER, CHECK_CATEGORY_NOT_SELECTABLE, CHECK_COLLECTION_UNSUPPORTED,
-    CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_ENUM_MEMBER, CHECK_UNRESOLVED_NAME, CheckDiagnostic,
-    CheckedProgram, DiagnosticPayload, EnumDiagnostic, MarrowType, build_alias_map,
-    expand_module_alias, identity_type_for_store, resolve_resource_schema_type,
+    CHECK_OPERATOR_TYPE, CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_ENUM_MEMBER, CHECK_UNRESOLVED_NAME,
+    CheckDiagnostic, CheckedProgram, DiagnosticPayload, EnumDiagnostic, MarrowType,
+    build_alias_map, expand_module_alias, identity_type_for_store, resolve_resource_schema_type,
     resolve_resource_type, resource_type_name,
 };
 
@@ -164,13 +164,10 @@ pub(crate) fn infer_type(
                         ty,
                         MarrowType::Primitive(ScalarType::Bytes) | MarrowType::Enum { .. }
                     ) {
-                        diagnostics.push(operator_diagnostic(
+                        diagnostics.push(interpolation_unsupported_source_diagnostic(
                             file,
                             expr.span(),
-                            format!(
-                                "interpolation cannot render `{}`; convert it explicitly",
-                                marrow_type_name(&ty)
-                            ),
+                            ty,
                         ));
                     }
                 }
@@ -317,6 +314,25 @@ pub(crate) fn infer_type(
         // multi-segment name has no known type.
         Expression::SavedRoot { name, .. } => singleton_resource_type(program, name),
         Expression::Name { .. } => MarrowType::Unknown,
+    }
+}
+
+fn interpolation_unsupported_source_diagnostic(
+    file: &Path,
+    span: SourceSpan,
+    source: MarrowType,
+) -> CheckDiagnostic {
+    let message = format!(
+        "interpolation cannot render `{}`; convert it explicitly",
+        marrow_type_name(&source)
+    );
+    CheckDiagnostic {
+        code: CHECK_OPERATOR_TYPE,
+        severity: Severity::Error,
+        file: file.to_path_buf(),
+        message,
+        span,
+        payload: DiagnosticPayload::InterpolationUnsupportedSource { source },
     }
 }
 

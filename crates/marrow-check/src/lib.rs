@@ -417,7 +417,9 @@ pub enum EnumDiagnostic {
 /// inaccessible enum. Duplicate named arguments carry the repeated argument or
 /// field name. Append target diagnostics carry the rejected target shape.
 /// Conversion unsupported-source diagnostics carry the target, rejected source,
-/// and accepted static sources. Other diagnostics carry [`DiagnosticPayload::None`].
+/// and accepted static sources. Interpolation unsupported-source diagnostics
+/// carry the source type that interpolation cannot render directly. Other
+/// diagnostics carry [`DiagnosticPayload::None`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DiagnosticPayload {
     /// No resolution identity is attached.
@@ -457,6 +459,8 @@ pub enum DiagnosticPayload {
     AppendTarget(AppendTargetDiagnostic),
     /// `check.call_argument`: a conversion call rejects the known source type.
     ConversionUnsupportedSource(ConversionUnsupportedSourceDiagnostic),
+    /// `check.operator_type`: interpolation rejects a known source type.
+    InterpolationUnsupportedSource { source: MarrowType },
 }
 
 /// A problem found while checking a project, located in a specific file.
@@ -1022,6 +1026,7 @@ impl TestResolutionSuppression {
             | DiagnosticPayload::DuplicateNamedArgument(_)
             | DiagnosticPayload::AppendTarget(_)
             | DiagnosticPayload::ConversionUnsupportedSource(_)
+            | DiagnosticPayload::InterpolationUnsupportedSource { .. }
             | DiagnosticPayload::None => false,
         }
     }

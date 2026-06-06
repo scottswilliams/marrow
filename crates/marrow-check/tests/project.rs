@@ -2338,7 +2338,12 @@ fn bytes_interpolation_is_a_check_error() {
         "check.operator_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
-    assert!(found[0].message.contains("bytes"), "{}", found[0].message);
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::InterpolationUnsupportedSource {
+            source: MarrowType::Primitive(ScalarType::Bytes),
+        }
+    );
 }
 
 #[test]
@@ -3873,7 +3878,15 @@ fn interpolation_rejects_enum_values() {
         "check.operator_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
-    assert!(found[0].message.contains("Color"), "{}", found[0].message);
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::InterpolationUnsupportedSource {
+            source: MarrowType::Enum {
+                module: "m".into(),
+                name: "Color".into(),
+            },
+        }
+    );
 }
 
 #[test]

@@ -105,6 +105,7 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
                 | DiagnosticPayload::DuplicateNamedArgument(_)
                 | DiagnosticPayload::AppendTarget(_)
                 | DiagnosticPayload::ConversionUnsupportedSource(_)
+                | DiagnosticPayload::InterpolationUnsupportedSource { .. }
                 | DiagnosticPayload::None => true,
             });
     }
