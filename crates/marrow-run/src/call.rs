@@ -9,7 +9,7 @@ use marrow_check::{
 use marrow_schema::stdlib::Capability;
 use marrow_syntax::SourceSpan;
 
-use crate::activation::{Invocation, complete_call, executable_body, invoke};
+use crate::activation::{Completion, Invocation, complete_call, executable_body, invoke};
 use crate::call_args::{bind_arguments, bind_arguments_with_modes, eval_resource_constructor};
 use crate::collection::{
     Direction, eval_append, eval_entries, eval_keys, eval_next_id, eval_reversed, eval_values,
@@ -68,35 +68,50 @@ fn eval_program_function<'p>(
     span: SourceSpan,
     env: &mut Env<'p>,
 ) -> Result<Option<Value>, RuntimeError> {
+    let values = bind_arguments(&function.params, args, span, env)?;
+    let (completion, _) = invoke_function(env, module, function, &values, &[])?;
+    complete_call(completion, span)
+}
+
+/// Run `function` as a child activation of `env`: build its call context, snapshot
+/// the loop-traversal layers it inherits, move the debugger hook in for the nested
+/// frame and back out when it returns, and surface the completion plus the final
+/// values of any `writeback` parameters. Callers differ only in how they bind
+/// arguments and what they do with the writeback finals.
+fn invoke_function<'p>(
+    env: &mut Env<'p>,
+    module: &'p CheckedRuntimeModule,
+    function: &'p CheckedRuntimeFunction,
+    values: &[Value],
+    writeback: &[&'p str],
+) -> Result<(Completion, Vec<Option<Value>>), RuntimeError> {
     let ctx = Context {
         program: env.program,
         store: env.store,
         host: env.host,
         transaction: Rc::clone(&env.transaction),
     };
-    let values = bind_arguments(&function.params, args, span, env)?;
     let names: Vec<&str> = function
         .params
         .iter()
         .map(|param| param.name.as_str())
         .collect();
-    let depth = env.depth;
     let traversed_layers = env.traversed_layers.clone();
-    let (completion, _, hook) = invoke(Invocation {
+    let (completion, finals, hook) = invoke(Invocation {
         ctx,
         output: Rc::clone(&env.output),
         module: Some(module),
         param_names: &names,
         body: executable_body(function)?,
         span: function.span,
-        args: &values,
-        writeback: &[],
+        args: values,
+        writeback,
         traversed_layers: &traversed_layers,
         hook: env.hook.take(),
-        depth: depth + 1,
+        depth: env.depth + 1,
     })?;
     env.hook = hook;
-    complete_call(completion, span)
+    Ok((completion, finals))
 }
 
 pub(crate) fn function_by_ref(
@@ -189,39 +204,13 @@ pub(crate) fn eval_call_with_modes<'p>(
     env: &mut Env<'p>,
 ) -> Result<Option<Value>, RuntimeError> {
     let (values, places) = bind_arguments_with_modes(&function.params, args, span, env)?;
-    let names: Vec<&str> = function
-        .params
-        .iter()
-        .map(|param| param.name.as_str())
-        .collect();
     let writeback: Vec<&str> = function
         .params
         .iter()
         .filter(|param| param.mode.is_some())
         .map(|param| param.name.as_str())
         .collect();
-    let ctx = Context {
-        program: env.program,
-        store: env.store,
-        host: env.host,
-        transaction: Rc::clone(&env.transaction),
-    };
-    let depth = env.depth;
-    let traversed_layers = env.traversed_layers.clone();
-    let (completion, finals, hook) = invoke(Invocation {
-        ctx,
-        output: Rc::clone(&env.output),
-        module: Some(module),
-        param_names: &names,
-        body: executable_body(function)?,
-        span: function.span,
-        args: &values,
-        writeback: &writeback,
-        traversed_layers: &traversed_layers,
-        hook: env.hook.take(),
-        depth: depth + 1,
-    })?;
-    env.hook = hook;
+    let (completion, finals) = invoke_function(env, module, function, &values, &writeback)?;
     for (place, final_value) in places.into_iter().zip(finals) {
         if let (Some(place), Some(value)) = (place, final_value) {
             place.write(value, span, env)?;

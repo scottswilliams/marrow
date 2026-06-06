@@ -4,8 +4,9 @@ use marrow_syntax::SourceSpan;
 
 use crate::collection::Direction;
 use crate::env::Env;
-use crate::error::{Located, RUN_ABSENT, RUN_TYPE, RuntimeError, raise_fault, unsupported};
+use crate::error::{RUN_ABSENT, RUN_TYPE, RuntimeError, raise_fault, unsupported};
 use crate::path::{Terminal, direct_root_place, lower};
+use crate::read::{first_data_child, first_record_child, next_data_child, next_record_child};
 use crate::store::{DataAddress, catalog_id};
 use crate::value::{Value, identity_value, saved_key_to_value};
 
@@ -127,42 +128,14 @@ fn seek_neighbor(
     match target {
         NeighborTarget::Record { place, anchor } => {
             let store = catalog_id(&place.store_catalog_id, "store", span)?;
-            match (anchor, dir) {
-                (None, Direction::Ascending) => env
-                    .store
-                    .record_first_child(&store, &[])
-                    .map_err(|error| error.located(span)),
-                (None, Direction::Descending) => env
-                    .store
-                    .record_last_child(&store, &[])
-                    .map_err(|error| error.located(span)),
-                (Some(key), Direction::Ascending) => env
-                    .store
-                    .record_next_child(&store, &[], &key)
-                    .map_err(|error| error.located(span)),
-                (Some(key), Direction::Descending) => env
-                    .store
-                    .record_prev_child(&store, &[], &key)
-                    .map_err(|error| error.located(span)),
+            match anchor {
+                None => first_record_child(env.store, &store, &[], dir, span),
+                Some(key) => next_record_child(env.store, &store, &[], &key, dir, span),
             }
         }
-        NeighborTarget::Data { parent, anchor } => match (anchor, dir) {
-            (None, Direction::Ascending) => env
-                .store
-                .data_first_child(&parent.store, &parent.identity, &parent.path)
-                .map_err(|error| error.located(span)),
-            (None, Direction::Descending) => env
-                .store
-                .data_last_child(&parent.store, &parent.identity, &parent.path)
-                .map_err(|error| error.located(span)),
-            (Some(key), Direction::Ascending) => env
-                .store
-                .data_next_child(&parent.store, &parent.identity, &parent.path, &key)
-                .map_err(|error| error.located(span)),
-            (Some(key), Direction::Descending) => env
-                .store
-                .data_prev_child(&parent.store, &parent.identity, &parent.path, &key)
-                .map_err(|error| error.located(span)),
+        NeighborTarget::Data { parent, anchor } => match anchor {
+            None => first_data_child(env.store, &parent, dir, span),
+            Some(key) => next_data_child(env.store, &parent, &key, dir, span),
         },
     }
 }

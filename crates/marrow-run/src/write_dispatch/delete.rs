@@ -6,13 +6,14 @@ use crate::error::{RuntimeError, raise_fault, unsupported};
 use crate::path::{SavedPath, Terminal, direct_root_place, lower, lower_keys};
 use crate::store::{DataAddress, LayerAddress};
 use crate::write::{
-    WRITE_REQUIRED_FIELD, WRITE_REQUIRES_MAINTENANCE, plan_data_delete, plan_field_delete,
-    plan_resource_delete, plan_store_root_delete,
+    WRITE_REQUIRED_FIELD, WRITE_REQUIRES_MAINTENANCE, WriteError, plan_data_delete,
+    plan_field_delete, plan_member_delete, plan_resource_delete, plan_store_root_delete,
 };
 use crate::write_dispatch::required::{
     checked_field_required, checked_group_has_required_materialized_field, checked_member_exists,
     checked_unkeyed_group, required_delete_has_preexisting_data, required_paths_under_group,
 };
+use crate::write_plan::WritePlan;
 
 pub(crate) fn eval_delete(
     path: &ExecExpr,
@@ -44,7 +45,7 @@ pub(crate) fn eval_delete(
 }
 
 /// Drop a whole keyed root and its generated index branches.
-pub(crate) fn eval_whole_root_delete(
+fn eval_whole_root_delete(
     place: &marrow_check::CheckedSavedPlace,
     span: SourceSpan,
     env: &mut Env<'_>,
@@ -61,7 +62,7 @@ pub(crate) fn eval_whole_root_delete(
     env.apply_plan(plan_store_root_delete(place, span), span)
 }
 
-pub(crate) fn eval_field_delete(
+fn eval_field_delete(
     base: &ExecExpr,
     field: &str,
     span: SourceSpan,
@@ -73,7 +74,7 @@ pub(crate) fn eval_field_delete(
     }
     let base_path = top_level_delete_base(base, span, env)?;
     match checked_unkeyed_group(&base_path.members, field) {
-        Some(group) => delete_top_level_group(&base_path, field, group, span, env),
+        Some(group) => delete_unkeyed_group(&base_path, &[], field, group, span, env),
         None => delete_top_level_field(&base_path, field, span, env),
     }
 }
@@ -99,14 +100,19 @@ fn top_level_delete_base(
     }
 }
 
-fn delete_top_level_group(
-    base_path: &SavedPath,
+/// Delete an unkeyed group, whether addressed directly off the root (`layers`
+/// empty) or nested under enclosing layers. The maintenance guard, required-data
+/// bookkeeping, and the deleted address are all derived from the same `layers`
+/// prefix, so the only thing that distinguishes the two call sites is that prefix.
+fn delete_unkeyed_group(
+    path: &SavedPath,
+    layers: &[LayerAddress],
     field: &str,
     group: &CheckedSavedMember,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
-    let identity = base_path.identity.as_slice();
+    let identity = path.identity.as_slice();
     let deletes_required = checked_group_has_required_materialized_field(group);
     if !env.host.maintenance && deletes_required {
         return Err(raise_fault(
@@ -119,15 +125,15 @@ fn delete_top_level_group(
         ));
     }
     let required_paths =
-        required_paths_under_group(&base_path.place, identity, &[], field, group, span)?;
+        required_paths_under_group(&path.place, identity, layers, field, group, span)?;
     let had_required_data = deletes_required
         && env.host.maintenance
         && required_delete_has_preexisting_data(&required_paths, span, env)?;
     let address =
-        DataAddress::member_path(&base_path.place, identity, &[], &[field.to_string()], span)?;
+        DataAddress::member_path(&path.place, identity, layers, &[field.to_string()], span)?;
     env.apply_plan(plan_data_delete(address), span)?;
     if had_required_data {
-        env.note_maintenance_required_delete(&base_path.place, identity, &[]);
+        env.note_maintenance_required_delete(&path.place, identity, layers);
     }
     Ok(())
 }
@@ -139,97 +145,42 @@ fn delete_top_level_field(
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
     let identity = base_path.identity.as_slice();
-    let deletes_required = checked_field_required(&base_path.members, field).unwrap_or(false);
-    if !env.host.maintenance && deletes_required {
-        return Err(raise_fault(
-            WRITE_REQUIRED_FIELD,
-            format!(
-                "cannot delete required field `{field}`; delete the whole record \
-                 instead, or run in maintenance mode"
-            ),
-            span,
-        ));
-    }
-    let required_address =
-        DataAddress::member_path(&base_path.place, identity, &[], &[field.to_string()], span)?;
-    let had_required_data = deletes_required
-        && env.host.maintenance
-        && required_delete_has_preexisting_data(
-            std::slice::from_ref(&required_address),
-            span,
-            env,
-        )?;
     let plan = plan_field_delete(&base_path.place, identity, field, env.store, span);
-    env.apply_plan(plan, span)?;
-    if had_required_data {
-        env.note_maintenance_required_delete(&base_path.place, identity, &[]);
-    }
-    Ok(())
+    delete_field(base_path, &[], field, plan, span, env)
 }
 
-pub(crate) fn delete_nested_field(
+fn delete_nested_field(
     path: SavedPath,
     field: &str,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
     if let Some(group) = checked_unkeyed_group(&path.members, field) {
-        return delete_nested_unkeyed_group(&path, field, group, span, env);
+        let layers = path.layer_addresses.clone();
+        return delete_unkeyed_group(&path, &layers, field, group, span, env);
     }
-    delete_nested_scalar_field(&path, field, span, env)
-}
-
-fn delete_nested_unkeyed_group(
-    path: &SavedPath,
-    field: &str,
-    group: &CheckedSavedMember,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<(), RuntimeError> {
-    let deletes_required = checked_group_has_required_materialized_field(group);
-    if !env.host.maintenance && deletes_required {
-        return Err(raise_fault(
-            WRITE_REQUIRED_FIELD,
-            format!(
-                "cannot delete unkeyed group `{field}` because it contains a required \
-                 field; delete the whole record instead, or run in maintenance mode"
-            ),
-            span,
-        ));
-    }
-    let identity = path.identity.as_slice();
-    let required_paths = required_paths_under_group(
-        &path.place,
-        identity,
-        &path.layer_addresses,
-        field,
-        group,
-        span,
-    )?;
-    let had_required_data = deletes_required
-        && env.host.maintenance
-        && required_delete_has_preexisting_data(&required_paths, span, env)?;
-    let address = DataAddress::member_path(
-        &path.place,
-        identity,
-        &path.layer_addresses,
-        &[field.to_string()],
-        span,
-    )?;
-    env.apply_plan(plan_data_delete(address), span)?;
-    note_nested_required_delete(path, had_required_data, env);
-    Ok(())
-}
-
-fn delete_nested_scalar_field(
-    path: &SavedPath,
-    field: &str,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<(), RuntimeError> {
     if !checked_member_exists(&path.members, field) {
         return Err(unsupported("deleting this group field", span));
     }
+    let layers = path.layer_addresses.clone();
+    let plan = plan_member_delete(&path.place, &path.identity, &layers, field, span);
+    delete_field(&path, &layers, field, plan, span, env)
+}
+
+/// Delete a single scalar field given its already-built delete plan. The plan
+/// differs between the top-level path (which also stages resource-index deletes)
+/// and a nested group field (a bare data delete), but the required-field
+/// maintenance guard, the preexisting-required-data probe, and the maintenance
+/// note are identical and keyed off the same `layers` prefix.
+fn delete_field(
+    path: &SavedPath,
+    layers: &[LayerAddress],
+    field: &str,
+    plan: Result<WritePlan, WriteError>,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
+    let identity = path.identity.as_slice();
     let deletes_required = checked_field_required(&path.members, field).unwrap_or(false);
     if !env.host.maintenance && deletes_required {
         return Err(raise_fault(
@@ -241,29 +192,23 @@ fn delete_nested_scalar_field(
             span,
         ));
     }
-    let identity = path.identity.as_slice();
-    let address = DataAddress::member_path(
-        &path.place,
-        identity,
-        &path.layer_addresses,
-        &[field.to_string()],
-        span,
-    )?;
+    let required_address =
+        DataAddress::member_path(&path.place, identity, layers, &[field.to_string()], span)?;
     let had_required_data = deletes_required
         && env.host.maintenance
-        && required_delete_has_preexisting_data(std::slice::from_ref(&address), span, env)?;
-    env.apply_plan(plan_data_delete(address), span)?;
-    note_nested_required_delete(path, had_required_data, env);
+        && required_delete_has_preexisting_data(
+            std::slice::from_ref(&required_address),
+            span,
+            env,
+        )?;
+    env.apply_plan(plan, span)?;
+    if had_required_data {
+        env.note_maintenance_required_delete(&path.place, identity, layers);
+    }
     Ok(())
 }
 
-fn note_nested_required_delete(path: &SavedPath, had_required_data: bool, env: &mut Env<'_>) {
-    if had_required_data {
-        env.note_maintenance_required_delete(&path.place, &path.identity, &path.layer_addresses);
-    }
-}
-
-pub(crate) fn eval_layer_entry_delete(
+fn eval_layer_entry_delete(
     target: &ExecExpr,
     span: SourceSpan,
     env: &mut Env<'_>,

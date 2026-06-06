@@ -78,7 +78,7 @@ impl From<ValueError> for WriteError {
     }
 }
 
-pub fn plan_resource_write(
+pub(crate) fn plan_resource_write(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
     value: &ResourceValue,
@@ -116,7 +116,7 @@ pub fn plan_resource_write(
     Ok(WritePlan { steps })
 }
 
-pub fn plan_resource_delete(
+pub(crate) fn plan_resource_delete(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
     store: &TreeStore,
@@ -130,13 +130,33 @@ pub fn plan_resource_delete(
     Ok(WritePlan { steps })
 }
 
-pub fn plan_data_delete(address: DataAddress) -> Result<WritePlan, WriteError> {
+pub(crate) fn plan_data_delete(address: DataAddress) -> Result<WritePlan, WriteError> {
     Ok(WritePlan {
         steps: vec![PlanStep::DeleteData { address }],
     })
 }
 
-pub fn plan_store_root_delete(
+/// Plan a bare data delete of one member under `layers`. The store address is
+/// resolved eagerly here; the resulting plan is applied (and any resolution
+/// error surfaced) later by `env.apply_plan`, after the required-field
+/// maintenance guard in `delete_field`.
+pub(crate) fn plan_member_delete(
+    place: &CheckedSavedPlace,
+    identity: &[SavedKey],
+    layers: &[LayerAddress],
+    field: &str,
+    span: SourceSpan,
+) -> Result<WritePlan, WriteError> {
+    plan_data_delete(data_address(
+        place,
+        identity,
+        layers,
+        &[field.to_string()],
+        span,
+    )?)
+}
+
+pub(crate) fn plan_store_root_delete(
     place: &CheckedSavedPlace,
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
@@ -152,7 +172,7 @@ pub fn plan_store_root_delete(
     Ok(WritePlan { steps })
 }
 
-pub fn plan_field_write(
+pub(crate) fn plan_field_write(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
     field: &str,
@@ -186,7 +206,7 @@ pub fn plan_field_write(
     Ok(WritePlan { steps })
 }
 
-pub fn plan_identity_field_write(
+pub(crate) fn plan_identity_field_write(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
     field: &str,
@@ -289,7 +309,7 @@ pub(crate) fn validate_required_fields_for_entry(
     ensure_required_fields_present(place, identity, layers, members, None, store, span)
 }
 
-pub fn plan_field_delete(
+pub(crate) fn plan_field_delete(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
     field: &str,
@@ -310,7 +330,7 @@ pub fn plan_field_delete(
     Ok(WritePlan { steps })
 }
 
-pub fn plan_layer_leaf_write(
+pub(crate) fn plan_layer_leaf_write(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
     layers: &[LayerAddress],
@@ -334,7 +354,7 @@ pub fn plan_layer_leaf_write(
     })
 }
 
-pub fn plan_layer_identity_leaf_write(
+pub(crate) fn plan_layer_identity_leaf_write(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
     layers: &[LayerAddress],
@@ -362,7 +382,7 @@ pub(crate) struct NestedLayerTarget<'a> {
     pub layers: &'a [LayerAddress],
 }
 
-pub fn plan_nested_layer_leaf_write(
+pub(crate) fn plan_nested_layer_leaf_write(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
     target: NestedLayerTarget<'_>,
@@ -372,7 +392,7 @@ pub fn plan_nested_layer_leaf_write(
     plan_layer_leaf_write(place, identity, target.layers, value, span)
 }
 
-pub fn plan_nested_layer_identity_leaf_write(
+pub(crate) fn plan_nested_layer_identity_leaf_write(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
     target: NestedLayerTarget<'_>,
@@ -383,7 +403,7 @@ pub fn plan_nested_layer_identity_leaf_write(
     plan_layer_identity_leaf_write(place, identity, target.layers, keys, referenced_arity, span)
 }
 
-pub fn plan_nested_field_write(
+pub(crate) fn plan_nested_field_write(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
     layers: &[LayerAddress],
@@ -405,7 +425,7 @@ pub fn plan_nested_field_write(
     })
 }
 
-pub fn plan_nested_identity_field_write(
+pub(crate) fn plan_nested_identity_field_write(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
     layers: &[LayerAddress],
@@ -427,7 +447,7 @@ pub fn plan_nested_identity_field_write(
     })
 }
 
-pub fn plan_layer_group_write(
+pub(crate) fn plan_layer_group_write(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
     layers: &[LayerAddress],
@@ -461,7 +481,7 @@ pub fn plan_layer_group_write(
     Ok(WritePlan { steps })
 }
 
-pub fn next_id(
+pub(crate) fn next_id(
     place: &CheckedSavedPlace,
     store: &TreeStore,
     span: SourceSpan,
@@ -482,7 +502,7 @@ pub fn next_id(
     next_after(highest)
 }
 
-pub fn next_layer_pos(
+pub(crate) fn next_layer_pos(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
     layers: &[LayerAddress],
@@ -498,7 +518,7 @@ pub fn next_layer_pos(
     next_after(highest)
 }
 
-pub fn next_nested_layer_pos(
+pub(crate) fn next_nested_layer_pos(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
     target: NestedLayerTarget<'_>,
@@ -560,7 +580,11 @@ fn supplied_field(
                         "field `{field}` references `{store_root}`, but the value is not an identity"
                     ),
                 })?;
-                Ok(Some(staged_identity_value(field, leaf, &[key], 1)?))
+                // A raw scalar value forms a single-key identity; its referenced
+                // arity is the one key, which `staged_identity_value` then checks
+                // against the leaf's declared arity.
+                let keys = [key];
+                Ok(Some(staged_identity_value(field, leaf, &keys, keys.len())?))
             }
             None => Ok(None),
         };

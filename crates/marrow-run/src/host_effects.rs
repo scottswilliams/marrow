@@ -117,6 +117,40 @@ pub(crate) fn eval_log(
     Ok(None)
 }
 
+/// A resolved filesystem op carrying its write payload, so direction (the
+/// catchable error code and whether it is a rollback-sensitive effect) and the
+/// fs call both derive from one value. A write borrows its bytes from the
+/// evaluated argument.
+enum IoOp<'a> {
+    ReadText,
+    ReadBytes,
+    Write(&'a [u8]),
+}
+
+impl IoOp<'_> {
+    fn is_write(&self) -> bool {
+        matches!(self, IoOp::Write(_))
+    }
+
+    /// The catchable error code a failed call raises: a read failure and a write
+    /// failure are distinct, catchable categories.
+    fn error_code(&self) -> &'static str {
+        if self.is_write() {
+            "io.write"
+        } else {
+            "io.read"
+        }
+    }
+
+    fn run(self, path: &str) -> std::io::Result<Option<Value>> {
+        match self {
+            IoOp::ReadText => std::fs::read_to_string(path).map(|text| Some(Value::Str(text))),
+            IoOp::ReadBytes => std::fs::read(path).map(|bytes| Some(Value::Bytes(bytes))),
+            IoOp::Write(data) => std::fs::write(path, data).map(|()| None),
+        }
+    }
+}
+
 pub(crate) fn eval_io(
     op: &str,
     args: &[ExecArg],
@@ -134,35 +168,25 @@ pub(crate) fn eval_io(
             span,
         ));
     }
-    match (op, values.as_slice()) {
-        ("readText", [Value::Str(path)]) => match std::fs::read_to_string(path) {
-            Ok(text) => Ok(Some(Value::Str(text))),
-            Err(error) => Err(raise(io_error("io.read", op, path, &error), span, None)),
-        },
-        ("writeText", [Value::Str(path), Value::Str(text)]) => {
-            env.guard_rollback_sensitive_host_effect(&format!("std::io::{op}"), span)?;
-            match std::fs::write(path, text) {
-                Ok(()) => Ok(None),
-                Err(error) => Err(raise(io_error("io.write", op, path, &error), span, None)),
-            }
+    let (path, io) = match (op, values.as_slice()) {
+        ("readText", [Value::Str(path)]) => (path, IoOp::ReadText),
+        ("readBytes", [Value::Str(path)]) => (path, IoOp::ReadBytes),
+        ("writeText", [Value::Str(path), Value::Str(text)]) => (path, IoOp::Write(text.as_bytes())),
+        ("writeBytes", [Value::Str(path), Value::Bytes(data)]) => (path, IoOp::Write(data)),
+        ("readText" | "readBytes" | "writeText" | "writeBytes", _) => {
+            return Err(type_error(
+                &format!("`std::io::{op}` got the wrong arguments"),
+                span,
+            ));
         }
-        ("readBytes", [Value::Str(path)]) => match std::fs::read(path) {
-            Ok(bytes) => Ok(Some(Value::Bytes(bytes))),
-            Err(error) => Err(raise(io_error("io.read", op, path, &error), span, None)),
-        },
-        ("writeBytes", [Value::Str(path), Value::Bytes(data)]) => {
-            env.guard_rollback_sensitive_host_effect(&format!("std::io::{op}"), span)?;
-            match std::fs::write(path, data) {
-                Ok(()) => Ok(None),
-                Err(error) => Err(raise(io_error("io.write", op, path, &error), span, None)),
-            }
-        }
-        ("readText" | "writeText" | "readBytes" | "writeBytes", _) => Err(type_error(
-            &format!("`std::io::{op}` got the wrong arguments"),
-            span,
-        )),
-        _ => unreachable!(
-            "the stdlib table routes only readText/writeText/readBytes/writeBytes to the io capability"
-        ),
+        _ => unreachable!("the stdlib table routes only the four io ops to eval_io"),
+    };
+    // A write is a rollback-sensitive effect; reject it inside an open
+    // transaction before touching the filesystem.
+    if io.is_write() {
+        env.guard_rollback_sensitive_host_effect(&format!("std::io::{op}"), span)?;
     }
+    let error_code = io.error_code();
+    io.run(path)
+        .map_err(|error| raise(io_error(error_code, op, path, &error), span, None))
 }

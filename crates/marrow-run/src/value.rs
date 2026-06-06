@@ -137,11 +137,7 @@ impl Value {
     /// instead of a fault, since the debugger must display every local. This is a
     /// preview, not a re-parseable form.
     pub fn display_debug(&self) -> String {
-        match self {
-            Value::Int(n) => n.to_string(),
-            Value::Bool(b) => b.to_string(),
-            Value::Str(s) => s.clone(),
-            Value::Decimal(d) => d.to_text(),
+        scalar_text(self).unwrap_or_else(|| match self {
             Value::Instant(n) => format!("instant({n})"),
             Value::Date(d) => format!("date({d})"),
             Value::Duration(n) => format!("duration({n})"),
@@ -160,8 +156,32 @@ impl Value {
                 let rendered: Vec<String> = identity.keys.iter().map(saved_key_preview).collect();
                 format!("identity({})", rendered.join(", "))
             }
-        }
+            Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::Decimal(_) => {
+                unreachable!("scalar_text rendered every scalar before this match")
+            }
+        })
     }
+}
+
+/// The canonical text of the scalar values that render identically for a
+/// debugger preview and the normal text renderer, or `None` for every shape that
+/// each renders differently. The single owner of this scalar-to-text mapping.
+fn scalar_text(value: &Value) -> Option<String> {
+    Some(match value {
+        Value::Int(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Str(s) => s.clone(),
+        Value::Decimal(d) => d.to_text(),
+        Value::Bytes(_)
+        | Value::Instant(_)
+        | Value::Date(_)
+        | Value::Duration(_)
+        | Value::Enum(_)
+        | Value::Sequence(_)
+        | Value::LocalTree(_)
+        | Value::Resource(_)
+        | Value::Identity(_) => return None,
+    })
 }
 
 /// A compact preview of one identity key segment for [`Value::display_debug`].
@@ -417,11 +437,10 @@ pub(crate) fn saved_value_to_value(value: SavedValue) -> Value {
 /// `true`/`false`, strings as themselves. Resource values have no text form, and
 /// an instant is rendered through `std::clock::formatInstant`, not directly.
 pub(crate) fn render(value: Value, span: SourceSpan) -> Result<String, RuntimeError> {
+    if let Some(text) = scalar_text(&value) {
+        return Ok(text);
+    }
     Ok(match value {
-        Value::Int(n) => n.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Str(s) => s,
-        Value::Decimal(d) => d.to_text(),
         Value::Bytes(_) => return Err(unsupported("rendering a bytes value", span)),
         Value::Sequence(_) => return Err(unsupported("rendering a sequence value", span)),
         Value::LocalTree(_) => return Err(unsupported("rendering a local tree value", span)),
@@ -431,6 +450,12 @@ pub(crate) fn render(value: Value, span: SourceSpan) -> Result<String, RuntimeEr
         Value::Resource(_) => return Err(unsupported("rendering a resource value", span)),
         Value::Identity(identity) => render_identity(&identity),
         Value::Enum(_) => return Err(unsupported("rendering an enum value", span)),
+        // `scalar_text` already returned `Some` for every scalar, so the match
+        // is reached only for the non-scalar shapes above; the scalar text is
+        // recovered without re-listing each variant's formatting.
+        scalar @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::Decimal(_)) => {
+            scalar_text(&scalar).unwrap_or_default()
+        }
     })
 }
 

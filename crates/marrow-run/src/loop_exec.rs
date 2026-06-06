@@ -278,7 +278,7 @@ impl RangeIter {
                 step,
                 make,
             } => {
-                if !int_in_range(*current, *end, *inclusive, *step) {
+                if !in_range(*current, *end, *inclusive, step_direction((*step).cmp(&0))) {
                     return Ok(None);
                 }
                 let value = make(*current);
@@ -294,7 +294,8 @@ impl RangeIter {
                 inclusive,
                 step,
             } => {
-                if !decimal_in_range(*current, *end, *inclusive, *step) {
+                let direction = step_direction(step.coefficient().cmp(&0));
+                if !in_range(*current, *end, *inclusive, direction) {
                     return Ok(None);
                 }
                 let value = Value::Decimal(*current);
@@ -307,7 +308,7 @@ impl RangeIter {
                 inclusive,
                 step,
             } => {
-                if !instant_in_range(*current, *end, *inclusive, *step) {
+                if !in_range(*current, *end, *inclusive, step_direction((*step).cmp(&0))) {
                     return Ok(None);
                 }
                 let value = Value::Instant(*current);
@@ -318,34 +319,29 @@ impl RangeIter {
     }
 }
 
-fn int_in_range(current: i64, end: i64, inclusive: bool, step: i64) -> bool {
-    match step.cmp(&0) {
-        Ordering::Greater if inclusive => current <= end,
-        Ordering::Greater => current < end,
-        Ordering::Less if inclusive => current >= end,
-        Ordering::Less => current > end,
-        Ordering::Equal => false,
-    }
+/// Which way a range walks, derived from the sign of its step. A zero step never
+/// yields, so a range built from a zero step is empty.
+enum RangeDirection {
+    Ascending,
+    Descending,
+    Empty,
 }
 
-fn decimal_in_range(current: Decimal, end: Decimal, inclusive: bool, step: Decimal) -> bool {
-    let sign = step.coefficient().cmp(&0);
+fn step_direction(sign: Ordering) -> RangeDirection {
     match sign {
-        Ordering::Greater if inclusive => current <= end,
-        Ordering::Greater => current < end,
-        Ordering::Less if inclusive => current >= end,
-        Ordering::Less => current > end,
-        Ordering::Equal => false,
+        Ordering::Greater => RangeDirection::Ascending,
+        Ordering::Less => RangeDirection::Descending,
+        Ordering::Equal => RangeDirection::Empty,
     }
 }
 
-fn instant_in_range(current: i128, end: i128, inclusive: bool, step: i128) -> bool {
-    match step.cmp(&0) {
-        Ordering::Greater if inclusive => current <= end,
-        Ordering::Greater => current < end,
-        Ordering::Less if inclusive => current >= end,
-        Ordering::Less => current > end,
-        Ordering::Equal => false,
+fn in_range<T: Ord>(current: T, end: T, inclusive: bool, direction: RangeDirection) -> bool {
+    match direction {
+        RangeDirection::Ascending if inclusive => current <= end,
+        RangeDirection::Ascending => current < end,
+        RangeDirection::Descending if inclusive => current >= end,
+        RangeDirection::Descending => current > end,
+        RangeDirection::Empty => false,
     }
 }
 

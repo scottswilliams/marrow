@@ -455,23 +455,17 @@ impl<'p> Env<'p> {
             return Ok(());
         };
         let pending = self.pending_commit_metadata(depth);
-        if pending.root_catalog_ids.is_empty() && pending.index_catalog_ids.is_empty() {
-            return Ok(());
-        }
-        let commit_id = self
-            .store
-            .read_commit_metadata()
-            .map_err(|error| error.located(span))?
-            .map(|commit| commit.commit_id + 1)
-            .unwrap_or(1);
-        let stamp = crate::evolution::metadata_stamp(crate::evolution::StampFacts {
+        let stamp = build_commit_metadata_stamp(
             catalog_epoch,
-            commit_id,
-            source_digest: self.program.source_digest().to_string(),
-            changed_root_catalog_ids: pending.root_catalog_ids.into_iter().collect(),
-            changed_index_catalog_ids: pending.index_catalog_ids.into_iter().collect(),
-            activation: None,
-        });
+            self.program.source_digest(),
+            pending.root_catalog_ids.into_iter().collect(),
+            pending.index_catalog_ids.into_iter().collect(),
+            self.store,
+        )
+        .map_err(|error| error.located(span))?;
+        let Some(stamp) = stamp else {
+            return Ok(());
+        };
         WritePlan { steps: vec![stamp] }
             .commit(self.store, true)
             .map_err(|error| error.located(span))
@@ -765,15 +759,36 @@ fn stamp_managed_write(
         return Ok(());
     }
     let (changed_root_catalog_ids, changed_index_catalog_ids) = changed_catalog_ids(&plan.steps);
-    if changed_root_catalog_ids.is_empty() && changed_index_catalog_ids.is_empty() {
-        return Ok(());
+    if let Some(stamp) = build_commit_metadata_stamp(
+        catalog_epoch,
+        source_digest,
+        changed_root_catalog_ids,
+        changed_index_catalog_ids,
+        store,
+    )? {
+        plan.steps.push(stamp);
     }
+    Ok(())
+}
 
+/// Build the metadata-stamp step that records a commit against the accepted
+/// catalog epoch, or `None` when nothing changed (so no stamp is owed). The
+/// commit id is the next id after the last recorded commit.
+fn build_commit_metadata_stamp(
+    catalog_epoch: u64,
+    source_digest: &str,
+    changed_root_catalog_ids: Vec<CatalogId>,
+    changed_index_catalog_ids: Vec<CatalogId>,
+    store: &TreeStore,
+) -> Result<Option<PlanStep>, marrow_store::StoreError> {
+    if changed_root_catalog_ids.is_empty() && changed_index_catalog_ids.is_empty() {
+        return Ok(None);
+    }
     let commit_id = store
         .read_commit_metadata()?
         .map(|commit| commit.commit_id + 1)
         .unwrap_or(1);
-    plan.steps.push(crate::evolution::metadata_stamp(
+    Ok(Some(crate::evolution::metadata_stamp(
         crate::evolution::StampFacts {
             catalog_epoch,
             commit_id,
@@ -782,8 +797,7 @@ fn stamp_managed_write(
             changed_index_catalog_ids,
             activation: None,
         },
-    ));
-    Ok(())
+    )))
 }
 
 fn changed_catalog_ids(steps: &[PlanStep]) -> (Vec<CatalogId>, Vec<CatalogId>) {

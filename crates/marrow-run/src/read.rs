@@ -83,7 +83,7 @@ pub(crate) fn iterable_layer<'a>(
     }
 }
 
-pub(crate) fn iterable_index_branch(
+fn iterable_index_branch(
     place: &CheckedSavedPlace,
     span: SourceSpan,
     env: &mut Env<'_>,

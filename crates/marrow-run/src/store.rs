@@ -50,7 +50,8 @@ impl DataAddress {
         span: SourceSpan,
     ) -> Result<Self, RuntimeError> {
         let mut address = Self::record(place, identity, span)?;
-        address.path = data_path(layers, Some(member_catalog_id), span)?;
+        let terminal = catalog_id(member_catalog_id, "resource member", span)?;
+        address.path = data_path(layers, Some(terminal), span)?;
         Ok(address)
     }
 
@@ -106,17 +107,6 @@ pub(crate) struct IndexAddress {
 }
 
 impl IndexAddress {
-    pub(crate) fn new(
-        catalog_id: &str,
-        keys: Vec<SavedKey>,
-        span: SourceSpan,
-    ) -> Result<Self, RuntimeError> {
-        Ok(Self {
-            index: raw_catalog_id(catalog_id, "store index", span)?,
-            keys,
-        })
-    }
-
     pub(crate) fn from_checked(
         catalog_id: &Option<String>,
         keys: Vec<SavedKey>,
@@ -125,7 +115,10 @@ impl IndexAddress {
         let Some(catalog_id) = catalog_id.as_deref() else {
             return Err(missing_catalog_id("store index", span));
         };
-        Self::new(catalog_id, keys, span)
+        Ok(Self {
+            index: raw_catalog_id(catalog_id, "store index", span)?,
+            keys,
+        })
     }
 
     pub(crate) fn from_place(
@@ -240,7 +233,7 @@ pub(crate) fn max_int_record_child(
 
 fn data_path(
     layers: &[LayerAddress],
-    terminal_member: Option<&Option<String>>,
+    terminal_member: Option<CatalogId>,
     span: SourceSpan,
 ) -> Result<Vec<DataPathSegment>, RuntimeError> {
     let mut path = Vec::new();
@@ -253,11 +246,7 @@ fn data_path(
         path.extend(layer.keys.iter().cloned().map(DataPathSegment::Key));
     }
     if let Some(member) = terminal_member {
-        path.push(DataPathSegment::Member(catalog_id(
-            member,
-            "resource member",
-            span,
-        )?));
+        path.push(DataPathSegment::Member(member));
     }
     Ok(path)
 }

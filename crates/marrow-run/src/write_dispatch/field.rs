@@ -6,7 +6,7 @@ use crate::env::Env;
 use crate::error::{RuntimeError, unsupported};
 use crate::expr::eval_expr;
 use crate::path::{SavedPath, Terminal, lower};
-use crate::store::DataAddress;
+use crate::store::{DataAddress, LayerAddress};
 use crate::value::{LeafValue, Value, identity_keys_of, value_to_leaf};
 use crate::write::{
     WriteError, plan_field_write, plan_identity_field_write, plan_nested_field_write,
@@ -70,7 +70,7 @@ fn write_identity_saved_field(
 ) -> Result<(), RuntimeError> {
     let keys = identity_keys_of(value, store_root, span)?;
     let plan = plan_identity_field_write(&path.place, &path.identity, field, &keys, arity, span);
-    let plan = validate_top_level_field_plan(path, field, plan, env);
+    let plan = validate_field_plan(path, &[], field, plan, env);
     env.apply_plan(plan, span)
 }
 
@@ -87,25 +87,18 @@ fn write_scalar_saved_field(
             .map(LeafValue::Scalar)
             .ok_or_else(|| unsupported("writing a resource value to a field", span))?,
     };
-    let plan = plan_field_write(&path.place, &path.identity, field, &saved, env.store, span)
-        .and_then(|plan| {
-            if env.transaction_depth() == 0 {
-                validate_required_fields_after_field_write(
-                    &path.place,
-                    &path.identity,
-                    &[],
-                    field,
-                    env.store,
-                    span,
-                )?;
-            }
-            Ok(plan)
-        });
+    let plan = plan_field_write(&path.place, &path.identity, field, &saved, env.store, span);
+    let plan = validate_field_plan(path, &[], field, plan, env);
     env.apply_plan(plan, span)
 }
 
-fn validate_top_level_field_plan(
+/// Outside a transaction, chain the planned field write with the immediate
+/// required-fields check so a single-field write that leaves a record incomplete
+/// is rejected before it lands. Inside a transaction the check is deferred to
+/// commit, so the plan passes through unchanged.
+fn validate_field_plan(
     path: &SavedPath,
+    layers: &[LayerAddress],
     field: &str,
     plan: Result<WritePlan, WriteError>,
     env: &Env<'_>,
@@ -117,7 +110,7 @@ fn validate_top_level_field_plan(
         validate_required_fields_after_field_write(
             &path.place,
             &path.identity,
-            &[],
+            layers,
             field,
             env.store,
             path.place.span,
@@ -185,7 +178,7 @@ pub(crate) fn write_nested_field(
             span,
         )
     };
-    let plan = validate_nested_field_plan(&path, identity, field, plan, env);
+    let plan = validate_field_plan(&path, &path.layer_addresses, field, plan, env);
     finish_nested_field_write(&path, identity, created_required_path, plan, span, env)
 }
 
@@ -195,30 +188,6 @@ fn saved_field_leaf(path: &SavedPath) -> Option<&StoreLeafKind> {
             leaf: Some(leaf), ..
         } => Some(leaf),
         _ => None,
-    }
-}
-
-fn validate_nested_field_plan(
-    path: &SavedPath,
-    identity: &[SavedKey],
-    field: &str,
-    plan: Result<WritePlan, WriteError>,
-    env: &Env<'_>,
-) -> Result<WritePlan, WriteError> {
-    if env.transaction_depth() == 0 {
-        plan.and_then(|plan| {
-            validate_required_fields_after_field_write(
-                &path.place,
-                identity,
-                &path.layer_addresses,
-                field,
-                env.store,
-                path.place.span,
-            )?;
-            Ok(plan)
-        })
-    } else {
-        plan
     }
 }
 
