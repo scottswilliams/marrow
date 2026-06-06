@@ -76,9 +76,9 @@ fn root_place(program: &CheckedProgram, root: &str) -> CheckedSavedPlace {
         .expect("checked saved root place")
 }
 
-fn index_has_children(store: &TreeStore, index: &CatalogId, prefix: &[SavedKey]) -> bool {
+fn index_has_children(store: &TreeStore, index: &CatalogId) -> bool {
     store
-        .index_first_child(index, prefix)
+        .index_first_child(index, &[])
         .expect("read first index child")
         .is_some()
 }
@@ -93,8 +93,7 @@ struct Seed<'a> {
 
 impl Seed<'_> {
     fn store_id(&self) -> CatalogId {
-        CatalogId::new(accepted_catalog_id(&self.place.store_catalog_id, "store"))
-            .expect("store catalog id")
+        store_id_of(self.place)
     }
 
     fn record(&self, id: i64) {
@@ -180,6 +179,13 @@ fn accepted_catalog_id(id: &Option<String>, label: &str) -> String {
     id.clone()
         .unwrap_or_else(|| panic!("accepted catalog id for `{label}`"))
 }
+
+/// The bound store catalog id for a committed place, ready to address store cells.
+fn store_id_of(place: &CheckedSavedPlace) -> CatalogId {
+    CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).expect("store catalog id")
+}
+
+const INT: marrow_store::value::ScalarType = marrow_store::value::ScalarType::Int;
 
 fn witness(program: &CheckedProgram, store: &TreeStore) -> EvolutionWitness {
     preview(program, store).expect("preview").0
@@ -341,18 +347,13 @@ fn proposal_required_default_backfills_before_catalog_acceptance() {
     );
     assert_eq!(outcome.receipt.records_backfilled, 2);
 
-    let store_id = CatalogId::new(accepted_catalog_id(
-        &accepted_place.store_catalog_id,
-        "store",
-    ))
-    .unwrap();
-    let int = marrow_store::value::ScalarType::Int;
+    let store_id = store_id_of(&accepted_place);
     assert_eq!(
-        read_scalar(&store, &store_id, 1, &pages_id, int),
+        read_scalar(&store, &store_id, 1, &pages_id, INT),
         Some(Scalar::Int(0))
     );
     assert_eq!(
-        read_scalar(&store, &store_id, 2, &pages_id, int),
+        read_scalar(&store, &store_id, 2, &pages_id, INT),
         Some(Scalar::Int(0))
     );
     assert_eq!(
@@ -414,7 +415,7 @@ fn completion_rejects_forged_default_receipt_digest() {
 fn completion_rejects_missing_default_backfill_cell() {
     let (root, program, place, store, pages_id) =
         applied_proposal_default_fixture("completion-default-missing-cell", 2);
-    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
+    let store_id = store_id_of(&place);
     store
         .delete_data_subtree(
             &store_id,
@@ -514,11 +515,7 @@ fn proposal_required_default_rejects_preexisting_target_data() {
     );
     let program = checked(&root);
     let pages_id = proposal_catalog_id(&program, "books::Book::pages");
-    let store_id = CatalogId::new(accepted_catalog_id(
-        &accepted_place.store_catalog_id,
-        "store",
-    ))
-    .unwrap();
+    let store_id = store_id_of(&accepted_place);
     store
         .write_data_value(
             &store_id,
@@ -536,12 +533,11 @@ fn proposal_required_default_rejects_preexisting_target_data() {
     let result = apply(&w, &program, &store, false, None);
     assert!(matches!(result, Err(ApplyError::Store(_))), "{result:#?}");
 
-    let int = marrow_store::value::ScalarType::Int;
     assert_eq!(
-        read_scalar(&store, &store_id, 1, &pages_id, int),
+        read_scalar(&store, &store_id, 1, &pages_id, INT),
         Some(Scalar::Int(7))
     );
-    assert_eq!(read_scalar(&store, &store_id, 2, &pages_id, int), None);
+    assert_eq!(read_scalar(&store, &store_id, 2, &pages_id, INT), None);
     assert_eq!(store.read_catalog_epoch().expect("epoch"), None);
     assert!(store.read_commit_metadata().expect("read commit").is_none());
     fs::remove_dir_all(&root).ok();
@@ -594,18 +590,13 @@ fn proposal_transform_writes_target_before_catalog_acceptance() {
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
     assert_eq!(outcome.receipt.records_transformed, 2);
 
-    let store_id = CatalogId::new(accepted_catalog_id(
-        &accepted_place.store_catalog_id,
-        "store",
-    ))
-    .unwrap();
-    let int = marrow_store::value::ScalarType::Int;
+    let store_id = store_id_of(&accepted_place);
     assert_eq!(
-        read_scalar(&store, &store_id, 1, &cents_id, int),
+        read_scalar(&store, &store_id, 1, &cents_id, INT),
         Some(Scalar::Int(300))
     );
     assert_eq!(
-        read_scalar(&store, &store_id, 2, &cents_id, int),
+        read_scalar(&store, &store_id, 2, &cents_id, INT),
         Some(Scalar::Int(700))
     );
     let catalog = fs::read_to_string(root.join("marrow.catalog.json")).expect("accepted catalog");
@@ -656,11 +647,7 @@ fn completion_rejects_missing_transform_cell() {
         .expect("priceCents id");
     apply(&witness(&program, &store), &program, &store, false, None).expect("apply");
 
-    let store_id = CatalogId::new(accepted_catalog_id(
-        &accepted_place.store_catalog_id,
-        "store",
-    ))
-    .unwrap();
+    let store_id = store_id_of(&accepted_place);
     store
         .delete_data_subtree(
             &store_id,
@@ -1059,20 +1046,14 @@ fn proposal_default_backfills_every_store_using_the_resource() {
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
     assert_eq!(outcome.receipt.records_backfilled, 2);
 
-    let int = marrow_store::value::ScalarType::Int;
-    let books_store_id =
-        CatalogId::new(accepted_catalog_id(&books_place.store_catalog_id, "books")).unwrap();
-    let archives_store_id = CatalogId::new(accepted_catalog_id(
-        &archives_place.store_catalog_id,
-        "archives",
-    ))
-    .unwrap();
+    let books_store_id = store_id_of(&books_place);
+    let archives_store_id = store_id_of(&archives_place);
     assert_eq!(
-        read_scalar(&store, &books_store_id, 1, &pages_id, int),
+        read_scalar(&store, &books_store_id, 1, &pages_id, INT),
         Some(Scalar::Int(0))
     );
     assert_eq!(
-        read_scalar(&store, &archives_store_id, 2, &pages_id, int),
+        read_scalar(&store, &archives_store_id, 2, &pages_id, INT),
         Some(Scalar::Int(0))
     );
     fs::remove_dir_all(&root).ok();
@@ -1134,20 +1115,14 @@ fn proposal_transform_updates_every_store_using_the_resource() {
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
     assert_eq!(outcome.receipt.records_transformed, 2);
 
-    let int = marrow_store::value::ScalarType::Int;
-    let books_store_id =
-        CatalogId::new(accepted_catalog_id(&books_place.store_catalog_id, "books")).unwrap();
-    let archives_store_id = CatalogId::new(accepted_catalog_id(
-        &archives_place.store_catalog_id,
-        "archives",
-    ))
-    .unwrap();
+    let books_store_id = store_id_of(&books_place);
+    let archives_store_id = store_id_of(&archives_place);
     assert_eq!(
-        read_scalar(&store, &books_store_id, 1, &cents_id, int),
+        read_scalar(&store, &books_store_id, 1, &cents_id, INT),
         Some(Scalar::Int(300))
     );
     assert_eq!(
-        read_scalar(&store, &archives_store_id, 2, &cents_id, int),
+        read_scalar(&store, &archives_store_id, 2, &cents_id, INT),
         Some(Scalar::Int(700))
     );
     fs::remove_dir_all(&root).ok();
@@ -1200,20 +1175,19 @@ fn required_with_default_backfills_exactly_k_and_stamps_epoch() {
     assert_eq!(outcome.receipt.records_backfilled, 2);
     assert_eq!(outcome.receipt.catalog_epoch, target_epoch);
 
-    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
+    let store_id = store_id_of(&place);
     let pages_id = member_catalog_id(&place, "pages");
-    let int = marrow_store::value::ScalarType::Int;
     assert_eq!(
-        read_scalar(&store, &store_id, 1, &pages_id, int),
+        read_scalar(&store, &store_id, 1, &pages_id, INT),
         Some(Scalar::Int(0))
     );
     assert_eq!(
-        read_scalar(&store, &store_id, 2, &pages_id, int),
+        read_scalar(&store, &store_id, 2, &pages_id, INT),
         Some(Scalar::Int(0))
     );
     // The record that already had a value is untouched.
     assert_eq!(
-        read_scalar(&store, &store_id, 3, &pages_id, int),
+        read_scalar(&store, &store_id, 3, &pages_id, INT),
         Some(Scalar::Int(271))
     );
 
@@ -1233,7 +1207,7 @@ fn required_with_default_backfills_exactly_k_and_stamps_epoch() {
     let second = apply(&resumed, &program, &store, false, None).expect("re-apply succeeds");
     assert_eq!(second.receipt.records_backfilled, 0);
     assert_eq!(
-        read_scalar(&store, &store_id, 1, &pages_id, int),
+        read_scalar(&store, &store_id, 1, &pages_id, INT),
         Some(Scalar::Int(0))
     );
 
@@ -1280,7 +1254,7 @@ fn optional_add_stamps_epoch_without_data_step() {
     assert_eq!(outcome.receipt.records_retired, 0);
     assert_eq!(outcome.receipt.proposal_catalog_digest, proposal_digest);
 
-    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
+    let store_id = store_id_of(&place);
     let subtitle_id = member_catalog_id(&place, "subtitle");
     assert_eq!(
         read_scalar(
@@ -1346,11 +1320,7 @@ fn completion_fails_when_no_effect_resume_recomputes_repair_required() {
     assert_eq!(outcome.receipt.indexes_rebuilt, 0);
     assert_eq!(outcome.receipt.records_retired, 0);
 
-    let store_id = CatalogId::new(accepted_catalog_id(
-        &accepted_place.store_catalog_id,
-        "store",
-    ))
-    .unwrap();
+    let store_id = store_id_of(&accepted_place);
     let title_id = CatalogId::new(member_catalog_id(&accepted_place, "title")).unwrap();
     store
         .delete_data_subtree(
@@ -1518,11 +1488,7 @@ fn dropped_index_apply_deletes_index_cells() {
     let accepted = commit_then_check(&root);
     let accepted_place = root_place(&accepted, "books");
     let index_id = CatalogId::new(index_catalog_id(&accepted_place, "byIsbn")).unwrap();
-    let store_id = CatalogId::new(accepted_catalog_id(
-        &accepted_place.store_catalog_id,
-        "store",
-    ))
-    .unwrap();
+    let store_id = store_id_of(&accepted_place);
 
     let store = TreeStore::memory();
     let seed = Seed {
@@ -1545,7 +1511,7 @@ fn dropped_index_apply_deletes_index_cells() {
             .expect("seed index entry");
     }
     assert!(
-        index_has_children(&store, &index_id, &[]),
+        index_has_children(&store, &index_id),
         "the index starts with cells"
     );
 
@@ -1568,13 +1534,11 @@ fn dropped_index_apply_deletes_index_cells() {
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
     fs::remove_dir_all(&root).ok();
 
-    // The drop leaves no index cells under the dropped id.
     assert_eq!(outcome.receipt.catalog_epoch, w.accepted_catalog.epoch);
     assert!(
-        !index_has_children(&store, &index_id, &[]),
+        !index_has_children(&store, &index_id),
         "the dropped index must have no remaining cells"
     );
-    // The base records and their members survive untouched.
     for (id, isbn) in [(1, "111"), (2, "222")] {
         let bytes = store
             .read_data_value(
@@ -1613,11 +1577,7 @@ fn explicit_index_retire_deletes_index_cells() {
     let accepted = commit_then_check(&root);
     let accepted_place = root_place(&accepted, "books");
     let index_id = CatalogId::new(index_catalog_id(&accepted_place, "byIsbn")).unwrap();
-    let store_id = CatalogId::new(accepted_catalog_id(
-        &accepted_place.store_catalog_id,
-        "store",
-    ))
-    .unwrap();
+    let store_id = store_id_of(&accepted_place);
 
     let store = TreeStore::memory();
     let seed = Seed {
@@ -1639,7 +1599,7 @@ fn explicit_index_retire_deletes_index_cells() {
             .expect("seed index entry");
     }
     assert!(
-        index_has_children(&store, &index_id, &[]),
+        index_has_children(&store, &index_id),
         "the index starts with cells"
     );
 
@@ -1669,7 +1629,7 @@ fn explicit_index_retire_deletes_index_cells() {
 
     assert_eq!(outcome.receipt.records_retired, 0);
     assert!(
-        !index_has_children(&store, &index_id, &[]),
+        !index_has_children(&store, &index_id),
         "an explicit index retire must leave no index cells"
     );
     for (id, isbn) in [(1, "111"), (2, "222")] {
@@ -1702,7 +1662,7 @@ fn destructive_retire_without_approval_aborts() {
         "expected ApprovalRequired, got {result:#?}"
     );
     // The subtitle data is still present: nothing was dropped.
-    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
+    let store_id = store_id_of(&place);
     assert!(
         store
             .data_subtree_exists(
@@ -1732,7 +1692,7 @@ fn destructive_retire_with_matching_approval_deletes() {
     let outcome = apply(&witness, &program, &store, true, Some(&approval)).expect("apply");
     assert_eq!(outcome.receipt.records_retired, 2);
 
-    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
+    let store_id = store_id_of(&place);
     for id in [1, 2] {
         assert!(
             !store
@@ -1843,7 +1803,7 @@ fn destructive_retire_count_drift_aborts() {
         matches!(result, Err(ApplyError::ApprovalMismatch)),
         "expected ApprovalMismatch, got {result:#?}"
     );
-    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
+    let store_id = store_id_of(&place);
     assert!(
         store
             .data_subtree_exists(
@@ -1859,7 +1819,6 @@ fn destructive_retire_count_drift_aborts() {
     fs::remove_dir_all(&root).ok();
 }
 
-/// A multi-retire approval must approve the total destructive witness, not one
 /// A multi-retire approval is matched per id: each approved count must equal the
 /// witness count for that exact id. When two retired members hold different populated
 /// counts, swapping the counts between them keeps the sum identical but is out of scope,
@@ -1926,11 +1885,7 @@ fn destructive_multi_retire_approval_is_matched_per_id() {
         "a per-id-wrong approval with a matching sum must be rejected, got {result:#?}"
     );
 
-    let store_id = CatalogId::new(accepted_catalog_id(
-        &accepted_place.store_catalog_id,
-        "store",
-    ))
-    .unwrap();
+    let store_id = store_id_of(&accepted_place);
     for member_id in [&subtitle_id, &notes_id] {
         assert!(
             store
@@ -1975,7 +1930,7 @@ fn destructive_retire_requires_maintenance() {
         matches!(result, Err(ApplyError::MaintenanceRequired)),
         "expected MaintenanceRequired, got {result:#?}"
     );
-    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
+    let store_id = store_id_of(&place);
     assert!(
         store
             .data_subtree_exists(
@@ -2031,15 +1986,14 @@ fn transform_computes_new_member_per_record_and_stamps() {
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
     assert_eq!(outcome.receipt.records_transformed, 2);
 
-    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
+    let store_id = store_id_of(&place);
     let cents_id = member_catalog_id(&place, "priceCents");
-    let int = marrow_store::value::ScalarType::Int;
     assert_eq!(
-        read_scalar(&store, &store_id, 1, &cents_id, int),
+        read_scalar(&store, &store_id, 1, &cents_id, INT),
         Some(Scalar::Int(300))
     );
     assert_eq!(
-        read_scalar(&store, &store_id, 2, &cents_id, int),
+        read_scalar(&store, &store_id, 2, &cents_id, INT),
         Some(Scalar::Int(700))
     );
     assert!(
@@ -2052,11 +2006,11 @@ fn transform_computes_new_member_per_record_and_stamps() {
     let resumed = witness(&program, &store);
     apply(&resumed, &program, &store, false, None).expect("re-apply succeeds");
     assert_eq!(
-        read_scalar(&store, &store_id, 1, &cents_id, int),
+        read_scalar(&store, &store_id, 1, &cents_id, INT),
         Some(Scalar::Int(300))
     );
     assert_eq!(
-        read_scalar(&store, &store_id, 2, &cents_id, int),
+        read_scalar(&store, &store_id, 2, &cents_id, INT),
         Some(Scalar::Int(700))
     );
     fs::remove_dir_all(&root).ok();
@@ -2142,10 +2096,9 @@ fn transform_body_fault_aborts_byte_identical() {
     seed.member(1, "price", Scalar::Int(9_000_000_000));
     seed.member(1, "priceCents", Scalar::Int(0));
 
-    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
+    let store_id = store_id_of(&place);
     let cents_id = member_catalog_id(&place, "priceCents");
-    let int = marrow_store::value::ScalarType::Int;
-    let before = read_scalar(&store, &store_id, 1, &cents_id, int);
+    let before = read_scalar(&store, &store_id, 1, &cents_id, INT);
 
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");
@@ -2158,7 +2111,7 @@ fn transform_body_fault_aborts_byte_identical() {
         "expected TransformBodyFaulted, got {result:#?}"
     );
     assert_eq!(
-        read_scalar(&store, &store_id, 1, &cents_path, int),
+        read_scalar(&store, &store_id, 1, &cents_path, INT),
         before,
         "the target cell is unchanged after a body fault"
     );
@@ -2205,11 +2158,10 @@ fn activatable_transform_with_total_body_applies() {
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
     assert_eq!(outcome.receipt.records_transformed, 1);
 
-    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
+    let store_id = store_id_of(&place);
     let cents_id = member_catalog_id(&place, "priceCents");
-    let int = marrow_store::value::ScalarType::Int;
     assert_eq!(
-        read_scalar(&store, &store_id, 1, &cents_id, int),
+        read_scalar(&store, &store_id, 1, &cents_id, INT),
         Some(Scalar::Int(500))
     );
     assert!(store.read_commit_metadata().expect("read").is_some());
@@ -2288,13 +2240,12 @@ fn transform_composes_with_default_and_retire() {
     assert_eq!(outcome.receipt.records_backfilled, 1);
     assert_eq!(outcome.receipt.records_retired, 1);
 
-    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
+    let store_id = store_id_of(&place);
     let cents_id = member_catalog_id(&place, "priceCents");
     let currency_id = member_catalog_id(&place, "currency");
-    let int = marrow_store::value::ScalarType::Int;
     let str_ty = marrow_store::value::ScalarType::Str;
     assert_eq!(
-        read_scalar(&store, &store_id, 1, &cents_id, int),
+        read_scalar(&store, &store_id, 1, &cents_id, INT),
         Some(Scalar::Int(500)),
         "the transform target is recomputed"
     );
@@ -2354,7 +2305,6 @@ fn source_digest_drift_aborts() {
         matches!(result, Err(ApplyError::Drift)),
         "expected Drift, got {result:#?}"
     );
-    // No stamp landed.
     assert_eq!(store.read_commit_metadata().expect("read"), None);
     fs::remove_dir_all(&root).ok();
 }
@@ -2408,15 +2358,14 @@ fn transform_constant_drift_aborts_before_apply() {
     let changed_program = checked(&root);
     let result = apply(&witness, &changed_program, &store, false, None);
 
-    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
+    let store_id = store_id_of(&place);
     let cents_id = member_catalog_id(&place, "priceCents");
-    let int = marrow_store::value::ScalarType::Int;
     assert!(
         matches!(result, Err(ApplyError::Drift)),
         "expected Drift, got {result:#?}"
     );
     assert_eq!(
-        read_scalar(&store, &store_id, 1, &cents_id, int),
+        read_scalar(&store, &store_id, 1, &cents_id, INT),
         Some(Scalar::Int(0)),
         "the target is unchanged when const drift is rejected"
     );
@@ -2493,15 +2442,14 @@ fn transform_body_drift_aborts_before_apply() {
     );
     let result = apply(&witness, &changed_program, &store, false, None);
 
-    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
+    let store_id = store_id_of(&place);
     let cents_id = member_catalog_id(&place, "priceCents");
-    let int = marrow_store::value::ScalarType::Int;
     assert!(
         matches!(result, Err(ApplyError::Drift)),
         "expected Drift, got {result:#?}"
     );
     assert_eq!(
-        read_scalar(&store, &store_id, 1, &cents_id, int),
+        read_scalar(&store, &store_id, 1, &cents_id, INT),
         Some(Scalar::Int(0)),
         "the target is unchanged when transform-body drift is rejected"
     );
@@ -2631,9 +2579,8 @@ fn failed_apply_rolls_back_and_resumes_idempotently() {
         seed.member(2, "title", Scalar::Str("Hyperion".into()));
     }
 
-    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
+    let store_id = store_id_of(&place);
     let pages_id = member_catalog_id(&place, "pages");
-    let int = marrow_store::value::ScalarType::Int;
 
     // A read-only handle fails the apply commit; nothing must land.
     {
@@ -2643,7 +2590,7 @@ fn failed_apply_rolls_back_and_resumes_idempotently() {
         assert!(result.is_err(), "read-only apply must fail");
         assert_eq!(ro.read_commit_metadata().expect("read"), None, "no stamp");
         assert_eq!(
-            read_scalar(&ro, &store_id, 1, &pages_id, int),
+            read_scalar(&ro, &store_id, 1, &pages_id, INT),
             None,
             "no partial backfill"
         );
@@ -2657,11 +2604,11 @@ fn failed_apply_rolls_back_and_resumes_idempotently() {
         let outcome = apply(&witness, &program, &rw, false, None).expect("resumed apply");
         assert_eq!(outcome.receipt.records_backfilled, 2);
         assert_eq!(
-            read_scalar(&rw, &store_id, 1, &pages_id, int),
+            read_scalar(&rw, &store_id, 1, &pages_id, INT),
             Some(Scalar::Int(0))
         );
         assert_eq!(
-            read_scalar(&rw, &store_id, 2, &pages_id, int),
+            read_scalar(&rw, &store_id, 2, &pages_id, INT),
             Some(Scalar::Int(0))
         );
         assert!(rw.read_commit_metadata().expect("read").is_some());
@@ -2696,25 +2643,15 @@ fn nested_group_retire_fails_closed() {
     let note_id = nested_member_catalog_id(&accepted_place, "meta", "note");
 
     let store = TreeStore::memory();
+    let store_id = store_id_of(&accepted_place);
     // Seed two records each carrying a `meta.note` cell at the nested member path.
     for id in [1, 2] {
         store
-            .write_node(
-                &CatalogId::new(accepted_catalog_id(
-                    &accepted_place.store_catalog_id,
-                    "store",
-                ))
-                .unwrap(),
-                &[SavedKey::Int(id)],
-            )
+            .write_node(&store_id, &[SavedKey::Int(id)])
             .expect("write node");
         store
             .write_data_value(
-                &CatalogId::new(accepted_catalog_id(
-                    &accepted_place.store_catalog_id,
-                    "store",
-                ))
-                .unwrap(),
+                &store_id,
                 &[SavedKey::Int(id)],
                 &[
                     DataPathSegment::Member(CatalogId::new(meta_id.clone()).unwrap()),
@@ -2759,11 +2696,6 @@ fn nested_group_retire_fails_closed() {
     );
 
     // The nested cells are untouched and no stamp landed.
-    let store_id = CatalogId::new(accepted_catalog_id(
-        &accepted_place.store_catalog_id,
-        "store",
-    ))
-    .unwrap();
     for id in [1, 2] {
         assert!(
             store
@@ -3036,10 +2968,9 @@ fn apply_is_fenced_when_store_evolved_past_the_binary() {
         store.read_catalog_epoch().expect("epoch"),
         Some(accepted + 1)
     );
-    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
+    let store_id = store_id_of(&place);
     let pages_id = member_catalog_id(&place, "pages");
-    let int = marrow_store::value::ScalarType::Int;
-    assert_eq!(read_scalar(&store, &store_id, 1, &pages_id, int), None);
+    assert_eq!(read_scalar(&store, &store_id, 1, &pages_id, INT), None);
 
     fs::remove_dir_all(&root).ok();
 }

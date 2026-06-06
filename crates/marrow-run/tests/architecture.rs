@@ -3,11 +3,9 @@ use std::path::Path;
 
 #[test]
 fn production_runtime_does_not_execute_syntax_bodies() {
-    let mut violations = Vec::new();
-
-    for path in runtime_rs_files() {
-        let text = fs::read_to_string(&path).expect("runtime source");
-        for forbidden in [
+    assert_runtime_free_of(
+        "production runtime still executes syntax bodies",
+        &[
             "marrow_syntax::{Argument",
             "marrow_syntax::{BinaryOp",
             "marrow_syntax::{Block",
@@ -19,17 +17,7 @@ fn production_runtime_does_not_execute_syntax_bodies() {
             "Block",
             "Expression::",
             "Statement::",
-        ] {
-            if source_contains(&text, forbidden) {
-                violations.push(format!("{} contains {forbidden}", path.display()));
-            }
-        }
-    }
-
-    assert!(
-        violations.is_empty(),
-        "production runtime still executes syntax bodies:\n{}",
-        violations.join("\n")
+        ],
     );
 }
 
@@ -159,32 +147,29 @@ fn checked_executable_syntax_lowering_is_not_public() {
         .expect("crate parent");
     let executable = crate_parent.join("marrow-check/src/executable.rs");
     let program = crate_parent.join("marrow-check/src/program.rs");
-    let executable_text = fs::read_to_string(&executable).expect("checked executable source");
-    let program_text = fs::read_to_string(&program).expect("checked program source");
     let mut violations = Vec::new();
 
-    for forbidden in [
-        "pub fn from_syntax(block",
-        "pub fn from_syntax(expr",
-        "pub statements: Vec<CheckedStmt>",
-    ] {
-        if source_contains(&executable_text, forbidden) {
-            violations.push(format!("{} contains {forbidden}", executable.display()));
-        }
-    }
-    for forbidden in [
-        "pub runtime_body: Option<CheckedBody>",
-        "pub body: Option<CheckedBody>",
-    ] {
-        if source_contains(&program_text, forbidden) {
-            violations.push(format!("{} contains {forbidden}", program.display()));
-        }
-    }
+    collect_forbidden(
+        &executable,
+        &[
+            "pub fn from_syntax(block",
+            "pub fn from_syntax(expr",
+            "pub statements: Vec<CheckedStmt>",
+        ],
+        &mut violations,
+    );
+    collect_forbidden(
+        &program,
+        &[
+            "pub runtime_body: Option<CheckedBody>",
+            "pub body: Option<CheckedBody>",
+        ],
+        &mut violations,
+    );
 
-    assert!(
-        violations.is_empty(),
-        "checked executable syntax lowering is still public:\n{}",
-        violations.join("\n")
+    assert_no_violations(
+        "checked executable syntax lowering is still public",
+        violations,
     );
 }
 
@@ -196,33 +181,28 @@ fn checked_runtime_bodies_are_not_rebuilt_from_parsed_sources_after_checking() {
     let program = crate_parent.join("marrow-check/src/program.rs");
     let analysis = crate_parent.join("marrow-check/src/analysis.rs");
     let check_lib = crate_parent.join("marrow-check/src/lib.rs");
-    let program_text = fs::read_to_string(&program).expect("checked program source");
-    let analysis_text = fs::read_to_string(&analysis).expect("analysis source");
-    let check_lib_text = fs::read_to_string(&check_lib).expect("checked lib source");
     let mut violations = Vec::new();
 
-    for forbidden in [
-        "rebuild_runtime_bodies_from_sources",
-        "source.body.clone()",
-        "resolve_block_matches",
-    ] {
-        if source_contains(&program_text, forbidden) {
-            violations.push(format!("{} contains {forbidden}", program.display()));
-        }
-    }
-    for (path, text) in [(&analysis, &analysis_text), (&check_lib, &check_lib_text)] {
-        if source_contains(text, "rebuild_runtime_bodies_from_sources") {
-            violations.push(format!(
-                "{} calls rebuild_runtime_bodies_from_sources",
-                path.display()
-            ));
-        }
+    collect_forbidden(
+        &program,
+        &[
+            "rebuild_runtime_bodies_from_sources",
+            "source.body.clone()",
+            "resolve_block_matches",
+        ],
+        &mut violations,
+    );
+    for path in [&analysis, &check_lib] {
+        collect_forbidden(
+            path,
+            &["rebuild_runtime_bodies_from_sources"],
+            &mut violations,
+        );
     }
 
-    assert!(
-        violations.is_empty(),
-        "checked runtime bodies are still rebuilt from parsed source after checking:\n{}",
-        violations.join("\n")
+    assert_no_violations(
+        "checked runtime bodies are still rebuilt from parsed source after checking",
+        violations,
     );
 }
 
@@ -307,23 +287,15 @@ fn checker_alias_helpers_are_not_public_runtime_resolution_bridges() {
         .parent()
         .expect("crate parent");
     let check_lib = crate_parent.join("marrow-check/src/lib.rs");
-    let text = fs::read_to_string(&check_lib).expect("checked lib source");
-    let mut violations = Vec::new();
 
-    for forbidden in [
-        "pub fn expand_module_alias",
-        "pub fn build_alias_map",
-        "pub fn expand_alias",
-    ] {
-        if source_contains(&text, forbidden) {
-            violations.push(format!("{} contains {forbidden}", check_lib.display()));
-        }
-    }
-
-    assert!(
-        violations.is_empty(),
-        "checker alias helpers are still public runtime resolution bridges:\n{}",
-        violations.join("\n")
+    assert_file_free_of(
+        "checker alias helpers are still public runtime resolution bridges",
+        &check_lib,
+        &[
+            "pub fn expand_module_alias",
+            "pub fn build_alias_map",
+            "pub fn expand_alias",
+        ],
     );
 }
 
@@ -340,22 +312,55 @@ fn production_runtime_uses_syntax_free_program_artifact() {
         {
             continue;
         }
-        let text = fs::read_to_string(&path).expect("runtime source");
-        for forbidden in [
-            "CheckedProgram",
-            "CheckedModule",
-            "CheckedFunction",
-            "CheckedConst",
-        ] {
-            if source_contains(&text, forbidden) {
-                violations.push(format!("{} contains {forbidden}", path.display()));
-            }
-        }
+        collect_forbidden(
+            &path,
+            &[
+                "CheckedProgram",
+                "CheckedModule",
+                "CheckedFunction",
+                "CheckedConst",
+            ],
+            &mut violations,
+        );
     }
 
+    assert_no_violations(
+        "production runtime still receives syntax-carrying checked artifacts",
+        violations,
+    );
+}
+
+/// Assert that no runtime source file contains any forbidden needle. `invariant`
+/// names the architectural guarantee for the failure message; each offending file is
+/// reported with the needle it still carries.
+fn assert_runtime_free_of(invariant: &str, forbidden: &[&str]) {
+    let mut violations = Vec::new();
+    for path in runtime_rs_files() {
+        collect_forbidden(&path, forbidden, &mut violations);
+    }
+    assert_no_violations(invariant, violations);
+}
+
+/// Assert that a single source file contains none of the forbidden needles.
+fn assert_file_free_of(invariant: &str, path: &Path, forbidden: &[&str]) {
+    let mut violations = Vec::new();
+    collect_forbidden(path, forbidden, &mut violations);
+    assert_no_violations(invariant, violations);
+}
+
+fn collect_forbidden(path: &Path, forbidden: &[&str], violations: &mut Vec<String>) {
+    let text = fs::read_to_string(path).expect("source file");
+    for needle in forbidden {
+        if source_contains(&text, needle) {
+            violations.push(format!("{} contains {needle}", path.display()));
+        }
+    }
+}
+
+fn assert_no_violations(invariant: &str, violations: Vec<String>) {
     assert!(
         violations.is_empty(),
-        "production runtime still receives syntax-carrying checked artifacts:\n{}",
+        "{invariant}:\n{}",
         violations.join("\n")
     );
 }
@@ -413,26 +418,14 @@ fn collect_rust_files(dir: &Path, files: &mut Vec<std::path::PathBuf>) {
 
 #[test]
 fn production_runtime_uses_typed_tree_cell_store_boundary() {
-    let mut violations = Vec::new();
-
-    for path in runtime_rs_files() {
-        let text = fs::read_to_string(&path).expect("runtime source");
-        for forbidden in [
+    assert_runtime_free_of(
+        "production runtime still depends on raw saved-path/backend store APIs",
+        &[
             "marrow_store::backend",
             "marrow_store::path",
             "crate::path::PathSegment",
             "crate::path::encode_path",
-        ] {
-            if source_contains(&text, forbidden) {
-                violations.push(format!("{} contains {forbidden}", path.display()));
-            }
-        }
-    }
-
-    assert!(
-        violations.is_empty(),
-        "production runtime still depends on raw saved-path/backend store APIs:\n{}",
-        violations.join("\n")
+        ],
     );
 }
 
@@ -474,11 +467,9 @@ fn production_runtime_enum_values_use_catalog_member_identity() {
 
 #[test]
 fn production_runtime_does_not_resolve_calls_from_source_strings() {
-    let mut violations = Vec::new();
-
-    for path in runtime_rs_files() {
-        let text = fs::read_to_string(&path).expect("runtime source");
-        for forbidden in [
+    assert_runtime_free_of(
+        "production runtime still resolves calls from source strings",
+        &[
             "split(\"::\")",
             "split_once(\"::\")",
             "rsplit_once(\"::\")",
@@ -494,57 +485,23 @@ fn production_runtime_does_not_resolve_calls_from_source_strings() {
             "resolve_program_function(",
             "resolve(",
             "is_std_module(",
-        ] {
-            if source_contains(&text, forbidden) {
-                violations.push(format!("{} contains {forbidden}", path.display()));
-            }
-        }
-    }
-
-    assert!(
-        violations.is_empty(),
-        "production runtime still resolves calls from source strings:\n{}",
-        violations.join("\n")
+        ],
     );
 }
 
 #[test]
 fn production_runtime_has_no_reserved_ephemeral_root_execution() {
-    let mut violations = Vec::new();
-
-    for path in runtime_rs_files() {
-        let text = fs::read_to_string(&path).expect("runtime source");
-        for forbidden in ["cache ~", "ensure ~", "Id(~", "~"] {
-            if source_contains(&text, forbidden) {
-                violations.push(format!("{} contains {forbidden}", path.display()));
-            }
-        }
-    }
-
-    assert!(
-        violations.is_empty(),
-        "production runtime contains reserved `~` ephemeral-root execution:\n{}",
-        violations.join("\n")
+    assert_runtime_free_of(
+        "production runtime contains reserved `~` ephemeral-root execution",
+        &["cache ~", "ensure ~", "Id(~", "~"],
     );
 }
 
 #[test]
 fn production_runtime_does_not_classify_saved_paths_locally() {
-    let mut violations = Vec::new();
-
-    for path in runtime_rs_files() {
-        let text = fs::read_to_string(&path).expect("runtime source");
-        for forbidden in ["is_saved_path(", "classify_saved_path", "SavedPathClass"] {
-            if source_contains(&text, forbidden) {
-                violations.push(format!("{} contains {forbidden}", path.display()));
-            }
-        }
-    }
-
-    assert!(
-        violations.is_empty(),
-        "production runtime still classifies saved paths locally:\n{}",
-        violations.join("\n")
+    assert_runtime_free_of(
+        "production runtime still classifies saved paths locally",
+        &["is_saved_path(", "classify_saved_path", "SavedPathClass"],
     );
 }
 
@@ -554,64 +511,43 @@ fn production_runtime_uses_checked_index_place_facts() {
     let mut violations = Vec::new();
 
     for name in ["stdlib.rs", "read.rs"] {
-        let path = runtime_src.join(name);
-        let text = fs::read_to_string(&path).expect("runtime source");
-        for forbidden in [
-            "fn index_branch_schema(",
-            "IndexSchema",
-            "find_store_resource",
-            "Expression::SavedRoot",
-        ] {
-            if source_contains(&text, forbidden) {
-                violations.push(format!("{} contains {forbidden}", path.display()));
-            }
-        }
+        collect_forbidden(
+            &runtime_src.join(name),
+            &[
+                "fn index_branch_schema(",
+                "IndexSchema",
+                "find_store_resource",
+                "Expression::SavedRoot",
+            ],
+            &mut violations,
+        );
     }
 
-    assert!(
-        violations.is_empty(),
-        "production runtime still classifies index branches from syntax/schema:\n{}",
-        violations.join("\n")
+    assert_no_violations(
+        "production runtime still classifies index branches from syntax/schema",
+        violations,
     );
 }
 
 #[test]
 fn production_runtime_uses_checked_root_identity_facts_for_count() {
     let runtime_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let stdlib = runtime_src.join("stdlib.rs");
-    let text = fs::read_to_string(&stdlib).expect("stdlib source");
-    let mut violations = Vec::new();
 
-    for forbidden in ["find_store_resource", "let Expression::SavedRoot"] {
-        if source_contains(&text, forbidden) {
-            violations.push(format!("{} contains {forbidden}", stdlib.display()));
-        }
-    }
-
-    assert!(
-        violations.is_empty(),
-        "production runtime count still rediscovers root schema facts:\n{}",
-        violations.join("\n")
+    assert_file_free_of(
+        "production runtime count still rediscovers root schema facts",
+        &runtime_src.join("stdlib.rs"),
+        &["find_store_resource", "let Expression::SavedRoot"],
     );
 }
 
 #[test]
 fn production_runtime_uses_checked_place_facts_for_node_segments() {
     let runtime_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let path_src = runtime_src.join("path.rs");
-    let text = fs::read_to_string(&path_src).expect("path source");
-    let mut violations = Vec::new();
 
-    for forbidden in ["root_identity_arity", "Expression::SavedRoot"] {
-        if source_contains(&text, forbidden) {
-            violations.push(format!("{} contains {forbidden}", path_src.display()));
-        }
-    }
-
-    assert!(
-        violations.is_empty(),
-        "production runtime node segment lowering still rediscovers saved-root facts:\n{}",
-        violations.join("\n")
+    assert_file_free_of(
+        "production runtime node segment lowering still rediscovers saved-root facts",
+        &runtime_src.join("path.rs"),
+        &["root_identity_arity", "Expression::SavedRoot"],
     );
 }
 
@@ -621,90 +557,64 @@ fn production_runtime_uses_checked_root_identity_facts_for_iteration() {
     let mut violations = Vec::new();
 
     for name in ["collection.rs", "read.rs"] {
-        let path = runtime_src.join(name);
-        let text = fs::read_to_string(&path).expect("runtime source");
-        if source_contains(&text, "root_identity_arity") {
-            violations.push(format!("{} contains root_identity_arity", path.display()));
-        }
+        collect_forbidden(
+            &runtime_src.join(name),
+            &["root_identity_arity"],
+            &mut violations,
+        );
     }
 
-    assert!(
-        violations.is_empty(),
-        "production runtime iteration still rediscovers root identity arity:\n{}",
-        violations.join("\n")
+    assert_no_violations(
+        "production runtime iteration still rediscovers root identity arity",
+        violations,
     );
 }
 
 #[test]
 fn production_runtime_uses_checked_root_identity_facts_for_deletes() {
     let runtime_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let write_dispatch = runtime_src.join("write_dispatch.rs");
-    let text = fs::read_to_string(&write_dispatch).expect("write dispatch source");
 
-    assert!(
-        !source_contains(&text, "root_identity_arity"),
-        "production runtime delete still rediscovers root identity arity in {}",
-        write_dispatch.display()
+    assert_file_free_of(
+        "production runtime delete still rediscovers root identity arity",
+        &runtime_src.join("write_dispatch.rs"),
+        &["root_identity_arity"],
     );
 }
 
 #[test]
 fn production_runtime_field_reads_use_checked_leaf_facts() {
     let runtime_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let path_src = runtime_src.join("path.rs");
-    let text = fs::read_to_string(&path_src).expect("path source");
-    let mut violations = Vec::new();
 
-    for forbidden in [
-        "resource_field_leaf_kind",
-        "resource_nested_member_leaf_kind",
-        "fn checked_leaf_for_field",
-    ] {
-        if source_contains(&text, forbidden) {
-            violations.push(format!("{} contains {forbidden}", path_src.display()));
-        }
-    }
-
-    assert!(
-        violations.is_empty(),
-        "production runtime field reads still rediscovers leaf facts:\n{}",
-        violations.join("\n")
+    assert_file_free_of(
+        "production runtime field reads still rediscovers leaf facts",
+        &runtime_src.join("path.rs"),
+        &[
+            "resource_field_leaf_kind",
+            "resource_nested_member_leaf_kind",
+            "fn checked_leaf_for_field",
+        ],
     );
 }
 
 #[test]
 fn production_runtime_does_not_classify_schema_leaves_locally() {
-    let mut violations = Vec::new();
-
-    for path in runtime_rs_files() {
-        let text = fs::read_to_string(&path).expect("runtime source");
-        for forbidden in [
+    assert_runtime_free_of(
+        "production runtime still classifies schema leaves locally",
+        &[
             "enum StoreLeafKind",
             "fn store_leaf_kind",
             "fn resource_field_leaf_kind",
             "fn resource_layer_leaf_kind_chain",
             "fn resource_nested_member_leaf_kind",
-        ] {
-            if source_contains(&text, forbidden) {
-                violations.push(format!("{} contains {forbidden}", path.display()));
-            }
-        }
-    }
-
-    assert!(
-        violations.is_empty(),
-        "production runtime still classifies schema leaves locally:\n{}",
-        violations.join("\n")
+        ],
     );
 }
 
 #[test]
 fn production_runtime_does_not_query_schema_facts_for_durable_places() {
-    let mut violations = Vec::new();
-
-    for path in runtime_rs_files() {
-        let text = fs::read_to_string(&path).expect("runtime source");
-        for forbidden in [
+    assert_runtime_free_of(
+        "production runtime still queries schema facts instead of checked durable places",
+        &[
             "find_store_resource",
             "find_resource",
             "marrow_schema::Node",
@@ -719,48 +629,29 @@ fn production_runtime_does_not_query_schema_facts_for_durable_places() {
             "resource_layer_leaf_kind_chain",
             "layer_key_params",
             "store_leaf_kind",
-        ] {
-            if source_contains(&text, forbidden) {
-                violations.push(format!("{} contains {forbidden}", path.display()));
-            }
-        }
-    }
-
-    assert!(
-        violations.is_empty(),
-        "production runtime still queries schema facts instead of checked durable places:\n{}",
-        violations.join("\n")
+        ],
     );
 }
 
 #[test]
 fn production_runtime_resource_constructors_use_checked_contract_facts() {
     let runtime_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let call = runtime_src.join("call.rs");
-    let text = fs::read_to_string(&call).expect("call source");
-    let mut violations = Vec::new();
 
-    for forbidden in [
-        "fn check_resource_constructor_value",
-        "fn runtime_type_from_schema",
-        "fn runtime_resource_type_from_name",
-        "fn value_matches_type",
-        "fn identity_value_matches",
-        "identity_key_defs",
-        "identity_root",
-        "runtime_enum_in",
-        "ResourceSchema",
-        "NodeKind",
-    ] {
-        if source_contains(&text, forbidden) {
-            violations.push(format!("{} contains {forbidden}", call.display()));
-        }
-    }
-
-    assert!(
-        violations.is_empty(),
-        "production runtime still validates constructors by classifying schemas:\n{}",
-        violations.join("\n")
+    assert_file_free_of(
+        "production runtime still validates constructors by classifying schemas",
+        &runtime_src.join("call.rs"),
+        &[
+            "fn check_resource_constructor_value",
+            "fn runtime_type_from_schema",
+            "fn runtime_resource_type_from_name",
+            "fn value_matches_type",
+            "fn identity_value_matches",
+            "identity_key_defs",
+            "identity_root",
+            "runtime_enum_in",
+            "ResourceSchema",
+            "NodeKind",
+        ],
     );
 }
 
@@ -792,24 +683,22 @@ fn canonical_language_docs_do_not_advertise_unsupported_edit_blocks() {
         if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
             continue;
         }
-        let text = fs::read_to_string(&path).expect("language doc source");
-        for forbidden in [
-            "edit_stmt",
-            "\"edit\" assignable",
-            "edit place",
-            "`edit` block",
-            "edit ^",
-        ] {
-            if source_contains(&text, forbidden) {
-                violations.push(format!("{} contains {forbidden}", path.display()));
-            }
-        }
+        collect_forbidden(
+            &path,
+            &[
+                "edit_stmt",
+                "\"edit\" assignable",
+                "edit place",
+                "`edit` block",
+                "edit ^",
+            ],
+            &mut violations,
+        );
     }
 
-    assert!(
-        violations.is_empty(),
-        "canonical docs still advertise unsupported edit syntax:\n{}",
-        violations.join("\n")
+    assert_no_violations(
+        "canonical docs still advertise unsupported edit syntax",
+        violations,
     );
 }
 
@@ -821,49 +710,43 @@ fn checker_durable_path_exports_no_runtime_schema_bridge_helpers() {
     let check_src = crate_parent.join("marrow-check/src");
     let mut violations = Vec::new();
 
+    let forbidden = [
+        "pub fn find_store_resource",
+        "pub fn find_store(",
+        "pub fn find_resource(",
+        "pub fn root_identity_arity",
+        "pub fn root_identity_keys",
+        "pub fn layer_key_params",
+        "pub fn identity_root",
+        "pub fn identity_key_defs",
+        "pub fn resource_layer_chain_exists",
+        "pub fn store_leaf_kind",
+        "pub fn resource_field_leaf_kind",
+        "pub fn resource_layer_leaf_kind_chain",
+        "pub fn resource_nested_member_leaf_kind",
+        "pub fn resource_nested_member_exists",
+        "find_store_resource,",
+        "find_store,",
+        "find_resource,",
+        "root_identity_arity,",
+        "root_identity_keys,",
+        "layer_key_params,",
+        "identity_root,",
+        "identity_key_defs,",
+        "resource_layer_chain_exists,",
+        "store_leaf_kind,",
+        "resource_field_leaf_kind,",
+        "resource_layer_leaf_kind_chain,",
+        "resource_nested_member_leaf_kind,",
+        "resource_nested_member_exists,",
+    ];
     for name in ["durable_path.rs", "lib.rs"] {
-        let path = check_src.join(name);
-        let text = fs::read_to_string(&path).expect("checker source");
-        for forbidden in [
-            "pub fn find_store_resource",
-            "pub fn find_store(",
-            "pub fn find_resource(",
-            "pub fn root_identity_arity",
-            "pub fn root_identity_keys",
-            "pub fn layer_key_params",
-            "pub fn identity_root",
-            "pub fn identity_key_defs",
-            "pub fn resource_layer_chain_exists",
-            "pub fn store_leaf_kind",
-            "pub fn resource_field_leaf_kind",
-            "pub fn resource_layer_leaf_kind_chain",
-            "pub fn resource_nested_member_leaf_kind",
-            "pub fn resource_nested_member_exists",
-            "find_store_resource,",
-            "find_store,",
-            "find_resource,",
-            "root_identity_arity,",
-            "root_identity_keys,",
-            "layer_key_params,",
-            "identity_root,",
-            "identity_key_defs,",
-            "resource_layer_chain_exists,",
-            "store_leaf_kind,",
-            "resource_field_leaf_kind,",
-            "resource_layer_leaf_kind_chain,",
-            "resource_nested_member_leaf_kind,",
-            "resource_nested_member_exists,",
-        ] {
-            if source_contains(&text, forbidden) {
-                violations.push(format!("{} contains {forbidden}", path.display()));
-            }
-        }
+        collect_forbidden(&check_src.join(name), &forbidden, &mut violations);
     }
 
-    assert!(
-        violations.is_empty(),
-        "checker still exposes runtime schema/path bridge helpers:\n{}",
-        violations.join("\n")
+    assert_no_violations(
+        "checker still exposes runtime schema/path bridge helpers",
+        violations,
     );
 }
 
@@ -877,18 +760,16 @@ fn production_runtime_has_no_local_schema_query_module() {
     }
 
     for path in runtime_rs_files() {
-        let text = fs::read_to_string(&path).expect("runtime source");
-        for forbidden in ["mod schema_query", "crate::schema_query", "schema_query::"] {
-            if source_contains(&text, forbidden) {
-                violations.push(format!("{} contains {forbidden}", path.display()));
-            }
-        }
+        collect_forbidden(
+            &path,
+            &["mod schema_query", "crate::schema_query", "schema_query::"],
+            &mut violations,
+        );
     }
 
-    assert!(
-        violations.is_empty(),
-        "production runtime still has a local schema query module:\n{}",
-        violations.join("\n")
+    assert_no_violations(
+        "production runtime still has a local schema query module",
+        violations,
     );
 }
 
@@ -901,25 +782,22 @@ fn production_runtime_splits_host_effect_handling() {
         violations.push("runtime is missing src/host_effects.rs".to_string());
     }
 
-    let stdlib = runtime_src.join("stdlib.rs");
-    let text = fs::read_to_string(&stdlib).expect("stdlib source");
-    for forbidden in [
-        "RUN_CAPABILITY",
-        "fn eval_clock_capability",
-        "fn eval_env",
-        "fn eval_log",
-        "fn eval_io",
-        "io_error(",
-    ] {
-        if source_contains(&text, forbidden) {
-            violations.push(format!("{} contains {forbidden}", stdlib.display()));
-        }
-    }
+    collect_forbidden(
+        &runtime_src.join("stdlib.rs"),
+        &[
+            "RUN_CAPABILITY",
+            "fn eval_clock_capability",
+            "fn eval_env",
+            "fn eval_log",
+            "fn eval_io",
+            "io_error(",
+        ],
+        &mut violations,
+    );
 
-    assert!(
-        violations.is_empty(),
-        "production runtime still keeps host effects in stdlib dispatch:\n{}",
-        violations.join("\n")
+    assert_no_violations(
+        "production runtime still keeps host effects in stdlib dispatch",
+        violations,
     );
 }
 
@@ -932,28 +810,25 @@ fn production_runtime_splits_index_maintenance() {
         violations.push("runtime is missing src/index_maintenance.rs".to_string());
     }
 
-    let write = runtime_src.join("write.rs");
-    let text = fs::read_to_string(&write).expect("write source");
-    for forbidden in [
-        "fn index_keys",
-        "fn stored_arg_key",
-        "fn stored_index_keys",
-        "fn field_write_index_keys",
-        "fn index_path",
-        "fn index_entry_value",
-        "fn encode_identity",
-        "fn decode_identity",
-        "fn check_unique_conflict",
-    ] {
-        if source_contains(&text, forbidden) {
-            violations.push(format!("{} contains {forbidden}", write.display()));
-        }
-    }
+    collect_forbidden(
+        &runtime_src.join("write.rs"),
+        &[
+            "fn index_keys",
+            "fn stored_arg_key",
+            "fn stored_index_keys",
+            "fn field_write_index_keys",
+            "fn index_path",
+            "fn index_entry_value",
+            "fn encode_identity",
+            "fn decode_identity",
+            "fn check_unique_conflict",
+        ],
+        &mut violations,
+    );
 
-    assert!(
-        violations.is_empty(),
-        "production runtime still keeps index maintenance in write planning:\n{}",
-        violations.join("\n")
+    assert_no_violations(
+        "production runtime still keeps index maintenance in write planning",
+        violations,
     );
 }
 
@@ -966,18 +841,15 @@ fn production_runtime_splits_checked_statement_execution() {
         violations.push("runtime is missing src/statement.rs".to_string());
     }
 
-    let exec = runtime_src.join("exec.rs");
-    let text = fs::read_to_string(&exec).expect("exec source");
-    for forbidden in ["fn eval_statement(", "match statement"] {
-        if source_contains(&text, forbidden) {
-            violations.push(format!("{} contains {forbidden}", exec.display()));
-        }
-    }
+    collect_forbidden(
+        &runtime_src.join("exec.rs"),
+        &["fn eval_statement(", "match statement"],
+        &mut violations,
+    );
 
-    assert!(
-        violations.is_empty(),
-        "production runtime still keeps checked statement execution in exec.rs:\n{}",
-        violations.join("\n")
+    assert_no_violations(
+        "production runtime still keeps checked statement execution in exec.rs",
+        violations,
     );
 }
 
@@ -990,30 +862,27 @@ fn production_runtime_splits_durable_place_reads() {
         violations.push("runtime is missing src/durable_read.rs".to_string());
     }
 
-    let read = runtime_src.join("read.rs");
-    let text = fs::read_to_string(&read).expect("read source");
-    for forbidden in [
-        "fn eval_saved_field(",
-        "fn read_saved_field(",
-        "fn eval_optional_field(",
-        "fn eval_index_lookup(",
-        "fn eval_saved_layer_read(",
-        "fn read_layer_entry(",
-        "fn read_layer_entry_at(",
-        "fn read_group_entry_chain(",
-        "fn eval_resource_read(",
-        "fn read_resource(",
-        "fn materialize_resource_members(",
-    ] {
-        if source_contains(&text, forbidden) {
-            violations.push(format!("{} contains {forbidden}", read.display()));
-        }
-    }
+    collect_forbidden(
+        &runtime_src.join("read.rs"),
+        &[
+            "fn eval_saved_field(",
+            "fn read_saved_field(",
+            "fn eval_optional_field(",
+            "fn eval_index_lookup(",
+            "fn eval_saved_layer_read(",
+            "fn read_layer_entry(",
+            "fn read_layer_entry_at(",
+            "fn read_group_entry_chain(",
+            "fn eval_resource_read(",
+            "fn read_resource(",
+            "fn materialize_resource_members(",
+        ],
+        &mut violations,
+    );
 
-    assert!(
-        violations.is_empty(),
-        "production runtime still keeps durable-place reads in read.rs:\n{}",
-        violations.join("\n")
+    assert_no_violations(
+        "production runtime still keeps durable-place reads in read.rs",
+        violations,
     );
 }
 
@@ -1026,23 +895,20 @@ fn production_runtime_splits_write_plan_representation() {
         violations.push("runtime is missing src/write_plan.rs".to_string());
     }
 
-    let write = runtime_src.join("write.rs");
-    let text = fs::read_to_string(&write).expect("write source");
-    for forbidden in [
-        "enum PlanStep",
-        "enum WriteOp",
-        "struct WritePlan",
-        "fn apply_steps",
-    ] {
-        if source_contains(&text, forbidden) {
-            violations.push(format!("{} contains {forbidden}", write.display()));
-        }
-    }
+    collect_forbidden(
+        &runtime_src.join("write.rs"),
+        &[
+            "enum PlanStep",
+            "enum WriteOp",
+            "struct WritePlan",
+            "fn apply_steps",
+        ],
+        &mut violations,
+    );
 
-    assert!(
-        violations.is_empty(),
-        "production runtime still keeps write-plan representation in write.rs:\n{}",
-        violations.join("\n")
+    assert_no_violations(
+        "production runtime still keeps write-plan representation in write.rs",
+        violations,
     );
 }
 
@@ -1055,13 +921,11 @@ fn production_runtime_splits_pure_std_dispatch() {
         violations.push("runtime is missing src/std_pure.rs".to_string());
     }
 
-    let stdlib = runtime_src.join("stdlib.rs");
-    let text = fs::read_to_string(&stdlib).expect("stdlib source");
-    for forbidden in ["pub(crate) fn eval_std(", "match (module, op)"] {
-        if source_contains(&text, forbidden) {
-            violations.push(format!("{} contains {forbidden}", stdlib.display()));
-        }
-    }
+    collect_forbidden(
+        &runtime_src.join("stdlib.rs"),
+        &["pub(crate) fn eval_std(", "match (module, op)"],
+        &mut violations,
+    );
 
     let std_pure = runtime_src.join("std_pure.rs");
     if let Ok(text) = fs::read_to_string(&std_pure)
@@ -1073,10 +937,9 @@ fn production_runtime_splits_pure_std_dispatch() {
         ));
     }
 
-    assert!(
-        violations.is_empty(),
-        "production runtime still keeps pure std helpers in one broad dispatcher:\n{}",
-        violations.join("\n")
+    assert_no_violations(
+        "production runtime still keeps pure std helpers in one broad dispatcher",
+        violations,
     );
 }
 
@@ -1089,24 +952,21 @@ fn production_runtime_splits_group_entry_write_dispatch() {
         violations.push("runtime is missing src/group_write.rs".to_string());
     }
 
-    let write_dispatch = runtime_src.join("write_dispatch.rs");
-    let text = fs::read_to_string(&write_dispatch).expect("write_dispatch source");
-    for forbidden in [
-        "pub(crate) fn eval_group_entry_write(",
-        "resource_layer_leaf_kind_chain(",
-        "plan_layer_group_write(",
-        "plan_nested_layer_identity_leaf_write(",
-        "plan_nested_layer_leaf_write(",
-    ] {
-        if source_contains(&text, forbidden) {
-            violations.push(format!("{} contains {forbidden}", write_dispatch.display()));
-        }
-    }
+    collect_forbidden(
+        &runtime_src.join("write_dispatch.rs"),
+        &[
+            "pub(crate) fn eval_group_entry_write(",
+            "resource_layer_leaf_kind_chain(",
+            "plan_layer_group_write(",
+            "plan_nested_layer_identity_leaf_write(",
+            "plan_nested_layer_leaf_write(",
+        ],
+        &mut violations,
+    );
 
-    assert!(
-        violations.is_empty(),
-        "production runtime still keeps group-entry write routing in write_dispatch.rs:\n{}",
-        violations.join("\n")
+    assert_no_violations(
+        "production runtime still keeps group-entry write routing in write_dispatch.rs",
+        violations,
     );
 }
 
@@ -1119,24 +979,21 @@ fn production_runtime_splits_loop_execution() {
         violations.push("runtime is missing src/loop_exec.rs".to_string());
     }
 
-    let exec = runtime_src.join("exec.rs");
-    let text = fs::read_to_string(&exec).expect("exec source");
-    for forbidden in [
-        "pub(crate) fn eval_for(",
-        "pub(crate) fn eval_while(",
-        "pub(crate) fn eval_collection(",
-        "enum RangeIter",
-        "fn range_iter(",
-    ] {
-        if source_contains(&text, forbidden) {
-            violations.push(format!("{} contains {forbidden}", exec.display()));
-        }
-    }
+    collect_forbidden(
+        &runtime_src.join("exec.rs"),
+        &[
+            "pub(crate) fn eval_for(",
+            "pub(crate) fn eval_while(",
+            "pub(crate) fn eval_collection(",
+            "enum RangeIter",
+            "fn range_iter(",
+        ],
+        &mut violations,
+    );
 
-    assert!(
-        violations.is_empty(),
-        "production runtime still keeps loop and collection iteration in exec.rs:\n{}",
-        violations.join("\n")
+    assert_no_violations(
+        "production runtime still keeps loop and collection iteration in exec.rs",
+        violations,
     );
 }
 
@@ -1267,24 +1124,22 @@ fn runtime_tests_do_not_hand_build_checked_function_syntax_bodies() {
         if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
             continue;
         }
-        let text = fs::read_to_string(&path).expect("runtime test source");
-        for forbidden in [
-            "CheckedBody::from_syntax",
-            "body: function.body",
-            "CheckedFunction {",
-            "entry: &str,\n    args: &[Value]",
-            "args: &[Value]",
-            "run_entry(program, store, entry, args)",
-        ] {
-            if source_contains(&text, forbidden) {
-                violations.push(format!("{} contains {forbidden}", path.display()));
-            }
-        }
+        collect_forbidden(
+            &path,
+            &[
+                "CheckedBody::from_syntax",
+                "body: function.body",
+                "CheckedFunction {",
+                "entry: &str,\n    args: &[Value]",
+                "args: &[Value]",
+                "run_entry(program, store, entry, args)",
+            ],
+            &mut violations,
+        );
     }
 
-    assert!(
-        violations.is_empty(),
-        "runtime tests still hand-build checked functions from syntax bodies:\n{}",
-        violations.join("\n")
+    assert_no_violations(
+        "runtime tests still hand-build checked functions from syntax bodies",
+        violations,
     );
 }
