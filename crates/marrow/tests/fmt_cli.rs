@@ -1,4 +1,6 @@
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 mod support;
 
@@ -117,6 +119,18 @@ fn temp_project(name: &str, files: &[(&str, &str)]) -> support::TempProject {
     })
 }
 
+#[cfg(unix)]
+fn make_readonly(path: impl AsRef<std::path::Path>) {
+    let permissions = fs::Permissions::from_mode(0o444);
+    fs::set_permissions(path, permissions).expect("make source readonly");
+}
+
+#[cfg(unix)]
+fn make_writable(path: impl AsRef<std::path::Path>) {
+    let permissions = fs::Permissions::from_mode(0o644);
+    fs::set_permissions(path, permissions).expect("make source writable");
+}
+
 #[test]
 fn fmt_check_on_a_project_directory_passes_when_all_files_are_formatted() {
     let project = temp_project(
@@ -156,6 +170,45 @@ fn fmt_write_on_a_project_directory_rewrites_each_changed_file() {
     let lib = fs::read_to_string(project.join("src/lib.mw")).expect("read lib");
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert_eq!(app, "module app\n\nconst Max: int = 5\n");
+    assert_eq!(lib, "module lib\n\nconst Limit: int = 10\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn fmt_write_reports_file_write_failures_as_io_write() {
+    let path = temp_source("write-readonly", "module app\nconst Max:int=5\n");
+    make_readonly(&path);
+    let output = run_fmt(&["--write", path.to_str().unwrap()]);
+    make_writable(&path);
+    fs::remove_file(&path).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("io.write"), "{stderr}");
+    assert!(stderr.contains(path.to_str().unwrap()), "{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn fmt_write_on_a_project_directory_reports_write_failures_as_io_write_and_continues() {
+    let project = temp_project(
+        "fmt-proj-readonly",
+        &[
+            ("src/app.mw", "module app\nconst Max:int=5\n"),
+            ("src/lib.mw", "module lib\nconst Limit:int=10\n"),
+        ],
+    );
+    let readonly = project.join("src/app.mw");
+    let writable = project.join("src/lib.mw");
+    make_readonly(&readonly);
+    let output = run_fmt(&["--write", project.to_str().unwrap()]);
+    make_writable(&readonly);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("io.write"), "{stderr}");
+    assert!(stderr.contains(readonly.to_str().unwrap()), "{stderr}");
+    let lib = fs::read_to_string(writable).expect("read lib");
     assert_eq!(lib, "module lib\n\nconst Limit: int = 10\n");
 }
 

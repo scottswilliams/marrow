@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use crate::{CheckFormat, report_check, report_io_error};
+use crate::{CheckFormat, report_check, report_io_error, report_simple_error};
 
 pub(crate) fn fmt(args: &[String]) -> ExitCode {
     let mut mode = None;
@@ -166,7 +166,11 @@ fn fmt_one(file: &str, source: &str, mode: FmtMode) -> Result<FmtOutcome, ()> {
             if source == formatted {
                 Ok(FmtOutcome::Unchanged)
             } else if let Err(error) = std::fs::write(file, &formatted) {
-                report_io_error(file, &error, CheckFormat::Text);
+                report_simple_error(
+                    "io.write",
+                    &format!("failed to write {file}: {error}"),
+                    CheckFormat::Text,
+                );
                 Err(())
             } else {
                 Ok(FmtOutcome::Formatted)
