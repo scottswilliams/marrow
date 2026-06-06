@@ -91,7 +91,6 @@ fn fmt_refuses_to_format_source_with_errors() {
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
     assert!(stderr.contains("parse.syntax"), "{stderr}");
-    // The file is left untouched when it does not parse.
     assert_eq!(unchanged, "module app\n\tconst Max: int = 5\n");
 }
 
@@ -109,12 +108,12 @@ fn fmt_write_refuses_unexpected_indentation_without_rewriting() {
     assert_eq!(unchanged, source);
 }
 
-/// A temp project directory with a `marrow.json` selecting `src` and one `.mw`
-/// file written there.
-fn temp_project(name: &str, relative: &str, source: &str) -> support::TempProject {
+fn temp_project(name: &str, files: &[(&str, &str)]) -> support::TempProject {
     support::temp_project_uncommitted(name, |root| {
         support::write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
-        support::write(root, relative, source);
+        for (relative, source) in files {
+            support::write(root, relative, source);
+        }
     })
 }
 
@@ -122,8 +121,10 @@ fn temp_project(name: &str, relative: &str, source: &str) -> support::TempProjec
 fn fmt_check_on_a_project_directory_passes_when_all_files_are_formatted() {
     let project = temp_project(
         "fmt-proj-ok",
-        "src/app.mw",
-        "module app\n\nconst Max: int = 5\n",
+        &[
+            ("src/app.mw", "module app\n\nconst Max: int = 5\n"),
+            ("src/lib.mw", "module lib\n\nconst Limit: int = 10\n"),
+        ],
     );
     let output = run_fmt(&["--check", project.to_str().unwrap()]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -133,8 +134,7 @@ fn fmt_check_on_a_project_directory_passes_when_all_files_are_formatted() {
 fn fmt_check_on_a_project_directory_fails_when_a_file_is_unformatted() {
     let project = temp_project(
         "fmt-proj-bad",
-        "src/app.mw",
-        "module app\nconst Max:int=5\n",
+        &[("src/app.mw", "module app\nconst Max:int=5\n")],
     );
     let output = run_fmt(&["--check", project.to_str().unwrap()]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -146,33 +146,33 @@ fn fmt_check_on_a_project_directory_fails_when_a_file_is_unformatted() {
 fn fmt_write_on_a_project_directory_rewrites_each_changed_file() {
     let project = temp_project(
         "fmt-proj-write",
-        "src/app.mw",
-        "module app\nconst Max:int=5\n",
+        &[
+            ("src/app.mw", "module app\nconst Max:int=5\n"),
+            ("src/lib.mw", "module lib\nconst Limit:int=10\n"),
+        ],
     );
     let output = run_fmt(&["--write", project.to_str().unwrap()]);
-    let written = fs::read_to_string(project.join("src/app.mw")).expect("read back");
+    let app = fs::read_to_string(project.join("src/app.mw")).expect("read app");
+    let lib = fs::read_to_string(project.join("src/lib.mw")).expect("read lib");
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert_eq!(written, "module app\n\nconst Max: int = 5\n");
+    assert_eq!(app, "module app\n\nconst Max: int = 5\n");
+    assert_eq!(lib, "module lib\n\nconst Limit: int = 10\n");
 }
 
 #[test]
-fn fmt_on_a_directory_with_no_config_reports_a_typed_error_not_is_a_directory() {
+fn fmt_on_a_directory_with_no_config_reports_io_read_for_config() {
     let dir = support::temp_dir("fmt-noconfig");
     let output = run_fmt(&["--check", dir.to_str().unwrap()]);
 
-    // A directory with no marrow.json is a typed error about the config file
-    // (exit 1, matching `check`'s `io.read` precedent), not a raw OS "Is a
-    // directory" from blindly reading the directory as a source file.
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("io.read"), "{stderr}");
     assert!(stderr.contains("marrow.json"), "{stderr}");
-    assert!(!stderr.contains("Is a directory"), "{stderr}");
 }
 
 #[test]
 fn fmt_on_a_directory_with_invalid_config_reports_a_config_error() {
-    let project = temp_project("fmt-proj-badconfig", "src/app.mw", "module app\n");
-    // Overwrite with an invalid config (no source roots) to force a `config.*`.
+    let project = temp_project("fmt-proj-badconfig", &[("src/app.mw", "module app\n")]);
     fs::write(project.join("marrow.json"), r#"{ "sourceRoots": [] }"#).expect("write config");
     let output = run_fmt(&["--check", project.to_str().unwrap()]);
 
@@ -183,9 +183,8 @@ fn fmt_on_a_directory_with_invalid_config_reports_a_config_error() {
 
 #[test]
 fn fmt_of_a_bare_directory_requires_check_or_write() {
-    let project = temp_project("fmt-proj-bare", "src/app.mw", "module app\n");
+    let project = temp_project("fmt-proj-bare", &[("src/app.mw", "module app\n")]);
     let output = run_fmt(&[project.to_str().unwrap()]);
-    // Concatenating many formatted files to stdout is meaningless; require a mode.
     assert_eq!(output.status.code(), Some(2), "{output:?}");
 }
 

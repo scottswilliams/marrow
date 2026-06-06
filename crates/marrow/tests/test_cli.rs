@@ -69,7 +69,6 @@ fn a_failed_assertion_is_a_located_failure() {
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
     assert!(stdout.contains("FAIL  tests::app_test::wrong"), "{stdout}");
     assert!(stdout.contains("run.assertion"), "{stdout}");
-    // The failure is located in the test file.
     assert!(stdout.contains("app_test.mw:2:"), "{stdout}");
     assert!(stdout.contains("0 passed, 1 failed"), "{stdout}");
 }
@@ -108,7 +107,6 @@ fn reports_when_no_tests_are_found() {
     let root = temp_project("test-none", |root| {
         write(root, "marrow.json", CONFIG);
         write(root, "src/app.mw", "module app\n");
-        // No `tests/` directory exists.
     });
     let output = run_test(&root);
 
