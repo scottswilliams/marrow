@@ -159,11 +159,16 @@ fn did_open_in_project_publishes_checker_diagnostics() {
     let diagnostics = publish["params"]["diagnostics"]
         .as_array()
         .expect("diagnostics array");
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic["code"] == json!("check.assignment_type")),
-        "project checker diagnostic should be published: {publish}",
+    let diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == json!("check.assignment_type"))
+        .expect("project checker diagnostic should be published");
+    assert_eq!(
+        diagnostic["range"],
+        json!({
+            "start": { "line": 2, "character": 4 },
+            "end": { "line": 2, "character": 22 },
+        })
     );
 }
 

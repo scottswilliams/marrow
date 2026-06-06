@@ -304,15 +304,19 @@ fn error_response(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
 
+const MAX_HEADER_LINE_BYTES: usize = 8 * 1024;
+const MAX_HEADER_BYTES: usize = 16 * 1024;
+const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+
 /// Read one LSP message: parse the `Content-Length` header block, then read
 /// exactly that many body bytes and parse them as JSON. `Ok(None)` on clean EOF.
 fn read_message(reader: &mut impl BufRead) -> io::Result<Option<Value>> {
     let mut content_length: Option<usize> = None;
+    let mut header_bytes = 0usize;
     loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 {
+        let Some(line) = read_header_line(reader, &mut header_bytes)? else {
             return Ok(None);
-        }
+        };
         let line = line.trim_end();
         if line.is_empty() {
             break;
@@ -324,8 +328,6 @@ fn read_message(reader: &mut impl BufRead) -> io::Result<Option<Value>> {
     let Some(length) = content_length else {
         return Ok(None);
     };
-    // Bound the body so a corrupt header cannot force a huge allocation.
-    const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
     if length > MAX_MESSAGE_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -337,6 +339,49 @@ fn read_message(reader: &mut impl BufRead) -> io::Result<Option<Value>> {
     let value = serde_json::from_slice(&body)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     Ok(Some(value))
+}
+
+fn read_header_line(
+    reader: &mut impl BufRead,
+    header_bytes: &mut usize,
+) -> io::Result<Option<String>> {
+    let mut line = Vec::new();
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            if line.is_empty() && *header_bytes == 0 {
+                return Ok(None);
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unterminated LSP header",
+            ));
+        }
+        let take = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |index| index + 1);
+        if line.len() + take > MAX_HEADER_LINE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "LSP header line exceeds the size limit",
+            ));
+        }
+        if *header_bytes + take > MAX_HEADER_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "LSP header block exceeds the size limit",
+            ));
+        }
+        line.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        *header_bytes += take;
+        if line.ends_with(b"\n") {
+            return String::from_utf8(line)
+                .map(Some)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error));
+        }
+    }
 }
 
 /// Match an LSP header name case-insensitively, returning its value.
@@ -356,9 +401,11 @@ fn write_message(writer: &mut impl Write, body: &Value) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{self, BufReader, Cursor};
+
     use serde_json::json;
 
-    use super::position;
+    use super::{position, read_message};
 
     #[test]
     fn positions_count_utf16_code_units() {
@@ -373,5 +420,30 @@ mod tests {
             position(text.len(), text),
             json!({ "line": 1, "character": 1 })
         );
+    }
+
+    #[test]
+    fn rejects_an_oversized_header_line_before_reading_a_body() {
+        let input = vec![b'x'; 9 * 1024];
+        let mut reader = BufReader::new(Cursor::new(input));
+
+        let error = read_message(&mut reader).expect_err("oversized header rejected");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn rejects_an_oversized_header_block_before_reading_a_body() {
+        let mut input = Vec::new();
+        for _ in 0..20 {
+            input.extend_from_slice(b"X-Marrow-Test: ");
+            input.extend(vec![b'x'; 900]);
+            input.extend_from_slice(b"\r\n");
+        }
+        let mut reader = BufReader::new(Cursor::new(input));
+
+        let error = read_message(&mut reader).expect_err("oversized header rejected");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 }
