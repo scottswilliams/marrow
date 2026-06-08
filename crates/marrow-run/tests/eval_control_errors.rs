@@ -205,6 +205,73 @@ fn a_whole_group_entry_can_be_read_and_copied() {
 }
 
 #[test]
+fn coalesce_absorbs_only_an_absent_left_read() {
+    // `^path ?? default` falls back only on an absent element. A populated read
+    // yields its own value; the default is never reached when the element exists.
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    title: string\n\n\
+         pub fn read(id: int): string\n    return ^books(id).title ?? \"none\"\n",
+    );
+    let store = empty_store();
+    write_data_value(
+        &program,
+        &store,
+        "books",
+        &[SavedKey::Int(1)],
+        &data_path(&program, "books", &["title"]),
+        SavedValue::Str("Mort".into()),
+    );
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::read", Value::Int(1))
+        )
+        .unwrap()
+        .value,
+        Some(Value::Str("Mort".into()))
+    );
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::read", Value::Int(2))
+        )
+        .unwrap()
+        .value,
+        Some(Value::Str("none".into()))
+    );
+}
+
+#[test]
+fn coalesce_propagates_a_non_absent_fault_on_its_left() {
+    // The `??` default catches only `run.absent_element`. A present-but-corrupt
+    // leaf decodes to a `run.type` fault, which must propagate rather than be
+    // silently swallowed into the default: a hidden decode failure would mask
+    // saved-data corruption behind a plausible fallback value.
+    let program = checked_program(
+        "resource Counter at ^counters(id: int)\n    n: int\n\n\
+         pub fn read(id: int): int\n    return ^counters(id).n ?? -1\n",
+    );
+    let store = empty_store();
+    // Store text bytes where the `int` leaf decoder expects a canonical integer,
+    // so the read faults with `run.type` instead of returning absent.
+    write_data_value(
+        &program,
+        &store,
+        "counters",
+        &[SavedKey::Int(1)],
+        &data_path(&program, "counters", &["n"]),
+        SavedValue::Str("not-an-int".into()),
+    );
+    assert_run_error(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::read", Value::Int(1)),
+        ),
+        RUN_TYPE,
+    );
+}
+
+#[test]
 fn std_text_builtins_operate_on_strings() {
     // `length` counts Unicode scalar values, not bytes ("café" is 4 scalars).
     let program = checked_program("pub fn f(): int\n    return std::text::length(\"café\")\n");
