@@ -1,3 +1,7 @@
+// Each data_cli test binary includes this whole module but uses only the helpers
+// its cases need, so a helper unused by one binary is not dead across the split.
+#![allow(dead_code)]
+
 use std::fs;
 use std::path::Path;
 
@@ -11,7 +15,6 @@ use crate::support::{self, TempProject, member_catalog_id, write};
 /// Run the binary, first committing the pending catalog of any directory argument
 /// so `data`'s read-only commands observe a frozen catalog the way a prior `run`
 /// would have left it.
-#[allow(dead_code)]
 pub(crate) fn marrow(args: &[&str]) -> std::process::Output {
     for arg in args {
         let path = Path::new(arg);
@@ -22,12 +25,10 @@ pub(crate) fn marrow(args: &[&str]) -> std::process::Output {
     support::marrow(args)
 }
 
-#[allow(dead_code)]
 pub(crate) fn json(output: std::process::Output) -> serde_json::Value {
     support::json(output.stdout)
 }
 
-#[allow(dead_code)]
 pub(crate) fn integrity_problem(value: &serde_json::Value, code: &str) -> serde_json::Value {
     value["problems"]
         .as_array()
@@ -38,7 +39,6 @@ pub(crate) fn integrity_problem(value: &serde_json::Value, code: &str) -> serde_
         .unwrap_or_else(|| panic!("{code} not found in {value:#?}"))
 }
 
-#[allow(dead_code)]
 pub(crate) fn native_project(name: &str) -> TempProject {
     support::temp_project_uncommitted(name, |root| {
         write(root, "marrow.json", support::native_config());
@@ -48,7 +48,6 @@ pub(crate) fn native_project(name: &str) -> TempProject {
 
 /// Seed the `native_project` fixture and return its directory string. The fixture
 /// stores one record, `^counter(1).value = 42`.
-#[allow(dead_code)]
 pub(crate) fn seeded_project(name: &str) -> (TempProject, String) {
     let project = native_project(name);
     let dir = project.to_str().unwrap().to_string();
@@ -59,7 +58,6 @@ pub(crate) fn seeded_project(name: &str) -> (TempProject, String) {
     (project, dir)
 }
 
-#[allow(dead_code)]
 pub(crate) fn checked_program(project: impl AsRef<Path>) -> CheckedProgram {
     let project = project.as_ref();
     support::commit_catalog_if_clean(project);
@@ -73,7 +71,6 @@ pub(crate) fn checked_program(project: impl AsRef<Path>) -> CheckedProgram {
     program
 }
 
-#[allow(dead_code)]
 pub(crate) fn checked_place(project: impl AsRef<Path>, root: &str) -> CheckedSavedPlace {
     checked_saved_root_place(
         &checked_program(project),
@@ -83,17 +80,14 @@ pub(crate) fn checked_place(project: impl AsRef<Path>, root: &str) -> CheckedSav
     .expect("checked saved root")
 }
 
-#[allow(dead_code)]
 pub(crate) fn catalog_id(raw: &str) -> CatalogId {
     CatalogId::new(raw.to_string()).expect("catalog id")
 }
 
-#[allow(dead_code)]
 pub(crate) fn checked_catalog_id(raw: &Option<String>) -> CatalogId {
     CatalogId::new(raw.clone().expect("accepted catalog id")).expect("catalog id")
 }
 
-#[allow(dead_code)]
 pub(crate) fn field_path(place: &CheckedSavedPlace, name: &str) -> Vec<DataPathSegment> {
     vec![DataPathSegment::Member(member_catalog_id(
         &place.root_members,
@@ -101,7 +95,6 @@ pub(crate) fn field_path(place: &CheckedSavedPlace, name: &str) -> Vec<DataPathS
     ))]
 }
 
-#[allow(dead_code)]
 pub(crate) fn keyed_field_path(
     place: &CheckedSavedPlace,
     name: &str,
@@ -113,7 +106,6 @@ pub(crate) fn keyed_field_path(
     ]
 }
 
-#[allow(dead_code)]
 pub(crate) fn write_tree_value(
     project: &Path,
     root: &str,
@@ -135,7 +127,6 @@ pub(crate) fn write_tree_value(
         .expect("write tree-cell value");
 }
 
-#[allow(dead_code)]
 pub(crate) fn encode_identity_keys(keys: &[SavedKey]) -> Vec<u8> {
     encode_identity_payload(keys)
 }
@@ -143,7 +134,6 @@ pub(crate) fn encode_identity_keys(keys: &[SavedKey]) -> Vec<u8> {
 /// Write one data leaf directly under a fabricated store catalog id and member, by
 /// passing low-level catalog ids the schema never declares. This stands in for data
 /// a dropped root or field left behind in the store.
-#[allow(dead_code)]
 pub(crate) fn write_orphan_cell(project: &Path, store_catalog: &str, member_catalog: &str) {
     let store_dir = project.join(".data");
     fs::create_dir_all(&store_dir).expect("create store dir");
