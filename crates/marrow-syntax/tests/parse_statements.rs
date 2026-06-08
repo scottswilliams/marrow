@@ -1,0 +1,458 @@
+//! Function-body statements: bindings, assignments, saved writes, keyed `var`,
+//! reserved statement surfaces, and the body diagnostics for malformed lines.
+
+use marrow_syntax::{
+    Diagnose, ExpectedSyntax, Expression, LexerDiagnosticReason, ObsoleteOperator,
+    ParseDiagnosticReason, ReservedSyntax, Statement, parse_source,
+};
+
+mod common;
+
+use common::{has_reason, lexer_reason, parse_reason};
+
+#[test]
+fn parses_simple_statements_in_function_bodies() {
+    let parsed = parse_source(
+        "module app\n\
+         fn main()\n\
+         \x20   const title: string = \"Small Gods\"\n\
+         \x20   var count: int = 0\n\
+         \x20   count = count + 1\n\
+         \x20   print(title)\n\
+         \x20   return count\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let main = parsed.file.function("main").expect("main function");
+    let statements = &main.body.statements;
+    assert_eq!(statements.len(), 5, "{statements:#?}");
+
+    assert!(
+        matches!(
+            &statements[0],
+            Statement::Const { name, ty: Some(ty), value: Expression::Literal { .. }, .. }
+                if name == "title" && ty.text == "string"
+        ),
+        "stmt 0: {:?}",
+        statements[0]
+    );
+    assert!(
+        matches!(
+            &statements[1],
+            Statement::Var { name, ty: Some(ty), value: Some(_), .. }
+                if name == "count" && ty.text == "int"
+        ),
+        "stmt 1: {:?}",
+        statements[1]
+    );
+    assert!(
+        matches!(
+            &statements[2],
+            Statement::Assign { target: Expression::Name { segments, .. }, .. }
+                if segments == &["count"]
+        ),
+        "stmt 2: {:?}",
+        statements[2]
+    );
+    assert!(
+        matches!(
+            &statements[3],
+            Statement::Expr {
+                value: Expression::Call { .. },
+                ..
+            }
+        ),
+        "stmt 3: {:?}",
+        statements[3]
+    );
+    assert!(
+        matches!(
+            &statements[4],
+            Statement::Return { value: Some(Expression::Name { segments, .. }), .. }
+                if segments == &["count"]
+        ),
+        "stmt 4: {:?}",
+        statements[4]
+    );
+}
+
+#[test]
+fn parses_a_type_keyword_as_a_path_segment() {
+    // `bytes` is a type keyword but must be valid mid-path, as in `std::bytes::length`.
+    let parsed = parse_source(
+        "module app\n\
+         fn main()\n\
+         \x20   return std::bytes::length(data)\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let main = parsed.file.function("main").expect("main function");
+    assert!(
+        matches!(
+            &main.body.statements[0],
+            Statement::Return { value: Some(Expression::Call { callee, .. }), .. }
+                if matches!(callee.as_ref(),
+                    Expression::Name { segments, .. } if segments == &["std", "bytes", "length"])
+        ),
+        "{:#?}",
+        main.body.statements[0]
+    );
+}
+
+#[test]
+fn parses_a_type_keyword_as_a_leading_path_segment() {
+    // A short-form std call leads its path with a type keyword, as in `bytes::length`
+    // after `use std::bytes`. The keyword must begin a path when followed by `::`,
+    // exactly as it is valid mid-path — otherwise short-form `std::bytes` is unusable.
+    let parsed = parse_source(
+        "module app\n\
+         use std::bytes\n\
+         fn main()\n\
+         \x20   return bytes::length(data)\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let main = parsed.file.function("main").expect("main function");
+    assert!(
+        matches!(
+            &main.body.statements[0],
+            Statement::Return { value: Some(Expression::Call { callee, .. }), .. }
+                if matches!(callee.as_ref(),
+                    Expression::Name { segments, .. } if segments == &["bytes", "length"])
+        ),
+        "{:#?}",
+        main.body.statements[0]
+    );
+}
+
+#[test]
+fn parses_keyed_var_declaration() {
+    let parsed = parse_source(
+        "module app\n\
+         fn tally()\n\
+         \x20   var counts(name: string): int\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let tally = parsed.file.function("tally").expect("tally function");
+    let Statement::Var {
+        name,
+        keys,
+        ty,
+        value,
+        ..
+    } = &tally.body.statements[0]
+    else {
+        panic!("expected var, got {:?}", tally.body.statements[0]);
+    };
+    assert_eq!(name, "counts");
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0].name, "name");
+    assert_eq!(keys[0].ty.text, "string");
+    assert_eq!(ty.as_ref().map(|t| t.text.as_str()), Some("int"));
+    assert_eq!(*value, None);
+}
+
+#[test]
+fn keyed_var_rejects_a_non_type_key_like_the_resource_path() {
+    // The keyed-`var` key list and the resource key list are one concept and
+    // must apply the same key-type rule: a key whose annotation is not a type
+    // (here the integer `1`) is rejected in both.
+    let parsed = parse_source(
+        "module app\n\
+         fn tally()\n\
+         \x20   var counts(name: 1): int\n",
+    );
+    assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
+    let tally = parsed.file.function("tally").expect("tally function");
+    assert!(tally.body.statements.is_empty(), "{tally:#?}");
+    assert!(
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::KeyType))
+        ),
+        "{:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
+fn keyed_var_key_list_errors_keep_key_specific_reasons() {
+    for (source, expected) in [
+        (
+            "fn f()\n    var counts(): int\n",
+            ParseDiagnosticReason::EmptyKeyParameters,
+        ),
+        (
+            "fn f()\n    var counts(name: 1): int\n",
+            ParseDiagnosticReason::Expected(ExpectedSyntax::KeyType),
+        ),
+    ] {
+        let parsed = parse_source(source);
+
+        assert!(parsed.has_errors(), "expected error for:\n{source}");
+        assert!(
+            has_reason(&parsed.diagnostics, parse_reason(expected)),
+            "expected keyed-var diagnostic for {source}: {:#?}",
+            parsed.diagnostics
+        );
+        assert!(
+            !has_reason(
+                &parsed.diagnostics,
+                parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement))
+            ),
+            "keyed-var errors should not fall back to statement recovery for {source}: {:#?}",
+            parsed.diagnostics
+        );
+    }
+}
+
+#[test]
+fn parses_keyed_var_with_multiple_keys_and_trailing_comma() {
+    let parsed = parse_source(
+        "module app\n\
+         fn grid()\n\
+         \x20   var cells(x: int, y: int,): bool\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let grid = parsed.file.function("grid").expect("grid function");
+    let Statement::Var { keys, ty, .. } = &grid.body.statements[0] else {
+        panic!("expected var, got {:?}", grid.body.statements[0]);
+    };
+    assert_eq!(keys.len(), 2, "{keys:#?}");
+    assert_eq!(keys[0].name, "x");
+    assert_eq!(keys[1].name, "y");
+    assert_eq!(ty.as_ref().map(|t| t.text.as_str()), Some("bool"));
+}
+
+#[test]
+fn parses_saved_writes_and_var_without_value() {
+    let parsed = parse_source(
+        "module app\n\
+         fn save()\n\
+         \x20   var book: Book\n\
+         \x20   ^books(id).title = title\n\
+         \x20   delete ^books(id).subtitle\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let save = parsed.file.function("save").expect("save function");
+    let statements = &save.body.statements;
+    assert_eq!(statements.len(), 3, "{statements:#?}");
+    assert!(
+        matches!(&statements[0], Statement::Var { name, value: None, .. } if name == "book"),
+        "stmt 0: {:?}",
+        statements[0]
+    );
+    assert!(
+        matches!(
+            &statements[1],
+            Statement::Assign { target: Expression::Field { name, .. }, .. } if name == "title"
+        ),
+        "stmt 1: {:?}",
+        statements[1]
+    );
+    assert!(
+        matches!(&statements[2], Statement::Delete { .. }),
+        "stmt 2: {:?}",
+        statements[2]
+    );
+}
+
+#[test]
+fn rejects_lock_as_reserved_statement_and_consumes_its_block() {
+    let parsed = parse_source(
+        "module app\n\
+         fn commit(id: Id(^books))\n\
+         \x20   lock ^books(id)\n\
+         \x20       transaction\n\
+         \x20           ^books(id).title = title\n",
+    );
+    assert!(parsed.has_errors(), "expected lock rejection");
+    assert!(
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Reserved(
+                ReservedSyntax::LockStatement
+            ))
+        ),
+        "{:#?}",
+        parsed.diagnostics
+    );
+    assert!(
+        !parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+            == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement))),
+        "{:#?}",
+        parsed.diagnostics
+    );
+    let commit = parsed.file.function("commit").expect("commit function");
+    assert!(commit.body.statements.is_empty(), "{commit:#?}");
+}
+
+#[test]
+fn rejects_merge_as_reserved_statement() {
+    let parsed = parse_source(
+        "module app\n\
+         fn commit(id: Id(^books))\n\
+         \x20   merge ^books(id) = ^books(id)\n\
+         \x20   print(\"after\")\n",
+    );
+    assert!(parsed.has_errors(), "expected merge rejection");
+    assert!(
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Reserved(
+                ReservedSyntax::MergeStatement
+            ))
+        ),
+        "{:#?}",
+        parsed.diagnostics
+    );
+    let commit = parsed.file.function("commit").expect("commit function");
+    assert_eq!(commit.body.statements.len(), 1, "{commit:#?}");
+    assert!(
+        matches!(&commit.body.statements[0], Statement::Expr { .. }),
+        "{:#?}",
+        commit.body.statements[0]
+    );
+}
+
+#[test]
+fn statement_spanning_open_delimiters_stays_one_statement() {
+    let parsed = parse_source(
+        "module app\n\
+         fn make()\n\
+         \x20   throw Error(\n\
+         \x20       code: \"book.absent\",\n\
+         \x20       message: \"missing\",\n\
+         \x20   )\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let make = parsed.file.function("make").expect("make function");
+    let statements = &make.body.statements;
+    assert_eq!(statements.len(), 1, "{statements:#?}");
+    assert!(
+        matches!(
+            &statements[0],
+            Statement::Throw {
+                value: Expression::Call { .. },
+                ..
+            }
+        ),
+        "stmt 0: {:?}",
+        statements[0]
+    );
+}
+
+#[test]
+fn reports_malformed_body_statements_with_a_diagnostic() {
+    // A statement the body parser cannot structure must surface a parse error
+    // rather than becoming a silent `Statement::Unparsed` no-op.
+    let cases = [
+        "module app\nfn main()\n    foo +\n",
+        "module app\nfn main()\n    const x: int\n",
+    ];
+    for source in cases {
+        let parsed = parse_source(source);
+        assert!(
+            parsed.has_errors(),
+            "expected a diagnostic for {source:?}: {:#?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "parse.syntax" && diagnostic.span.line == 3)
+            .unwrap_or_else(|| panic!("expected a line-3 parse.syntax diagnostic for {source:?}"));
+        assert_eq!(syntax.kind(), "parse", "{source:?}");
+    }
+}
+
+#[test]
+fn reports_unexpected_indentation_after_simple_statements() {
+    let parsed = parse_source(
+        "module app\n\
+         fn main()\n\
+         \x20   print(\"kept\")\n\
+         \x20       print(\"over-indented\")\n",
+    );
+
+    assert!(
+        parsed.has_errors(),
+        "an unexpected nested line must not parse cleanly: {:#?}",
+        parsed.diagnostics
+    );
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.span.line == 4
+                && diagnostic.reason == parse_reason(ParseDiagnosticReason::UnexpectedIndentation)),
+        "expected a line-4 indentation diagnostic: {:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
+fn parses_final_block_statement_without_trailing_newline() {
+    let parsed = parse_source("module app\nfn main()\n    if ready\n        return");
+
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "EOF should close the final newline/dedent sequence: {:#?}",
+        parsed.diagnostics
+    );
+    let main = parsed.file.function("main").expect("main function");
+    assert!(matches!(main.body.statements[0], Statement::If { .. }));
+}
+
+#[test]
+fn surfaces_lexer_diagnostics_for_function_body_tokens() {
+    let parsed = parse_source("module app\nfn main()\n    return a && b\n");
+
+    assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
+    let obsolete = parsed
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.reason
+                == lexer_reason(LexerDiagnosticReason::ObsoleteOperator(
+                    ObsoleteOperator::AndAnd,
+                ))
+        })
+        .expect("expected obsolete operator diagnostic");
+    assert_eq!(obsolete.code, "parse.syntax");
+    assert_eq!(obsolete.kind(), "parse");
+    assert_eq!(obsolete.span.line, 3);
+    assert_eq!(
+        obsolete.help.as_deref(),
+        Some("Use `and` for boolean and."),
+        "{:#?}",
+        obsolete.help
+    );
+}
+
+#[test]
+fn reserved_word_as_var_name_reports_variable_name_diagnostic() {
+    // `out` is reserved as a parameter-mode keyword. In a binding position the
+    // parser should diagnose the binding name itself, not drop the statement and
+    // cascade through the rest of the body.
+    let parsed = parse_source("module app\nfn f(): int\n    var out: int = 0\n    return out\n");
+
+    assert_eq!(parsed.diagnostics.len(), 2, "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics[0].reason
+            == parse_reason(ParseDiagnosticReason::Expected(
+                ExpectedSyntax::VariableName
+            )),
+        "{:#?}",
+        parsed.diagnostics[0]
+    );
+    assert_eq!(parsed.diagnostics[0].span.line, 3);
+    assert!(
+        parsed.diagnostics[1].reason == parse_reason(ParseDiagnosticReason::KeywordExpression),
+        "{:#?}",
+        parsed.diagnostics[1]
+    );
+    assert!(
+        parsed.diagnostics.iter().all(|diagnostic| diagnostic.reason
+            != parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement))),
+        "{:#?}",
+        parsed.diagnostics
+    );
+}

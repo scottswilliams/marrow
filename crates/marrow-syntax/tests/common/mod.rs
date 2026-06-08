@@ -8,6 +8,34 @@
 
 use std::path::Path;
 
+use marrow_syntax::{Diagnostic, DiagnosticReason, LexerDiagnosticReason, ParseDiagnosticReason};
+
+/// Wrap a parser-stage reason in the unified diagnostic-reason enum, so the
+/// parse suites can assert on the typed reason rather than rendered prose.
+pub fn parse_reason(reason: ParseDiagnosticReason) -> DiagnosticReason {
+    DiagnosticReason::Parser(reason)
+}
+
+/// Wrap a lexer-stage reason in the unified diagnostic-reason enum.
+pub fn lexer_reason(reason: LexerDiagnosticReason) -> DiagnosticReason {
+    DiagnosticReason::Lexer(reason)
+}
+
+/// Whether any diagnostic carries the given typed reason.
+pub fn has_reason(diagnostics: &[Diagnostic], reason: DiagnosticReason) -> bool {
+    diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.reason == reason)
+}
+
+/// How many diagnostics carry the given typed reason.
+pub fn reason_count(diagnostics: &[Diagnostic], reason: DiagnosticReason) -> usize {
+    diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.reason == reason)
+        .count()
+}
+
 /// One fenced ```mw``` block from a language-reference markdown file.
 pub struct MwBlock {
     /// The markdown file name (such as `resources.md`).
