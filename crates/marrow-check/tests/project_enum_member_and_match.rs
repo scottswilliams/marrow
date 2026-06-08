@@ -1,0 +1,270 @@
+mod support;
+mod support_enum;
+
+use marrow_check::{EnumDiagnostic, check_project};
+
+use support::{
+    assert_clean, check_module, check_module_report, config, temp_project, with_code, write,
+};
+use support_enum::assert_enum_payload;
+
+#[test]
+fn an_enum_member_reference_checks_clean() {
+    // `Status::archived` is a known member of a declared enum; using it as a
+    // value must not raise an unresolved-name or unknown-member diagnostic.
+    let report = check_module_report(
+        "enum-member-ok",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         fn f()\n    const s: Status = Status::archived\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
+fn an_enum_typed_param_and_var_annotation_is_accepted() {
+    // An enum name is a valid type annotation on a parameter, a `var`, and a
+    // `const`; none should be flagged `check.unknown_type`.
+    let report = check_module_report(
+        "enum-annotation-ok",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         fn f(s: Status): Status\n    var t: Status = Status::active\n    return t\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
+fn an_enum_typed_resource_field_is_accepted() {
+    let report = check_module_report(
+        "enum-field-ok",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         resource Order at ^orders(id: int)\n    required state: Status\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
+fn reports_an_unknown_enum_member() {
+    let found = check_module(
+        "enum-unknown-member",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         fn f()\n    const s: Status = Status::deleted\n",
+        "check.unknown_enum_member",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_enum_payload(
+        &found[0],
+        EnumDiagnostic::UnknownMember {
+            enum_name: "Status".into(),
+            member: "deleted".into(),
+        },
+    );
+}
+
+#[test]
+fn the_checked_program_carries_enum_schemas() {
+    let root = temp_project("enum-program", |root| {
+        write(
+            root,
+            "src/m.mw",
+            "module m\nenum Status\n    active\n    archived\n    banned\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    assert_clean(&report);
+    let status = &program.modules[0].enums[0];
+    assert_eq!(status.name, "Status");
+    assert_eq!(status.members[2].name, "banned");
+}
+
+#[test]
+fn enum_equality_against_the_same_enum_is_accepted() {
+    let report = check_module_report(
+        "enum-eq-ok",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         fn f(): bool\n    return Status::active == Status::archived\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
+fn comparing_an_enum_to_a_string_is_an_operator_error() {
+    // Nominal `==`: an enum value is comparable only with the same enum, never a
+    // raw string. The mismatch is the existing operator-type diagnostic.
+    let found = check_module(
+        "enum-eq-string",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         fn f(): bool\n    return Status::active == \"active\"\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn comparing_two_different_enums_is_an_operator_error() {
+    let found = check_module(
+        "enum-eq-cross",
+        "module m\n\
+         enum Status\n    active\n\nenum Color\n    red\n\n\
+         fn f(): bool\n    return Status::active == Color::red\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn enum_operator_errors_do_not_emit_untyped_return_hints() {
+    let report = check_module_report(
+        "enum-operator-no-untyped-cascade",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         fn ordered(): bool\n    return Status::active < Status::archived\n\n\
+         fn added(): Status\n    return Status::active + Status::archived\n",
+    );
+    assert_eq!(
+        with_code(&report, "check.operator_type").len(),
+        2,
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.untyped_value").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_exhaustive_match_over_an_enum_checks_clean() {
+    let report = check_module_report(
+        "match-ok",
+        "module m\n\
+         enum Status\n    active\n    archived\n    banned\n\n\
+         fn f(s: Status)\n    \
+         match s\n        active\n            return\n        \
+         archived\n            return\n        banned\n            return\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
+fn a_nonexhaustive_match_is_a_check_error() {
+    let found = check_module(
+        "match-nonexhaustive",
+        "module m\n\
+         enum Status\n    active\n    archived\n    banned\n\n\
+         fn f(s: Status)\n    \
+         match s\n        active\n            return\n        archived\n            return\n",
+        "check.nonexhaustive_match",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_enum_payload(
+        &found[0],
+        EnumDiagnostic::NonexhaustiveMatch {
+            enum_name: "Status".into(),
+            missing: vec!["banned".into()],
+        },
+    );
+}
+
+#[test]
+fn a_match_arm_for_an_unknown_member_is_a_check_error() {
+    let found = check_module(
+        "match-unknown-arm",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         fn f(s: Status)\n    \
+         match s\n        active\n            return\n        \
+         archived\n            return\n        deleted\n            return\n",
+        "check.unknown_enum_member",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_enum_payload(
+        &found[0],
+        EnumDiagnostic::UnknownMember {
+            enum_name: "Status".into(),
+            member: "deleted".into(),
+        },
+    );
+}
+
+#[test]
+fn a_match_over_a_non_enum_scrutinee_is_rejected() {
+    let found = check_module(
+        "match-non-enum",
+        "module m\n\
+         fn f(n: int)\n    \
+         match n\n        active\n            return\n",
+        "check.match_requires_enum",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_duplicate_match_arm_is_a_check_error() {
+    let found = check_module(
+        "match-duplicate-arm",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         fn f(s: Status)\n    \
+         match s\n        active\n            return\n        \
+         active\n            return\n        archived\n            return\n",
+        "check.duplicate_match_arm",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_match_over_a_sequence_enum_element_enforces_its_identity() {
+    // A `sequence[Status]` element carries `Status`: iterating it binds the loop
+    // variable to that enum, so a `match` over it is dispatched against `Status`'s
+    // members. Arms naming a *different* enum's members (`Color`'s `red`/`green`)
+    // are then unknown `Status` members — a check error. Without recursing the
+    // element through enum resolution the element binds `Unknown`, the match is
+    // left alone as an unresolved scrutinee, and the foreign arms pass open: a
+    // silent loss of identity over a sequence of enums.
+    let found = check_module(
+        "enum-sequence-element-foreign",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         enum Color\n    red\n    green\n\n\
+         fn f(items: sequence[Status])\n    \
+         for s in items\n        \
+         match s\n            red\n                return\n            green\n                return\n",
+        "check.unknown_enum_member",
+    );
+    assert_eq!(found.len(), 2, "{found:#?}");
+    assert_enum_payload(
+        &found[0],
+        EnumDiagnostic::UnknownMember {
+            enum_name: "Status".into(),
+            member: "red".into(),
+        },
+    );
+    assert_enum_payload(
+        &found[1],
+        EnumDiagnostic::UnknownMember {
+            enum_name: "Status".into(),
+            member: "green".into(),
+        },
+    );
+}
+
+#[test]
+fn a_const_annotated_with_one_enum_and_a_different_enum_value_is_a_check_error() {
+    // The const-annotation place is an enum; the initializer is a different enum.
+    let found = check_module(
+        "enum-const-cross",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         enum Color\n    red\n    green\n\n\
+         fn f()\n    const s: Status = Color::red\n",
+        "check.assignment_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
