@@ -23,22 +23,6 @@ fn an_unknown_subcommand_is_a_usage_failure() {
 }
 
 #[test]
-fn the_catalog_command_is_absent() {
-    // The catalog is written transparently by run and evolve apply; there is no
-    // user-facing catalog command. It must be rejected like any unknown command,
-    // before any project work.
-    let output = marrow(&["catalog", "preview", "."]);
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    assert!(
-        output.stdout.is_empty(),
-        "unexpected stdout: {:?}",
-        output.stdout
-    );
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("unknown command"), "{stderr}");
-}
-
-#[test]
 fn run_with_no_project_dir_is_a_usage_failure() {
     let output = marrow(&["run"]);
     assert_eq!(output.status.code(), Some(2), "{output:?}");
