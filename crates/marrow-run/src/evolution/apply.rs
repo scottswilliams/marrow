@@ -533,7 +533,11 @@ fn stage_obligation(
     }
 }
 
-fn accepted_resource_member(program: &CheckedProgram, catalog_id: &CatalogId) -> bool {
+/// Whether `catalog_id` names a resource member the accepted catalog already owns. A
+/// default whose target is not yet accepted is proposal-new: apply must fail closed on an
+/// existing target cell, and crash-resume completion holds it to the exact constant. The
+/// single owner of that classification so staging and completion cannot disagree.
+pub(super) fn accepted_resource_member(program: &CheckedProgram, catalog_id: &CatalogId) -> bool {
     program.catalog.accepted_entries.iter().any(|entry| {
         entry.kind == CatalogEntryKind::ResourceMember && entry.stable_id == catalog_id.as_str()
     })

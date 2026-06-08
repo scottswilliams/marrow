@@ -63,9 +63,3 @@ fn catalog_id(raw: &str) -> Result<CatalogId, ApplyError> {
         })
     })
 }
-
-fn incomplete() -> StoreError {
-    StoreError::Corruption {
-        message: "activation completion evidence is missing a committed effect".to_string(),
-    }
-}

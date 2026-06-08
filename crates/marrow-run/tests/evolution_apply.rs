@@ -432,7 +432,7 @@ fn completion_rejects_missing_default_backfill_cell() {
         .expect_err("missing default cell fails");
     fs::remove_dir_all(&root).ok();
 
-    assert!(matches!(error, ApplyError::Store(_)));
+    assert_eq!(error, ApplyError::Drift);
 }
 
 #[test]

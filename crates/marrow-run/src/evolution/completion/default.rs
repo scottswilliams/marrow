@@ -1,7 +1,5 @@
 use marrow_check::evolution::default_value_for_bound_member;
-use marrow_check::{
-    CatalogEntryKind, CheckedProgram, CheckedRuntimeProgram, CheckedSavedPlace, StoreLeafKind,
-};
+use marrow_check::{CheckedProgram, CheckedRuntimeProgram, CheckedSavedPlace, StoreLeafKind};
 use marrow_store::cell::CatalogId;
 use marrow_store::tree::TreeStore;
 
@@ -10,10 +8,10 @@ use crate::value::decode_leaf;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::DataPathSegment;
 
-use super::super::apply::{ApplyError, for_each_place_record, store_id};
+use super::super::apply::{ApplyError, accepted_resource_member, for_each_place_record, store_id};
 use super::super::backfill::{fold_default_cell, locations, visit_member_cell_paths};
 use super::super::evidence::{ACTIVATION_DEFAULT_DIGEST, EvidenceDigest};
-use super::{catalog_id, incomplete};
+use super::catalog_id;
 
 pub(super) struct DefaultCompletion {
     pub(super) catalog_id: CatalogId,
@@ -56,12 +54,19 @@ pub(super) fn verify_default_completion(
                 expected: &value.encoded,
                 leaf: &leaf,
             };
+            let mut drifted = false;
             for_each_place_record(store, place, &mut |identity| {
                 visit_member_cell_paths(store, &sid, identity, &steps, &mut |path| {
                     target_records += 1;
-                    verify_default_cell(&cell, store, &sid, identity, path, &mut cell_digest)
+                    if !verify_default_cell(&cell, store, &sid, identity, path, &mut cell_digest)? {
+                        drifted = true;
+                    }
+                    Ok(())
                 })
             })?;
+            if drifted {
+                return Err(ApplyError::Drift);
+            }
         }
         if target_leaf.is_none() {
             return Err(ApplyError::Drift);
@@ -86,10 +91,11 @@ struct DefaultCell<'a> {
     leaf: &'a StoreLeafKind,
 }
 
-/// Verify one stored default cell and fold it into the completion digest, or report the
-/// activation incomplete when the cell is missing or does not satisfy its contract. The
-/// folded fields match the staging recipe exactly, so a completed activation reproduces
-/// the digest its stamp recorded.
+/// Verify one stored default cell and fold it into the completion digest. Returns `false`
+/// when the cell is missing or does not satisfy its contract, so the caller surfaces a
+/// drifted stamp as `ApplyError::Drift` rather than a store-read fault; a genuine read
+/// failure still propagates as `StoreError`. The folded fields match the staging recipe
+/// exactly, so a completed activation reproduces the digest its stamp recorded.
 fn verify_default_cell(
     cell: &DefaultCell<'_>,
     store: &TreeStore,
@@ -97,20 +103,20 @@ fn verify_default_cell(
     identity: &[SavedKey],
     path: &[DataPathSegment],
     digest: &mut EvidenceDigest,
-) -> Result<(), marrow_store::StoreError> {
+) -> Result<bool, marrow_store::StoreError> {
     let current = store.read_data_value(store_id, identity, path)?;
     if cell.proposal_new {
         if current.as_deref() != Some(cell.expected) {
-            return Err(incomplete());
+            return Ok(false);
         }
     } else if !stored_default_cell_valid(cell.runtime, cell.leaf, &current) {
-        return Err(incomplete());
+        return Ok(false);
     }
     let Some(bytes) = current.as_deref() else {
-        return Err(incomplete());
+        return Ok(false);
     };
     fold_default_cell(digest, store_id, identity, path, bytes);
-    Ok(())
+    Ok(true)
 }
 
 fn stored_default_cell_valid(
@@ -122,10 +128,4 @@ fn stored_default_cell_valid(
         return false;
     };
     decode_leaf(runtime, bytes, leaf).is_some()
-}
-
-fn accepted_resource_member(program: &CheckedProgram, catalog_id: &CatalogId) -> bool {
-    program.catalog.accepted_entries.iter().any(|entry| {
-        entry.kind == CatalogEntryKind::ResourceMember && entry.stable_id == catalog_id.as_str()
-    })
 }
