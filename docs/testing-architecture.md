@@ -51,3 +51,34 @@ re-declare the same project as an inline string in multiple crates; add it to th
 - **No legacy.** A test must assert the v0.1 contract. A test that depends on rejected,
   prototype, or removed behavior is migrated to the contract or deleted, not kept green.
 - **Comments are durable rationale only.** No narration, history, or restating the assertion.
+
+## Test quality rubric
+
+Every test is judged against the points below. A reviewer flags any a test fails;
+a test that fails several is reworked or removed before it is merged.
+
+1. **Behavioral, not existential.** It asserts what the code *does*, not that a symbol,
+   field, or module simply exists or has a given structural shape.
+2. **Refactor-resistant.** It pins the observable contract — typed codes, payloads, facts,
+   witnesses, values, store effects — not the implementation's internal shape, and never a
+   substring of rendered prose.
+3. **Protects an important contract.** It guards behavior a user or a sibling component
+   depends on, not trivia, a tautology, or a restatement of the line under it.
+4. **Mutation-resistant.** It would fail if the important behavior broke. It exercises the
+   fail-closed path or the edge case, not only the happy path that passes by construction.
+5. **Production pipeline.** It runs through the real parser, checker, runtime, store, or CLI,
+   not a hand-built replica that can drift from production.
+6. **Typed oracle at the right tier.** Its assertions match its tier's allowed oracle —
+   no rendered-message check standing in for a typed Tier-1 fact.
+7. **Focused and diagnosable.** It pins one invariant, so a failure names the broken
+   contract rather than a tangle of unrelated behavior.
+8. **Uniquely owned.** No other test already asserts the same invariant; duplicate-invariant
+   tests are consolidated, not multiplied.
+9. **Deterministic and isolated.** It does not depend on ordering, timing, shared mutable
+   state, or another test having run; it sets up and tears down its own world.
+10. **Clear intent.** Its name and body state the invariant under test, so a reader sees what
+    breaking it would mean.
+11. **Asserts the critical DB contracts.** Where it covers durable data, it asserts the
+    contract that matters — atomic write-and-rollback, index consistency and rebuild, unique
+    fail-closed, identity stability, store-corruption fail-closed, backup/restore integrity,
+    and evolution-discharge fail-closed — not an incidental side effect of exercising them.

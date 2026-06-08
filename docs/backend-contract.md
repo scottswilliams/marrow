@@ -91,10 +91,13 @@ uses the in-memory development/test engine; `TreeStore::open(path)` and
 store facade. A native read-only open can read existing tree cells and rejects
 write-capability operations as `store.read_only`.
 
-Exact index scans return only entries in the requested typed tuple range. The
-cursor contains private engine key bytes, but callers can only receive and
-return it through the typed index-scan API; a cursor from another exact tuple is
-rejected as `store.cursor`.
+An exact index scan matches only the exact tuple it is given: scanning a tuple
+prefix returns entries whose index-key tuple equals it exactly and excludes any
+longer tuple that extends it. The cursor contains private engine key bytes, but
+callers can only receive and return it through the typed index-scan API, and a
+cursor is bound to the exact tuple it was issued for; resuming it against a
+different tuple prefix is rejected as `store.cursor`, so a paged scan cannot drift
+onto another tuple's rows.
 
 Backup traversal returns `TreeBackupCell`, an opaque borrowed data-family cell.
 Callers can read its typed data-cell identity, fold its framed checksum, and
@@ -164,10 +167,11 @@ distinguish members by stable catalog identity instead of source order.
 ## Transactions
 
 `begin` opens a savepoint; `commit` and `rollback` close the innermost
-savepoint. Nested transactions are savepoints: an inner rollback undoes only
-the inner level, and an inner commit keeps its writes but leaves them undoable
-by an outer rollback. Only the outermost commit makes native writes durable.
-Unbalanced `commit` and `rollback` are no-ops.
+savepoint. Nested transactions are savepoints: an inner rollback undoes only the
+writes made since the inner `begin`, leaving the outer transaction's still-open
+writes intact, and an inner commit keeps its writes but leaves them undoable by an
+outer rollback. Only the outermost commit makes native writes durable. Unbalanced
+`commit` and `rollback` are no-ops.
 
 The in-memory engine snapshots the whole map at each savepoint. The native
 engine holds one redb write transaction while the outermost savepoint is open

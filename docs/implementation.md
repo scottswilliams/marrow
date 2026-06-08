@@ -143,6 +143,13 @@ tuples.
 Schemas come from source. Tools may cache compiled metadata, but the cache is
 not the source of truth.
 
+Each durable entity carries an opaque stable catalog ID, and that ID must be unique
+within the accepted catalog. The accepted-catalog digest covers every entry, and the
+proposed catalog is validated at check time: a duplicate or colliding stable ID — from
+a rare allocation clash, a hand-edited catalog, or a bad merge — fails closed there,
+before any schema binds to it, rather than surfacing later at apply or as two entities
+aliased onto one set of stored cells.
+
 ## Saved Tree
 
 Saved data is a typed tree backed by tree-cell keys and byte values:
@@ -221,6 +228,15 @@ explicit checked writes or a future checked transform.
 Managed writes are planned before they commit, and generated index maintenance is
 part of the same plan. This protects indexes, history layers, and required
 fields from accidental corruption.
+
+The plan's steps apply sequentially in plan order inside one store transaction.
+Ordering is part of the contract: a record's old index entries are deleted before
+its new values and index entries are written, so a unique index never momentarily
+holds two live entries for one identity. The final step stamps the catalog epoch,
+engine profile, and commit metadata; it runs only after every data and index step
+in the plan has succeeded, so the store's epoch never advances over partially
+written data. Data cells, index cells, and the metadata stamp commit together in
+that one transaction, or the whole plan rolls back and the store is unchanged.
 
 ## Runtime Consistency
 
@@ -388,12 +404,26 @@ backup/restore is the current bulk data movement contract. See
 manifest plus the canonical tree-cell data stream, not a raw engine-byte copy; the
 manifest binds the data to the source digest, accepted catalog epoch, engine
 profile, and value-codec version it was written under. The generated indexes are
-derived, so the stream omits them and restore rebuilds them from the data. Restore
-validates that binding and full data integrity, including orphaned managed cells,
-then replays into an empty store in one transaction. Backups are deterministic and
-portable across conforming backends at the same layout and codec, but byte
-identity requires matching accepted catalog facts, engine profile, value codec,
-and stored data.
+derived, so the stream omits them and restore rebuilds them from the canonical
+data using the current checker's index logic, rather than trusting index bytes that
+could disagree. Restore validates that binding and full data integrity, including
+orphaned managed cells, then replays into an empty store in one transaction; the
+index rebuild runs inside that same transaction, so data and rebuilt indexes become
+durable together or not at all. Backups are deterministic and portable across
+conforming backends at the same layout and codec, but byte identity requires
+matching accepted catalog facts, engine profile, value codec, and stored data.
+
+The manifest carries a streaming checksum over the cell stream: each cell folds its
+exact framed bytes into a running per-cell FNV-1a value, so a backup can be written
+and verified in bounded memory regardless of store size. Restore recomputes the
+fold while replaying and rejects a mismatch, a short stream, or any trailing bytes
+as a corrupt backup, catching a truncated or tampered chunk. The checksum is an
+integrity check over transport, not a cryptographic proof; where integrity must be
+proven — the source digest, accepted-catalog digest, and evolution evidence — the
+manifest carries `sha256:` digests instead. The engine-profile digest the manifest
+records is likewise deterministic but non-cryptographic: it is used only to compare
+engine profiles for equality, so a restore can refuse a cross-engine, cross-layout,
+or cross-codec backup, never as an integrity proof.
 
 `marrow lsp` is the editor language server: JSON-RPC over stdio with
 `Content-Length` framing. It tracks open documents with full text sync and
