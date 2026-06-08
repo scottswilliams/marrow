@@ -235,7 +235,9 @@ fn index_catalog_id(index: &CheckedSavedIndex) -> Result<CatalogId, ApplyError> 
 
 /// Stage the index entry every record contributes to the rebuilt index named by
 /// `catalog_id`. The index belongs to exactly one place, so the first place that declares
-/// it owns the rebuild and the scan stops there.
+/// it owns the rebuild and the scan stops there. A rebuild obligation the witness proved
+/// must resolve to a declared index; finding none is a discharge/apply divergence, so it
+/// fails closed rather than stamping success over a silently un-rebuilt index.
 pub(super) fn stage_index_rebuild(
     catalog_id: &CatalogId,
     places: &[CheckedSavedPlace],
@@ -259,7 +261,9 @@ pub(super) fn stage_index_rebuild(
         staged.indexes_rebuilt += 1;
         return Ok(());
     }
-    Ok(())
+    Err(ApplyError::Store(StoreError::Corruption {
+        message: "evolution apply found no declared index for a rebuild obligation".to_string(),
+    }))
 }
 
 /// Stage a `DeleteIndexSubtree` of every cell under a source-dropped index. The index

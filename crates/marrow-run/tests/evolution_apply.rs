@@ -2122,6 +2122,74 @@ fn transform_body_fault_aborts_byte_identical() {
     );
 }
 
+/// A transform that recomputes the first record cleanly but faults on the second must
+/// discard the first record's already-recomputed write: a transform that fails midway
+/// rolls the whole apply back, leaving every target cell byte-identical and the store
+/// unstamped. Record 1's `price` is small enough to transform, while record 2's overflows,
+/// so apply stages record 1's write, then faults on record 2 before any commit.
+#[test]
+fn transform_body_fault_midscan_discards_earlier_staged_write() {
+    let root = temp_project("apply-transform-fault-midscan", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required price: int\n\
+             \x20   required priceCents: int\n\
+             evolve\n\
+             \x20   transform Book.priceCents\n\
+             \x20       return old.price * 1000000000000\n\
+             pub fn add(price: int): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let program = commit_then_check(&root);
+    let place = root_place(&program, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &place,
+    };
+    // Record 1 transforms cleanly to a sentinel value; record 2 overflows the 64-bit range.
+    seed.record(1);
+    seed.member(1, "price", Scalar::Int(1));
+    seed.member(1, "priceCents", Scalar::Int(0));
+    seed.record(2);
+    seed.member(2, "price", Scalar::Int(9_000_000_000));
+    seed.member(2, "priceCents", Scalar::Int(0));
+
+    let store_id = store_id_of(&place);
+    let cents_id = member_catalog_id(&place, "priceCents");
+    let before_one = read_scalar(&store, &store_id, 1, &cents_id, INT);
+    let before_two = read_scalar(&store, &store_id, 2, &cents_id, INT);
+
+    let w = witness(&program, &store);
+    assert!(w.is_activatable(), "{w:#?}");
+    let result = apply(&w, &program, &store, false, None);
+    fs::remove_dir_all(&root).ok();
+
+    assert!(
+        matches!(result, Err(ApplyError::TransformBodyFaulted { .. })),
+        "expected TransformBodyFaulted, got {result:#?}"
+    );
+    assert_eq!(
+        read_scalar(&store, &store_id, 1, &cents_id, INT),
+        before_one,
+        "the cleanly-transformed record's staged write must not survive a later fault"
+    );
+    assert_eq!(
+        read_scalar(&store, &store_id, 2, &cents_id, INT),
+        before_two,
+        "the faulting record's target is unchanged"
+    );
+    assert_eq!(
+        store.read_commit_metadata().expect("read"),
+        None,
+        "a mid-scan transform fault leaves the store unstamped"
+    );
+}
+
 /// The activatable->applyable invariant for a transform: a witness whose read members
 /// all decode under their current type and whose body does not fault over the data
 /// applies successfully, writing the recomputed value and stamping the store.

@@ -495,7 +495,14 @@ fn stage_obligation(
             steps,
             staged,
         ),
-        Verdict::DerivedRebuild => stage_index_rebuild(catalog_id, places, store, steps, staged),
+        // Derived rebuilds are staged in a second pass after every data obligation, so a
+        // rebuilt index sees the defaults and transforms this apply also writes. The apply
+        // loop diverts them before they reach here; one arriving means the loop's deferral
+        // broke, which is a fail-closed internal divergence rather than a silent skip.
+        Verdict::DerivedRebuild => Err(ApplyError::Store(StoreError::Corruption {
+            message: "evolution apply staged a derived rebuild outside its deferred pass"
+                .to_string(),
+        })),
         Verdict::IndexDropped => stage_index_drop(catalog_id, steps),
         Verdict::DestructiveDecisionRequired { .. } => {
             stage_retire_deletes(catalog_id, places, store, steps, staged)
