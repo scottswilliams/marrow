@@ -23,7 +23,7 @@ pub(crate) fn restore(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
     // Restore needs a durable target. An in-memory project has nowhere to write to.
-    let path = match resolve_store_path(&dir, &config) {
+    let path = match resolve_store_path(&dir, &config, format) {
         Ok(Some(path)) => path,
         Ok(None) => {
             report_simple_error(

@@ -178,7 +178,7 @@ fn run_project_dir(
     };
     let runtime_program = program.runtime();
 
-    let store = match open_run_store(dir, &program, &config) {
+    let store = match open_run_store(dir, &program, &config, observe.format()) {
         Ok(Some(store)) => store,
         Ok(None) => marrow_store::tree::TreeStore::memory(),
         Err(code) => return code,
@@ -196,12 +196,13 @@ fn open_run_store(
     dir: &str,
     program: &marrow_check::CheckedProgram,
     config: &marrow_project::ProjectConfig,
+    format: CheckFormat,
 ) -> Result<Option<marrow_store::tree::TreeStore>, ExitCode> {
-    let Some(path) = resolve_store_path(dir, config)? else {
+    let Some(path) = resolve_store_path(dir, config, format)? else {
         return Ok(None);
     };
     let store = marrow_store::tree::TreeStore::open(&path).map_err(|error| {
-        report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
+        report_simple_error(error.code(), &error.to_string(), format);
         ExitCode::FAILURE
     })?;
     if let Err(error) = marrow_run::evolution::fence(

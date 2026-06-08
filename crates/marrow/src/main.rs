@@ -265,13 +265,14 @@ fn native_store_path(
 pub(crate) fn resolve_store_path(
     dir: &str,
     config: &marrow_project::ProjectConfig,
+    format: CheckFormat,
 ) -> Result<Option<PathBuf>, ExitCode> {
     let Some(path) = native_store_path(dir, config)? else {
         return Ok(None);
     };
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
-            report_io_error(&parent.display().to_string(), &error, CheckFormat::Text);
+            report_io_error(&parent.display().to_string(), &error, format);
             ExitCode::FAILURE
         })?;
     }

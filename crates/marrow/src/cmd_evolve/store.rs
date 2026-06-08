@@ -20,7 +20,7 @@ pub(super) fn apply_store(
     config: &marrow_project::ProjectConfig,
     format: CheckFormat,
 ) -> Result<TreeStore, ExitCode> {
-    match resolve_store_path(dir, config)? {
+    match resolve_store_path(dir, config, format)? {
         Some(path) => match TreeStore::open(&path) {
             Ok(store) => Ok(store),
             Err(error) => {
