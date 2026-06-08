@@ -23,7 +23,7 @@ pub(crate) fn backup(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
     // A project with no saved data on disk yields a valid empty backup.
-    let store = match open_store_for_inspection(&dir, &config) {
+    let store = match open_store_for_inspection(&dir, &config, format) {
         Ok(Some(store)) => store,
         Ok(None) => TreeStore::memory(),
         Err(code) => return code,

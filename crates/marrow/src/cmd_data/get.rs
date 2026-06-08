@@ -34,7 +34,7 @@ pub(super) fn data_get(args: &[String]) -> ExitCode {
         }
         Err(ToolingError::Store(error)) => return super::report_store_error(error, format),
     };
-    let store = match crate::open_store_for_inspection(&dir, &config) {
+    let store = match crate::open_store_for_inspection(&dir, &config, format) {
         Ok(store) => store,
         Err(code) => return code,
     };

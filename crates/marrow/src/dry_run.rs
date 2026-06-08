@@ -1,10 +1,13 @@
 //! The dry-run hook and report for `run --dry-run`.
 //!
 //! A dry run executes the entry inside one outer store savepoint that is always
-//! rolled back, so the saved data is left byte-for-byte unchanged. It collects the
-//! managed writes the run *would* have committed through the same write-observation
-//! seam the trace uses, then reports them. When `--trace` is also set, it forwards
-//! each event to a [`TraceHook`] so the two compose: observe and discard.
+//! rolled back, so no saved data changes — the same records read back afterward.
+//! Aborting the store transaction can still rewrite backend metadata, so the
+//! guarantee is logical saved-data stability, not native-file byte identity. It
+//! collects the managed writes the run *would* have committed through the same
+//! write-observation seam the trace uses, then reports them. When `--trace` is also
+//! set, it forwards each event to a [`TraceHook`] so the two compose: observe and
+//! discard.
 //!
 //! Only saved data is rewound. Side effects outside the store — a `std::io` file
 //! write, a `std::log` line — are not rolled back, so the report covers managed
@@ -81,9 +84,9 @@ impl StepHook for DryRunHook {
 }
 
 /// Report the planned writes a dry run collected. The run's own `print`/`write`
-/// output is handled by the caller; this renders only the dry-run report, on
-/// standard error under text format (off the program's stdout stream) or as a JSON
-/// object under `json`/`jsonl`.
+/// output is handled by the caller; this renders only the dry-run report on standard
+/// error, off the program's stdout stream — `would write`/`would delete` lines under
+/// text format, or a JSON object under `json`/`jsonl`.
 pub(crate) fn report(
     planned: &[PlannedWrite],
     format: CheckFormat,
@@ -119,7 +122,7 @@ pub(crate) fn report(
                 .iter()
                 .map(|step| planned_record(step, &names))
                 .collect();
-            crate::write_json(json!({
+            crate::write_json_err(json!({
                 "committed": false,
                 "writes": writes,
                 "deletes": deletes,

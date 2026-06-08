@@ -7,8 +7,9 @@ use crate::{CheckFormat, open_store_for_inspection, report_simple_error, resolve
 pub(super) fn preview_store(
     dir: &str,
     config: &marrow_project::ProjectConfig,
+    format: CheckFormat,
 ) -> Result<TreeStore, ExitCode> {
-    Ok(match open_store_for_inspection(dir, config)? {
+    Ok(match open_store_for_inspection(dir, config, format)? {
         Some(store) => store,
         None => TreeStore::memory(),
     })

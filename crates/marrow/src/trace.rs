@@ -1,12 +1,12 @@
 //! The execution-trace hook shared by `run --trace` and `test --trace`.
 //!
 //! A [`TraceHook`] is a [`StepHook`] that observes each statement and each
-//! managed write as the run executes, reporting them in execution order. Under
-//! text format it prints an indented, depth-aware stream to standard error,
-//! leaving the program's own `print`/`write` on standard out; under `json`/`jsonl`
-//! it emits one `step`/`write` record per event on standard out. It never alters
-//! the run: it only observes, so a traced run does exactly what an untraced one
-//! does, plus the trace.
+//! managed write as the run executes, reporting them in execution order. The trace
+//! is tooling output on standard error under every format, leaving the program's
+//! own `print`/`write` alone on standard out: under text an indented, depth-aware
+//! stream, and under `json`/`jsonl` one `step`/`write` record per event. It never
+//! alters the run: it only observes, so a traced run does exactly what an untraced
+//! one does, plus the trace.
 
 use std::collections::HashMap;
 
@@ -47,20 +47,22 @@ impl TraceHook {
 
     /// Emit the collected JSON records (for `json`/`jsonl`), then reset them. Text
     /// traces print as they happen and leave nothing to flush. `json` wraps the
-    /// records in one object; `jsonl` streams them followed by a summary line.
+    /// records in one object; `jsonl` streams them followed by a summary line. The
+    /// trace is tooling output that rides alongside the program's own stdout, so its
+    /// records go to standard error to keep the two streams from interleaving.
     pub(crate) fn flush(&mut self) {
         let records = std::mem::take(&mut self.records);
         match self.format {
             CheckFormat::Text => {}
-            CheckFormat::Json => crate::write_json(json!({
+            CheckFormat::Json => crate::write_json_err(json!({
                 "trace": self.label,
                 "events": records,
             })),
             CheckFormat::Jsonl => {
                 for record in &records {
-                    crate::write_json(record.clone());
+                    crate::write_json_err(record.clone());
                 }
-                crate::write_json(json!({
+                crate::write_json_err(json!({
                     "kind": "summary",
                     "trace": self.label,
                     "events": records.len(),

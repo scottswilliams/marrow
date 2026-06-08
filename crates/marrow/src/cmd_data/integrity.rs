@@ -17,7 +17,7 @@ pub(super) fn data_integrity(args: &[String]) -> ExitCode {
         Ok(checked) => checked,
         Err(code) => return code,
     };
-    let store = match crate::open_store_for_inspection(&dir, &config) {
+    let store = match crate::open_store_for_inspection(&dir, &config, format) {
         Ok(store) => store,
         Err(code) => return code,
     };

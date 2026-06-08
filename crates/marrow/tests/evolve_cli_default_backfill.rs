@@ -151,3 +151,45 @@ fn evolve_apply_noop_when_store_and_file_already_at_target() {
         "no-op apply does not bump the commit id"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn evolve_apply_renders_a_catalog_write_failure_through_the_selected_format() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // `evolve apply` freezes the project's pending identity through the production
+    // catalog writer before touching the store. When that write fails — here a
+    // read-only project directory blocks the catalog file — the failure is an IO
+    // error that must render through the selected `--format`, not as hard-coded
+    // text, so a machine consumer parsing stdout as JSON still sees the error.
+    let root = native_books_project("evolve-apply-catalog-write", REQUIRED_DEFAULT_SOURCE);
+    let restore = fs::metadata(&root).expect("project metadata").permissions();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o555))
+        .expect("make the project directory read-only");
+
+    let output = marrow(&[
+        "evolve",
+        "apply",
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
+
+    // Restore write permission so the temp-project guard can clean up on drop.
+    fs::set_permissions(&root, restore).expect("restore project permissions");
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("a catalog-write failure must be JSON on stdout");
+    assert_eq!(
+        value["kind"], "io",
+        "a catalog-write IO failure must carry the io kind: {value}"
+    );
+    assert!(
+        value["code"]
+            .as_str()
+            .is_some_and(|code| code.starts_with("io.")),
+        "the error must carry an io code: {value}"
+    );
+}

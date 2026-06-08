@@ -191,9 +191,10 @@ that the default run rejects. An operator must type it; the default run and
 `run.defaultEntry` can never inject it. Use it deliberately.
 
 `--trace` reports each statement as it runs — file, line, call depth, and the
-visible locals — and each managed write or delete, in execution order. Under text
-the trace is an indented stream on stderr, leaving the program's stdout alone.
-Under `json`/`jsonl` it emits `step` records and managed-write `write` records.
+visible locals — and each managed write or delete, in execution order. The trace
+is tooling output on stderr under every format, leaving the program's stdout for
+its own `print`/`write` output: under text an indented stream, under `json`/`jsonl`
+`step` records and managed-write `write` records.
 
 In the human-readable text of a `--trace` or `--dry-run` write, the leaf value is
 rendered as its declared typed scalar, not as raw codec bytes: a `bool` reads
@@ -201,22 +202,25 @@ rendered as its declared typed scalar, not as raw codec bytes: a `bool` reads
 machine-readable `value_b64` field in the JSON output stays the raw stored bytes.
 
 `--dry-run` runs the entry, reports the saved-data writes it would commit, then
-rolls them back. The store is left byte-for-byte unchanged: the run rides one
-outer savepoint that is always rolled back, so managed writes inside
-`transaction` blocks stage and then discard with the rest. Only saved data is
-rewound; host side effects such as `std::io` writes or `std::log` lines are not
-rolled back.
+rolls them back. No saved data changes: the run rides one outer savepoint that is
+always rolled back, so managed writes inside `transaction` blocks stage and then
+discard with the rest. The guarantee is logical saved-data stability — the same
+records read back afterward — not native-file byte identity, since aborting the
+store transaction can still rewrite backend metadata. Only saved data is rewound;
+host side effects such as `std::io` writes or `std::log` lines are not.
 
-`--dry-run` takes `--format`. Under text, planned writes are reported on stderr
-as `would write <path>` / `would delete <path>` lines and a
+`--dry-run` takes `--format`. The report is tooling output on stderr under every
+format, off the program's stdout stream. Under text, planned writes are
+`would write <path>` / `would delete <path>` lines and a
 `dry run: N write(s), M delete(s) (rolled back)` summary. Under `json`/`jsonl`,
 the report is a `{"committed": false, "planned": […]}` envelope whose planned
 entries carry the op, human path, and base64 value bytes.
 
 `--trace` composes with `--dry-run`: the run is traced and its writes are then
-discarded. Under `--format json`, stdout receives the trace object followed by
-the dry-run envelope as separate top-level JSON objects. For source-native data
-evolution use `marrow evolve preview`; `run --maintenance --dry-run` is for
+discarded. The trace and the dry-run report both go to stderr — under `--format
+json` the trace object followed by the dry-run envelope as separate top-level JSON
+objects — so the program's own stdout output stays uninterrupted. For source-native
+data evolution use `marrow evolve preview`; `run --maintenance --dry-run` is for
 explicit repair/admin code.
 
 Exits `0` on success, `1` if the project does not check, the store cannot be
@@ -256,10 +260,9 @@ if the project does not check, or if no test is found (`test.none`).
 
 With `--trace`, every test runs under an execution trace attributed to that test
 by name. The trace events have the same text/json/jsonl shapes as `run --trace`,
-and each event carries the test label so consumer tooling can group it. The test
-runner still prints its normal `ok`/`FAIL`/`ERROR` lines and summary on stdout;
-under `--format json` or `jsonl`, those text lines appear after each test's trace
-report.
+and each event carries the test label so consumer tooling can group it. The trace
+is tooling output on stderr; the test runner's `ok`/`FAIL`/`ERROR` lines and
+summary stay on stdout, so the two streams never interleave.
 
 ```console
 $ marrow test ./proj

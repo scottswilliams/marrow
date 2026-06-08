@@ -280,10 +280,13 @@ pub(crate) fn resolve_store_path(
 
 /// Open the project's configured store read-only for inspection, or `Ok(None)` if
 /// it holds no saved data on disk yet (the in-memory default, or the native file
-/// does not exist). Never creates a store — inspection is read-only.
+/// does not exist). Never creates a store — inspection is read-only. A store-open
+/// failure is rendered through `format` so a `--format json` caller still gets a
+/// JSON error envelope rather than text.
 pub(crate) fn open_store_for_inspection(
     dir: &str,
     config: &marrow_project::ProjectConfig,
+    format: CheckFormat,
 ) -> Result<Option<marrow_store::tree::TreeStore>, ExitCode> {
     let Some(path) = native_store_path(dir, config)? else {
         return Ok(None);
@@ -294,7 +297,7 @@ pub(crate) fn open_store_for_inspection(
     match marrow_store::tree::TreeStore::open_read_only(&path) {
         Ok(store) => Ok(Some(store)),
         Err(error) => {
-            report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
+            report_simple_error(error.code(), &error.to_string(), format);
             Err(ExitCode::FAILURE)
         }
     }
@@ -357,30 +360,32 @@ pub(crate) fn load_checked_project_with_format(
 /// catalog writer, returning the re-checked program. A program with no pending
 /// proposal (a clean accepted catalog, or no durable surface) is returned unchanged
 /// without touching the catalog file. The state-establishing flows — `run` and
-/// `evolve apply` — call this; `check` never does.
+/// `evolve apply` — call this; `check` never does. A failure renders through
+/// `format` so a `--format json` caller still gets a JSON error envelope.
 pub(crate) fn commit_pending_identity(
     dir: &str,
     config: &marrow_project::ProjectConfig,
     program: marrow_check::CheckedProgram,
+    format: CheckFormat,
 ) -> Result<marrow_check::CheckedProgram, ExitCode> {
     match marrow_check::commit_pending_identity(Path::new(dir), config, &program) {
         Ok(None) => Ok(program),
         Ok(Some((report, committed))) => {
             if report.has_errors() {
-                report_project(dir, &report, CheckFormat::Text);
+                report_project(dir, &report, format);
                 return Err(ExitCode::FAILURE);
             }
             Ok(committed)
         }
         Err(marrow_check::CommitIdentityError::Io { path, error }) => {
-            report_io_error(&path.display().to_string(), &error, CheckFormat::Text);
+            report_io_error(&path.display().to_string(), &error, format);
             Err(ExitCode::FAILURE)
         }
         Err(marrow_check::CommitIdentityError::Discover(error)) => {
             report_simple_error(
                 error.code,
                 &format!("{}: {}", error.path.display(), error.message),
-                CheckFormat::Text,
+                format,
             );
             Err(ExitCode::FAILURE)
         }
@@ -389,21 +394,24 @@ pub(crate) fn commit_pending_identity(
 
 /// Advance the accepted-catalog file to `catalog` through the one production catalog
 /// writer. `evolve apply` calls this as its final step, after the store transaction
-/// has committed, so the file moves in lockstep with the store it activates.
+/// has committed, so the file moves in lockstep with the store it activates. A
+/// failure renders through `format` so a `--format json` caller still gets a JSON
+/// error envelope.
 pub(crate) fn write_accepted_catalog(
     dir: &str,
     config: &marrow_project::ProjectConfig,
     catalog: &marrow_project::CatalogMetadata,
+    format: CheckFormat,
 ) -> Result<(), ExitCode> {
     marrow_check::write_accepted_catalog(Path::new(dir), config, catalog).map_err(|error| {
         match error {
             marrow_check::CommitIdentityError::Io { path, error } => {
-                report_io_error(&path.display().to_string(), &error, CheckFormat::Text);
+                report_io_error(&path.display().to_string(), &error, format);
             }
             marrow_check::CommitIdentityError::Discover(error) => report_simple_error(
                 error.code,
                 &format!("{}: {}", error.path.display(), error.message),
-                CheckFormat::Text,
+                format,
             ),
         }
         ExitCode::FAILURE
@@ -551,6 +559,17 @@ fn diagnostic_record(file: &str, diagnostic: &marrow_syntax::Diagnostic) -> serd
 
 pub(crate) fn write_json(value: serde_json::Value) {
     println!(
+        "{}",
+        serde_json::to_string(&value).expect("JSON value should serialize")
+    );
+}
+
+/// Emit one JSON record on standard error. Tooling reports that ride alongside a
+/// separate stdout stream — the execution trace and the dry-run plan, which share
+/// stdout with the program's own `print`/`write` output (or the test pass/fail
+/// report) — write their records here so the two streams never interleave.
+pub(crate) fn write_json_err(value: serde_json::Value) {
+    eprintln!(
         "{}",
         serde_json::to_string(&value).expect("JSON value should serialize")
     );

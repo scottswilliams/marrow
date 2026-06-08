@@ -128,7 +128,7 @@ fn data_roots(args: &[String]) -> ExitCode {
         Ok(checked) => checked,
         Err(code) => return code,
     };
-    let store = match open_store_for_inspection(&dir, &config) {
+    let store = match open_store_for_inspection(&dir, &config, format) {
         Ok(store) => store,
         Err(code) => return code,
     };
@@ -169,7 +169,7 @@ fn data_stats(args: &[String]) -> ExitCode {
         Ok(checked) => checked,
         Err(code) => return code,
     };
-    let store = match open_store_for_inspection(&dir, &config) {
+    let store = match open_store_for_inspection(&dir, &config, format) {
         Ok(store) => store,
         Err(code) => return code,
     };
@@ -216,7 +216,7 @@ fn data_dump(args: &[String]) -> ExitCode {
         Ok(checked) => checked,
         Err(code) => return code,
     };
-    let store = match open_store_for_inspection(&dir, &config) {
+    let store = match open_store_for_inspection(&dir, &config, format) {
         Ok(store) => store,
         Err(code) => return code,
     };

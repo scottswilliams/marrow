@@ -4,14 +4,11 @@ use serde_json::{Value, json};
 
 use support::{jsonl, marrow, temp_project, write};
 
-fn jsonl_trace_records(stdout: Vec<u8>) -> Vec<Value> {
-    let text = String::from_utf8(stdout).expect("stdout utf8");
-    let jsonl_text = text
-        .lines()
-        .filter(|line| line.trim_start().starts_with('{'))
-        .collect::<Vec<_>>()
-        .join("\n");
-    jsonl(jsonl_text.into_bytes())
+/// Parse the trace record stream a `--format jsonl` run emits on stderr. Every
+/// line is one JSON record; the pass/fail report stays on stdout, so the trace
+/// stream needs no filtering.
+fn jsonl_trace_records(stderr: Vec<u8>) -> Vec<Value> {
+    jsonl(stderr)
 }
 
 #[test]
@@ -216,7 +213,9 @@ fn run_trace_json_emits_step_and_write_records() {
     let output = marrow(&["run", "--trace", "--format", "jsonl", &dir]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let records = jsonl(output.stdout);
+    // Trace records are tooling output on stderr; the program's stdout stays its own.
+    assert!(output.stdout.is_empty(), "stdout: {:?}", output.stdout);
+    let records = jsonl(output.stderr);
     let [step, write, summary] = records.as_slice() else {
         panic!("expected step, write, and summary records: {records:?}");
     };
@@ -250,6 +249,54 @@ fn run_trace_json_emits_step_and_write_records() {
 }
 
 #[test]
+fn run_trace_jsonl_keeps_program_output_off_the_record_stream() {
+    // A traced run that also prints must keep the two streams apart: stdout is the
+    // program's own `print` output, and the JSONL trace records land on stderr.
+    // A consumer parsing stdout as JSONL would otherwise choke on the program line.
+    let project = temp_project("trace-jsonl-streams", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             resource Book at ^books(id: int)\n\
+             \x20\x20\x20\x20title: string\n\n\
+             pub fn main()\n\
+             \x20\x20\x20\x20^books(1).title = \"Mort\"\n\
+             \x20\x20\x20\x20print(\"done\")\n",
+        );
+    });
+    let dir = project.to_str().unwrap().to_string();
+    let output = marrow(&["run", "--trace", "--format", "jsonl", &dir]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+
+    // The program output is exactly its `print`; no JSON record reached stdout.
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    assert_eq!(stdout, "done\n", "program output must own stdout: {stdout}");
+
+    // Every line of stderr is one trace record; the write record is present.
+    let stderr = String::from_utf8(output.stderr).expect("utf8");
+    let records: Vec<Value> = stderr
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each stderr line is one JSONL record"))
+        .collect();
+    assert!(
+        records
+            .iter()
+            .any(|record| record["kind"] == "write" && record["path"] == "^books(1).title"),
+        "the write record must be on stderr: {records:?}"
+    );
+    assert!(
+        records.iter().any(|record| record["kind"] == "summary"),
+        "the summary record must be on stderr: {records:?}"
+    );
+}
+
+#[test]
 fn test_trace_labels_each_test() {
     // Two tests, each traced; the trace stream attributes events to the right test
     // by name.
@@ -273,7 +320,7 @@ fn test_trace_labels_each_test() {
     let output = marrow(&["test", "--trace", "--format", "jsonl", &dir]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let records = jsonl_trace_records(output.stdout);
+    let records = jsonl_trace_records(output.stderr);
     let step_labels = records
         .iter()
         .filter(|record| record["kind"] == "step")

@@ -291,8 +291,9 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
     // A project with no saved data yet serves an empty store; inspection never
-    // creates the backing file.
-    let store = match open_store_for_inspection(&dir, &config) {
+    // creates the backing file. Serve reports its startup errors as text on
+    // stderr, so a store-open failure renders the same way.
+    let store = match open_store_for_inspection(&dir, &config, crate::CheckFormat::Text) {
         Ok(Some(store)) => store,
         Ok(None) => TreeStore::memory(),
         Err(code) => return code,
@@ -346,6 +347,16 @@ fn serve(listener: &TcpListener, program: &CheckedProgram, store: &TreeStore) ->
     Ok(())
 }
 
+/// Serve one connection with the production request-size limit.
+fn serve_connection(
+    reader: &mut impl BufRead,
+    writer: &mut impl Write,
+    program: &CheckedProgram,
+    store: &TreeStore,
+) -> io::Result<()> {
+    serve_connection_within(reader, writer, program, store, MAX_REQUEST_BYTES)
+}
+
 /// The outcome of reading one request line. A `Bad` line (non-UTF-8 or over the
 /// size limit) is recoverable — it earns a `protocol.malformed` reply and the
 /// connection continues — whereas a genuine socket failure stays an `io::Error`
@@ -368,11 +379,12 @@ enum Line {
 /// schema this serve binary was checked against, every data op replies
 /// `protocol.stale_epoch` rather than rendering evolved data under the stale
 /// schema.
-fn serve_connection(
+fn serve_connection_within(
     reader: &mut impl BufRead,
     writer: &mut impl Write,
     program: &CheckedProgram,
     store: &TreeStore,
+    limit: u64,
 ) -> io::Result<()> {
     let snapshot = match store.read_snapshot() {
         Ok(snapshot) => snapshot,
@@ -391,7 +403,7 @@ fn serve_connection(
     let stale = marrow_check::tooling::store_is_newer_than_program(&metadata);
     let session = protocol::ProtocolSession::new(stale);
     loop {
-        let line = match read_line_bounded(reader)? {
+        let line = match read_line_bounded_within(reader, limit)? {
             Line::Eof => break,
             Line::Request(line) => line,
             Line::Bad(reason) => {
@@ -441,14 +453,21 @@ fn write_reply(writer: &mut impl Write, reply: &serde_json::Value) -> io::Result
     writer.flush()
 }
 
-/// Read one newline-terminated request line, bounded by [`MAX_REQUEST_BYTES`].
-/// Returns [`Line::Eof`] on a clean hang-up and [`Line::Bad`] for a non-UTF-8 or
-/// oversized line; a genuine socket failure is an `io::Error`.
-fn read_line_bounded(reader: &mut impl BufRead) -> io::Result<Line> {
+/// Read one newline-terminated request line, bounded by `limit` bytes. Returns
+/// [`Line::Eof`] on a clean hang-up and [`Line::Bad`] for a non-UTF-8 or oversized
+/// line; a genuine socket failure is an `io::Error`.
+///
+/// A line that reaches `limit` bytes without a newline is one oversized request:
+/// the remaining bytes of that line, up to its newline, are drained and discarded
+/// so the next read starts at the following request. Without that drain a single
+/// oversized line would be split into one rejected request plus a phantom second
+/// request from its own tail.
+fn read_line_bounded_within(reader: &mut impl BufRead, limit: u64) -> io::Result<Line> {
     let mut buf = Vec::new();
-    let reader: &mut dyn BufRead = reader;
-    let mut limited = reader.take(MAX_REQUEST_BYTES);
-    let read = match limited.read_until(b'\n', &mut buf) {
+    let read = match (reader as &mut dyn BufRead)
+        .take(limit)
+        .read_until(b'\n', &mut buf)
+    {
         Ok(read) => read,
         // A stalled client hits the per-connection read timeout; close the
         // connection cleanly (like a hang-up) rather than reporting an error.
@@ -458,12 +477,40 @@ fn read_line_bounded(reader: &mut impl BufRead) -> io::Result<Line> {
     if read == 0 {
         return Ok(Line::Eof);
     }
-    if read as u64 == MAX_REQUEST_BYTES && !buf.ends_with(b"\n") {
+    if read as u64 == limit && !buf.ends_with(b"\n") {
+        // The line overflowed the limit. Drain the rest of it so its tail is not
+        // re-read as a second request; a drain error ends the connection.
+        discard_to_newline(reader)?;
         return Ok(Line::Bad("request line exceeds the size limit".to_string()));
     }
     match String::from_utf8(buf) {
         Ok(line) => Ok(Line::Request(line)),
         Err(_) => Ok(Line::Bad("request line is not valid UTF-8".to_string())),
+    }
+}
+
+/// Consume and discard bytes up to and including the next newline (or EOF). Used to
+/// drop the tail of an oversized line so it is not parsed as a fresh request.
+fn discard_to_newline(reader: &mut impl BufRead) -> io::Result<()> {
+    loop {
+        let available = match reader.fill_buf() {
+            Ok(available) => available,
+            Err(error) if is_timeout(error.kind()) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        if available.is_empty() {
+            return Ok(());
+        }
+        match available.iter().position(|&byte| byte == b'\n') {
+            Some(offset) => {
+                reader.consume(offset + 1);
+                return Ok(());
+            }
+            None => {
+                let consumed = available.len();
+                reader.consume(consumed);
+            }
+        }
     }
 }
 
@@ -480,7 +527,10 @@ mod tests {
 
     use marrow_store::key::SavedKey;
 
-    use super::{Line, protocol, read_line_bounded, serve_connection};
+    use super::{
+        Line, MAX_REQUEST_BYTES, protocol, read_line_bounded_within, serve_connection,
+        serve_connection_within,
+    };
     use crate::serve::test_support::{self, empty_state, state_with_books};
 
     #[test]
@@ -664,7 +714,8 @@ mod tests {
         // connection like a clean hang-up, so serve() moves on to the next client
         // instead of the read propagating as a connection error.
         assert!(matches!(
-            read_line_bounded(&mut TimingOutReader).expect("a timeout is not an error"),
+            read_line_bounded_within(&mut TimingOutReader, MAX_REQUEST_BYTES)
+                .expect("a timeout is not an error"),
             Line::Eof
         ));
         let state = empty_state();
@@ -677,6 +728,68 @@ mod tests {
         )
         .expect("serve returns cleanly");
         assert!(output.is_empty(), "a timed-out connection sends no reply");
+    }
+
+    #[test]
+    fn an_oversized_line_is_one_rejected_request_not_two() {
+        // A single request line that runs past the size limit must be framed as one
+        // rejected request: the bytes after the limit, up to the real newline, are
+        // part of that same oversized line and must not be re-read as a second
+        // request. Here the oversized garbage is followed by a valid request, so a
+        // correct framing yields exactly two replies (one malformed, one ok), never
+        // three.
+        // A limit comfortably above the valid request (33 bytes with its newline)
+        // but well below the oversized garbage line, so only the garbage overflows.
+        let limit = 40u64;
+        let oversized = "x".repeat(64);
+        let valid = "{\"id\":2,\"op\":\"debug_data_roots\"}";
+        let input = format!("{oversized}\n{valid}\n");
+
+        // The framing reader rejects the oversized line as one bad request and then
+        // resumes at the start of the next line, not mid-line.
+        let mut reader = Cursor::new(input.into_bytes());
+        let first = read_line_bounded_within(&mut reader, limit).expect("first line");
+        assert!(
+            matches!(first, Line::Bad(_)),
+            "the oversized line is rejected"
+        );
+        let second = read_line_bounded_within(&mut reader, limit).expect("second line");
+        let Line::Request(line) = second else {
+            panic!("the next read must yield the following request whole");
+        };
+        assert_eq!(
+            line.trim(),
+            valid,
+            "the oversized line's tail must not become a second request"
+        );
+        let third = read_line_bounded_within(&mut reader, limit).expect("third line");
+        assert!(
+            matches!(third, Line::Eof),
+            "no third request hides in the oversized line's tail"
+        );
+
+        // End to end through serve_connection: one oversized line plus one valid
+        // request produces exactly two replies, the first malformed.
+        let state = empty_state();
+        let mut input = Cursor::new(format!("{}\n{valid}\n", "x".repeat(64)).into_bytes());
+        let mut output: Vec<u8> = Vec::new();
+        serve_connection_within(&mut input, &mut output, &state.program, &state.store, limit)
+            .expect("serve");
+        let replies: Vec<serde_json::Value> = String::from_utf8(output)
+            .expect("utf8")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("reply json"))
+            .collect();
+        assert_eq!(
+            replies.len(),
+            2,
+            "one oversized line is one rejected request, not two: {replies:?}"
+        );
+        assert_eq!(
+            replies[0]["error"]["code"],
+            serde_json::json!(protocol::PROTOCOL_MALFORMED)
+        );
+        assert_eq!(replies[1]["id"], serde_json::json!(2));
     }
 
     #[test]

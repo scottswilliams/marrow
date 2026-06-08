@@ -64,8 +64,9 @@ fn dry_run_plan_matches_a_real_run() {
 
     let dry = marrow(&["run", "--dry-run", "--format", "json", &dry_dir]);
     assert_eq!(dry.status.code(), Some(0), "dry: {dry:?}");
+    // The dry-run report is tooling output on stderr, off the program's stdout.
     let dry_json: serde_json::Value =
-        serde_json::from_str(&String::from_utf8(dry.stdout).expect("utf8")).expect("json");
+        serde_json::from_str(String::from_utf8(dry.stderr).expect("utf8").trim()).expect("json");
     assert_eq!(dry_json["committed"], false);
     let planned_paths: Vec<String> = dry_json["planned"]
         .as_array()
@@ -168,8 +169,9 @@ fn dry_run_reports_maintenance_whole_root_deletes() {
         &dir,
     ]);
     assert_eq!(dry.status.code(), Some(0), "dry: {dry:?}");
+    // The dry-run report is tooling output on stderr, off the program's stdout.
     let dry_json: serde_json::Value =
-        serde_json::from_str(&String::from_utf8(dry.stdout).expect("utf8")).expect("json");
+        serde_json::from_str(String::from_utf8(dry.stderr).expect("utf8").trim()).expect("json");
 
     assert_eq!(dry_json["committed"], false);
     assert_eq!(dry_json["writes"], 0);
@@ -245,8 +247,9 @@ fn dry_run_reports_non_root_deletes() {
         &dir,
     ]);
     assert_eq!(dry.status.code(), Some(0), "dry: {dry:?}");
+    // The dry-run report is tooling output on stderr, off the program's stdout.
     let dry_json: serde_json::Value =
-        serde_json::from_str(&String::from_utf8(dry.stdout).expect("utf8")).expect("json");
+        serde_json::from_str(String::from_utf8(dry.stderr).expect("utf8").trim()).expect("json");
 
     assert_eq!(dry_json["committed"], false);
     assert_eq!(dry_json["writes"], 0);
@@ -305,6 +308,70 @@ fn dry_run_keeps_the_program_output_on_stdout() {
     let stderr = String::from_utf8(output.stderr).expect("utf8");
     assert_eq!(stdout, "ran\n", "program output must stay on stdout");
     assert!(stderr.contains("rolled back"), "{stderr}");
+}
+
+#[test]
+fn dry_run_jsonl_keeps_program_output_off_the_record_stream() {
+    // Under `--format jsonl` the dry-run records are tooling output and must not
+    // share the program's stdout stream: stdout is exactly the program's own
+    // `print` output, and the planned-write records land on stderr as parseable
+    // JSONL. Mixing them would corrupt a consumer parsing stdout as JSONL.
+    let project = temp_project("dryrun-jsonl-streams", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             resource Book at ^books(id: int)\n\
+             \x20\x20\x20\x20title: string\n\n\
+             pub fn main()\n\
+             \x20\x20\x20\x20transaction\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(1).title = \"Mort\"\n\
+             \x20\x20\x20\x20print(\"ran\")\n",
+        );
+    });
+    let dir = project.to_str().unwrap().to_string();
+    let output = marrow(&["run", "--dry-run", "--format", "json", &dir]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+
+    // Program output owns stdout untouched; no JSON record leaked onto it.
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    assert_eq!(stdout, "ran\n", "program output must own stdout: {stdout}");
+
+    // The dry-run report is one JSON envelope on stderr, off the program's stream.
+    let stderr = String::from_utf8(output.stderr).expect("utf8");
+    let report: serde_json::Value =
+        serde_json::from_str(stderr.trim()).expect("the dry-run report is JSON on stderr");
+    assert_eq!(report["committed"], false, "{report}");
+    let planned = report["planned"].as_array().expect("planned array");
+    assert!(
+        planned
+            .iter()
+            .any(|step| step["op"] == "write" && step["path"] == "^books(1).title"),
+        "the planned write must appear in the stderr report: {report}"
+    );
+}
+
+#[test]
+fn dry_run_does_not_promise_native_file_byte_stability() {
+    // The dry run guarantees logical saved-data stability, not native-file byte
+    // identity: the same records read back. The native file itself may differ
+    // because aborting the store transaction can still rewrite backend metadata.
+    // No CLI surface may promise byte-for-byte file identity.
+    let help = marrow(&["run", "--help"]);
+    let help_text = String::from_utf8(help.stdout).expect("utf8");
+    assert!(
+        !help_text.contains("byte-for-byte"),
+        "run --help must not promise byte-for-byte file identity: {help_text}"
+    );
+    assert!(
+        help_text.contains("saved data"),
+        "run --help must describe the real saved-data guarantee: {help_text}"
+    );
 }
 
 #[test]

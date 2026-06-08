@@ -71,7 +71,7 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
             // Report each statement and managed write as the run executes.
             "--trace" => trace = true,
             // Run the entry, report the saved-data writes it would commit, then roll
-            // them back so the store is left byte-for-byte unchanged.
+            // them back so no saved data changes.
             "--dry-run" => dry_run = true,
             "--format" => {
                 if let Err(code) =
@@ -99,9 +99,11 @@ with `print`/`write` goes to stdout.
                  rejects. Use it deliberately.
   --trace        Report each statement (file:line, call depth, visible locals)
                  and each managed write as the run executes, in execution order.
+                 The trace is tooling output on stderr, leaving stdout for the
+                 program's own output.
   --dry-run      Run the entry, report the saved-data writes it would commit,
-                 then roll them back: the store is left byte-for-byte unchanged.
-                 Side effects outside saved data are not rewound.
+                 then roll them back: no saved data changes. Side effects outside
+                 saved data are not rewound. The plan is tooling output on stderr.
   --format       The report format for --trace/--dry-run (default text). A plain
                  run's stdout is the program's own output and takes no --format.
 "
@@ -159,7 +161,9 @@ fn run_project_dir(
     // with a pending catalog proposal has its durable identity frozen here before the
     // run touches the store. A clean accepted catalog proposes no change and is left
     // untouched.
-    let program = match commit_pending_identity(dir, &config, program) {
+    // A plain run reports its errors as text; only the trace/dry-run report takes
+    // `--format`, so an identity-commit failure renders as text here.
+    let program = match commit_pending_identity(dir, &config, program, CheckFormat::Text) {
         Ok(program) => program,
         Err(code) => return code,
     };
@@ -294,9 +298,9 @@ fn execute(
     };
 
     // A dry run brackets the whole run in one outer savepoint it always rolls back,
-    // so saved data is left byte-for-byte unchanged; it observes every managed
-    // write through the same hook the trace uses. A `--trace` (with or without
-    // `--dry-run`) installs the trace hook; a plain run installs none.
+    // so no saved data changes; it observes every managed write through the same
+    // hook the trace uses. A `--trace` (with or without `--dry-run`) installs the
+    // trace hook; a plain run installs none.
     let format = observe.format();
     let result = if observe.rolls_back() {
         let trace = observe
@@ -339,8 +343,10 @@ fn execute(
     }
 }
 
-/// The tooling report a run produced alongside the program's own output, emitted
-/// after the run's stdout so the program output and the report do not interleave.
+/// The tooling report a run produced alongside the program's own output. The
+/// program's output owns stdout; the report is written to stderr, so under any
+/// `--format` the two streams stay separate and a consumer parsing stdout sees only
+/// program output.
 enum Report {
     None,
     Trace(TraceHook),

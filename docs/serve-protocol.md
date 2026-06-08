@@ -49,8 +49,11 @@ connection, not the server).
 - The server accepts connections one at a time and serves each to completion.
 - A connection has a 30-second read timeout. A client that connects and then
   stalls has its connection closed (like a hang-up); the accept loop moves on.
-- A request line may be up to 64 MiB; a longer line without a newline earns a
-  `protocol.malformed` reply (see below) and the connection stays open.
+- A request line may be up to 64 MiB. A line that exceeds that bound is one
+  oversized request: it earns a single `protocol.malformed` reply (see below), the
+  rest of that line up to its newline is discarded, and the connection stays open.
+  An oversized line is never split into a rejected request plus a second request
+  parsed from its tail.
 
 ### Per-connection snapshot
 

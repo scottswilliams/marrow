@@ -1,3 +1,5 @@
+use std::fs;
+
 use marrow_store::value::Scalar;
 
 mod support;
@@ -6,7 +8,7 @@ mod support_evolve;
 use support::{marrow, write};
 use support_evolve::{
     REQUIRED_DEFAULT_SOURCE, commit_catalog, member_catalog_id, native_books_project,
-    open_native_store, root_place, seed_member, seed_title_only,
+    native_store_path, open_native_store, root_place, seed_member, seed_title_only,
 };
 
 #[test]
@@ -27,6 +29,44 @@ fn evolve_preview_reports_the_exact_witness_counts() {
     assert!(stdout.contains("records to backfill: 1"), "{stdout}");
     assert!(stdout.contains("source digest:"), "{stdout}");
     assert!(stdout.contains("accepted epoch:"), "{stdout}");
+}
+
+#[test]
+fn evolve_preview_renders_a_store_open_failure_through_the_selected_format() {
+    // `evolve preview` opens the configured store read-only. A store that cannot be
+    // opened is a store fault, and under `--format json` it must render as a JSON
+    // error envelope on stdout carrying the store code, not hard-coded text on
+    // stderr. Otherwise a machine consumer parsing stdout as JSON sees nothing.
+    let root = native_books_project("evolve-preview-store-open", REQUIRED_DEFAULT_SOURCE);
+    commit_catalog(&root);
+    // Corrupt the native store file so opening it for inspection fails.
+    let store_path = native_store_path(&root);
+    fs::create_dir_all(store_path.parent().unwrap()).expect("create data dir");
+    fs::write(&store_path, b"not a redb database").expect("write corrupt store");
+
+    let output = marrow(&[
+        "evolve",
+        "preview",
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+
+    // The failure renders as JSON on stdout, not as raw text on stderr.
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    let value: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("store-open failure must be JSON on stdout");
+    assert_eq!(
+        value["kind"], "storage",
+        "a store-open failure must carry the storage kind: {value}"
+    );
+    assert!(
+        value["code"]
+            .as_str()
+            .is_some_and(|code| code.starts_with("store.")),
+        "the error must carry a store code: {value}"
+    );
 }
 
 #[test]

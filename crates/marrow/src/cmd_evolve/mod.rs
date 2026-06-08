@@ -38,7 +38,7 @@ pub(crate) fn check_data(dir: &str, format: CheckFormat) -> ExitCode {
     let Ok((config, program)) = load_checked_project_with_format(dir, format) else {
         return ExitCode::FAILURE;
     };
-    let Ok(store) = store::preview_store(dir, &config) else {
+    let Ok(store) = store::preview_store(dir, &config, format) else {
         return ExitCode::FAILURE;
     };
     match preview(&program, &store) {
@@ -66,7 +66,7 @@ fn preview_cmd(raw_args: &[String]) -> ExitCode {
     let Ok((config, program)) = load_checked_project_with_format(&input.dir, input.format) else {
         return ExitCode::FAILURE;
     };
-    let Ok(store) = store::preview_store(&input.dir, &config) else {
+    let Ok(store) = store::preview_store(&input.dir, &config, input.format) else {
         return ExitCode::FAILURE;
     };
     match preview(&program, &store) {
@@ -99,7 +99,7 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
     // built. This is a separate transactional step from consuming the preview witness:
     // once the catalog is committed, preview and apply run against the accepted
     // identity exactly as they would for an already-accepted project.
-    let program = match commit_pending_identity(&input.dir, &config, program) {
+    let program = match commit_pending_identity(&input.dir, &config, program, input.format) {
         Ok(program) => program,
         Err(code) => return code,
     };
@@ -139,7 +139,8 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
             // change that does not touch durable identity (a pure backfill), so the file
             // already matches and is left untouched.
             if let Some(proposal) = &program.catalog.proposal
-                && let Err(code) = write_accepted_catalog(&input.dir, &config, proposal)
+                && let Err(code) =
+                    write_accepted_catalog(&input.dir, &config, proposal, input.format)
             {
                 return code;
             }
@@ -221,7 +222,7 @@ fn resume_completion(
         report_resume_drift(format);
         return Err(ExitCode::FAILURE);
     }
-    write_accepted_catalog(dir, config, proposal)?;
+    write_accepted_catalog(dir, config, proposal, format)?;
     render::apply_resumed(proposal.epoch, format);
     Ok(Some(ExitCode::SUCCESS))
 }
