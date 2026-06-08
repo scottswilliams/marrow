@@ -26,8 +26,8 @@ fn codes(source: &str) -> Vec<String> {
 ///
 /// Range diagnostics select the indefinite article for the endpoint type name
 /// (`an instant`, not `a instant`); that grammar lives only in the rendered
-/// message, with no typed signal to assert. The two article tests below are the
-/// only coverage of that rule and rely on this helper.
+/// message, with no typed signal to assert. The article test below is the only
+/// coverage of that rule and relies on this helper.
 fn messages(source: &str) -> Vec<String> {
     diagnostics(source)
         .iter()
@@ -281,32 +281,22 @@ fn a_valid_ascending_decimal_range_checks_clean() {
 }
 
 #[test]
-fn a_vowel_initial_endpoint_step_mismatch_uses_the_right_article() {
-    // `instant` is vowel-initial; the message must read "an instant", not "a instant".
-    let messages = messages(&module(
+fn a_vowel_initial_endpoint_uses_the_right_article() {
+    // `instant` is vowel-initial; the range diagnostic must read "an instant", not
+    // "a instant". Both the step-mismatch (`by 1`) and the default-step (no `by`)
+    // diagnostics render the endpoint type name, so both must select the article.
+    for body in [
         "    for t in std::clock::now()..std::clock::now() by 1\n        var x = t\n",
-    ));
-    assert!(
-        messages.iter().any(|m| m.contains("an `instant`")),
-        "{messages:?}"
-    );
-    assert!(
-        !messages.iter().any(|m| m.contains("a `instant`")),
-        "{messages:?}"
-    );
-}
-
-#[test]
-fn a_vowel_initial_endpoint_default_step_uses_the_right_article() {
-    let messages = messages(&module(
         "    for t in std::clock::now()..std::clock::now()\n        var x = t\n",
-    ));
-    assert!(
-        messages.iter().any(|m| m.contains("an `instant`")),
-        "{messages:?}"
-    );
-    assert!(
-        !messages.iter().any(|m| m.contains("a `instant`")),
-        "{messages:?}"
-    );
+    ] {
+        let messages = messages(&module(body));
+        assert!(
+            messages.iter().any(|m| m.contains("an `instant`")),
+            "{messages:?}"
+        );
+        assert!(
+            !messages.iter().any(|m| m.contains("a `instant`")),
+            "{messages:?}"
+        );
+    }
 }

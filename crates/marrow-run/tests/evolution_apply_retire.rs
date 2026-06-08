@@ -111,62 +111,50 @@ fn explicit_index_retire_deletes_index_cells() {
 }
 
 /// A retire over populated data needs maintenance plus a scoped approval. With no
-/// approval, apply refuses: the witness is non-activatable.
+/// approval apply refuses and the witness is non-activatable, leaving the data in
+/// place; with maintenance and a matching scoped approval it drops the retired member
+/// subtree from every record and stamps the retire receipt.
 #[test]
-fn destructive_retire_without_approval_aborts() {
+fn destructive_retire_aborts_without_approval_and_deletes_with_matching_approval() {
     let (root, program, place, store, subtitle_id) =
-        destructive_retire_fixture("apply-retire-noapproval");
+        destructive_retire_fixture("apply-retire-approval");
     let witness = witness(&program, &store);
-    assert!(!witness.is_activatable());
+    let store_id = store_id_of(&place);
+    let subtitle_present = |id: i64| {
+        store
+            .data_subtree_exists(
+                &store_id,
+                &[SavedKey::Int(id)],
+                &[DataPathSegment::Member(
+                    CatalogId::new(subtitle_id.clone()).unwrap(),
+                )],
+            )
+            .expect("exists")
+    };
 
+    // No approval: the witness is non-activatable and apply refuses without dropping
+    // any data.
+    assert!(!witness.is_activatable());
     let result = apply(&witness, &program, &store, true, None);
     assert!(
         matches!(result, Err(ApplyError::ApprovalRequired { .. })),
         "expected ApprovalRequired, got {result:#?}"
     );
-    // The subtitle data is still present: nothing was dropped.
-    let store_id = store_id_of(&place);
     assert!(
-        store
-            .data_subtree_exists(
-                &store_id,
-                &[SavedKey::Int(1)],
-                &[DataPathSegment::Member(
-                    CatalogId::new(subtitle_id.clone()).unwrap()
-                )]
-            )
-            .expect("exists"),
+        subtitle_present(1),
         "retire without approval must not drop data"
     );
-    fs::remove_dir_all(&root).ok();
-}
 
-/// A retire with maintenance and a matching scoped approval drops the retired member
-/// subtree and stamps the epoch.
-#[test]
-fn destructive_retire_with_matching_approval_deletes() {
-    let (root, program, place, store, subtitle_id) =
-        destructive_retire_fixture("apply-retire-approved");
-    let witness = witness(&program, &store);
-
+    // Maintenance plus a matching scoped approval drops the member subtree from both
+    // records and stamps the retire receipt.
     let approval = Approval {
         retires: vec![(CatalogId::new(subtitle_id.clone()).unwrap(), 2)],
     };
     let outcome = apply(&witness, &program, &store, true, Some(&approval)).expect("apply");
     assert_eq!(outcome.receipt.records_retired, 2);
-
-    let store_id = store_id_of(&place);
     for id in [1, 2] {
         assert!(
-            !store
-                .data_subtree_exists(
-                    &store_id,
-                    &[SavedKey::Int(id)],
-                    &[DataPathSegment::Member(
-                        CatalogId::new(subtitle_id.clone()).unwrap()
-                    )]
-                )
-                .expect("exists"),
+            !subtitle_present(id),
             "approved retire drops the member subtree"
         );
     }
@@ -250,42 +238,11 @@ fn completion_rejects_retire_receipt_count_moved_between_ids() {
     assert_eq!(error, ApplyError::Drift);
 }
 
-/// A scoped approval whose populated count does not match the witness aborts: the
-/// store changed under the developer's decision and the destructive drop is refused.
-#[test]
-fn destructive_retire_count_drift_aborts() {
-    let (root, program, place, store, subtitle_id) =
-        destructive_retire_fixture("apply-retire-countdrift");
-    let witness = witness(&program, &store);
-
-    let approval = Approval {
-        retires: vec![(CatalogId::new(subtitle_id.clone()).unwrap(), 1)], // witness recorded 2
-    };
-    let result = apply(&witness, &program, &store, true, Some(&approval));
-    assert!(
-        matches!(result, Err(ApplyError::ApprovalMismatch)),
-        "expected ApprovalMismatch, got {result:#?}"
-    );
-    let store_id = store_id_of(&place);
-    assert!(
-        store
-            .data_subtree_exists(
-                &store_id,
-                &[SavedKey::Int(1)],
-                &[DataPathSegment::Member(
-                    CatalogId::new(subtitle_id).unwrap()
-                )]
-            )
-            .expect("exists"),
-        "a count-drifted approval must not drop data"
-    );
-    fs::remove_dir_all(&root).ok();
-}
-
 /// A multi-retire approval is matched per id: each approved count must equal the
-/// witness count for that exact id. When two retired members hold different populated
-/// counts, swapping the counts between them keeps the sum identical but is out of scope,
-/// so apply must refuse. A merely summed check would bless the swap and drop data the
+/// witness count for that exact id. A single member whose approved count drifts from
+/// the witness is refused, and when two retired members hold different populated counts,
+/// swapping the counts between them keeps the sum identical but is out of scope, so apply
+/// must still refuse. A merely summed check would bless the swap and drop data the
 /// developer did not approve at that scope.
 #[test]
 fn destructive_multi_retire_approval_is_matched_per_id() {
@@ -336,6 +293,41 @@ fn destructive_multi_retire_approval_is_matched_per_id() {
     );
     let program = checked(&root);
     let witness = witness(&program, &store);
+    let store_id = store_id_of(&accepted_place);
+    let both_present = |label: &str| {
+        for member_id in [&subtitle_id, &notes_id] {
+            assert!(
+                store
+                    .data_subtree_exists(
+                        &store_id,
+                        &[SavedKey::Int(1)],
+                        &[DataPathSegment::Member(
+                            CatalogId::new(member_id.clone()).unwrap(),
+                        )],
+                    )
+                    .expect("exists"),
+                "{label} must not drop data"
+            );
+        }
+    };
+
+    // A single member whose approved count drifts below the witness (subtitle approved
+    // as 1 where the witness recorded 2, notes correct) is refused without dropping data.
+    let single_drift = Approval {
+        retires: vec![
+            (CatalogId::new(subtitle_id.clone()).unwrap(), 1),
+            (CatalogId::new(notes_id.clone()).unwrap(), 1),
+        ],
+    };
+    let result = apply(&witness, &program, &store, true, Some(&single_drift));
+    assert!(
+        matches!(result, Err(ApplyError::ApprovalMismatch)),
+        "a single-member count drift must be rejected, got {result:#?}"
+    );
+    both_present("a count-drifted approval");
+
+    // Swapping the two counts keeps the sum at 3 but is per-id out of scope, so apply
+    // must refuse rather than bless the sum and drop unapproved data.
     let swapped = Approval {
         retires: vec![
             (CatalogId::new(subtitle_id.clone()).unwrap(), 1),
@@ -347,22 +339,7 @@ fn destructive_multi_retire_approval_is_matched_per_id() {
         matches!(result, Err(ApplyError::ApprovalMismatch)),
         "a per-id-wrong approval with a matching sum must be rejected, got {result:#?}"
     );
-
-    let store_id = store_id_of(&accepted_place);
-    for member_id in [&subtitle_id, &notes_id] {
-        assert!(
-            store
-                .data_subtree_exists(
-                    &store_id,
-                    &[SavedKey::Int(1)],
-                    &[DataPathSegment::Member(
-                        CatalogId::new(member_id.clone()).unwrap()
-                    )]
-                )
-                .expect("exists"),
-            "a per-id-wrong approval must not drop data"
-        );
-    }
+    both_present("a per-id-wrong approval");
 
     // The correctly scoped per-id approval activates and drops both members.
     let scoped = Approval {

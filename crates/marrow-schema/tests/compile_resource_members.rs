@@ -65,6 +65,59 @@ fn compile_source(source: &str) -> (ResourceSchema, Vec<SchemaError>) {
     }
 }
 
+/// Compile every stored resource in `source` through the saved-resource schema rule
+/// sequence the checker drives — the stored-resource shape, the store, the saved member
+/// rules, and the named-field enum rule resolved against the module's declared enums —
+/// and return the schema errors. The same-file enum set and stored-resource set are
+/// derived from the parsed declarations exactly as the checker derives them, so the
+/// named-field rule sees the enums a real module would.
+fn compile_saved_resource_errors(source: &str) -> Vec<SchemaError> {
+    let parsed = parse_source(source);
+    assert!(
+        !parsed.has_errors(),
+        "source should parse cleanly: {:?}",
+        parsed.diagnostics
+    );
+    let module_enums: Vec<String> = parsed
+        .file
+        .declarations
+        .iter()
+        .filter_map(|declaration| match declaration {
+            Declaration::Enum(decl) => Some(decl.name.clone()),
+            _ => None,
+        })
+        .collect();
+    let stores: Vec<_> = parsed
+        .file
+        .declarations
+        .iter()
+        .filter_map(|declaration| match declaration {
+            Declaration::Store(store) => Some(store.clone()),
+            _ => None,
+        })
+        .collect();
+
+    let mut errors = Vec::new();
+    for declaration in &parsed.file.declarations {
+        let Declaration::Resource(resource) = declaration else {
+            continue;
+        };
+        let Some(store) = stores.iter().find(|store| store.resource == resource.name) else {
+            continue;
+        };
+        let (schema, resource_errors) = compile_stored_resource(resource);
+        errors.extend(resource_errors);
+        let (_, store_errors) = compile_store(store, &schema);
+        errors.extend(store_errors);
+        errors.extend(check_saved_member_rules(&resource.members));
+        errors.extend(check_saved_named_member_fields(
+            &resource.members,
+            &module_enums,
+        ));
+    }
+    errors
+}
+
 fn codes(errors: &[SchemaError]) -> Vec<&'static str> {
     errors.iter().map(|error| error.code).collect()
 }
@@ -156,20 +209,27 @@ fn member_resolvers_reject_unknown_and_empty_chains() {
 
 #[test]
 fn a_bare_named_saved_field_must_be_a_declared_enum() {
-    let decl = resource(
+    // A saved field typed by a declared enum compiles clean; the same field typed by
+    // an undeclared name is the typed non-enum-named-field error.
+    assert!(
+        compile_saved_resource_errors(
+            "\
+enum Status
+    active
+    archived
+resource Order at ^orders(id: int)
+    required state: Status
+",
+        )
+        .is_empty(),
+        "an enum-typed saved field is allowed"
+    );
+    let errors = compile_saved_resource_errors(
         "\
 resource Order at ^orders(id: int)
     required state: Status
 ",
     );
-    // `Status` is a declared enum: the saved field is accepted.
-    assert!(
-        check_saved_named_member_fields(&decl.members, &["Status".to_string()]).is_empty(),
-        "an enum-typed saved field is allowed"
-    );
-    // With no such enum declared, the bare-named field has no checked enum value
-    // form and is rejected.
-    let errors = check_saved_named_member_fields(&decl.members, &[]);
     assert_eq!(codes(&errors), [SCHEMA_NON_ENUM_NAMED_FIELD]);
     assert_kind(
         &errors[0],
@@ -182,17 +242,25 @@ resource Order at ^orders(id: int)
 
 #[test]
 fn a_bare_named_map_value_must_be_a_declared_enum() {
-    let decl = resource(
+    assert!(
+        compile_saved_resource_errors(
+            "\
+enum Status
+    active
+    archived
+resource Order at ^orders(id: int)
+    scores: map[string, Status]
+",
+        )
+        .is_empty(),
+        "an enum-typed map value is allowed"
+    );
+    let errors = compile_saved_resource_errors(
         "\
 resource Order at ^orders(id: int)
     scores: map[string, Status]
 ",
     );
-    assert!(
-        check_saved_named_member_fields(&decl.members, &["Status".to_string()]).is_empty(),
-        "an enum-typed map value is allowed"
-    );
-    let errors = check_saved_named_member_fields(&decl.members, &[]);
     assert_eq!(codes(&errors), [SCHEMA_NON_ENUM_NAMED_FIELD]);
     assert_kind(
         &errors[0],

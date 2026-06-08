@@ -26,17 +26,10 @@ fn count_reports_scalar_presence_and_child_counts() {
     assert_eq!(count("test::countTags"), Some(Value::Int(2)));
     assert_eq!(count("test::countMissingField"), Some(Value::Int(0)));
     assert_eq!(count("test::countMissingTags"), Some(Value::Int(0)));
-}
 
-#[test]
-fn count_of_a_path_with_both_value_and_children_counts_children() {
-    // When a path has BOTH a value and children, `count` returns the number of
-    // immediate children, not children-plus-one.
-    let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    tags: sequence[string]\n\npub fn n(): int\n    return count(^books(1).tags)\n",
-    );
-    let store = TreeStore::memory();
-    // Seed a value at `^books(1).tags` itself and two children below it.
+    // A layer carrying BOTH a self-value and children counts only its immediate
+    // children, not children-plus-one. The runtime never writes a value at a
+    // sequence-layer path, so this edge is seeded at the store directly.
     write_data_value(
         &program,
         &store,
@@ -45,27 +38,7 @@ fn count_of_a_path_with_both_value_and_children_counts_children() {
         &data_path(&program, "books", &["tags"]),
         SavedValue::Str("self".into()),
     );
-    for (pos, value) in [(1, "a"), (2, "b")] {
-        write_data_value(
-            &program,
-            &store,
-            "books",
-            &[SavedKey::Int(1)],
-            &keyed_data_path(
-                &program,
-                "books",
-                &[("tags", vec![SavedKey::Int(pos)])],
-                &[],
-            ),
-            SavedValue::Str(value.into()),
-        );
-    }
-    assert_eq!(
-        run_entry(&store, checked_entry!(&program, "test::n"))
-            .expect("run")
-            .value,
-        Some(Value::Int(2)),
-    );
+    assert_eq!(count("test::countTags"), Some(Value::Int(2)));
 }
 
 /// `count` over a declared index branch returns the number of entries under that
@@ -268,32 +241,38 @@ fn count_over_an_indexed_root_ignores_populated_index_branches() {
 }
 
 #[test]
-fn count_over_a_direct_saved_root_matches_written_records() {
-    let program = checked_program(&format!(
-        "{BOOK_PRIMARY_SCHEMA}pub fn seed()\n    ^books(1).title = \"A\"\n    ^books(2).title = \"B\"\n    ^books(3).title = \"C\"\n\npub fn countRoot(): int\n    return count(^books)\n"
+fn count_over_a_saved_root_matches_direct_iteration() {
+    // A root count equals the record count direct iteration yields, for both a
+    // primary single-key root and a composite-key root.
+    let primary = checked_program(&format!(
+        "{BOOK_PRIMARY_SCHEMA}pub fn seed()\n    ^books(1).title = \"A\"\n    ^books(2).title = \"B\"\n    ^books(3).title = \"C\"\n\npub fn countRoot(): int\n    return count(^books)\n\npub fn iterRoot(): int\n    var n = 0\n    for book in ^books\n        n = n + 1\n    return n\n"
     ));
-    let store = TreeStore::memory();
-    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+    let call = |store: &TreeStore, program, entry: &str| {
+        run_entry(store, checked_entry!(program, entry))
+            .expect(entry)
+            .value
+    };
 
+    let primary_store = TreeStore::memory();
+    run_entry(&primary_store, checked_entry!(&primary, "test::seed")).expect("seed");
     assert_eq!(
-        run_entry(&store, checked_entry!(&program, "test::countRoot"))
-            .expect("count")
-            .value,
+        call(&primary_store, &primary, "test::countRoot"),
         Some(Value::Int(3))
     );
-}
+    assert_eq!(
+        call(&primary_store, &primary, "test::iterRoot"),
+        Some(Value::Int(3))
+    );
 
-#[test]
-fn count_over_a_composite_root_matches_direct_iteration() {
-    let program = checked_program(
+    let composite = checked_program(
         "resource Cell at ^cells(x: int, y: int)\n    required value: int\n\npub fn put(x: int, y: int, value: int)\n    ^cells(x, y).value = value\n\npub fn countRoot(): int\n    return count(^cells)\n\npub fn iterRoot(): int\n    var n = 0\n    for cell in ^cells\n        n = n + 1\n    return n\n",
     );
-    let store = TreeStore::memory();
+    let composite_store = TreeStore::memory();
     for (x, y, value) in [(1, 1, 11), (1, 2, 12), (2, 1, 21)] {
         run_entry(
-            &store,
+            &composite_store,
             checked_entry!(
-                &program,
+                &composite,
                 "test::put",
                 Value::Int(x),
                 Value::Int(y),
@@ -302,13 +281,14 @@ fn count_over_a_composite_root_matches_direct_iteration() {
         )
         .expect("put");
     }
-    let call = |entry: &str| {
-        run_entry(&store, checked_entry!(&program, entry))
-            .expect(entry)
-            .value
-    };
-    assert_eq!(call("test::countRoot"), Some(Value::Int(3)));
-    assert_eq!(call("test::iterRoot"), Some(Value::Int(3)));
+    assert_eq!(
+        call(&composite_store, &composite, "test::countRoot"),
+        Some(Value::Int(3))
+    );
+    assert_eq!(
+        call(&composite_store, &composite, "test::iterRoot"),
+        Some(Value::Int(3))
+    );
 }
 
 #[test]
