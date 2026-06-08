@@ -1,22 +1,13 @@
 mod support;
+mod support_conversion;
 
-use marrow_check::{
-    ConversionTarget, ConversionUnsupportedSourceDiagnostic, DiagnosticPayload, MarrowType,
-    ScalarType, check_project,
-};
+use marrow_check::{ConversionTarget, DiagnosticPayload, MarrowType, ScalarType, check_project};
 
 use support::{
     assert_clean, check_module, check_module_report, check_script, config, temp_project, with_code,
     write,
 };
-
-fn conversion_source_payload(target: ConversionTarget, source: MarrowType) -> DiagnosticPayload {
-    DiagnosticPayload::ConversionUnsupportedSource(ConversionUnsupportedSourceDiagnostic {
-        target,
-        source,
-        accepted_sources: target.accepted_source_types(),
-    })
-}
+use support_conversion::conversion_source_payload;
 
 #[test]
 fn a_conversion_rejects_an_unsupported_source_and_lists_the_accepted_sources() {

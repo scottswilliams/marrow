@@ -1,19 +1,12 @@
 mod support;
+mod support_conversion;
 
 use marrow_check::{
-    AppendTargetDiagnostic, ConversionTarget, ConversionUnsupportedSourceDiagnostic,
-    DiagnosticPayload, MarrowType, ScalarType,
+    AppendTargetDiagnostic, ConversionTarget, DiagnosticPayload, MarrowType, ScalarType,
 };
 
 use support::{assert_clean, check_module, check_module_report, with_code};
-
-fn conversion_source_payload(target: ConversionTarget, source: MarrowType) -> DiagnosticPayload {
-    DiagnosticPayload::ConversionUnsupportedSource(ConversionUnsupportedSourceDiagnostic {
-        target,
-        source,
-        accepted_sources: target.accepted_source_types(),
-    })
-}
+use support_conversion::conversion_source_payload;
 
 #[test]
 fn exists_and_append_builtin_return_types_feed_checks() {
