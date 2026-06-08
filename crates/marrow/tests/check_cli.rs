@@ -11,6 +11,11 @@ fn check_json(path: impl AsRef<std::ffi::OsStr>) -> std::process::Output {
     support::marrow_sub("check", &["--format", "json", path])
 }
 
+fn check_jsonl(path: impl AsRef<std::ffi::OsStr>) -> std::process::Output {
+    let path = path.as_ref().to_str().expect("utf8 path");
+    support::marrow_sub("check", &["--format", "jsonl", path])
+}
+
 fn diagnostic_codes(report: &Value) -> Vec<&str> {
     report["diagnostics"]
         .as_array()
@@ -22,6 +27,21 @@ fn diagnostic_codes(report: &Value) -> Vec<&str> {
 
 fn assert_has_code(report: &Value, code: &str) {
     assert!(diagnostic_codes(report).contains(&code), "{report:#?}");
+}
+
+/// The diagnostic records of a `--format jsonl` run: every record except the
+/// trailing summary. Asserting against parsed records, not a stderr blob, keeps
+/// the oracle on typed codes and payload fields rather than rendered prose.
+fn diagnostic_records(output: std::process::Output) -> Vec<Value> {
+    support::jsonl(output.stdout)
+        .into_iter()
+        .filter(|record| record["kind"] != "summary")
+        .collect()
+}
+
+/// Whether any diagnostic record carries `code`.
+fn has_code(records: &[Value], code: &str) -> bool {
+    support::codes(records).contains(&code)
 }
 
 #[test]
@@ -46,13 +66,22 @@ pub fn main()
 fn check_reports_parse_diagnostics() {
     let path = temp_source("invalid", "module app\n\tpub fn main()\n");
 
-    let output = support::marrow_sub("check", &[path.to_str().unwrap()]);
+    let output = check_jsonl(&path);
 
     fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("parse.syntax"), "{stderr}");
-    assert!(stderr.contains("tabs"), "{stderr}");
+    let records = diagnostic_records(output);
+    assert!(has_code(&records, "parse.syntax"), "{records:#?}");
+    // The tab-rejection message is the human render contract for this diagnostic.
+    let tab = records
+        .iter()
+        .find(|record| {
+            record["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("tabs"))
+        })
+        .expect("a tab-rejection diagnostic");
+    assert_eq!(tab["code"], "parse.syntax", "{tab}");
 }
 
 #[test]
@@ -65,17 +94,44 @@ fn check_reserved_word_binding_reports_parse_errors_without_control_flow_cascade
     )
     .expect("write source");
 
-    let output = support::marrow_sub("check", &[dir.to_str().unwrap()]);
+    let output = check_jsonl(dir.path());
 
     assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("expected variable name"), "{stderr}");
+    let records = diagnostic_records(output);
+    // No control-flow cascade: every diagnostic is a parse error, so the rejected
+    // binding never reaches the checker as a spurious missing-return or a
+    // recovery-mode "expected a statement".
     assert!(
-        stderr.contains("cannot be used as an expression"),
-        "{stderr}"
+        records
+            .iter()
+            .all(|record| record["code"] == "parse.syntax"),
+        "{records:#?}"
     );
-    assert!(!stderr.contains("expected a statement"), "{stderr}");
-    assert!(!stderr.contains("check.missing_return"), "{stderr}");
+    assert!(!has_code(&records, "check.missing_return"), "{records:#?}");
+    let messages: Vec<&str> = records
+        .iter()
+        .filter_map(|record| record["message"].as_str())
+        .collect();
+    // The two reserved-word positions render distinctly: the binding name and the
+    // expression use. This message pair is the human render contract.
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("variable name")),
+        "{messages:#?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("as an expression")),
+        "{messages:#?}"
+    );
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message.contains("expected a statement")),
+        "{messages:#?}"
+    );
 }
 
 #[test]
@@ -85,14 +141,23 @@ fn check_reports_obsolete_operators_in_function_bodies() {
         "module app\nfn main()\n    return a && b\n",
     );
 
-    let output = support::marrow_sub("check", &[path.to_str().unwrap()]);
+    let output = check_jsonl(&path);
 
     fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("parse.syntax"), "{stderr}");
-    assert!(stderr.contains("`&&`"), "{stderr}");
-    assert!(stderr.contains("Use `and` for boolean and"), "{stderr}");
+    let records = diagnostic_records(output);
+    let obsolete = records
+        .iter()
+        .find(|record| {
+            record["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("`&&`"))
+        })
+        .expect("an obsolete-operator diagnostic");
+    assert_eq!(obsolete["code"], "parse.syntax", "{obsolete}");
+    // The `and` migration guidance is the human render contract, carried in the
+    // structured `help` field rather than spliced into the rendered message.
+    assert_eq!(obsolete["help"], "Use `and` for boolean and.", "{obsolete}");
 }
 
 #[test]
@@ -162,14 +227,33 @@ fn check_reports_reserved_merge_and_lock_as_parse_errors() {
     )
     .expect("write source");
 
-    let output = support::marrow_sub("check", &[dir.to_str().unwrap()]);
+    let output = check_jsonl(dir.path());
 
     assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("parse.syntax"), "{stderr}");
-    assert!(stderr.contains("`lock` is reserved"), "{stderr}");
-    assert!(stderr.contains("`merge` is reserved"), "{stderr}");
-    assert!(!stderr.contains("check.rejected_surface"), "{stderr}");
+    let records = diagnostic_records(output);
+    assert!(has_code(&records, "parse.syntax"), "{records:#?}");
+    // `lock` and `merge` are parse-rejected, not checker-rejected: the reserved
+    // surface never reaches `check.rejected_surface`.
+    assert!(
+        !has_code(&records, "check.rejected_surface"),
+        "{records:#?}"
+    );
+    let messages: Vec<&str> = records
+        .iter()
+        .filter_map(|record| record["message"].as_str())
+        .collect();
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("`lock` is reserved")),
+        "{messages:#?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("`merge` is reserved")),
+        "{messages:#?}"
+    );
 }
 
 #[test]

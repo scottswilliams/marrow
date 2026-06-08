@@ -1,8 +1,23 @@
 use std::path::Path;
 
+use serde_json::Value;
+
 mod support;
 
-use support::{marrow, marrow_sub, temp_project, write};
+use support::{marrow_sub, temp_project, write};
+
+/// Check a project directory through the structured JSONL surface, returning the
+/// diagnostic records (every record except the trailing summary). Enum-identity
+/// mismatches are asserted on typed codes and structured `message` payloads, not
+/// on a rendered stderr blob.
+fn check_diagnostics(dir: &str) -> (std::process::Output, Vec<Value>) {
+    let output = marrow_sub("check", &["--format", "jsonl", dir]);
+    let records = support::jsonl(output.stdout.clone())
+        .into_iter()
+        .filter(|record| record["kind"] != "summary")
+        .collect();
+    (output, records)
+}
 
 #[test]
 fn a_same_named_enum_in_another_module_does_not_alias() {
@@ -229,12 +244,11 @@ fn an_aliased_annotation_rejects_a_foreign_enum_argument() {
         );
     });
     let dir = root.to_str().unwrap().to_string();
-    let check = marrow(&["check", &dir]);
+    let (check, records) = check_diagnostics(&dir);
     assert_eq!(check.status.code(), Some(1), "check: {check:?}");
-    let stderr = String::from_utf8(check.stderr).expect("stderr utf8");
     assert!(
-        stderr.contains("check.call_argument"),
-        "expected a call_argument mismatch, got: {stderr}"
+        support::codes(&records).contains(&"check.call_argument"),
+        "expected a call_argument mismatch, got: {records:#?}"
     );
 }
 
@@ -333,11 +347,17 @@ fn a_cross_module_same_named_enum_mismatch_names_both_modules() {
         );
     });
     let dir = root.to_str().unwrap().to_string();
-    let check = marrow(&["check", &dir]);
+    let (check, records) = check_diagnostics(&dir);
     assert_eq!(check.status.code(), Some(1), "check: {check:?}");
-    let stderr = String::from_utf8(check.stderr).expect("stderr utf8");
+    let mismatch = records
+        .iter()
+        .find(|record| record["code"] == "check.call_argument")
+        .expect("a call_argument mismatch");
+    // Both short names are `Status`, so the rendered message must qualify each
+    // side with its owning module; this disambiguation is the render contract.
+    let message = mismatch["message"].as_str().expect("diagnostic message");
     assert!(
-        stderr.contains("a::Status") && stderr.contains("b::Status"),
-        "expected both modules named, got: {stderr}"
+        message.contains("a::Status") && message.contains("b::Status"),
+        "expected both modules named, got: {mismatch}"
     );
 }
