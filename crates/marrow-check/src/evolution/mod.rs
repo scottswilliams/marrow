@@ -45,14 +45,11 @@ pub fn default_value_for_bound_member(
     program: &CheckedProgram,
     catalog_id: &str,
     value: &Expression,
-) -> Option<Result<DefaultValue, String>> {
+) -> Option<Result<DefaultValue, RejectedDefault>> {
     let leaf = checked_activation_root_places(program)
         .iter()
         .find_map(|place| member_leaf(&place.root_members, catalog_id))?;
-    Some(
-        const_default::default_value_for_leaf(value, Some(&leaf))
-            .map_err(|reason| reason.message().to_string()),
-    )
+    Some(const_default::default_value_for_leaf(value, Some(&leaf)))
 }
 
 /// Rebind a freshly regenerated proposal to the random IDs recorded by an activation
