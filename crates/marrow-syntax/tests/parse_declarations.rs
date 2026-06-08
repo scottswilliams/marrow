@@ -32,12 +32,14 @@ fn parses_documented_reference_sample() {
     assert!(parsed.file.function("main").is_some());
 }
 
+/// Corpus smoke test (one owner): every fenced `mw` block that opens with
+/// `module` is a complete library file and must parse without diagnostics. It
+/// guards the documented examples as a whole; the per-construct parse contracts
+/// are owned by the focused `parse_*` suites. Signature-only and fragment
+/// examples are illustrative and excluded here; the lexer corpus covers all
+/// blocks.
 #[test]
 fn parses_all_documented_module_files() {
-    // Every fenced `mw` block that opens with `module` is a complete library
-    // file and must parse without diagnostics. Signature-only and fragment
-    // examples (bare statements, body-less functions) are illustrative and not
-    // included here; the lexer fixture covers all blocks.
     let blocks = common::documented_module_blocks();
     assert!(
         blocks.len() >= 5,
@@ -57,6 +59,11 @@ fn parses_all_documented_module_files() {
     }
 }
 
+/// Structure smoke over the canonical `sample.md` library: it spot-checks that
+/// the documented end-to-end example still parses to the expected resource,
+/// store, index, and function shape. The construct-level parse contracts are
+/// owned by the focused `parse_*` suites; this only guards that the reference
+/// sample keeps its overall shape.
 #[test]
 fn parses_reference_sample_structure() {
     let parsed = parse_source(&common::reference_sample());

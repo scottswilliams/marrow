@@ -314,6 +314,10 @@ fn parses_try_catch_without_type_annotation() {
     assert_eq!(catch.ty, None);
 }
 
+/// Panic guard for the DEDENT-out-of-slice edge: a body that ends in nested
+/// compound blocks closes every DEDENT past the body's token slice. The structure
+/// asserted below is the minimum that proves no recovery swallowed the nesting,
+/// not a fresh contract for `for`/`if` nesting (the focused tests above own that).
 #[test]
 fn nested_compound_at_end_of_body_parses_without_panic() {
     // The body ends with nested compound blocks, so every closing DEDENT lands

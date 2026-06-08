@@ -533,6 +533,10 @@ fn rejects_a_bare_question_mark() {
     );
 }
 
+/// Corpus smoke test (one owner): every fenced `mw` block in the language
+/// reference lexes without errors and ends with EOF. It guards the documented
+/// examples as a whole; the per-token and per-error lexer contracts are owned by
+/// the focused tests above.
 #[test]
 fn lexes_all_language_reference_mw_blocks_without_errors() {
     for block in common::mw_blocks() {
