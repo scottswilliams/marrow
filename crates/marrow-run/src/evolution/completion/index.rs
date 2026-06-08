@@ -8,11 +8,12 @@ use marrow_syntax::SourceSpan;
 use crate::index_maintenance::{EmptyStagedData, index_rebuild_entry_with_staged};
 use crate::write_plan::PlanStep;
 
-use super::super::apply::{ApplyError, for_each_place_record};
+use super::super::apply::ApplyError;
 use super::super::evidence::{
     EvidenceDigest, EvidenceSetDigest, INDEX_ROW_DIGEST, INDEX_SET_DIGEST,
 };
 use super::super::lifecycle::retired_proposal_ids;
+use super::super::locate::for_each_place_record;
 use super::catalog_id;
 
 pub(super) fn verify_index_completion(

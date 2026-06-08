@@ -39,7 +39,8 @@ use crate::host::Host;
 use crate::store::DataAddress;
 use crate::value::{Value, decode_leaf, value_to_leaf};
 
-use super::apply::{ApplyError, for_each_place_record, store_id};
+use super::apply::ApplyError;
+use super::locate::{for_each_place_record, store_id};
 
 /// The read-only inputs a transform staging or verification pass resolves against: the
 /// target member, the witness-proven read members, the checked program and runtime the

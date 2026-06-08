@@ -8,9 +8,10 @@ use crate::value::decode_leaf;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::DataPathSegment;
 
-use super::super::apply::{ApplyError, accepted_resource_member, for_each_place_record, store_id};
+use super::super::apply::{ApplyError, accepted_resource_member};
 use super::super::backfill::{fold_default_cell, locations, visit_member_cell_paths};
 use super::super::evidence::{ACTIVATION_DEFAULT_DIGEST, EvidenceDigest};
+use super::super::locate::{for_each_place_record, store_id};
 use super::catalog_id;
 
 pub(super) struct DefaultCompletion {

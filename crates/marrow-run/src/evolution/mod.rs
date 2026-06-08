@@ -14,6 +14,7 @@ mod backfill;
 mod completion;
 mod evidence;
 mod lifecycle;
+mod locate;
 mod rebuild;
 mod transform;
 mod validate;

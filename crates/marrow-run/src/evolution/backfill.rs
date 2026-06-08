@@ -28,11 +28,9 @@ use crate::index_maintenance::{
 use crate::store::{DataAddress, IndexAddress};
 use crate::write_plan::PlanStep;
 
-use super::apply::{
-    ApplyError, MemberLocation, PathStep, StagedWork, for_each_place_record, locate_member,
-    store_id,
-};
+use super::apply::{ApplyError, StagedWork};
 use super::evidence::{ACTIVATION_DEFAULT_DIGEST, EvidenceDigest};
+use super::locate::{MemberLocation, PathStep, for_each_place_record, locate_member, store_id};
 
 /// Fold one default-target cell's identity into the activation-default evidence digest:
 /// the store id, the record identity, the cell path, and the cell's bytes, in that fixed
