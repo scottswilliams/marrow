@@ -11,8 +11,7 @@ marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] \
   [--format text|json|jsonl] <projectdir>
 marrow test [--trace] [--format text|json|jsonl] <projectdir>
 marrow data <typed inspection subcommand> <projectdir>
-marrow data dump [--format text|json|jsonl] [--limit <n>] \
-  [--cursor <opaque>] <projectdir>
+marrow data dump [--format text|json|jsonl] <projectdir>
 marrow backup [--format text|json|jsonl] <projectdir> <output-file>
 marrow restore [--format text|json|jsonl] <projectdir> <backup-file>
 marrow lsp
