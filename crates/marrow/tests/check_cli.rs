@@ -71,16 +71,12 @@ fn check_reports_parse_diagnostics() {
     fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(1));
     let records = diagnostic_records(output);
-    assert!(has_code(&records, "parse.syntax"), "{records:#?}");
-    // The tab-rejection message is the human render contract for this diagnostic.
+    // The tab is rejected as a parse error at its own position (the leading tab on
+    // line 2, column 1), asserted by code and span rather than by its rendered prose.
     let tab = records
         .iter()
-        .find(|record| {
-            record["message"]
-                .as_str()
-                .is_some_and(|message| message.contains("tabs"))
-        })
-        .expect("a tab-rejection diagnostic");
+        .find(|record| record["source_span"]["line"] == 2 && record["source_span"]["column"] == 1)
+        .expect("a diagnostic at the tab position");
     assert_eq!(tab["code"], "parse.syntax", "{tab}");
 }
 
@@ -98,40 +94,25 @@ fn check_reserved_word_binding_reports_parse_errors_without_control_flow_cascade
 
     assert_eq!(output.status.code(), Some(1));
     let records = diagnostic_records(output);
-    // No control-flow cascade: every diagnostic is a parse error, so the rejected
-    // binding never reaches the checker as a spurious missing-return or a
-    // recovery-mode "expected a statement".
-    assert!(
-        records
-            .iter()
-            .all(|record| record["code"] == "parse.syntax"),
-        "{records:#?}"
-    );
-    assert!(!has_code(&records, "check.missing_return"), "{records:#?}");
-    let messages: Vec<&str> = records
+    // No control-flow cascade: the reserved word is rejected exactly where it is
+    // written — once as the binding name (line 4) and once as the expression use
+    // (line 5) — and nowhere else. Both rejections are parse errors, so the binding
+    // never reaches the checker as a spurious missing-return, and the parser does not
+    // drop into recovery and emit a third "expected a statement" diagnostic. Asserting
+    // the exact code/span pair, rather than the rendered prose, pins the cascade-free
+    // shape reword-proof.
+    let spans: Vec<(i64, i64)> = records
         .iter()
-        .filter_map(|record| record["message"].as_str())
+        .map(|record| {
+            assert_eq!(record["code"], "parse.syntax", "{record}");
+            (
+                record["source_span"]["line"].as_i64().expect("line"),
+                record["source_span"]["column"].as_i64().expect("column"),
+            )
+        })
         .collect();
-    // The two reserved-word positions render distinctly: the binding name and the
-    // expression use. This message pair is the human render contract.
-    assert!(
-        messages
-            .iter()
-            .any(|message| message.contains("variable name")),
-        "{messages:#?}"
-    );
-    assert!(
-        messages
-            .iter()
-            .any(|message| message.contains("as an expression")),
-        "{messages:#?}"
-    );
-    assert!(
-        !messages
-            .iter()
-            .any(|message| message.contains("expected a statement")),
-        "{messages:#?}"
-    );
+    assert_eq!(spans, vec![(4, 9), (5, 12)], "{records:#?}");
+    assert!(!has_code(&records, "check.missing_return"), "{records:#?}");
 }
 
 #[test]
@@ -146,18 +127,15 @@ fn check_reports_obsolete_operators_in_function_bodies() {
     fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(1));
     let records = diagnostic_records(output);
+    // The obsolete-operator diagnostic is found by its typed `help` payload, not by a
+    // message substring: the migration guidance lives in the structured `help` field,
+    // so a record carrying it is the obsolete-operator rejection. That help string is
+    // the one human render contract this test pins.
     let obsolete = records
         .iter()
-        .find(|record| {
-            record["message"]
-                .as_str()
-                .is_some_and(|message| message.contains("`&&`"))
-        })
-        .expect("an obsolete-operator diagnostic");
+        .find(|record| record["help"] == "Use `and` for boolean and.")
+        .expect("an obsolete-operator diagnostic carrying the `and` migration help");
     assert_eq!(obsolete["code"], "parse.syntax", "{obsolete}");
-    // The `and` migration guidance is the human render contract, carried in the
-    // structured `help` field rather than spliced into the rendered message.
-    assert_eq!(obsolete["help"], "Use `and` for boolean and.", "{obsolete}");
 }
 
 #[test]
@@ -231,29 +209,21 @@ fn check_reports_reserved_merge_and_lock_as_parse_errors() {
 
     assert_eq!(output.status.code(), Some(1));
     let records = diagnostic_records(output);
-    assert!(has_code(&records, "parse.syntax"), "{records:#?}");
     // `lock` and `merge` are parse-rejected, not checker-rejected: the reserved
-    // surface never reaches `check.rejected_surface`.
+    // surface never reaches `check.rejected_surface`. Each reserved statement is
+    // rejected exactly at its own line (the `lock` on line 6 and the `merge` on line
+    // 8), asserted by code and span rather than by the rendered reserved-word prose.
     assert!(
         !has_code(&records, "check.rejected_surface"),
         "{records:#?}"
     );
-    let messages: Vec<&str> = records
+    let reserved_lines: Vec<i64> = records
         .iter()
-        .filter_map(|record| record["message"].as_str())
+        .filter(|record| record["code"] == "parse.syntax")
+        .filter_map(|record| record["source_span"]["line"].as_i64())
         .collect();
-    assert!(
-        messages
-            .iter()
-            .any(|message| message.contains("`lock` is reserved")),
-        "{messages:#?}"
-    );
-    assert!(
-        messages
-            .iter()
-            .any(|message| message.contains("`merge` is reserved")),
-        "{messages:#?}"
-    );
+    assert!(reserved_lines.contains(&6), "{records:#?}");
+    assert!(reserved_lines.contains(&8), "{records:#?}");
 }
 
 #[test]

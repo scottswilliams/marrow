@@ -34,14 +34,25 @@ fn dry_run_leaves_saved_data_unchanged() {
     let before = marrow(&["data", "dump", &dir]);
     assert_eq!(before.status.code(), Some(0), "before: {before:?}");
 
-    // A dry run reports the writes it would commit, then rolls them back.
-    let dry = marrow(&["run", "--dry-run", &dir]);
+    // A dry run reports the writes it would commit, then rolls them back. The plan is
+    // tooling output on stderr; under json it is one envelope whose `planned` records
+    // carry the write op and field path as typed fields.
+    let dry = marrow(&["run", "--dry-run", "--format", "json", &dir]);
     assert_eq!(dry.status.code(), Some(0), "dry: {dry:?}");
-    let dry_err = String::from_utf8(dry.stderr).expect("utf8");
-    // It listed the planned writes to the title and pages fields.
-    assert!(dry_err.contains("would write"), "{dry_err}");
-    assert!(dry_err.contains("^books(1).title"), "{dry_err}");
-    assert!(dry_err.contains("^books(1).pages"), "{dry_err}");
+    let dry_json: serde_json::Value =
+        serde_json::from_str(String::from_utf8(dry.stderr).expect("utf8").trim()).expect("json");
+    assert_eq!(dry_json["committed"], false, "{dry_json}");
+    // It planned writes to the title and pages fields, asserted on the typed
+    // op/path of the planned records rather than the rendered "would write" text.
+    let planned = dry_json["planned"].as_array().expect("planned array");
+    for field in ["^books(1).title", "^books(1).pages"] {
+        assert!(
+            planned
+                .iter()
+                .any(|step| step["op"] == "write" && step["path"] == field),
+            "dry run must plan a write to {field}: {dry_json}"
+        );
+    }
 
     // The saved data is unchanged: the dump after reads back the same records as
     // the dump before.
@@ -121,10 +132,35 @@ fn dry_run_renders_a_bool_write_as_its_typed_value() {
         );
     });
     let dir = project.to_str().unwrap().to_string();
-    let output = marrow(&["run", "--dry-run", &dir]);
 
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("utf8");
+    // Typed oracle: the planned bool write targets the `on` member of `^flags(1)` and
+    // carries the stored codec byte for `true`; the JSON report keeps the raw bytes.
+    let json_run = marrow(&["run", "--dry-run", "--format", "json", &dir]);
+    assert_eq!(json_run.status.code(), Some(0), "{json_run:?}");
+    let report: serde_json::Value =
+        serde_json::from_str(String::from_utf8(json_run.stderr).expect("utf8").trim())
+            .expect("json");
+    let planned = report["planned"].as_array().expect("planned array");
+    let write = planned
+        .iter()
+        .find(|step| step["op"] == "write" && step["path"] == "^flags(1).on")
+        .expect("a planned write to ^flags(1).on");
+    assert_eq!(write["target"]["store"], serde_json::json!("flags"));
+    assert_eq!(
+        write["target"]["path"],
+        serde_json::json!([{ "member": "on" }])
+    );
+    assert_eq!(
+        write["value_b64"],
+        serde_json::json!("MQ=="),
+        "stored bool codec byte"
+    );
+
+    // Render contract: the text dry-run report renders that codec byte as the typed
+    // scalar `true`, never the byte `1`.
+    let text_run = marrow(&["run", "--dry-run", &dir]);
+    assert_eq!(text_run.status.code(), Some(0), "{text_run:?}");
+    let stderr = String::from_utf8(text_run.stderr).expect("utf8");
     assert!(
         stderr.contains("would write ^flags(1).on\ttrue"),
         "a bool must dry-run as `true`, not `1`: {stderr}"

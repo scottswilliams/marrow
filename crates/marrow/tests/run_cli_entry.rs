@@ -2,6 +2,24 @@ mod support;
 
 use support::{marrow_sub, temp_project, write};
 
+/// The diagnostic code of a run fault, read from the structured position of the
+/// rendered fault line rather than matched anywhere in the stderr blob. A run
+/// reports an entry-resolution fault as `code: message` on its last stderr line; the
+/// code is the dotted token before the first `: ` separator (codes carry no spaces,
+/// so the split is unambiguous). Asserting the code in this position keeps the oracle
+/// reword-proof against changes to the human message that follows it.
+fn fault_code(stderr: &[u8]) -> String {
+    let text = String::from_utf8(stderr.to_vec()).expect("stderr utf8");
+    let line = text
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .expect("a fault line");
+    line.split_once(": ")
+        .map(|(code, _)| code.to_string())
+        .unwrap_or_else(|| line.to_string())
+}
+
 #[test]
 fn runs_the_default_entry_and_prints_its_output() {
     let root = temp_project("run-default", |root| {
@@ -79,8 +97,7 @@ fn bare_entry_flag_rejects_ambiguous_public_functions() {
     let output = marrow_sub("run", &["--entry", "main", root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("run.ambiguous_function"), "{stderr}");
+    assert_eq!(fault_code(&output.stderr), "run.ambiguous_function");
 }
 
 #[test]
@@ -96,8 +113,7 @@ fn entry_flag_rejects_private_functions() {
     let output = marrow_sub("run", &["--entry", "app::main", root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("run.private_function"), "{stderr}");
+    assert_eq!(fault_code(&output.stderr), "run.private_function");
 }
 
 #[test]
@@ -137,8 +153,7 @@ fn reports_a_missing_entry() {
     let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("run.no_entry"), "{stderr}");
+    assert_eq!(fault_code(&output.stderr), "run.no_entry");
 }
 
 #[test]
@@ -154,8 +169,7 @@ fn maps_an_unknown_entry_to_a_runtime_code() {
     let output = marrow_sub("run", &["--entry", "app::nope", root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("run.unknown_function"), "{stderr}");
+    assert_eq!(fault_code(&output.stderr), "run.unknown_function");
 }
 
 #[test]

@@ -20,7 +20,8 @@ fn data_roots_lists_stored_roots() {
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
-    assert!(stdout.contains("^counter"), "{stdout}");
+    // Render contract: the text format prints exactly one `^root` line per saved root.
+    assert_eq!(stdout, "^counter\n", "{stdout}");
 }
 
 #[test]
@@ -32,11 +33,8 @@ fn data_stats_counts_roots_and_records() {
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
-    assert!(stdout.contains("roots: 1"), "{stdout}");
-    assert!(
-        stdout.contains("records: ") && !stdout.contains("records: 0"),
-        "{stdout}"
-    );
+    // Render contract: the two count lines, pinned exactly.
+    assert_eq!(stdout, "roots: 1\nrecords: 1\n", "{stdout}");
 }
 
 #[test]
@@ -50,7 +48,7 @@ fn inspecting_an_unseeded_project_reports_no_data_and_creates_nothing() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     // Render contract: an empty store prints a human placeholder, not a bare line.
     let stdout = String::from_utf8(output.stdout).expect("utf8");
-    assert!(stdout.contains("(no saved data)"), "{stdout}");
+    assert_eq!(stdout, "(no saved data)\n", "{stdout}");
     assert!(!created, "inspection must not create the store");
 }
 
@@ -63,8 +61,8 @@ fn data_dump_prints_each_record_as_path_and_value() {
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
-    assert!(stdout.contains("^counter(1).value"), "{stdout}");
-    assert!(stdout.contains("42"), "{stdout}");
+    // Render contract: one `<path>\t<value>` line for the single record, pinned exactly.
+    assert_eq!(stdout, "^counter(1).value\t42\n", "{stdout}");
 }
 
 #[test]
@@ -77,7 +75,7 @@ fn data_dump_of_an_unseeded_project_prints_empty_and_creates_nothing() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     // Render contract: an empty store dump prints a human placeholder.
     let stdout = String::from_utf8(output.stdout).expect("utf8");
-    assert!(stdout.contains("(no saved data)"), "{stdout}");
+    assert_eq!(stdout, "(no saved data)\n", "{stdout}");
     assert!(!created, "dump must not create the store");
 }
 

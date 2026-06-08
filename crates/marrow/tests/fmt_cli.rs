@@ -10,6 +10,49 @@ fn run_fmt(args: &[&str]) -> std::process::Output {
     support::marrow_sub("fmt", args)
 }
 
+/// The diagnostic/error codes `marrow fmt` reports, each read from its structured
+/// slot on the stderr line rather than matched anywhere in the rendered prose. `fmt`
+/// has no JSON surface, so the dotted code is the typed identifier embedded in the
+/// text. Two line shapes carry one: a simple error renders `code: message`, where the
+/// code is the leading `: `-delimited segment; a located parse diagnostic renders
+/// `file:line:col: severity: code: message`, where the code is the segment right after
+/// the `error`/`warning` severity. A `not formatted` finding carries no code. Asserting
+/// against these slots keeps the oracle on the code, reword-proof against changes to
+/// the human message that follows it.
+fn fmt_error_codes(stderr: &[u8]) -> Vec<String> {
+    let text = String::from_utf8(stderr.to_vec()).expect("stderr utf8");
+    text.lines().filter_map(line_code).collect()
+}
+
+fn line_code(line: &str) -> Option<String> {
+    let segments: Vec<&str> = line.split(": ").collect();
+    // A located diagnostic places the code right after its `error`/`warning` severity.
+    if let Some(severity) = segments
+        .iter()
+        .position(|segment| *segment == "error" || *segment == "warning")
+        && let Some(code) = segments.get(severity + 1)
+    {
+        return is_code(code).then(|| (*code).to_string());
+    }
+    // Otherwise a simple error leads with `code: message`.
+    let first = segments.first()?;
+    is_code(first).then(|| (*first).to_string())
+}
+
+/// Whether `token` is a diagnostic code: a dotted lowercase identifier carrying no
+/// spaces, so a `not formatted` finding or a path fragment never reads as a code.
+fn is_code(token: &str) -> bool {
+    token.contains('.')
+        && !token.contains(' ')
+        && token
+            .chars()
+            .all(|character| character.is_ascii_lowercase() || character == '.' || character == '_')
+}
+
+fn fmt_reports_code(stderr: &[u8], code: &str) -> bool {
+    fmt_error_codes(stderr).iter().any(|found| found == code)
+}
+
 #[test]
 fn fmt_prints_canonical_source_to_stdout() {
     // Extra blank lines and tight spacing get normalized.
@@ -91,8 +134,11 @@ fn fmt_refuses_to_format_source_with_errors() {
     fs::remove_file(&path).ok();
 
     assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("parse.syntax"), "{stderr}");
+    assert!(
+        fmt_reports_code(&output.stderr, "parse.syntax"),
+        "{:?}",
+        output.stderr
+    );
     assert_eq!(unchanged, "module app\n\tconst Max: int = 5\n");
 }
 
@@ -105,8 +151,11 @@ fn fmt_write_refuses_unexpected_indentation_without_rewriting() {
     fs::remove_file(&path).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("parse.syntax"), "{stderr}");
+    assert!(
+        fmt_reports_code(&output.stderr, "parse.syntax"),
+        "{:?}",
+        output.stderr
+    );
     assert_eq!(unchanged, source);
 }
 
@@ -183,8 +232,13 @@ fn fmt_write_reports_file_write_failures_as_io_write() {
     fs::remove_file(&path).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        fmt_reports_code(&output.stderr, "io.write"),
+        "{:?}",
+        output.stderr
+    );
+    // The failed path is part of the io.write payload; it has no JSON surface here.
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("io.write"), "{stderr}");
     assert!(stderr.contains(path.to_str().unwrap()), "{stderr}");
 }
 
@@ -205,8 +259,13 @@ fn fmt_write_on_a_project_directory_reports_write_failures_as_io_write_and_conti
     make_writable(&readonly);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        fmt_reports_code(&output.stderr, "io.write"),
+        "{:?}",
+        output.stderr
+    );
+    // The failed path is part of the io.write payload; it has no JSON surface here.
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("io.write"), "{stderr}");
     assert!(stderr.contains(readonly.to_str().unwrap()), "{stderr}");
     let lib = fs::read_to_string(writable).expect("read lib");
     assert_eq!(lib, "module lib\n\nconst Limit: int = 10\n");
@@ -218,8 +277,13 @@ fn fmt_on_a_directory_with_no_config_reports_io_read_for_config() {
     let output = run_fmt(&["--check", dir.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        fmt_reports_code(&output.stderr, "io.read"),
+        "{:?}",
+        output.stderr
+    );
+    // The unreadable config path is part of the io.read payload.
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("io.read"), "{stderr}");
     assert!(stderr.contains("marrow.json"), "{stderr}");
 }
 
@@ -230,8 +294,15 @@ fn fmt_on_a_directory_with_invalid_config_reports_a_config_error() {
     let output = run_fmt(&["--check", project.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("config."), "{stderr}");
+    // An invalid config is reported under a `config.*` code, read from the code slot
+    // rather than matched in the message prose.
+    assert!(
+        fmt_error_codes(&output.stderr)
+            .iter()
+            .any(|code| code.starts_with("config.")),
+        "{:?}",
+        output.stderr
+    );
 }
 
 #[test]
