@@ -57,8 +57,6 @@ pub const WRITE_NOT_A_GROUP_LAYER: &str = "write.not_a_group_layer";
 pub const WRITE_LAYER_KEY_ARITY: &str = "write.layer_key_arity";
 pub const WRITE_ID_OVERFLOW: &str = "write.id_overflow";
 pub const WRITE_NEXT_ID_UNSUPPORTED: &str = "write.next_id_unsupported";
-pub const WRITE_REQUIRED_FIELD: &str = "write.required_field";
-pub const WRITE_REQUIRES_MAINTENANCE: &str = "write.requires_maintenance";
 
 impl From<marrow_store::StoreError> for WriteError {
     fn from(error: marrow_store::StoreError) -> Self {

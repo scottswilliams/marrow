@@ -6,14 +6,22 @@ use crate::error::{RuntimeError, raise_fault, unsupported};
 use crate::path::{SavedPath, Terminal, direct_root_place, lower, lower_keys};
 use crate::store::{DataAddress, LayerAddress};
 use crate::write::{
-    WRITE_REQUIRED_FIELD, WRITE_REQUIRES_MAINTENANCE, WriteError, plan_data_delete,
-    plan_field_delete, plan_member_delete, plan_resource_delete, plan_store_root_delete,
+    WriteError, plan_data_delete, plan_field_delete, plan_member_delete, plan_resource_delete,
+    plan_store_root_delete,
 };
 use crate::write_dispatch::required::{
     checked_field_required, checked_group_has_required_materialized_field, checked_member_exists,
     checked_unkeyed_group, required_delete_has_preexisting_data, required_paths_under_group,
 };
 use crate::write_plan::WritePlan;
+
+/// Deleting a required scalar field (or an unkeyed group that holds one) outside
+/// maintenance mode would leave the record incomplete, so the delete is refused.
+const WRITE_REQUIRED_FIELD: &str = "write.required_field";
+
+/// Dropping a whole managed root is maintenance work; a run without the
+/// maintenance capability is refused.
+const WRITE_REQUIRES_MAINTENANCE: &str = "write.requires_maintenance";
 
 pub(crate) fn eval_delete(
     path: &ExecExpr,

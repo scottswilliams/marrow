@@ -9,9 +9,8 @@ use crate::error::{RUN_TYPE, RuntimeError, assign_error, overflow, unsupported, 
 use crate::expr::eval_expr;
 use crate::path::{direct_root_place, lower};
 use crate::store::{DataAddress, LayerAddress};
-use crate::value::{LeafValue, Value, identity_value, value_to_leaf};
-use crate::write::{WriteError, next_id, next_layer_pos, plan_layer_leaf_write};
-use crate::write_plan::WritePlan;
+use crate::value::{Value, identity_value, value_to_leaf};
+use crate::write::{next_id, next_layer_pos, plan_layer_leaf_write};
 
 pub(crate) fn eval_next_id(
     args: &[ExecArg],
@@ -113,7 +112,7 @@ fn eval_saved_append(
     let pos = next_append_position(place, &identity, &prefix_layers, span, env)?;
     let mut entry_layers = prefix_layers;
     entry_layers.last_mut().expect("terminal layer").keys = vec![SavedKey::Int(pos)];
-    let plan = append_write_plan(place, &identity, &entry_layers, &saved, span);
+    let plan = plan_layer_leaf_write(place, &identity, &entry_layers, &saved, span);
     env.apply_plan(plan, span)?;
     Ok(Value::Int(pos))
 }
@@ -136,14 +135,4 @@ fn next_append_position(
 ) -> Result<i64, RuntimeError> {
     next_layer_pos(place, identity, layers, env.store, span)
         .map_err(|error| write_fault(error, span))
-}
-
-fn append_write_plan(
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
-    layers: &[LayerAddress],
-    saved: &LeafValue,
-    span: SourceSpan,
-) -> Result<WritePlan, WriteError> {
-    plan_layer_leaf_write(place, identity, layers, saved, span)
 }
