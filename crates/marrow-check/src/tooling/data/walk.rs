@@ -38,8 +38,7 @@ pub fn walk_data(
     if cursor.is_some() && start.storage.identity.len() != query.storage.identity_arity {
         return Err(QueryError::CursorNotAPosition.into());
     }
-    if cursor.is_some() && !cursor_names_value_path(&place.root_members, &start.storage.data_path)?
-    {
+    if cursor.is_some() && !cursor_names_value_path(&place.root_members, &start.storage.data_path) {
         return Err(QueryError::CursorNotAPosition.into());
     }
 

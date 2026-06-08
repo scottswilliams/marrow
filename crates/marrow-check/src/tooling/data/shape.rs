@@ -7,7 +7,6 @@ use crate::{CheckedSavedMember, CheckedSavedMemberKind, ScalarType};
 
 use super::query_error::MemberFlavor;
 use super::{DataQuerySegment, KeyMismatch};
-use crate::tooling::ToolingError;
 
 pub(crate) fn tooling_catalog_id(
     raw: &Option<String>,
@@ -82,75 +81,73 @@ pub(crate) fn declared_members_below_path<'a>(
     }
 }
 
+/// Where a stored data path lands relative to the declared member tree.
+///
+/// Both the walk cursor (which only cares whether a resume point is a value
+/// position) and integrity orphan detection (which renders why an undeclared
+/// path is not part of the schema) read this single classification, so the two
+/// never drift in how they decide what a declared value path is.
+pub(crate) enum DataPathShape {
+    /// The path ends exactly on a declared scalar field value.
+    Value,
+    /// The path is well formed against the schema but does not terminate on a
+    /// value: it stops on a group or before a keyed member's keys.
+    NotAValue,
+    /// The path does not follow the declared member tree. The reason renders
+    /// into the orphan diagnostic.
+    Undeclared(&'static str),
+}
+
+pub(crate) fn classify_data_path(
+    members: &[CheckedSavedMember],
+    path: &[DataPathSegment],
+) -> DataPathShape {
+    let Some(DataPathSegment::Member(catalog)) = path.first() else {
+        return DataPathShape::Undeclared("a saved path shape the schema does not declare");
+    };
+    let Some(member) = members
+        .iter()
+        .find(|member| member.catalog_id.as_deref() == Some(catalog.as_str()))
+    else {
+        return DataPathShape::Undeclared("a saved member the schema no longer declares");
+    };
+    let Some(rest) = rest_after_member_keys(member, &path[1..]) else {
+        return DataPathShape::Undeclared("a saved member key shape the schema does not declare");
+    };
+    match &member.kind {
+        CheckedSavedMemberKind::Field { .. } => {
+            if rest.is_empty() {
+                DataPathShape::Value
+            } else {
+                DataPathShape::Undeclared("a saved field path the schema does not declare")
+            }
+        }
+        CheckedSavedMemberKind::Group => {
+            if rest.is_empty() {
+                DataPathShape::NotAValue
+            } else {
+                classify_data_path(&member.group_members, rest)
+            }
+        }
+    }
+}
+
 pub(crate) fn cursor_names_value_path(
     members: &[CheckedSavedMember],
     data_path: &[DataPathSegment],
-) -> Result<bool, ToolingError> {
-    let Some(DataPathSegment::Member(catalog)) = data_path.first() else {
-        return Ok(false);
-    };
-    let Some(member) = checked_member_by_catalog(members, catalog)? else {
-        return Ok(false);
-    };
-    let Some(rest) = rest_after_member_keys(member, &data_path[1..]) else {
-        return Ok(false);
-    };
-    match &member.kind {
-        CheckedSavedMemberKind::Field { .. } => Ok(rest.is_empty()),
-        CheckedSavedMemberKind::Group => {
-            if rest.is_empty() {
-                return Ok(false);
-            }
-            cursor_names_value_path(&member.group_members, rest)
-        }
-    }
+) -> bool {
+    matches!(classify_data_path(members, data_path), DataPathShape::Value)
 }
 
 pub(crate) fn validate_member_value_path(
     members: &[CheckedSavedMember],
     path: &[DataPathSegment],
 ) -> Result<(), &'static str> {
-    let Some(DataPathSegment::Member(catalog)) = path.first() else {
-        return Err("a saved path shape the schema does not declare");
-    };
-    let Some(member) = members
-        .iter()
-        .find(|member| member.catalog_id.as_deref() == Some(catalog.as_str()))
-    else {
-        return Err("a saved member the schema no longer declares");
-    };
-    let Some(rest) = rest_after_member_keys(member, &path[1..]) else {
-        return Err("a saved member key shape the schema does not declare");
-    };
-    match &member.kind {
-        CheckedSavedMemberKind::Field { .. } => {
-            if rest.is_empty() {
-                Ok(())
-            } else {
-                Err("a saved field path the schema does not declare")
-            }
-        }
-        CheckedSavedMemberKind::Group => {
-            if rest.is_empty() {
-                Err("a saved group path the schema does not declare")
-            } else {
-                validate_member_value_path(&member.group_members, rest)
-            }
-        }
+    match classify_data_path(members, path) {
+        DataPathShape::Value => Ok(()),
+        DataPathShape::NotAValue => Err("a saved group path the schema does not declare"),
+        DataPathShape::Undeclared(reason) => Err(reason),
     }
-}
-
-pub(crate) fn checked_member_by_catalog<'a>(
-    members: &'a [CheckedSavedMember],
-    catalog: &CatalogId,
-) -> Result<Option<&'a CheckedSavedMember>, ToolingError> {
-    for member in members {
-        let member_catalog = tooling_catalog_id(&member.catalog_id, "resource member")?;
-        if &member_catalog == catalog {
-            return Ok(Some(member));
-        }
-    }
-    Ok(None)
 }
 
 pub(crate) fn path_can_match(path: &[DataPathSegment], filter: &[DataPathSegment]) -> bool {
