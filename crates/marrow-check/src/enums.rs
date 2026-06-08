@@ -58,10 +58,20 @@ pub(crate) fn normalize_program_named_types_against(
         // same expansion call dispatch applies. Built once, before the mutable
         // borrow of the module's functions and constants.
         let aliases = build_alias_map(&module.imports);
-        for function in &mut module.functions {
-            let Some(decl) = parsed.file.function(&function.name) else {
-                continue;
-            };
+        // The checked functions zip positionally with the parse's function
+        // declarations (one checked function per declaration, in source order); a
+        // by-name lookup would re-resolve a duplicate-named function against the
+        // first declaration's annotations.
+        let function_decls =
+            parsed
+                .file
+                .declarations
+                .iter()
+                .filter_map(|declaration| match declaration {
+                    marrow_syntax::Declaration::Function(function) => Some(function),
+                    _ => None,
+                });
+        for (function, decl) in module.functions.iter_mut().zip(function_decls) {
             for (param, param_decl) in function.params.iter_mut().zip(&decl.params) {
                 param.ty = resolve_type(&param_decl.ty, resolver, &aliases, &file.path);
             }

@@ -171,7 +171,7 @@ fn bare_foreign_resource_annotation_is_unknown_not_project_wide() {
     assert_eq!(unknown_types.len(), 1, "{:#?}", report.diagnostics);
     assert_eq!(
         unknown_types[0].payload,
-        DiagnosticPayload::UnknownType("Book".into())
+        DiagnosticPayload::UnknownType(marrow_schema::Type::Named("Book".into()))
     );
 }
 

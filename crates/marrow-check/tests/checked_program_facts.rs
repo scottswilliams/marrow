@@ -81,7 +81,8 @@ fn checked_facts_do_not_first_match_bare_foreign_resource_annotations() {
     assert!(
         report.diagnostics.iter().any(|diagnostic| {
             diagnostic.code == marrow_check::CHECK_UNKNOWN_TYPE
-                && diagnostic.payload == DiagnosticPayload::UnknownType("Book".into())
+                && diagnostic.payload
+                    == DiagnosticPayload::UnknownType(marrow_schema::Type::Named("Book".into()))
         }),
         "{:#?}",
         report.diagnostics
@@ -190,6 +191,64 @@ fn checked_facts_record_function_effects_with_typed_places() {
             .future_ephemeral_roots;
         assert!(ephemeral.reads.is_empty(), "{name} has ephemeral reads");
         assert!(ephemeral.writes.is_empty(), "{name} has ephemeral writes");
+    }
+}
+
+#[test]
+fn duplicate_named_functions_keep_their_own_direct_effects() {
+    // Two `fn dup` declarations in one module are a hard error, but both still
+    // become facts. Each fact must carry the effects of its OWN body — the reader
+    // reads `^books`, the writer writes it — addressed by the fact's stable
+    // `source_index`. A by-name remap would attribute the first body's effects to
+    // both, so the writer would lose its write and gain a phantom read.
+    let root = temp_project("program-fact-duplicate-effects", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             fn dup(id: Id(^books)): string\n\
+             \x20   return ^books(id).title\n\
+             fn dup(id: Id(^books), title: string)\n\
+             \x20   transaction\n\
+             \x20       ^books(id).title = title\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    // Duplicate declarations are rejected, so the program is in error; the facts
+    // are still built for both bodies.
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == marrow_check::CHECK_DUPLICATE_DECLARATION),
+        "{:#?}",
+        report.diagnostics
+    );
+
+    let module = &program.modules[0];
+    let dup_facts: Vec<&marrow_check::FunctionFact> = program
+        .facts
+        .functions()
+        .iter()
+        .filter(|fact| fact.name == "dup")
+        .collect();
+    assert_eq!(dup_facts.len(), 2, "both `dup` bodies are facts");
+
+    for fact in dup_facts {
+        // The source function the fact points at is the one whose effects it must
+        // carry: the reader (one param) reads, the writer (two params) writes.
+        let source = &module.functions[fact.source_index as usize];
+        let effects = &fact.direct_effects;
+        if source.params.len() == 1 {
+            assert!(!effects.saved_reads.is_empty(), "reader keeps its read");
+            assert!(effects.saved_writes.is_empty(), "reader has no write");
+        } else {
+            assert!(!effects.saved_writes.is_empty(), "writer keeps its write");
+            assert!(effects.saved_reads.is_empty(), "writer has no read");
+        }
     }
 }
 

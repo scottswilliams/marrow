@@ -282,44 +282,35 @@ fn throw_surfaces_as_an_uncaught_error() {
 
 #[test]
 fn error_constructor_requires_code_and_message() {
-    let program = checked_program("pub fn bad()\n    throw Error(code: \"x.y\")\n");
-    let error = run_expecting_error(checked_entry!(&program, "test::bad"));
-    assert_eq!(error.code, RUN_TYPE);
-    // The required subset {code, message} is owned by the schema descriptor; pin
-    // the message a missing required field surfaces so the descriptor stays the
-    // single source of the `Error` shape without drifting from this contract.
-    assert_eq!(error.message, "`Error` requires `message`");
+    // The required subset {code, message} of the `Error` shape is owned by the
+    // schema descriptor; the checker rejects a constructor that omits a required
+    // field, so the program never reaches the runtime.
+    checker_rejects(
+        "pub fn bad()\n    throw Error(code: \"x.y\")\n",
+        "check.call_argument",
+    );
 }
 
 #[test]
 fn error_constructor_rejects_an_unknown_field() {
-    let program = checked_program(
+    // A field outside the descriptor's set is a constructor error the checker
+    // catches before run.
+    checker_rejects(
         "pub fn bad()\n    throw Error(code: \"x\", message: \"m\", oops: \"!\")\n",
+        "check.call_argument",
     );
-    let error = run_expecting_error(checked_entry!(&program, "test::bad"));
-    assert_eq!(error.code, RUN_TYPE);
-    assert_eq!(error.message, "`Error` has no field `oops`");
 }
 
 #[test]
 fn error_constructor_rejects_non_string_builtin_fields() {
-    for (field, source) in [
-        (
-            "code",
-            "pub fn bad()\n    throw Error(code: true, message: \"m\")\n",
-        ),
-        (
-            "message",
-            "pub fn bad()\n    throw Error(code: \"x\", message: true)\n",
-        ),
-        (
-            "help",
-            "pub fn bad()\n    throw Error(code: \"x\", message: \"m\", help: true)\n",
-        ),
+    // Each builtin `Error` field carries a declared type; a value of the wrong
+    // type is a constructor error the checker rejects.
+    for source in [
+        "pub fn bad()\n    throw Error(code: true, message: \"m\")\n",
+        "pub fn bad()\n    throw Error(code: \"x\", message: true)\n",
+        "pub fn bad()\n    throw Error(code: \"x\", message: \"m\", help: true)\n",
     ] {
-        let program = checked_program(source);
-        let error = run_expecting_error(checked_entry!(&program, "test::bad"));
-        assert_eq!(error.code, RUN_TYPE, "{field}");
+        checker_rejects(source, "check.call_argument");
     }
 }
 

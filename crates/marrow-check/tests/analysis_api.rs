@@ -253,6 +253,44 @@ fn scope_at_includes_use_import_aliases() {
 }
 
 #[test]
+fn type_at_a_cross_module_resource_field_read_uses_the_one_resolver() {
+    // A field read off a value typed as a resource declared in another module
+    // (`thing.name` where `thing: shelf::Thing`) carries the canonical resource
+    // name `shelf::Thing`. Typing it routes that name through the shared resolver,
+    // so a bare-name shortcut cannot diverge from how calls and go-to-def resolve
+    // the same resource. The field is a `string`, so the read types to `string`.
+    let m = "module m\n\
+        use shelf\n\
+        fn describe(thing: shelf::Thing): string\n    \
+        return thing.name\n";
+    let shelf = "module shelf\nresource Thing\n    name: string\n";
+    let (snapshot, paths) = analyze_overlay(
+        "type-at-cross-module-field",
+        &[("src/m.mw", m), ("src/shelf.mw", shelf)],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let path = paths
+        .into_iter()
+        .find(|path| path.ends_with("m.mw"))
+        .expect("the m.mw path");
+    let parsed = snapshot
+        .files
+        .iter()
+        .find(|file| file.path == path)
+        .expect("m.mw is analyzed")
+        .parsed
+        .clone();
+    let offset = m.rfind("name").expect("the .name field read") + 1;
+
+    let ty = type_at(&snapshot.program, &path, &parsed, offset);
+    assert_eq!(ty, Some(MarrowType::Primitive(ScalarType::Str)), "{ty:?}");
+}
+
+#[test]
 fn type_at_and_scope_at_emit_no_diagnostics() {
     // The whole point: tooling queries reuse the checker's inference without a
     // diagnostics sink. The queries take an immutable program and parse and return

@@ -440,8 +440,11 @@ pub enum DiagnosticPayload {
     UnresolvedImport(String),
     /// `function … is not defined`: the call's (possibly qualified) name.
     UnresolvedCall(String),
-    /// `unknown type`: the type spelling the checker did not recognize.
-    UnknownType(String),
+    /// `unknown type`: the structured type the checker did not recognize. Carries
+    /// the resolved [`marrow_schema::Type`] (sequence wrappers and named segments
+    /// already classified) so resolution-suppression compares it against hidden
+    /// type identities through the type model instead of re-parsing source text.
+    UnknownType(marrow_schema::Type),
     /// Schema compiler facts for schema diagnostics.
     Schema(marrow_schema::SchemaErrorKind),
     /// `check.duplicate_declaration`: duplicated name and first declaration span.
@@ -754,34 +757,31 @@ pub(crate) fn resolve_resource_schema_type(
     }
 }
 
+/// Resolve a canonical resource type name (`module::resource`, or a bare
+/// `resource` for the script module) to its declaration and owning module name.
+/// The name was produced by [`resource_type_name`] from an already-resolved
+/// resource, so its module prefix names the owning module exactly: resolving from
+/// that module reaches the resource through the one resolver, in-module and
+/// visibility-aware, rather than a second bespoke module scan.
 pub(crate) fn resolve_resource_type<'p>(
     program: &'p CheckedProgram,
     name: &str,
 ) -> Option<(&'p marrow_schema::ResourceSchema, &'p str)> {
-    if let Some((module_name, resource_name)) = name.rsplit_once("::") {
-        return program
-            .modules
-            .iter()
-            .find(|module| module.name == module_name)
-            .and_then(|module| {
-                module
-                    .resources
-                    .iter()
-                    .find(|resource| resource.name == resource_name)
-                    .map(|resource| (resource, module.name.as_str()))
-            });
+    let (from_module, segments) = match name.rsplit_once("::") {
+        Some((module_name, resource_name)) => (
+            module_name,
+            vec![module_name.to_string(), resource_name.to_string()],
+        ),
+        None => ("", vec![name.to_string()]),
+    };
+    match resolve(program, from_module, &segments, ResolvableKind::Resource) {
+        Resolution::Found(Def {
+            module,
+            item: DefItem::Resource(resource),
+            ..
+        }) => Some((resource, module.name.as_str())),
+        _ => None,
     }
-    program
-        .modules
-        .iter()
-        .find(|module| module.name.is_empty())
-        .and_then(|module| {
-            module
-                .resources
-                .iter()
-                .find(|resource| resource.name == name)
-                .map(|resource| (resource, module.name.as_str()))
-        })
 }
 
 fn enum_visibility(file: &marrow_syntax::SourceFile) -> HashMap<String, bool> {
@@ -1036,7 +1036,7 @@ impl TestResolutionSuppression {
                 self.references_hidden_module_exactly(name)
             }
             DiagnosticPayload::UnresolvedCall(name) => self.references_hidden_module_member(name),
-            DiagnosticPayload::UnknownType(name) => self.references_hidden_type(name),
+            DiagnosticPayload::UnknownType(ty) => self.references_hidden_type(ty),
             DiagnosticPayload::Schema(_)
             | DiagnosticPayload::DuplicateDeclaration { .. }
             | DiagnosticPayload::DuplicateModule { .. }
@@ -1065,47 +1065,20 @@ impl TestResolutionSuppression {
             .any(|module| name.starts_with(&format!("{module}::")))
     }
 
-    fn references_hidden_type(&self, name: &str) -> bool {
-        self.references_hidden_type_text(name.trim())
-    }
-
-    fn references_hidden_type_text(&self, name: &str) -> bool {
-        if let Some(element) = sequence_type_element(name) {
-            return self.references_hidden_type_text(element);
-        }
-        self.references_hidden_named_type(name)
-    }
-
-    fn references_hidden_named_type(&self, name: &str) -> bool {
-        if !is_type_name_like(name) {
-            return false;
-        }
-        if name.contains("::") {
-            self.hidden_qualified_types.contains(name)
-        } else {
-            self.hidden_types.contains(name)
+    fn references_hidden_type(&self, ty: &marrow_schema::Type) -> bool {
+        match ty {
+            // A sequence is hidden when its element names a hidden type; the type
+            // model already peeled the `sequence[...]` wrapper.
+            marrow_schema::Type::Sequence(element) => self.references_hidden_type(element),
+            // A qualified name carries `::`; only such names go in the qualified
+            // set, so the segment shape decides which hidden set to consult.
+            marrow_schema::Type::Named(name) if name.contains("::") => {
+                self.hidden_qualified_types.contains(name)
+            }
+            marrow_schema::Type::Named(name) => self.hidden_types.contains(name),
+            _ => false,
         }
     }
-}
-
-fn sequence_type_element(text: &str) -> Option<&str> {
-    let inner = text.strip_prefix("sequence[")?.strip_suffix(']')?;
-    (!inner.is_empty()).then_some(inner)
-}
-
-fn is_type_name_like(text: &str) -> bool {
-    let mut saw_segment = false;
-    for segment in text.split("::") {
-        if segment.is_empty()
-            || !segment
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-        {
-            return false;
-        }
-        saw_segment = true;
-    }
-    saw_segment
 }
 
 pub(crate) struct CheckedTests {
@@ -1457,10 +1430,15 @@ fn check_file_source(
                     let (schema, errors) = marrow_schema::compile_store(store, resource);
                     for error in errors {
                         let diagnostic = schema_diagnostic(file_path, error);
+                        // The stored resource is compiled twice (once for its
+                        // resource schema, once for the store), so de-duplicate on
+                        // the typed schema-error identity: same code, file, span,
+                        // and `SchemaErrorKind` payload is the same error, while
+                        // two distinct store errors at one span differ in payload.
                         if !diagnostics.iter().any(|existing| {
                             existing.code == diagnostic.code
                                 && existing.file == diagnostic.file
-                                && existing.message == diagnostic.message
+                                && existing.payload == diagnostic.payload
                                 && existing.span == diagnostic.span
                         }) {
                             diagnostics.push(diagnostic);

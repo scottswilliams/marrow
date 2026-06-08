@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use marrow_schema::{ScalarType, Type};
 use marrow_store::cell::CatalogId;
-use marrow_syntax::{Expression, ParsedSource, SourceSpan, TypeRef};
+use marrow_syntax::{Declaration, Expression, ParsedSource, SourceSpan, TypeRef};
 
 use crate::executable::{
     CheckedBody, CheckedExecutableContext, CheckedExpr, CheckedFunctionRef, CheckedParamMode,
@@ -159,12 +159,22 @@ impl CheckedProgram {
             let parsed = sources.get(&source_file).copied();
             let module_name = module.name.clone();
             let context = CheckedExecutableContext::new(&snapshot, module_index);
-            for function in &mut module.functions {
-                let Some(declaration) =
-                    parsed.and_then(|parsed| parsed.file.function(&function.name))
-                else {
-                    continue;
-                };
+            // The checked functions are built in source order, one per function
+            // declaration, so they zip positionally with the parse's function
+            // declarations. Matching by name would lower duplicate-named functions
+            // against the first declaration's body, attaching the wrong body to the
+            // second — a name carries no stable identity here, position does.
+            let declarations = parsed.into_iter().flat_map(|parsed| {
+                parsed
+                    .file
+                    .declarations
+                    .iter()
+                    .filter_map(|declaration| match declaration {
+                        Declaration::Function(function) => Some(function),
+                        _ => None,
+                    })
+            });
+            for (function, declaration) in module.functions.iter_mut().zip(declarations) {
                 let mut scope = vec![constants.clone()];
                 scope.push(
                     function
@@ -175,6 +185,7 @@ impl CheckedProgram {
                 );
                 debug_assert_eq!(aliases, crate::build_alias_map(&module.imports));
                 debug_assert_eq!(context.module_name(), module_name);
+                debug_assert_eq!(function.name, declaration.name);
                 function.runtime_body = CheckedBody::lower(&declaration.body, &context, scope);
             }
         }

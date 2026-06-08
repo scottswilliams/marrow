@@ -18,9 +18,8 @@ fn reports_unknown_types_in_signatures_and_consts() {
     assert_eq!(found.len(), 3, "{found:#?}");
     for name in ["Booook", "Alsobad", "Nope"] {
         assert!(
-            found
-                .iter()
-                .any(|d| d.payload == DiagnosticPayload::UnknownType(name.into())),
+            found.iter().any(|d| d.payload
+                == DiagnosticPayload::UnknownType(marrow_schema::Type::Named(name.into()))),
             "{name}: {found:#?}"
         );
     }
@@ -37,7 +36,9 @@ fn map_annotations_outside_resource_members_are_not_supported_types() {
     assert_eq!(found.len(), 7, "{:#?}", report.diagnostics);
     assert!(
         found.iter().all(|diagnostic| diagnostic.payload
-            == DiagnosticPayload::UnknownType("map[string,int]".into())),
+            == DiagnosticPayload::UnknownType(marrow_schema::Type::Named(
+                "map[string,int]".into()
+            ))),
         "{found:#?}"
     );
     let schema = with_code(&report, "schema.unsupported_type");

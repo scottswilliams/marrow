@@ -412,7 +412,7 @@ fn check_type_annotation(
             file: context.file.to_path_buf(),
             message: format!("unknown type `{name}`"),
             span,
-            payload: DiagnosticPayload::UnknownType(name),
+            payload: DiagnosticPayload::UnknownType(schema_type),
         });
     }
 }
@@ -454,7 +454,7 @@ fn check_resource_identity_annotations(
                         file: context.file.to_path_buf(),
                         message: format!("unknown type `{identity}`"),
                         span: field.span,
-                        payload: DiagnosticPayload::UnknownType(identity),
+                        payload: DiagnosticPayload::UnknownType(Type::resolve(&field.ty)),
                     });
                 }
             }

@@ -107,8 +107,10 @@ impl CheckedFacts {
             facts.collect_store_facts(module_id, module, parsed);
         }
         for &(module_id, module, parsed) in &bindings {
-            for function in &module.functions {
-                if let Some(function) = facts.function_fact(module_id, module, function, parsed) {
+            for (source_index, function) in module.functions.iter().enumerate() {
+                if let Some(function) =
+                    facts.function_fact(module_id, module, function, source_index as u32, parsed)
+                {
                     facts.functions.push(function);
                 }
             }
@@ -380,12 +382,7 @@ impl CheckedFacts {
             .map(|fact| {
                 modules
                     .get(fact.module.0 as usize)
-                    .and_then(|module| {
-                        module
-                            .functions
-                            .iter()
-                            .find(|function| function.name == fact.name)
-                    })
+                    .and_then(|module| module.functions.get(fact.source_index as usize))
                     .and_then(|function| function.runtime_body())
                     .map_or_else(DirectEffectFacts::default, |body| {
                         crate::presence::direct_effects_for_block(self, body)
@@ -470,9 +467,24 @@ impl CheckedFacts {
         module_id: ModuleId,
         module: &CheckedModule,
         function: &crate::CheckedFunction,
+        source_index: u32,
         parsed: Option<&ParsedSource>,
     ) -> Option<FunctionFact> {
-        let declaration = parsed.and_then(|parsed| parsed.file.function(&function.name));
+        // The checked functions are built one per function declaration in source
+        // order, so the declaration carrying this function's annotations is the
+        // one at the same position — not the first declaration of this name, which
+        // a by-name lookup would wrongly pick for a duplicate-named function.
+        let declaration = parsed.and_then(|parsed| {
+            parsed
+                .file
+                .declarations
+                .iter()
+                .filter_map(|declaration| match declaration {
+                    marrow_syntax::Declaration::Function(function) => Some(function),
+                    _ => None,
+                })
+                .nth(source_index as usize)
+        });
         let aliases = build_alias_map(&module.imports);
 
         let params = function
@@ -521,6 +533,7 @@ impl CheckedFacts {
             params,
             return_type,
             direct_effects: DirectEffectFacts::default(),
+            source_index,
             span: function.span,
         })
     }
@@ -1107,6 +1120,11 @@ pub struct FunctionFact {
     pub params: Vec<LocalFact>,
     pub return_type: Option<CheckedType>,
     pub direct_effects: DirectEffectFacts,
+    /// Position of the source function in its module's `functions`. A fact is
+    /// built only when its signature resolves, so the facts are a subset of the
+    /// module's functions; this stable index maps each fact back to its body
+    /// without a by-name lookup, which would mis-attribute under a duplicate name.
+    pub source_index: u32,
     pub span: SourceSpan,
 }
 

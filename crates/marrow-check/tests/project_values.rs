@@ -312,7 +312,7 @@ fn identity_type_must_name_a_declared_store() {
     assert_eq!(found.len(), 1, "{found:#?}");
     assert_eq!(
         found[0].payload,
-        DiagnosticPayload::UnknownType("Id(^missing)".into())
+        DiagnosticPayload::UnknownType(marrow_schema::Type::Identity("missing".into()))
     );
 }
 
