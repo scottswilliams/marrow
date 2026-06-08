@@ -26,7 +26,7 @@ fn native_project(name: &str) -> support::TempProject {
 }
 
 #[test]
-fn dry_run_leaves_the_store_byte_for_byte_unchanged() {
+fn dry_run_leaves_saved_data_unchanged() {
     let project = native_project("dryrun-untouched");
     let dir = project.to_str().unwrap().to_string();
 
@@ -43,12 +43,13 @@ fn dry_run_leaves_the_store_byte_for_byte_unchanged() {
     assert!(dry_err.contains("^books(1).title"), "{dry_err}");
     assert!(dry_err.contains("^books(1).pages"), "{dry_err}");
 
-    // The store is unchanged: the dump after matches the dump before.
+    // The saved data is unchanged: the dump after reads back the same records as
+    // the dump before.
     let after = marrow(&["data", "dump", &dir]);
     assert_eq!(after.status.code(), Some(0), "after: {after:?}");
     assert_eq!(
         before.stdout, after.stdout,
-        "dry run must leave saved data byte-for-byte unchanged"
+        "dry run must leave saved data unchanged: the same records read back"
     );
 }
 

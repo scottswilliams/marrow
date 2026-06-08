@@ -479,8 +479,14 @@ fn read_line_bounded_within(reader: &mut impl BufRead, limit: u64) -> io::Result
     }
     if read as u64 == limit && !buf.ends_with(b"\n") {
         // The line overflowed the limit. Drain the rest of it so its tail is not
-        // re-read as a second request; a drain error ends the connection.
-        discard_to_newline(reader)?;
+        // re-read as a second request. If the drain cannot reach the line's
+        // newline — the client stalled past the read timeout, or hung up mid-line —
+        // the undrained tail must never resume as a fresh request, so the
+        // connection ends like a clean hang-up rather than rejecting only the
+        // prefix and leaving the tail behind.
+        if !discard_to_newline(reader)? {
+            return Ok(Line::Eof);
+        }
         return Ok(Line::Bad("request line exceeds the size limit".to_string()));
     }
     match String::from_utf8(buf) {
@@ -489,22 +495,27 @@ fn read_line_bounded_within(reader: &mut impl BufRead, limit: u64) -> io::Result
     }
 }
 
-/// Consume and discard bytes up to and including the next newline (or EOF). Used to
-/// drop the tail of an oversized line so it is not parsed as a fresh request.
-fn discard_to_newline(reader: &mut impl BufRead) -> io::Result<()> {
+/// Consume and discard bytes up to and including the next newline. Used to drop the
+/// tail of an oversized line so it is not parsed as a fresh request.
+///
+/// Returns `true` once the line's newline has been consumed, so the next read starts
+/// at the following request. Returns `false` when the newline is unreachable — a
+/// stalled client whose read timeout has fired, or a hang-up mid-line — because the
+/// undrained tail must not be re-read as a request; the caller ends the connection.
+fn discard_to_newline(reader: &mut impl BufRead) -> io::Result<bool> {
     loop {
         let available = match reader.fill_buf() {
             Ok(available) => available,
-            Err(error) if is_timeout(error.kind()) => return Ok(()),
+            Err(error) if is_timeout(error.kind()) => return Ok(false),
             Err(error) => return Err(error),
         };
         if available.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         match available.iter().position(|&byte| byte == b'\n') {
             Some(offset) => {
                 reader.consume(offset + 1);
-                return Ok(());
+                return Ok(true);
             }
             None => {
                 let consumed = available.len();
@@ -790,6 +801,102 @@ mod tests {
             serde_json::json!(protocol::PROTOCOL_MALFORMED)
         );
         assert_eq!(replies[1]["id"], serde_json::json!(2));
+    }
+
+    /// A reader scripted as a queue of fill results: each `Some(bytes)` is one
+    /// `fill_buf` chunk, each `None` is one read-timeout (`WouldBlock`). It lets a
+    /// test stall the drain of an oversized line exactly between the limit-fill and
+    /// the line's undrained tail.
+    struct StallingReader {
+        steps: VecDeque<Option<Vec<u8>>>,
+        current: Vec<u8>,
+        position: usize,
+    }
+
+    impl StallingReader {
+        fn new(steps: Vec<Option<Vec<u8>>>) -> Self {
+            Self {
+                steps: steps.into(),
+                current: Vec::new(),
+                position: 0,
+            }
+        }
+    }
+
+    impl Read for StallingReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let available = self.fill_buf()?;
+            let count = available.len().min(buf.len());
+            buf[..count].copy_from_slice(&available[..count]);
+            self.consume(count);
+            Ok(count)
+        }
+    }
+
+    impl BufRead for StallingReader {
+        fn fill_buf(&mut self) -> io::Result<&[u8]> {
+            if self.position < self.current.len() {
+                return Ok(&self.current[self.position..]);
+            }
+            match self.steps.pop_front() {
+                Some(Some(bytes)) => {
+                    self.current = bytes;
+                    self.position = 0;
+                    Ok(&self.current[..])
+                }
+                Some(None) => Err(io::Error::new(io::ErrorKind::WouldBlock, "timed out")),
+                None => Ok(&[]),
+            }
+        }
+
+        fn consume(&mut self, amount: usize) {
+            self.position += amount;
+        }
+    }
+
+    #[test]
+    fn a_stalled_drain_of_an_oversized_line_closes_the_connection() {
+        // An oversized line whose tail cannot be drained — the client stalls past
+        // the read timeout mid-line — must close the connection, not leave the
+        // undrained tail to resume as a phantom request. The reader fills exactly
+        // the limit with no newline, then times out (the drain cannot reach the
+        // newline), then would have offered a tail and a fresh request had the
+        // connection survived.
+        let limit = 4u64;
+        let mut reader = StallingReader::new(vec![
+            Some(b"xxxx".to_vec()),
+            None,
+            Some(b"yyy\n".to_vec()),
+            Some(b"{\"id\":1,\"op\":\"debug_data_roots\"}\n".to_vec()),
+        ]);
+        let line = read_line_bounded_within(&mut reader, limit).expect("a stalled drain is clean");
+        assert!(
+            matches!(line, Line::Eof),
+            "a drain that cannot reach the newline closes the connection, not Bad"
+        );
+
+        // End to end: the stalled oversized line yields no reply at all, and the
+        // tail `yyy` plus the trailing request never resurface.
+        let state = empty_state();
+        let mut reader = StallingReader::new(vec![
+            Some(b"xxxx".to_vec()),
+            None,
+            Some(b"yyy\n".to_vec()),
+            Some(b"{\"id\":1,\"op\":\"debug_data_roots\"}\n".to_vec()),
+        ]);
+        let mut output: Vec<u8> = Vec::new();
+        serve_connection_within(
+            &mut reader,
+            &mut output,
+            &state.program,
+            &state.store,
+            limit,
+        )
+        .expect("serve closes cleanly");
+        assert!(
+            output.is_empty(),
+            "a stalled oversized line sends no reply and re-reads no tail: {output:?}"
+        );
     }
 
     #[test]

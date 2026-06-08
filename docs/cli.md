@@ -42,15 +42,18 @@ Commands that report diagnostics or saved data take `--format`:
 
 - `text` (the default) — human-readable lines. Diagnostics and findings go to
   stderr; primary results go to stdout.
-- `json` — one JSON object per tooling report on stdout.
+- `json` — one JSON object per tooling report on stdout, except the
+  `run --trace`, `run --dry-run`, and `test --trace` reports, which go to stderr
+  (see below).
 - `jsonl` — one JSON object per line for streaming tooling reports, ending
   with a `{"kind": "summary", …}` line where the report has many records.
 
 Plain `run` output is the program's own `print`/`write` stream, which carries no
 envelope. `run --trace`, `run --dry-run`, and `test --trace` accept `--format`
-for their tooling reports; when reports compose, more than one top-level JSON
-object may appear on stdout. `--format` is also accepted by `check` and typed
-`data` subcommands.
+for their tooling reports; those reports are written to stderr, leaving stdout
+for the program's own `print`/`write` output and the test pass/fail report, and
+when those reports compose more than one top-level JSON object may appear on
+stderr. `--format` is also accepted by `check` and typed `data` subcommands.
 
 ---
 
