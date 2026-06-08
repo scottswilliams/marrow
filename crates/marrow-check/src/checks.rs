@@ -2752,6 +2752,10 @@ fn check_builtin_call(
 ) -> MarrowType {
     let label = segments.join("::");
     check_plain_call_modes(&label, args, env.span, env.file, env.diagnostics);
+    if segments == ["Error"] {
+        check_error_constructor_args(args, arg_types, env.span, env.file, env.diagnostics);
+        return MarrowType::Error;
+    }
     check_builtin_call_args(segments, arg_types, env.span, env.file, env.diagnostics);
     if let Some(params) = std_call_params(segments) {
         check_args_against(
@@ -2766,7 +2770,6 @@ fn check_builtin_call(
     std_call_return_type(segments)
         .or_else(|| conversion_return_type(segments))
         .or_else(|| builtin_return_type(segments))
-        .or_else(|| (segments == ["Error"]).then_some(MarrowType::Error))
         .unwrap_or(MarrowType::Unknown)
 }
 
@@ -2956,6 +2959,64 @@ fn check_builtin_call_args(
     let [name] = segments else { return };
     if let Some(target) = ConversionTarget::from_name(name) {
         check_conversion_arg(target, arg_types, span, file, diagnostics);
+    }
+}
+
+/// Check an `Error(...)` constructor against the one `Error` field contract owned
+/// by `marrow_schema::error`. `Error` is constructed with named fields, so each
+/// argument names a field whose type is checked like a resource field, and every
+/// required field must be supplied. The field set and types live in the schema so
+/// the checker and runtime validate one definition.
+fn check_error_constructor_args(
+    args: &[marrow_syntax::Argument],
+    arg_types: &[MarrowType],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let fields = marrow_schema::error::fields();
+    let mut supplied = vec![false; fields.len()];
+    for (arg, arg_type) in args.iter().zip(arg_types) {
+        let Some(name) = &arg.name else {
+            diagnostics.push(call_diagnostic(
+                file,
+                span,
+                "`Error` constructor takes named fields".to_string(),
+            ));
+            continue;
+        };
+        let Some(index) = fields.iter().position(|field| field.name == name) else {
+            diagnostics.push(call_diagnostic(
+                file,
+                span,
+                format!("`Error` has no field `{name}`"),
+            ));
+            continue;
+        };
+        if supplied[index] {
+            diagnostics.push(CheckDiagnostic {
+                code: CHECK_CALL_ARGUMENT,
+                severity: Severity::Error,
+                file: file.to_path_buf(),
+                message: format!("field `{name}` is supplied more than once"),
+                span,
+                payload: DiagnosticPayload::DuplicateNamedArgument(name.clone()),
+            });
+            continue;
+        }
+        supplied[index] = true;
+        let expected = MarrowType::from_resolved(fields[index].ty.clone(), TypeNames::default());
+        check_one_arg("Error", &expected, arg_type, span, file, diagnostics);
+    }
+
+    for (field, supplied) in fields.iter().zip(supplied) {
+        if field.required && !supplied {
+            diagnostics.push(call_diagnostic(
+                file,
+                span,
+                format!("`Error` requires `{}`", field.name),
+            ));
+        }
     }
 }
 
