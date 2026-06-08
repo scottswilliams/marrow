@@ -95,6 +95,11 @@ pub enum Verdict {
 pub enum RepairReason {
     /// A newly-required member is absent from records that carry no default.
     MissingRequiredMember,
+    /// A newly-required member declares an `evolve default`, but the value is not a
+    /// constant the checker can carry as a typed fill. The developer named a fill, so this
+    /// is distinct from `MissingRequiredMember`: the obligation is not "no default" but "a
+    /// default that cannot be encoded", and the typed cause names which way it failed.
+    DefaultRejected { reason: RejectedDefault },
     /// A stored cell carries bytes that are present but not valid under the member's
     /// current type: they fail to decode, or they name an enum member the current enum
     /// no longer offers as a value (one removed, made `category`, or given children). The
@@ -159,6 +164,35 @@ pub enum RepairReason {
     /// backstop that keeps the fail-closed invariant total: any unhandled structural divergence
     /// over populated data fails closed here rather than silently activating.
     StructuralDivergence,
+}
+
+/// Why a declared `evolve default` could not be carried as a typed constant fill. The
+/// developer named a default, so the obligation fails closed on the specific way the value
+/// was rejected rather than on the absence of a default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RejectedDefault {
+    /// The value is not a constant the checker evaluates at discharge time; a per-record
+    /// fill is a transform, not a default.
+    NotConstant,
+    /// The value is a constant of the wrong type for the member's leaf.
+    TypeMismatch,
+    /// The value is a constant of the right type but out of the leaf's encodable range.
+    NotEncodable,
+}
+
+impl RejectedDefault {
+    /// The render-only prose a rejected default reports. Logic branches on the variant; this
+    /// is the one place its developer-facing wording lives, so the discharge diagnostic and
+    /// any boundary renderer never spell the cause twice.
+    pub fn message(&self) -> &'static str {
+        match self {
+            RejectedDefault::NotConstant => {
+                "evolve default must be a constant value; use a transform for computed values"
+            }
+            RejectedDefault::TypeMismatch => "evolve default value type does not match the member",
+            RejectedDefault::NotEncodable => "evolve default value is out of range for the member",
+        }
+    }
 }
 
 impl Verdict {

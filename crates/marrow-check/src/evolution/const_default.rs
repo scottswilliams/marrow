@@ -11,29 +11,31 @@ use marrow_store::Decimal;
 use marrow_store::value::{Scalar, ScalarType, decode_value, encode_value};
 use marrow_syntax::{Argument, Expression, LiteralKind, UnaryOp, decode_string_literal};
 
-use super::witness::DefaultValue;
+use super::witness::{DefaultValue, RejectedDefault};
 use crate::StoreLeafKind;
 
 /// The single owner of the const-default rule applied to a member leaf: a non-scalar leaf
 /// (an enum, an identity, or a non-tokenizable position with no leaf kind) cannot take a
 /// constant default, because a computed fill is a transform, not a default; a scalar leaf
 /// evaluates its value through [`eval_const_default`]. Both the discharge accumulator and
-/// the resume verifier route through here so the gate and the eval never drift.
+/// the resume verifier route through here so the gate and the eval never drift. A rejected
+/// default returns its typed cause so the verdict names which way the default failed.
 pub(crate) fn default_value_for_leaf(
     value: &Expression,
     leaf: Option<&StoreLeafKind>,
-) -> Result<DefaultValue, String> {
+) -> Result<DefaultValue, RejectedDefault> {
+    // A non-scalar member cannot take a constant default; a computed fill over an enum,
+    // identity, or non-tokenizable leaf is a transform, so this is the not-constant cause.
     let Some(StoreLeafKind::Scalar(scalar)) = leaf else {
-        return Err(
-            "evolve default targets a non-scalar member; use a transform for computed values"
-                .to_string(),
-        );
+        return Err(RejectedDefault::NotConstant);
     };
-    eval_const_default(value, *scalar).map_err(|error| error.message())
+    eval_const_default(value, *scalar).map_err(ConstDefaultError::into_rejected)
 }
 
-/// Why a default value cannot be carried as a typed constant.
-pub(crate) enum ConstDefaultError {
+/// Why a default literal cannot be carried as a typed constant. This is the const-default
+/// evaluator's own cause; [`Self::into_rejected`] lifts it to the witness-level
+/// [`RejectedDefault`] the discharge verdict carries, so the typed cause has one mapping.
+enum ConstDefaultError {
     /// The expression is not a constant literal the checker evaluates.
     NotConstant,
     /// The literal's type does not match the member's leaf type.
@@ -43,21 +45,12 @@ pub(crate) enum ConstDefaultError {
 }
 
 impl ConstDefaultError {
-    /// The diagnostic a rejected default reports. A non-constant value steers the
-    /// developer to a transform; a type or range failure names the conflict.
-    pub(crate) fn message(&self) -> String {
+    fn into_rejected(self) -> RejectedDefault {
         match self {
-            ConstDefaultError::NotConstant => {
-                "evolve default must be a constant value; use a transform for computed values"
-            }
-            ConstDefaultError::TypeMismatch => {
-                "evolve default value type does not match the member"
-            }
-            ConstDefaultError::NotEncodable => {
-                "evolve default value is out of range for the member"
-            }
+            ConstDefaultError::NotConstant => RejectedDefault::NotConstant,
+            ConstDefaultError::TypeMismatch => RejectedDefault::TypeMismatch,
+            ConstDefaultError::NotEncodable => RejectedDefault::NotEncodable,
         }
-        .to_string()
     }
 }
 

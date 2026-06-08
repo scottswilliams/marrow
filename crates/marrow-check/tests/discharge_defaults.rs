@@ -1,7 +1,7 @@
 mod support;
 mod support_discharge;
 
-use marrow_check::evolution::{RepairReason, Verdict, preview};
+use marrow_check::evolution::{RejectedDefault, RepairReason, Verdict, preview};
 use marrow_store::tree::TreeStore;
 use marrow_store::value::{Scalar, encode_value};
 
@@ -221,26 +221,26 @@ fn non_canonical_temporal_default_fails_closed() {
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
     let day_id = member_catalog_id(&place, "day");
+    // A declared default the checker cannot encode is not a missing member: the
+    // developer named a fill, so the verdict names the rejected default by its typed
+    // cause rather than collapsing into the no-default-at-all case.
     assert!(
         matches!(
             verdict_for(&result, &day_id),
             Verdict::RepairRequired {
-                reason: RepairReason::MissingRequiredMember
+                reason: RepairReason::DefaultRejected {
+                    reason: RejectedDefault::NotEncodable
+                }
             }
         ),
         "{:#?}",
         result.verdicts
     );
-    // The diagnostic names the offending member by its typed catalog id; the
-    // non-encodable-default cause has no typed `RepairReason` variant, so it is
-    // asserted through the message.
-    let day_diagnostic = diagnostics
-        .iter()
-        .find(|diagnostic| diagnostic.catalog_id.as_str() == day_id)
-        .expect("a diagnostic naming the day member");
     assert!(
-        day_diagnostic.message.contains("out of range"),
-        "{day_diagnostic:#?}"
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.catalog_id.as_str() == day_id),
+        "{diagnostics:#?}"
     );
 }
 
@@ -273,27 +273,25 @@ fn non_constant_default_fails_closed_with_transform_hint() {
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
     let pages_id = member_catalog_id(&place, "pages");
+    // A declared non-constant default is steered to a transform by a typed cause, not by
+    // the missing-member verdict a member with no default carries.
     assert!(
         matches!(
             verdict_for(&result, &pages_id),
             Verdict::RepairRequired {
-                reason: RepairReason::MissingRequiredMember
+                reason: RepairReason::DefaultRejected {
+                    reason: RejectedDefault::NotConstant
+                }
             }
         ),
         "{:#?}",
         result.verdicts
     );
-    // The diagnostic names the member by its typed catalog id; the non-constant cause
-    // ("a varying fill is a transform, not a default") has no typed `RepairReason`
-    // variant, so it is asserted through the message.
-    let pages_diagnostic = diagnostics
-        .iter()
-        .find(|diagnostic| diagnostic.catalog_id.as_str() == pages_id)
-        .expect("a diagnostic naming the pages member");
     assert!(
-        pages_diagnostic.message.contains("constant")
-            && pages_diagnostic.message.contains("transform"),
-        "{pages_diagnostic:#?}"
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.catalog_id.as_str() == pages_id),
+        "{diagnostics:#?}"
     );
 }
 

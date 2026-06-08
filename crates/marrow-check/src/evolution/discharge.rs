@@ -31,7 +31,7 @@ use marrow_store::tree::{DataPathSegment, TreeStore};
 
 use super::const_default::default_value_for_leaf;
 use super::transform_reads::{TransformReadMember, transform_read_members};
-use super::witness::{DefaultValue, ObligationVerdict, RepairReason, Verdict};
+use super::witness::{DefaultValue, ObligationVerdict, RejectedDefault, RepairReason, Verdict};
 use crate::StoreLeafKind;
 use crate::executable::{
     CheckedSavedIndex, CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace,
@@ -1539,9 +1539,6 @@ fn classify_leaf(
         return Ok(());
     }
     acc.counts.records_lacking_member += state.missing_count + state.invalid_count;
-    let repair = Verdict::RepairRequired {
-        reason: RepairReason::MissingRequiredMember,
-    };
     if state.invalid_count > 0 {
         return acc.invalid_stored_value(
             id,
@@ -1556,16 +1553,23 @@ fn classify_leaf(
             acc.counts.records_to_backfill += state.missing_count;
             Verdict::Default { value }
         }
-        Some(Err(message)) => {
-            acc.diagnostic(id.clone(), message);
-            repair
+        // The member declares a default the checker cannot encode. This is a distinct
+        // obligation from a member with no default: the verdict names the rejected default
+        // by its typed cause, and the diagnostic renders that cause's prose.
+        Some(Err(reason)) => {
+            acc.diagnostic(id.clone(), reason.message().to_string());
+            Verdict::RepairRequired {
+                reason: RepairReason::DefaultRejected { reason },
+            }
         }
         None => {
             acc.diagnostic(
                 id.clone(),
                 missing_member_message(&leaf.label, state.missing_count, &state.sample),
             );
-            repair
+            Verdict::RepairRequired {
+                reason: RepairReason::MissingRequiredMember,
+            }
         }
     };
     acc.push_leaf(id, verdict)?;
@@ -1984,16 +1988,16 @@ impl Accumulator {
             && self.declared_leaf_token(catalog_id).is_none()
     }
 
-    /// The typed constant fill for a defaulted member, or an error message when the
-    /// default value is not a constant the checker can evaluate against the leaf
-    /// type. `None` when no `evolve default` targets the member. A non-scalar leaf — an
-    /// enum, an identity, or a non-tokenizable position with no leaf kind — cannot take a
-    /// constant default; a computed fill is a transform.
+    /// The typed constant fill for a defaulted member, or the typed cause when the default
+    /// value is not a constant the checker can evaluate against the leaf type. `None` when no
+    /// `evolve default` targets the member. A non-scalar leaf — an enum, an identity, or a
+    /// non-tokenizable position with no leaf kind — cannot take a constant default; a computed
+    /// fill is a transform.
     fn default_value_for(
         &self,
         raw_catalog_id: &str,
         leaf: Option<&StoreLeafKind>,
-    ) -> Option<Result<super::witness::DefaultValue, String>> {
+    ) -> Option<Result<super::witness::DefaultValue, RejectedDefault>> {
         let value = self.defaults.get(raw_catalog_id)?;
         Some(default_value_for_leaf(value, leaf))
     }

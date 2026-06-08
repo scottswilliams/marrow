@@ -32,7 +32,7 @@ pub use preview::preview;
 pub use transform_reads::{TransformReadMember, transform_read_members};
 pub use witness::{
     CatalogFingerprint, DefaultValue, DischargeCounts, EvolutionWitness, ObligationVerdict,
-    RepairReason, Verdict,
+    RejectedDefault, RepairReason, Verdict,
 };
 
 use crate::executable::{CheckedSavedMember, checked_activation_root_places};
@@ -49,7 +49,10 @@ pub fn default_value_for_bound_member(
     let leaf = checked_activation_root_places(program)
         .iter()
         .find_map(|place| member_leaf(&place.root_members, catalog_id))?;
-    Some(const_default::default_value_for_leaf(value, Some(&leaf)))
+    Some(
+        const_default::default_value_for_leaf(value, Some(&leaf))
+            .map_err(|reason| reason.message().to_string()),
+    )
 }
 
 /// Rebind a freshly regenerated proposal to the random IDs recorded by an activation
