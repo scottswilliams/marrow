@@ -1,4 +1,5 @@
 mod support;
+mod support_enum;
 
 use marrow_check::{CheckDiagnostic, DiagnosticPayload, EnumDiagnostic, check_project};
 use marrow_schema::SchemaErrorKind;
@@ -6,19 +7,12 @@ use marrow_schema::SchemaErrorKind;
 use support::{
     assert_clean, check_module, check_module_report, config, temp_project, with_code, write,
 };
+use support_enum::assert_enum_payload;
 
 fn assert_schema_payload(diagnostic: &CheckDiagnostic, expected: SchemaErrorKind) {
     assert_eq!(
         diagnostic.payload,
         DiagnosticPayload::Schema(expected),
-        "{diagnostic:#?}"
-    );
-}
-
-fn assert_enum_payload(diagnostic: &CheckDiagnostic, expected: EnumDiagnostic) {
-    assert_eq!(
-        diagnostic.payload,
-        DiagnosticPayload::Enum(expected),
         "{diagnostic:#?}"
     );
 }

@@ -1,18 +1,12 @@
 mod support;
+mod support_enum;
 
 use std::path::Path;
 
-use marrow_check::{CheckDiagnostic, DiagnosticPayload, EnumDiagnostic, check_project};
+use marrow_check::{DiagnosticPayload, EnumDiagnostic, check_project};
 
 use support::{assert_clean, check_script, config, temp_project, with_code, write};
-
-fn assert_enum_payload(diagnostic: &CheckDiagnostic, expected: EnumDiagnostic) {
-    assert_eq!(
-        diagnostic.payload,
-        DiagnosticPayload::Enum(expected),
-        "{diagnostic:#?}"
-    );
-}
+use support_enum::assert_enum_payload;
 
 /// A nested-module enum `module a::b` owns `Status` and `Color`. Its module name
 /// has *two* segments (`a::b`), so a qualified annotation `a::b::Status` and a
