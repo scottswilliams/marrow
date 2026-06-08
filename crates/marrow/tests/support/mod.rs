@@ -197,3 +197,24 @@ pub(crate) fn commit_catalog_if_clean(root: impl AsRef<Path>) {
         );
     }
 }
+
+/// The accepted store catalog id of a checked root member, addressed by name. CLI
+/// tests that write cells under the live store resolve member ids through the same
+/// checked facts the runtime uses, never by spelling the id.
+#[allow(dead_code)]
+pub(crate) fn member_catalog_id(
+    members: &[marrow_check::CheckedSavedMember],
+    name: &str,
+) -> marrow_store::cell::CatalogId {
+    let member = members
+        .iter()
+        .find(|member| member.name == name)
+        .expect("checked member");
+    marrow_store::cell::CatalogId::new(
+        member
+            .catalog_id
+            .clone()
+            .expect("accepted member catalog id"),
+    )
+    .expect("member catalog id")
+}

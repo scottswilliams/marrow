@@ -2,16 +2,14 @@ use std::fs;
 use std::path::Path;
 
 use marrow_check::tooling::{DataQuerySegment, QueryError, ToolingError, data_children};
-use marrow_check::{
-    CheckedProgram, CheckedSavedMember, CheckedSavedPlace, checked_saved_root_place,
-};
+use marrow_check::{CheckedProgram, CheckedSavedPlace, checked_saved_root_place};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::{DataPathSegment, TreeStore};
 
 mod support;
 
-use support::{TempProject, write};
+use support::{TempProject, member_catalog_id, write};
 
 /// Run the binary, first committing the pending catalog of any directory argument
 /// so `data`'s read-only commands observe a frozen catalog the way a prior `run`
@@ -181,14 +179,6 @@ fn catalog_id(raw: &str) -> CatalogId {
 
 fn checked_catalog_id(raw: &Option<String>) -> CatalogId {
     CatalogId::new(raw.clone().expect("accepted catalog id")).expect("catalog id")
-}
-
-fn member_catalog_id(members: &[CheckedSavedMember], name: &str) -> CatalogId {
-    let member = members
-        .iter()
-        .find(|member| member.name == name)
-        .expect("checked member");
-    checked_catalog_id(&member.catalog_id)
 }
 
 fn field_path(place: &CheckedSavedPlace, name: &str) -> Vec<DataPathSegment> {

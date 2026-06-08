@@ -9,7 +9,7 @@ use marrow_store::tree::{DataPathSegment, TreeStore};
 
 mod support;
 
-use support::{TempProject, marrow, temp_project, write};
+use support::{TempProject, marrow, member_catalog_id, temp_project, write};
 
 /// The `code` field of a single JSON error record printed to stdout.
 fn json_code(output: &Output) -> String {
@@ -319,20 +319,6 @@ fn store_catalog_id(root: impl AsRef<Path>) -> CatalogId {
     let place = checked_books_place(root);
     CatalogId::new(place.store_catalog_id.expect("accepted store catalog id"))
         .expect("store catalog id")
-}
-
-fn member_catalog_id(members: &[marrow_check::CheckedSavedMember], name: &str) -> CatalogId {
-    let member = members
-        .iter()
-        .find(|member| member.name == name)
-        .expect("checked member");
-    CatalogId::new(
-        member
-            .catalog_id
-            .clone()
-            .expect("accepted member catalog id"),
-    )
-    .expect("member catalog id")
 }
 
 /// A backup that carries an orphan data cell is not valid under the target
