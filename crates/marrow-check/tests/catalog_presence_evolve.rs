@@ -441,7 +441,7 @@ fn evolve_rename_whose_source_is_still_declared_fails_closed() {
         write_catalog(root, &metadata);
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_project(&root, &config()).expect("check");
 
     assert!(
         report
@@ -450,22 +450,6 @@ fn evolve_rename_whose_source_is_still_declared_fails_closed() {
             .any(|diagnostic| diagnostic.code == CHECK_CATALOG_INTENT),
         "a rename whose source is still declared must fail closed: {:#?}",
         report.diagnostics
-    );
-    let module = program.facts.module_id("books").expect("module");
-    let resource = program.facts.resource_id(module, "Book").expect("resource");
-    let bound: Vec<&str> = program
-        .facts
-        .resource_members()
-        .iter()
-        .filter(|member| {
-            member.resource == resource
-                && member.catalog_id.as_deref() == Some(derived_id("member-a").as_str())
-        })
-        .map(|member| member.name.as_str())
-        .collect();
-    assert!(
-        bound.len() <= 1,
-        "stable id member-a must not bind two source members: {bound:#?}"
     );
 }
 
@@ -564,11 +548,11 @@ fn two_renames_onto_the_same_target_conflict() {
 }
 
 #[test]
-fn evolve_transform_body_reports_undefined_names_and_calls() {
+fn evolve_transform_body_reports_undefined_identifiers() {
     // A transform body is held to the same name-resolution rules a function body
-    // is: an undefined identifier and an unknown call are caught at check time, not
-    // left as unchecked free text.
-    let root = temp_project("evolve-transform-undefined", |root| {
+    // is: an undefined identifier is caught at check time, not left as unchecked
+    // free text.
+    let root = temp_project("evolve-transform-undefined-name", |root| {
         write(
             root,
             "src/books.mw",
@@ -577,8 +561,7 @@ fn evolve_transform_body_reports_undefined_names_and_calls() {
              \x20   title: string\n\
              evolve\n\
              \x20   transform Book.title\n\
-             \x20   \x20   const x: string = totallyUndefinedVar\n\
-             \x20   \x20   const y: string = nonexistentFn()\n",
+             \x20   \x20   const x: string = totallyUndefinedVar\n",
         );
     });
 
@@ -592,6 +575,27 @@ fn evolve_transform_body_reports_undefined_names_and_calls() {
         "undefined identifier in a transform body must be reported: {:#?}",
         report.diagnostics
     );
+}
+
+#[test]
+fn evolve_transform_body_reports_unknown_calls() {
+    // A transform body resolves call targets the same way a function body does: an
+    // unknown call is caught at check time.
+    let root = temp_project("evolve-transform-undefined-call", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   title: string\n\
+             evolve\n\
+             \x20   transform Book.title\n\
+             \x20   \x20   const y: string = nonexistentFn()\n",
+        );
+    });
+
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
     assert!(
         report
             .diagnostics

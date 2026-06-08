@@ -38,16 +38,13 @@ fn derived_id(label: &str) -> String {
 }
 
 /// The accepted catalog is the durable ABI: a torn write would brick the project, so
-/// `write_accepted_catalog` must be all-or-nothing. After a successful write the only
-/// catalog artifact in the directory is the complete target file — no temp staging file
-/// is left behind, and overwriting a prior catalog never exposes a partial file. The
-/// written bytes round-trip back to the same metadata.
+/// `write_accepted_catalog` must be all-or-nothing. Overwriting a prior, smaller catalog
+/// with a larger one must leave exactly one artifact in the directory — the target file —
+/// with no temp staging file beside it and no partial older content exposed.
 #[test]
-fn write_accepted_catalog_is_atomic_and_leaves_no_temp() {
-    let root = temp_project("catalog-atomic", |_| {});
+fn write_accepted_catalog_leaves_only_the_target_file() {
+    let root = temp_project("catalog-atomic-no-temp", |_| {});
 
-    // A prior, smaller catalog sits at the target. The overwrite with a larger catalog
-    // must replace it wholesale, never leaving a half-written file or a stray temp.
     let prior = catalog(vec![entry(
         CatalogEntryKind::Resource,
         "books::Book",
@@ -56,16 +53,7 @@ fn write_accepted_catalog_is_atomic_and_leaves_no_temp() {
     )]);
     write_catalog(&root, &prior);
 
-    let next = catalog(vec![
-        entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
-        entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
-        entry(
-            CatalogEntryKind::ResourceMember,
-            "books::Book.title",
-            "member-title",
-            &[],
-        ),
-    ]);
+    let next = larger_catalog();
     marrow_check::write_accepted_catalog(&root, &config(), &next).expect("write accepted catalog");
 
     let entries: Vec<String> = fs::read_dir(&*root)
@@ -83,13 +71,34 @@ fn write_accepted_catalog_is_atomic_and_leaves_no_temp() {
         vec![String::from("marrow.catalog.json")],
         "a successful write leaves only the target file, with no temp staging artifact"
     );
+}
+
+/// The bytes `write_accepted_catalog` lands on disk are the complete catalog, not a
+/// truncated prefix: reading the target back parses to the same metadata that was written.
+#[test]
+fn write_accepted_catalog_lands_the_complete_catalog() {
+    let root = temp_project("catalog-atomic-complete", |_| {});
+
+    let written = larger_catalog();
+    marrow_check::write_accepted_catalog(&root, &config(), &written)
+        .expect("write accepted catalog");
 
     let bytes = fs::read_to_string(catalog_path(&root)).expect("read catalog");
-    let round_tripped = CatalogMetadata::from_json(&bytes).expect("complete, parseable catalog");
-    assert_eq!(
-        round_tripped, next,
-        "the written file is the complete catalog, not a truncated prefix"
-    );
+    let read_back = CatalogMetadata::from_json(&bytes).expect("complete, parseable catalog");
+    assert_eq!(read_back, written);
+}
+
+fn larger_catalog() -> CatalogMetadata {
+    catalog(vec![
+        entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+        entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+        entry(
+            CatalogEntryKind::ResourceMember,
+            "books::Book.title",
+            "member-title",
+            &[],
+        ),
+    ])
 }
 
 #[test]

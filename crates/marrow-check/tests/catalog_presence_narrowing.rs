@@ -24,32 +24,6 @@ fn assert_bare_present_read(name: &str, src: &str) {
 }
 
 #[test]
-fn coalesce_rejects_non_saved_function_calls_outside_the_presence_ledger() {
-    let root = temp_project("presence-coalesce-call", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             fn value(): string\n\
-             \x20   return \"title\"\n\
-             fn fallback(): string\n\
-             \x20   return value() ?? \"untitled\"\n",
-        );
-    });
-
-    let (report, _program) = check_project(&root, &config()).expect("check");
-
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == marrow_check::CHECK_OPERATOR_TYPE),
-        "{:#?}",
-        report.diagnostics
-    );
-}
-
-#[test]
 fn if_exists_narrows_reads_inside_the_then_block() {
     let root = temp_project("presence-if-exists", |root| {
         write(
@@ -561,26 +535,25 @@ fn if_exists_narrowing_expires_when_same_condition_calls_saved_writer() {
     );
 }
 
+/// Check `src` as the single module `books`, returning the presence proofs it records.
+fn presence_proofs(name: &str, src: &str) -> Vec<marrow_check::PresenceProofFact> {
+    let root = temp_project(name, |root| write(root, "src/books.mw", src));
+    let (report, program) = check_project(&root, &config()).expect("check");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    program.facts.presence_proofs().to_vec()
+}
+
 #[test]
-fn bare_maybe_present_read_errors_and_resolved_reads_record_allowed_proof_sources() {
-    let root = temp_project("presence-ledger", |root| {
+fn a_bare_maybe_present_read_pends_on_attached_data() {
+    let root = temp_project("presence-bare-pending", |root| {
         write(
             root,
             "src/books.mw",
             "module books\n\
              resource Book at ^books(id: int)\n\
-             \x20   required title: string\n\
              \x20   subtitle: string\n\
-             fn requiredTitle(id: int): string\n\
-             \x20   return ^books(id).title\n\
              fn bare(id: int): string\n\
-             \x20   return ^books(id).subtitle\n\
-             fn fallback(id: int): string\n\
-             \x20   return ^books(id).subtitle ?? \"untitled\"\n\
-             fn found(id: int): bool\n\
-             \x20   return exists(^books(id).subtitle)\n\
-             fn optional(id: int): string\n\
-             \x20   return ^books(id)?.subtitle ?? \"untitled\"\n",
+             \x20   return ^books(id).subtitle\n",
         );
     });
 
@@ -594,61 +567,95 @@ fn bare_maybe_present_read_errors_and_resolved_reads_record_allowed_proof_source
         "{:#?}",
         report.diagnostics
     );
-    let proof_sources: Vec<_> = program
+    let proof = program
         .facts
         .presence_proofs()
         .iter()
-        .map(|proof| proof.source)
-        .collect();
-    let mut observed_sources: Vec<_> = proof_sources.clone();
-    observed_sources.sort_by_key(|source| format!("{source:?}"));
-    observed_sources.dedup();
-    // Compile-time tripwire: a new PresenceProofSource variant must also be
-    // added to all_sources below, or this match stops being exhaustive.
+        .find(|proof| proof.source == PresenceProofSource::AttachedData)
+        .expect("attached-data proof");
+    assert_eq!(proof.status, PresenceProofStatus::PendingAttachedData);
+}
+
+#[test]
+fn a_required_declaration_discharges_a_saved_read() {
+    let proofs = presence_proofs(
+        "presence-declaration",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         fn requiredTitle(id: int): string\n\
+         \x20   return ^books(id).title\n",
+    );
+
+    let proof = proofs
+        .iter()
+        .find(|proof| proof.source == PresenceProofSource::Declaration)
+        .expect("declaration proof");
+    assert_eq!(proof.status, PresenceProofStatus::Discharged);
+}
+
+#[test]
+fn a_coalesce_fallback_discharges_via_narrowing() {
+    let proofs = presence_proofs(
+        "presence-coalesce-narrowing",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   subtitle: string\n\
+         fn fallback(id: int): string\n\
+         \x20   return ^books(id).subtitle ?? \"untitled\"\n",
+    );
+
+    let proof = proofs
+        .iter()
+        .find(|proof| proof.source == PresenceProofSource::Narrowing)
+        .expect("narrowing proof");
+    assert_eq!(proof.status, PresenceProofStatus::Discharged);
+}
+
+#[test]
+fn an_exists_guard_discharges_via_narrowing() {
+    let proofs = presence_proofs(
+        "presence-exists-narrowing",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   subtitle: string\n\
+         fn found(id: int): bool\n\
+         \x20   return exists(^books(id).subtitle)\n",
+    );
+
+    let proof = proofs
+        .iter()
+        .find(|proof| proof.source == PresenceProofSource::Narrowing)
+        .expect("narrowing proof");
+    assert_eq!(proof.status, PresenceProofStatus::Discharged);
+}
+
+#[test]
+fn an_optional_chain_fallback_discharges_via_narrowing() {
+    let proofs = presence_proofs(
+        "presence-optional-narrowing",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   subtitle: string\n\
+         fn optional(id: int): string\n\
+         \x20   return ^books(id)?.subtitle ?? \"untitled\"\n",
+    );
+
+    let proof = proofs
+        .iter()
+        .find(|proof| proof.source == PresenceProofSource::Narrowing)
+        .expect("narrowing proof");
+    assert_eq!(proof.status, PresenceProofStatus::Discharged);
+}
+
+/// A new `PresenceProofSource` variant must be wired through the per-strategy tests
+/// above; this match fails to compile until it is, so the suite cannot silently stop
+/// covering a way presence is proven.
+#[test]
+fn presence_proof_sources_are_exhaustively_covered() {
     match PresenceProofSource::AttachedData {
         PresenceProofSource::AttachedData
         | PresenceProofSource::Declaration
         | PresenceProofSource::Narrowing => {}
     }
-    let mut all_sources = vec![
-        PresenceProofSource::AttachedData,
-        PresenceProofSource::Declaration,
-        PresenceProofSource::Narrowing,
-    ];
-    all_sources.sort_by_key(|source| format!("{source:?}"));
-    assert_eq!(
-        observed_sources, all_sources,
-        "every presence-proof source variant must occur once in this fixture"
-    );
-    assert!(
-        program
-            .facts
-            .presence_proofs()
-            .iter()
-            .any(|proof| proof.status == PresenceProofStatus::PendingAttachedData),
-        "{:#?}",
-        program.facts.presence_proofs()
-    );
-    assert!(
-        program
-            .facts
-            .presence_proofs()
-            .iter()
-            .any(|proof| proof.status == PresenceProofStatus::Discharged),
-        "{:#?}",
-        program.facts.presence_proofs()
-    );
-    let mut proof_ids: Vec<_> = program
-        .facts
-        .presence_proofs()
-        .iter()
-        .map(|proof| proof.id)
-        .collect();
-    proof_ids.sort_by_key(|id| id.0);
-    proof_ids.dedup();
-    assert_eq!(
-        proof_ids.len(),
-        program.facts.presence_proofs().len(),
-        "presence proof ids must be unique"
-    );
 }

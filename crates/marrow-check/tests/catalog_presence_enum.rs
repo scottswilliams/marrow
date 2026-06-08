@@ -2,7 +2,7 @@ mod support;
 
 use std::hash::{Hash, Hasher};
 
-use marrow_check::{StoreIndexKeySource, StoredValueMeaning, check_project};
+use marrow_check::{ScalarType, StoreIndexKeySource, StoredValueMeaning, check_project};
 use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogMetadata};
 
 use support::catalog::entry as literal_entry;
@@ -296,6 +296,7 @@ fn enum_field_value_meaning_fails_closed_for_unresolved_bare_enum_names() {
             "src/b.mw",
             "module b\n\
              resource Order at ^orders(id: int)\n\
+             \x20   label: string\n\
              \x20   state: Status\n",
         );
         let metadata = catalog(vec![
@@ -308,6 +309,12 @@ fn enum_field_value_meaning_fails_closed_for_unresolved_bare_enum_names() {
             ),
             entry(CatalogEntryKind::Resource, "b::Order", "res-order", &[]),
             entry(CatalogEntryKind::Store, "b::^orders", "store-orders", &[]),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "b::Order::label",
+                "member-label",
+                &[],
+            ),
             entry(
                 CatalogEntryKind::ResourceMember,
                 "b::Order::state",
@@ -325,12 +332,28 @@ fn enum_field_value_meaning_fails_closed_for_unresolved_bare_enum_names() {
         .facts
         .resource_id(module, "Order")
         .expect("resource");
-    let state = program
-        .facts
-        .resource_members()
-        .iter()
-        .find(|member| member.resource == order && member.name == "state")
-        .expect("state member");
+    let member = |name: &str| {
+        program
+            .facts
+            .resource_members()
+            .iter()
+            .find(|member| member.resource == order && member.name == name)
+            .unwrap_or_else(|| panic!("{name} member"))
+    };
 
-    assert_eq!(state.value_meaning, None, "{state:#?}");
+    // A resolvable scalar field in the same resource still records its value
+    // meaning, so the unresolved enum field below is failing closed in isolation
+    // rather than the checker blanket-dropping the module's value meanings.
+    assert_eq!(
+        member("label").value_meaning,
+        Some(StoredValueMeaning::Scalar(ScalarType::Str)),
+        "{:#?}",
+        member("label")
+    );
+    assert_eq!(
+        member("state").value_meaning,
+        None,
+        "{:#?}",
+        member("state")
+    );
 }
