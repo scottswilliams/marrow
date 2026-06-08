@@ -1,6 +1,7 @@
 //! `marrow data get`: reading one path's value, distinguishing a present value, a
 //! children-only node, and a truly absent path. Presence and value are asserted as
-//! typed JSON fields; a malformed path is asserted by its usage exit code.
+//! typed JSON fields; a malformed path is asserted by its usage exit code. The
+//! default human text output is pinned by a separate render-contract test.
 
 mod support;
 mod support_data;
@@ -28,6 +29,33 @@ fn data_get_reads_a_path_value_and_reports_absence() {
 
     // A path that does not parse fails before touching the store: a usage error.
     assert_eq!(malformed.status.code(), Some(2), "{malformed:?}");
+}
+
+#[test]
+fn data_get_text_format_renders_each_presence_branch() {
+    // Render contract: with no --format, `data get` prints the human default for each
+    // presence branch -- the raw value for a present leaf, a children placeholder for a
+    // record identity node, and an absence marker for a missing path. The typed presence
+    // and value assertions live in the JSON tests above.
+    let (_project, dir) = seeded_project("data-get-text");
+    let value_only = marrow(&["data", "get", &dir, "^counter(1).value"]);
+    let children_only = marrow(&["data", "get", &dir, "^counter(1)"]);
+    let absent = marrow(&["data", "get", &dir, "^counter(2).value"]);
+
+    assert_eq!(value_only.status.code(), Some(0), "{value_only:?}");
+    let value_stdout = String::from_utf8(value_only.stdout).expect("utf8");
+    assert!(value_stdout.contains("42"), "{value_stdout}");
+
+    assert_eq!(children_only.status.code(), Some(0), "{children_only:?}");
+    let children_stdout = String::from_utf8(children_only.stdout).expect("utf8");
+    assert!(
+        children_stdout.contains("(no value; has children)"),
+        "{children_stdout}"
+    );
+
+    assert_eq!(absent.status.code(), Some(0), "{absent:?}");
+    let absent_stdout = String::from_utf8(absent.stdout).expect("utf8");
+    assert!(absent_stdout.contains("(absent)"), "{absent_stdout}");
 }
 
 #[test]
