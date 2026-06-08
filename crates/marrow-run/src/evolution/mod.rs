@@ -10,6 +10,7 @@
 
 mod admission;
 mod apply;
+mod auto_apply;
 mod backfill;
 mod completion;
 mod evidence;
@@ -21,6 +22,7 @@ mod validate;
 mod window;
 
 pub use apply::{ApplyError, ApplyOutcome, Approval, apply};
+pub use auto_apply::{AutoApplyOutcome, RunObligation, try_auto_apply};
 pub use completion::verify_activation_completion;
 pub use rebuild::rebuild_store_indexes;
 pub use window::{FenceError, current_engine_profile, fence};

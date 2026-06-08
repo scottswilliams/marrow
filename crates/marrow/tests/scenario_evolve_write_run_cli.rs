@@ -5,17 +5,22 @@
 //! fresh write carries the new field.
 //!
 //! Oracles are typed: process exit codes, parsed `data get --format json` presence and
-//! decoded value bytes, and the structured `evolve preview` JSON witness — never a
-//! substring of human-rendered prose. A separate `#[ignore]`d test records a durability
-//! divergence the scenario surfaced: a bare `marrow run` after a source-only sparse-field
-//! add fails closed on the activation fence rather than running as the docs' "source
-//! change only" table row implies, so the evolve cycle above is the real repair path.
-
-use std::fs;
+//! decoded value bytes, the structured `evolve preview` JSON witness, and the accepted
+//! catalog file's epoch — never a substring of human-rendered prose.
 
 mod support;
 
 use support::{TempProject, marrow, marrow_sub, write};
+
+/// The accepted catalog epoch a project has committed, read from its catalog file. A
+/// run that auto-applies an evolution advances this exactly as an explicit `evolve
+/// apply` does, so the epoch is the typed oracle for "the activation advanced".
+fn accepted_epoch(root: &TempProject) -> u64 {
+    let path = root.join("marrow.catalog.json");
+    let text = std::fs::read_to_string(&path).expect("read accepted catalog");
+    let catalog: serde_json::Value = serde_json::from_str(&text).expect("catalog json");
+    catalog["epoch"].as_u64().expect("catalog epoch")
+}
 
 /// A native-store project whose default entry seeds one book under the original schema.
 /// Built uncommitted so the first `run` freezes the catalog transparently, exactly as a
@@ -92,8 +97,9 @@ fn add_a_sparse_field_through_the_evolve_cycle_keeps_old_records_and_carries_new
         "the original schema's record is saved",
     );
 
-    // Step 2: add a sparse field in source. A populated store still has to re-stamp the
-    // changed durable shape, so the cycle is preview -> apply, not a bare run.
+    // Step 2: add a sparse field in source and discharge it through the explicit
+    // preview -> apply cycle. A bare run would auto-apply the same zero-record change;
+    // the explicit path stays valid and is what this scenario exercises.
     write(&root, "src/books.mw", EVOLVED_SOURCE);
     let preview = marrow(&["evolve", "preview", "--format", "json", dir(&root)]);
     assert_eq!(preview.status.code(), Some(0), "preview: {preview:?}");
@@ -230,37 +236,38 @@ fn an_identity_reference_added_by_evolution_links_an_existing_record_and_round_t
 }
 
 #[test]
-#[ignore = "DIVERGENCE: docs/data-evolution.md says a sparse-field add is a 'source change only' \
-            with existing records staying valid, but a bare `marrow run` over a populated store \
-            after the add fails closed with run.schema_drift -- the changed durable shape must be \
-            re-stamped through `evolve apply` (or the store must be empty) before the program can run."]
-fn a_bare_run_after_a_source_only_sparse_add_is_fenced_by_schema_drift() {
-    // Repro of the divergence the working scenario routes around. Run under the original
-    // schema to stamp the store, add a sparse field in source, then run again WITHOUT an
-    // evolve cycle. The docs' change table calls a sparse add "source change only", which
-    // implies the re-run should proceed and read the field as absent; instead the
-    // activation fence rejects it because the source digest binds the resource's member
-    // shape and now differs from the one the store recorded at the same epoch.
+fn a_bare_run_after_a_sparse_add_auto_applies() {
+    // Seed a record under the original schema, then add a sparse field in source and run
+    // again WITHOUT an explicit evolve cycle. Adding a sparse field mutates zero stored
+    // records, so the run auto-applies the evolution under the apply lock: it advances the
+    // accepted epoch by one, stamps the new shape, and proceeds. The old record reads back
+    // intact and the new sparse field is absent on it.
     let root = books_project("scenario-sparse-bare-run");
     let first = marrow_sub("run", &[dir(&root)]);
     assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    let epoch_before = accepted_epoch(&root);
 
     write(&root, "src/books.mw", EVOLVED_SOURCE);
     let rerun = marrow_sub("run", &[dir(&root)]);
-
-    // The documented contract for a sparse add is "existing records stay valid", so this
-    // bare re-run should succeed (exit 0) and leave the old record readable. It does not:
-    // the run is fenced before execution.
     assert_eq!(
         rerun.status.code(),
         Some(0),
-        "a source-only sparse add should not fence a re-run",
-    );
-    let stderr = String::from_utf8(rerun.stderr).expect("stderr utf8");
-    assert!(
-        !stderr.contains("run.schema_drift"),
-        "a sparse add must not read as schema drift: {stderr}",
+        "a sparse add auto-applies on run: {rerun:?}",
     );
 
-    fs::remove_dir_all(root.path()).ok();
+    assert_eq!(
+        get_value(&root, "^books(1).title"),
+        Some(b"Mort".to_vec()),
+        "the pre-evolution record keeps its title across the auto-apply",
+    );
+    assert_eq!(
+        get_value(&root, "^books(1).subtitle"),
+        None,
+        "the newly added sparse field is absent on the old record",
+    );
+    assert_eq!(
+        accepted_epoch(&root),
+        epoch_before + 1,
+        "the auto-apply advanced the accepted catalog epoch by exactly one",
+    );
 }

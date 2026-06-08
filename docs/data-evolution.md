@@ -26,11 +26,11 @@ schema does not fully describe until explicit data-evolution work runs.
 
 | Change | What it needs today |
 |---|---|
-| Add a sparse field | Source change only. Existing records stay valid; the field reads as absent until written. |
+| Add a sparse field | Existing records stay valid; the field reads as absent until written. It changes the durable shape, so a populated store is re-stamped, but discharging the change mutates no stored record: a `marrow run` auto-applies it (see [Run-Time Auto-Apply](#run-time-auto-apply)), and `marrow evolve apply` discharges it explicitly. |
 | Add a `required` field | `evolve default` or checked `evolve transform`, proven by `marrow evolve preview` and applied by `marrow evolve apply`. |
 | Rename a field | `evolve rename`, applied with `marrow evolve apply`; the stable identity moves with the rename, and stored cells addressed by that identity remain attached. |
 | Change a leaf's type | A populated leaf-type change fails closed: the stored bytes were written under the old type, so the new type cannot read them — even when its decoder would accept the old bytes — and `marrow evolve preview` reports it. A transform may not read the member it replaces, so an in-place reinterpret is not the resolution. Instead add a new field of the new type, populate it with an `evolve transform` computed from the old field, then retire the old field. The check is total over leaf-position members — every plain field and every `map[K, V]` value, required and sparse alike — and detects any change to a member's leaf type: scalar to scalar, scalar to an enum or a reference, or one named type to another. An empty leaf has no data to reinterpret and changes freely. |
-| Remove or unselect an enum member | While saved data still selects the member, the change fails closed: a stored value carries the member's stable identity, which the new enum no longer offers. Removing the member, marking it `category`, or giving it children all make it unselectable, and `marrow evolve preview` reports repair-required. Every leaf referencing the enum is scanned, required and sparse alike, so a stored value naming the gone member is caught regardless of the holding field's requiredness. Migrate the affected records to a current member first. Reordering members keeps every identity and is a source change only. Renaming a member is identity-preserving the same way a field rename is: declare it with `evolve rename`, and the member's stable identity moves to the new spelling so stored values addressed by that identity stay valid. A bare source rename with no `evolve rename` intent is read as the old member removed plus a new one added, so a stored value naming the old member then fails closed at preview. |
+| Remove or unselect an enum member | While saved data still selects the member, the change fails closed: a stored value carries the member's stable identity, which the new enum no longer offers. Removing the member, marking it `category`, or giving it children all make it unselectable, and `marrow evolve preview` reports repair-required. Every leaf referencing the enum is scanned, required and sparse alike, so a stored value naming the gone member is caught regardless of the holding field's requiredness. Migrate the affected records to a current member first. Reordering members keeps every identity and mutates no stored record, so it re-stamps the durable shape with no data work: a `marrow run` auto-applies it (see [Run-Time Auto-Apply](#run-time-auto-apply)). Renaming a member is identity-preserving the same way a field rename is: declare it with `evolve rename`, and the member's stable identity moves to the new spelling so stored values addressed by that identity stay valid. A bare source rename with no `evolve rename` intent is read as the old member removed plus a new one added, so a stored value naming the old member then fails closed at preview. |
 | Add an index | `marrow evolve preview` proves the rebuild and `marrow evolve apply` publishes index entries atomically. |
 | Remove a field | If no stored cells exist for that field, removal is a source/catalog no-op. Stored cells under a field the current source no longer declares are `data.orphan`; populated destructive removal needs `evolve retire` plus approval, or maintenance repair that deletes or moves the data before activation. |
 | Change a store's identity key shape | Not supported over saved data. Changing the key arity or any identity key type fails closed: existing records are keyed by the old shape and the new shape cannot address them. Model a new store and migrate with maintenance code. |
@@ -258,6 +258,40 @@ no durable context and is never fenced.
 This is the v0.1 compatibility window: a binary supports exactly its own accepted
 epoch and schema. Old and new binaries outside that exact window fail closed
 before writing.
+
+## Run-Time Auto-Apply
+
+When a `marrow run` fences on `run.schema_drift` — the store holds a structurally
+different shape at this binary's epoch — the run computes the evolution obligation
+against the live committed data and discharges it itself when, and only when, doing
+so mutates zero stored records. The digest still binds the full durable shape and
+the fence comparison is unchanged; the run is performing the real evolution apply
+(new digest, advanced epoch) for the subset where apply stages no data write.
+
+An evolution mutates zero stored records when it is intrinsically additive — a
+sparse field add, a new resource, store, enum member, or module constant, or an
+enum-member reorder — or when the affected store holds no records. Emptiness is not
+a special case: an empty store has nothing to backfill or lose, so any change
+against it discharges its obligation. The same source edit therefore auto-applies
+against an empty store and fences against a populated one that needs work.
+
+A change that backfills a newly required field, rewrites records through a
+transform, or destructively drops populated data does not auto-apply. The run fences
+with an actionable diagnostic that names `marrow evolve apply` and the backfill
+count where the witness proved one. A destructive drop against populated data stays
+explicit and requires confirmation through `marrow evolve apply --maintenance`,
+because losing data must never be a silent side effect of a run; a drop whose target
+holds no cells has nothing to lose and auto-applies. An evolution that needs that
+destructive approval never auto-applies, whatever its record count.
+
+The obligation probe and the activation stamp run in one transaction under the store
+write lock. The witness pins the store commit id, and apply re-checks that pin inside
+the write transaction, so a write that commits between the probe and the stamp moves
+the commit id and fails the apply closed: the auto-apply decision reflects committed
+state at stamp time and can only become more conservative under a race, never stamp
+against data it no longer describes. A run advancing the epoch fences other bindings
+still on the old epoch (`run.store_evolved`), the same lockout an explicit
+`marrow evolve apply` produces.
 
 ## Long-Term Online Activation Direction
 

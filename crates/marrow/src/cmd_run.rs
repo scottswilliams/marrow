@@ -3,12 +3,15 @@
 use std::cell::RefCell;
 use std::process::ExitCode;
 
+use marrow_check::evolution::preview;
+use marrow_run::evolution::{AutoApplyOutcome, FenceError, RunObligation, fence, try_auto_apply};
+
 use crate::cmd_check::report_runtime_fault;
 use crate::dry_run::{self, DryRunHook};
 use crate::trace::TraceHook;
 use crate::{
     CheckFormat, commit_pending_identity, load_checked_project, report_simple_error,
-    resolve_store_path,
+    resolve_store_path, write_accepted_catalog,
 };
 
 /// How a run observes itself: a plain run with no tooling report, an execution
@@ -168,54 +171,113 @@ fn run_project_dir(
         Err(code) => return code,
     };
 
-    let Some(entry) = entry_override.or(config.default_entry.as_deref()) else {
+    if entry_override.or(config.default_entry.as_deref()).is_none() {
         report_simple_error(
             "run.no_entry",
             "no entry to run; pass --entry <name> or set `run.defaultEntry` in marrow.json",
             CheckFormat::Text,
         );
         return ExitCode::FAILURE;
-    };
-    let runtime_program = program.runtime();
+    }
 
-    let store = match open_run_store(dir, &program, &config, observe.format()) {
-        Ok(Some(store)) => store,
-        Ok(None) => marrow_store::tree::TreeStore::memory(),
+    // The store open binds the program against the catalog the store sits at: an
+    // auto-applied evolution advances the epoch, so the returned program may be a
+    // re-check past the one loaded above.
+    let (program, store) = match open_run_store(dir, &config, program, observe.format()) {
+        Ok(OpenStore::Memory(program)) => (program, marrow_store::tree::TreeStore::memory()),
+        Ok(OpenStore::Native { program, store }) => (program, store),
         Err(code) => return code,
     };
+    let entry = entry_override
+        .or(config.default_entry.as_deref())
+        .expect("entry presence proven before the store opened");
+    let runtime_program = program.runtime();
     execute(&runtime_program, &store, entry, maintenance, observe)
+}
+
+/// The store a run executes over, paired with the program bound against the catalog the
+/// store now sits at. An auto-applied evolution advances the accepted catalog, so the
+/// returned program may be a re-check past the one the run loaded.
+enum OpenStore {
+    Memory(marrow_check::CheckedProgram),
+    Native {
+        program: marrow_check::CheckedProgram,
+        store: marrow_store::tree::TreeStore,
+    },
 }
 
 /// Open the project's configured native store for writing, fenced against the store's
 /// durable activation context and checked for an unstamped-but-populated state. A
 /// store a newer binary evolved past this program's accepted catalog, one that
 /// predates it, or one whose storage layout drifted is refused rather than written
-/// with a stale shape. `Ok(None)` is the in-memory default, which has no durable
-/// context to fence and is never stamp-checked.
+/// with a stale shape. An in-memory default has no durable context to fence and is
+/// never stamp-checked.
+///
+/// Schema drift at the current epoch is the run-time evolution case: the store holds a
+/// structurally different shape at this binary's epoch, which a sparse add or any other
+/// zero-record-mutation change produces. Such a change is auto-applied here — the
+/// production apply path stamps the new shape and advances the epoch — and the run
+/// proceeds against the re-checked program. A change that would backfill, transform, or
+/// destructively drop populated data fences instead, naming `evolve apply`.
 fn open_run_store(
     dir: &str,
-    program: &marrow_check::CheckedProgram,
+    config: &marrow_project::ProjectConfig,
+    program: marrow_check::CheckedProgram,
+    format: CheckFormat,
+) -> Result<OpenStore, ExitCode> {
+    let Some(store) = open_store_file(dir, config, format)? else {
+        return Ok(OpenStore::Memory(program));
+    };
+    match fence_run(&program, &store) {
+        Ok(()) => finish_open(program, store),
+        Err(FenceError::SchemaDrift) => auto_apply_then_reopen(dir, config, program, store, format),
+        Err(error) => {
+            report_simple_error(error.code(), &error.message(), CheckFormat::Text);
+            Err(ExitCode::FAILURE)
+        }
+    }
+}
+
+/// Open the project's configured native store file for writing, or `Ok(None)` when the
+/// project configures the in-memory default. The redb backend holds a process-level lock
+/// on the file, so a caller re-opening after an auto-apply must drop its first handle
+/// first.
+fn open_store_file(
+    dir: &str,
     config: &marrow_project::ProjectConfig,
     format: CheckFormat,
 ) -> Result<Option<marrow_store::tree::TreeStore>, ExitCode> {
     let Some(path) = resolve_store_path(dir, config, format)? else {
         return Ok(None);
     };
-    let store = marrow_store::tree::TreeStore::open(&path).map_err(|error| {
-        report_simple_error(error.code(), &error.to_string(), format);
-        ExitCode::FAILURE
-    })?;
-    if let Err(error) = marrow_run::evolution::fence(
+    marrow_store::tree::TreeStore::open(&path)
+        .map(Some)
+        .map_err(|error| {
+            report_simple_error(error.code(), &error.to_string(), format);
+            ExitCode::FAILURE
+        })
+}
+
+/// Fence a run's program against the store's stamped activation context.
+fn fence_run(
+    program: &marrow_check::CheckedProgram,
+    store: &marrow_store::tree::TreeStore,
+) -> Result<(), FenceError> {
+    fence(
         program.catalog.accepted_epoch,
         &program.source_digest(),
         &marrow_run::evolution::current_engine_profile(),
-        &store,
-    ) {
-        report_simple_error(error.code(), &error.message(), CheckFormat::Text);
-        return Err(ExitCode::FAILURE);
-    }
-    match populated_unstamped_store(program, &store) {
-        Ok(false) => Ok(Some(store)),
+        store,
+    )
+}
+
+/// Confirm a fenced store is not populated-but-unstamped, then admit it for the run.
+fn finish_open(
+    program: marrow_check::CheckedProgram,
+    store: marrow_store::tree::TreeStore,
+) -> Result<OpenStore, ExitCode> {
+    match populated_unstamped_store(&program, &store) {
+        Ok(false) => Ok(OpenStore::Native { program, store }),
         Ok(true) => {
             report_simple_error(
                 "run.store_unstamped",
@@ -227,6 +289,95 @@ fn open_run_store(
         Err(error) => {
             report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
             Err(ExitCode::FAILURE)
+        }
+    }
+}
+
+/// On schema drift, compute the evolution against committed data and either auto-apply a
+/// zero-record-mutation change or fence with the obligation as the actionable cause.
+///
+/// A zero-mutation evolution is discharged through the production apply path, which
+/// stamps the new shape and advances the epoch under the write lock with the witness
+/// commit-id pin, so a concurrent write fails the apply closed rather than letting a
+/// stale decision stamp. After the store commits, the accepted catalog file advances in
+/// lockstep and the project is re-checked so the run binds against the activated epoch
+/// and re-fences clean.
+fn auto_apply_then_reopen(
+    dir: &str,
+    config: &marrow_project::ProjectConfig,
+    program: marrow_check::CheckedProgram,
+    store: marrow_store::tree::TreeStore,
+    format: CheckFormat,
+) -> Result<OpenStore, ExitCode> {
+    let witness = match preview(&program, &store) {
+        Ok((witness, _diagnostics)) => witness,
+        Err(error) => {
+            report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
+            return Err(ExitCode::FAILURE);
+        }
+    };
+    match try_auto_apply(&witness, &program, &store) {
+        Ok(AutoApplyOutcome::Applied) => {}
+        Ok(AutoApplyOutcome::MustFence(obligation)) => {
+            report_simple_error(
+                "run.schema_drift",
+                &fence_message(&obligation),
+                CheckFormat::Text,
+            );
+            return Err(ExitCode::FAILURE);
+        }
+        Err(_) => {
+            // The apply re-verifies the witness against committed data under the write
+            // lock; a failure here means the store moved between the probe and the stamp
+            // (a concurrent write), so the auto-apply decision is stale. Fail closed
+            // rather than stamp against state the witness no longer describes.
+            report_simple_error(
+                FenceError::SchemaDrift.code(),
+                "store changed under the auto-apply probe; re-run to recompute the evolution against current data",
+                CheckFormat::Text,
+            );
+            return Err(ExitCode::FAILURE);
+        }
+    }
+    // The store transaction committed the new epoch; advance the accepted catalog file to
+    // match, exactly as an explicit `evolve apply` does as its final step.
+    if let Some(proposal) = &program.catalog.proposal {
+        write_accepted_catalog(dir, config, proposal, format)?;
+    }
+    // Release the file lock the native backend holds before re-opening below; one process
+    // may not hold two handles to the same store file at once.
+    drop(store);
+    // Re-check the project so the program binds against the freshly accepted epoch, then
+    // re-open and re-fence the store, which now matches. The reload sees the catalog file
+    // this auto-apply just advanced, so it proposes no further change and fences clean.
+    let (config, program) = load_checked_project(dir)?;
+    let Some(store) = open_store_file(dir, &config, format)? else {
+        return Ok(OpenStore::Memory(program));
+    };
+    if let Err(error) = fence_run(&program, &store) {
+        report_simple_error(error.code(), &error.message(), CheckFormat::Text);
+        return Err(ExitCode::FAILURE);
+    }
+    finish_open(program, store)
+}
+
+/// The actionable diagnostic a fenced obligation reports, naming `evolve apply` and the
+/// backfill count where the witness proved one. A zero-mutation obligation never fences,
+/// so it is not a reachable cause here.
+fn fence_message(obligation: &RunObligation) -> String {
+    match obligation {
+        RunObligation::Backfill { records } => format!(
+            "store was stamped under a different schema at this catalog epoch; the change backfills {records} record(s). Run `marrow evolve apply` to discharge it."
+        ),
+        RunObligation::Transform { records } => format!(
+            "store was stamped under a different schema at this catalog epoch; the change rewrites {records} record(s). Run `marrow evolve apply` to discharge it."
+        ),
+        RunObligation::DestructiveDrop { populated } => format!(
+            "store was stamped under a different schema at this catalog epoch; the change drops {populated} populated record(s). Run `marrow evolve apply --maintenance` and confirm the retire to discharge it."
+        ),
+        RunObligation::Repair => "store was stamped under a different schema at this catalog epoch; the change cannot be discharged against the stored data. Run `marrow evolve preview` to see the required repair.".to_string(),
+        RunObligation::ZeroMutation { .. } => {
+            "store was stamped under a different schema at this catalog epoch".to_string()
         }
     }
 }
