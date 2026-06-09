@@ -43,8 +43,8 @@ enum MemberHead {
     },
 }
 
-/// The classification of the next line in an indented member block, after the
-/// shared trivia (dedent, blank lines, comments, stray indents) has been handled.
+/// Classification of the next line in an indented member block, after the shared
+/// trivia (dedent, blank lines, comments, stray indents) has been handled.
 enum MemberBlockFrame {
     /// The block closed on its `DEDENT`; stop the loop.
     Done,
@@ -84,7 +84,7 @@ fn is_stray_block_clause_keyword(keyword: Keyword) -> bool {
 /// delegates expression parsing to `ExprParser`.
 struct StmtParser<'a> {
     source: &'a str,
-    tokens: Vec<Token>,
+    tokens: &'a [Token],
     pos: usize,
     /// Line comments for the block currently being parsed, in source order.
     /// Each nested block swaps in a fresh accumulator (see `parse_nested_block`)
@@ -97,10 +97,10 @@ struct StmtParser<'a> {
 }
 
 impl<'a> StmtParser<'a> {
-    fn new(source: &'a str, tokens: &[Token]) -> Self {
+    fn new(source: &'a str, tokens: &'a [Token]) -> Self {
         Self {
             source,
-            tokens: tokens.to_vec(),
+            tokens,
             pos: 0,
             comments: Vec::new(),
             diagnostics: Vec::new(),
@@ -108,7 +108,6 @@ impl<'a> StmtParser<'a> {
     }
 
     fn parse_block(mut self) -> (Vec<Statement>, Vec<Comment>, Vec<Diagnostic>) {
-        // A body opens with the INDENT that began it.
         if matches!(self.peek(), Some(TokenKind::Indent)) {
             self.advance();
         }
@@ -578,7 +577,7 @@ impl<'a> StmtParser<'a> {
 
     /// Index of the `NEWLINE` (or layout token) that ends the current line.
     fn find_line_end(&self) -> usize {
-        line_end(&self.tokens, self.pos)
+        line_end(self.tokens, self.pos)
     }
 
     fn report_unexpected_indented_block(&mut self) {
@@ -1048,30 +1047,20 @@ impl<'a> DeclParser<'a> {
                 "expected const name before type annotation",
             );
         }
-        let ty = match type_tokens {
-            Some(tokens) if !tokens.is_empty() => {
-                let ty = type_ref_from_tokens(self.source, tokens);
-                if !is_type_text(&ty.text) {
-                    self.error_span(
-                        span,
-                        ParseDiagnosticReason::Expected(ExpectedSyntax::ConstType),
-                        "expected const type annotation",
-                    );
-                    None
-                } else {
-                    Some(ty)
-                }
+        // No `:` leaves the type absent; a `:` with a well-formed type spelling
+        // yields it; an empty or malformed annotation reports and yields no type.
+        let ty = type_tokens.and_then(|tokens| {
+            let ty = (!tokens.is_empty()).then(|| type_ref_from_tokens(self.source, tokens));
+            if ty.as_ref().is_some_and(|ty| is_type_text(&ty.text)) {
+                return ty;
             }
-            Some(_) => {
-                self.error_span(
-                    span,
-                    ParseDiagnosticReason::Expected(ExpectedSyntax::ConstType),
-                    "expected const type annotation",
-                );
-                None
-            }
-            None => None,
-        };
+            self.error_span(
+                span,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::ConstType),
+                "expected const type annotation",
+            );
+            None
+        });
         (name, ty)
     }
 
@@ -1449,12 +1438,12 @@ impl<'a> DeclParser<'a> {
                     let header = self.take_header_line();
                     if matches!(kind, TokenKind::Keyword(Keyword::Index)) {
                         if let Some(index) =
-                            self.parse_index_member(allow_indexes, span, err, member_docs, &header)
+                            self.parse_index_member(allow_indexes, span, err, member_docs, header)
                         {
                             indexes.push(index);
                         }
                     } else if let Some(member) =
-                        self.parse_field_or_group_member(span, err, member_docs, &header)
+                        self.parse_field_or_group_member(span, err, member_docs, header)
                     {
                         members.push(member);
                     }
@@ -1567,7 +1556,7 @@ impl<'a> DeclParser<'a> {
     fn parse_enum(&mut self, docs: Vec<String>) -> EnumDecl {
         let span = self.header_span();
         let header = self.take_header_line();
-        let (public, name) = match parse_enum_head(self.source, &header) {
+        let (public, name) = match parse_enum_head(self.source, header) {
             Ok(parsed) => parsed,
             Err(error) => {
                 self.error_span(span, error.reason, error.message);
@@ -1626,7 +1615,7 @@ impl<'a> DeclParser<'a> {
                     let err = self.content_span();
                     let member_docs = self.take_docs_for_current_item(&mut docs, &mut comments);
                     let header = self.take_header_line();
-                    match enum_member_name(self.source, &header) {
+                    match enum_member_name(self.source, header) {
                         Ok((name, category)) => {
                             // A member's children are the indented block that
                             // immediately follows its header, parsed by the same
@@ -1658,7 +1647,7 @@ impl<'a> DeclParser<'a> {
     fn parse_function(&mut self, docs: Vec<String>) -> FunctionDecl {
         let span = self.header_span();
         let header = self.take_header_line();
-        let head = match parse_function_head(self.source, &header) {
+        let head = match parse_function_head(self.source, header) {
             Ok(head) => head,
             Err(error) => {
                 self.error_span(span, error.reason, error.message);
@@ -1750,13 +1739,15 @@ impl<'a> DeclParser<'a> {
     /// Collect the tokens of the current header line (up to the next
     /// `NEWLINE`/`INDENT`/`DEDENT`/`EOF`) and advance past the closing `NEWLINE`.
     /// A header line continues across newlines suppressed inside open delimiters,
-    /// so a multi-line const value stays one header line.
-    fn take_header_line(&mut self) -> Vec<Token> {
+    /// so a multi-line const value stays one header line. A trailing comment is
+    /// excluded from the returned slice so the caller sees only header content.
+    fn take_header_line(&mut self) -> &'a [Token] {
         let end = self.header_end();
-        let mut line = self.tokens[self.pos..end].to_vec();
-        if line.last().is_some_and(|token| is_line_comment(token.kind)) {
-            line.pop();
-        }
+        let content_end = match self.tokens[self.pos..end].last() {
+            Some(token) if is_line_comment(token.kind) => end - 1,
+            _ => end,
+        };
+        let line = &self.tokens[self.pos..content_end];
         self.pos = end;
         if matches!(self.peek(), Some(TokenKind::Newline)) {
             self.advance();
@@ -2644,10 +2635,7 @@ fn split_param_groups(inner: &[Token]) -> Vec<ParamGroup<'_>> {
 
         if depth == 0 && token.kind == TokenKind::Comma {
             if let Some(start) = body_start.take() {
-                groups.push(ParamGroup {
-                    docs: std::mem::take(&mut docs),
-                    body: &inner[start..index],
-                });
+                push_param_group(&mut groups, &mut docs, &inner[start..index]);
             }
             index += 1;
             continue;
@@ -2657,10 +2645,7 @@ fn split_param_groups(inner: &[Token]) -> Vec<ParamGroup<'_>> {
             // A doc comment that opens a new parameter's documentation follows a
             // completed parameter body, so close that body before collecting it.
             if let Some(start) = body_start.take() {
-                groups.push(ParamGroup {
-                    docs: std::mem::take(&mut docs),
-                    body: &inner[start..index],
-                });
+                push_param_group(&mut groups, &mut docs, &inner[start..index]);
             }
             docs.push(token);
             index += 1;
@@ -2676,10 +2661,7 @@ fn split_param_groups(inner: &[Token]) -> Vec<ParamGroup<'_>> {
             // across physical lines inside `(` or `[`, where the deeper depth keeps
             // the wrap from splitting the parameter.
             Some(start) if depth_before == 0 && token.span.line > inner[start].span.line => {
-                groups.push(ParamGroup {
-                    docs: std::mem::take(&mut docs),
-                    body: &inner[start..index],
-                });
+                push_param_group(&mut groups, &mut docs, &inner[start..index]);
                 body_start = Some(index);
             }
             Some(_) => {}
@@ -2688,20 +2670,27 @@ fn split_param_groups(inner: &[Token]) -> Vec<ParamGroup<'_>> {
     }
 
     match body_start {
-        Some(start) => groups.push(ParamGroup {
-            docs,
-            body: &inner[start..],
-        }),
+        Some(start) => push_param_group(&mut groups, &mut docs, &inner[start..]),
         // A `;;` run with no parameter after it documents nothing. Surface it as a
         // body-less group so the caller can report the misplaced doc rather than
         // drop it.
-        None if !docs.is_empty() => groups.push(ParamGroup {
-            docs,
-            body: &inner[inner.len()..],
-        }),
+        None if !docs.is_empty() => push_param_group(&mut groups, &mut docs, &inner[inner.len()..]),
         None => {}
     }
     groups
+}
+
+/// Close one parameter group, pairing `body` with the doc run accumulated so far
+/// and clearing the doc buffer so the next parameter starts with an empty run.
+fn push_param_group<'a>(
+    groups: &mut Vec<ParamGroup<'a>>,
+    docs: &mut Vec<&'a Token>,
+    body: &'a [Token],
+) {
+    groups.push(ParamGroup {
+        docs: std::mem::take(docs),
+        body,
+    });
 }
 
 /// Index of the `)` matching the leading `(` of `tokens`, if balanced.
@@ -2954,8 +2943,8 @@ fn find_top_level_equal(tokens: &[Token]) -> Option<usize> {
 /// depth 0 keeps an arrow inside a parenthesized key from splitting the rename.
 fn find_arrow(tokens: &[Token]) -> Option<usize> {
     let mut depth = 0usize;
-    for index in 0..tokens.len() {
-        match tokens[index].kind {
+    for (index, token) in tokens.iter().enumerate() {
+        match token.kind {
             TokenKind::LeftParen | TokenKind::LeftBracket => depth += 1,
             TokenKind::RightParen | TokenKind::RightBracket => depth = depth.saturating_sub(1),
             TokenKind::Minus
