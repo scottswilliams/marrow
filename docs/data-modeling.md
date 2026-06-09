@@ -58,7 +58,7 @@ resource Patient
         first: string
         last: string
 
-    visits(date: date)
+    visits(visitDate: date)
         note: string
         provider: string
 
@@ -68,7 +68,7 @@ store ^patients(id: string): Patient
 - An unkeyed group (`name`) is structural. It groups fields under the containing
   resource. A `required` field inside it is required for the whole resource. Its
   fields read as `^patients(id).name.first`.
-- A keyed layer (`visits(date: date)`) creates repeatable children. Each entry
+- A keyed layer (`visits(visitDate: date)`) creates repeatable children. Each entry
   is addressed by its key: `^patients(id).visits(someDate).note`. Required-field
   checks apply only to entries that exist, not to every possible key.
 
