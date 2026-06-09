@@ -299,12 +299,8 @@ impl Place {
 
     fn read(&self, span: SourceSpan, env: &mut Env<'_>) -> Result<Value, RuntimeError> {
         match self {
-            Place::Local(name) => env.lookup(name).cloned().ok_or_else(|| RuntimeError {
-                throw: None,
-                origin: None,
-                code: RUN_UNBOUND_NAME,
-                message: format!("`{name}` is not bound"),
-                span,
+            Place::Local(name) => env.lookup(name).cloned().ok_or_else(|| {
+                RuntimeError::fault(RUN_UNBOUND_NAME, format!("`{name}` is not bound"), span)
             }),
             Place::LocalField { base, field } => read_local_field(base, field, span, env),
         }

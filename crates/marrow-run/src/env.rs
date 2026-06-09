@@ -874,12 +874,10 @@ fn data_child_under<'a>(
 }
 
 fn traversal_fault(span: SourceSpan) -> RuntimeError {
-    RuntimeError {
-        throw: None,
-        origin: None,
-        code: RUN_TRAVERSAL,
-        message: "this write changes the saved layer a loop is traversing; collect the keys into a local sequence first"
+    RuntimeError::fault(
+        RUN_TRAVERSAL,
+        "this write changes the saved layer a loop is traversing; collect the keys into a local sequence first"
             .into(),
         span,
-    }
+    )
 }

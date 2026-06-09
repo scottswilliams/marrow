@@ -87,15 +87,13 @@ fn eval_name(
     if segments.len() != 1 {
         return Err(unsupported("a qualified name", span));
     }
-    env.lookup(&segments[0])
-        .cloned()
-        .ok_or_else(|| RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_UNBOUND_NAME,
-            message: format!("`{}` is not bound", segments[0]),
+    env.lookup(&segments[0]).cloned().ok_or_else(|| {
+        RuntimeError::fault(
+            RUN_UNBOUND_NAME,
+            format!("`{}` is not bound", segments[0]),
             span,
-        })
+        )
+    })
 }
 
 fn enum_member_value(
@@ -127,13 +125,11 @@ fn eval_call_expr(
 ) -> Result<Value, RuntimeError> {
     match eval_call(call, callee, args, target, span, env)? {
         Some(value) => Ok(value),
-        None => Err(RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_NO_VALUE,
-            message: "a call to a function that returns no value cannot be used as a value".into(),
+        None => Err(RuntimeError::fault(
+            RUN_NO_VALUE,
+            "a call to a function that returns no value cannot be used as a value".into(),
             span,
-        }),
+        )),
     }
 }
 

@@ -129,13 +129,11 @@ pub(crate) fn function_by_ref(
 }
 
 fn checked_target_error(target: &str, span: SourceSpan) -> RuntimeError {
-    RuntimeError {
-        throw: None,
-        origin: None,
-        code: RUN_UNKNOWN_FUNCTION,
-        message: format!("checked call target no longer names a {target}"),
+    RuntimeError::fault(
+        RUN_UNKNOWN_FUNCTION,
+        format!("checked call target no longer names a {target}"),
         span,
-    }
+    )
 }
 
 fn eval_checked_index_lookup(
