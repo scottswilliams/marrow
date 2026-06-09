@@ -1865,49 +1865,39 @@ pub(crate) fn check_condition(
     let condition_type = infer_type(program, condition, scope, aliases, file, diagnostics);
     let span = condition.span();
     match as_primitive(&condition_type) {
-        Some(primitive) if primitive != ScalarType::Bool => diagnostics.push(CheckDiagnostic {
-            code: CHECK_CONDITION_TYPE,
-            severity: Severity::Error,
-            file: file.to_path_buf(),
-            message: format!("condition must be `bool`, found `{}`", primitive.name()),
+        Some(primitive) if primitive != ScalarType::Bool => diagnostics.push(error_at(
+            CHECK_CONDITION_TYPE,
+            file,
             span,
-            payload: DiagnosticPayload::None,
-        }),
-        // Strict typing: a condition whose type cannot be resolved cannot be shown
-        // to be `bool`.
-        None if matches!(condition_type, MarrowType::Unknown) => {
-            diagnostics.push(CheckDiagnostic {
-                code: CHECK_UNTYPED_VALUE,
-                severity: Severity::Error,
-                file: file.to_path_buf(),
-                message: "condition has no known type; it must be `bool`".to_string(),
-                span,
-                payload: DiagnosticPayload::None,
-            });
-        }
-        // `Error` is a concrete (non-scalar) type, not an unknown one, so it cannot
-        // be `bool`: flag it just like a wrong scalar (not as an untyped value).
-        None if matches!(condition_type, MarrowType::Error) => diagnostics.push(CheckDiagnostic {
-            code: CHECK_CONDITION_TYPE,
-            severity: Severity::Error,
-            file: file.to_path_buf(),
-            message: "condition must be `bool`, found `Error`".to_string(),
+            format!("condition must be `bool`, found `{}`", primitive.name()),
+        )),
+        // An unresolved condition is reported as untyped rather than as a wrong type,
+        // since strict typing cannot show it to be `bool`.
+        None if matches!(condition_type, MarrowType::Unknown) => diagnostics.push(error_at(
+            CHECK_UNTYPED_VALUE,
+            file,
             span,
-            payload: DiagnosticPayload::None,
-        }),
-        // A concrete non-scalar — an identity, whole record, or sequence — is not
-        // `bool`, so it is flagged like a wrong scalar rather than swallowed.
-        None if is_concrete_nonscalar(&condition_type) => diagnostics.push(CheckDiagnostic {
-            code: CHECK_CONDITION_TYPE,
-            severity: Severity::Error,
-            file: file.to_path_buf(),
-            message: format!(
+            "condition has no known type; it must be `bool`".to_string(),
+        )),
+        // `Error` is a concrete (non-scalar) type, not an unknown one, so it is
+        // flagged like a wrong scalar rather than as an untyped value.
+        None if matches!(condition_type, MarrowType::Error) => diagnostics.push(error_at(
+            CHECK_CONDITION_TYPE,
+            file,
+            span,
+            "condition must be `bool`, found `Error`".to_string(),
+        )),
+        // A concrete non-scalar — an identity, whole record, or sequence — is flagged
+        // like a wrong scalar rather than swallowed.
+        None if is_concrete_nonscalar(&condition_type) => diagnostics.push(error_at(
+            CHECK_CONDITION_TYPE,
+            file,
+            span,
+            format!(
                 "condition must be `bool`, found `{}`",
                 marrow_type_name(&condition_type)
             ),
-            span,
-            payload: DiagnosticPayload::None,
-        }),
+        )),
         _ => {}
     }
 }
