@@ -66,5 +66,5 @@ The native store is the default persistent project store and the only storage
 engine required for the first release.
 
 Other storage engines can exist as separate packages when they implement the
-same backend contract described in [`implementation.md`](implementation.md).
+same backend contract described in [`backend-contract.md`](backend-contract.md).
 They are not part of the default install path.

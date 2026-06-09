@@ -1,0 +1,44 @@
+# Standard library boundary
+
+The runtime evaluates a checked `std::<module>::<op>` call or a language builtin (`print`, `count`, `exists`, conversions, `Error(...)`, index lookup) into a `Value` or a host effect. The checker has already resolved each call to a typed target — `CheckedStdCall` carrying a `Capability`, or a `CheckedBuiltinCall` / `CheckedCallTarget` variant — against the single descriptor table in `crates/marrow-schema/src/stdlib.rs`. This boundary never re-parses op-name strings to decide arity, types, or which capability is needed; it branches on the typed kind.
+
+Dispatch enters from `eval_std_call` and `eval_builtin_call` in `crates/marrow-run/src/call.rs`. `eval_std_call` matches the `Capability` enum (`Pure` → `eval_std`; `Clock`/`Env`/`Log`/`Io` → host-effect handlers; `Assert` → `eval_assert`). Pure helpers compute in place and never touch `env.host`. Host-effect helpers read their capability off `Env`'s `Host` — `clock`/`env`/`log` are `Option` fields, `io` is the `bool` `Host.filesystem` flag — and raise `run.capability` when it is absent.
+
+## The two halves
+
+- **Pure** (`std_pure.rs`, plus `args`/`assertions`/`conversion`/`count`/`error_constructor`/`index_lookup`/`math`/`output`): text/math/bytes/clock-format/parse, conversions, counting, the `Error(...)` constructor, and index lookups. No capability required. Clock format/parse/add are pure; only `now`/`today` need the `Clock` capability.
+- **Host effects** (`host_effects.rs`): `clock` now/today, `env`, `log`, `io`. Each pulls its capability off `env.host` (`clock`/`env`/`log` are `Option`s; `io` is the `bool` `filesystem` flag). Writes (`std::io::write*`, `print`/`write`, `std::log`) call `env.guard_rollback_sensitive_host_effect` before touching the outside world, rejecting them with `run.capability` when transaction depth > 0 — external effects cannot be rolled back. Reads (io read, env, clock) are unguarded.
+
+## Module map
+
+| File | Responsibility |
+| --- | --- |
+| `crates/marrow-run/src/stdlib.rs` | Module root: declares the eight submodules plus tests, re-exports their entry points to the crate. |
+| `crates/marrow-run/src/std_pure.rs` | Pure dispatch: `eval_std` routes the module string to text/math/bytes/clock(format+parse+add) handlers computing in place. |
+| `crates/marrow-run/src/host_effects.rs` | Capability handlers `eval_clock_capability`/`eval_env`/`eval_log`/`eval_io`; capability gating and rollback-sensitive write guarding. |
+| `crates/marrow-run/src/stdlib/args.rs` | Typed arg evaluators: `eval_typed_arg` plus `eval_bytes`/`decimal`/`instant`/`date`/`duration`/`text_arg` coerce one `ExecArg` to a concrete `Value`. |
+| `crates/marrow-run/src/stdlib/assertions.rs` | `std::assert`: `isTrue`/`isFalse`/`absent`/`fail`; raises `run.assert` on failure, returns `None` on success. |
+| `crates/marrow-run/src/stdlib/conversion.rs` | Scalar/ErrorCode/bytes conversions driven by `ConversionKind`; parses via store `decode_value`/`Decimal`, splitting decimal overflow from malformed text. |
+| `crates/marrow-run/src/stdlib/count.rs` | `count`/`exists` over saved paths and local collections; routes through specialized counters before falling back to a store child-count. |
+| `crates/marrow-run/src/stdlib/error_constructor.rs` | `Error(...)`: validates named args against the `marrow_schema::error` field table, builds a `Value::Resource` of `(name, value)` fields. |
+| `crates/marrow-run/src/stdlib/index_lookup.rs` | Unique-index lookup: resolves a checked `Index` terminal to an `IndexAddress`, scans, decodes the payload to an identity, answers presence/count. |
+| `crates/marrow-run/src/stdlib/math.rs` | Integer `int_remainder` (shared with the `%` remainder operator lowering) and `int_modulo` (backs `std::math::modulo` only); divide-by-zero/overflow faults, sign from divisor. |
+| `crates/marrow-run/src/stdlib/output.rs` | `print`/`write`: `OutputKind` selects trailing newline, guards the write, appends to `env.output` (not the host log sink). |
+| `crates/marrow-run/src/stdlib/tests.rs` | `every_table_row_reaches_a_live_handler`: every `marrow_schema::stdlib::all()` row routes to a handler that does not return `run.unsupported`. |
+
+## Invariants worth knowing
+
+- The `marrow_schema::stdlib` `TABLE` is the single source of truth for arity, param/return types, and the evaluating `Capability`. A new std helper is one row, not parallel checker + runtime entries. `unreachable!()` arms in `host_effects.rs` encode that the checker already filtered op names against this table.
+- `ConversionKind` and `OutputKind` carry the checker's resolved decision so the runtime never re-derives it from a name. `conversion.rs` marks `Conversion(ScalarType::Bytes)` unreachable because bytes resolves to its own `CheckedBuiltinCall::Bytes`.
+- `print`/`write` append to `env.output` (the run's stdout buffer); `std::log` appends to the separate `host.log` sink. Output is always available; log requires the capability.
+- Conversion error taxonomy is owned downstream: `convert_to_decimal` defers overflow-vs-malformed to `marrow-store`'s `Decimal` parser.
+- Unique-index reads decode the stored payload into an identity of the expected arity and raise one canonical `run.type` corruption fault (`decode_unique_index_identity`); presence/count comes from `ExactUniqueIndexLookupValue` without materializing the record. `keys(...)` over a unique index is unsupported (`check_key_collection`).
+
+Note: the `Host` struct also carries a `maintenance` capability, but this boundary never reads it — it gates managed-write maintenance ops elsewhere.
+
+## Read next
+
+- `crates/marrow-run/src/call.rs` — `eval_std_call` / `eval_builtin_call`: the dispatch fan-out reaching every entry point.
+- `crates/marrow-schema/src/stdlib.rs` — `TABLE` / `Capability` / `StdOp`: the single descriptor table the whole boundary is organized around.
+- `crates/marrow-run/src/host_effects.rs` — `eval_io` / `IoOp` / `eval_log`: capability gating, rollback-sensitive guarding, and the read/write error-code split.
+- `crates/marrow-run/src/stdlib/index_lookup.rs` — `read_exact_unique_index_lookup_value` / `decode_unique_index_identity`: the densest store-touching logic, identity decode and the presence/count contract.

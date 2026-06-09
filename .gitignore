@@ -6,3 +6,4 @@
 *.tmp
 *.exe
 *.pdb
+.DS_Store

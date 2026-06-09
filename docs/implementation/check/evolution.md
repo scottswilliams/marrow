@@ -1,0 +1,44 @@
+# Data-Evolution Check
+
+Decides whether a schema change can activate against data already in the store, and if not, names the exact manual work required. Nothing here mutates the store: discharge stays crate-internal, and `preview`'s `EvolutionWitness` is the only artifact that crosses the check→run boundary into [apply](../runtime/evolution.md) (`crates/marrow-run/src/evolution/`).
+
+The shape is three stages. **Intents** turn each `evolve` block step into a typed declaration and type-check its default/transform body against current source. **Discharge** streams the live store snapshot read-only and classifies every obligation that current source plus the catalog proposal imply into one `Verdict` per `CatalogId`. **Preview** assembles those verdicts plus store fingerprints into the `EvolutionWitness`. Apply re-verifies every witness field before writing.
+
+## The verdict vocabulary
+
+`Verdict` (in `witness.rs`) is the contract that crosses crates. Seven variants activate unattended — `NoOp`, `CatalogOnly` (rename), `IndexDropped`, `DataProof`, `Default{value}`, `DerivedRebuild`, `Transform{reads}`. Two block on a developer: `DestructiveDecisionRequired{populated}` (a retire over live data) and `RepairRequired{reason}`. `is_activatable` is true iff every verdict is activatable.
+
+`RepairReason` is the typed fail-closed cause: missing required member, rejected default, invalid stored value, unique-index collision or unprobeability, retire required, undecodable transform input, a type/key-shape change that needs a transform, and `StructuralDivergence` — the default-deny backstop.
+
+## Load-bearing invariants
+
+- **Fail-closed is total by construction.** Targeted classifiers run first, then `classify_structural_backstop` fails closed any populated member whose identity-aware structural signature diverged and that no classifier claimed. An unforeseen transition cannot silently activate.
+- **Identity, not spelling, decides retype.** Leaf and structural tokens name the referent's stable catalog id (enum/store) plus physical key shape (`leaf_type.rs`), so a pure rename is `CatalogOnly` while a real retype changes the token and fails closed.
+- **Records stream, never materialize.** One paged `for_each_record` scan per root fuses presence probing and unique-index key derivation, retaining only bounded per-obligation state.
+- **A transform body is a pure total function of `old`.** Reading saved data directly bypasses the per-member decodability proof and fails closed; the transform target is excluded from the presence scan and its verdict carries the decodability proof.
+- **A default must be a checker-evaluable constant on a scalar leaf.** `const_default` is the single interpreter; apply writes the encoded bytes verbatim and never re-reads source, so a non-scalar or per-record-varying fill is a typed `RejectedDefault`.
+- **No baseline means no obligation.** A store/member with no recorded accepted token/struct/key-shape places no obligation; the proposal freezes the current shape forward so a later change has a baseline.
+
+## Modules
+
+| File | Responsibility |
+| --- | --- |
+| `crates/marrow-check/src/evolution/mod.rs` | Module root: declares submodules, re-exports the public surface, hosts resume-verification helpers `default_value_for_bound_member` and `rebind_activation_resume_program`. |
+| `crates/marrow-check/src/evolution/intents.rs` | Intent extraction and evolve-body type checking: collects rename/retire/default/transform intents, maps target spellings to catalog paths, type-checks defaults and transform bodies, enforces transform read restrictions and purity. |
+| `crates/marrow-check/src/evolution/discharge.rs` | The classifier: streams the store read-only, produces per-obligation verdicts, counts, partitioned changed catalog ids, and fail-closed diagnostics. Owns the record scan, leaf presence/decodability/retype/enum-shrink checks, index collision probing, and the default-deny backstop. |
+| `crates/marrow-check/src/evolution/discharge/absent_source.rs` | Classifies accepted catalog entries current source no longer declares: retire over data, dropped index, dependency-free dropped member, member an index still reads, nested retire. |
+| `crates/marrow-check/src/evolution/witness.rs` | The read-only witness types: `Verdict`, `RepairReason`, `DefaultValue`, `ObligationVerdict`, `CatalogFingerprint`, `DischargeCounts`, `EvolutionWitness`, plus `is_activatable`. Prose-free data. |
+| `crates/marrow-check/src/evolution/const_default.rs` | Single interpreter of an evolve default literal: evaluates a constant scalar expression to an encoded `DefaultValue` or a typed `RejectedDefault`. |
+| `crates/marrow-check/src/evolution/leaf_type.rs` | Identity-aware leaf and structural tokenization: derives a member's leaf token and structural signature so a rename leaves the token unchanged and a retype/reshape changes it. |
+| `crates/marrow-check/src/evolution/preview.rs` | The analysis entry point: runs discharge, then composes the `EvolutionWitness` from the discharge result plus store commit metadata, engine-profile digest, layout epoch, and source/evolution digests. |
+| `crates/marrow-check/src/evolution/transform_reads.rs` | Resolves a transform's read `CatalogId`s to `TransformReadMember` (name, leaf kind) — the one rule discharge and apply share so check and run never drift. |
+
+The evolution module root is `mod.rs`; there is no top-level `evolution.rs`.
+
+## Read next
+
+- `crates/marrow-check/src/evolution/witness.rs` → `Verdict`, `RepairReason`, `is_activatable` — the cross-crate vocabulary; read this first.
+- `crates/marrow-check/src/evolution/discharge.rs` → `discharge` — top-level ordering: store-key-shape skip, per-root scan, `absent_source` classification, transform discharge, structural backstop.
+- `crates/marrow-check/src/evolution/discharge.rs` → `classify_leaf` / `classify_member_leaf` — the per-leaf decision tree (retype-vs-populated, required/optional/renamed, default fill, enum validity).
+- `crates/marrow-check/src/evolution/preview.rs` → `preview` — how verdicts plus fingerprints become the witness apply consumes.
+- `crates/marrow-check/src/evolution/intents.rs` → `check_evolve_types`, `impurity_reason` — the check-time gate that decides which intents reach discharge.

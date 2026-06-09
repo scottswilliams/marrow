@@ -24,9 +24,9 @@ can be local or saved, and `^` marks saved data.
 
 - [Language](docs/language/) defines `.mw` syntax, types, resources, saved
   data, control flow, builtins, standard library contracts, and grammar.
-- [Implementation And Backends](docs/implementation.md) defines the
-  language/database kernel, project configuration, saved paths, managed writes,
-  native storage, tooling, and capability profiles.
+- [Implementation Map](docs/implementation/) is the code-truth architecture map:
+  what each crate and module does and where to read it, plus the
+  [backend contract](docs/backend-contract.md) the store satisfies.
 
 ## Shape
 

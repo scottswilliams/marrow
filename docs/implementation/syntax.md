@@ -1,0 +1,60 @@
+# Syntax: `.mw` Text to AST
+
+`marrow-syntax` is the compiler front end. It turns `.mw` source into a `SourceFile` AST plus a span-sorted list of typed `Diagnostic`s, and renders an AST back to canonical source. It decides syntactic shape only; all meaning (type/name resolution, enum/match validity, evolve semantics) is deferred to later crates. Zero dependencies — it is the most upstream crate.
+
+## Pipeline
+
+`parse_source(&str) -> ParsedSource` is the one entry point. It runs two stages and merges their diagnostics:
+
+1. `lex_source` — text to a flat token stream. The lexer maintains an indent stack and an `open_delimiters` counter, synthesizing `INDENT`/`DEDENT`/`NEWLINE` layout tokens (not lexical characters) and suppressing them inside `(`/`[`. Tabs and obsolete operators (`&&`, `||`, `!`, `#`) and the reserved `~` are lexer diagnostics.
+2. `DeclParser::parse` — tokens to declarations/statements/expressions via recursive descent.
+
+Diagnostics from both stages are concatenated and sorted by `(line, start_byte)`. All output uses the `parse.syntax` code; tests assert on the typed `reason`, never prose.
+
+## Three parser layers, one token stream
+
+Layout-token discipline differs by layer and mixing them breaks block framing:
+
+- `DeclParser` — top-level dispatch and resource/store/enum/function/const/evolve framing; keeps layout tokens to frame blocks by balanced `INDENT`/`DEDENT`. A keyword introduces its kind only when a literal space follows it (`module x` is a declaration, `module::x` is a name path; `evolve` is exempt).
+- `StmtParser` — function/transform body statements; keeps layout tokens. Bodies are fed a byte-bounded token slice via `tokens_in_range(span)` so a trailing EOF `DEDENT` is excluded.
+- `ExprParser` — a single expression over a trivia-filtered slice (no newlines/indents/comments); the full precedence ladder (or/and/is/==/??/comparison/range/concat/additive/multiplicative/unary/postfix/primary).
+
+A value the grammar cannot structure yields `None` plus a `parse.syntax` diagnostic, never a partial node. Diagnostics fire at most once per failing position (a `before = diagnostics.len()` guard suppresses the generic fallback when an inline rule already explained the failure).
+
+## The AST
+
+`ParsedSource = { file: SourceFile, diagnostics }`. `SourceFile` holds the optional `module`, `uses`, ordered `declarations`, and file-level `comments`, with name-lookup accessors downstream crates use. The AST records no parentheses — the formatter re-derives the minimum from a precedence table that must stay in sync with `parse_expr.rs`. `TypeRef` stores verbatim whitespace-stripped source text and is never resolved here. Comments are retained as block/file trivia with `placement` and column so `parse -> format` round-trips losslessly. `SourceSpan` (file-absolute byte range plus 1-based line/column) is on every token, node, and diagnostic.
+
+## Formatter
+
+`format_source` re-parses the source string (it does not take an AST) then renders canonical `.mw`; it is idempotent. `format_declaration` and `format_expression` are public node-level renderers (`format_statement` is crate-private); note `format_declaration(source, decl)` still also takes the source `&str` for any statement body it carries, while only `format_expression(expr)` renders from an AST node alone.
+
+## Modules
+
+| File | Responsibility |
+| --- | --- |
+| `crates/marrow-syntax/src/lib.rs` | Crate root; re-exports the public surface and defines `parse_source` (lex, parse, merge+sort diagnostics). |
+| `crates/marrow-syntax/src/lexer.rs` | The lexer: line splitting, indentation, `INDENT`/`DEDENT`/`NEWLINE`, numbers/durations/strings/bytes/interpolation/punctuation, tab/operator rejection. |
+| `crates/marrow-syntax/src/token.rs` | `Token`/`TokenKind`/`Keyword`/`LexedSource`, the keyword table, `duration_unit_seconds`, lexical predicates (`is_identifier`, `is_type_text`, `tokens_in_range`). |
+| `crates/marrow-syntax/src/parse_decl.rs` | `DeclParser` and `StmtParser`: top-level framing plus all token-slice header/key/param/index/field helpers. |
+| `crates/marrow-syntax/src/parse_expr.rs` | `ExprParser`: single-expression recursive descent with the full precedence ladder. |
+| `crates/marrow-syntax/src/ast.rs` | The full AST: `ParsedSource`, `SourceFile`, every declaration/statement/expression node, comment trivia, `span()` accessors, `TypeRef`. |
+| `crates/marrow-syntax/src/diagnostic.rs` | `Diagnostic`, the typed reason tree, `Severity`, `SourceSpan`, the `Diagnose` trait, `kind_for_code`. |
+| `crates/marrow-syntax/src/literal.rs` | Canonical string-literal decoder (`decode_string_literal`/`decode_string_escapes`, `StringLiteralError`) — single owner of the five escapes. |
+| `crates/marrow-syntax/src/format.rs` | The formatter: `format_source` (re-parses then renders), per-node renderers, minimal precedence parens, comment re-emission. |
+
+## Discrepancies (code reality)
+
+- `format_source` re-parses rather than consuming a caller-held AST, so a caller already holding a `ParsedSource` pays for a second parse.
+- `StoreDecl` is produced two ways: standalone `store ^root: Resource`, and synthesized from `resource Name at ^root`. The formatter only emits the `store ^root: Resource` spelling, so formatting an `at ^root` input splits it into separate `resource` and `store` declarations.
+- `EnumDecl.public` is parsed and round-tripped but visibility is not enforced here; the flag is inert until a later crate.
+- `Statement::Match` carries `enum_name`/`enum_module` slots the parser always leaves `None` (the checker fills them).
+- `is_type_text` recognizes `map[...]` and `Id(^root)` spellings that no current production emits; that part of the guard is unexercised by the front end.
+
+## Read next
+
+- `crates/marrow-syntax/src/lib.rs` — `parse_source` (the whole pipeline in one function).
+- `crates/marrow-syntax/src/parse_decl.rs` — `DeclParser::dispatch_top_level`, `DeclParser::parse_function_body` (space-after gate, resource/store split, body byte-bounding).
+- `crates/marrow-syntax/src/parse_expr.rs` — `ExprParser::expression`, `ExprParser::primary_expr` (precedence ladder; pairs with `format.rs` `binary_precedence`).
+- `crates/marrow-syntax/src/lexer.rs` — `Lexer::lex`, `Lexer::apply_indent`, `Lexer::lex_interpolation` (text to layout tokens).
+- `crates/marrow-syntax/src/format.rs` — `format_source`, `format_block` (re-parse and lossless comment interleaving).

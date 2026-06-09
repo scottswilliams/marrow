@@ -124,12 +124,27 @@ belong together.
 ## Repository Shape
 
 - `docs/language/` is the language reference.
-- `docs/implementation.md` is the implementation and backend reference.
+- `docs/implementation/` is the code-truth architecture map: a thin,
+  progressive-disclosure guide to what each crate and module does and where to
+  read the real code. It mirrors the source pipeline and is the entry point for
+  understanding the codebase. Start at `docs/implementation/README.md`; each
+  crate carries a short `AGENTS.md` pointing to its page.
+- `docs/backend-contract.md` is the store contract; `docs/language/` is the
+  language law. The map links to them and does not restate them.
 - Other durable language, database, implementation, backend, and tooling docs
   belong under `docs/`, not scattered elsewhere.
 - Public examples and demos exist only when they match `docs/language/` and
   the implementation. Otherwise remove them and keep coverage in tests or
   fixtures.
+
+On any high-level change to the code — a module, type, pass, invariant, or data
+flow added, removed, renamed, or reshaped — you MUST review its
+`docs/implementation/` page and update it IN PLACE in the same change, as
+concisely as possible: rewrite the stale lines and delete what no longer holds.
+It is imperative this map never accrues agentic sediment: never append notes,
+history, or migration narration, and never let a page drift out of step with the
+code. A page is a thin map, not a changelog; if an edit makes it longer without
+making it truer, cut instead. Each crate's `AGENTS.md` names its page.
 
 ## Coding Expectations
 

@@ -210,3 +210,19 @@ Public tree-cell tests assert the production contract: stable catalog-ID
 physical keys, typed leaves, sequence cells, exact index entries and scans,
 metadata round trips, read-only native behavior, rollback, corruption handling,
 catalog-backed references, and catalog-backed enum member values.
+
+## Adapters And Portability
+
+The native redb engine is the only production saved-data backend in v0.1. Any
+other storage engine is an adapter that must implement this same tree-cell
+contract over its own ordered-byte storage; it may map the ordered tree onto
+tables, documents, or engine records internally, but it adds no language
+features and exposes no engine query surface. Adapters and other extensions such
+as import/export or host bridges ship as separate packages, never in the default
+install.
+
+Portability is the typed tree-cell data plus the source and catalog facts needed
+to interpret it, not a raw engine byte stream. A backup carries catalog IDs,
+typed values, sequence state, and engine-profile metadata; generated indexes are
+derived and rebuilt on restore rather than trusted as bytes. Backups are portable
+across conforming backends at the same layout and value-codec version.

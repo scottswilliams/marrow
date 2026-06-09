@@ -47,9 +47,9 @@ point at the [language reference](language/) for the exact rules.
 
 ## Architecture Reference
 
-- [Implementation And Backends](implementation.md) defines the language/database
-  kernel, project configuration, logical paths, managed write path, backend
-  contract, server/tooling model, and capability profiles.
+- [Implementation Map](implementation/) — the code-truth architecture map: what
+  each crate and module does and where to read it, mirroring the source pipeline
+  from syntax through check and runtime to the store.
 - [Backend Contract](backend-contract.md) — the ordered path/value operations,
   savepoints, presence states, bounded scans, the conformance suite, and
   native-store responsibilities a store backend must satisfy.
@@ -58,3 +58,17 @@ point at the [language reference](language/) for the exact rules.
 
 Marrow is unreleased. If implementation and language references disagree,
 treat the disagreement as implementation work, not as a competing design.
+
+## Scope And Security
+
+Marrow v0.1 is deliberately bounded. It does not add a second storage query
+language, a hidden object store, an ORM layer, a SQL-style migration subsystem,
+implicit async syntax, a required background service, a web framework, a remote
+database product, a built-in users-and-roles system, or backend-specific
+application APIs.
+
+There is no database users-and-roles system in `.mw`. The security boundary is
+the host process, the filesystem or backend credentials, and the selected
+transport: local CLI commands use the current user's access to project source
+and data, and remote server transport is out of v0.1. Application authorization
+belongs in application data and code, not in a hidden backend permission layer.
