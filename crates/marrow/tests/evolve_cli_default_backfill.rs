@@ -24,7 +24,13 @@ fn evolve_apply_consumes_preview_witness_and_backfills() {
         seed_title_only(&store, &place, 1, "Dune");
     }
 
-    let output = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    let output = marrow(&[
+        "evolve",
+        "apply",
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
     let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
     let pages = read_scalar(&store, &place, 1, "pages", ScalarType::Int);
     let commit = store
@@ -33,9 +39,10 @@ fn evolve_apply_consumes_preview_witness_and_backfills() {
         .expect("commit stamp");
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
-    assert!(stdout.contains("applied evolution"), "{stdout}");
-    assert!(stdout.contains("records backfilled: 1"), "{stdout}");
+    let record = support::json(output.stdout);
+    assert_eq!(record["kind"], serde_json::json!("evolve_apply"));
+    assert_eq!(record["status"], serde_json::json!("applied"));
+    assert_eq!(record["records_backfilled"], serde_json::json!(1));
     assert_eq!(pages, Some(Scalar::Int(0)));
     assert_eq!(
         commit.catalog_epoch,
@@ -56,10 +63,17 @@ fn evolve_apply_backfills_proposal_required_default_before_accepting_catalog() {
     let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
     write(&root, "src/books.mw", OPTIONAL_PAGES_DEFAULT_INDEX_SOURCE);
 
-    let output = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    let output = marrow(&[
+        "evolve",
+        "apply",
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
-    assert!(stdout.contains("records backfilled: 2"), "{stdout}");
+    let record = support::json(output.stdout);
+    assert_eq!(record["status"], serde_json::json!("applied"));
+    assert_eq!(record["records_backfilled"], serde_json::json!(2));
 
     let catalog_epoch = accepted_catalog(&root).epoch;
     let pages_id = accepted_catalog_entry_id(&root, "books::Book::pages");

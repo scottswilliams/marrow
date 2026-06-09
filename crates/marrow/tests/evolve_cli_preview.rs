@@ -21,14 +21,28 @@ fn evolve_preview_reports_the_exact_witness_counts() {
         seed_title_only(&store, &place, 1, "Dune");
     }
 
-    let output = marrow(&["evolve", "preview", root.to_str().unwrap()]);
+    let output = marrow(&[
+        "evolve",
+        "preview",
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
-    assert!(stdout.contains("status: activatable"), "{stdout}");
-    assert!(stdout.contains("records to backfill: 1"), "{stdout}");
-    assert!(stdout.contains("source digest:"), "{stdout}");
-    assert!(stdout.contains("accepted epoch:"), "{stdout}");
+    let witness = support::json(output.stdout);
+    assert_eq!(witness["kind"], serde_json::json!("evolve_preview"));
+    assert_eq!(witness["status"], serde_json::json!("activatable"));
+    assert_eq!(witness["records_to_backfill"], serde_json::json!(1));
+    // The preview carries the schema-bearing source digest and the accepted epoch the
+    // store would advance from: both are present facts, not just a rendered label.
+    assert!(
+        witness["source_digest"]
+            .as_str()
+            .is_some_and(|digest| !digest.is_empty()),
+        "{witness}"
+    );
+    assert!(witness["accepted_epoch"].is_number(), "{witness}");
 }
 
 #[test]
@@ -105,11 +119,25 @@ fn evolve_preview_reports_destructive_approval_requirement() {
          \x20   return nextId(^books)\n",
     );
 
+    // The remediation hint a blocked text-format preview renders on stderr: the typed
+    // code plus the maintenance invocation a human runs to approve the retire. The code
+    // is the typed oracle; this golden pins only the human guidance that has no
+    // structured form.
+    const APPROVE_RETIRE_HINT: &str = "rerun with --maintenance --approve-retire";
+
     let text = marrow(&["evolve", "preview", root.to_str().unwrap()]);
     assert_eq!(text.status.code(), Some(1), "{text:?}");
     let stderr = String::from_utf8(text.stderr).expect("stderr");
+    // A blocked text-format preview renders the typed code on the blocking-obligation
+    // stream (stderr); the preview body itself stays on stdout.
     assert!(stderr.contains("evolve.approval_required"), "{stderr}");
-    assert!(stderr.contains("--approve-retire"), "{stderr}");
+    assert!(
+        !String::from_utf8(text.stdout)
+            .expect("stdout")
+            .contains("evolve.approval_required"),
+        "the blocking report belongs on stderr, not stdout"
+    );
+    assert!(stderr.contains(APPROVE_RETIRE_HINT), "{stderr}");
 
     let json = marrow(&[
         "evolve",

@@ -106,17 +106,21 @@ fn run_trace_renders_a_bool_write_as_its_typed_value() {
     assert_eq!(write["target"]["path"], json!([{ "member": "on" }]));
     assert_eq!(write["value_b64"], json!("MQ=="), "stored bool codec byte");
 
-    // Render contract: the text trace renders that codec byte as the typed scalar
-    // `true`, never leaking the byte `1`.
+    // Render contract: the human text trace renders that codec byte as the typed
+    // scalar, never leaking the byte. The line the render must produce and the byte
+    // leak it must never produce are pinned as golden fragments of the debug render;
+    // the typed value above is the oracle for the stored bytes.
+    const BOOL_WRITE_RENDER: &str = "write ^flags(1).on = true";
+    const BOOL_CODEC_BYTE_LEAK: &str = "^flags(1).on = 1";
     let text_run = marrow(&["run", "--trace", &dir]);
     assert_eq!(text_run.status.code(), Some(0), "{text_run:?}");
     let stderr = String::from_utf8(text_run.stderr).expect("utf8");
     assert!(
-        stderr.contains("write ^flags(1).on = true"),
+        stderr.contains(BOOL_WRITE_RENDER),
         "a bool must trace as `true`, not `1`: {stderr}"
     );
     assert!(
-        !stderr.contains("^flags(1).on = 1"),
+        !stderr.contains(BOOL_CODEC_BYTE_LEAK),
         "the bool must not leak the codec byte `1`: {stderr}"
     );
 }
@@ -236,14 +240,16 @@ fn an_untraced_run_emits_no_trace_and_matches_plain_run() {
     let plain = marrow(&["run", &dir]);
     let traced_off = marrow(&["run", &dir]);
 
+    assert_eq!(plain.status.code(), Some(0), "{plain:?}");
     assert_eq!(plain.stdout, traced_off.stdout);
     let stdout = String::from_utf8(plain.stdout).expect("utf8");
     assert_eq!(stdout, "hello\n");
-    let stderr = String::from_utf8(plain.stderr).expect("utf8");
-    // No trace lines on a plain run.
+    // Without --trace the trace stream is silent: a plain run emits nothing on stderr,
+    // so no trace records leak into a consumer reading it.
     assert!(
-        !stderr.contains("step"),
-        "plain run emitted a trace: {stderr}"
+        plain.stderr.is_empty(),
+        "plain run emitted a trace: {:?}",
+        String::from_utf8_lossy(&plain.stderr)
     );
 }
 
@@ -395,8 +401,11 @@ fn test_trace_labels_each_test() {
 
 #[test]
 fn run_trace_appears_in_help() {
+    // `run --help` is human-rendered text; the golden here is the one fragment that
+    // proves the trace flag is documented, not the whole help body.
+    const TRACE_FLAG_IN_HELP: &str = "--trace";
     let output = marrow(&["run", "--help"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
-    assert!(stdout.contains("--trace"), "{stdout}");
+    assert!(stdout.contains(TRACE_FLAG_IN_HELP), "{stdout}");
 }

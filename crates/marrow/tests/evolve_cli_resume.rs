@@ -43,15 +43,25 @@ fn evolve_apply_resumes_proposal_default_after_store_commit() {
     fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind file");
     assert_eq!(accepted_catalog(&root).epoch, baseline_epoch);
 
-    let resume = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    let resume = marrow(&[
+        "evolve",
+        "apply",
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
     assert_eq!(
         resume.status.code(),
         Some(0),
         "resume completes: {resume:?}"
     );
-    let stdout = String::from_utf8(resume.stdout).expect("stdout utf8");
-    assert!(stdout.contains("completed evolution"), "{stdout}");
-    assert!(stdout.contains("records backfilled: 0"), "{stdout}");
+    // The store already reached the proposal epoch, so the resume re-applies no data and
+    // only brings the accepted catalog file forward: a `completed` apply with a zero
+    // backfill witness, asserted as typed envelope fields.
+    let record = support::json(resume.stdout);
+    assert_eq!(record["kind"], serde_json::json!("evolve_apply"));
+    assert_eq!(record["status"], serde_json::json!("completed"));
+    assert_eq!(record["records_backfilled"], serde_json::json!(0));
 
     {
         let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
@@ -239,7 +249,14 @@ fn evolve_apply_resumes_a_half_applied_store_by_writing_the_file_only() {
         );
     }
 
-    let resume = marrow(&["evolve", "apply", "--maintenance", root.to_str().unwrap()]);
+    let resume = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
     assert_eq!(
         resume.status.code(),
         Some(0),
@@ -249,10 +266,15 @@ fn evolve_apply_resumes_a_half_applied_store_by_writing_the_file_only() {
     // Resuming completes the file side without re-applying data work.
     assert_eq!(accepted_catalog(&root).epoch, baseline_epoch + 1);
     assert_eq!(store_epoch(&root), Some(baseline_epoch + 1));
-    let stdout = String::from_utf8(resume.stdout).expect("stdout utf8");
-    assert!(
-        stdout.contains("records retired: 0"),
-        "resume re-applies no data: {stdout}"
+    // The retire was already committed by the first apply, so the resume retires no
+    // records: a `completed` apply with a zero retire witness, asserted as typed fields.
+    let record = support::json(resume.stdout);
+    assert_eq!(record["kind"], serde_json::json!("evolve_apply"));
+    assert_eq!(record["status"], serde_json::json!("completed"));
+    assert_eq!(
+        record["records_retired"],
+        serde_json::json!(0),
+        "resume re-applies no data"
     );
 
     let run = marrow(&["run", "--entry", "books::add", root.to_str().unwrap()]);

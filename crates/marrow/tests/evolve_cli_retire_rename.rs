@@ -67,6 +67,8 @@ fn evolve_apply_accepts_two_repeated_approve_retire_flags() {
         &format!("{subtitle_id}:1"),
         "--approve-retire",
         &format!("{notes_id}:1"),
+        "--format",
+        "json",
         root.to_str().unwrap(),
     ]);
     let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
@@ -74,8 +76,12 @@ fn evolve_apply_accepts_two_repeated_approve_retire_flags() {
     let notes_present = read_scalar(&store, &accepted_place, 1, "notes", ScalarType::Str);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
-    assert!(stdout.contains("records retired: 2"), "{stdout}");
+    // Both approved retires apply: the retire witness counts the two cells removed,
+    // asserted as the typed envelope field rather than the rendered count line.
+    let record = support::json(output.stdout);
+    assert_eq!(record["kind"], serde_json::json!("evolve_apply"));
+    assert_eq!(record["status"], serde_json::json!("applied"));
+    assert_eq!(record["records_retired"], serde_json::json!(2));
     assert_eq!(subtitle_present, None, "subtitle was retired");
     assert_eq!(notes_present, None, "notes was retired");
 }

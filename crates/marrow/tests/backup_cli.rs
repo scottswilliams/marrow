@@ -96,10 +96,40 @@ fn add_pages_default_evolution(root: impl AsRef<Path>) {
     );
 }
 
-fn dump(root: impl AsRef<Path>) -> String {
-    let out = marrow(&["data", "dump", root.as_ref().to_str().unwrap()]);
+/// Every saved `(path, value_b64)` record the store holds, read through the typed
+/// `data dump --format json` envelope. Two dumps comparing equal proves a byte-exact
+/// round-trip of the saved data, asserted on parsed records rather than rendered text.
+fn dump_records(root: impl AsRef<Path>) -> Vec<serde_json::Value> {
+    let out = marrow(&[
+        "data",
+        "dump",
+        "--format",
+        "json",
+        root.as_ref().to_str().unwrap(),
+    ]);
     assert_eq!(out.status.code(), Some(0), "data dump: {out:?}");
-    String::from_utf8(out.stdout).expect("dump utf8")
+    support::json(out.stdout)["records"]
+        .as_array()
+        .expect("dump records array")
+        .clone()
+}
+
+/// The stored value bytes at one source-text path, read through the typed
+/// `data get --format json` envelope, or `None` when the path holds no direct value.
+/// A data-presence check goes through this structured read, never a stdout substring.
+fn data_get_value(root: impl AsRef<Path>, path: &str) -> Option<Vec<u8>> {
+    let out = marrow(&[
+        "data",
+        "get",
+        "--format",
+        "json",
+        root.as_ref().to_str().unwrap(),
+        path,
+    ]);
+    assert_eq!(out.status.code(), Some(0), "data get {path}: {out:?}");
+    support::json(out.stdout)["value_b64"]
+        .as_str()
+        .map(|b64| marrow_run::base64::decode(b64).expect("decode value"))
 }
 
 #[test]
@@ -109,8 +139,12 @@ fn backup_then_restore_round_trips_saved_data() {
     let archive = root.join("books.mwbackup");
     let archive_arg = archive.to_str().unwrap().to_string();
 
-    let before = dump(&root);
-    assert!(before.contains("Mort"), "seed wrote a book: {before}");
+    let before = dump_records(&root);
+    assert_eq!(
+        data_get_value(&root, "^books(1).title"),
+        Some(b"Mort".to_vec()),
+        "seed wrote a book"
+    );
 
     let backup = marrow(&["backup", &dir, &archive_arg]);
     assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
@@ -118,17 +152,23 @@ fn backup_then_restore_round_trips_saved_data() {
 
     // Empty the store: same source and catalog, no saved data.
     fs::remove_dir_all(&data_dir).expect("remove store data");
-    let roots = marrow(&["data", "roots", &dir]);
-    assert!(
-        String::from_utf8_lossy(&roots.stdout).contains("(no saved data)"),
-        "store is empty before restore: {roots:?}"
+    let roots = marrow(&["data", "roots", "--format", "json", &dir]);
+    assert_eq!(
+        support::json(roots.stdout)["roots"],
+        serde_json::json!([]),
+        "store is empty before restore"
     );
 
     let restore = marrow(&["restore", &dir, &archive_arg]);
     assert_eq!(restore.status.code(), Some(0), "restore: {restore:?}");
 
-    let after = dump(&root);
+    let after = dump_records(&root);
     assert_eq!(after, before, "restored data matches the original");
+    assert_eq!(
+        data_get_value(&root, "^books(1).title"),
+        Some(b"Mort".to_vec()),
+        "the restored book is readable"
+    );
 }
 
 #[test]
@@ -156,18 +196,23 @@ fn restore_crash_window_backup_then_evolve_resume_completes() {
     let restore = marrow(&["restore", &dir, &archive_arg]);
     assert_eq!(restore.status.code(), Some(0), "restore: {restore:?}");
 
-    let resume = marrow(&["evolve", "apply", &dir]);
+    let resume = marrow(&["evolve", "apply", "--format", "json", &dir]);
     assert_eq!(resume.status.code(), Some(0), "resume: {resume:?}");
-    let stdout = String::from_utf8(resume.stdout).expect("resume stdout utf8");
-    assert!(
-        stdout.contains("completed evolution"),
-        "resume publishes the restored proposal: {stdout}"
-    );
+    // The store reached the proposal epoch before the crash, so resuming re-applies no
+    // data and only brings the accepted catalog file forward: a `completed` apply.
+    let record = support::json(resume.stdout);
+    assert_eq!(record["kind"], serde_json::json!("evolve_apply"));
+    assert_eq!(record["status"], serde_json::json!("completed"));
 
-    let after = dump(&root);
-    assert!(
-        after.contains("Mort") && after.contains('0'),
-        "restored data survives resume: {after}"
+    assert_eq!(
+        data_get_value(&root, "^books(1).title"),
+        Some(b"Mort".to_vec()),
+        "the restored book survives resume"
+    );
+    assert_eq!(
+        data_get_value(&root, "^books(1).pages"),
+        Some(b"0".to_vec()),
+        "the backfilled default survives resume"
     );
 }
 
@@ -283,22 +328,22 @@ fn restore_rebuilds_indexes_usable_through_lookups() {
     let restore = marrow(&["restore", &dir, &archive_arg]);
     assert_eq!(restore.status.code(), Some(0), "restore: {restore:?}");
 
-    // The unique index resolves the looked-up record by isbn.
+    // The unique index resolves the looked-up record by isbn; the program prints the
+    // title of the single matching book, so its stdout is exactly that runtime value.
     let unique = marrow(&["run", "--entry", "shelf::find_isbn", &dir]);
-    let unique_out = String::from_utf8_lossy(&unique.stdout).to_string();
-    // The non-unique index resolves both fiction books.
-    let count = marrow(&["run", "--entry", "shelf::count_shelf", &dir]);
-    let count_out = String::from_utf8_lossy(&count.stdout).to_string();
-
     assert_eq!(unique.status.code(), Some(0), "find_isbn run: {unique:?}");
-    assert!(
-        unique_out.contains("Reaper"),
-        "rebuilt unique index resolves the book: {unique_out}"
+    assert_eq!(
+        String::from_utf8(unique.stdout).expect("utf8"),
+        "Reaper\n",
+        "rebuilt unique index resolves the book"
     );
+    // The non-unique index resolves both fiction books; the program prints the count.
+    let count = marrow(&["run", "--entry", "shelf::count_shelf", &dir]);
     assert_eq!(count.status.code(), Some(0), "count_shelf run: {count:?}");
-    assert!(
-        count_out.contains('2'),
-        "rebuilt non-unique index resolves both fiction books: {count_out}"
+    assert_eq!(
+        String::from_utf8(count.stdout).expect("utf8"),
+        "2\n",
+        "rebuilt non-unique index resolves both fiction books"
     );
 }
 
@@ -356,16 +401,17 @@ fn restore_rejects_a_backup_carrying_an_orphan_cell() {
 
     fs::remove_dir_all(&data_dir).expect("remove store data");
     let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
-    let roots_after_failed_restore = marrow(&["data", "roots", &dir]);
+    let roots_after_failed_restore = marrow(&["data", "roots", "--format", "json", &dir]);
     assert_eq!(
         restore.status.code(),
         Some(1),
         "restore rejects a backup with orphan debris: {restore:?}"
     );
     assert_eq!(json_code(&restore), "restore.data_invalid");
-    assert!(
-        String::from_utf8_lossy(&roots_after_failed_restore.stdout).contains("(no saved data)"),
-        "failed restore leaves the target empty: {roots_after_failed_restore:?}"
+    assert_eq!(
+        support::json(roots_after_failed_restore.stdout)["roots"],
+        serde_json::json!([]),
+        "failed restore leaves the target empty"
     );
 }
 
@@ -406,16 +452,17 @@ fn restore_rejects_a_backup_carrying_an_impossible_data_cell_shape() {
 
     fs::remove_dir_all(&data_dir).expect("remove store data");
     let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
-    let roots_after_failed_restore = marrow(&["data", "roots", &dir]);
+    let roots_after_failed_restore = marrow(&["data", "roots", "--format", "json", &dir]);
     assert_eq!(
         restore.status.code(),
         Some(1),
         "restore rejects a backup with an impossible data cell shape: {restore:?}"
     );
     assert_eq!(json_code(&restore), "restore.data_invalid");
-    assert!(
-        String::from_utf8_lossy(&roots_after_failed_restore.stdout).contains("(no saved data)"),
-        "failed restore leaves the target empty: {roots_after_failed_restore:?}"
+    assert_eq!(
+        support::json(roots_after_failed_restore.stdout)["roots"],
+        serde_json::json!([]),
+        "failed restore leaves the target empty"
     );
 }
 
@@ -479,9 +526,11 @@ fn restore_continues_next_id_from_the_restored_data() {
 
     // The highest stored id is 3, so nextId is 4 before any round-trip.
     let before = marrow(&["run", "--entry", "shelf::peek_next", &dir]);
-    assert!(
-        String::from_utf8_lossy(&before.stdout).contains('4'),
-        "nextId before restore is 4: {before:?}"
+    assert_eq!(before.status.code(), Some(0), "peek before: {before:?}");
+    assert_eq!(
+        String::from_utf8(before.stdout).expect("utf8"),
+        "4\n",
+        "nextId before restore is 4"
     );
 
     let archive = root.join("books.mwbackup");
@@ -500,9 +549,11 @@ fn restore_continues_next_id_from_the_restored_data() {
 
     // After restore, nextId continues from the restored data: still 4.
     let after = marrow(&["run", "--entry", "shelf::peek_next", &dir]);
-    assert!(
-        String::from_utf8_lossy(&after.stdout).contains('4'),
-        "nextId after restore continues from the restored data: {after:?}"
+    assert_eq!(after.status.code(), Some(0), "peek after: {after:?}");
+    assert_eq!(
+        String::from_utf8(after.stdout).expect("utf8"),
+        "4\n",
+        "nextId after restore continues from the restored data"
     );
 }
 
@@ -527,10 +578,11 @@ fn backup_of_an_unseeded_project_restores_empty() {
     let backup = marrow(&["backup", &dir, &archive_arg]);
     assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
 
-    let restore = marrow(&["restore", &dir, &archive_arg]);
+    let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
     assert_eq!(restore.status.code(), Some(0), "restore: {restore:?}");
-    assert!(
-        String::from_utf8_lossy(&restore.stdout).contains("restored 0 record(s)"),
-        "an empty backup restores zero records: {restore:?}"
+    assert_eq!(
+        support::json(restore.stdout)["records"],
+        serde_json::json!(0),
+        "an empty backup restores zero records"
     );
 }
