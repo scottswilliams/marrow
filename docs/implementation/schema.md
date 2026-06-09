@@ -38,7 +38,12 @@ Two single-source tables live here so checker and runtime never grow parallel co
 
 | File | Responsibility |
 |---|---|
-| `crates/marrow-schema/src/lib.rs` | All schema compilation: `Type` resolution, `ResourceSchema`/`StoreSchema`/`EnumSchema`/`Node` types, `compile_*` entries, saved-data rule checks, sequence/map desugaring, `SchemaError` vocabulary |
+| `crates/marrow-schema/src/lib.rs` | Thin crate root: module declarations and the `pub use` re-exports that fix the public API paths |
+| `crates/marrow-schema/src/types.rs` | `Type` resolution and the `ResourceSchema`/`StoreSchema`/`SavedRootSchema`/`Node`/`NodeKind`/`KeyDef`/`IndexSchema` tree shapes with their query impls |
+| `crates/marrow-schema/src/enums.rs` | `EnumSchema`/`EnumMemberSchema`/`MemberPathResolution` and the value/`is`/`match` member-path queries |
+| `crates/marrow-schema/src/errors.rs` | The `SchemaError` vocabulary: `SchemaErrorKind`, the typed target enums, the `schema.*` codes, and the message constructors |
+| `crates/marrow-schema/src/compile.rs` | The `compile_*` entries, member→`Node` lowering with sequence/map desugaring (`MapLeaf`), enum flattening, and `map`/`sequence` type-spelling parsing |
+| `crates/marrow-schema/src/validate.rs` | Single-declaration validation: duplicate-name tracking, the orderable-scalar key allowlist, store identity-key/index checks, and the saved-member rules |
 | `crates/marrow-schema/src/stdlib.rs` | The `std::<module>::<op>` descriptor table (`StdOp`, `Capability`) with `lookup` and `all` |
 | `crates/marrow-schema/src/error.rs` | The builtin `Error` shape (`ErrorField`, `FIELDS`) with `fields` and `field` |
 
@@ -48,10 +53,10 @@ Two single-source tables live here so checker and runtime never grow parallel co
 
 ## Read next
 
-- `compile_resource` / `compile_stored_resource` (`lib.rs`) — the resource lowering split and why two entries exist (saved-`unknown` rejection, `map` sugar).
-- `member_node` / `sequence_leaf` / `map_leaf` / `MapLeaf` (`lib.rs`) — the single owner of member→`Node` lowering and collection desugaring.
-- `classify_key_type` / `index_arg_type_key_error` (`lib.rs`) — the orderable-scalar allowlist and the one index-arg divergence.
-- `compile_store` index checks (`lib.rs`) — keyed-root requirement and the trailing-identity-key rule for non-unique indexes.
-- `EnumSchema::walk_member_path` / `flatten_enum_members` (`lib.rs`) — the shared value/`is`/`match` path walk and category⟺has-children enforcement.
-- `SavedRootSchema::single_int_root` (`lib.rs`) — the checker's single-int-root `nextId` gate (the runtime re-checks the same contract via `single_int_identity` in `marrow-run`); `next_id_shape` is the matching rejection-message helper, single-sourced and reused verbatim by the runtime.
+- `compile_resource` / `compile_stored_resource` (`compile.rs`) — the resource lowering split and why two entries exist (saved-`unknown` rejection, `map` sugar).
+- `member_node` / `sequence_leaf` / `map_leaf` / `MapLeaf` (`compile.rs`) — the single owner of member→`Node` lowering and collection desugaring.
+- `classify_key_type` / `index_arg_type_key_error` (`validate.rs`) — the orderable-scalar allowlist and the one index-arg divergence.
+- `compile_store` (`compile.rs`) / `check_store_index` (`validate.rs`) — keyed-root requirement and the trailing-identity-key rule for non-unique indexes.
+- `EnumSchema::walk_member_path` (`enums.rs`) / `flatten_enum_members` (`compile.rs`) — the shared value/`is`/`match` path walk and category⟺has-children enforcement.
+- `SavedRootSchema::single_int_root` (`types.rs`) — the checker's single-int-root `nextId` gate (the runtime re-checks the same contract via `single_int_identity` in `marrow-run`); `next_id_shape` is the matching rejection-message helper, single-sourced and reused verbatim by the runtime.
 - `TABLE` / `StdOp` / `lookup` (`stdlib.rs`) — the row shape that keeps std typing and dispatch single-sourced.
