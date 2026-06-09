@@ -44,10 +44,8 @@ pub struct EnumMemberId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LocalId(pub u32);
 
-/// The store's resolved resource binding that index-fact collection works against: the
-/// owning module, the store being collected, and the resource the index keys read, in both
-/// its fact id and its schema. The caller resolves these once per store and threads them in
-/// so the collector does not re-resolve the resource it already holds.
+/// The resource a store's index-fact collection reads, resolved once per store and threaded
+/// in so the collector does not re-resolve it.
 struct StoreIndexBinding<'a> {
     module_id: ModuleId,
     store_id: StoreId,
@@ -85,9 +83,9 @@ impl CheckedFacts {
             });
         }
 
-        // Resolve each module's id and parsed source once, then drive every collector
-        // over the same triples. Module facts must already exist so the collectors can
-        // resolve cross-module references through `module_id`.
+        // Resolve each module's id and parsed source once, then drive every collector over the
+        // same bindings. Module facts must already exist so the collectors can resolve
+        // cross-module references through `module_id`.
         let bindings: Vec<(ModuleId, &CheckedModule, Option<&ParsedSource>)> = modules
             .iter()
             .enumerate()
@@ -432,16 +430,14 @@ impl CheckedFacts {
         resource: ResourceId,
         path: &[&str],
     ) -> Option<ResourceMemberId> {
-        let mut parent = None;
-        let mut current = None;
+        let mut id = None;
         for name in path {
             let member = self.resource_members.iter().find(|member| {
-                member.resource == resource && member.parent == parent && member.name == *name
+                member.resource == resource && member.parent == id && member.name == *name
             })?;
-            current = Some(member.id);
-            parent = current;
+            id = Some(member.id);
         }
-        current
+        id
     }
 
     pub fn enum_id(&self, module: ModuleId, name: &str) -> Option<EnumId> {
@@ -765,28 +761,36 @@ impl CheckedFacts {
                 catalog_id: None,
                 span: declaration.map_or(SourceSpan::default(), |decl| decl.span),
             });
+            self.collect_enum_member_facts(enum_id, enum_schema, declaration);
+        }
+    }
 
-            let mut member_spans = Vec::new();
-            if let Some(declaration) = declaration {
-                flatten_enum_member_spans(&declaration.members, &mut member_spans);
-            }
-            let member_start = self.enum_members.len() as u32;
-            for (index, member) in enum_schema.members.iter().enumerate() {
-                self.enum_members.push(EnumMemberFact {
-                    id: EnumMemberId(member_start + index as u32),
-                    enum_id,
-                    parent: member
-                        .parent
-                        .map(|parent| EnumMemberId(member_start + parent as u32)),
-                    name: member.name.clone(),
-                    selectable: enum_schema.is_selectable_leaf(index),
-                    catalog_id: None,
-                    span: member_spans
-                        .get(index)
-                        .copied()
-                        .unwrap_or_else(SourceSpan::default),
-                });
-            }
+    fn collect_enum_member_facts(
+        &mut self,
+        enum_id: EnumId,
+        enum_schema: &marrow_schema::EnumSchema,
+        declaration: Option<&marrow_syntax::EnumDecl>,
+    ) {
+        let mut member_spans = Vec::new();
+        if let Some(declaration) = declaration {
+            flatten_enum_member_spans(&declaration.members, &mut member_spans);
+        }
+        let member_start = self.enum_members.len() as u32;
+        for (index, member) in enum_schema.members.iter().enumerate() {
+            self.enum_members.push(EnumMemberFact {
+                id: EnumMemberId(member_start + index as u32),
+                enum_id,
+                parent: member
+                    .parent
+                    .map(|parent| EnumMemberId(member_start + parent as u32)),
+                name: member.name.clone(),
+                selectable: enum_schema.is_selectable_leaf(index),
+                catalog_id: None,
+                span: member_spans
+                    .get(index)
+                    .copied()
+                    .unwrap_or_else(SourceSpan::default),
+            });
         }
     }
 
@@ -1193,9 +1197,9 @@ pub struct DirectEffectFacts {
     pub transactions: bool,
     pub host_calls: Vec<HostEffect>,
     pub throws: bool,
-    /// Whether the body calls a user-defined function. The direct summary does not expand
-    /// callee effects, so a caller that requires a self-contained body (an evolve transform)
-    /// reads this bit rather than re-walking the AST to find the call.
+    /// Whether the body calls a user-defined function. Callee effects are not expanded into the
+    /// direct summary, so callers that require a self-contained body (such as evolve transforms,
+    /// which cannot delegate to another function) read this bit instead of re-walking the AST.
     pub calls_user_function: bool,
 }
 
