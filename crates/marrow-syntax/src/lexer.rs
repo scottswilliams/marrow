@@ -346,7 +346,7 @@ impl<'a> Lexer<'a> {
             let ch = self.source[index..line.end_byte].chars().next()?;
             match ch {
                 '"' => {
-                    index = self.find_string_end(line, index, 0)?;
+                    index = self.find_string_end(line, index)?;
                     continue;
                 }
                 '{' => return None,
@@ -363,8 +363,8 @@ impl<'a> Lexer<'a> {
         None
     }
 
-    fn find_string_end(&self, line: Line<'a>, start: usize, quote_offset: usize) -> Option<usize> {
-        let mut index = start + quote_offset + 1;
+    fn find_string_end(&self, line: Line<'a>, start: usize) -> Option<usize> {
+        let mut index = start + 1;
         while index < line.end_byte {
             let ch = self.source[index..line.end_byte].chars().next()?;
             index += ch.len_utf8();

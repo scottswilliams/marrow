@@ -10,7 +10,7 @@ use crate::ast::{
     ResourceMember,
 };
 use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
-use crate::token::{Keyword, Token, TokenKind, is_type_text};
+use crate::token::{Keyword, Token, TokenKind};
 
 impl<'a> DeclParser<'a> {
     pub(super) fn parse_store_members(&mut self) -> (Vec<IndexDecl>, Vec<Comment>) {
@@ -170,23 +170,14 @@ impl<'a> DeclParser<'a> {
                 name,
                 keys,
                 ty,
-            }) => {
-                if !is_type_text(&ty.text) {
-                    self.error_span(
-                        err,
-                        ParseDiagnosticReason::Expected(ExpectedSyntax::FieldType),
-                        "expected field type annotation",
-                    );
-                }
-                Some(ResourceMember::Field(FieldDecl {
-                    docs,
-                    required,
-                    name,
-                    keys,
-                    ty,
-                    span,
-                }))
-            }
+            }) => Some(ResourceMember::Field(FieldDecl {
+                docs,
+                required,
+                name,
+                keys,
+                ty,
+                span,
+            })),
             Ok(MemberHead::Group { name, keys }) => {
                 let (children, child_indexes, child_comments) =
                     if matches!(self.peek(), Some(TokenKind::Indent)) {

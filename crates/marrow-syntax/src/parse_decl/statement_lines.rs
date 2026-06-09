@@ -4,6 +4,7 @@
 //! headers) it delegates to.
 
 use super::head::parse_key_params_tokens;
+use super::params::match_paren;
 use super::tokens::{
     expr_of, find_top_level, find_top_level_equal, line_span, push_parse_error,
     type_ref_from_tokens,
@@ -165,25 +166,12 @@ fn parse_var_keys(
     line: &[Token],
     open_index: usize,
 ) -> ParseResult<(Vec<KeyParam>, usize)> {
-    let mut depth = 0usize;
-    let mut close = None;
-    for (offset, token) in line[open_index..].iter().enumerate() {
-        match token.kind {
-            TokenKind::LeftParen => depth += 1,
-            TokenKind::RightParen => {
-                depth -= 1;
-                if depth == 0 {
-                    close = Some(open_index + offset);
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    let close = close.ok_or(ParseError::new(
-        ParseDiagnosticReason::Expected(ExpectedSyntax::KeyParameterList),
-        "expected key parameter list",
-    ))?;
+    let close = match_paren(&line[open_index..])
+        .map(|close| open_index + close)
+        .ok_or(ParseError::new(
+            ParseDiagnosticReason::Expected(ExpectedSyntax::KeyParameterList),
+            "expected key parameter list",
+        ))?;
     let keys = parse_key_params_tokens(source, &line[open_index + 1..close])?;
     Ok((keys, close + 1))
 }
