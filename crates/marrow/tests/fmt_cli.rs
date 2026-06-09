@@ -10,6 +10,17 @@ fn run_fmt(args: &[&str]) -> std::process::Output {
     support::marrow_sub("fmt", args)
 }
 
+/// Human-rendered `fmt` message fragments with no typed code or JSON surface (`fmt` has
+/// no `--format json`). Each is a render-contract golden: the behavior it accompanies is
+/// asserted by its typed exit status (a `not formatted` finding exits 1, a flag-usage
+/// error exits 2), and these fragments only pin the rendered explanation. Regenerate only
+/// on an intentional change to the rendered message. The structured-envelope idea is
+/// recorded as a backlog item in this lane's design notes.
+const NOT_FORMATTED_GOLDEN: &str = "not formatted";
+const CHECK_FLAG_GOLDEN: &str = "--check";
+const WRITE_FLAG_GOLDEN: &str = "--write";
+const STDIN_GOLDEN: &str = "stdin";
+
 /// The diagnostic/error codes `marrow fmt` reports, each read from its structured
 /// slot on the stderr line rather than matched anywhere in the rendered prose. `fmt`
 /// has no JSON surface, so the dotted code is the typed identifier embedded in the
@@ -85,9 +96,11 @@ fn fmt_check_fails_on_unformatted_source() {
     let path = temp_source("unformatted", "module app\nconst Max:int=5\n");
     let output = run_fmt(&["--check", path.to_str().unwrap()]);
     fs::remove_file(&path).ok();
+    // The unformatted finding is the typed exit status 1; the rendered explanation is the
+    // golden, since `fmt --check` has no structured finding surface.
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("not formatted"), "{stderr}");
+    assert!(stderr.contains(NOT_FORMATTED_GOLDEN), "{stderr}");
 }
 
 #[test]
@@ -108,11 +121,13 @@ fn fmt_rejects_check_with_write_without_rewriting() {
     let written = fs::read_to_string(&path).expect("read back");
     fs::remove_file(&path).ok();
 
+    // Conflicting mode flags are the typed usage error (exit 2); the rendered message
+    // names both flags, pinned by the goldens since `fmt` has no structured usage surface.
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     assert_eq!(written, source);
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("--check"), "{stderr}");
-    assert!(stderr.contains("--write"), "{stderr}");
+    assert!(stderr.contains(CHECK_FLAG_GOLDEN), "{stderr}");
+    assert!(stderr.contains(WRITE_FLAG_GOLDEN), "{stderr}");
 }
 
 #[test]
@@ -121,9 +136,11 @@ fn fmt_rejects_duplicate_mode_flags() {
     let output = run_fmt(&["--check", "--check", path.to_str().unwrap()]);
     fs::remove_file(&path).ok();
 
+    // A repeated mode flag is the typed usage error (exit 2); the rendered message names
+    // the offending flag, pinned by the golden.
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("--check"), "{stderr}");
+    assert!(stderr.contains(CHECK_FLAG_GOLDEN), "{stderr}");
 }
 
 #[test]
@@ -200,9 +217,11 @@ fn fmt_check_on_a_project_directory_fails_when_a_file_is_unformatted() {
         &[("src/app.mw", "module app\nconst Max:int=5\n")],
     );
     let output = run_fmt(&["--check", project.to_str().unwrap()]);
+    // A directory check fails closed on the first unformatted file: typed exit status 1,
+    // with the rendered finding pinned by the golden.
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("not formatted"), "{stderr}");
+    assert!(stderr.contains(NOT_FORMATTED_GOLDEN), "{stderr}");
 }
 
 #[test]
@@ -315,7 +334,9 @@ fn fmt_of_a_bare_directory_requires_check_or_write() {
 #[test]
 fn fmt_rejects_stdin_dash_cleanly() {
     let output = run_fmt(&["-"]);
+    // Rejecting a `-` stdin argument is the typed usage error (exit 2); the rendered
+    // message names stdin, pinned by the golden.
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("stdin"), "{stderr}");
+    assert!(stderr.contains(STDIN_GOLDEN), "{stderr}");
 }

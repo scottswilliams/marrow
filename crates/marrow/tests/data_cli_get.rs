@@ -8,6 +8,15 @@ mod support_data;
 
 use support_data::{json, marrow, native_project, seeded_project};
 
+/// The human-rendered placeholders `data get` prints in its default text format for a
+/// children-only identity node and a missing path. These are render-contract goldens:
+/// `data get --format json` is the typed oracle for presence (`children_only` / `absent`)
+/// and value, asserted in the JSON tests below; these strings only pin the text rendering
+/// of those branches, which has no typed surface of its own. Regenerate only on an
+/// intentional change to the rendered placeholders.
+const CHILDREN_ONLY_TEXT_GOLDEN: &str = "(no value; has children)";
+const ABSENT_TEXT_GOLDEN: &str = "(absent)";
+
 #[test]
 fn data_get_reads_a_path_value_and_reports_absence() {
     let (_project, dir) = seeded_project("data-get");
@@ -42,6 +51,8 @@ fn data_get_text_format_renders_each_presence_branch() {
     let children_only = marrow(&["data", "get", &dir, "^counter(1)"]);
     let absent = marrow(&["data", "get", &dir, "^counter(2).value"]);
 
+    // A present leaf renders its stored value verbatim; the typed value (`b"42"`) is
+    // asserted from `value_b64` in `data_get_reads_a_path_value_and_reports_absence`.
     assert_eq!(value_only.status.code(), Some(0), "{value_only:?}");
     let value_stdout = String::from_utf8(value_only.stdout).expect("utf8");
     assert!(value_stdout.contains("42"), "{value_stdout}");
@@ -49,13 +60,16 @@ fn data_get_text_format_renders_each_presence_branch() {
     assert_eq!(children_only.status.code(), Some(0), "{children_only:?}");
     let children_stdout = String::from_utf8(children_only.stdout).expect("utf8");
     assert!(
-        children_stdout.contains("(no value; has children)"),
+        children_stdout.contains(CHILDREN_ONLY_TEXT_GOLDEN),
         "{children_stdout}"
     );
 
     assert_eq!(absent.status.code(), Some(0), "{absent:?}");
     let absent_stdout = String::from_utf8(absent.stdout).expect("utf8");
-    assert!(absent_stdout.contains("(absent)"), "{absent_stdout}");
+    assert!(
+        absent_stdout.contains(ABSENT_TEXT_GOLDEN),
+        "{absent_stdout}"
+    );
 }
 
 #[test]

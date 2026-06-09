@@ -14,6 +14,19 @@ const SRC: &str = "module app\n\n\
                    \x20\x20\x20\x20\x20\x20\x20\x20^books(1).title = \"Mort\"\n\
                    \x20\x20\x20\x20\x20\x20\x20\x20^books(1).pages = 272\n";
 
+/// The human-rendered line `run --dry-run` prints under its default text format when a
+/// transaction is discarded. The typed fact is the JSON report's `committed == false`;
+/// this golden pins only the text rendering of the rollback, which has no typed surface
+/// in text mode. Regenerate only on an intentional change to the rendered report.
+const ROLLED_BACK_TEXT_GOLDEN: &str = "rolled back";
+
+/// The human-rendered planned-write line `run --dry-run` prints for the `^flags(1).on`
+/// bool write under its default text format: the planned path tab-joined to the typed
+/// scalar `true`. The typed oracle is the JSON report's stored codec byte (`value_b64`),
+/// asserted in the same test; this golden pins only that a `bool` renders as `true`, never
+/// the raw codec byte `1`.
+const DRY_RUN_BOOL_WRITE_TEXT_GOLDEN: &str = "would write ^flags(1).on\ttrue";
+
 fn native_project(name: &str) -> support::TempProject {
     temp_project(name, |root| {
         write(
@@ -30,9 +43,12 @@ fn dry_run_leaves_saved_data_unchanged() {
     let project = native_project("dryrun-untouched");
     let dir = project.to_str().unwrap().to_string();
 
-    // The store starts empty. Dump it before the dry run.
-    let before = marrow(&["data", "dump", &dir]);
+    // The store starts empty. Dump its records as the typed JSON envelope before the dry run.
+    let before = marrow(&["data", "dump", "--format", "json", &dir]);
     assert_eq!(before.status.code(), Some(0), "before: {before:?}");
+    let before_json: serde_json::Value =
+        serde_json::from_str(String::from_utf8(before.stdout).expect("utf8").trim())
+            .expect("dump json");
 
     // A dry run reports the writes it would commit, then rolls them back. The plan is
     // tooling output on stderr; under json it is one envelope whose `planned` records
@@ -54,12 +70,15 @@ fn dry_run_leaves_saved_data_unchanged() {
         );
     }
 
-    // The saved data is unchanged: the dump after reads back the same records as
-    // the dump before.
-    let after = marrow(&["data", "dump", &dir]);
+    // The saved data is unchanged: the dump after reads back the same records as the dump
+    // before, asserted on the parsed `records` array rather than the rendered dump text.
+    let after = marrow(&["data", "dump", "--format", "json", &dir]);
     assert_eq!(after.status.code(), Some(0), "after: {after:?}");
+    let after_json: serde_json::Value =
+        serde_json::from_str(String::from_utf8(after.stdout).expect("utf8").trim())
+            .expect("dump json");
     assert_eq!(
-        before.stdout, after.stdout,
+        before_json["records"], after_json["records"],
         "dry run must leave saved data unchanged: the same records read back"
     );
 }
@@ -87,25 +106,37 @@ fn dry_run_plan_matches_a_real_run() {
         .filter_map(|step| step["path"].as_str().map(str::to_string))
         .collect();
 
-    // A real run commits the writes; its dump holds those exact field paths.
+    // A real run commits the writes; its dump holds those exact field paths. Read the
+    // committed records as the typed `data dump --format json` envelope and pin the
+    // plan-vs-real equivalence on the parsed `path` field of each record, never a
+    // substring of the rendered dump.
     assert_eq!(
         marrow(&["run", &real_dir]).status.code(),
         Some(0),
         "real run"
     );
-    let real_dump = marrow(&["data", "dump", &real_dir]);
-    let real_out = String::from_utf8(real_dump.stdout).expect("utf8");
+    let real_dump = marrow(&["data", "dump", "--format", "json", &real_dir]);
+    assert_eq!(real_dump.status.code(), Some(0), "real dump: {real_dump:?}");
+    let real_json: serde_json::Value =
+        serde_json::from_str(String::from_utf8(real_dump.stdout).expect("utf8").trim())
+            .expect("dump json");
+    let real_paths: Vec<&str> = real_json["records"]
+        .as_array()
+        .expect("records array")
+        .iter()
+        .filter_map(|record| record["path"].as_str())
+        .collect();
 
-    // Every planned field write the dry run reported is present in the real store.
+    // Every planned field write the dry run reported is a committed record in the real store.
     for path in &planned_paths {
         assert!(
-            real_out.contains(path),
-            "real run is missing a path the dry run planned: {path}\n{real_out}"
+            real_paths.contains(&path.as_str()),
+            "real run is missing a path the dry run planned: {path}\n{real_json}"
         );
     }
     assert!(
-        planned_paths.iter().any(|p| p.contains("title"))
-            && planned_paths.iter().any(|p| p.contains("pages")),
+        planned_paths.contains(&"^books(1).title".to_string())
+            && planned_paths.contains(&"^books(1).pages".to_string()),
         "the plan must cover both field writes: {planned_paths:?}"
     );
 }
@@ -157,12 +188,12 @@ fn dry_run_renders_a_bool_write_as_its_typed_value() {
     );
 
     // Render contract: the text dry-run report renders that codec byte as the typed
-    // scalar `true`, never the byte `1`.
+    // scalar `true`, never the byte `1`. Pinned by the explicitly-marked golden.
     let text_run = marrow(&["run", "--dry-run", &dir]);
     assert_eq!(text_run.status.code(), Some(0), "{text_run:?}");
     let stderr = String::from_utf8(text_run.stderr).expect("utf8");
     assert!(
-        stderr.contains("would write ^flags(1).on\ttrue"),
+        stderr.contains(DRY_RUN_BOOL_WRITE_TEXT_GOLDEN),
         "a bool must dry-run as `true`, not `1`: {stderr}"
     );
 }
@@ -239,12 +270,18 @@ fn dry_run_reports_maintenance_whole_root_deletes() {
         "dry-run report must include the index root delete: {dry_json}"
     );
 
-    let dump = marrow(&["data", "dump", &dir]);
+    let dump = marrow(&["data", "dump", "--format", "json", &dir]);
     assert_eq!(dump.status.code(), Some(0), "dump: {dump:?}");
-    let dump_out = String::from_utf8(dump.stdout).expect("utf8");
+    let dump_json: serde_json::Value =
+        serde_json::from_str(String::from_utf8(dump.stdout).expect("utf8").trim())
+            .expect("dump json");
     assert!(
-        dump_out.contains("^books(1).title"),
-        "dry run must leave the seeded record in place: {dump_out}"
+        dump_json["records"]
+            .as_array()
+            .expect("records array")
+            .iter()
+            .any(|record| record["path"] == "^books(1).title"),
+        "dry run must leave the seeded record in place: {dump_json}"
     );
 }
 
@@ -307,12 +344,18 @@ fn dry_run_reports_non_root_deletes() {
         "dry-run report must include the group delete: {dry_json}"
     );
 
-    let dump = marrow(&["data", "dump", &dir]);
+    let dump = marrow(&["data", "dump", "--format", "json", &dir]);
     assert_eq!(dump.status.code(), Some(0), "dump: {dump:?}");
-    let dump_out = String::from_utf8(dump.stdout).expect("utf8");
+    let dump_json: serde_json::Value =
+        serde_json::from_str(String::from_utf8(dump.stdout).expect("utf8").trim())
+            .expect("dump json");
     assert!(
-        dump_out.contains("^books(1).details.note"),
-        "dry run must leave the seeded group data in place: {dump_out}"
+        dump_json["records"]
+            .as_array()
+            .expect("records array")
+            .iter()
+            .any(|record| record["path"] == "^books(1).details.note"),
+        "dry run must leave the seeded group data in place: {dump_json}"
     );
 }
 
@@ -344,7 +387,8 @@ fn dry_run_keeps_the_program_output_on_stdout() {
     let stdout = String::from_utf8(output.stdout).expect("utf8");
     let stderr = String::from_utf8(output.stderr).expect("utf8");
     assert_eq!(stdout, "ran\n", "program output must stay on stdout");
-    assert!(stderr.contains("rolled back"), "{stderr}");
+    // The rollback in text mode has no typed surface; the golden pins the rendered line.
+    assert!(stderr.contains(ROLLED_BACK_TEXT_GOLDEN), "{stderr}");
 }
 
 #[test]
@@ -421,14 +465,21 @@ fn dry_run_composes_with_trace() {
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("utf8");
+    // The trace names the write path it traced; that path presence is structural.
     assert!(stderr.contains("^books(1).title"), "trace: {stderr}");
-    assert!(stderr.contains("rolled back"), "report: {stderr}");
+    // The rollback in text mode has no typed surface; the golden pins the rendered line.
+    assert!(stderr.contains(ROLLED_BACK_TEXT_GOLDEN), "report: {stderr}");
 
-    // The store is still empty after the composed dry run.
-    let dump = marrow(&["data", "dump", &dir]);
-    let dump_out = String::from_utf8(dump.stdout).expect("utf8");
-    assert!(
-        dump_out.contains("(no saved data)"),
-        "store must be empty: {dump_out}"
+    // The store is still empty after the composed dry run: the typed dump envelope holds
+    // no records, asserted on the parsed `records` array rather than the empty-store text.
+    let dump = marrow(&["data", "dump", "--format", "json", &dir]);
+    assert_eq!(dump.status.code(), Some(0), "dump: {dump:?}");
+    let dump_json: serde_json::Value =
+        serde_json::from_str(String::from_utf8(dump.stdout).expect("utf8").trim())
+            .expect("dump json");
+    assert_eq!(
+        dump_json["records"],
+        serde_json::json!([]),
+        "store must be empty: {dump_json}"
     );
 }
