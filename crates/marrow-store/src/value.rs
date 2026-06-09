@@ -1,23 +1,18 @@
 //! Canonical saved-value encoding.
 //!
-//! Saved values are stored in their canonical Marrow byte form: the bytes do
-//! not depend on the backend, so backup,
-//! diff, traversal, equality, and restore are stable. Unlike keys, values are
-//! not order-preserving — the store orders by tree-cell key, not by value — so the
-//! encoding optimizes for a clear canonical round-trip. A value's type comes
-//! from the schema at read time, so the bytes carry no type tag.
+//! Values are stored in a backend-independent canonical byte form, so backup,
+//! diff, equality, and restore are stable. The bytes carry no type tag — the
+//! type comes from the schema at read time — and are not order-preserving, since
+//! the store orders by tree-cell key rather than by value.
 
 use crate::Decimal;
 use crate::key::SavedKey;
 
-/// The version of the canonical scalar value encoding. A backup records it so a
-/// restore refuses data written under an encoding it cannot decode. It advances
-/// only on an incompatible change to the canonical value bytes.
+/// Version of the canonical value encoding, recorded in a backup so a restore can
+/// refuse data it cannot decode. Advances only on an incompatible byte-format change.
 pub const VALUE_CODEC_VERSION: u32 = 0;
 
-/// A scalar value in decoded form: the one type the store, the runtime, and the
-/// serve protocol all share for a stored leaf. The eight arms are exactly the
-/// storable scalars.
+/// A decoded scalar value, shared by the store, runtime, and serve protocol.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scalar {
     Bool(bool),
@@ -34,15 +29,12 @@ pub enum Scalar {
     Decimal(Decimal),
 }
 
-/// The saved form of a scalar is the scalar itself; `SavedValue` is the name the
-/// store and the write planner read it under.
+/// A saved scalar; the name the store and write planner read a [`Scalar`] under.
 pub type SavedValue = Scalar;
 
 impl Scalar {
-    /// This scalar as an order-preserving [`SavedKey`], or `None` for a decimal,
-    /// which has no order-preserving key encoding. A [`SavedKey`] is exactly the
-    /// orderable projection of a scalar, so this is the one place that mapping
-    /// lives.
+    /// This scalar's order-preserving key projection, or `None` for a decimal, which
+    /// has no order-preserving key encoding. The single home for that mapping.
     pub fn as_key(&self) -> Option<SavedKey> {
         Some(match self {
             Scalar::Int(v) => SavedKey::Int(*v),
@@ -56,8 +48,7 @@ impl Scalar {
         })
     }
 
-    /// The [`ScalarType`] discriminant of this scalar, the inverse of the `ty`
-    /// argument [`decode_value`] decodes by.
+    /// This scalar's type discriminant.
     pub fn ty(&self) -> ScalarType {
         match self {
             Scalar::Bool(_) => ScalarType::Bool,
@@ -72,17 +63,12 @@ impl Scalar {
     }
 }
 
-/// A value that cannot be encoded to its canonical saved form. Today the only
-/// such case is a `date`/`instant` whose calendar year falls outside the
-/// supported 0001-9999 range: formatting it would
-/// produce a 5-7 digit year that [`decode_value`] could never read back, so the
-/// codec rejects it rather than break the round-trip / one-canonical-form
-/// invariant.
+/// A value that cannot be encoded to canonical saved form. A `date`/`instant`
+/// outside year 0001-9999 would format to a 5-7 digit year that [`decode_value`]
+/// could never read back, so the codec rejects it to keep the round-trip exact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValueError {
-    /// A date's day count lies outside year 0001-9999.
     DateOutOfRange { days: i32 },
-    /// An instant's calendar day lies outside year 0001-9999.
     InstantOutOfRange { nanos: i128 },
 }
 
@@ -123,10 +109,9 @@ pub enum ScalarType {
     Decimal,
 }
 
-/// The canonical scalar spellings shared by schema, checker, runtime, and tools.
-///
-/// `ErrorCode` is a language-level spelling whose storage envelope is a string.
-/// The reverse mapping keeps `Str` canonical as `string`.
+/// Canonical scalar spellings shared by schema, checker, runtime, and tools.
+/// `ErrorCode` is a language spelling stored as a string; placing it after the
+/// canonical `string` entry keeps the reverse lookup of `Str` as `string`.
 const SCALAR_NAMES: [(&str, ScalarType); 9] = [
     ("bool", ScalarType::Bool),
     ("int", ScalarType::Int),
@@ -140,7 +125,6 @@ const SCALAR_NAMES: [(&str, ScalarType); 9] = [
 ];
 
 impl ScalarType {
-    /// The scalar type a language spelling denotes.
     pub fn from_scalar_name(name: &str) -> Option<ScalarType> {
         SCALAR_NAMES
             .iter()
@@ -158,13 +142,12 @@ impl ScalarType {
     }
 }
 
-/// Encode a value to its canonical saved bytes: `bool` as `0`/`1`, `int` as
-/// decimal text, strings as UTF-8, bytes verbatim, dates as
-/// `YYYY-MM-DD`, durations as `PT<seconds>S`, instants as `YYYY-MM-DDTHH:MM:SSZ`.
+/// Encodes a value to its canonical saved bytes: `bool` as `0`/`1`, `int` as decimal
+/// text, strings as UTF-8, bytes verbatim, dates as `YYYY-MM-DD`, durations as
+/// `PT<seconds>S`, instants as `YYYY-MM-DDTHH:MM:SSZ`.
 ///
-/// This is the canonical boundary: it produces only forms [`decode_value`] reads
-/// back. A `date`/`instant` outside year 0001-9999 is a typed [`ValueError`]
-/// rather than a non-decodable 5-7 digit year.
+/// The canonical boundary: it emits only forms [`decode_value`] reads back, so a
+/// `date`/`instant` outside year 0001-9999 is a typed [`ValueError`].
 pub fn encode_value(value: &SavedValue) -> Result<Vec<u8>, ValueError> {
     Ok(match value {
         SavedValue::Bool(value) => vec![if *value { b'1' } else { b'0' }],
@@ -178,10 +161,8 @@ pub fn encode_value(value: &SavedValue) -> Result<Vec<u8>, ValueError> {
     })
 }
 
-/// Decode canonical saved bytes as `ty`, or `None` if the bytes are not a valid
-/// canonical form for that type. The check is strict, so non-canonical bytes
-/// (e.g. `+1`, `01`, or a non-`0`/`1` boolean) are rejected rather than
-/// silently normalized.
+/// Decodes canonical saved bytes as `ty`, strictly: non-canonical bytes such as
+/// `+1`, `01`, or a non-`0`/`1` boolean are rejected rather than normalized.
 pub fn decode_value(bytes: &[u8], ty: ScalarType) -> Option<SavedValue> {
     match ty {
         ScalarType::Bool => match bytes {
@@ -206,19 +187,16 @@ pub fn decode_value(bytes: &[u8], ty: ScalarType) -> Option<SavedValue> {
     }
 }
 
-/// Parse the exact canonical decimal form `encode_value` produces: an optional
-/// `-` then digits, no `+`, no leading zeros. Rejects anything that would not
-/// round-trip identically (`+1`, `01`, `-0`, whitespace).
+/// Parses the canonical int form, rejecting anything that would not round-trip
+/// identically (`+1`, `01`, `-0`, whitespace).
 fn parse_canonical_int(bytes: &[u8]) -> Option<i64> {
     let text = std::str::from_utf8(bytes).ok()?;
     let value: i64 = text.parse().ok()?;
     (value.to_string() == text).then_some(value)
 }
 
-/// The number of days from the Unix epoch (1970-01-01) to `year-month-day`, or
-/// `None` if it is out of range or not a real calendar date. Years run
-/// 0001–9999. Validates by reconstructing the date, so
-/// impossible dates such as 2021-02-29 are rejected.
+/// Days from the Unix epoch to `year-month-day` (years 0001-9999), or `None` if out
+/// of range. Validates by reconstructing the date, so 2021-02-29 and the like fail.
 pub fn date_days(year: i32, month: u32, day: u32) -> Option<i32> {
     if !(1..=9999).contains(&year) || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;
@@ -228,9 +206,8 @@ pub fn date_days(year: i32, month: u32, day: u32) -> Option<i32> {
     (civil_from_days(days) == (year, month, day)).then_some(value)
 }
 
-/// Format days-since-epoch as the canonical `YYYY-MM-DD`, or a typed range error
-/// when the date's year falls outside 0001-9999 (`decode_value` only reads a
-/// 4-digit year, so an out-of-range year would never round-trip).
+/// Formats days-since-epoch as `YYYY-MM-DD`, erroring outside year 0001-9999 since a
+/// wider year is not the 4-digit form `decode_value` reads.
 fn format_date(days: i32) -> Result<String, ValueError> {
     let (year, month, day) = civil_from_days(days as i64);
     if !(1..=9999).contains(&year) {
@@ -239,9 +216,8 @@ fn format_date(days: i32) -> Result<String, ValueError> {
     Ok(format!("{year:04}-{month:02}-{day:02}"))
 }
 
-/// Parse the canonical `YYYY-MM-DD` form to days-since-epoch. The shape is
-/// fixed-width (10 bytes, dashes at indices 4 and 7, digits elsewhere), so
-/// unpadded fields, stray separators, and impossible dates are all rejected.
+/// Parses fixed-width canonical `YYYY-MM-DD` to days-since-epoch; unpadded fields,
+/// stray separators, and impossible dates are all rejected.
 fn parse_date(bytes: &[u8]) -> Option<i32> {
     if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
         return None;
@@ -252,8 +228,8 @@ fn parse_date(bytes: &[u8]) -> Option<i32> {
     date_days(year as i32, month, day)
 }
 
-/// Parse a fixed-width all-ASCII-digit field as a `u32`, rejecting any non-digit
-/// byte (so unpadded or signed fields never parse).
+/// Parses an all-ASCII-digit field as a `u32`; any non-digit byte rejects it, so
+/// unpadded or signed fields never parse.
 fn parse_digit_field(slice: &[u8]) -> Option<u32> {
     if slice.iter().all(u8::is_ascii_digit) {
         std::str::from_utf8(slice).ok()?.parse().ok()
@@ -262,8 +238,8 @@ fn parse_digit_field(slice: &[u8]) -> Option<u32> {
     }
 }
 
-/// Days from the Unix epoch to a proleptic-Gregorian date (Howard Hinnant's
-/// `days_from_civil`). Valid for any real `month`/`day`; callers validate ranges.
+/// Howard Hinnant's `days_from_civil`: proleptic-Gregorian date to days from the Unix
+/// epoch. Valid for any real `month`/`day`; callers validate ranges.
 fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
     let year = year as i64 - i64::from(month <= 2);
     let era = (if year >= 0 { year } else { year - 399 }) / 400;
@@ -274,8 +250,7 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
     era * 146097 + day_of_era - 719468
 }
 
-/// The proleptic-Gregorian date for a day count from the Unix epoch (the inverse
-/// of [`days_from_civil`], Hinnant's `civil_from_days`).
+/// Hinnant's `civil_from_days`, the inverse of [`days_from_civil`].
 fn civil_from_days(days: i64) -> (i32, u32, u32) {
     let days = days + 719468;
     let era = (if days >= 0 { days } else { days - 146096 }) / 146097;
@@ -298,10 +273,9 @@ fn civil_from_days(days: i64) -> (i32, u32, u32) {
 const NANOS_PER_SEC: i128 = 1_000_000_000;
 const NANOS_PER_DAY: i128 = 86_400 * NANOS_PER_SEC;
 
-/// Append the canonical sub-second fraction of `nanos_fraction` (a value in
-/// `[0, 10^9)`) to `out`: nothing when it is zero, otherwise a `.` and the
-/// nine-digit fraction with trailing zeros trimmed. Shared by the duration and
-/// instant codecs so they format sub-second fractions identically.
+/// Appends the canonical sub-second fraction of `nanos_fraction` (in `[0, 10^9)`):
+/// nothing when zero, else `.` and the nine-digit fraction with trailing zeros
+/// trimmed. Shared so the duration and instant codecs format fractions identically.
 fn push_nanos_fraction(out: &mut String, nanos_fraction: u32) {
     if nanos_fraction > 0 {
         out.push('.');
@@ -309,11 +283,10 @@ fn push_nanos_fraction(out: &mut String, nanos_fraction: u32) {
     }
 }
 
-/// Parse a canonical sub-second fraction (the digits after the `.`) to its
-/// left-padded nanosecond value. The one canonical form is one to nine ASCII
-/// digits with no trailing zero, so an empty, over-long, trailing-zero, or
-/// non-digit fraction is rejected. Shared by the duration and instant codecs so
-/// the canonical-fraction rule has a single owner.
+/// Parses a canonical sub-second fraction (the digits after the `.`) to nanoseconds.
+/// The one canonical form is one to nine ASCII digits with no trailing zero, so an
+/// empty, over-long, trailing-zero, or non-digit fraction is rejected. Single owner
+/// of that rule for the duration and instant codecs.
 fn parse_canonical_fraction(fraction: &[u8]) -> Option<i128> {
     if fraction.is_empty()
         || fraction.len() > 9
@@ -327,9 +300,8 @@ fn parse_canonical_fraction(fraction: &[u8]) -> Option<i128> {
         .ok()
 }
 
-/// Format a signed nanosecond span as the canonical `PT<seconds>S`: an optional
-/// `-`, whole seconds with no leading zeros, and a trailing-zero-trimmed
-/// fraction only when non-zero. Zero is `PT0S`.
+/// Formats a signed nanosecond span as canonical `PT<seconds>S`: optional `-`, whole
+/// seconds with no leading zeros, a trimmed fraction only when non-zero. Zero is `PT0S`.
 fn format_duration(nanos: i128) -> String {
     let sign = if nanos < 0 { "-" } else { "" };
     let magnitude = nanos.unsigned_abs();
@@ -341,9 +313,9 @@ fn format_duration(nanos: i128) -> String {
     out
 }
 
-/// Parse the canonical `PT<seconds>S` form to a signed nanosecond span,
-/// rejecting any non-canonical spelling (leading zeros, a trailing-zero or empty
-/// fraction, `-PT0S`, a missing `PT`/`S`, or out-of-range magnitude).
+/// Parses canonical `PT<seconds>S` to a signed nanosecond span, rejecting any
+/// non-canonical spelling (leading zeros, a bad fraction, `-PT0S`, a missing
+/// `PT`/`S`, or out-of-range magnitude).
 fn parse_duration(bytes: &[u8]) -> Option<i128> {
     let text = std::str::from_utf8(bytes).ok()?;
     let (negative, rest) = match text.strip_prefix('-') {
@@ -360,7 +332,7 @@ fn parse_duration(bytes: &[u8]) -> Option<i128> {
         return None;
     }
     if seconds_text.len() > 1 && seconds_text.starts_with('0') {
-        return None; // leading zero
+        return None;
     }
     let seconds: i128 = seconds_text.parse().ok()?;
 
@@ -373,15 +345,13 @@ fn parse_duration(bytes: &[u8]) -> Option<i128> {
         .checked_mul(NANOS_PER_SEC)?
         .checked_add(fraction_nanos)?;
     if negative && magnitude == 0 {
-        return None; // `-PT0S` is not canonical
+        return None; // `-PT0S` has no canonical spelling; zero is `PT0S`
     }
     Some(if negative { -magnitude } else { magnitude })
 }
 
-/// Format nanoseconds-since-epoch (UTC) as the canonical
-/// `YYYY-MM-DDTHH:MM:SSZ`, including a trailing-zero-trimmed fraction only when
-/// the sub-second part is non-zero. Returns a typed range error when the calendar
-/// day falls outside year 0001-9999, matching the date boundary.
+/// Formats UTC nanoseconds-since-epoch as canonical `YYYY-MM-DDTHH:MM:SSZ`, with a
+/// trimmed fraction only when non-zero. Errors outside year 0001-9999, like dates.
 fn format_instant(nanos: i128) -> Result<String, ValueError> {
     let days = nanos.div_euclid(NANOS_PER_DAY);
     let time_of_day = nanos.rem_euclid(NANOS_PER_DAY); // [0, NANOS_PER_DAY)
@@ -402,9 +372,8 @@ fn format_instant(nanos: i128) -> Result<String, ValueError> {
     Ok(out)
 }
 
-/// Parse the canonical `YYYY-MM-DDTHH:MM:SSZ` (UTC) form to nanoseconds since the
-/// epoch. The shape is fixed-width through the seconds field, with an optional
-/// `.fraction` before the `Z`; anything non-canonical is rejected.
+/// Parses canonical UTC `YYYY-MM-DDTHH:MM:SSZ` to nanoseconds since the epoch. Fixed
+/// width through the seconds field, with an optional `.fraction` before the `Z`.
 fn parse_instant(bytes: &[u8]) -> Option<i128> {
     if bytes.len() < 20 || bytes[10] != b'T' || *bytes.last()? != b'Z' {
         return None;

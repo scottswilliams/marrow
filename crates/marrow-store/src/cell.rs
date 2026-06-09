@@ -1,10 +1,11 @@
 //! Tree-cell storage IDs and the private physical key substrate.
 //!
-//! The in-memory and redb engines order opaque bytes. This module owns the v0
-//! Marrow key profile above those engines while callers use stable catalog IDs,
-//! typed key values, and tree-cell operations.
+//! Engines order opaque bytes; this module owns the v0 Marrow key profile above
+//! them so callers work in catalog IDs, typed key values, and tree-cell terms.
 
-use crate::key::{SavedKey, decode_key_value, encode_escaped_bytes, encode_key_value};
+use crate::key::{
+    SavedKey, decode_escaped_bytes, decode_key_value, encode_escaped_bytes, encode_key_value,
+};
 
 const EMPTY_PLACEMENT_PREFIX: u8 = 0x00;
 
@@ -25,7 +26,7 @@ const INDEX_ENTRY_END: u8 = 0x00;
 
 pub(crate) const NODE_MARKER: &[u8] = b"node";
 
-/// An opaque catalog ID in the tree-cell storage key shape.
+/// A stable catalog identifier, spelled `cat_<32 lowercase hex>`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CatalogId(String);
 
@@ -39,7 +40,6 @@ impl CatalogId {
     }
 }
 
-/// A rejected stable ID.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CellIdError;
 
@@ -51,24 +51,12 @@ impl std::fmt::Display for CellIdError {
 
 impl std::error::Error for CellIdError {}
 
-/// Store-level metadata cells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MetaCell {
     CatalogEpoch,
     LayoutEpoch,
     EngineProfile,
     Commit,
-}
-
-impl MetaCell {
-    fn tag(self) -> u8 {
-        match self {
-            Self::CatalogEpoch => 0x01,
-            Self::LayoutEpoch => 0x02,
-            Self::EngineProfile => 0x03,
-            Self::Commit => 0x04,
-        }
-    }
 }
 
 /// A sequence position encoded in unsigned numeric order.
@@ -98,8 +86,14 @@ pub enum DataPathSegment {
 
 impl CellKey {
     pub(crate) fn meta(cell: MetaCell) -> Self {
+        let tag = match cell {
+            MetaCell::CatalogEpoch => 0x01,
+            MetaCell::LayoutEpoch => 0x02,
+            MetaCell::EngineProfile => 0x03,
+            MetaCell::Commit => 0x04,
+        };
         let mut bytes = family(FAMILY_META);
-        bytes.push(cell.tag());
+        bytes.push(tag);
         Self(bytes)
     }
 
@@ -207,15 +201,12 @@ impl CellKey {
 }
 
 /// A key-grammar byte run that did not parse under the v0 tree-cell profile. The
-/// caller owns turning this into a typed store error, since it holds the full
-/// physical key the malformed run came from.
+/// caller, which still holds the full physical key, turns this into a store error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MalformedKey;
 
-/// Decode the immediate data-family child key from the bytes that follow a
-/// data-path prefix. A key segment (`DATA_KEY_SEGMENT`) carries one scalar child;
-/// any other leading byte sits past the keyed-child run, so the scan yields no
-/// child here, and a key segment with an unparseable body is malformed.
+/// Decodes the immediate data-family child key after a data-path prefix; `Ok(None)`
+/// once the bytes sit past the keyed-child run.
 pub(crate) fn decode_data_child_key(bytes: &[u8]) -> Result<Option<SavedKey>, MalformedKey> {
     if bytes.first().copied() != Some(DATA_KEY_SEGMENT) {
         return Ok(None);
@@ -225,10 +216,8 @@ pub(crate) fn decode_data_child_key(bytes: &[u8]) -> Result<Option<SavedKey>, Ma
     Ok(Some(key))
 }
 
-/// Decode the immediate record-family child key from the bytes that follow a
-/// record prefix. Identity keys run until the node terminator, so an empty tail
-/// or a leading `NODE_END` sits past the child run; a non-terminator byte begins
-/// one identity key whose body must parse.
+/// Decodes the first record-identity key after a record prefix; `Ok(None)` for an
+/// empty tail or a leading `NODE_END`, which both sit past the identity run.
 pub(crate) fn decode_record_child_key(bytes: &[u8]) -> Result<Option<SavedKey>, MalformedKey> {
     if bytes.first().copied().is_none_or(|tag| tag == NODE_END) {
         return Ok(None);
@@ -237,10 +226,8 @@ pub(crate) fn decode_record_child_key(bytes: &[u8]) -> Result<Option<SavedKey>, 
     Ok(Some(key))
 }
 
-/// Decode the immediate index-family child key from the bytes that follow an
-/// index key prefix. A non-zero leading byte begins the next index key; the
-/// `INDEX_IDENTITY` separator opens the identity run, whose first key is the child
-/// at that level, and a bare separator with no identity sits past the run.
+/// Decodes the next index-family child key after an index-key prefix: the next index
+/// key, or the first identity key past the `INDEX_IDENTITY` separator.
 pub(crate) fn decode_index_child_key(bytes: &[u8]) -> Result<Option<SavedKey>, MalformedKey> {
     let body = match bytes.split_first() {
         None => return Ok(None),
@@ -252,9 +239,8 @@ pub(crate) fn decode_index_child_key(bytes: &[u8]) -> Result<Option<SavedKey>, M
     Ok(Some(key))
 }
 
-/// Split the bytes that follow an index key prefix into the stored index-key tuple
-/// and the record identity. The runs are separated by the `INDEX_IDENTITY` byte and
-/// the identity closes with `INDEX_ENTRY_END`.
+/// Splits an index-entry tail into its stored index-key tuple and record identity,
+/// which the `INDEX_IDENTITY` separator divides.
 pub(crate) fn decode_index_entry_key(
     bytes: &[u8],
 ) -> Result<(Vec<SavedKey>, Vec<SavedKey>), MalformedKey> {
@@ -277,8 +263,7 @@ pub(crate) fn decode_index_entry_key(
     Ok((index_keys, decode_index_identity(rest)?))
 }
 
-/// Decode a stored index identity from the bytes that follow the `INDEX_IDENTITY`
-/// separator: a run of identity keys closed by the `INDEX_ENTRY_END` terminator.
+/// Decodes a stored index identity: a run of keys closed by the `INDEX_ENTRY_END` terminator.
 pub(crate) fn decode_index_identity(bytes: &[u8]) -> Result<Vec<SavedKey>, MalformedKey> {
     let (&terminator, identity) = bytes.split_last().ok_or(MalformedKey)?;
     if terminator != INDEX_ENTRY_END {
@@ -287,7 +272,7 @@ pub(crate) fn decode_index_identity(bytes: &[u8]) -> Result<Vec<SavedKey>, Malfo
     decode_saved_keys(identity)
 }
 
-/// Decode a run of scalar key-values that fills the whole slice.
+/// Decodes a run of scalar key-values that fills the whole slice.
 fn decode_saved_keys(mut bytes: &[u8]) -> Result<Vec<SavedKey>, MalformedKey> {
     let mut keys = Vec::new();
     while !bytes.is_empty() {
@@ -314,9 +299,8 @@ pub enum DataCellKind {
     },
 }
 
-/// A decoded data-family cell: its store catalog id, record identity, and exact
-/// data-cell kind. A backup carries only data cells, so tooling can classify
-/// these typed facts without seeing physical key bytes.
+/// A decoded data-family cell. A backup carries only data cells, so tooling
+/// classifies these typed facts without touching physical key bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataCellKey {
     pub store: CatalogId,
@@ -336,10 +320,9 @@ impl DataCellKey {
     }
 }
 
-/// Decode a data-family cell key into its structural pieces, or `None` when the
-/// bytes are not a well-formed data cell under the v0 tree-cell key grammar — the
-/// caller reports that as store corruption. Index and meta cells are derived or
-/// reconstructed, not carried in a backup, so a non-data key also decodes to `None`.
+/// Decodes a data-family cell key into its structural pieces. Returns `None` for a
+/// non-data key (index and meta cells are reconstructed, not backed up) or for bytes
+/// that are malformed under the v0 grammar, which the caller treats as corruption.
 pub(crate) fn decode_data_cell_key(bytes: &[u8]) -> Option<DataCellKey> {
     let [
         EMPTY_PLACEMENT_PREFIX,
@@ -362,8 +345,8 @@ pub(crate) fn decode_data_cell_key(bytes: &[u8]) -> Option<DataCellKey> {
     })
 }
 
-/// Decode the run of identity key-values that precede the node terminator. A
-/// key-value tag is never `NODE_END`, so the run ends at the first `NODE_END`.
+/// Decodes the identity key-values before the node terminator. A key tag is never
+/// `NODE_END`, so the run ends unambiguously at the first `NODE_END`.
 fn decode_leading_keys(mut bytes: &[u8]) -> Option<(Vec<SavedKey>, &[u8])> {
     let mut keys = Vec::new();
     while bytes.first().copied()? != NODE_END {
@@ -374,11 +357,8 @@ fn decode_leading_keys(mut bytes: &[u8]) -> Option<(Vec<SavedKey>, &[u8])> {
     Some((keys, bytes))
 }
 
-/// Decode the member/key path below a record node from the bytes after the node
-/// terminator. An empty tail is a bare record node (path `[]`). A value cell ends
-/// at the value marker; a leaf or sequence cell carries one member id after its
-/// cell tag. The decoded path keeps only structural member/key segments — a
-/// sequence position is not part of the schema path.
+/// Classifies the cell from the bytes after the node terminator. The decoded path
+/// keeps only structural member/key segments; a sequence position is not part of it.
 fn decode_data_cell_kind(mut bytes: &[u8]) -> Option<DataCellKind> {
     let mut path = Vec::new();
     loop {
@@ -424,30 +404,11 @@ fn decode_data_cell_kind(mut bytes: &[u8]) -> Option<DataCellKind> {
     }
 }
 
-/// Decode one escaped id (the `encode_escaped_bytes` form) and return it with the
-/// bytes after its `0x00 0x00` terminator.
+/// Decodes one escaped id and returns it with the bytes after its terminator.
 fn decode_escaped_id(bytes: &[u8]) -> Option<(String, &[u8])> {
-    let mut decoded = Vec::new();
-    let mut index = 0;
-    loop {
-        match *bytes.get(index)? {
-            0x00 => match *bytes.get(index + 1)? {
-                0x00 => {
-                    let id = String::from_utf8(decoded).ok()?;
-                    return Some((id, bytes.get(index + 2..)?));
-                }
-                0x01 => {
-                    decoded.push(0x00);
-                    index += 2;
-                }
-                _ => return None,
-            },
-            byte => {
-                decoded.push(byte);
-                index += 1;
-            }
-        }
-    }
+    let (decoded, used) = decode_escaped_bytes(bytes)?;
+    let id = String::from_utf8(decoded).ok()?;
+    Some((id, bytes.get(used..)?))
 }
 
 fn encode_data_path(path: &[DataPathSegment], out: &mut Vec<u8>) {

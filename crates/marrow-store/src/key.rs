@@ -2,7 +2,6 @@
 
 use std::cmp::Ordering;
 
-/// A scalar key value in a record-key or index-key position.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SavedKey {
     Int(i64),
@@ -19,7 +18,6 @@ pub enum SavedKey {
 }
 
 impl SavedKey {
-    /// The scalar kind this key projects.
     pub fn scalar_type(&self) -> crate::value::ScalarType {
         use crate::value::ScalarType;
 
@@ -67,13 +65,13 @@ impl Ord for SavedKey {
             (SavedKey::Duration(left), SavedKey::Duration(right)) => left.cmp(right),
             (SavedKey::Str(left), SavedKey::Str(right)) => left.cmp(right),
             (SavedKey::Bytes(left), SavedKey::Bytes(right)) => left.cmp(right),
-            _ => unreachable!("equal order tags imply the same SavedKey variant"),
+            _ => unreachable!(),
         }
     }
 }
 
-// Key-type tags, in Marrow's typed key order: booleans, numbers, then dates,
-// instants, and durations, then strings.
+// Type tags ascend in Marrow's typed key order, so a byte comparison of two
+// differently-typed keys yields their canonical order without decoding.
 pub(crate) const KEY_BOOL: u8 = 0x01;
 pub(crate) const KEY_INT: u8 = 0x02;
 pub(crate) const KEY_DATE: u8 = 0x03;
@@ -85,20 +83,63 @@ pub(crate) const KEY_BYTES: u8 = 0x08;
 // The bounded int-key band uses `KEY_INT + 1` as its exclusive upper bound.
 const _: () = assert!(KEY_DATE == KEY_INT + 1);
 
-/// Encode a single scalar key to its private order-preserving bytes.
 pub(crate) fn encode_key_value(key: &SavedKey) -> Vec<u8> {
     let mut bytes = Vec::new();
     encode_key_into(key, &mut bytes);
     bytes
 }
 
-/// Decode one scalar key from the front of private key bytes, returning the value
-/// and the number of bytes it consumed in a single walk.
+/// Decodes the leading scalar key, returning it with the byte count it consumed.
 pub(crate) fn decode_key_value(bytes: &[u8]) -> Option<(SavedKey, usize)> {
-    decode_key(bytes)
+    match *bytes.first()? {
+        KEY_BOOL => {
+            let value = match *bytes.get(1)? {
+                0 => false,
+                1 => true,
+                _ => return None,
+            };
+            Some((SavedKey::Bool(value), 2))
+        }
+        KEY_INT => {
+            let raw: [u8; 8] = bytes.get(1..9)?.try_into().ok()?;
+            Some((
+                SavedKey::Int((u64::from_be_bytes(raw) ^ (1u64 << 63)) as i64),
+                9,
+            ))
+        }
+        KEY_DATE => {
+            let raw: [u8; 4] = bytes.get(1..5)?.try_into().ok()?;
+            Some((
+                SavedKey::Date((u32::from_be_bytes(raw) ^ (1u32 << 31)) as i32),
+                5,
+            ))
+        }
+        KEY_DURATION => {
+            let raw: [u8; 16] = bytes.get(1..17)?.try_into().ok()?;
+            Some((
+                SavedKey::Duration((u128::from_be_bytes(raw) ^ (1u128 << 127)) as i128),
+                17,
+            ))
+        }
+        KEY_INSTANT => {
+            let raw: [u8; 16] = bytes.get(1..17)?.try_into().ok()?;
+            Some((
+                SavedKey::Instant((u128::from_be_bytes(raw) ^ (1u128 << 127)) as i128),
+                17,
+            ))
+        }
+        KEY_STR => {
+            let (decoded, used) = decode_escaped_bytes(bytes.get(1..)?)?;
+            Some((SavedKey::Str(String::from_utf8(decoded).ok()?), 1 + used))
+        }
+        KEY_BYTES => {
+            let (decoded, used) = decode_escaped_bytes(bytes.get(1..)?)?;
+            Some((SavedKey::Bytes(decoded), 1 + used))
+        }
+        _ => None,
+    }
 }
 
-/// Encode identity keys into the canonical tree-cell payload form.
 pub fn encode_identity_payload(identity: &[SavedKey]) -> Vec<u8> {
     let mut bytes = Vec::new();
     for key in identity {
@@ -107,7 +148,7 @@ pub fn encode_identity_payload(identity: &[SavedKey]) -> Vec<u8> {
     bytes
 }
 
-/// Decode a canonical identity payload with the expected arity.
+/// Decodes a canonical identity payload, returning `None` unless it holds exactly `arity` keys.
 pub fn decode_identity_payload_arity(bytes: &[u8], arity: usize) -> Option<Vec<SavedKey>> {
     let mut keys = Vec::with_capacity(arity);
     let mut rest = bytes;
@@ -152,56 +193,8 @@ pub(crate) fn encode_key_into(key: &SavedKey, out: &mut Vec<u8>) {
     }
 }
 
-fn decode_key(bytes: &[u8]) -> Option<(SavedKey, usize)> {
-    match *bytes.first()? {
-        KEY_BOOL => {
-            let value = match *bytes.get(1)? {
-                0 => false,
-                1 => true,
-                _ => return None,
-            };
-            Some((SavedKey::Bool(value), 2))
-        }
-        KEY_INT => {
-            let raw: [u8; 8] = bytes.get(1..9)?.try_into().ok()?;
-            Some((
-                SavedKey::Int((u64::from_be_bytes(raw) ^ (1u64 << 63)) as i64),
-                9,
-            ))
-        }
-        KEY_DATE => {
-            let raw: [u8; 4] = bytes.get(1..5)?.try_into().ok()?;
-            Some((
-                SavedKey::Date((u32::from_be_bytes(raw) ^ (1u32 << 31)) as i32),
-                5,
-            ))
-        }
-        KEY_DURATION => {
-            let raw: [u8; 16] = bytes.get(1..17)?.try_into().ok()?;
-            Some((
-                SavedKey::Duration((u128::from_be_bytes(raw) ^ (1u128 << 127)) as i128),
-                17,
-            ))
-        }
-        KEY_INSTANT => {
-            let raw: [u8; 16] = bytes.get(1..17)?.try_into().ok()?;
-            Some((
-                SavedKey::Instant((u128::from_be_bytes(raw) ^ (1u128 << 127)) as i128),
-                17,
-            ))
-        }
-        KEY_STR => {
-            let (decoded, used) = read_escaped_str(bytes.get(1..)?)?;
-            Some((SavedKey::Str(String::from_utf8(decoded).ok()?), 1 + used))
-        }
-        KEY_BYTES => {
-            let (decoded, used) = read_escaped_str(bytes.get(1..)?)?;
-            Some((SavedKey::Bytes(decoded), 1 + used))
-        }
-        _ => None,
-    }
-}
-
+// Inner `0x00` escapes to `0x00 0x01` and a `0x00 0x00` terminates the run, so an
+// embedded null can never be confused with the end of the field.
 pub(crate) fn encode_escaped_bytes(value: &[u8], out: &mut Vec<u8>) {
     for &byte in value {
         out.push(byte);
@@ -213,7 +206,8 @@ pub(crate) fn encode_escaped_bytes(value: &[u8], out: &mut Vec<u8>) {
     out.push(0x00);
 }
 
-fn read_escaped_str(bytes: &[u8]) -> Option<(Vec<u8>, usize)> {
+/// Decodes one `encode_escaped_bytes` run, returning its bytes and the count consumed up to and including the terminator.
+pub(crate) fn decode_escaped_bytes(bytes: &[u8]) -> Option<(Vec<u8>, usize)> {
     let mut decoded = Vec::new();
     let mut index = 0;
     loop {
