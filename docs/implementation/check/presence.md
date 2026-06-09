@@ -41,7 +41,7 @@ Key types live mostly in `presence/target.rs` (`ReadTarget`, `ReadPlace`), `pres
 | --- | --- | --- |
 | `check_presence` | `analysis.rs` (after lowering) | Runs the flow-sensitive walk, mutating facts and pushing diagnostics. |
 | `direct_effects_for_block` | `facts.rs` `refresh_direct_effects`, `evolution/intents.rs` | Summarizes one block's effects into `DirectEffectFacts`. |
-| `read_target` | `checks.rs` (assignment LHS check) | Scope-free test of whether an LHS resolves to a saved/store-index place. |
+| `read_target` | `checks/operators.rs` (`??` coalesce check) | Scope-free test of whether an LHS resolves to a saved/store-index place. |
 
 ## Notes on code reality
 

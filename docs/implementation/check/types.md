@@ -17,7 +17,7 @@ The orchestration that sequences the passes lives in `analysis.rs`, outside this
 | `crates/marrow-check/src/lib.rs` | Crate root: diagnostic codes/payloads, `ConversionTarget` table, per-file structural check, `check_project`/`check_tests` entrypoints, accepted-catalog writer, public re-exports. |
 | `crates/marrow-check/src/program.rs` | The `CheckedProgram`/`CheckedRuntimeProgram` artifacts, the `MarrowType` lattice and `from_resolved` placement, `FileId`, runtime-body lowering. |
 | `crates/marrow-check/src/resolve.rs` | The one module/visibility-aware name resolver: `resolve` → `Resolution`/`Def`/`DefItem`; `resolve_store_by_root` for project-wide saved roots. |
-| `crates/marrow-check/src/checks.rs` | The type-check driver: shared resolved-file pass, `StatementCheck` dispatch, `check_call` (builtin/std/constructor/user), operator/condition/assign/return/throw checks, range-for and for-loop frames. |
+| `crates/marrow-check/src/checks/` | The type-check driver, split by concern: `driver` (resolved-file pass, file prelude, type-annotation checks), `statements` (`StatementCheck` dispatch, block/function scope), `calls` (`check_call`: builtin/std/constructor/user), `operators` (operator/condition/assign/return/throw checks), `ranges` (range-for step/direction rules), `collections` (for-loop frames, saved-path/index-branch key and value typing), `saved_keys` (key-argument typing), `returns` (return placement, divergence), and `diagnostics` (the shared error constructors). `mod.rs` re-exports the cross-crate API. |
 | `crates/marrow-check/src/infer.rs` | Expression type inference (`infer_type`/`infer_only`): literals, scope lookup, saved-path/leaf/group/index resolution (`saved_call_type`), enum member-path typing. |
 | `crates/marrow-check/src/typerules.rs` | Pure lattice rules: `type_compatible`, `expects_conversion`, `as_primitive`, numeric/ordered/steppable predicates, literal-range envelope, mismatch display. |
 | `crates/marrow-check/src/rules.rs` | Structural (syntax-only) rules: try-handler presence, finally-escape, loop control-flow, catch-type, assignment-target validity, read-only inout, const-constant-expr. |
@@ -42,7 +42,7 @@ The orchestration that sequences the passes lives in `analysis.rs`, outside this
 ## Read next
 
 - `program.rs` — `CheckedProgram`, `MarrowType`, `MarrowType::from_resolved`, `lower_runtime_bodies` (the artifact and lattice every downstream crate reads against).
-- `checks.rs` — `check_call`, `StatementCheck::check` (the dispatch heart; how every type diagnostic is produced and how scope threads through blocks).
+- `checks/calls.rs` and `checks/statements.rs` — `check_call`, `StatementCheck::check` (the dispatch heart; how every type diagnostic is produced and how scope threads through blocks).
 - `infer.rs` — `infer_type`, `saved_call_type` (layered `^root(key).layer(key).field` typing — the trickiest part of the lattice).
 - `facts.rs` — `CheckedFacts::from_modules`, `StoredValueMeaning::stored_key` (id-assignment order and the single owner of durable member-byte → `SavedKey` decoding).
 - `resolve.rs` — `resolve`, `resolve_store_by_root` (the resolution outcome shared by checker, runtime, and LSP).
