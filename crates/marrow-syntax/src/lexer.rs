@@ -36,15 +36,18 @@ impl<'a> Lexer<'a> {
     }
 
     fn lex(mut self) -> LexedSource {
-        for line in self.lines.clone() {
+        // `Line` is `Copy`, so index the line stack rather than holding a borrow
+        // across the mutating body. `self.lines` stays intact for `eof_span`.
+        for index in 0..self.lines.len() {
+            let line = self.lines[index];
             self.reject_line_tabs(line);
 
             if line.is_blank() {
                 continue;
             }
 
-            if line.is_comment() || line.doc_comment().is_some() {
-                let is_doc_comment = line.doc_comment().is_some();
+            let is_doc_comment = line.doc_comment().is_some();
+            if line.is_comment() || is_doc_comment {
                 let starts_in_delimiters = self.open_delimiters > 0;
                 if !starts_in_delimiters {
                     self.apply_comment_indent(line, is_doc_comment);
@@ -388,8 +391,6 @@ impl<'a> Lexer<'a> {
         end
     }
 
-    /// The byte index just past the run of identifier-continue characters at
-    /// `start`. Equal to `start` when no identifier word begins there.
     fn identifier_word_end(&self, start: usize, line_end: usize) -> usize {
         let mut end = start;
         for (offset, ch) in self.source[start..line_end].char_indices() {

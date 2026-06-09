@@ -1,8 +1,9 @@
 //! Render the syntax tree back to canonical Marrow `.mw` source.
 //!
-//! Canonical style: binary operators are spaced
-//! (`a + b`), ranges are not (`1..10`), unary is `-x` / `not x`, calls are
-//! `f(a, b)`, dotted fields and `::` name paths have no surrounding spaces.
+//! Canonical style: binary operators are spaced (`a + b`), ranges are not
+//! (`1..10`), unary is `-x` / `not x`, calls are `f(a, b)`, and dotted fields
+//! and `::` name paths have no surrounding spaces.
+//!
 //! The syntax tree does not record parentheses, so the formatter re-inserts
 //! the minimum needed to preserve operator precedence and associativity.
 
@@ -13,51 +14,55 @@ use crate::{
     ResourceDecl, ResourceMember, Statement, StoreDecl, TypeRef, UnaryOp,
 };
 
-/// Precedence of an expression, tightest-binding last. Used to decide where
-/// parentheses are required. Atoms (literals, names, calls, fields, …) bind
-/// tightest; `or` binds loosest.
+/// Precedence used to decide where parentheses are required, tightest-binding
+/// last: atoms bind tightest, then unary, with binary operators below.
 const PREC_ATOM: u8 = 11;
 const PREC_UNARY: u8 = 10;
 
-/// One indentation level in canonical Marrow source.
 const INDENT: &str = "    ";
 
-/// Format a whole `.mw` source file as canonical Marrow. The module
-/// declaration, the `use` block, and each top-level declaration are separated
-/// by a single blank line; the result ends with a newline.
+/// Format a whole `.mw` source file to canonical Marrow. The module
+/// declaration, the `use` block, and each top-level declaration are separated by
+/// a single blank line, and the result ends with a newline.
 ///
-/// Formatting normalizes layout (indentation, blank lines, doc-comment
-/// spacing), so the output is not byte-identical to arbitrary input but is a
-/// stable fixed point: `format_source(format_source(s)) == format_source(s)`.
-/// Line comments inside function bodies are retained as block trivia and
-/// re-emitted (see `format_block`). A comment in the middle of a value that
-/// spans several lines inside open delimiters is the one position the expression
-/// parser does not carry through.
+/// Normalizing layout makes the output a stable fixed point:
+/// `format_source(format_source(s))` equals `format_source(s)`. Line comments
+/// inside function bodies are retained as block trivia and re-emitted (see
+/// `format_block`). A comment in the middle of a value that spans several lines
+/// inside open delimiters is the one position the expression parser does not
+/// carry through.
 pub fn format_source(source: &str) -> String {
     let parsed = crate::parse_source(source);
     let file = &parsed.file;
     let mut sections: Vec<FormatSection> = Vec::new();
 
     if let Some(module) = &file.module {
-        sections.push(FormatSection::item(
-            module.span,
-            format!("module {}", module.name),
-        ));
+        sections.push(FormatSection {
+            span: module.span,
+            text: format!("module {}", module.name),
+            kind: FormatSectionKind::Item,
+        });
     }
     for comment in &file.comments {
-        sections.push(FormatSection::comment(comment));
+        sections.push(FormatSection {
+            span: comment.span,
+            text: format_comment(comment),
+            kind: FormatSectionKind::Comment,
+        });
     }
     for use_decl in &file.uses {
-        sections.push(FormatSection::use_decl(
-            use_decl.span,
-            format!("use {}", use_decl.name),
-        ));
+        sections.push(FormatSection {
+            span: use_decl.span,
+            text: format!("use {}", use_decl.name),
+            kind: FormatSectionKind::Use,
+        });
     }
     for declaration in &file.declarations {
-        sections.push(FormatSection::item(
-            declaration_span(declaration),
-            format_declaration(source, declaration),
-        ));
+        sections.push(FormatSection {
+            span: declaration_span(declaration),
+            text: format_declaration(source, declaration),
+            kind: FormatSectionKind::Item,
+        });
     }
 
     if sections.is_empty() {
@@ -88,32 +93,6 @@ enum FormatSectionKind {
     Item,
 }
 
-impl FormatSection {
-    fn item(span: crate::SourceSpan, text: String) -> Self {
-        Self {
-            span,
-            text,
-            kind: FormatSectionKind::Item,
-        }
-    }
-
-    fn use_decl(span: crate::SourceSpan, text: String) -> Self {
-        Self {
-            span,
-            text,
-            kind: FormatSectionKind::Use,
-        }
-    }
-
-    fn comment(comment: &Comment) -> Self {
-        Self {
-            span: comment.span,
-            text: format_comment(comment),
-            kind: FormatSectionKind::Comment,
-        }
-    }
-}
-
 fn section_separator(prev: &FormatSection, next: &FormatSection) -> &'static str {
     if prev.kind == FormatSectionKind::Use
         && next.kind == FormatSectionKind::Use
@@ -138,11 +117,9 @@ fn declaration_span(declaration: &Declaration) -> crate::SourceSpan {
     }
 }
 
-/// Render one top-level declaration (const, resource, store, function, enum, or
-/// evolve) to canonical Marrow source with a fixed layout, independent of how the
-/// declaration was spelled in the input, including its documentation comments.
-/// `source` supplies the original text for any statement body the declaration
-/// carries. The returned text has no trailing newline.
+/// Render one top-level declaration to canonical fixed layout, independent of
+/// input style, with no trailing newline. `source` supplies the original text
+/// for any statement body.
 pub fn format_declaration(source: &str, declaration: &Declaration) -> String {
     match declaration {
         Declaration::Const(decl) => format_const(decl),
@@ -154,9 +131,6 @@ pub fn format_declaration(source: &str, declaration: &Declaration) -> String {
     }
 }
 
-/// Format an `evolve` block: the bare header, then one step per line at one indent
-/// level, matching the resource and store body shape. A `transform` step prints
-/// its statement body one level deeper.
 fn format_evolve(source: &str, decl: &EvolveDecl) -> String {
     let mut out = String::from("evolve");
     let step_pad = INDENT;
@@ -411,8 +385,6 @@ fn format_param(param: &ParamDecl) -> String {
     format!("{mode}{}: {}", param.name, param.ty)
 }
 
-/// Render documentation comments as `;; ...` lines at `level`, each ending in a
-/// newline so the declaration or member follows on its own line.
 fn format_docs(docs: &[String], level: usize) -> String {
     let pad = INDENT.repeat(level);
     docs.iter()
@@ -426,22 +398,26 @@ fn format_docs(docs: &[String], level: usize) -> String {
         .collect::<String>()
 }
 
-/// Format a block's statements at the given indentation level, one statement
-/// per line, joined by newlines (no trailing newline). Nested blocks indent one
-/// level deeper.
+/// Format a block's statements one per line at `level`, joined without a
+/// trailing newline.
 ///
-/// Line comments retained on the block are re-emitted so `parse -> format`
-/// round-trips them: own-line comments appear on their own line at the block
-/// indent, in source order between statements; a trailing comment is appended to
-/// the line of the statement it sits on.
+/// Block comments are re-emitted so `parse -> format` round-trips them: own-line
+/// comments preserve their source column (see `format_comment`) and appear on
+/// their own line, in source order between statements, so a comment outdented
+/// relative to the block is not re-indented; a trailing comment is appended to
+/// the line of the statement it sits on. Walking comments in step with
+/// statements relies on both being in source order.
+///
+/// A comment in the middle of a value that spans several lines inside open
+/// delimiters is not round-tripped: that is the one position the expression
+/// parser does not carry through, a structural limitation inherited from the
+/// parser rather than the formatter.
 pub(crate) fn format_block(source: &str, block: &Block, level: usize) -> String {
     let mut lines: Vec<String> = Vec::new();
-    // Comments are kept in source order; walk them in step with the statements.
     let mut comments = block.comments.iter().peekable();
 
     for (i, statement) in block.statements.iter().enumerate() {
         let stmt_span = statement.span();
-        // Own-line comments that precede this statement.
         while let Some(comment) = comments.peek() {
             if comment.placement == CommentPlacement::OwnLine
                 && comment.span.start_byte < stmt_span.start_byte
@@ -453,9 +429,8 @@ pub(crate) fn format_block(source: &str, block: &Block, level: usize) -> String 
         }
 
         let mut text = format_statement(source, statement, level);
-        // A trailing comment sits on this statement's line, so it appears after
-        // the statement starts and before the next statement does. Append it to
-        // the statement's last line.
+        // A trailing comment falls between this statement's start and the next
+        // statement's; append it to this statement's last line.
         let next_start = block
             .statements
             .get(i + 1)
@@ -476,8 +451,7 @@ pub(crate) fn format_block(source: &str, block: &Block, level: usize) -> String 
         lines.push(text);
     }
 
-    // Any remaining comments dangle after the last statement (or fill an
-    // otherwise statement-less block); emit them on their own lines.
+    // Comments after the last statement, or an entirely statement-less block.
     for comment in comments {
         lines.push(format_comment(comment));
     }
@@ -485,10 +459,10 @@ pub(crate) fn format_block(source: &str, block: &Block, level: usize) -> String 
     lines.join("\n")
 }
 
-/// Render an own-line `;` comment as a `; text` line, preserving the comment's
-/// original indentation. Comments are indentation-exempt, so keeping the
-/// author's column round-trips an outdented comment exactly rather than
-/// re-indenting it to whichever block the lexer structurally attached it to.
+/// Render an own-line comment, preserving its original column. Comments are
+/// indentation-exempt, so keeping the author's column round-trips an outdented
+/// comment exactly rather than re-indenting it to the block the lexer attached
+/// it to.
 fn format_comment(comment: &Comment) -> String {
     let pad = " ".repeat(comment.span.column.saturating_sub(1) as usize);
     let marker = comment_marker_str(comment.marker);
@@ -499,8 +473,6 @@ fn format_comment(comment: &Comment) -> String {
     }
 }
 
-/// The canonical marker text for a comment. Owning this in one place keeps the
-/// own-line and trailing comment paths from spelling `;` and `;;` independently.
 fn comment_marker_str(marker: CommentMarker) -> &'static str {
     match marker {
         CommentMarker::Line => ";",
@@ -508,8 +480,6 @@ fn comment_marker_str(marker: CommentMarker) -> &'static str {
     }
 }
 
-/// Format one statement (and any nested blocks) at `level`. The returned text
-/// has no trailing newline.
 pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize) -> String {
     let pad = INDENT.repeat(level);
     match statement {
@@ -606,8 +576,6 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
     }
 }
 
-/// Format an `if`/`else if`/`else` chain. The condition and each else-if
-/// condition sit on their header line; each block indents one level deeper.
 fn format_if(
     source: &str,
     condition: Option<&Expression>,
@@ -638,8 +606,6 @@ fn format_if(
     out
 }
 
-/// Format a `for` loop header (optional label, binding, iterable, optional `by`
-/// step) and its body one level deeper.
 fn format_for(
     source: &str,
     label: &Option<String>,
@@ -666,8 +632,6 @@ fn format_for(
     )
 }
 
-/// Format a `try` block with its optional `catch` and `finally` clauses, each
-/// header on its own line and each block one level deeper.
 fn format_try(
     source: &str,
     body: &Block,
@@ -694,8 +658,6 @@ fn format_try(
     out
 }
 
-/// Format a `match` header and its arms. Each arm header is a member path one
-/// level deeper than the `match`, with the arm block one level deeper again.
 fn format_match(
     source: &str,
     scrutinee: Option<&Expression>,
@@ -816,9 +778,8 @@ fn format_expression_at(expression: &Expression, level: usize) -> String {
     }
 }
 
-/// Format an optional value-position expression at `level`, rendering nothing
-/// when the value did not parse (a syntax error was already reported at parse
-/// time).
+/// Render nothing when the value did not parse; the syntax error was already
+/// reported at parse time.
 fn format_opt_expression_at(expression: Option<&Expression>, level: usize) -> String {
     expression
         .map(|expression| format_expression_at(expression, level))
@@ -827,9 +788,9 @@ fn format_opt_expression_at(expression: Option<&Expression>, level: usize) -> St
 
 fn format_binary_at(op: BinaryOp, left: &Expression, right: &Expression, level: usize) -> String {
     let precedence = binary_precedence(op);
-    // Left-associative operators keep an equal-precedence left operand without
-    // parentheses; the right operand needs them. Non-associative operators
-    // (equality, comparison, range) require parentheses on either equal side.
+    // A left-associative operator keeps an equal-precedence left operand bare but
+    // parenthesizes an equal right operand; a non-associative one parenthesizes
+    // either equal side.
     let (left_min, right_min) = if is_left_associative(op) {
         (precedence, precedence + 1)
     } else {
@@ -920,8 +881,9 @@ fn binary_precedence(op: BinaryOp) -> u8 {
     }
 }
 
-/// `is`, equality, `??`, comparison, and range are non-associative per the
-/// grammar; all other binary operators are left-associative.
+/// Equality, `is`, `??`, comparison, and range are non-associative per the
+/// grammar and need parentheses on either equal-precedence side; every other
+/// binary operator is left-associative.
 fn is_left_associative(op: BinaryOp) -> bool {
     !matches!(
         op,
@@ -956,7 +918,7 @@ fn binary_symbol(op: BinaryOp) -> &'static str {
         BinaryOp::And => "and",
         BinaryOp::Or => "or",
         BinaryOp::Is => "is",
-        // Ranges are emitted without spaces by `format_binary`.
+        // Ranges are emitted unspaced, so these symbols are only for exhaustiveness.
         BinaryOp::RangeExclusive => "..",
         BinaryOp::RangeInclusive => "..=",
     }
