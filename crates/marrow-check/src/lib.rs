@@ -140,8 +140,8 @@ pub const CHECK_AMBIGUOUS_CALL: &str = "check.ambiguous_call";
 /// `nextId(^root)` names a root with no default integer allocation policy: a
 /// composite identity, a single non-integer identity key, or a keyless singleton.
 /// The default per-root policy is only available for a store with one `int`
-/// identity key. The runtime backstops
-/// this with `write.next_id_unsupported`; the checker catches it before a run.
+/// identity key. The runtime backstops this with `write.next_id_unsupported`; the
+/// checker catches it before a run.
 pub const CHECK_NEXT_ID_REQUIRES_SINGLE_INT: &str = "check.next_id_requires_single_int";
 /// `next`/`prev` is applied to a shape it cannot navigate: a composite
 /// multi-key identity record (its identity spans several key levels, not the one
@@ -603,20 +603,17 @@ pub enum CommitIdentityError {
 /// Establish a project's baseline durable identity: write its first catalog proposal
 /// to the project's catalog file and re-check the project against it. Returns
 /// `Ok(None)` when there is nothing to establish — the project already has an accepted
-/// catalog, or proposes no catalog at all — so a project past its baseline never
-/// churns the file. On success the re-checked report and program reflect the
-/// now-committed baseline catalog.
+/// catalog, or proposes none — so a project past its baseline never churns the file.
 ///
-/// This is the one production path that writes the catalog. The authorized
-/// state-establishing flows — running the program and `evolve apply` — call it when
-/// the source checks clean; `check` never does, so it stays read-only.
+/// This is the one production path that writes the catalog, called by the authorized
+/// state-establishing flows (running the program and `evolve apply`) once the source
+/// checks clean; `check` never does, so it stays read-only.
 ///
-/// It deliberately commits only the baseline. Once a catalog is accepted, every later
-/// change to durable identity is an evolution that must flow through `evolve apply`'s
-/// witness — its renames, retires, and backfills are stamped into the store under the
-/// apply transaction, never silently advanced here. Auto-writing an evolution proposal
-/// would reserve retired entries before the witness consumed them, dropping the
-/// very entries a retire relies on.
+/// It commits only the baseline. Once a catalog is accepted, every later change to
+/// durable identity is an evolution stamped into the store under `evolve apply`'s
+/// witness transaction, never silently advanced here. Auto-writing an evolution
+/// proposal would reserve retired entries before the witness consumed them, dropping
+/// the very entries a retire relies on.
 pub fn commit_pending_identity(
     project_root: &Path,
     config: &ProjectConfig,
@@ -666,10 +663,9 @@ pub fn write_accepted_catalog(
         error,
     })?;
 
-    // The temp name must be unique per write so two writers in this process — concurrent
-    // threads sharing the same pid — never target the same temp file and rename a half-written
-    // one over the other. The process-wide counter makes every call in this process distinct;
-    // the pid keeps it distinct from other processes writing the same project.
+    // The temp name must be unique per write so two concurrent writers never rename
+    // a half-written file over each other's. The process-wide counter separates
+    // calls within this process; the pid separates processes sharing the project.
     static TEMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = TEMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut temp = path.clone();
@@ -697,9 +693,9 @@ pub fn write_accepted_catalog(
         let _ = std::fs::remove_file(&temp);
         return Err(io(&path, error));
     }
-    // Flushing the directory persists the rename. A failure here is non-fatal: the bytes
-    // and the rename are already durable on common platforms, and the next write will
-    // re-establish the entry, so the catalog is never left torn.
+    // Flushing the directory persists the rename. A failure here is non-fatal: the
+    // bytes and the rename are already durable, and the next write re-establishes
+    // the entry, so the catalog is never left torn.
     if let Ok(dir) = std::fs::File::open(parent) {
         let _ = dir.sync_all();
     }
@@ -729,8 +725,8 @@ pub(crate) fn resource_type_name(module: &str, resource: &str) -> String {
     }
 }
 
-/// Resolve resource references inside a schema type through the checked,
-/// module-aware resolver and return the canonical checker type.
+/// Resolve resource references inside a schema type through the module-aware
+/// resolver, yielding the canonical checker type.
 pub(crate) fn resolve_resource_schema_type(
     program: &CheckedProgram,
     from_module: &str,
@@ -742,7 +738,7 @@ pub(crate) fn resolve_resource_schema_type(
                 .map(|element_type| MarrowType::Sequence(Box::new(element_type)))
         }
         marrow_schema::Type::Named(name) => {
-            let segments: Vec<String> = name.split("::").map(str::to_string).collect();
+            let segments = split_type_path(name);
             match resolve(program, from_module, &segments, ResolvableKind::Resource) {
                 Resolution::Found(Def {
                     module,
@@ -763,8 +759,8 @@ pub(crate) fn resolve_resource_schema_type(
 /// `resource` for the script module) to its declaration and owning module name.
 /// The name was produced by [`resource_type_name`] from an already-resolved
 /// resource, so its module prefix names the owning module exactly: resolving from
-/// that module reaches the resource through the one resolver, in-module and
-/// visibility-aware, rather than a second bespoke module scan.
+/// that module reaches the resource through the one in-module, visibility-aware
+/// resolver.
 pub(crate) fn resolve_resource_type<'p>(
     program: &'p CheckedProgram,
     name: &str,
@@ -810,8 +806,7 @@ fn module_of_file<'p>(program: &'p CheckedProgram, file: &Path) -> Option<&'p st
 /// aliases, so an enum spelling qualified by a short alias (`c` under
 /// `use a::b::c`) names the imported module (`a::b::c`).
 pub(crate) fn expand_module_alias(module: &str, aliases: &HashMap<String, Vec<String>>) -> String {
-    let segments: Vec<String> = module.split("::").map(str::to_string).collect();
-    expand_leading_alias(&segments, aliases).join("::")
+    expand_leading_alias(&split_type_path(module), aliases).join("::")
 }
 
 /// Resolve a call's `segments` to a function, also yielding the [`CheckedModule`]
@@ -971,6 +966,8 @@ pub fn check_tests_with_sources(
     ))
 }
 
+/// Like [`check_tests`], but returns the full combined [`CheckedProgram`] (project
+/// modules plus the clean test modules) instead of only the test modules.
 pub fn check_tests_program(
     project_root: &Path,
     config: &ProjectConfig,
@@ -1157,11 +1154,10 @@ pub(crate) fn check_tests_with_sources_analysis(
     let resolvable = test_resolvable_modules(project, &modules);
 
     // Run the same type-inference pass library files get, so a test file's std
-    // argument/arity errors, `nextId` misuse, and ordinary type mismatches are
-    // reported at check time rather than only at run time. Types resolve against a
-    // program holding both the already-checked project modules and the clean test
-    // modules — cross-module calls and resource constructors resolve, and the
-    // `nextId` gate finds the project's resource schemas.
+    // argument/arity errors, `nextId` misuse, and ordinary type mismatches surface
+    // at check time. The combined program holds both the already-checked project
+    // modules and the clean test modules, so cross-module calls, resource
+    // constructors, and the `nextId` gate's resource schemas all resolve.
     let project_count = project.modules.len();
     let mut combined =
         CheckedProgram::from_modules(project.modules.iter().cloned().chain(modules).collect());
@@ -1191,10 +1187,9 @@ pub(crate) fn check_tests_with_sources_analysis(
         &mut report,
     );
     // When the source program is partial, a configured test may name a module,
-    // function, resource, or enum that exists in a source file which could not
-    // join `project`.
-    // Keep test-local parse/type diagnostics, but avoid reporting resolution
-    // noise whose truth depends on the incomplete source module set.
+    // function, resource, or enum from a source file that could not join `project`.
+    // Keep test-local parse/type diagnostics, but drop resolution noise whose truth
+    // depends on the incomplete source module set.
     report
         .diagnostics
         .retain(|diagnostic| !resolution_suppression.should_suppress(diagnostic));
@@ -1376,24 +1371,17 @@ fn check_file_source(
 
     check_duplicate_declarations(file_path, &parsed.file, diagnostics);
 
-    let module_enums: Vec<String> = parsed
-        .file
-        .declarations
-        .iter()
-        .filter_map(|declaration| match declaration {
-            marrow_syntax::Declaration::Enum(decl) => Some(decl.name.clone()),
-            _ => None,
-        })
-        .collect();
-    let module_stored_resources: HashSet<String> = parsed
-        .file
-        .declarations
-        .iter()
-        .filter_map(|declaration| match declaration {
-            marrow_syntax::Declaration::Store(store) => Some(store.resource.clone()),
-            _ => None,
-        })
-        .collect();
+    let mut module_enums: Vec<String> = Vec::new();
+    let mut module_stored_resources: HashSet<String> = HashSet::new();
+    for declaration in &parsed.file.declarations {
+        match declaration {
+            marrow_syntax::Declaration::Enum(decl) => module_enums.push(decl.name.clone()),
+            marrow_syntax::Declaration::Store(store) => {
+                module_stored_resources.insert(store.resource.clone());
+            }
+            _ => {}
+        }
+    }
     // A bare enum annotation in a signature names this module's enum, so the
     // resolved type carries the module's qualified name as the enum's owner. A
     // module-less script has no declared name (its enums are project-unique).
@@ -1431,18 +1419,11 @@ fn check_file_source(
                 {
                     let (schema, errors) = marrow_schema::compile_store(store, resource);
                     for error in errors {
+                        // A stored resource is compiled twice — once for its
+                        // resource schema, once for the store — so the same schema
+                        // error can surface from both passes.
                         let diagnostic = schema_diagnostic(file_path, error);
-                        // The stored resource is compiled twice (once for its
-                        // resource schema, once for the store), so de-duplicate on
-                        // the typed schema-error identity: same code, file, span,
-                        // and `SchemaErrorKind` payload is the same error, while
-                        // two distinct store errors at one span differ in payload.
-                        if !diagnostics.iter().any(|existing| {
-                            existing.code == diagnostic.code
-                                && existing.file == diagnostic.file
-                                && existing.payload == diagnostic.payload
-                                && existing.span == diagnostic.span
-                        }) {
+                        if !has_duplicate_error(diagnostics, &diagnostic) {
                             diagnostics.push(diagnostic);
                         }
                     }
@@ -1482,8 +1463,8 @@ fn check_file_source(
                     span: constant.span,
                 });
             }
-            // An evolve block compiles to no resource, store, enum, function, or
-            // constant; its catalog intent is resolved against the bound program.
+            // An evolve block compiles to no declaration; its catalog intent is
+            // resolved later against the bound program.
             marrow_syntax::Declaration::Evolve(_) => {}
         }
     }
@@ -1544,6 +1525,18 @@ fn push_schema_error(
     error: marrow_schema::SchemaError,
 ) {
     diagnostics.push(schema_diagnostic(file_path, error));
+}
+
+/// Whether `diagnostic` repeats one already collected, by typed identity: same
+/// code, file, span, and payload. Two distinct errors at one span differ in
+/// payload, so this only collapses a genuine duplicate.
+fn has_duplicate_error(diagnostics: &[CheckDiagnostic], diagnostic: &CheckDiagnostic) -> bool {
+    diagnostics.iter().any(|existing| {
+        existing.code == diagnostic.code
+            && existing.file == diagnostic.file
+            && existing.payload == diagnostic.payload
+            && existing.span == diagnostic.span
+    })
 }
 
 fn schema_diagnostic(file_path: &Path, error: marrow_schema::SchemaError) -> CheckDiagnostic {
@@ -1682,8 +1675,7 @@ pub(crate) fn build_alias_map(
         .iter()
         .map(|path| {
             let short = path.rsplit("::").next().unwrap_or(path).to_string();
-            let full = path.split("::").map(str::to_string).collect();
-            (short, full)
+            (short, split_type_path(path))
         })
         .collect()
 }
@@ -1797,8 +1789,7 @@ fn check_duplicate_declarations(
 ) {
     use marrow_syntax::Declaration;
 
-    // Every name this file introduces, in source order. A `use shelf::books`
-    // introduces the short name `books`.
+    // A `use shelf::books` introduces the short name `books`.
     let mut introduced: Vec<(&str, SourceSpan, NameKind)> = Vec::new();
     for use_decl in &source.uses {
         let short = use_decl.name.rsplit("::").next().unwrap_or(&use_decl.name);
