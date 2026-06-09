@@ -212,20 +212,9 @@ fn check_project_dir(dir: &str, format: CheckFormat, data: bool) -> ExitCode {
     if data {
         return crate::cmd_evolve::check_data(dir, format);
     }
-    let config_path = Path::new(dir).join("marrow.json");
-    let config_text = match std::fs::read_to_string(&config_path) {
-        Ok(text) => text,
-        Err(error) => {
-            report_io_error(&config_path.display().to_string(), &error, format);
-            return ExitCode::FAILURE;
-        }
-    };
-    let config = match marrow_project::parse_config(&config_text) {
+    let config = match crate::load_config_with_format(dir, format) {
         Ok(config) => config,
-        Err(error) => {
-            report_simple_error(error.code, &error.message, format);
-            return ExitCode::FAILURE;
-        }
+        Err(code) => return code,
     };
     let report = match marrow_check::analyze_project(
         Path::new(dir),
