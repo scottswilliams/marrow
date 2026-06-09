@@ -10,6 +10,9 @@ use marrow_schema::{
 };
 use marrow_syntax::{Declaration, parse_source};
 
+mod common;
+use common::{assert_kind, codes};
+
 fn compile_source(source: &str) -> (ResourceSchema, Vec<SchemaError>) {
     let parsed = parse_source(source);
     assert!(
@@ -41,15 +44,6 @@ fn compile_source(source: &str) -> (ResourceSchema, Vec<SchemaError>) {
 fn compile_source_errors(source: &str) -> Vec<SchemaError> {
     let (_, errors) = compile_source(source);
     errors
-}
-
-/// Only this code, to keep `unknown`/collision assertions specific.
-fn codes(errors: &[SchemaError]) -> Vec<&'static str> {
-    errors.iter().map(|error| error.code).collect()
-}
-
-fn assert_kind(error: &SchemaError, kind: SchemaErrorKind) {
-    assert_eq!(error.kind, kind);
 }
 
 fn unknown(target: SchemaSavedUnknownTarget, name: &str) -> SchemaErrorKind {

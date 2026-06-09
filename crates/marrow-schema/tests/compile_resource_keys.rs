@@ -10,6 +10,9 @@ use marrow_schema::{
 };
 use marrow_syntax::{Declaration, ResourceDecl, StoreDecl, parse_source};
 
+mod common;
+use common::{assert_kind, codes};
+
 fn compile_source(source: &str) -> (ResourceSchema, Vec<SchemaError>) {
     let parsed = parse_source(source);
     assert!(
@@ -74,14 +77,6 @@ fn resource_and_store(source: &str) -> (ResourceDecl, StoreDecl) {
         resource.expect("resource declaration"),
         store.expect("store declaration"),
     )
-}
-
-fn codes(errors: &[SchemaError]) -> Vec<&'static str> {
-    errors.iter().map(|error| error.code).collect()
-}
-
-fn assert_kind(error: &SchemaError, kind: SchemaErrorKind) {
-    assert_eq!(error.kind, kind);
 }
 
 fn key_param(name: &str) -> SchemaKeyTarget {

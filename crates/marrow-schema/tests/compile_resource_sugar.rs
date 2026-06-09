@@ -10,6 +10,9 @@ use marrow_schema::{
 };
 use marrow_syntax::{Declaration, parse_source};
 
+mod common;
+use common::{assert_kind, codes};
+
 /// Compile `source`'s resource, asserting it produced no schema errors.
 fn compile_ok(source: &str) -> ResourceSchema {
     let (schema, errors) = compile_source(source);
@@ -62,14 +65,6 @@ fn layer<'a>(schema: &'a ResourceSchema, name: &str) -> &'a Node {
 /// The top-level nodes classified by the production schema API as plain fields.
 fn top_level_fields(schema: &ResourceSchema) -> impl Iterator<Item = &Node> {
     schema.members.iter().filter(|node| node.is_plain_field())
-}
-
-fn codes(errors: &[SchemaError]) -> Vec<&'static str> {
-    errors.iter().map(|error| error.code).collect()
-}
-
-fn assert_kind(error: &SchemaError, kind: SchemaErrorKind) {
-    assert_eq!(error.kind, kind);
 }
 
 fn unsupported(target: SchemaUnsupportedTypeTarget, name: &str) -> SchemaErrorKind {

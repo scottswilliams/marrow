@@ -11,6 +11,9 @@ use marrow_schema::{
 };
 use marrow_syntax::{Declaration, ResourceDecl, parse_source};
 
+mod common;
+use common::{assert_kind, codes};
+
 /// Parse `source` and return its single resource declaration.
 fn resource(source: &str) -> ResourceDecl {
     let parsed = parse_source(source);
@@ -116,14 +119,6 @@ fn compile_saved_resource_errors(source: &str) -> Vec<SchemaError> {
         ));
     }
     errors
-}
-
-fn codes(errors: &[SchemaError]) -> Vec<&'static str> {
-    errors.iter().map(|error| error.code).collect()
-}
-
-fn assert_kind(error: &SchemaError, kind: SchemaErrorKind) {
-    assert_eq!(error.kind, kind);
 }
 
 /// A resource nesting a keyed-leaf layer and a field inside a group, exercising
