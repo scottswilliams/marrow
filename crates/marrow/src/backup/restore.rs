@@ -82,8 +82,7 @@ fn restore_program(
         return Ok(program.clone());
     }
 
-    let rebound = activation_window_program(program, manifest, backup_epoch)?;
-    Ok(rebound)
+    activation_window_program(program, manifest, backup_epoch)
 }
 
 fn activation_window_program(
@@ -140,8 +139,8 @@ fn replay(
             "backup data checksum does not match its manifest".to_string(),
         ));
     }
-    // The cell count and checksum both matched, so a byte past the last cell is
-    // trailing junk the backup did not write: a truncated, doubled, or tampered file.
+    // Count and checksum matched, so any byte past the last cell is junk the backup
+    // did not write: a truncated, doubled, or tampered file.
     if has_trailing_bytes(input)? {
         return Err(BackupError::corrupt(
             BackupCorruptProblem::TrailingBytes,
@@ -149,15 +148,14 @@ fn replay(
         ));
     }
 
-    // A backup carries data only; the generated indexes are derived, so rebuild them
-    // from the replayed records rather than trusting bytes that could disagree. The
-    // rebuild stages and executes inside this open transaction, so the restore commit
-    // makes the indexes durable atomically with the data.
+    // Indexes are derived, so rebuild them from the replayed records rather than
+    // trusting bytes that could disagree. The rebuild runs inside this open
+    // transaction, so the commit makes indexes durable atomically with the data.
     rebuild_store_indexes(program, store).map_err(rebuild_error)?;
 
     // Stamp the durable identity the data was written under, so the restored store
-    // fences exactly as the original did. The engine profile is the current
-    // build's, already proven equal to the manifest's.
+    // fences exactly as the original did. The engine profile is this build's, already
+    // proven equal to the manifest's.
     store.write_engine_profile(&current_engine_profile())?;
     if let Some(epoch) = manifest.catalog_epoch {
         store.write_catalog_epoch(epoch)?;
@@ -200,9 +198,8 @@ fn restore_cell(store: &TreeStore, cell: &TreeBackupCellBuf) -> Result<(), Backu
     Ok(())
 }
 
-/// Whether the input has any byte left after the cell stream. A well-formed backup
-/// ends exactly at the last cell, so one readable byte means the file is not the
-/// backup the manifest describes.
+/// A well-formed backup ends exactly at the last cell, so one readable byte means
+/// the file is not the backup the manifest describes.
 fn has_trailing_bytes(input: &mut impl Read) -> Result<bool, BackupError> {
     let mut byte = [0u8; 1];
     Ok(input.read(&mut byte)? != 0)

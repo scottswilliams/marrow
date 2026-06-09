@@ -25,8 +25,8 @@ const MAX_CELL_BYTES: u32 = 256 * 1024 * 1024;
 
 const CHECKSUM_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 
-/// Fold one cell's framed bytes into the running checksum, exactly as they are
-/// written, so the write and read sides agree.
+/// Fold one cell into the running checksum over its framed bytes; write and read
+/// sides must agree on exactly these bytes.
 pub(super) fn checksum_cell(hash: u64, cell: TreeBackupCell<'_>) -> u64 {
     cell.fold_checksum(hash)
 }
@@ -344,9 +344,8 @@ fn str_array_field(value: &Value, field: &'static str) -> Result<Vec<String>, Ba
         .collect()
 }
 
-/// Decode an array-of-object manifest field, parsing each entry with `parse_entry`.
-/// This owns the array/object-shape validation shared by the typed-count fields; the
-/// per-type field extraction is the only thing each caller supplies.
+/// Decode an array-of-object manifest field, owning the shared array/object-shape
+/// validation; each caller supplies only the per-entry field extraction.
 fn object_array_field<T>(
     value: &Value,
     field: &'static str,

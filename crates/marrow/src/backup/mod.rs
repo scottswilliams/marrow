@@ -43,13 +43,13 @@ pub(crate) struct BackupManifest {
     pub(crate) format_version: u32,
     /// The schema-bearing source digest of the program that wrote the data.
     pub(crate) source_digest: String,
-    /// The store's stamped catalog epoch, or `None` for an unstamped store.
+    /// `None` for an unstamped store.
     pub(crate) catalog_epoch: Option<u64>,
     /// The engine profile the data was written under, so restore refuses a layout
     /// or codec it cannot reproduce (reporting an engine recompile is required).
     pub(crate) engine: EngineDescriptor,
-    /// The commit the snapshot observed, replayed so the restored store fences
-    /// exactly like the original. `None` for an unstamped store.
+    /// Replayed so the restored store fences exactly like the original. `None` for
+    /// an unstamped store.
     pub(crate) commit: Option<CommitDescriptor>,
     /// How many tree cells the data stream carries.
     pub(crate) record_count: u64,
@@ -142,6 +142,10 @@ pub(crate) struct RetireCountDescriptor {
     pub(crate) records: u64,
 }
 
+fn owned_ids(ids: &[marrow_store::cell::CatalogId]) -> Vec<String> {
+    ids.iter().map(|id| id.as_str().to_string()).collect()
+}
+
 impl CommitDescriptor {
     pub(crate) fn from_metadata(metadata: &CommitMetadata) -> Self {
         Self {
@@ -150,23 +154,13 @@ impl CommitDescriptor {
             layout_epoch: metadata.layout_epoch,
             source_digest: metadata.source_digest.clone(),
             engine_profile_digest: metadata.engine_profile_digest,
-            changed_root_catalog_ids: metadata
-                .changed_root_catalog_ids
-                .iter()
-                .map(|id| id.as_str().to_string())
-                .collect(),
-            changed_index_catalog_ids: metadata
-                .changed_index_catalog_ids
-                .iter()
-                .map(|id| id.as_str().to_string())
-                .collect(),
+            changed_root_catalog_ids: owned_ids(&metadata.changed_root_catalog_ids),
+            changed_index_catalog_ids: owned_ids(&metadata.changed_index_catalog_ids),
             activation_evolution_digest: metadata.activation_evolution_digest.clone(),
             activation_proposal_catalog_digest: metadata.activation_proposal_catalog_digest.clone(),
-            activation_proposal_new_catalog_ids: metadata
-                .activation_proposal_new_catalog_ids
-                .iter()
-                .map(|id| id.as_str().to_string())
-                .collect(),
+            activation_proposal_new_catalog_ids: owned_ids(
+                &metadata.activation_proposal_new_catalog_ids,
+            ),
             activation_records_backfilled: metadata.activation_records_backfilled,
             activation_default_records_by_id: metadata
                 .activation_default_records_by_id
@@ -291,8 +285,8 @@ fn sha256_digest_spelling(digest: &str) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
-/// Rebuild one catalog id from its manifest text, rejecting a malformed id as a
-/// corrupt manifest. The single construction site for `MalformedCatalogId`.
+/// The single construction site for `MalformedCatalogId`, so a bad manifest id is
+/// rejected as corrupt at one point.
 fn catalog_id(text: &str) -> Result<marrow_store::cell::CatalogId, BackupError> {
     marrow_store::cell::CatalogId::new(text.to_string()).map_err(|_| {
         BackupError::corrupt(
