@@ -995,10 +995,7 @@ impl CheckedFacts {
     }
 
     fn store_for_root(&self, root: &str) -> Option<StoreId> {
-        self.stores
-            .iter()
-            .find(|store| store.root == root)
-            .map(|store| store.id)
+        self.store_by_root(root).map(|store| store.id)
     }
 
     fn member_path_ids(
