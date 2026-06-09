@@ -1,10 +1,34 @@
 use std::fs;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 use marrow_project::{discover_modules, discover_test_modules, parse_config};
 
+/// A temporary project directory removed when the value is dropped.
+///
+/// Derefs to its root [`Path`], so it passes straight into discovery without an
+/// explicit accessor, and the drop removes the directory even when an assertion
+/// panics, so a failing test never leaks its temp dir.
+struct TempProject {
+    root: PathBuf,
+}
+
+impl Deref for TempProject {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.root
+    }
+}
+
+impl Drop for TempProject {
+    fn drop(&mut self) {
+        fs::remove_dir_all(&self.root).ok();
+    }
+}
+
 /// Create a unique temporary project directory and run `build` to populate it.
-fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
+fn temp_project(name: &str, build: impl FnOnce(&Path)) -> TempProject {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock after unix epoch")
@@ -12,7 +36,7 @@ fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
     let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
     fs::create_dir_all(&root).expect("create project root");
     build(&root);
-    root
+    TempProject { root }
 }
 
 fn write(root: &Path, relative: &str, contents: &str) {
@@ -41,8 +65,6 @@ fn discovers_mw_files_with_module_names() {
         .map(|m| (m.relative_path.clone(), m.module_name.clone()))
         .collect();
 
-    fs::remove_dir_all(&root).ok();
-
     // Only `.mw` files, sorted by absolute path, with derived module names.
     assert_eq!(found.len(), 3, "{found:#?}");
     assert!(found.contains(&(PathBuf::from("main.mw"), Some("main".to_string()))));
@@ -67,7 +89,6 @@ fn searches_each_configured_source_root() {
     let modules = discover_modules(&root, &config).expect("discover");
     let names: Vec<Option<String>> = modules.iter().map(|m| m.module_name.clone()).collect();
 
-    fs::remove_dir_all(&root).ok();
     assert_eq!(modules.len(), 2, "{modules:#?}");
     assert!(names.contains(&Some("a".to_string())));
     assert!(names.contains(&Some("b".to_string())));
@@ -90,7 +111,6 @@ fn overlapping_source_roots_discover_each_file_once() {
         .map(|m| (m.relative_path.clone(), m.module_name.clone()))
         .collect();
 
-    fs::remove_dir_all(&root).ok();
     assert_eq!(modules.len(), 1, "{modules:#?}");
     assert_eq!(
         found[0],
@@ -110,7 +130,6 @@ fn an_empty_source_root_yields_no_modules() {
     let config = parse_config(r#"{ "sourceRoots": ["src"] }"#).expect("config");
 
     let modules = discover_modules(&root, &config).expect("discover");
-    fs::remove_dir_all(&root).ok();
     assert!(modules.is_empty(), "{modules:#?}");
 }
 
@@ -120,7 +139,6 @@ fn errors_when_a_source_root_is_missing() {
     let config = parse_config(r#"{ "sourceRoots": ["src"] }"#).expect("config");
 
     let error = discover_modules(&root, &config).expect_err("missing source root should error");
-    fs::remove_dir_all(&root).ok();
     assert_eq!(error.code, "project.source_root");
 }
 
@@ -137,8 +155,6 @@ fn discovers_test_files_from_a_glob_pattern() {
 
     let modules = discover_test_modules(&root, &config).expect("discover tests");
     let names: Vec<Option<String>> = modules.iter().map(|m| m.module_name.clone()).collect();
-
-    fs::remove_dir_all(&root).ok();
 
     // Only `.mw` files under the pattern's directory, with project-relative names.
     assert_eq!(modules.len(), 2, "{modules:#?}");
@@ -171,7 +187,6 @@ fn single_star_test_glob_does_not_recurse() {
     let double =
         parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
     let modules = discover_test_modules(&root, &double).expect("discover tests");
-    fs::remove_dir_all(&root).ok();
     assert_eq!(modules.len(), 2, "{modules:#?}");
 }
 
@@ -187,7 +202,6 @@ fn test_patterns_accept_a_bare_directory_or_file() {
     let modules = discover_test_modules(&root, &config).expect("discover tests");
     let names: Vec<Option<String>> = modules.iter().map(|m| m.module_name.clone()).collect();
 
-    fs::remove_dir_all(&root).ok();
     assert_eq!(modules.len(), 2, "{modules:#?}");
     assert!(names.contains(&Some("checks::a_test".to_string())));
     assert!(names.contains(&Some("smoke".to_string())));
@@ -204,6 +218,5 @@ fn a_missing_test_directory_yields_no_tests() {
         parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
 
     let modules = discover_test_modules(&root, &config).expect("discover tests");
-    fs::remove_dir_all(&root).ok();
     assert!(modules.is_empty(), "{modules:#?}");
 }
