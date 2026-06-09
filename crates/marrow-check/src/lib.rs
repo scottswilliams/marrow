@@ -1769,6 +1769,24 @@ fn module_path_error(
     }
 }
 
+/// How a name enters a file's top-level namespace. Only declarations may
+/// collide with a builtin name; an imported short name binds the import
+/// regardless. The variant also names the kind in the duplicate diagnostic.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NameKind {
+    Import,
+    Declaration,
+}
+
+impl NameKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Import => "import",
+            Self::Declaration => "declaration",
+        }
+    }
+}
+
 /// Top-level declaration names (const, resource, function) and imported short
 /// module names share one namespace within a file. Flag any name introduced
 /// more than once, reporting the later occurrence and referencing the first.
@@ -1781,10 +1799,10 @@ fn check_duplicate_declarations(
 
     // Every name this file introduces, in source order. A `use shelf::books`
     // introduces the short name `books`.
-    let mut introduced: Vec<(&str, SourceSpan, &'static str)> = Vec::new();
+    let mut introduced: Vec<(&str, SourceSpan, NameKind)> = Vec::new();
     for use_decl in &source.uses {
         let short = use_decl.name.rsplit("::").next().unwrap_or(&use_decl.name);
-        introduced.push((short, use_decl.span, "import"));
+        introduced.push((short, use_decl.span, NameKind::Import));
     }
     for declaration in &source.declarations {
         let (name, span) = match declaration {
@@ -1794,7 +1812,7 @@ fn check_duplicate_declarations(
             Declaration::Function(decl) => (decl.name.as_str(), decl.span),
             Declaration::Enum(decl) => (decl.name.as_str(), decl.span),
         };
-        introduced.push((name, span, "declaration"));
+        introduced.push((name, span, NameKind::Declaration));
     }
     introduced.sort_by_key(|(_, span, _)| (span.line, span.start_byte));
 
@@ -1805,13 +1823,14 @@ fn check_duplicate_declarations(
         if name.is_empty() {
             continue;
         }
-        if *kind != "import" && is_builtin_name(name) {
+        if *kind == NameKind::Declaration && is_builtin_name(name) {
             diagnostics.push(CheckDiagnostic {
                 code: CHECK_DUPLICATE_DECLARATION,
                 severity: Severity::Error,
                 file: file.to_path_buf(),
                 message: format!(
-                    "`{name}` is a builtin name and cannot be used as a module-level {kind}"
+                    "`{name}` is a builtin name and cannot be used as a module-level {}",
+                    kind.label()
                 ),
                 span: *span,
                 payload: DiagnosticPayload::None,
