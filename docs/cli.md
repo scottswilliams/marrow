@@ -341,12 +341,12 @@ production backup format.
 
 ```console
 $ marrow data dump ./proj
-^books(1).author	Terry Pratchett
 ^books(1).title	Small Gods
+^books(1).author	Terry Pratchett
 
 $ marrow data dump --format jsonl ./proj
-{"path":"^books(1).author","value_b64":"…"}
 {"path":"^books(1).title","value_b64":"…"}
+{"path":"^books(1).author","value_b64":"…"}
 {"kind":"summary","records":2}
 ```
 
