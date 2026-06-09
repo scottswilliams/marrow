@@ -1,0 +1,41 @@
+resource Enrollment at ^enrollments(studentId: string, courseId: string)
+    required status: string
+    required student: string
+    required course: string
+
+    index byStatus(status, studentId, courseId)
+
+pub fn enroll(s: string, c: string, st: string)
+    var enrollment: Enrollment
+    enrollment.status = st
+    enrollment.student = s
+    enrollment.course = c
+    ^enrollments(s, c) = enrollment
+
+pub fn activeStatuses()
+    for id in keys(^enrollments.byStatus("active"))
+        print(^enrollments(id).status)
+
+pub fn activeEnrollmentsDirect()
+    for id in ^enrollments.byStatus("active")
+        print($"{^enrollments(id).student}:{^enrollments(id).course}")
+
+pub fn activeCoursesForStudent(student: string)
+    for id in ^enrollments.byStatus("active", student)
+        print(^enrollments(id).course)
+
+pub fn activeCourseExact(student: string, course: string)
+    for id in ^enrollments.byStatus("active", student, course)
+        print(^enrollments(id).course)
+
+pub fn activeCourseExactPair(student: string, course: string)
+    for id, enrollment in ^enrollments.byStatus("active", student, course)
+        print($"{^enrollments(id).course}:{enrollment.course}")
+
+pub fn activeCourseExactKeys(student: string, course: string)
+    for id in keys(^enrollments.byStatus("active", student, course))
+        print(^enrollments(id).course)
+
+pub fn activeCourseExactCount(student: string, course: string): int
+    return count(^enrollments.byStatus("active", student, course))
+

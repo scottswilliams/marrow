@@ -1,0 +1,6 @@
+resource Book at ^books(id: int)
+    required title: string
+    isbn: string
+
+    index byIsbn(isbn) unique
+

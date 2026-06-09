@@ -1,0 +1,17 @@
+resource Book at ^books(id: int)
+    required title: string
+    shelf: string
+
+pub fn add(title: string, shelf: string): Id(^books)
+    const id = nextId(^books)
+    var book: Book
+    book.title = title
+    book.shelf = shelf
+    ^books(id) = book
+    return id
+
+pub fn title_of(id: int): string
+    return ^books(id).title ?? ""
+
+pub fn shelf_of(id: int): string
+    return ^books(id).shelf ?? ""

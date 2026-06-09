@@ -1,0 +1,5 @@
+module books
+resource Book at ^books(id: int)
+    required title: string
+pub fn add(title: string): Id(^books)
+    return nextId(^books)

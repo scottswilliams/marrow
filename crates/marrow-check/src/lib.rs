@@ -28,6 +28,8 @@ pub mod program;
 mod rejected_surface;
 pub mod resolve;
 mod rules;
+#[cfg(feature = "test-support")]
+pub mod test_support;
 pub mod tooling;
 mod typerules;
 mod walk;

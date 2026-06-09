@@ -1,0 +1,4 @@
+resource Book at ^books(id: int)
+    required title: string
+    tags(pos: int): string
+

@@ -18,15 +18,36 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use marrow_check::evolution::{EvolutionWitness, preview};
-use marrow_check::{
-    CheckedProgram, CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace, ProjectConfig,
-    check_project, checked_saved_root_place,
-};
+use marrow_check::{CheckedProgram, CheckedSavedPlace, check_project};
 use marrow_run::evolution::apply;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_store::value::{Scalar, decode_value, encode_value};
+
+// The fact-lookup family and the check/commit factories are owned by marrow-check
+// behind its `test-support` feature, so the apply suites query the same helpers the
+// discharge suites do rather than carrying a copy. The `config`/`checked`/
+// `commit_then_check`/`root_place` names the apply tests call resolve through this glob.
+// Each split binary uses a subset, so unused re-exports are expected, as with the
+// crate-wide `dead_code` allowance.
+#[allow(unused_imports)]
+pub use marrow_check::test_support::{
+    checked, commit_then_check, group_member_catalog_id, index_catalog_id, member_catalog_id,
+    nested_member_catalog_id, proposal_catalog_id, root_place, store_id_of, test_config as config,
+};
+
+// The before/after `module books` evolution sources live in the repo-root corpus, so
+// the apply suites and the CLI evolution suites load one canonical fixture rather than
+// re-declaring the same shape as an inline string per crate.
+const BOOKS_BASELINE: &str =
+    include_str!("../../../../fixtures/v01/evolution/books_required_baseline.mw");
+const BOOKS_REQUIRED_DEFAULT: &str =
+    include_str!("../../../../fixtures/v01/evolution/books_required_default.mw");
+const BOOKS_SUBTITLE_BASELINE: &str =
+    include_str!("../../../../fixtures/v01/evolution/books_subtitle_baseline.mw");
+const BOOKS_RETIRE_SUBTITLE: &str =
+    include_str!("../../../../fixtures/v01/evolution/books_retire_subtitle.mw");
 
 pub fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
     let nanos = std::time::SystemTime::now()
@@ -43,40 +64,6 @@ pub fn write(root: &Path, relative: &str, contents: &str) {
     let path = root.join(relative);
     fs::create_dir_all(path.parent().unwrap()).expect("create dirs");
     fs::write(path, contents).expect("write file");
-}
-
-pub fn config() -> ProjectConfig {
-    ProjectConfig {
-        source_roots: vec!["src".into()],
-        default_entry: None,
-        store: None,
-        tests: Vec::new(),
-        accepted_catalog: "marrow.catalog.json".into(),
-    }
-}
-
-pub fn checked(root: &Path) -> CheckedProgram {
-    let (report, program) = check_project(root, &config()).expect("check project");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    program
-}
-
-/// Check the source with no committed catalog, freeze its proposal through the
-/// production commit path, then re-check. The returned program's schema is fully
-/// committed, so its bound catalog ids address the store.
-pub fn commit_then_check(root: &Path) -> CheckedProgram {
-    let (report, program) = check_project(root, &config()).expect("check for commit");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let (report, program) = marrow_check::commit_pending_identity(root, &config(), &program)
-        .expect("commit catalog")
-        .expect("a catalog proposal to commit");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    program
-}
-
-pub fn root_place(program: &CheckedProgram, root: &str) -> CheckedSavedPlace {
-    checked_saved_root_place(program, root, marrow_syntax::SourceSpan::default())
-        .expect("checked saved root place")
 }
 
 pub fn index_has_children(store: &TreeStore, index: &CatalogId) -> bool {
@@ -123,71 +110,6 @@ impl Seed<'_> {
     }
 }
 
-pub fn member_catalog_id(place: &CheckedSavedPlace, name: &str) -> String {
-    let member = place
-        .root_members
-        .iter()
-        .find(|member| {
-            member.name == name && matches!(member.kind, CheckedSavedMemberKind::Field { .. })
-        })
-        .unwrap_or_else(|| panic!("checked member `{name}`"));
-    accepted_catalog_id(&member.catalog_id, name)
-}
-
-pub fn proposal_catalog_id(program: &CheckedProgram, path: &str) -> String {
-    program
-        .catalog
-        .proposal
-        .as_ref()
-        .expect("catalog proposal")
-        .entries
-        .iter()
-        .find(|entry| entry.path == path)
-        .unwrap_or_else(|| panic!("proposal catalog entry `{path}`"))
-        .stable_id
-        .clone()
-}
-
-pub fn index_catalog_id(place: &CheckedSavedPlace, name: &str) -> String {
-    let index = place
-        .indexes
-        .iter()
-        .find(|index| index.name == name)
-        .unwrap_or_else(|| panic!("checked index `{name}`"));
-    accepted_catalog_id(&index.catalog_id, name)
-}
-
-pub fn group_member<'a>(place: &'a CheckedSavedPlace, group: &str) -> &'a CheckedSavedMember {
-    place
-        .root_members
-        .iter()
-        .find(|member| member.name == group && matches!(member.kind, CheckedSavedMemberKind::Group))
-        .unwrap_or_else(|| panic!("checked group member `{group}`"))
-}
-
-pub fn group_member_catalog_id(place: &CheckedSavedPlace, group: &str) -> String {
-    accepted_catalog_id(&group_member(place, group).catalog_id, group)
-}
-
-pub fn nested_member_catalog_id(place: &CheckedSavedPlace, group: &str, leaf: &str) -> String {
-    let member = group_member(place, group)
-        .group_members
-        .iter()
-        .find(|member| member.name == leaf)
-        .unwrap_or_else(|| panic!("checked nested member `{group}.{leaf}`"));
-    accepted_catalog_id(&member.catalog_id, leaf)
-}
-
-pub fn accepted_catalog_id(id: &Option<String>, label: &str) -> String {
-    id.clone()
-        .unwrap_or_else(|| panic!("accepted catalog id for `{label}`"))
-}
-
-/// The bound store catalog id for a committed place, ready to address store cells.
-pub fn store_id_of(place: &CheckedSavedPlace) -> CatalogId {
-    CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).expect("store catalog id")
-}
-
 pub const INT: marrow_store::value::ScalarType = marrow_store::value::ScalarType::Int;
 
 pub fn witness(program: &CheckedProgram, store: &TreeStore) -> EvolutionWitness {
@@ -205,15 +127,7 @@ pub fn applied_proposal_default_fixture(
     String,
 ) {
     let root = temp_project(name, |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book at ^books(id: int)\n\
-             \x20   required title: string\n\
-             pub fn add(title: string): Id(^books)\n\
-             \x20   return nextId(^books)\n",
-        );
+        write(root, "src/books.mw", BOOKS_BASELINE);
     });
     let accepted = commit_then_check(&root);
     let accepted_place = root_place(&accepted, "books");
@@ -226,18 +140,7 @@ pub fn applied_proposal_default_fixture(
         seed.record(id);
         seed.member(id, "title", Scalar::Str(format!("Book {id}")));
     }
-    write(
-        &root,
-        "src/books.mw",
-        "module books\n\
-         resource Book at ^books(id: int)\n\
-         \x20   required title: string\n\
-         \x20   required pages: int\n\
-         evolve\n\
-         \x20   default Book.pages = 0\n\
-         pub fn add(title: string): Id(^books)\n\
-         \x20   return nextId(^books)\n",
-    );
+    write(&root, "src/books.mw", BOOKS_REQUIRED_DEFAULT);
     let program = checked(&root);
     let pages_id = proposal_catalog_id(&program, "books::Book::pages");
     let w = witness(&program, &store);
@@ -280,16 +183,7 @@ pub fn destructive_retire_fixture(
     String,
 ) {
     let root = temp_project(name, |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book at ^books(id: int)\n\
-             \x20   required title: string\n\
-             \x20   subtitle: string\n\
-             pub fn add(title: string): Id(^books)\n\
-             \x20   return nextId(^books)\n",
-        );
+        write(root, "src/books.mw", BOOKS_SUBTITLE_BASELINE);
     });
     // Commit the schema that still declares `subtitle`, so the member binds a stable id.
     let accepted = commit_then_check(&root);
@@ -311,17 +205,7 @@ pub fn destructive_retire_fixture(
 
     // Now drop `subtitle` from source with a retire intent; the accepted catalog still
     // names it, so discharge classifies a destructive decision over the two records.
-    write(
-        &root,
-        "src/books.mw",
-        "module books\n\
-         resource Book at ^books(id: int)\n\
-         \x20   required title: string\n\
-         evolve\n\
-         \x20   retire Book.subtitle\n\
-         pub fn add(title: string): Id(^books)\n\
-         \x20   return nextId(^books)\n",
-    );
+    write(&root, "src/books.mw", BOOKS_RETIRE_SUBTITLE);
     let (_report, program) = check_project(&root, &config()).expect("check retiring source");
     let place = root_place(&program, "books");
     (root, program, place, store, subtitle_id)

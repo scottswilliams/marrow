@@ -54,16 +54,7 @@ pub fn checker_rejects_sources(sources: &[&str], code: &str) {
     assert_checker_code(&report, code);
 }
 
-pub fn assert_checker_code(report: &marrow_check::CheckReport, code: &str) {
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == code),
-        "expected checker diagnostic {code}, got {:#?}",
-        report.diagnostics
-    );
-}
+pub use marrow_check::test_support::assert_checker_code;
 
 pub fn checked_program_modules(sources: &[&str]) -> CheckedRuntimeProgram {
     let files: Vec<(PathBuf, String)> = sources
@@ -494,26 +485,9 @@ pub fn eval_source(
 }
 
 /// The sample's `add` shape: allocate an id, build a local resource field by
-/// field, and save it.
-pub const BOOK_ADD: &str = "\
-resource Book at ^books(id: int)
-    required title: string
-    shelf: string
-
-pub fn add(title: string, shelf: string): Id(^books)
-    const id = nextId(^books)
-    var book: Book
-    book.title = title
-    book.shelf = shelf
-    ^books(id) = book
-    return id
-
-pub fn title_of(id: int): string
-    return ^books(id).title ?? \"\"
-
-pub fn shelf_of(id: int): string
-    return ^books(id).shelf ?? \"\"
-";
+/// field, and save it. The runtime snippet fixtures live in the repo-root corpus,
+/// so no `.mw` shape is re-declared as an inline string across crates.
+pub const BOOK_ADD: &str = include_str!("../../../../fixtures/v01/runtime/books_add.mw");
 
 /// Extract the single `mw` code block from the canonical sample, so the
 /// integration test runs the exact published source.
@@ -529,112 +503,27 @@ pub fn sample_source() -> String {
 /// A composite-identity store indexed by status. The non-unique index ends with
 /// both identity keys, so traversal must descend both levels per entry and
 /// reconstruct the full `Id(^enrollments)` (not just the first key component).
-pub const ENROLLMENT_STATUS: &str = "\
-resource Enrollment at ^enrollments(studentId: string, courseId: string)
-    required status: string
-    required student: string
-    required course: string
-
-    index byStatus(status, studentId, courseId)
-
-pub fn enroll(s: string, c: string, st: string)
-    var enrollment: Enrollment
-    enrollment.status = st
-    enrollment.student = s
-    enrollment.course = c
-    ^enrollments(s, c) = enrollment
-
-pub fn activeStatuses()
-    for id in keys(^enrollments.byStatus(\"active\"))
-        print(^enrollments(id).status)
-
-pub fn activeEnrollmentsDirect()
-    for id in ^enrollments.byStatus(\"active\")
-        print($\"{^enrollments(id).student}:{^enrollments(id).course}\")
-
-pub fn activeCoursesForStudent(student: string)
-    for id in ^enrollments.byStatus(\"active\", student)
-        print(^enrollments(id).course)
-
-pub fn activeCourseExact(student: string, course: string)
-    for id in ^enrollments.byStatus(\"active\", student, course)
-        print(^enrollments(id).course)
-
-pub fn activeCourseExactPair(student: string, course: string)
-    for id, enrollment in ^enrollments.byStatus(\"active\", student, course)
-        print($\"{^enrollments(id).course}:{enrollment.course}\")
-
-pub fn activeCourseExactKeys(student: string, course: string)
-    for id in keys(^enrollments.byStatus(\"active\", student, course))
-        print(^enrollments(id).course)
-
-pub fn activeCourseExactCount(student: string, course: string): int
-    return count(^enrollments.byStatus(\"active\", student, course))
-
-";
+pub const ENROLLMENT_STATUS: &str =
+    include_str!("../../../../fixtures/v01/runtime/enrollment_status.mw");
 
 /// Iterating a primary keyed root yields identities. Two-name loops pair the
-/// identity with the materialized record value.
-pub const BOOK_PRIMARY_SCHEMA: &str = "\
-resource Book at ^books(id: int)
-    required title: string
+/// identity with the materialized record value. The trailing blank line lets a
+/// test append its own entries after the resource block.
+pub const BOOK_PRIMARY_SCHEMA: &str =
+    include_str!("../../../../fixtures/v01/runtime/books_primary_schema.mw");
 
-";
+pub const BOOK_TAGS_SCHEMA: &str =
+    include_str!("../../../../fixtures/v01/runtime/books_tags_schema.mw");
 
-pub const BOOK_TAGS_SCHEMA: &str = "\
-resource Book at ^books(id: int)
-    required title: string
-    tags(pos: int): string
+pub const BOOK_SHELF_SCHEMA: &str =
+    include_str!("../../../../fixtures/v01/runtime/books_shelf_schema.mw");
 
-";
+pub const BOOK_ISBN_SCHEMA: &str =
+    include_str!("../../../../fixtures/v01/runtime/books_isbn_schema.mw");
 
-pub const BOOK_SHELF_SCHEMA: &str = "\
-resource Book at ^books(id: int)
-    required title: string
-    shelf: string
-
-";
-
-pub const BOOK_ISBN_SCHEMA: &str = "\
-resource Book at ^books(id: int)
-    required title: string
-    isbn: string
-
-    index byIsbn(isbn) unique
-
-";
-
-pub const BOOK_SHELF_INDEX_SCHEMA: &str = "\
-resource Book at ^books(id: int)
-    required title: string
-    shelf: string
-
-    index byShelf(shelf, id)
-
-";
+pub const BOOK_SHELF_INDEX_SCHEMA: &str =
+    include_str!("../../../../fixtures/v01/runtime/books_shelf_index_schema.mw");
 
 /// `count(path)` over the four presence shapes: a scalar field, a child-bearing
 /// layer, and absent paths.
-pub const BOOK_COUNT: &str = "\
-resource Book at ^books(id: int)
-    required title: string
-    subtitle: string
-    tags: sequence[string]
-
-pub fn seed()
-    ^books(1).title = \"Mort\"
-    const a: int = append(^books(1).tags, \"fiction\")
-    const b: int = append(^books(1).tags, \"funny\")
-
-pub fn countTitle(): int
-    return count(^books(1).title)
-
-pub fn countTags(): int
-    return count(^books(1).tags)
-
-pub fn countMissingField(): int
-    return count(^books(1).subtitle)
-
-pub fn countMissingTags(): int
-    return count(^books(2).tags)
-";
+pub const BOOK_COUNT: &str = include_str!("../../../../fixtures/v01/runtime/books_count.mw");

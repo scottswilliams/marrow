@@ -1,16 +1,21 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use marrow_check::{
-    CheckedProgram, CheckedSavedMemberKind, CheckedSavedPlace, ProjectConfig, check_project,
-    checked_saved_root_place,
-};
+use marrow_check::{CheckedProgram, CheckedSavedPlace, ProjectConfig, check_project};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_store::value::{Scalar, ScalarType, decode_value, encode_value};
 
 use crate::support::{TempProject, temp_project_uncommitted as temp_project, write};
+
+// The saved-place fact lookups are owned by marrow-check behind its `test-support`
+// feature, so the CLI evolution suites resolve a member or store catalog id through the
+// same helpers the discharge and apply suites do.
+#[allow(unused_imports)]
+pub(crate) use marrow_check::test_support::{
+    member_catalog_id, root_place, store_id_of as store_catalog_id,
+};
 
 #[allow(dead_code)]
 fn config(root: impl AsRef<Path>) -> ProjectConfig {
@@ -41,35 +46,6 @@ pub(crate) fn open_native_store(root: impl AsRef<Path>) -> TreeStore {
     let path = native_store_path(root);
     fs::create_dir_all(path.parent().unwrap()).expect("create data dir");
     TreeStore::open(&path).expect("open native store")
-}
-
-#[allow(dead_code)]
-pub(crate) fn root_place(program: &CheckedProgram, root: &str) -> CheckedSavedPlace {
-    checked_saved_root_place(program, root, marrow_syntax::SourceSpan::default())
-        .expect("checked saved root place")
-}
-
-#[allow(dead_code)]
-pub(crate) fn member_catalog_id(place: &CheckedSavedPlace, name: &str) -> String {
-    let member = place
-        .root_members
-        .iter()
-        .find(|member| {
-            member.name == name && matches!(member.kind, CheckedSavedMemberKind::Field { .. })
-        })
-        .unwrap_or_else(|| panic!("checked member `{name}`"));
-    accepted_catalog_id(&member.catalog_id, name)
-}
-
-#[allow(dead_code)]
-pub(crate) fn store_catalog_id(place: &CheckedSavedPlace) -> CatalogId {
-    CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).expect("store catalog id")
-}
-
-#[allow(dead_code)]
-fn accepted_catalog_id(id: &Option<String>, label: &str) -> String {
-    id.clone()
-        .unwrap_or_else(|| panic!("accepted catalog id for `{label}`"))
 }
 
 #[allow(dead_code)]
@@ -181,155 +157,72 @@ pub(crate) fn store_epoch(root: impl AsRef<Path>) -> Option<u64> {
     store.read_catalog_epoch().expect("read store epoch")
 }
 
+// The before/after `module books` evolution sources live in the repo-root corpus, so
+// the same fixture is not re-declared as an inline string here and in the runtime
+// crate. The baseline/default/subtitle/retire shapes are shared with marrow-run.
 #[allow(dead_code)]
-pub(crate) const REQUIRED_DEFAULT_SOURCE: &str = "module books\n\
-resource Book at ^books(id: int)\n\
-\x20   required title: string\n\
-\x20   required pages: int\n\
-evolve\n\
-\x20   default Book.pages = 0\n\
-pub fn add(title: string): Id(^books)\n\
-\x20   return nextId(^books)\n";
+pub(crate) const REQUIRED_DEFAULT_SOURCE: &str =
+    include_str!("../../../../fixtures/v01/evolution/books_required_default.mw");
 
 #[allow(dead_code)]
-pub(crate) const REQUIRED_NO_DEFAULT_SOURCE: &str = "module books\n\
-resource Book at ^books(id: int)\n\
-\x20   required title: string\n\
-\x20   required pages: int\n\
-pub fn add(title: string): Id(^books)\n\
-\x20   return nextId(^books)\n";
+pub(crate) const REQUIRED_NO_DEFAULT_SOURCE: &str =
+    include_str!("../../../../fixtures/v01/evolution/books_required_no_default.mw");
 
 #[allow(dead_code)]
-pub(crate) const REQUIRED_BASELINE_SOURCE: &str = "module books\n\
-resource Book at ^books(id: int)\n\
-\x20   required title: string\n\
-pub fn add(title: string): Id(^books)\n\
-\x20   return nextId(^books)\n";
+pub(crate) const REQUIRED_BASELINE_SOURCE: &str =
+    include_str!("../../../../fixtures/v01/evolution/books_required_baseline.mw");
 
 #[allow(dead_code)]
-pub(crate) const OPTIONAL_PAGES_BASELINE_SOURCE: &str = "module books\n\
-resource Book at ^books(id: int)\n\
-\x20   required title: string\n\
-\x20   pages: int\n\
-pub fn add(title: string): Id(^books)\n\
-\x20   return nextId(^books)\n";
+pub(crate) const OPTIONAL_PAGES_BASELINE_SOURCE: &str =
+    include_str!("../../../../fixtures/v01/evolution/books_optional_pages_baseline.mw");
 
 #[allow(dead_code)]
-pub(crate) const OPTIONAL_PAGES_DEFAULT_INDEX_SOURCE: &str = "module books\n\
-resource Book at ^books(id: int)\n\
-\x20   required title: string\n\
-\x20   required pages: int\n\
-\x20   index byPages(pages, id)\n\
-evolve\n\
-\x20   default Book.pages = 0\n\
-pub fn add(title: string): Id(^books)\n\
-\x20   return nextId(^books)\n";
+pub(crate) const OPTIONAL_PAGES_DEFAULT_INDEX_SOURCE: &str =
+    include_str!("../../../../fixtures/v01/evolution/books_optional_pages_default_index.mw");
 
 #[allow(dead_code)]
-pub(crate) const PRICE_BASELINE_SOURCE: &str = "module books\n\
-resource Book at ^books(id: int)\n\
-\x20   required price: int\n\
-pub fn add(price: int): Id(^books)\n\
-\x20   return nextId(^books)\n";
+pub(crate) const PRICE_BASELINE_SOURCE: &str =
+    include_str!("../../../../fixtures/v01/evolution/books_price_baseline.mw");
 
 #[allow(dead_code)]
-pub(crate) const PRICE_CENTS_TRANSFORM_SOURCE: &str = "module books\n\
-resource Book at ^books(id: int)\n\
-\x20   required price: int\n\
-\x20   required priceCents: int\n\
-evolve\n\
-\x20   transform Book.priceCents\n\
-\x20       return old.price * 100\n\
-pub fn add(price: int): Id(^books)\n\
-\x20   return nextId(^books)\n";
+pub(crate) const PRICE_CENTS_TRANSFORM_SOURCE: &str =
+    include_str!("../../../../fixtures/v01/evolution/books_price_cents_transform.mw");
 
 #[allow(dead_code)]
-pub(crate) const RETIRE_SOURCE: &str = "module books\n\
-resource Book at ^books(id: int)\n\
-\x20   required title: string\n\
-evolve\n\
-\x20   retire Book.subtitle\n\
-pub fn add(title: string): Id(^books)\n\
-\x20   return nextId(^books)\n";
+pub(crate) const RETIRE_SOURCE: &str =
+    include_str!("../../../../fixtures/v01/evolution/books_retire_subtitle.mw");
 
 #[allow(dead_code)]
-pub(crate) const RETIRE_BASELINE_SOURCE: &str = "module books\n\
-resource Book at ^books(id: int)\n\
-\x20   required title: string\n\
-\x20   subtitle: string\n\
-pub fn add(title: string): Id(^books)\n\
-\x20   return nextId(^books)\n";
+pub(crate) const RETIRE_BASELINE_SOURCE: &str =
+    include_str!("../../../../fixtures/v01/evolution/books_subtitle_baseline.mw");
 
 #[allow(dead_code)]
-pub(crate) const RENAME_SOURCE: &str = "module books\n\
-resource Book at ^books(id: int)\n\
-\x20   required title: string\n\
-\x20   blurb: string\n\
-evolve\n\
-\x20   rename Book.subtitle -> Book.blurb\n\
-pub fn add(title: string): Id(^books)\n\
-\x20   return nextId(^books)\n";
+pub(crate) const RENAME_SOURCE: &str =
+    include_str!("../../../../fixtures/v01/evolution/books_rename_subtitle.mw");
 
 // Baseline with a runnable zero-arg entry: a `subtitle` member a later rename/retire
 // consumes, plus a `seed` that writes through the store so the fence is exercised.
 #[allow(dead_code)]
-pub(crate) const BLOCK_BASELINE_SOURCE: &str = "module books\n\
-resource Book at ^books(id: int)\n\
-\x20   required title: string\n\
-\x20   subtitle: string\n\
-pub fn seed()\n\
-\x20   var b: Book\n\
-\x20   b.title = \"Dune\"\n\
-\x20   transaction\n\
-\x20       ^books(2) = b\n";
+pub(crate) const BLOCK_BASELINE_SOURCE: &str =
+    include_str!("../../../../fixtures/v01/evolution/books_seed_subtitle_baseline.mw");
 
 // The renamed source with the consumed rename block present.
 #[allow(dead_code)]
-pub(crate) const RENAME_BLOCK_SOURCE: &str = "module books\n\
-resource Book at ^books(id: int)\n\
-\x20   required title: string\n\
-\x20   blurb: string\n\
-evolve\n\
-\x20   rename Book.subtitle -> Book.blurb\n\
-pub fn seed()\n\
-\x20   var b: Book\n\
-\x20   b.title = \"Dune\"\n\
-\x20   transaction\n\
-\x20       ^books(2) = b\n";
+pub(crate) const RENAME_BLOCK_SOURCE: &str =
+    include_str!("../../../../fixtures/v01/evolution/books_seed_rename_block.mw");
 
 // The renamed source with the consumed rename block removed: the rename is already
 // recorded in the accepted catalog, so the block is transient and safe to delete.
 #[allow(dead_code)]
-pub(crate) const RENAME_BLOCK_DELETED_SOURCE: &str = "module books\n\
-resource Book at ^books(id: int)\n\
-\x20   required title: string\n\
-\x20   blurb: string\n\
-pub fn seed()\n\
-\x20   var b: Book\n\
-\x20   b.title = \"Dune\"\n\
-\x20   transaction\n\
-\x20       ^books(2) = b\n";
+pub(crate) const RENAME_BLOCK_DELETED_SOURCE: &str =
+    include_str!("../../../../fixtures/v01/evolution/books_seed_rename_block_deleted.mw");
 
 // The retired source with the consumed retire block present.
 #[allow(dead_code)]
-pub(crate) const RETIRE_BLOCK_SOURCE: &str = "module books\n\
-resource Book at ^books(id: int)\n\
-\x20   required title: string\n\
-evolve\n\
-\x20   retire Book.subtitle\n\
-pub fn seed()\n\
-\x20   var b: Book\n\
-\x20   b.title = \"Dune\"\n\
-\x20   transaction\n\
-\x20       ^books(2) = b\n";
+pub(crate) const RETIRE_BLOCK_SOURCE: &str =
+    include_str!("../../../../fixtures/v01/evolution/books_seed_retire_block.mw");
 
 // The retired source with the consumed retire block removed.
 #[allow(dead_code)]
-pub(crate) const RETIRE_BLOCK_DELETED_SOURCE: &str = "module books\n\
-resource Book at ^books(id: int)\n\
-\x20   required title: string\n\
-pub fn seed()\n\
-\x20   var b: Book\n\
-\x20   b.title = \"Dune\"\n\
-\x20   transaction\n\
-\x20       ^books(2) = b\n";
+pub(crate) const RETIRE_BLOCK_DELETED_SOURCE: &str =
+    include_str!("../../../../fixtures/v01/evolution/books_seed_retire_block_deleted.mw");

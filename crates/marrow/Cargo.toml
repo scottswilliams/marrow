@@ -20,5 +20,10 @@ marrow-run = { path = "../marrow-run" }
 marrow-store = { path = "../marrow-store", features = ["native"] }
 serde_json = "1"
 
+[dev-dependencies]
+# The shared fact-lookup family lives behind marrow-check's test-support feature; the
+# crate is already a normal dependency, so this only flips the feature for tests.
+marrow-check = { path = "../marrow-check", features = ["test-support"] }
+
 [lints]
 workspace = true

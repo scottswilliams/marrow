@@ -1,0 +1,11 @@
+module books
+resource Book at ^books(id: int)
+    required title: string
+    blurb: string
+evolve
+    rename Book.subtitle -> Book.blurb
+pub fn seed()
+    var b: Book
+    b.title = "Dune"
+    transaction
+        ^books(2) = b

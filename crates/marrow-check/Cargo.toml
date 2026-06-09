@@ -8,6 +8,12 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# Exposes `marrow_check::test_support`, the shared owner of the fact-lookup family the
+# downstream evolution/runtime/CLI test suites query. Test-only and off by default, so
+# normal and release builds never carry it; it pulls in no extra dependency.
+test-support = []
+
 [dependencies]
 marrow-syntax = { path = "../marrow-syntax" }
 marrow-project = { path = "../marrow-project" }
