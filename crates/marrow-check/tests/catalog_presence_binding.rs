@@ -1,17 +1,12 @@
 mod support;
 
 use std::fs;
-use std::hash::{Hash, Hasher};
 
 use marrow_check::{CHECK_CATALOG_INTENT, DiagnosticPayload, check_project};
 use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 
-use support::catalog::{catalog_path, entry as literal_entry, write_catalog};
+use support::catalog::{catalog, catalog_path, derived_id, entry as literal_entry, write_catalog};
 use support::{config, temp_project, write};
-
-fn catalog(entries: Vec<CatalogEntry>) -> CatalogMetadata {
-    CatalogMetadata::new(7, entries)
-}
 
 /// A catalog entry whose stable id is minted deterministically from `label`, so a
 /// fixture refers to a member by a readable name and still gets a `cat_`-shaped id the
@@ -24,18 +19,6 @@ fn entry(
     aliases: &[&str],
 ) -> CatalogEntry {
     literal_entry(kind, canonical_path, &derived_id(label), aliases)
-}
-
-/// Mint a deterministic `cat_<32 hex>` stable id from a readable label, so fixtures and
-/// the assertions that look the id back up agree without sharing a literal constant.
-fn derived_id(label: &str) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    label.hash(&mut hasher);
-    let first = hasher.finish();
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    (label, "catalog-presence-fixture").hash(&mut hasher);
-    let second = hasher.finish();
-    format!("cat_{first:016x}{second:016x}")
 }
 
 #[test]

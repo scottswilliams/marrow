@@ -150,11 +150,13 @@ pub fn analyze_overlay(name: &str, files: &[(&str, &str)]) -> (AnalysisSnapshot,
 }
 
 /// Shared catalog-fixture plumbing for the discharge and presence suites: the
-/// well-known catalog file location, the JSON writer, and the bare `CatalogEntry`
-/// constructor. The two suites mint stable ids differently (one hashes a label, the
-/// other uses literal `cat_` ids) and layer their own structural fields on top, so
-/// those stay in the suites; this owns only the shape every entry shares.
+/// well-known catalog file location, the JSON writer, the bare `CatalogEntry`
+/// constructor, the presence-suite catalog wrapper, and the deterministic
+/// label-to-id minting the presence suite keys its fixtures on. The discharge
+/// suite uses literal `cat_` ids; both layer their own structural fields
+/// (`accepted_struct`, `accepted_key_shape`) on top of the bare entry.
 pub mod catalog {
+    use std::hash::{Hash, Hasher};
     use std::path::{Path, PathBuf};
 
     use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
@@ -187,5 +189,24 @@ pub mod catalog {
             accepted_key_shape: None,
             accepted_struct: None,
         }
+    }
+
+    /// Wrap `entries` in a presence-suite catalog at a fixed schema digest, so a
+    /// fixture lists only the entries it cares about and the digest never varies.
+    pub fn catalog(entries: Vec<CatalogEntry>) -> CatalogMetadata {
+        CatalogMetadata::new(7, entries)
+    }
+
+    /// Mint a deterministic `cat_<32 hex>` stable id from a readable label, so a
+    /// fixture names a member by a readable label and the assertions that look the
+    /// id back up agree without sharing a literal constant.
+    pub fn derived_id(label: &str) -> String {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        label.hash(&mut hasher);
+        let first = hasher.finish();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (label, "catalog-presence-fixture").hash(&mut hasher);
+        let second = hasher.finish();
+        format!("cat_{first:016x}{second:016x}")
     }
 }
