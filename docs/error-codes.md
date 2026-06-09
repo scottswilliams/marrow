@@ -174,6 +174,11 @@ over every configured source and test file.
 | `check.neighbor_unsupported` | `next`/`prev` targets a shape with no single key level to seek: a composite-identity record or an index branch. |
 | `check.range` | A range-for header is ill-formed: the endpoints are not the same steppable type, or the `by` step does not match them (a number for `int`/`decimal`, a positive duration for `date`/`instant`). `decimal` and `instant` require an explicit step; a zero step, a literal step pointing away from literal endpoints (a dead loop), a negated duration on a temporal range, or a `by` on a non-range iterable is rejected. |
 | `check.range_value` | A range expression appears outside a `for` iterable. Ranges are loop shapes, not values. |
+| `check.collection_unsupported` | `values` or `entries` is applied to an address-only collection, such as a non-unique index branch, that has no materialized values distinct from its keys. |
+| `check.private_enum` | A cross-module enum reference names an enum that exists but is not `pub`; the enum resolves, the visibility does not. |
+| `check.evolve_target` | An `evolve` intent names an entity — a resource member, saved root, store index, enum, or enum member — that the current source does not declare (or, for a rename's source side, that the accepted catalog does not record). |
+| `check.evolve_type` | An `evolve default` value does not match its target member's type, or an `evolve transform` body does not type-check. |
+| `check.evolve_transform` | An `evolve transform` body is ill-formed: it is impure, reads its own target or a member another `default`/`transform` rewrites in the same block, or does not compute a top-level member as a pure function of `old`'s other decodable members. |
 
 ### `schema.*` — kind `check`
 
@@ -185,7 +190,6 @@ Resource-schema rules. Reported during a project check alongside `check.*`.
 | `schema.category_leaf` | A `category` enum member has no nested members, so it can never be selected or matched. |
 | `schema.parent_not_category` | An enum member has nested members but is not a `category`; a grouping node must be marked `category`, since a value selects a concrete member under it. |
 | `schema.duplicate_root_owner` | Two stores declare the same saved root (a cross-declaration rule the project checker reports). |
-| `schema.index_in_group` | An index appears inside a group; indexes are direct members of keyed stores. |
 | `schema.unknown_in_saved` | A managed saved field or key is typed `unknown`; saved schemas use concrete types. |
 | `schema.unsupported_type` | A parsed type spelling is only supported in a narrower declaration context, such as `map[K, V]` saved keyed-leaf member sugar. |
 | `schema.key_member_collision` | A top-level field or layer shares a name with an identity key. |
