@@ -1720,25 +1720,9 @@ fn map_leaf(field: &FieldDecl, map: MapLeaf) -> Node {
 /// per-layer namespace; two keys of the same name are unaddressable. Key params
 /// have no span of their own, so errors point at the layer's `span`.
 fn check_duplicate_key_params(keys: &[KeyParam], span: SourceSpan, errors: &mut Vec<SchemaError>) {
-    let mut seen: Vec<&str> = Vec::new();
+    let mut names = Namespace::new(SchemaDuplicateTarget::KeyParam);
     for key in keys {
-        if seen.contains(&key.name.as_str()) {
-            errors.push(duplicate_key_error(&key.name, span));
-        } else {
-            seen.push(&key.name);
-        }
-    }
-}
-
-fn duplicate_key_error(name: &str, span: SourceSpan) -> SchemaError {
-    SchemaError {
-        kind: SchemaErrorKind::DuplicateMember {
-            target: SchemaDuplicateTarget::KeyParam,
-            name: name.to_string(),
-        },
-        code: SCHEMA_DUPLICATE_MEMBER,
-        message: format!("duplicate key `{name}`"),
-        span,
+        names.check(&key.name, span, errors);
     }
 }
 
