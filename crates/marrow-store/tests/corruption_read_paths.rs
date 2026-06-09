@@ -10,12 +10,10 @@
 //! corrupt physical cell needs the crate-private engine and key-construction
 //! substrate, which the public crate surface intentionally does not expose.
 
-use marrow_store::cell::CatalogId;
 use marrow_store::tree::{TreeEnumMember, decode_tree_enum_member, encode_tree_enum_member};
 
-fn catalog_id(hex: &str) -> CatalogId {
-    CatalogId::new(format!("cat_{hex:0>32}")).expect("catalog id")
-}
+mod common;
+use common::catalog_id;
 
 /// A well-formed encoded enum-member value to truncate or extend per case.
 fn encoded_member() -> Vec<u8> {
