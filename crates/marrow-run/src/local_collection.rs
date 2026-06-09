@@ -144,8 +144,7 @@ pub(crate) fn materialize_local_collection_dir(
     Ok(rows)
 }
 
-/// The implicit one-based positions of a local sequence as int keys, the shared key
-/// derivation both the keys-only and the keyed materialization of a sequence use.
+/// The implicit one-based positions of a local sequence as int keys.
 fn sequence_positions(len: usize, span: SourceSpan) -> Result<Vec<Value>, RuntimeError> {
     (1..=len)
         .map(|pos| {
@@ -156,8 +155,8 @@ fn sequence_positions(len: usize, span: SourceSpan) -> Result<Vec<Value>, Runtim
         .collect()
 }
 
-/// Reverse an ascending materialization in place for a descending walk. The whole walk
-/// reverses as one, so the keyed entries stay paired with their values.
+/// Reverse the rows for a descending walk. The whole row reverses as one, so keyed
+/// entries stay paired with their values.
 fn apply_direction<T>(rows: &mut [T], dir: Direction) {
     if dir == Direction::Descending {
         rows.reverse();
@@ -218,9 +217,8 @@ fn eval_local_keys(
         .collect()
 }
 
-/// A local-collection lookup takes only positional value keys: a named or inout argument
-/// has no meaning addressing an in-memory sequence or tree, so both lookup helpers reject
-/// it through this one owner of the local-lookup argument contract.
+/// A local-collection lookup takes only positional value keys; a named or inout
+/// argument has no meaning addressing an in-memory sequence or tree.
 fn reject_named_or_inout(arg: &ExecArg, span: SourceSpan) -> Result<(), RuntimeError> {
     if arg.mode.is_some() || arg.name.is_some() {
         return Err(unsupported(

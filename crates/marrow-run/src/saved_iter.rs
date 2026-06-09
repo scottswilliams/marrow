@@ -38,11 +38,9 @@ pub(crate) enum SavedLoopRow {
     Pair(Value, Value),
 }
 
-/// Build the loop row a scan yields for one identity under `shape`: the key alone for
-/// `Keys`, the value alone for `Values`, the key/value pair for `Entries`. `read_value`
-/// is consulted only when the shape needs the value, so a scan whose values are
-/// unsupported (or gated) reports that through its reader and pays nothing for `Keys`.
-/// Keeping this dispatch here is the single owner of the Keys/Values/Entries row contract.
+/// The single owner of the Keys/Values/Entries row contract. `read_value` is
+/// consulted only when the shape needs the value, so a scan whose values are
+/// unsupported (or gated) pays nothing for `Keys`.
 pub(super) fn shape_row(
     shape: LoopShape,
     key: Value,
@@ -55,10 +53,8 @@ pub(super) fn shape_row(
     }
 }
 
-/// One level of a saved-tree child walk: the first child under a key prefix and the next
-/// child after an anchor, in the scan's direction. Record iteration and index iteration
-/// both seek over keyed tree levels with this same first/next contract; only the cell kind
-/// they address (records vs index entries) differs.
+/// One keyed level of a saved-tree child walk. Record and index iteration share
+/// this first/next contract; only the cell kind they address differs.
 pub(super) trait ChildCursor {
     fn first(
         &self,
@@ -75,10 +71,10 @@ pub(super) trait ChildCursor {
 }
 
 /// Walk `depth` keyed levels under `query_prefix`, yielding each leaf's accumulated
-/// identity to `visit`. The cursor prefix (`query_prefix`) and the visited identity
-/// (`identity_prefix`) are threaded separately so an index walk can seek over its full
-/// argument-plus-identity prefix while yielding only the identity suffix; a record walk
-/// passes the same slice for both. A `Break` from `visit` stops the whole walk.
+/// identity to `visit`. The cursor prefix and the visited identity are threaded
+/// separately so an index walk can seek over its full argument-plus-identity prefix
+/// while yielding only the identity suffix; a record walk passes the same slice for
+/// both. A `Break` from `visit` stops the whole walk.
 pub(super) fn walk_keyed_children(
     cursor: &dyn ChildCursor,
     depth: usize,
@@ -110,11 +106,10 @@ pub(super) fn walk_keyed_children(
     Ok(Flow::Normal)
 }
 
-/// Sum, with overflow guarding, the records reachable by walking `depth` keyed levels
-/// under `query_prefix`. `leaf_count` reports how many records each walked leaf prefix
-/// contributes, letting a record walk fold a bulk child count into its final level while
-/// an index walk counts one per leaf. The same depth-bounded walk that drives iteration
-/// drives counting, so there is one tree-walk owner per concept.
+/// Sum the records reachable by walking `depth` keyed levels under `query_prefix`,
+/// guarding for overflow. `leaf_count` lets a record walk fold a bulk child count into
+/// its final level while an index walk counts one per leaf. Counting reuses the
+/// iteration walk so there is one tree-walk owner.
 pub(crate) fn count_keyed_children(
     cursor: &dyn ChildCursor,
     depth: usize,

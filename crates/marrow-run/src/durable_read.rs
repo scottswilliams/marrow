@@ -138,15 +138,15 @@ pub(crate) fn read_layer_entry_at(
             span,
         ));
     };
-    decode_leaf(env.program, &bytes, leaf).ok_or_else(|| RuntimeError {
-        throw: None,
-        origin: None,
-        code: RUN_TYPE,
-        message: format!(
-            "stored value in `{}` did not decode to a runtime value",
-            address.layer_facts.name
-        ),
-        span,
+    decode_leaf(env.program, &bytes, leaf).ok_or_else(|| {
+        RuntimeError::fault(
+            RUN_TYPE,
+            format!(
+                "stored value in `{}` did not decode to a runtime value",
+                address.layer_facts.name
+            ),
+            span,
+        )
     })
 }
 
@@ -210,7 +210,11 @@ fn materialize_resource_members(
             let bytes = read_data(env.store, &address, span)?;
             let Some(bytes) = bytes else {
                 if required {
-                    return Err(required_field_absent(&member.name, span));
+                    return Err(RuntimeError::fault(
+                        RUN_TYPE,
+                        format!("required stored field `{}` is absent", member.name),
+                        span,
+                    ));
                 }
                 continue;
             };
@@ -218,12 +222,12 @@ fn materialize_resource_members(
                 .leaf
                 .as_ref()
                 .ok_or_else(|| unsupported("reading this field type", span))?;
-            let value = decode_leaf(program, &bytes, leaf).ok_or_else(|| RuntimeError {
-                throw: None,
-                origin: None,
-                code: RUN_TYPE,
-                message: format!("stored value for `{}` did not decode", member.name),
-                span,
+            let value = decode_leaf(program, &bytes, leaf).ok_or_else(|| {
+                RuntimeError::fault(
+                    RUN_TYPE,
+                    format!("stored value for `{}` did not decode", member.name),
+                    span,
+                )
             })?;
             fields.push((member.name.clone(), value));
         } else if member.is_unkeyed_group() {
@@ -248,12 +252,4 @@ fn materialize_resource_members(
         }
     }
     Ok(fields)
-}
-
-fn required_field_absent(name: &str, span: SourceSpan) -> RuntimeError {
-    RuntimeError::fault(
-        RUN_TYPE,
-        format!("required stored field `{name}` is absent"),
-        span,
-    )
 }

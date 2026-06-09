@@ -22,13 +22,11 @@ pub(crate) fn eval_neighbor(
         } else {
             "prev"
         };
-        return Err(RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_TYPE,
-            message: format!("`{which}` takes one argument"),
+        return Err(RuntimeError::fault(
+            RUN_TYPE,
+            format!("`{which}` takes one argument"),
             span,
-        });
+        ));
     };
     let target = neighbor_target(&arg.value, env)?;
     let identity_root = match &target {

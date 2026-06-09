@@ -14,10 +14,9 @@ pub(crate) struct DataAddress {
 }
 
 impl DataAddress {
-    /// A data address from already-resolved parts: a store catalog id, a record
-    /// identity, and a data path of catalog-id member segments and keys. Evolution
-    /// apply derives these directly from the checked facts and the live store, so it
-    /// addresses cells without re-resolving a member name path.
+    /// A data address from already-resolved parts. Evolution apply derives these from
+    /// the checked facts and the live store, addressing cells without re-resolving a
+    /// member name path.
     pub(crate) fn from_resolved_parts(
         store: CatalogId,
         identity: Vec<SavedKey>,
@@ -128,13 +127,11 @@ impl IndexAddress {
         span: SourceSpan,
     ) -> Result<Self, RuntimeError> {
         let Some(index) = place.indexes.iter().find(|index| index.name == name) else {
-            return Err(RuntimeError {
-                throw: None,
-                origin: None,
-                code: RUN_STORE,
-                message: format!("checked index `{name}` is missing from the executable facts"),
+            return Err(RuntimeError::fault(
+                RUN_STORE,
+                format!("checked index `{name}` is missing from the executable facts"),
                 span,
-            });
+            ));
         };
         Self::from_checked(&index.catalog_id, keys, span)
     }
@@ -156,27 +153,25 @@ pub(crate) fn raw_catalog_id(
     what: &'static str,
     span: SourceSpan,
 ) -> Result<CatalogId, RuntimeError> {
-    CatalogId::new(raw.to_string()).map_err(|_| RuntimeError {
-        throw: None,
-        origin: None,
-        code: RUN_STORE,
-        message: format!(
-            "checked {what} catalog identity is missing or malformed; durable identity is recorded automatically when the program runs"
-        ),
-        span,
+    CatalogId::new(raw.to_string()).map_err(|_| {
+        RuntimeError::fault(
+            RUN_STORE,
+            format!(
+                "checked {what} catalog identity is missing or malformed; durable identity is recorded automatically when the program runs"
+            ),
+            span,
+        )
     })
 }
 
 fn missing_catalog_id(what: &'static str, span: SourceSpan) -> RuntimeError {
-    RuntimeError {
-        throw: None,
-        origin: None,
-        code: RUN_STORE,
-        message: format!(
+    RuntimeError::fault(
+        RUN_STORE,
+        format!(
             "checked {what} catalog identity is missing; durable identity is recorded automatically when the program runs"
         ),
         span,
-    }
+    )
 }
 
 pub(crate) fn read_data(
@@ -276,13 +271,11 @@ fn member_path_segments(
     let mut path = Vec::with_capacity(member_path.len());
     for name in member_path {
         let Some(member) = members.iter().find(|member| member.name == *name) else {
-            return Err(RuntimeError {
-                throw: None,
-                origin: None,
-                code: RUN_STORE,
-                message: format!("checked member `{name}` is missing from the executable facts"),
+            return Err(RuntimeError::fault(
+                RUN_STORE,
+                format!("checked member `{name}` is missing from the executable facts"),
                 span,
-            });
+            ));
         };
         path.push(DataPathSegment::Member(catalog_id(
             &member.catalog_id,

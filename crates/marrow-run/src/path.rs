@@ -18,16 +18,13 @@ use crate::store::{DataAddress, LayerAddress, catalog_id, data_exists, read_data
 use crate::value::{Value, decode_leaf, value_to_key};
 use crate::write_dispatch::{write_nested_field, write_resource, write_saved_field};
 
-/// A saved path lowered from its source expression: the saved root, the record
-/// identity keys, the chain of group/keyed-layer levels from outermost to
-/// innermost, and how the path terminates. One [`lower`] pass walks the call/field
-/// spine once and produces this; every saved record write, delete, layer
-/// read, and traversal then consumes these fields directly.
+/// A saved path lowered from its source expression by one [`lower`] pass over the
+/// call/field spine.
 ///
 /// Callers always peel the trailing scalar field off the spine before lowering its
 /// base, so `lower` is given a record, layer, or index path — never a trailing
-/// `.field`. Each `.name` off a saved path it walks is therefore a group/layer hop,
-/// and the only non-record terminal it produces is an index branch.
+/// `.field`. Each `.name` it walks is therefore a group/layer hop, and the only
+/// non-record terminal it produces is an index branch.
 pub(crate) struct SavedPath {
     pub(crate) place: CheckedSavedPlace,
     pub(crate) members: Vec<CheckedSavedMember>,
@@ -42,18 +39,16 @@ pub(crate) struct SavedPath {
 
 /// How a [`SavedPath`] terminates.
 pub(crate) enum Terminal {
-    /// The path stops at the record or group entry itself (`^root(id)`,
-    /// `^root(id).layer(k)`).
+    /// The record or group entry itself (`^root(id)`, `^root(id).layer(k)`).
     Record,
-    /// The path stops at a named scalar field of the record or innermost group
-    /// entry (`^root(id).field`, `^root(id).layer(k).field`). Produced when a place
-    /// resolution peels the trailing `.field` onto an otherwise-`Record` path.
+    /// A named scalar field of the record or innermost group entry, produced when a
+    /// place resolution peels the trailing `.field` onto an otherwise-`Record` path.
     Field {
         name: String,
         catalog_id: Option<String>,
         leaf: Option<StoreLeafKind>,
     },
-    /// A declared index branch `^root.index(args…)`. It hangs directly off the root
+    /// A declared index branch `^root.index(args…)`, hanging directly off the root
     /// with no record identity or layer chain.
     Index,
 }
@@ -99,8 +94,8 @@ impl SavedPath {
         )?;
         let bytes = read_data(env.store, &address, span)?;
         let Some(bytes) = bytes else {
-            // A top-level field reads "is absent"; a group-entry field "entry is
-            // absent", keeping each read's message as it was.
+            // A group-entry field's absence is reported against its entry, a
+            // top-level field's against the field itself.
             let what = if self.layers.is_empty() {
                 format!("`{field}` is absent")
             } else {
@@ -117,9 +112,8 @@ impl SavedPath {
         })
     }
 
-    /// Write `value` to this lowered path, routing a scalar field or whole-record
-    /// write the same way a direct assignment to the path would. Shared by direct
-    /// saved writes.
+    /// Routes the write through the terminal variant, delegating to the
+    /// field or record write handler that a direct assignment would use.
     pub(crate) fn write(
         self,
         value: Value,
@@ -142,8 +136,8 @@ impl SavedPath {
 }
 
 /// Lower a checked saved-place descriptor to the concrete runtime keys it names.
-/// The checker already resolved root, layer, index, and field shape; runtime only
-/// evaluates the key expressions and preserves the checked terminal.
+/// The checker already resolved the path shape; runtime only evaluates the key
+/// expressions and preserves the checked terminal.
 pub(crate) fn lower(expr: &ExecExpr, env: &mut Env<'_>) -> Result<SavedPath, RuntimeError> {
     let place = expr
         .saved_place()
@@ -256,11 +250,9 @@ pub(crate) fn saved_path_present(
 }
 
 /// Evaluate a keyed lookup's arguments to saved key segments, rejecting named or
-/// mode arguments. When `allow_identity_splice` (the record-identity position), a
-/// sole identity-valued argument (`^root(id)` where `id: Id(^root)`) splices its
-/// lowered keys in as the full key vector and an identity mixed with raw keys is
-/// rejected; otherwise (a keyed layer or index lookup) each argument is one raw
-/// key.
+/// mode arguments. In the record-identity position (`allow_identity_splice`), a sole
+/// identity-valued argument splices its lowered keys in as the full key vector;
+/// otherwise each argument is one raw key.
 pub(crate) fn lower_keys(
     args: &[ExecArg],
     span: SourceSpan,
@@ -312,9 +304,8 @@ pub(crate) fn lower_keys(
     Ok(keys)
 }
 
-/// Guard a spliced identity's key bytes against the checked target keyspace.
-/// Checked places own nominal root identity; this catches byte-shape mismatches
-/// before address lowering.
+/// Guard a spliced identity's arity and key bytes against the checked target
+/// keyspace, catching byte-shape mismatches before address lowering.
 pub(crate) fn check_spliced_identity(
     identity: &[SavedKey],
     expected: &[CheckedSavedKeyParam],
@@ -340,10 +331,9 @@ pub(crate) fn check_spliced_identity(
 }
 
 /// Guard one lowered key's scalar kind against its declared key type, the single
-/// typed-keyspace check every key path shares: record lookups, layer lookups, and
-/// spliced identities all route through it. A non-scalar (defer) declaration
-/// passes no expectation, so the guard skips and any arity fault still fires
-/// downstream. A wrong scalar is a `key_type_fault`.
+/// typed-keyspace check record lookups, layer lookups, and spliced identities all
+/// share. A non-scalar (defer) declaration carries no expectation, so the guard
+/// skips and any arity fault still fires downstream.
 pub(crate) fn guard_key_type(
     declared: &CheckedSavedKeyParam,
     key: &SavedKey,

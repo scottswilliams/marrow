@@ -22,18 +22,18 @@ use crate::value::{Value, saved_key_to_value, value_to_key};
 
 pub(crate) const INDEX_SCAN_PAGE_LIMIT: usize = 128;
 
-/// The single argument of a `reversed(<iterable>)` call, or `None` for any other
-/// expression. Lets collection helpers see through the wrapper without changing
-/// the saved layer they traverse.
+/// The single argument of a `reversed(<iterable>)` call. Lets collection helpers
+/// see through the wrapper without changing the saved layer they traverse.
 pub(crate) fn reversed_argument(expr: &ExecExpr) -> Option<&ExecExpr> {
     let ExecExpr::Call { target, args, .. } = expr else {
         return None;
     };
-    matches!(
+    if !matches!(
         target,
         CheckedCallTarget::Builtin(CheckedBuiltinCall::Reversed)
-    )
-    .then_some(())?;
+    ) {
+        return None;
+    }
     match args.as_slice() {
         [arg] if arg.mode.is_none() && arg.name.is_none() => Some(&arg.value),
         _ => None,
@@ -46,7 +46,9 @@ pub(crate) fn keys_argument(expr: &ExecExpr) -> Option<&ExecExpr> {
     let ExecExpr::Call { target, args, .. } = expr else {
         return None;
     };
-    matches!(target, CheckedCallTarget::Builtin(CheckedBuiltinCall::Keys)).then_some(())?;
+    if !matches!(target, CheckedCallTarget::Builtin(CheckedBuiltinCall::Keys)) {
+        return None;
+    }
     match args.as_slice() {
         [arg] if arg.mode.is_none() && arg.name.is_none() => Some(&arg.value),
         _ => None,
@@ -181,10 +183,9 @@ pub(crate) fn iterable_index_branch_present(
     index_branch_present(&branch, path.span(), env).map(Some)
 }
 
-/// Count every record identity under a root of `arity` identity keys. A single-key root
-/// reads the child count of one level directly; a composite root walks the first `arity - 1`
-/// levels through the shared keyed-child walk and folds the bulk child count of the final
-/// level into each walked prefix.
+/// Count every record identity under a root of `arity` identity keys. A composite
+/// root walks the first `arity - 1` levels and folds the bulk child count of the
+/// final level into each walked prefix, avoiding a per-leaf descent.
 fn count_record_identities(
     store: &CatalogId,
     arity: usize,
@@ -235,7 +236,9 @@ fn count_exact_index_tuple(
         .scan_index_tuple(&branch.index.index, &branch.arg_keys, INDEX_SCAN_PAGE_LIMIT)
         .map_err(|error| error.located(span))?;
     loop {
-        count = checked_count_add(count, page.entries.len(), span)?;
+        count = count
+            .checked_add(page.entries.len())
+            .ok_or_else(|| overflow(span))?;
         let Some(cursor) = page.cursor else {
             break;
         };
@@ -292,10 +295,6 @@ fn child_layer_prefix_address(
     let mut layers = base_path.layer_addresses;
     layers.push(LayerAddress::from_checked(layer_facts, Vec::new()));
     DataAddress::layer_prefix(place, &base_path.identity, &layers, span)
-}
-
-fn checked_count_add(left: usize, right: usize, span: SourceSpan) -> Result<usize, RuntimeError> {
-    left.checked_add(right).ok_or_else(|| overflow(span))
 }
 
 pub(crate) fn first_record_child(
@@ -441,11 +440,5 @@ pub(crate) fn read_local_field(
         .iter()
         .find(|(name, _)| name == field)
         .map(|(_, value)| value.clone())
-        .ok_or_else(|| RuntimeError {
-            throw: None,
-            origin: None,
-            code: RUN_ABSENT,
-            message: format!("`{field}` is absent"),
-            span,
-        })
+        .ok_or_else(|| RuntimeError::fault(RUN_ABSENT, format!("`{field}` is absent"), span))
 }

@@ -20,19 +20,16 @@ pub(crate) use materialize::{
 };
 
 /// Where a saved read sits, which decides how an absent element fails. A
-/// value-position read (`^book(id).title` used as a value) raises a catchable
-/// `run.absent_element` fault a `try`/`catch` can bind; materialization after an
-/// address/key has already been chosen stays a plain fatal fault.
+/// value-position read raises a catchable fault a `try`/`catch` can bind;
+/// materialization after an address has been chosen stays a plain fatal fault.
 #[derive(Clone, Copy)]
 pub(crate) enum ReadPosition {
     Value,
     Materialization,
 }
 
-/// The order a saved-layer walk yields its children. `for`/`keys`/`values`/
-/// `entries` enumerate `Ascending`; `reversed(...)` enumerates `Descending`; and
-/// `next`/`prev` seek the next/previous neighbor. The whole walk reverses as one,
-/// so a composite identity is true-reversed at every level, not only its
+/// The order a saved-layer walk yields its children. A descending walk reverses as
+/// one, so a composite identity is true-reversed at every level, not only its
 /// outermost component.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Direction {
@@ -60,8 +57,6 @@ pub(crate) fn durable_collection_value(span: SourceSpan) -> RuntimeError {
     )
 }
 
-/// The single path argument a `keys`/`values`/`entries` builtin takes, or the per-builtin
-/// arity fault naming `builtin`.
 fn single_path_arg<'a>(
     args: &'a [ExecArg],
     builtin: &str,
@@ -120,9 +115,8 @@ pub(crate) fn eval_entries(
     )
 }
 
-/// Materialize a local keyed collection in ascending order as a value sequence, projecting
-/// each `(key, value)` row by `kind`: `Values` yields the value, `Entries` yields a
-/// `[key, value]` pair. Durable saved data is never materialized as a value.
+/// Materialize a local keyed collection as a value sequence. Durable saved data is
+/// never materialized as a value; iterate it directly.
 fn eval_materialized(
     path: &ExecExpr,
     kind: MaterializeKind,
