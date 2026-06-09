@@ -162,7 +162,7 @@ pub(crate) fn analyze_source_project(
     for file in &files {
         // Editor buffer text wins over disk for an overlaid path; a path with no
         // overlay is read from disk, and a read failure drops the file (its
-        // `io.read` diagnostic is recorded) exactly as before.
+        // `io.read` diagnostic is recorded).
         let Some(source) = read_source(&file.path, sources, &mut report.diagnostics) else {
             continue;
         };

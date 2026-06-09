@@ -371,32 +371,54 @@ fn check_builtin_call_args(
     }
 }
 
-/// Check an `Error(...)` constructor against the named-field contract owned by
-/// `marrow_schema::error`; every required field must be supplied. The field set
-/// lives in the schema so the checker and runtime validate one definition.
-fn check_error_constructor_args(
-    args: &[marrow_syntax::Argument],
-    arg_types: &[MarrowType],
+/// The call-site context for a named-field constructor check: the constructor
+/// `label` used in diagnostics, the supplied `args` and their `arg_types`, the
+/// call `span`, the source `file`, and the diagnostic sink.
+struct NamedFieldArgs<'a> {
+    label: &'a str,
+    args: &'a [marrow_syntax::Argument],
+    arg_types: &'a [MarrowType],
     span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
+    file: &'a Path,
+    diagnostics: &'a mut Vec<CheckDiagnostic>,
+}
+
+/// Check named-field constructor arguments against a fixed field list: reject
+/// unnamed args, unknown field names, and duplicate-supplied fields, type-check
+/// each supplied value against its expected type, and require every required
+/// field. `field_name` reads a field's name, `expected_type` yields the type to
+/// check a supplied field against (when one applies), and `is_required` decides
+/// whether a missing field is an error.
+fn check_named_field_args<F>(
+    call: NamedFieldArgs<'_>,
+    fields: &[F],
+    field_name: impl Fn(&F) -> &str,
+    expected_type: impl Fn(usize) -> Option<MarrowType>,
+    is_required: impl Fn(&F) -> bool,
 ) {
-    let fields = marrow_schema::error::fields();
+    let NamedFieldArgs {
+        label,
+        args,
+        arg_types,
+        span,
+        file,
+        diagnostics,
+    } = call;
     let mut supplied = vec![false; fields.len()];
     for (arg, arg_type) in args.iter().zip(arg_types) {
         let Some(name) = &arg.name else {
             diagnostics.push(call_diagnostic(
                 file,
                 span,
-                "`Error` constructor takes named fields".to_string(),
+                format!("`{label}` constructor takes named fields"),
             ));
             continue;
         };
-        let Some(index) = fields.iter().position(|field| field.name == name) else {
+        let Some(index) = fields.iter().position(|field| field_name(field) == name) else {
             diagnostics.push(call_diagnostic(
                 file,
                 span,
-                format!("`Error` has no field `{name}`"),
+                format!("`{label}` has no field `{name}`"),
             ));
             continue;
         };
@@ -413,19 +435,52 @@ fn check_error_constructor_args(
             continue;
         }
         supplied[index] = true;
-        let expected = MarrowType::from_resolved(fields[index].ty.clone(), TypeNames::default());
-        check_one_arg("Error", &expected, arg_type, span, file, diagnostics);
+        if let Some(expected) = expected_type(index) {
+            check_one_arg(label, &expected, arg_type, span, file, diagnostics);
+        }
     }
 
     for (field, supplied) in fields.iter().zip(supplied) {
-        if field.required && !supplied {
+        if is_required(field) && !supplied {
             diagnostics.push(call_diagnostic(
                 file,
                 span,
-                format!("`Error` requires `{}`", field.name),
+                format!("`{label}` requires `{}`", field_name(field)),
             ));
         }
     }
+}
+
+/// Check an `Error(...)` constructor against the named-field contract owned by
+/// `marrow_schema::error`; every required field must be supplied. The field set
+/// lives in the schema so the checker and runtime validate one definition.
+fn check_error_constructor_args(
+    args: &[marrow_syntax::Argument],
+    arg_types: &[MarrowType],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let fields = marrow_schema::error::fields();
+    check_named_field_args(
+        NamedFieldArgs {
+            label: "Error",
+            args,
+            arg_types,
+            span,
+            file,
+            diagnostics,
+        },
+        fields,
+        |field| field.name,
+        |index| {
+            Some(MarrowType::from_resolved(
+                fields[index].ty.clone(),
+                TypeNames::default(),
+            ))
+        },
+        |field| field.required,
+    );
 }
 
 fn check_value_materialization_args(
@@ -640,58 +695,29 @@ fn check_resource_constructor_args(input: ResourceConstructorCheck<'_>) {
         .iter()
         .filter(|node| node.is_plain_field())
         .collect();
-    let mut supplied = vec![false; fields.len()];
-
-    for (arg, arg_type) in args.iter().zip(arg_types) {
-        let Some(name) = &arg.name else {
-            diagnostics.push(call_diagnostic(
-                file,
-                span,
-                format!("`{label}` constructor takes named fields"),
-            ));
-            continue;
-        };
-        let Some(index) = fields.iter().position(|field| &field.name == name) else {
-            diagnostics.push(call_diagnostic(
-                file,
-                span,
-                format!("`{label}` has no field `{name}`"),
-            ));
-            continue;
-        };
-        if supplied[index] {
-            diagnostics.push(
-                CheckDiagnostic::error(
-                    CHECK_CALL_ARGUMENT,
-                    file,
-                    span,
-                    format!("field `{name}` is supplied more than once"),
-                )
-                .with_payload(DiagnosticPayload::DuplicateNamedArgument(name.clone())),
-            );
-            continue;
-        }
-        supplied[index] = true;
-        if let Some(ty) = fields[index].plain_field_type() {
-            let expected = constructor_field_type(program, module_name, enum_names, ty);
-            check_one_arg(label, &expected, arg_type, span, file, diagnostics);
-        }
-    }
-
-    for (field, supplied) in fields.iter().zip(supplied) {
-        if !supplied
-            && matches!(
+    check_named_field_args(
+        NamedFieldArgs {
+            label,
+            args,
+            arg_types,
+            span,
+            file,
+            diagnostics,
+        },
+        &fields,
+        |field| field.name.as_str(),
+        |index| {
+            fields[index]
+                .plain_field_type()
+                .map(|ty| constructor_field_type(program, module_name, enum_names, ty))
+        },
+        |field| {
+            matches!(
                 &field.kind,
                 marrow_schema::NodeKind::Slot { required: true, .. }
             )
-        {
-            diagnostics.push(call_diagnostic(
-                file,
-                span,
-                format!("`{label}` requires `{}`", field.name),
-            ));
-        }
-    }
+        },
+    );
 }
 
 fn constructor_field_type(

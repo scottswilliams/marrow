@@ -665,12 +665,10 @@ impl<'p> IndexBuilder<'p> {
             SchemaType::Named(resource) => {
                 let segments = split_type_path(resource);
                 let resolved_segments = expand_alias(&segments, aliases);
-                if let Some(def) = self.module_scope.resolved_resource(
-                    self.program,
-                    module,
-                    &resolved_segments,
-                    ResolvableKind::Resource,
-                ) && let Some(span) = type_ref_path_tail_span(source, ty, &segments, 1)
+                if let Some(def) =
+                    self.module_scope
+                        .resolved_resource(self.program, module, &resolved_segments)
+                    && let Some(span) = type_ref_path_tail_span(source, ty, &segments, 1)
                 {
                     self.use_of(def, file, span, SymbolKind::Resource);
                 }
@@ -1034,7 +1032,6 @@ impl UseWalker<'_, '_> {
                 self.builder.program,
                 self.module,
                 segments,
-                ResolvableKind::Resource,
             ) {
                 self.builder
                     .use_of(id, self.file, span, SymbolKind::Resource);
@@ -1201,7 +1198,6 @@ impl UseWalker<'_, '_> {
             self.builder.program,
             self.module,
             &resolved_segments,
-            ResolvableKind::Resource,
         ) {
             let use_span =
                 path_tail_span(self.source, *callee_span, segments, 1).unwrap_or(*callee_span);
@@ -1271,21 +1267,17 @@ impl ModuleScope {
         program: &CheckedProgram,
         from_module: &str,
         segments: &[String],
-        kind: ResolvableKind,
     ) -> Option<DefId> {
         let Resolution::Found(Def {
             module,
             item: DefItem::Resource(resource),
             ..
-        }) = resolve(program, from_module, segments, kind)
+        }) = resolve(program, from_module, segments, ResolvableKind::Resource)
         else {
             return None;
         };
         let key = (module.name.clone(), resource.name.clone());
-        match kind {
-            ResolvableKind::Resource => self.resources.get(&key).copied(),
-            ResolvableKind::Function => None,
-        }
+        self.resources.get(&key).copied()
     }
 }
 
