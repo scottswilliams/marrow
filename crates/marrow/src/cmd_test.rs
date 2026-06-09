@@ -16,8 +16,6 @@ pub(crate) fn test(args: &[String]) -> ExitCode {
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
-            // Report each statement and managed write of every test as it runs,
-            // attributed to the test by name.
             "--trace" => trace = true,
             "--format" => {
                 if let Err(code) =
@@ -89,8 +87,7 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // A test is a public, zero-parameter function in a test file. Each test keeps
-    // its source file so a failure can be reported at its location.
+    // Each test keeps its source file so a failure can be reported at its location.
     let tests: Vec<(String, PathBuf)> = program.modules[source_module_count..]
         .iter()
         .flat_map(|module| {

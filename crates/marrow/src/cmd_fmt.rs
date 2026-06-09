@@ -141,8 +141,6 @@ enum FmtOutcome {
 /// untouched and reported (`Err`). The `Print` mode writes to stdout (only valid
 /// for a single file).
 fn fmt_one(file: &str, source: &str, mode: FmtMode) -> Result<FmtOutcome, ()> {
-    // Do not reformat source that does not parse; report its diagnostics and
-    // leave the file untouched.
     let parsed = marrow_syntax::parse_source(source);
     if parsed.has_errors() {
         report_check(file, &parsed, CheckFormat::Text);

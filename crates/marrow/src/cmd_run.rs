@@ -35,8 +35,6 @@ impl RunObservation {
         matches!(self, Self::DryRun(_) | Self::TraceDryRun(_))
     }
 
-    /// The report format of an observing run. A plain run emits no report, so it has
-    /// no format; callers must only ask once they know the run observes.
     fn format(self) -> CheckFormat {
         match self {
             Self::Plain => CheckFormat::Text,
@@ -68,13 +66,10 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
                 };
                 entry = Some(value.clone());
             }
-            // Grants the maintenance capability. An operator must type it; the
-            // default run and `run.defaultEntry` can never inject it.
+            // An operator must type `--maintenance`; the default run and
+            // `run.defaultEntry` can never inject the maintenance capability.
             "--maintenance" => maintenance = true,
-            // Report each statement and managed write as the run executes.
             "--trace" => trace = true,
-            // Run the entry, report the saved-data writes it would commit, then roll
-            // them back so no saved data changes.
             "--dry-run" => dry_run = true,
             "--format" => {
                 if let Err(code) =
@@ -164,8 +159,6 @@ fn run_project_dir(
     // with a pending catalog proposal has its durable identity frozen here before the
     // run touches the store. A clean accepted catalog proposes no change and is left
     // untouched.
-    // A plain run reports its errors as text; only the trace/dry-run report takes
-    // `--format`, so an identity-commit failure renders as text here.
     let program = match commit_pending_identity(dir, &config, program, CheckFormat::Text) {
         Ok(program) => program,
         Err(code) => return code,
@@ -365,21 +358,21 @@ fn auto_apply_then_reopen(
 /// backfill count where the witness proved one. A zero-mutation obligation never fences,
 /// so it is not a reachable cause here.
 fn fence_message(obligation: &RunObligation) -> String {
-    match obligation {
+    let base = "store was stamped under a different schema at this catalog epoch";
+    let cause = match obligation {
         RunObligation::Backfill { records } => format!(
-            "store was stamped under a different schema at this catalog epoch; the change backfills {records} record(s). Run `marrow evolve apply` to discharge it."
+            "; the change backfills {records} record(s). Run `marrow evolve apply` to discharge it."
         ),
         RunObligation::Transform { records } => format!(
-            "store was stamped under a different schema at this catalog epoch; the change rewrites {records} record(s). Run `marrow evolve apply` to discharge it."
+            "; the change rewrites {records} record(s). Run `marrow evolve apply` to discharge it."
         ),
         RunObligation::DestructiveDrop { populated } => format!(
-            "store was stamped under a different schema at this catalog epoch; the change drops {populated} populated record(s). Run `marrow evolve apply --maintenance` and confirm the retire to discharge it."
+            "; the change drops {populated} populated record(s). Run `marrow evolve apply --maintenance` and confirm the retire to discharge it."
         ),
-        RunObligation::Repair => "store was stamped under a different schema at this catalog epoch; the change cannot be discharged against the stored data. Run `marrow evolve preview` to see the required repair.".to_string(),
-        RunObligation::ZeroMutation { .. } => {
-            "store was stamped under a different schema at this catalog epoch".to_string()
-        }
-    }
+        RunObligation::Repair => "; the change cannot be discharged against the stored data. Run `marrow evolve preview` to see the required repair.".to_string(),
+        RunObligation::ZeroMutation { .. } => String::new(),
+    };
+    format!("{base}{cause}")
 }
 
 fn populated_unstamped_store(
@@ -433,11 +426,11 @@ pub(crate) fn base_host(log: std::rc::Rc<RefCell<String>>) -> marrow_run::Host {
         .with_filesystem()
 }
 
-/// Run `entry` from a checked `program` over `store`, printing its output. The run
-/// gets the real system clock, environment, and filesystem, and sends `std::log`
-/// output to standard error. `maintenance` grants the maintenance capability only
-/// when the operator passed `--maintenance`. `observe` selects a plain run, a
-/// traced run, a dry run (run-then-rollback), or both composed.
+/// Run `entry` from a checked `program` over `store`, printing its output to stdout
+/// and sending `std::log` output to stderr so the two streams stay separate.
+/// `maintenance` grants the maintenance capability, set only when the operator passed
+/// `--maintenance`. `observe` selects a plain run, a traced run, a dry run
+/// (run-then-rollback), or both composed.
 fn execute(
     program: &marrow_check::CheckedRuntimeProgram,
     store: &marrow_store::tree::TreeStore,

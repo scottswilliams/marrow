@@ -80,8 +80,7 @@ project store read-only and prove data-evolution obligations.
 /// errors) surface for a single file instead of being silently skipped.
 fn check_single_file(file: &str, source: &str, format: CheckFormat) -> ExitCode {
     let parsed = marrow_syntax::parse_source(source);
-    // Source that does not parse cannot be type-checked; report its parse
-    // diagnostics (which carry help and byte offsets the project checker drops).
+    // Parse errors carry byte offsets the project checker drops.
     if parsed.has_errors() {
         report_check(file, &parsed, format);
         return ExitCode::FAILURE;
@@ -95,9 +94,8 @@ fn check_single_file(file: &str, source: &str, format: CheckFormat) -> ExitCode 
                 ExitCode::SUCCESS
             }
         }
-        // A synthesized project should always check; if its scratch directory
-        // could not be written, fall back to the clean parse result rather than
-        // failing a file that parsed.
+        // A scratch-directory I/O fault still reports the clean parse result rather
+        // than failing a file that parsed.
         Err(error) => {
             report_io_error(&error.0.display().to_string(), &error.1, format);
             report_check(file, &parsed, format);
@@ -106,12 +104,13 @@ fn check_single_file(file: &str, source: &str, format: CheckFormat) -> ExitCode 
     }
 }
 
-/// Type-check a single parsed-clean file by synthesizing a throwaway one-file
-/// project in a scratch directory and running the project checker over it, so a
-/// lone file reaches the same `check.*` rules a project directory does. The file
-/// is placed at the path its declared `module` implies (a module-less script
-/// keeps its own stem), so the project checker raises no spurious module-path
-/// diagnostic. Returns the report with each diagnostic relocated to `file`.
+/// Type-check a single parsed-clean file by synthesizing a one-file project in a
+/// scratch directory and running the project checker over it, so a lone file reaches
+/// the same `check.*` rules a project directory does. The file is placed at the path
+/// its declared `module` implies (`a/b.mw` for `module a::b`; a module-less script
+/// keeps its own stem), because the project checker validates module paths against
+/// layout and would otherwise raise a spurious module-path diagnostic. Returns the
+/// report with each diagnostic relocated to `file`.
 fn check_one_file_project(
     file: &str,
     source: &str,
@@ -119,46 +118,9 @@ fn check_one_file_project(
 ) -> Result<marrow_check::CheckReport, (PathBuf, std::io::Error)> {
     let scratch = ScratchDir::new().map_err(|error| (std::env::temp_dir(), error))?;
     let root = scratch.path();
-    // A library file (`module a::b`) must sit at `a/b.mw`; a module-less script
-    // is path-free, so any `.mw` name under the root works.
-    let relative = module_relative_path(module);
-    write_scratch_file(&root.join(&relative), source)?;
-
-    let config = marrow_project::ProjectConfig {
-        source_roots: vec![".".to_string()],
-        default_entry: None,
-        store: None,
-        tests: Vec::new(),
-        accepted_catalog: "marrow.catalog.json".to_string(),
-    };
-    // The scratch root holds exactly one file, so discovery cannot walk a source
-    // root it failed to create; an error here would be a genuine I/O fault.
-    let (mut report, _program) = marrow_check::check_project(root, &config)
-        .map_err(|error| (error.path.clone(), std::io::Error::other(error.message)))?;
-    // Every diagnostic came from the one synthesized file; relocate them to the
-    // path the operator named so the report reads as a single-file check.
-    let real = PathBuf::from(file);
-    for diagnostic in &mut report.diagnostics {
-        diagnostic.file = real.clone();
-    }
-    Ok(report)
-}
-
-/// Write the single file into its synthesized project, creating any parent
-/// directories its module path implies. Each I/O fault is reported against the path
-/// that failed so a scratch-write error names the directory or file it could not create.
-fn write_scratch_file(target: &Path, source: &str) -> Result<(), (PathBuf, std::io::Error)> {
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| (parent.to_path_buf(), error))?;
-    }
-    std::fs::write(target, source).map_err(|error| (target.to_path_buf(), error))
-}
-
-/// The source-root-relative path a single file is written to inside its
-/// synthesized project: `a/b.mw` for a `module a::b`, else `script.mw` for a
-/// module-less file.
-fn module_relative_path(module: Option<&marrow_syntax::ModuleDecl>) -> PathBuf {
-    match module {
+    // A library file (`module a::b`) must sit at `a/b.mw`; a module-less script is
+    // path-free, so any `.mw` name under the root works.
+    let relative = match module {
         Some(module) => {
             let mut path = PathBuf::new();
             for segment in module.name.split("::") {
@@ -168,7 +130,31 @@ fn module_relative_path(module: Option<&marrow_syntax::ModuleDecl>) -> PathBuf {
             path
         }
         None => PathBuf::from("script.mw"),
+    };
+    // Create parent dirs and write the file, attributing each I/O fault to the path
+    // that failed so a scratch-write error names the directory or file it could not create.
+    let target = root.join(&relative);
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| (parent.to_path_buf(), error))?;
     }
+    std::fs::write(&target, source).map_err(|error| (target.clone(), error))?;
+
+    let config = marrow_project::ProjectConfig {
+        source_roots: vec![".".to_string()],
+        default_entry: None,
+        store: None,
+        tests: Vec::new(),
+        accepted_catalog: "marrow.catalog.json".to_string(),
+    };
+    let (mut report, _program) = marrow_check::check_project(root, &config)
+        .map_err(|error| (error.path.clone(), std::io::Error::other(error.message)))?;
+    // Every diagnostic came from the one synthesized file; relocate them to the
+    // path the operator named so the report reads as a single-file check.
+    let real = PathBuf::from(file);
+    for diagnostic in &mut report.diagnostics {
+        diagnostic.file = real.clone();
+    }
+    Ok(report)
 }
 
 /// Report a single-file check: a clean check prints the friendly `ok` summary
@@ -187,8 +173,8 @@ fn report_single_file_check(
     }
 }
 
-/// A scratch directory under the system temp dir, removed on drop. Used to hand
-/// the project checker a real on-disk one-file project without leaving litter.
+/// A temp-dir scratch directory removed on drop, for handing the project checker a
+/// real on-disk one-file project.
 struct ScratchDir {
     path: PathBuf,
 }
