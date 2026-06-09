@@ -23,7 +23,7 @@ const TREE_VALUE_VERSION_V0: u8 = 0;
 const CHILD_SCAN_PAGE_LIMIT: usize = 128;
 type IndexEntryVisitor<'a> =
     dyn FnMut(&[SavedKey], &[SavedKey], &[u8]) -> Result<(), StoreError> + 'a;
-/// One index row from an exact index tuple scan.
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexEntry {
     pub identity: Vec<SavedKey>,
@@ -64,10 +64,6 @@ impl TreeEnumMember {
     pub fn member_id(&self) -> &CatalogId {
         &self.member_id
     }
-}
-
-struct TreeCellStore<'a, B: Backend + ?Sized> {
-    backend: &'a mut B,
 }
 
 /// An owning tree-cell store handle for runtime and tooling callers.
@@ -113,44 +109,56 @@ impl TreeStore {
     }
 
     pub fn write_catalog_epoch(&self, epoch: u64) -> Result<(), StoreError> {
-        self.with_cell(|cell| cell.write_catalog_epoch(epoch))
+        self.write_u64_meta(MetaCell::CatalogEpoch, epoch)
     }
 
     pub fn read_catalog_epoch(&self) -> Result<Option<u64>, StoreError> {
-        self.with_cell(|cell| cell.read_catalog_epoch())
+        self.read_u64_meta(MetaCell::CatalogEpoch)
     }
 
-    /// Stamps the layout epoch on its own, without the engine-profile digest that
-    /// `write_engine_profile` also records. This reproduces the pre-digest on-disk
-    /// shape that the layout-epoch drift fence must still defend against, so the
-    /// standalone stamp is the only way to construct a store carrying a layout
-    /// epoch but no profile digest.
+    /// Stamp the layout epoch without the engine-profile digest that
+    /// `write_engine_profile` also records, reproducing the pre-digest on-disk
+    /// shape the layout-epoch drift fence must still defend against.
     pub fn write_layout_epoch(&self, epoch: u64) -> Result<(), StoreError> {
-        self.with_cell(|cell| cell.write_layout_epoch(epoch))
+        self.write_u64_meta(MetaCell::LayoutEpoch, epoch)
     }
 
     pub fn read_layout_epoch(&self) -> Result<Option<u64>, StoreError> {
-        self.with_cell(|cell| cell.read_layout_epoch())
+        self.read_u64_meta(MetaCell::LayoutEpoch)
     }
 
     pub fn write_engine_profile(&self, profile: &EngineProfile) -> Result<(), StoreError> {
-        self.with_cell(|cell| cell.write_engine_profile(profile))
+        self.write_layout_epoch(profile.layout_epoch())?;
+        self.write_cell(
+            CellKey::meta(MetaCell::EngineProfile).as_bytes(),
+            profile.digest_bytes().to_vec(),
+        )
     }
 
     pub fn read_engine_profile_digest(&self) -> Result<Option<EngineProfileDigest>, StoreError> {
-        self.with_cell(|cell| cell.read_engine_profile_digest())
+        self.read_cell(CellKey::meta(MetaCell::EngineProfile).as_bytes())?
+            .map(|bytes| decode_digest(&bytes))
+            .transpose()
     }
 
     pub fn write_commit_metadata(&self, metadata: &CommitMetadata) -> Result<(), StoreError> {
-        self.with_cell(|cell| cell.write_commit_metadata(metadata))
+        self.write_cell(
+            CellKey::meta(MetaCell::Commit).as_bytes(),
+            encode_commit_metadata(metadata)?,
+        )
     }
 
     pub fn read_commit_metadata(&self) -> Result<Option<CommitMetadata>, StoreError> {
-        self.with_cell(|cell| cell.read_commit_metadata())
+        self.read_cell(CellKey::meta(MetaCell::Commit).as_bytes())?
+            .map(|bytes| decode_commit_metadata(&bytes))
+            .transpose()
     }
 
     pub fn write_node(&self, store: &CatalogId, identity: &[SavedKey]) -> Result<(), StoreError> {
-        self.with_cell(|cell| cell.write_node(store, identity))
+        self.write_cell(
+            CellKey::node(store, identity).as_bytes(),
+            NODE_MARKER.to_vec(),
+        )
     }
 
     pub fn write_leaf(
@@ -160,7 +168,7 @@ impl TreeStore {
         member: &CatalogId,
         value: Vec<u8>,
     ) -> Result<(), StoreError> {
-        self.with_cell(|cell| cell.write_leaf(store, identity, member, value))
+        self.write_cell(CellKey::leaf(store, identity, member).as_bytes(), value)
     }
 
     pub fn write_sequence_position(
@@ -171,9 +179,10 @@ impl TreeStore {
         position: SequencePosition,
         value: Vec<u8>,
     ) -> Result<(), StoreError> {
-        self.with_cell(|cell| {
-            cell.write_sequence_position(store, identity, member, position, value)
-        })
+        self.write_cell(
+            CellKey::sequence(store, identity, member, position).as_bytes(),
+            value,
+        )
     }
 
     pub fn write_data_value(
@@ -183,7 +192,10 @@ impl TreeStore {
         path: &[DataPathSegment],
         value: Vec<u8>,
     ) -> Result<(), StoreError> {
-        self.with_cell(|cell| cell.write_data_value(store, identity, path, value))
+        self.write_cell(
+            CellKey::data_path_value(store, identity, path).as_bytes(),
+            value,
+        )
     }
 
     pub fn read_data_value(
@@ -192,7 +204,7 @@ impl TreeStore {
         identity: &[SavedKey],
         path: &[DataPathSegment],
     ) -> Result<Option<Vec<u8>>, StoreError> {
-        self.with_cell(|cell| cell.read_data_value(store, identity, path))
+        self.read_cell(CellKey::data_path_value(store, identity, path).as_bytes())
     }
 
     pub fn delete_data_subtree(
@@ -201,7 +213,7 @@ impl TreeStore {
         identity: &[SavedKey],
         path: &[DataPathSegment],
     ) -> Result<(), StoreError> {
-        self.with_cell(|cell| cell.delete_data_subtree(store, identity, path))
+        self.delete_cells(CellKey::data_path_prefix(store, identity, path).as_bytes())
     }
 
     pub fn data_subtree_exists(
@@ -210,7 +222,11 @@ impl TreeStore {
         identity: &[SavedKey],
         path: &[DataPathSegment],
     ) -> Result<bool, StoreError> {
-        self.with_cell(|cell| cell.data_subtree_exists(store, identity, path))
+        if self.read_data_value(store, identity, path)?.is_some() {
+            return Ok(true);
+        }
+        let prefix = CellKey::data_path_prefix(store, identity, path);
+        Ok(!self.scan(prefix.as_bytes(), 1)?.entries.is_empty())
     }
 
     pub fn data_next_child(
@@ -220,7 +236,16 @@ impl TreeStore {
         path: &[DataPathSegment],
         after: &SavedKey,
     ) -> Result<Option<SavedKey>, StoreError> {
-        self.with_cell(|cell| cell.data_next_child(store, identity, path, after))
+        let prefix = CellKey::data_path_prefix(store, identity, path);
+        let mut cursor_path = path.to_vec();
+        cursor_path.push(DataPathSegment::Key(after.clone()));
+        let cursor = CellKey::data_path_prefix(store, identity, &cursor_path);
+        self.next_child_after_cursor(
+            prefix.as_bytes(),
+            cursor.as_bytes(),
+            after,
+            decode_data_child,
+        )
     }
 
     pub fn data_first_child(
@@ -229,7 +254,8 @@ impl TreeStore {
         identity: &[SavedKey],
         path: &[DataPathSegment],
     ) -> Result<Option<SavedKey>, StoreError> {
-        self.with_cell(|cell| cell.data_first_child(store, identity, path))
+        let prefix = CellKey::data_path_prefix(store, identity, path);
+        self.first_child(prefix.as_bytes(), decode_data_child)
     }
 
     pub fn data_last_child(
@@ -238,7 +264,8 @@ impl TreeStore {
         identity: &[SavedKey],
         path: &[DataPathSegment],
     ) -> Result<Option<SavedKey>, StoreError> {
-        self.with_cell(|cell| cell.data_last_child(store, identity, path))
+        let prefix = CellKey::data_path_prefix(store, identity, path);
+        self.last_child(prefix.as_bytes(), decode_data_child)
     }
 
     pub fn data_prev_child(
@@ -248,7 +275,8 @@ impl TreeStore {
         path: &[DataPathSegment],
         before: &SavedKey,
     ) -> Result<Option<SavedKey>, StoreError> {
-        self.with_cell(|cell| cell.data_prev_child(store, identity, path, before))
+        let prefix = CellKey::data_path_prefix(store, identity, path);
+        self.prev_child_before(prefix.as_bytes(), before, decode_data_child)
     }
 
     pub fn data_child_count(
@@ -257,7 +285,8 @@ impl TreeStore {
         identity: &[SavedKey],
         path: &[DataPathSegment],
     ) -> Result<usize, StoreError> {
-        self.with_cell(|cell| cell.data_child_count(store, identity, path))
+        let prefix = CellKey::data_path_prefix(store, identity, path);
+        self.child_count(prefix.as_bytes(), decode_data_child)
     }
 
     pub fn max_int_data_child(
@@ -266,7 +295,8 @@ impl TreeStore {
         identity: &[SavedKey],
         path: &[DataPathSegment],
     ) -> Result<Option<i64>, StoreError> {
-        self.with_cell(|cell| cell.max_int_data_child(store, identity, path))
+        let prefix = CellKey::data_path_prefix(store, identity, path);
+        self.max_int_child(prefix.as_bytes(), decode_data_child)
     }
 
     pub fn record_child_count(
@@ -274,7 +304,8 @@ impl TreeStore {
         store: &CatalogId,
         identity_prefix: &[SavedKey],
     ) -> Result<usize, StoreError> {
-        self.with_cell(|cell| cell.record_child_count(store, identity_prefix))
+        let prefix = CellKey::record_prefix(store, identity_prefix);
+        self.child_count(prefix.as_bytes(), decode_record_child)
     }
 
     pub fn delete_record_subtree(
@@ -282,7 +313,7 @@ impl TreeStore {
         store: &CatalogId,
         identity_prefix: &[SavedKey],
     ) -> Result<(), StoreError> {
-        self.with_cell(|cell| cell.delete_record_subtree(store, identity_prefix))
+        self.delete_cells(CellKey::record_prefix(store, identity_prefix).as_bytes())
     }
 
     pub fn record_next_child(
@@ -291,7 +322,8 @@ impl TreeStore {
         identity_prefix: &[SavedKey],
         after: &SavedKey,
     ) -> Result<Option<SavedKey>, StoreError> {
-        self.with_cell(|cell| cell.record_next_child(store, identity_prefix, after))
+        let prefix = CellKey::record_prefix(store, identity_prefix);
+        self.next_child_after(prefix.as_bytes(), after, decode_record_child)
     }
 
     pub fn record_first_child(
@@ -299,7 +331,8 @@ impl TreeStore {
         store: &CatalogId,
         identity_prefix: &[SavedKey],
     ) -> Result<Option<SavedKey>, StoreError> {
-        self.with_cell(|cell| cell.record_first_child(store, identity_prefix))
+        let prefix = CellKey::record_prefix(store, identity_prefix);
+        self.first_child(prefix.as_bytes(), decode_record_child)
     }
 
     pub fn record_last_child(
@@ -307,7 +340,8 @@ impl TreeStore {
         store: &CatalogId,
         identity_prefix: &[SavedKey],
     ) -> Result<Option<SavedKey>, StoreError> {
-        self.with_cell(|cell| cell.record_last_child(store, identity_prefix))
+        let prefix = CellKey::record_prefix(store, identity_prefix);
+        self.last_child(prefix.as_bytes(), decode_record_child)
     }
 
     pub fn record_prev_child(
@@ -316,7 +350,8 @@ impl TreeStore {
         identity_prefix: &[SavedKey],
         before: &SavedKey,
     ) -> Result<Option<SavedKey>, StoreError> {
-        self.with_cell(|cell| cell.record_prev_child(store, identity_prefix, before))
+        let prefix = CellKey::record_prefix(store, identity_prefix);
+        self.prev_child_before(prefix.as_bytes(), before, decode_record_child)
     }
 
     pub fn max_int_record_child(
@@ -324,14 +359,14 @@ impl TreeStore {
         store: &CatalogId,
         identity_prefix: &[SavedKey],
     ) -> Result<Option<i64>, StoreError> {
-        self.with_cell(|cell| cell.max_int_record_child(store, identity_prefix))
+        let prefix = CellKey::record_prefix(store, identity_prefix);
+        self.max_int_child(prefix.as_bytes(), decode_record_child)
     }
 
     /// Visit every record identity under `store_id`, descending `arity` key levels and
-    /// invoking `visit` with each full identity tuple. The descent reads one key at a
-    /// time through the paged record cursor, so the scan never materializes the whole
-    /// store; only the current identity path is held. A store always has at least one
-    /// identity level, so an `arity` of zero is treated as one.
+    /// invoking `visit` with each full identity tuple. The descent is paged, so the
+    /// whole store never materializes. A store always has at least one identity level,
+    /// so an `arity` of zero is treated as one.
     pub fn for_each_record(
         &self,
         store_id: &CatalogId,
@@ -370,7 +405,10 @@ impl TreeStore {
         identity: &[SavedKey],
         value: Vec<u8>,
     ) -> Result<(), StoreError> {
-        self.with_cell(|cell| cell.write_index_entry(index, index_keys, identity, value))
+        self.write_cell(
+            CellKey::index(index, index_keys, identity).as_bytes(),
+            value,
+        )
     }
 
     pub fn delete_index_entry(
@@ -379,7 +417,7 @@ impl TreeStore {
         index_keys: &[SavedKey],
         identity: &[SavedKey],
     ) -> Result<(), StoreError> {
-        self.with_cell(|cell| cell.delete_index_entry(index, index_keys, identity))
+        self.delete_cells(CellKey::index(index, index_keys, identity).as_bytes())
     }
 
     pub fn delete_index_subtree(
@@ -387,7 +425,7 @@ impl TreeStore {
         index: &CatalogId,
         key_prefix: &[SavedKey],
     ) -> Result<(), StoreError> {
-        self.with_cell(|cell| cell.delete_index_subtree(index, key_prefix))
+        self.delete_cells(CellKey::index_key_prefix(index, key_prefix).as_bytes())
     }
 
     pub fn index_next_child(
@@ -396,7 +434,8 @@ impl TreeStore {
         key_prefix: &[SavedKey],
         after: &SavedKey,
     ) -> Result<Option<SavedKey>, StoreError> {
-        self.with_cell(|cell| cell.index_next_child(index, key_prefix, after))
+        let prefix = CellKey::index_key_prefix(index, key_prefix);
+        self.next_child_after(prefix.as_bytes(), after, decode_index_child)
     }
 
     pub fn index_first_child(
@@ -404,7 +443,8 @@ impl TreeStore {
         index: &CatalogId,
         key_prefix: &[SavedKey],
     ) -> Result<Option<SavedKey>, StoreError> {
-        self.with_cell(|cell| cell.index_first_child(index, key_prefix))
+        let prefix = CellKey::index_key_prefix(index, key_prefix);
+        self.first_child(prefix.as_bytes(), decode_index_child)
     }
 
     pub fn index_last_child(
@@ -412,7 +452,8 @@ impl TreeStore {
         index: &CatalogId,
         key_prefix: &[SavedKey],
     ) -> Result<Option<SavedKey>, StoreError> {
-        self.with_cell(|cell| cell.index_last_child(index, key_prefix))
+        let prefix = CellKey::index_key_prefix(index, key_prefix);
+        self.last_child(prefix.as_bytes(), decode_index_child)
     }
 
     pub fn index_prev_child(
@@ -421,7 +462,8 @@ impl TreeStore {
         key_prefix: &[SavedKey],
         before: &SavedKey,
     ) -> Result<Option<SavedKey>, StoreError> {
-        self.with_cell(|cell| cell.index_prev_child(index, key_prefix, before))
+        let prefix = CellKey::index_key_prefix(index, key_prefix);
+        self.prev_child_before(prefix.as_bytes(), before, decode_index_child)
     }
 
     pub fn scan_index_tuple(
@@ -430,7 +472,7 @@ impl TreeStore {
         index_keys: &[SavedKey],
         limit: usize,
     ) -> Result<IndexPage, StoreError> {
-        self.with_cell(|cell| cell.scan_index_tuple(index, index_keys, limit))
+        self.scan_index_tuple_from(index, index_keys, None, limit)
     }
 
     pub fn scan_index_tuple_after(
@@ -440,24 +482,30 @@ impl TreeStore {
         cursor: &IndexCursor,
         limit: usize,
     ) -> Result<IndexPage, StoreError> {
-        self.with_cell(|cell| cell.scan_index_tuple_after(index, index_keys, cursor, limit))
+        self.scan_index_tuple_from(index, index_keys, Some(cursor), limit)
     }
 
-    /// Visit every row under one index id in bounded backend pages. The callback sees the
-    /// stored index-key tuple and identity exactly as encoded, so callers can detect stale
-    /// rows whose key arity no longer matches the current source declaration.
+    /// Visit every row under one index id. The callback sees the stored index-key tuple
+    /// and identity exactly as encoded, so callers can detect stale rows whose key arity
+    /// no longer matches the current source declaration.
     pub fn for_each_index_entry(
         &self,
         index: &CatalogId,
         visit: &mut IndexEntryVisitor<'_>,
     ) -> Result<(), StoreError> {
-        self.with_cell(|cell| cell.for_each_index_entry(index, visit))
+        let prefix = CellKey::index_key_prefix(index, &[]);
+        self.for_each_page_entry(prefix.as_bytes(), |key, value| {
+            let rest = key.get(prefix.as_bytes().len()..).unwrap_or_default();
+            let (index_keys, identity) =
+                decode_index_entry_key(rest).map_err(|_| corrupt_cell(key))?;
+            visit(&index_keys, &identity, value)?;
+            Ok(std::ops::ControlFlow::Continue(()))
+        })
     }
 
-    /// Pin a consistent read snapshot for the lifetime of the returned guard. A
-    /// multi-call traversal — a backup, or a long-lived inspection — reads one
-    /// coherent version of saved data, and this handle rejects writes and write
-    /// transactions until the guard is dropped.
+    /// Pin a consistent read snapshot for the lifetime of the returned guard, so a
+    /// multi-call traversal reads one coherent version of saved data. The handle
+    /// rejects writes until the guard is dropped.
     pub fn read_snapshot(&self) -> Result<ReadSnapshot<'_>, StoreError> {
         self.backend.borrow_mut().begin_snapshot()?;
         Ok(ReadSnapshot { store: self })
@@ -466,15 +514,17 @@ impl TreeStore {
     /// Whether the store holds no saved data: no data or index cells. A freshly
     /// created store is empty, and restore refuses a non-empty target.
     pub fn is_empty(&self) -> Result<bool, StoreError> {
-        Ok(self.first_cell(&CellKey::data_family())?.is_none()
-            && self.first_cell(&CellKey::index_family())?.is_none())
+        Ok(self.family_is_empty(&CellKey::data_family())?
+            && self.family_is_empty(&CellKey::index_family())?)
     }
 
-    /// Visit every data-family cell in encoded order. Index-family cells are
-    /// derived from data and are rebuilt on restore, so a backup carries data
-    /// only. Cells page internally so the whole store streams in bounded chunks;
-    /// wrap the call in a [`read_snapshot`] when every page must observe one
-    /// coherent version.
+    fn family_is_empty(&self, prefix: &CellKey) -> Result<bool, StoreError> {
+        Ok(self.scan(prefix.as_bytes(), 1)?.entries.is_empty())
+    }
+
+    /// Visit every data-family cell in encoded order. Index-family cells are derived
+    /// from data and rebuilt on restore, so a backup carries data only. Wrap the call
+    /// in a [`read_snapshot`] when every page must observe one coherent version.
     ///
     /// [`read_snapshot`]: TreeStore::read_snapshot
     pub fn visit_backup_cells(
@@ -484,17 +534,12 @@ impl TreeStore {
         self.visit_family(CellKey::data_family().as_bytes(), &mut visit)
     }
 
-    fn first_cell(&self, prefix: &CellKey) -> Result<Option<Vec<u8>>, StoreError> {
-        let page = self.with_cell(|cell| cell.scan_cells(prefix.as_bytes(), 1))?;
-        Ok(page.entries.into_iter().next().map(|(key, _)| key))
-    }
-
     fn visit_family(
         &self,
         prefix: &[u8],
         visit: &mut impl for<'cell> FnMut(TreeBackupCell<'cell>) -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
-        let mut page = self.with_cell(|cell| cell.scan_cells(prefix, BACKUP_SCAN_PAGE))?;
+        let mut page = self.scan(prefix, BACKUP_SCAN_PAGE)?;
         loop {
             for (key, value) in &page.entries {
                 visit(TreeBackupCell::from_raw(key, value)?)?;
@@ -507,18 +552,43 @@ impl TreeStore {
                 .last()
                 .map(|(key, _)| key.clone())
                 .expect("a truncated page has a last entry");
-            page =
-                self.with_cell(|cell| cell.scan_cells_after(prefix, &resume, BACKUP_SCAN_PAGE))?;
+            page = self.scan_after(prefix, &resume, BACKUP_SCAN_PAGE)?;
         }
     }
 
-    fn with_cell<R>(
+    fn read_cell(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        self.backend.borrow().read(key)
+    }
+
+    fn write_cell(&self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
+        self.backend.borrow_mut().write(key, value)
+    }
+
+    fn delete_cells(&self, prefix: &[u8]) -> Result<(), StoreError> {
+        self.backend.borrow_mut().delete(prefix)
+    }
+
+    fn scan(&self, prefix: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
+        self.backend.borrow().scan(prefix, limit)
+    }
+
+    fn scan_after(
         &self,
-        f: impl for<'b> FnOnce(&mut TreeCellStore<'b, dyn Backend>) -> Result<R, StoreError>,
-    ) -> Result<R, StoreError> {
-        let mut backend = self.backend.borrow_mut();
-        let mut cell = TreeCellStore::new(&mut **backend);
-        f(&mut cell)
+        prefix: &[u8],
+        cursor: &[u8],
+        limit: usize,
+    ) -> Result<ScanPage, StoreError> {
+        self.backend.borrow().scan_after(prefix, cursor, limit)
+    }
+
+    fn write_u64_meta(&self, cell: MetaCell, value: u64) -> Result<(), StoreError> {
+        self.write_cell(CellKey::meta(cell).as_bytes(), value.to_be_bytes().to_vec())
+    }
+
+    fn read_u64_meta(&self, cell: MetaCell) -> Result<Option<u64>, StoreError> {
+        self.read_cell(CellKey::meta(cell).as_bytes())?
+            .map(|bytes| decode_u64(&bytes))
+            .transpose()
     }
 }
 
@@ -536,386 +606,7 @@ impl Drop for ReadSnapshot<'_> {
     }
 }
 
-impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
-    fn new(backend: &'a mut B) -> Self {
-        Self { backend }
-    }
-
-    fn scan_cells(&self, prefix: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
-        self.backend.scan(prefix, limit)
-    }
-
-    fn scan_cells_after(
-        &self,
-        prefix: &[u8],
-        cursor: &[u8],
-        limit: usize,
-    ) -> Result<ScanPage, StoreError> {
-        self.backend.scan_after(prefix, cursor, limit)
-    }
-
-    fn write_catalog_epoch(&mut self, epoch: u64) -> Result<(), StoreError> {
-        self.write_u64_meta(MetaCell::CatalogEpoch, epoch)
-    }
-
-    fn read_catalog_epoch(&self) -> Result<Option<u64>, StoreError> {
-        self.read_u64_meta(MetaCell::CatalogEpoch)
-    }
-
-    fn write_layout_epoch(&mut self, epoch: u64) -> Result<(), StoreError> {
-        self.write_u64_meta(MetaCell::LayoutEpoch, epoch)
-    }
-
-    fn read_layout_epoch(&self) -> Result<Option<u64>, StoreError> {
-        self.read_u64_meta(MetaCell::LayoutEpoch)
-    }
-
-    fn write_engine_profile(&mut self, profile: &EngineProfile) -> Result<(), StoreError> {
-        self.write_layout_epoch(profile.layout_epoch())?;
-        self.backend.write(
-            CellKey::meta(MetaCell::EngineProfile).as_bytes(),
-            profile.digest_bytes().to_vec(),
-        )
-    }
-
-    fn read_engine_profile_digest(&self) -> Result<Option<EngineProfileDigest>, StoreError> {
-        self.backend
-            .read(CellKey::meta(MetaCell::EngineProfile).as_bytes())?
-            .map(|bytes| decode_digest(&bytes))
-            .transpose()
-    }
-
-    fn write_commit_metadata(&mut self, metadata: &CommitMetadata) -> Result<(), StoreError> {
-        self.backend.write(
-            CellKey::meta(MetaCell::Commit).as_bytes(),
-            encode_commit_metadata(metadata)?,
-        )
-    }
-
-    fn read_commit_metadata(&self) -> Result<Option<CommitMetadata>, StoreError> {
-        self.backend
-            .read(CellKey::meta(MetaCell::Commit).as_bytes())?
-            .map(|bytes| decode_commit_metadata(&bytes))
-            .transpose()
-    }
-
-    fn write_node(&mut self, store: &CatalogId, identity: &[SavedKey]) -> Result<(), StoreError> {
-        self.backend.write(
-            CellKey::node(store, identity).as_bytes(),
-            NODE_MARKER.to_vec(),
-        )
-    }
-
-    fn write_leaf(
-        &mut self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        member: &CatalogId,
-        value: Vec<u8>,
-    ) -> Result<(), StoreError> {
-        self.backend
-            .write(CellKey::leaf(store, identity, member).as_bytes(), value)
-    }
-
-    fn write_sequence_position(
-        &mut self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        member: &CatalogId,
-        position: SequencePosition,
-        value: Vec<u8>,
-    ) -> Result<(), StoreError> {
-        self.backend.write(
-            CellKey::sequence(store, identity, member, position).as_bytes(),
-            value,
-        )
-    }
-
-    fn write_data_value(
-        &mut self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        path: &[DataPathSegment],
-        value: Vec<u8>,
-    ) -> Result<(), StoreError> {
-        self.backend.write(
-            CellKey::data_path_value(store, identity, path).as_bytes(),
-            value,
-        )
-    }
-
-    fn read_data_value(
-        &self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        path: &[DataPathSegment],
-    ) -> Result<Option<Vec<u8>>, StoreError> {
-        self.backend
-            .read(CellKey::data_path_value(store, identity, path).as_bytes())
-    }
-
-    fn delete_data_subtree(
-        &mut self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        path: &[DataPathSegment],
-    ) -> Result<(), StoreError> {
-        self.backend
-            .delete(CellKey::data_path_prefix(store, identity, path).as_bytes())
-    }
-
-    fn data_subtree_exists(
-        &self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        path: &[DataPathSegment],
-    ) -> Result<bool, StoreError> {
-        if self.read_data_value(store, identity, path)?.is_some() {
-            return Ok(true);
-        }
-        let prefix = CellKey::data_path_prefix(store, identity, path);
-        Ok(!self.backend.scan(prefix.as_bytes(), 1)?.entries.is_empty())
-    }
-
-    fn data_next_child(
-        &self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        path: &[DataPathSegment],
-        after: &SavedKey,
-    ) -> Result<Option<SavedKey>, StoreError> {
-        let prefix = CellKey::data_path_prefix(store, identity, path);
-        let mut cursor_path = path.to_vec();
-        cursor_path.push(DataPathSegment::Key(after.clone()));
-        let cursor = CellKey::data_path_prefix(store, identity, &cursor_path);
-        self.next_child_after_cursor(
-            prefix.as_bytes(),
-            cursor.as_bytes(),
-            after,
-            decode_data_child,
-        )
-    }
-
-    fn data_prev_child(
-        &self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        path: &[DataPathSegment],
-        before: &SavedKey,
-    ) -> Result<Option<SavedKey>, StoreError> {
-        let prefix = CellKey::data_path_prefix(store, identity, path);
-        self.prev_child_before(prefix.as_bytes(), before, decode_data_child)
-    }
-
-    fn data_first_child(
-        &self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        path: &[DataPathSegment],
-    ) -> Result<Option<SavedKey>, StoreError> {
-        let prefix = CellKey::data_path_prefix(store, identity, path);
-        self.first_child(prefix.as_bytes(), decode_data_child)
-    }
-
-    fn data_last_child(
-        &self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        path: &[DataPathSegment],
-    ) -> Result<Option<SavedKey>, StoreError> {
-        let prefix = CellKey::data_path_prefix(store, identity, path);
-        self.last_child(prefix.as_bytes(), decode_data_child)
-    }
-
-    fn data_child_count(
-        &self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        path: &[DataPathSegment],
-    ) -> Result<usize, StoreError> {
-        let prefix = CellKey::data_path_prefix(store, identity, path);
-        self.child_count(prefix.as_bytes(), decode_data_child)
-    }
-
-    fn record_child_count(
-        &self,
-        store: &CatalogId,
-        identity_prefix: &[SavedKey],
-    ) -> Result<usize, StoreError> {
-        let prefix = CellKey::record_prefix(store, identity_prefix);
-        self.child_count(prefix.as_bytes(), decode_record_child)
-    }
-
-    fn delete_record_subtree(
-        &mut self,
-        store: &CatalogId,
-        identity_prefix: &[SavedKey],
-    ) -> Result<(), StoreError> {
-        self.backend
-            .delete(CellKey::record_prefix(store, identity_prefix).as_bytes())
-    }
-
-    fn record_next_child(
-        &self,
-        store: &CatalogId,
-        identity_prefix: &[SavedKey],
-        after: &SavedKey,
-    ) -> Result<Option<SavedKey>, StoreError> {
-        let prefix = CellKey::record_prefix(store, identity_prefix);
-        self.next_child_after(prefix.as_bytes(), after, decode_record_child)
-    }
-
-    fn record_prev_child(
-        &self,
-        store: &CatalogId,
-        identity_prefix: &[SavedKey],
-        before: &SavedKey,
-    ) -> Result<Option<SavedKey>, StoreError> {
-        let prefix = CellKey::record_prefix(store, identity_prefix);
-        self.prev_child_before(prefix.as_bytes(), before, decode_record_child)
-    }
-
-    fn record_first_child(
-        &self,
-        store: &CatalogId,
-        identity_prefix: &[SavedKey],
-    ) -> Result<Option<SavedKey>, StoreError> {
-        let prefix = CellKey::record_prefix(store, identity_prefix);
-        self.first_child(prefix.as_bytes(), decode_record_child)
-    }
-
-    fn record_last_child(
-        &self,
-        store: &CatalogId,
-        identity_prefix: &[SavedKey],
-    ) -> Result<Option<SavedKey>, StoreError> {
-        let prefix = CellKey::record_prefix(store, identity_prefix);
-        self.last_child(prefix.as_bytes(), decode_record_child)
-    }
-
-    fn max_int_record_child(
-        &self,
-        store: &CatalogId,
-        identity_prefix: &[SavedKey],
-    ) -> Result<Option<i64>, StoreError> {
-        let prefix = CellKey::record_prefix(store, identity_prefix);
-        self.max_int_child(prefix.as_bytes(), decode_record_child)
-    }
-
-    fn write_index_entry(
-        &mut self,
-        index: &CatalogId,
-        index_keys: &[SavedKey],
-        identity: &[SavedKey],
-        value: Vec<u8>,
-    ) -> Result<(), StoreError> {
-        self.backend.write(
-            CellKey::index(index, index_keys, identity).as_bytes(),
-            value,
-        )
-    }
-
-    fn delete_index_entry(
-        &mut self,
-        index: &CatalogId,
-        index_keys: &[SavedKey],
-        identity: &[SavedKey],
-    ) -> Result<(), StoreError> {
-        self.backend
-            .delete(CellKey::index(index, index_keys, identity).as_bytes())
-    }
-
-    fn delete_index_subtree(
-        &mut self,
-        index: &CatalogId,
-        key_prefix: &[SavedKey],
-    ) -> Result<(), StoreError> {
-        self.backend
-            .delete(CellKey::index_key_prefix(index, key_prefix).as_bytes())
-    }
-
-    fn index_next_child(
-        &self,
-        index: &CatalogId,
-        key_prefix: &[SavedKey],
-        after: &SavedKey,
-    ) -> Result<Option<SavedKey>, StoreError> {
-        let prefix = CellKey::index_key_prefix(index, key_prefix);
-        self.next_child_after(prefix.as_bytes(), after, decode_index_child)
-    }
-
-    fn index_prev_child(
-        &self,
-        index: &CatalogId,
-        key_prefix: &[SavedKey],
-        before: &SavedKey,
-    ) -> Result<Option<SavedKey>, StoreError> {
-        let prefix = CellKey::index_key_prefix(index, key_prefix);
-        self.prev_child_before(prefix.as_bytes(), before, decode_index_child)
-    }
-
-    fn index_first_child(
-        &self,
-        index: &CatalogId,
-        key_prefix: &[SavedKey],
-    ) -> Result<Option<SavedKey>, StoreError> {
-        let prefix = CellKey::index_key_prefix(index, key_prefix);
-        self.first_child(prefix.as_bytes(), decode_index_child)
-    }
-
-    fn index_last_child(
-        &self,
-        index: &CatalogId,
-        key_prefix: &[SavedKey],
-    ) -> Result<Option<SavedKey>, StoreError> {
-        let prefix = CellKey::index_key_prefix(index, key_prefix);
-        self.last_child(prefix.as_bytes(), decode_index_child)
-    }
-
-    fn max_int_data_child(
-        &self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        path: &[DataPathSegment],
-    ) -> Result<Option<i64>, StoreError> {
-        let prefix = CellKey::data_path_prefix(store, identity, path);
-        self.max_int_child(prefix.as_bytes(), decode_data_child)
-    }
-
-    fn scan_index_tuple(
-        &self,
-        index: &CatalogId,
-        index_keys: &[SavedKey],
-        limit: usize,
-    ) -> Result<IndexPage, StoreError> {
-        self.scan_index_tuple_from(index, index_keys, None, limit)
-    }
-
-    fn scan_index_tuple_after(
-        &self,
-        index: &CatalogId,
-        index_keys: &[SavedKey],
-        cursor: &IndexCursor,
-        limit: usize,
-    ) -> Result<IndexPage, StoreError> {
-        self.scan_index_tuple_from(index, index_keys, Some(cursor), limit)
-    }
-
-    fn for_each_index_entry(
-        &self,
-        index: &CatalogId,
-        visit: &mut IndexEntryVisitor<'_>,
-    ) -> Result<(), StoreError> {
-        let prefix = CellKey::index_key_prefix(index, &[]);
-        self.for_each_page_entry(prefix.as_bytes(), |key, value| {
-            let rest = key.get(prefix.as_bytes().len()..).unwrap_or_default();
-            let (index_keys, identity) =
-                decode_index_entry_key(rest).map_err(|_| corrupt_cell(key))?;
-            visit(&index_keys, &identity, value)?;
-            Ok(std::ops::ControlFlow::Continue(()))
-        })
-    }
-
+impl TreeStore {
     fn scan_index_tuple_from(
         &self,
         index: &CatalogId,
@@ -938,10 +629,9 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
                         message: "index cursor does not match exact index tuple".into(),
                     });
                 }
-                self.backend
-                    .scan_after(prefix.as_bytes(), cursor.last_key.as_slice(), limit)?
+                self.scan_after(prefix.as_bytes(), cursor.last_key.as_slice(), limit)?
             }
-            None => self.backend.scan(prefix.as_bytes(), limit)?,
+            None => self.scan(prefix.as_bytes(), limit)?,
         };
         let range = prefix.range();
         let mut entries = Vec::new();
@@ -968,18 +658,6 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
             cursor,
             truncated: page.truncated,
         })
-    }
-
-    fn write_u64_meta(&mut self, cell: MetaCell, value: u64) -> Result<(), StoreError> {
-        self.backend
-            .write(CellKey::meta(cell).as_bytes(), value.to_be_bytes().to_vec())
-    }
-
-    fn read_u64_meta(&self, cell: MetaCell) -> Result<Option<u64>, StoreError> {
-        self.backend
-            .read(CellKey::meta(cell).as_bytes())?
-            .map(|bytes| decode_u64(&bytes))
-            .transpose()
     }
 
     fn child_count(
@@ -1028,10 +706,8 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
         let mut cursor: Option<Vec<u8>> = None;
         loop {
             let page = match cursor.as_ref() {
-                Some(cursor) => self
-                    .backend
-                    .scan_after(prefix, cursor, CHILD_SCAN_PAGE_LIMIT)?,
-                None => self.backend.scan(prefix, CHILD_SCAN_PAGE_LIMIT)?,
+                Some(cursor) => self.scan_after(prefix, cursor, CHILD_SCAN_PAGE_LIMIT)?,
+                None => self.scan(prefix, CHILD_SCAN_PAGE_LIMIT)?,
             };
             cursor = page.entries.last().map(|(key, _)| key.clone());
             for (key, value) in &page.entries {
@@ -1103,9 +779,7 @@ impl<'a, B: Backend + ?Sized> TreeCellStore<'a, B> {
     ) -> Result<Option<SavedKey>, StoreError> {
         let mut cursor = cursor.to_vec();
         loop {
-            let page = self
-                .backend
-                .scan_after(prefix, &cursor, CHILD_SCAN_PAGE_LIMIT)?;
+            let page = self.scan_after(prefix, &cursor, CHILD_SCAN_PAGE_LIMIT)?;
             let next_cursor = page.entries.last().map(|(key, _)| key.clone());
             for (key, _) in page.entries {
                 let rest = key.get(prefix.len()..).unwrap_or_default();
