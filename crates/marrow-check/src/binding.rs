@@ -1,27 +1,19 @@
 //! The project-wide binding index: every identifier *use* resolved to the
 //! *definition* it names, respecting lexical scope (shadowing) and `use` import
-//! aliases, plus a rename-safety classification.
+//! aliases, plus a rename-safety classification. It is the resolution layer the
+//! editor tooling (go-to-definition, find-all-references, rename) builds on. It
+//! does not reimplement name resolution: it reuses the checker's unified `resolve`
+//! (via `resolve_function_in_module`) for module-aware function calls,
+//! `find_resource_schema` plus the schema's field/layer/index lookup for saved
+//! data, and the same block traversal shape the checker's scope lowering uses (a
+//! frame per block, with loop and catch bindings scoped to their body) so a
+//! local's scope cannot drift from the one the checker builds.
 //!
-//! This is the resolution layer the editor tooling (go-to-definition,
-//! find-all-references, rename) builds on. It does not reimplement name
-//! resolution: it reuses the checker's unified `resolve` (via
-//! `resolve_function_in_module`) for module-aware function calls — short-form
-//! `use` aliases and visibility included — `find_resource_schema` plus the
-//! schema's field/layer/index lookup for saved data, and the same block
-//! traversal shape the checker's scope lowering uses (a frame per block, with
-//! loop and catch bindings scoped to their body) so a local's scope cannot drift
-//! from the one the checker builds.
-//!
-//! Spans. A *use* of a single-segment name (a local, parameter, module constant,
-//! or unqualified function) is recorded at the identifier itself, because the
-//! parser gives a single-segment [`Expression::Name`] a span covering exactly that
-//! token. A qualified call (`shelf::books::add`, `books::add`) is recorded at the
-//! whole path span, while an enum member literal (`Cat::tiger::bengal`) is split
-//! so the enum segment and each written member-path segment resolve
-//! independently. A *definition* is recorded at its declaration node's span; a
-//! parameter, loop, or catch binding has no node span of its own in the AST, so
-//! its definition is recorded at the enclosing declaration. Consumers that need a
-//! tighter range can narrow within these spans using the source text.
+//! A single-segment name resolves at the identifier token; a qualified call at
+//! the whole path span; an enum member literal is split so the enum segment and
+//! each written member-path segment resolve independently. A parameter, loop, or
+//! catch binding has no node span of its own, so its definition is recorded at
+//! the enclosing declaration.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -121,9 +113,8 @@ pub struct BindingIndex {
 /// same scope, alias, and schema logic the checker uses.
 pub fn build_binding_index(snapshot: &AnalysisSnapshot) -> BindingIndex {
     let mut builder = IndexBuilder::new(&snapshot.program);
-    // Definitions come from the parsed files (they carry source spans the
-    // resolved program does not): module constants, functions, resources and
-    // their members, and `use` aliases.
+    // Definitions come from the parsed files, which carry source spans the
+    // resolved program does not.
     for file in &snapshot.files {
         builder.collect_definitions(&file.path, &file.parsed);
     }
@@ -363,8 +354,7 @@ impl<'p> IndexBuilder<'p> {
                         &enum_decl.members,
                     );
                 }
-                // An evolve block declares catalog intent, not source symbols, so
-                // it contributes no binding definitions.
+                // Evolve blocks declare catalog intent, not source symbols.
                 Declaration::Evolve(_) => {}
             }
         }
@@ -397,10 +387,9 @@ impl<'p> IndexBuilder<'p> {
         }
     }
 
-    /// Collect a resource definition. It is data-backed exactly when a store
-    /// references the resource in this module. Resources are keyed by their
-    /// declaring module plus source name; use sites choose the module through the
-    /// checker resolver.
+    /// Collect a resource definition, data-backed exactly when a store references
+    /// it. Keyed by declaring module plus source name; use sites pick the module
+    /// through the checker resolver.
     fn collect_resource(
         &mut self,
         file: &Path,
@@ -408,7 +397,7 @@ impl<'p> IndexBuilder<'p> {
         resource: &ResourceDecl,
         has_store: bool,
     ) {
-        let type_safety = if has_store {
+        let safety = if has_store {
             RenameSafety::SavedDataBacked
         } else {
             RenameSafety::SourceOnly
@@ -419,7 +408,7 @@ impl<'p> IndexBuilder<'p> {
                 span: resource.span,
                 kind: SymbolKind::Resource,
             },
-            type_safety.clone(),
+            safety,
         );
         self.module_scope
             .resources
@@ -487,7 +476,6 @@ impl<'p> IndexBuilder<'p> {
                     self.module_scope
                         .saved_members
                         .insert((root.to_string(), chain.clone()), id);
-                    // Descend into the group's members with this layer on the chain.
                     self.collect_members(file, root, chain, &group.members);
                     chain.pop();
                 }
@@ -505,9 +493,8 @@ impl<'p> IndexBuilder<'p> {
         for declaration in &parsed.file.declarations {
             self.collect_type_refs(file, declaration, source, &prelude.aliases, &module);
             if let Declaration::Function(function) = declaration {
-                // The function body runs under a scope of its parameters over the
-                // module's bindings. Parameters have no AST span, so a parameter
-                // binding is defined here at the function span and tracked by name.
+                // Parameters have no AST span, so each is defined at the function
+                // span and tracked by name.
                 let mut scope: Vec<HashMap<String, DefId>> = vec![HashMap::new()];
                 let mut type_scope: Vec<HashMap<String, MarrowType>> =
                     vec![prelude.module_constants.clone()];
@@ -711,10 +698,10 @@ fn resource_decl<'a>(parsed: &'a ParsedSource, name: &str) -> Option<&'a Resourc
 }
 
 /// Walks a function body collecting identifier uses against a scope of local
-/// bindings, mirroring the checker's block/statement scope traversal
-/// (push a frame per block; record `const`/`var` bindings as they appear; push a
+/// bindings, mirroring the checker's block/statement scope traversal (push a
+/// frame per block; record `const`/`var` bindings as they appear; push a
 /// loop/catch frame for the body that runs under it) so a local's scope cannot
-/// drift from the checker's.
+/// drift from the one the checker builds.
 struct UseWalker<'a, 'p> {
     builder: &'a mut IndexBuilder<'p>,
     file: &'a Path,
@@ -759,8 +746,7 @@ impl UseWalker<'_, '_> {
                 if let Some(ty) = ty {
                     self.resolve_type_ref(ty);
                 }
-                // The initializer is in the scope *before* the binding, so resolve
-                // it first, then bind the name for later statements.
+                // The initializer runs before the binding, so resolve it first.
                 self.walk_expr(value, scope);
                 self.bind_local(statement, name, *span, scope, type_scope);
             }
@@ -985,20 +971,18 @@ impl UseWalker<'_, '_> {
             Expression::Name { segments, span } => {
                 self.resolve_name(segments, *span, scope);
             }
-            Expression::SavedRoot { .. } => {
-                // A bare saved root resolves only as part of a larger saved-path
-                // expression; resolution happens in the enclosing Call/Field arm
-                // where the chain is known.
-            }
+            // A bare saved root resolves only as part of a larger saved-path
+            // expression; resolution happens in the enclosing Call/Field arm
+            // where the chain is known.
+            Expression::SavedRoot { .. } => {}
             Expression::Unary { operand, .. } => self.walk_expr(operand, scope),
             Expression::Binary { left, right, .. } => {
                 self.walk_expr(left, scope);
                 self.walk_expr(right, scope);
             }
             Expression::Call { callee, args, .. } => {
-                // A saved keyed read `^root(..).layer(..)` or a record read
-                // `^root(..)` is call-shaped; resolve its saved member if it names
-                // one before treating the callee as a function/value.
+                // A saved keyed/record read is call-shaped; resolve its saved
+                // member before treating the callee as a function or value.
                 if !self.resolve_saved_path(expr) && !self.resolve_call(callee) {
                     self.walk_expr(callee, scope);
                 }
@@ -1007,8 +991,8 @@ impl UseWalker<'_, '_> {
                 }
             }
             Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
-                // A saved field read `^root(..).field` (or a deeper group path)
-                // resolves to the field; otherwise descend into the base.
+                // Resolve as a saved path if applicable; otherwise descend into
+                // the base.
                 if !self.resolve_saved_path(expr) {
                     self.walk_expr(base, scope);
                 }
@@ -1253,8 +1237,7 @@ impl UseWalker<'_, '_> {
         let Some((root, chain, name_span, kind)) = saved_member_ref(expr) else {
             return false;
         };
-        // Only a declared saved root with this member resolves; reuse the checker's
-        // resource lookup to confirm the root is owned.
+        // Only a declared saved root resolves; confirm the root is owned.
         if find_resource_schema(self.builder.program, root).is_none() {
             return false;
         }
@@ -1403,10 +1386,8 @@ fn source_span_at(source: &str, start_byte: usize, end_byte: usize) -> SourceSpa
 
 fn match_arm_header_span(arm: &MatchArm) -> SourceSpan {
     let label_len = arm.path.join("::").len();
-    // `span_covers` treats `end_byte` as the last covered byte, so a label of
-    // length N starting at S ends at S + N - 1. A space or trailing comment after
-    // the label must not resolve as a member; an exclusive end would let the byte
-    // just past the label match.
+    // `span_covers` end is inclusive, so a label of length N ends at S + N - 1;
+    // an exclusive end would let the byte just past the label resolve as a member.
     SourceSpan {
         start_byte: arm.span.start_byte,
         end_byte: arm
@@ -1422,30 +1403,26 @@ fn span_width(span: SourceSpan) -> usize {
     span.end_byte.saturating_sub(span.start_byte)
 }
 
-/// Extract `(root, member-chain, member-name span, kind)` from a saved-path read,
-/// where the member chain is the named segments after the identity (outermost
-/// first) and the span points at the leaf member name. Resolves a top-level field
+/// Extract `(root, member-chain, member-name span, kind)` from a saved-path read.
+/// The chain is the named segments after the identity, outermost first, and the
+/// span points at the leaf member name. Covers a top-level field
 /// `^root(..).field` / singleton `^root.field`, a keyed layer `^root(..).layer(..)`
 /// or unkeyed group hop, and a unique-index lookup `^root.index(..)`. Returns
 /// `None` for anything that is not a saved read of a named member.
 fn saved_member_ref(expr: &Expression) -> Option<(&str, Vec<&str>, SourceSpan, SymbolKind)> {
     match expr {
-        // A field/group read off a saved base: `^root(..).name`, `^root.name`, or a
-        // deeper group hop `^root(..).group.name`.
+        // A field/group read names a stored field; an index is always *called*, so
+        // it never appears in a `Field` position.
         Expression::Field {
             base, name, span, ..
         }
         | Expression::OptionalField {
             base, name, span, ..
         } => {
-            // A field/group read names a stored field of the resource (an index is
-            // always *called*, so it never appears in a `Field` position).
             let (root, mut chain) = saved_field_chain(base)?;
             chain.push(name);
             Some((root, chain, *span, SymbolKind::Field))
         }
-        // A keyed layer read `^root(..).layer(..)` (a call whose callee is the layer
-        // field) or an index lookup `^root.index(..)`.
         Expression::Call { callee, .. } => match callee.as_ref() {
             Expression::Field {
                 base,
@@ -1453,12 +1430,11 @@ fn saved_member_ref(expr: &Expression) -> Option<(&str, Vec<&str>, SourceSpan, S
                 span: name_span,
                 ..
             } => {
-                // `^root.index(args)`: base is the bare saved root, so this names an
-                // index by its single-name chain.
+                // `^root.index(args)`: base is the bare saved root, so this names
+                // an index by its single-name chain.
                 if let Expression::SavedRoot { name: root, .. } = base.as_ref() {
                     return Some((root, vec![name], *name_span, SymbolKind::Index));
                 }
-                // `^root(..).layer(..)`: base is a keyed record or deeper layer.
                 let (root, mut chain) = saved_layer_base(base)?;
                 chain.push(name);
                 Some((root, chain, *name_span, SymbolKind::Layer))
@@ -1470,20 +1446,15 @@ fn saved_member_ref(expr: &Expression) -> Option<(&str, Vec<&str>, SourceSpan, S
 }
 
 /// The `(root, [member..])` chain leading to the base of a field read, peeling
-/// group hops: a keyed record `^root(..)`, a singleton root `^root`, or a deeper
-/// unkeyed group `..group`.
+/// group hops.
 fn saved_field_chain(expr: &Expression) -> Option<(&str, Vec<&str>)> {
     match expr {
-        // `^root(..)`: the keyed record. The following field is the first member.
         Expression::Call { callee, .. } => match callee.as_ref() {
             Expression::SavedRoot { name: root, .. } => Some((root, Vec::new())),
-            // A keyed layer `^root(..).layer(..)` as a base: peel it as a layer.
             Expression::Field { .. } => saved_layer_base(callee),
             _ => None,
         },
-        // `^root`: a singleton resource addressed by its root.
         Expression::SavedRoot { name: root, .. } => Some((root, Vec::new())),
-        // `..group`: an unkeyed group hop; recurse and append this group name.
         Expression::Field { base, name, .. } => {
             let (root, mut chain) = saved_field_chain(base)?;
             chain.push(name);
@@ -1493,12 +1464,10 @@ fn saved_field_chain(expr: &Expression) -> Option<(&str, Vec<&str>)> {
     }
 }
 
-/// The `(root, [layer..])` chain to a keyed layer base `^root(..).layer`, with
-/// layer names outermost first. Each `Field` peels one layer; its base is the
-/// keyed record `^root(..)` or a deeper keyed layer entry. This stays stricter
-/// than the inference-side layer decoder: it requires a keyed `Call` base, so a
-/// bare saved root `^root.layer` does not resolve to a layer symbol here, which
-/// keeps editor symbol resolution from widening.
+/// The `(root, [layer..])` chain to a keyed layer base `^root(..).layer`, layer
+/// names outermost first. Stricter than the inference-side layer decoder: it
+/// requires a keyed `Call` base, so a bare `^root.layer` does not resolve to a
+/// layer symbol here and editor symbol resolution does not widen.
 fn saved_layer_base(expr: &Expression) -> Option<(&str, Vec<&str>)> {
     let Expression::Field {
         base, name: layer, ..
