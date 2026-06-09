@@ -458,7 +458,7 @@ const ok: bool = bool(raw)
 const payload: bytes = bytes(text)
 const code: ErrorCode = ErrorCode(raw)
 const day: date = date(raw)
-const at: instant = instant(raw)
+const moment: instant = instant(raw)
 const span: duration = duration(raw)
 ```
 
