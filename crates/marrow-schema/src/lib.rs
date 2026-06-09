@@ -673,10 +673,6 @@ pub const SCHEMA_CATEGORY_LEAF: &str = "schema.category_leaf";
 /// cover. The invariant category <=> has-children makes that fail-open impossible.
 pub const SCHEMA_PARENT_NOT_CATEGORY: &str = "schema.parent_not_category";
 
-/// An index appears inside a group. Indexes are direct members of keyed saved
-/// resources; nested-layer lookups are modeled as a separate resource.
-pub const SCHEMA_INDEX_IN_GROUP: &str = "schema.index_in_group";
-
 /// A managed saved field or key is typed `unknown`. `unknown` is a dynamic
 /// boundary value; saved schemas use concrete field and key types. Local-only
 /// resources may use `unknown`.
