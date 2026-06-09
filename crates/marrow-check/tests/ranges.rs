@@ -22,12 +22,10 @@ fn codes(source: &str) -> Vec<String> {
         .collect()
 }
 
-/// The diagnostic messages a module's source produces, in report order.
-///
-/// Range diagnostics select the indefinite article for the endpoint type name
-/// (`an instant`, not `a instant`); that grammar lives only in the rendered
-/// message, with no typed signal to assert. The article test below is the only
-/// coverage of that rule and relies on this helper.
+/// The diagnostic messages a module's source produces, in report order. Range
+/// diagnostics name the endpoint type with an indefinite article, a grammar
+/// detail that lives only in the rendered message; the article golden below is
+/// the sole consumer.
 fn messages(source: &str) -> Vec<String> {
     diagnostics(source)
         .iter()
@@ -280,18 +278,31 @@ fn a_valid_ascending_decimal_range_checks_clean() {
     assert!(codes.is_empty(), "{codes:?}");
 }
 
+/// The instant endpoint named in a range diagnostic, with its indefinite article. This is
+/// a human-render contract with no typed signal: `instant` is vowel-initial, so a faithful
+/// message reads "an `instant`", never "a `instant`". Pinned as a golden so an intentional
+/// wording change is reviewed, while the range invariant itself is the typed `check.range`
+/// code asserted alongside it.
+const RENDERED_INSTANT_ARTICLE: &str = "an `instant`";
+
 #[test]
-fn a_vowel_initial_endpoint_uses_the_right_article() {
-    // `instant` is vowel-initial; the range diagnostic must read "an instant", not
-    // "a instant". Both the step-mismatch (`by 1`) and the default-step (no `by`)
-    // diagnostics render the endpoint type name, so both must select the article.
+fn an_instant_endpoint_range_diagnostic_uses_the_right_article() {
+    // Both the step-mismatch (`by 1`) and the default-step (no `by`) instant ranges are a
+    // `check.range` error and render the endpoint type name, so both must select the article.
     for body in [
         "    for t in std::clock::now()..std::clock::now() by 1\n        var x = t\n",
         "    for t in std::clock::now()..std::clock::now()\n        var x = t\n",
     ] {
-        let messages = messages(&module(body));
+        let source = module(body);
+
+        let codes = codes(&source);
+        assert!(codes.iter().any(|c| c == "check.range"), "{codes:?}");
+
+        let messages = messages(&source);
         assert!(
-            messages.iter().any(|m| m.contains("an `instant`")),
+            messages
+                .iter()
+                .any(|m| m.contains(RENDERED_INSTANT_ARTICLE)),
             "{messages:?}"
         );
         assert!(

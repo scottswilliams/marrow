@@ -197,31 +197,31 @@ fn non_sha_catalog_digest_is_rejected() {
     assert_eq!(error.code, marrow_project::CATALOG_INVALID);
 }
 
+/// A retired identity is dropped from the catalog, never carried as a `removed` lifecycle
+/// marker: `removed` is not a representable [`CatalogLifecycle`], so a catalog whose
+/// lifecycle text reads `removed` fails closed with `CATALOG_INVALID`. The contrast against
+/// the byte-identical `active` catalog, which parses clean, pins the rejection to the
+/// lifecycle value rather than the digest or another field.
 #[test]
 fn removed_catalog_lifecycle_is_rejected() {
-    let json = r#"{
-  "epoch": 7,
-  "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-  "entries": [
-    {
-      "kind": "resource",
-      "path": "books::Book",
-      "stableId": "cat_00000000000000000000000000000001",
-      "aliases": [],
-      "lifecycle": "removed",
-      "acceptedKeyShape": null,
-      "acceptedStruct": null
-    }
-  ]
-}"#;
+    let metadata = catalog(vec![entry(
+        CatalogEntryKind::Resource,
+        "books::Book",
+        "res-book",
+        &[],
+    )]);
+    let json = metadata.to_json_pretty();
+    CatalogMetadata::from_json(&json).expect("active lifecycle parses clean");
 
-    let error = CatalogMetadata::from_json(json).expect_err("removed lifecycle rejected");
-
-    assert_eq!(error.code, marrow_project::CATALOG_INVALID);
+    let field = "\"lifecycle\": \"active\"";
     assert!(
-        error.message.contains("removed"),
-        "wrong rejection: {error:?}"
+        json.contains(field),
+        "on-disk lifecycle spelling drifted: {json}"
     );
+    let removed = json.replacen(field, "\"lifecycle\": \"removed\"", 1);
+
+    let error = CatalogMetadata::from_json(&removed).expect_err("removed lifecycle rejected");
+    assert_eq!(error.code, marrow_project::CATALOG_INVALID);
 }
 
 #[test]
