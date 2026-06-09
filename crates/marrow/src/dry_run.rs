@@ -1,17 +1,12 @@
 //! The dry-run hook and report for `run --dry-run`.
 //!
 //! A dry run executes the entry inside one outer store savepoint that is always
-//! rolled back, so no saved data changes — the same records read back afterward.
-//! Aborting the store transaction can still rewrite backend metadata, so the
-//! guarantee is logical saved-data stability, not native-file byte identity. It
-//! collects the managed writes the run *would* have committed through the same
-//! write-observation seam the trace uses, then reports them. When `--trace` is also
-//! set, it forwards each event to a [`TraceHook`] so the two compose: observe and
-//! discard.
-//!
-//! Only saved data is rewound. Side effects outside the store — a `std::io` file
-//! write, a `std::log` line — are not rolled back, so the report covers managed
-//! writes alone.
+//! rolled back, then reports the managed writes the run *would* have committed.
+//! Aborting the transaction can still rewrite backend metadata, so the guarantee is
+//! logical saved-data stability, not native-file byte identity. Only saved data is
+//! rewound: side effects outside the store (a `std::io` write, a `std::log` line)
+//! are not, so the report covers managed writes alone. With `--trace` set, each
+//! event also forwards to a [`TraceHook`].
 
 use marrow_check::CheckedRuntimeProgram;
 use marrow_run::{Frame, RuntimeError, StepHook, WriteOp, WriteTarget};
@@ -21,8 +16,8 @@ use serde_json::json;
 use crate::CheckFormat;
 use crate::trace::{TraceHook, WriteTargetNames, render_write_target, write_target_json};
 
-/// One planned managed operation the run would have committed: its kind, the human
-/// path, and the value bytes for a write (a delete has none).
+/// One managed operation a dry run would have committed; `value` is `None` for a
+/// delete.
 pub(crate) struct PlannedWrite {
     op: WriteOp,
     target: WriteTarget,
@@ -30,9 +25,8 @@ pub(crate) struct PlannedWrite {
 }
 
 /// Collects the managed writes a dry run would commit, optionally forwarding each
-/// observed statement and write to a [`TraceHook`] when `--dry-run --trace`
-/// compose. It is purely observational — the run's writes still stage inside the
-/// outer savepoint and are discarded when the savepoint is rolled back.
+/// event to a [`TraceHook`] under `--dry-run --trace`. Purely observational: the
+/// run's writes still stage inside the outer savepoint and are discarded on rollback.
 pub(crate) struct DryRunHook {
     planned: Vec<PlannedWrite>,
     trace: Option<TraceHook>,
@@ -83,10 +77,8 @@ impl StepHook for DryRunHook {
     }
 }
 
-/// Report the planned writes a dry run collected. The run's own `print`/`write`
-/// output is handled by the caller; this renders only the dry-run report on standard
-/// error, off the program's stdout stream — `would write`/`would delete` lines under
-/// text format, or a JSON object under `json`/`jsonl`.
+/// Report the planned writes a dry run collected, on standard error to stay off
+/// the program's own stdout stream.
 pub(crate) fn report(
     planned: &[PlannedWrite],
     format: CheckFormat,
@@ -132,8 +124,8 @@ pub(crate) fn report(
     }
 }
 
-/// One planned write as a JSON record: its op, the human path, and base64 of the
-/// value bytes for a write (a delete has none).
+/// Render one planned write as a JSON record with op, path, and base64 value
+/// (or null for deletes).
 fn planned_record(step: &PlannedWrite, names: &WriteTargetNames) -> serde_json::Value {
     let op = match step.op {
         WriteOp::Write => "write",
@@ -143,6 +135,6 @@ fn planned_record(step: &PlannedWrite, names: &WriteTargetNames) -> serde_json::
         "op": op,
         "target": write_target_json(&step.target, names),
         "path": render_write_target(&step.target, names),
-        "value_b64": step.value.as_ref().map(|bytes| marrow_run::base64::encode(bytes)),
+        "value_b64": step.value.as_deref().map(marrow_run::base64::encode),
     })
 }

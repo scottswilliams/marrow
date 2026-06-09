@@ -1,12 +1,9 @@
 //! The execution-trace hook shared by `run --trace` and `test --trace`.
 //!
-//! A [`TraceHook`] is a [`StepHook`] that observes each statement and each
-//! managed write as the run executes, reporting them in execution order. The trace
-//! is tooling output on standard error under every format, leaving the program's
-//! own `print`/`write` alone on standard out: under text an indented, depth-aware
-//! stream, and under `json`/`jsonl` one `step`/`write` record per event. It never
-//! alters the run: it only observes, so a traced run does exactly what an untraced
-//! one does, plus the trace.
+//! A [`TraceHook`] observes each statement and managed write as the run executes
+//! and reports them in execution order, on standard error to leave the program's
+//! own `print`/`write` alone on stdout. It only observes: a traced run does exactly
+//! what an untraced one does, plus the trace.
 
 use std::collections::HashMap;
 
@@ -20,9 +17,8 @@ use serde_json::json;
 
 use crate::CheckFormat;
 
-/// Observes a run and reports each statement and managed write. The `label`
-/// prefixes every event under text format and is carried on each JSON record, so
-/// `test --trace` can attribute a trace to the test it belongs to; a plain `run`
+/// Observes a run and reports each statement and managed write. `label` prefixes
+/// each event so `test --trace` can attribute a trace to its test; a plain `run`
 /// passes an empty label.
 pub(crate) struct TraceHook {
     format: CheckFormat,
@@ -45,11 +41,8 @@ impl TraceHook {
         }
     }
 
-    /// Emit the collected JSON records (for `json`/`jsonl`), then reset them. Text
-    /// traces print as they happen and leave nothing to flush. `json` wraps the
-    /// records in one object; `jsonl` streams them followed by a summary line. The
-    /// trace is tooling output that rides alongside the program's own stdout, so its
-    /// records go to standard error to keep the two streams from interleaving.
+    /// Emit and reset the collected JSON records. Text traces print as they happen
+    /// and leave nothing to flush.
     pub(crate) fn flush(&mut self) {
         let records = std::mem::take(&mut self.records);
         match self.format {
@@ -71,8 +64,8 @@ impl TraceHook {
         }
     }
 
-    /// The text prefix for an event: the label (when tracing a named test) and an
-    /// indent of two spaces per nested call, so the stream reads as a call tree.
+    /// The text prefix for an event: the label and two spaces per nested call, so
+    /// the stream reads as a call tree.
     fn text_indent(&self, depth: usize) -> String {
         let mut prefix = String::new();
         if !self.label.is_empty() {
@@ -216,13 +209,10 @@ impl WriteTargetNames {
         names
     }
 
-    /// Render a managed write's leaf value as its declared typed scalar, looked up
-    /// by the write's leaf member. The canonical saved text of every non-bool scalar
-    /// is its stored bytes (an int as its digits, a date as `YYYY-MM-DD`, raw bytes
-    /// as `0x<hex>`), so only a `bool` needs decoding to read `true`/`false`; every
-    /// other value renders straight from its bytes with no decode/encode round-trip.
-    /// A value whose meaning is not a scalar (an identity reference or enum member)
-    /// also renders from its raw bytes. The JSON `value_b64` field stays the raw bytes.
+    /// Render a managed write's leaf value as its declared typed scalar. The
+    /// canonical saved text of every non-bool scalar is its stored bytes, so only a
+    /// `bool` needs decoding to read `true`/`false`; everything else renders
+    /// straight from its bytes with no decode/encode round-trip.
     pub(crate) fn render_leaf_value(&self, target: &WriteTarget, value: &[u8]) -> String {
         if let Some(StoredValueMeaning::Scalar(ScalarType::Bool)) = self.leaf_meaning(target)
             && let Some(SavedValue::Bool(flag)) = decode_value(value, ScalarType::Bool)

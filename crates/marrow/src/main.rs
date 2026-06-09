@@ -132,12 +132,9 @@ pub(crate) fn report_project(
     }
 }
 
-/// Emit a diagnostic report under `json`/`jsonl`, the single owner of the
-/// array-versus-stream-plus-summary shape both reporters share. `json` nests the
-/// records under `diagnostics` in one `envelope` object; `jsonl` streams each record
-/// and then a `summary` line carrying the record count. `envelope` supplies the
-/// per-report fields (`project`/`file`, `status`, and any `declarations`) common to
-/// both shapes. Callers route only `json`/`jsonl` here; text stays caller-specific.
+/// `json` nests the records under `diagnostics` in one envelope; `jsonl` streams
+/// each record followed by a `summary` line carrying the count. Callers route only
+/// `json`/`jsonl` here; text stays caller-specific.
 fn report_diagnostic_records(
     format: CheckFormat,
     records: impl Iterator<Item = serde_json::Value>,
@@ -163,12 +160,9 @@ fn report_diagnostic_records(
     }
 }
 
-/// The error envelope shared by every diagnostic the CLI emits as JSON: the
-/// `code`/`kind`/`message` scaffold every code carries, plus its per-source
-/// `source_span`. Parse and project diagnostics add a `severity`; a parse
-/// diagnostic also carries `help` (and byte offsets in its span). The optional
-/// keys are passed in rather than read off the trait so the absent-key cases stay
-/// exactly absent.
+/// The JSON envelope shared by every diagnostic: `code`/`kind`/`message` plus a
+/// per-source `source_span`. The optional `severity`/`help` are passed in rather
+/// than read off the trait so an absent key stays exactly absent.
 pub(crate) fn envelope(
     diagnostic: &dyn Diagnose,
     source_span: serde_json::Value,
@@ -191,8 +185,7 @@ pub(crate) fn envelope(
     record
 }
 
-/// Render a project diagnostic as JSON. Unlike single-file parse diagnostics,
-/// project diagnostics carry no `help` or byte offsets — they are reported at a
+/// Project diagnostics carry no `help` or byte offsets: they are reported at a
 /// declaration site rather than a byte span.
 fn check_diagnostic_record(diagnostic: &marrow_check::CheckDiagnostic) -> serde_json::Value {
     envelope(
@@ -219,9 +212,8 @@ pub(crate) fn report_simple_error(code: &str, message: &str, format: CheckFormat
     }
 }
 
-/// Parse a project directory, a second path argument, and an optional `--format`
-/// for commands shaped `marrow <command> [--format ...] <projectdir> <path>`.
-/// `path_label` names the second argument in usage and errors.
+/// Parse `marrow <command> [--format ...] <projectdir> <path>`; `path_label` names
+/// the second argument in usage and errors.
 pub(crate) fn dir_and_path_args(
     command: &str,
     path_label: &str,
@@ -260,9 +252,8 @@ pub(crate) fn dir_and_path_args(
     }
 }
 
-/// The project store's redb file path (native backend), or `Ok(None)` for the
-/// in-memory default. No filesystem side effects. The `Result` mirrors
-/// [`resolve_store_path`], which can fail while creating the directory.
+/// The native backend's redb file path, or `Ok(None)` for the in-memory default.
+/// No filesystem side effects.
 fn native_store_path(
     dir: &str,
     config: &marrow_project::ProjectConfig,
@@ -277,8 +268,6 @@ fn native_store_path(
             backend: marrow_project::StoreBackend::Native,
             data_dir,
         }) => {
-            // `parse_config` already rejected a native store with a missing or
-            // empty `dataDir` as `config.invalid`, so it is present here.
             let data_dir = data_dir
                 .as_deref()
                 .expect("parse_config guarantees a native store has a dataDir");
@@ -288,7 +277,7 @@ fn native_store_path(
 }
 
 /// Like [`native_store_path`], but creates the data directory so the store can be
-/// opened for writing. `Ok(None)` is the in-memory default.
+/// opened for writing.
 pub(crate) fn resolve_store_path(
     dir: &str,
     config: &marrow_project::ProjectConfig,
@@ -306,11 +295,8 @@ pub(crate) fn resolve_store_path(
     Ok(Some(path))
 }
 
-/// Open the project's configured store read-only for inspection, or `Ok(None)` if
-/// it holds no saved data on disk yet (the in-memory default, or the native file
-/// does not exist). Never creates a store — inspection is read-only. A store-open
-/// failure is rendered through `format` so a `--format json` caller still gets a
-/// JSON error envelope rather than text.
+/// Open the project's store read-only, or `Ok(None)` if it holds no saved data on
+/// disk yet (in-memory default, or the native file does not exist). Never creates.
 pub(crate) fn open_store_for_inspection(
     dir: &str,
     config: &marrow_project::ProjectConfig,
@@ -331,9 +317,7 @@ pub(crate) fn open_store_for_inspection(
     }
 }
 
-/// Load `<dir>/marrow.json`. Reports and returns the exit code if it is missing or
-/// invalid. `load_checked_project` builds on this for commands that need checked
-/// source facts.
+/// Load `<dir>/marrow.json`, reporting an exit code if it is missing or invalid.
 pub(crate) fn load_config(dir: &str) -> Result<marrow_project::ProjectConfig, ExitCode> {
     load_config_with_format(dir, CheckFormat::Text)
 }
@@ -353,10 +337,8 @@ pub(crate) fn load_config_with_format(
     })
 }
 
-/// Load `<dir>/marrow.json` and check the project. On any failure — a missing or
-/// invalid config, an unreadable source root, or check errors — the problem is
-/// reported and the exit code is returned in `Err`; on success the parsed config
-/// and checked program are returned. Shared by `run` and `test`.
+/// Load the config and check the project. On any failure (config, unreadable
+/// source, or check errors) the problem is reported and an exit code returned.
 pub(crate) fn load_checked_project(
     dir: &str,
 ) -> Result<(marrow_project::ProjectConfig, marrow_check::CheckedProgram), ExitCode> {
@@ -384,12 +366,10 @@ pub(crate) fn load_checked_project_with_format(
     Ok((config, program))
 }
 
-/// Freeze a clean project's pending durable identity through the one production
-/// catalog writer, returning the re-checked program. A program with no pending
-/// proposal (a clean accepted catalog, or no durable surface) is returned unchanged
-/// without touching the catalog file. The state-establishing flows — `run` and
-/// `evolve apply` — call this; `check` never does. A failure renders through
-/// `format` so a `--format json` caller still gets a JSON error envelope.
+/// Freeze a project's pending durable identity through the catalog writer,
+/// returning the re-checked program. A program with no pending proposal (a clean
+/// accepted catalog, or no durable surface) is returned unchanged without touching
+/// the catalog file.
 pub(crate) fn commit_pending_identity(
     dir: &str,
     config: &marrow_project::ProjectConfig,
@@ -420,11 +400,8 @@ pub(crate) fn commit_pending_identity(
     }
 }
 
-/// Advance the accepted-catalog file to `catalog` through the one production catalog
-/// writer. `evolve apply` calls this as its final step, after the store transaction
-/// has committed, so the file moves in lockstep with the store it activates. A
-/// failure renders through `format` so a `--format json` caller still gets a JSON
-/// error envelope.
+/// Advance the accepted-catalog file to `catalog`. Must run only after the store
+/// transaction commits, so the file moves in lockstep with the store it activates.
 pub(crate) fn write_accepted_catalog(
     dir: &str,
     config: &marrow_project::ProjectConfig,
@@ -464,11 +441,9 @@ impl CheckFormat {
     }
 }
 
-/// Parse a `--format <value>` flag, the single owner of the `--format` grammar
-/// shared by every command. `index` points at the `--format` token and is advanced
-/// past its value. `saw_format` rejects a repeated flag, and `format` receives the
-/// parsed value. A missing value, an unknown format, or a duplicate flag is a usage
-/// error (exit code 2) with a uniform message.
+/// The one owner of the `--format <value>` grammar. `index` points at the
+/// `--format` token and is advanced past its value. A missing value, unknown
+/// format, or duplicate flag is a usage error (exit code 2).
 pub(crate) fn parse_format_flag(
     args: &[String],
     index: &mut usize,
@@ -493,16 +468,13 @@ pub(crate) fn parse_format_flag(
     Ok(())
 }
 
-/// Report an unknown `-`-prefixed option for `command`, the single owner of the
-/// usage error every command's catch-all option arm shares.
 pub(crate) fn unknown_option(command: &str, value: &str) -> ExitCode {
     eprintln!("unknown {command} option: {value}");
     ExitCode::from(2)
 }
 
-/// Record one positional `target` into `slot`, rejecting a second one. `target_label`
-/// names what the command takes (a project directory, or a source file or directory)
-/// so the duplicate-target error reads naturally for each command.
+/// Record one positional `target` into `slot`, rejecting a second one.
+/// `target_label` names what the command takes so the error reads naturally.
 pub(crate) fn take_single_target(
     slot: &mut Option<String>,
     target: &str,
@@ -592,10 +564,8 @@ pub(crate) fn write_json(value: serde_json::Value) {
     );
 }
 
-/// Emit one JSON record on standard error. Tooling reports that ride alongside a
-/// separate stdout stream — the execution trace and the dry-run plan, which share
-/// stdout with the program's own `print`/`write` output (or the test pass/fail
-/// report) — write their records here so the two streams never interleave.
+/// Emit one JSON record on standard error. Tooling reports (the trace and dry-run
+/// plan) use this so they never interleave with the program's own stdout output.
 pub(crate) fn write_json_err(value: serde_json::Value) {
     eprintln!(
         "{}",
@@ -603,8 +573,8 @@ pub(crate) fn write_json_err(value: serde_json::Value) {
     );
 }
 
-/// Append the lowercase hexadecimal of `bytes` to `out`, two digits per byte, with no
-/// separator or `0x` prefix. Writing into the buffer avoids a per-byte allocation.
+/// Append the lowercase hex of `bytes` to `out` (two digits per byte, no prefix).
+/// Writing into the caller's buffer avoids a per-byte allocation.
 pub(crate) fn push_hex(out: &mut String, bytes: &[u8]) {
     use std::fmt::Write;
     for byte in bytes {
@@ -612,17 +582,16 @@ pub(crate) fn push_hex(out: &mut String, bytes: &[u8]) {
     }
 }
 
-/// The lowercase hexadecimal of `bytes` as an owned string, two digits per byte, with
-/// no separator or `0x` prefix. The single owner of the digest-to-hex conversion.
+/// Allocate and return the lowercase hex string of `bytes`. The single owner of
+/// the digest-to-hex conversion.
 pub(crate) fn hex_string(bytes: &[u8]) -> String {
     let mut text = String::with_capacity(bytes.len() * 2);
     push_hex(&mut text, bytes);
     text
 }
 
-/// Render saved value bytes as the text a developer reads: UTF-8 text when the bytes
-/// are valid UTF-8, otherwise `0x<hex>`. The single owner of the value-byte display
-/// contract shared by `data dump`, `data get`, and the execution trace.
+/// The one owner of how saved value bytes display: UTF-8 text when valid,
+/// otherwise `0x<hex>`. Shared by `data dump`/`data get` and the execution trace.
 pub(crate) fn render_value_bytes(bytes: &[u8]) -> String {
     match std::str::from_utf8(bytes) {
         Ok(text) => text.to_string(),

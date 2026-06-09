@@ -1,14 +1,7 @@
-//! The Marrow language server: a basic LSP over stdio.
-//!
-//! It speaks JSON-RPC 2.0 with `Content-Length` framing, handles the
-//! `initialize`/`shutdown`/`exit` lifecycle, and tracks open documents with full
-//! text sync. On every `didOpen`/`didChange` it publishes
-//! `textDocument/publishDiagnostics`: project checker diagnostics when initialize
-//! supplies a valid `rootUri`, otherwise parse diagnostics for the open buffer.
-//! Hover, definition, and other language features are not yet implemented.
-//!
-//! This is the editor language server, distinct from `marrow serve` (a data/IPC
-//! server with different framing and purpose).
+//! The Marrow editor language server: JSON-RPC 2.0 over stdio with
+//! `Content-Length` framing, full text sync, publishing
+//! `textDocument/publishDiagnostics` on every `didOpen`/`didChange`. Distinct from
+//! `marrow serve`, which is a data/IPC server with different framing and purpose.
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
@@ -46,9 +39,8 @@ reports diagnostics for open `.mw` documents; point an LSP-capable editor at it.
     }
 }
 
-/// The message loop. Returns `Ok(true)` when `exit` arrived after `shutdown` (a
-/// clean stop), `Ok(false)` when `exit` (or EOF) arrived without `shutdown`, and
-/// `Err` on an I/O failure.
+/// The message loop. `Ok(true)` is a clean stop (`exit` after `shutdown`);
+/// `Ok(false)` is `exit` or EOF without `shutdown`; `Err` on I/O failure.
 fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> io::Result<bool> {
     let mut documents: HashMap<String, String> = HashMap::new();
     let mut project: Option<ProjectContext> = None;
@@ -106,7 +98,7 @@ struct ProjectContext {
     config: marrow_project::ProjectConfig,
 }
 
-/// The `(uri, full text)` of a `didOpen`/`didChange`. Full text sync means a
+/// The `(uri, full text)` of a `didOpen`/`didChange`. Under full text sync a
 /// change carries the whole new document as its last content change.
 fn document_params(method: &str, message: &Value) -> Option<(String, String)> {
     let document = &message["params"]["textDocument"];
@@ -128,8 +120,8 @@ fn project_context(message: &Value) -> Option<ProjectContext> {
     Some(ProjectContext { root, config })
 }
 
-/// Build a `publishDiagnostics` notification for `uri`, using project checking
-/// when initialize supplied a valid project root and falling back to parsing.
+/// Build a `publishDiagnostics` notification, using project checking when a valid
+/// project root was supplied and falling back to parse-only diagnostics otherwise.
 fn diagnostics_notification(
     uri: &str,
     text: &str,
@@ -180,7 +172,6 @@ fn checked_diagnostics_notification(
     Some(publish_notification(uri, diagnostics))
 }
 
-/// Parse `text` and build a `publishDiagnostics` notification for `uri`.
 fn parse_diagnostics_notification(uri: &str, text: &str) -> Value {
     let parsed = parse_source(text);
     let diagnostics = parsed
@@ -208,9 +199,8 @@ fn publish_notification(uri: &str, diagnostics: Vec<Value>) -> Value {
     })
 }
 
-/// Map a Marrow diagnostic to the LSP shape: a `range` from the span's byte
-/// offsets, a numeric `severity`, the dotted `code`, `source: "marrow"`, and the
-/// message (with any `help` appended, as `marrow check` does).
+/// Map a Marrow diagnostic to the LSP shape. Any `help` is appended to the
+/// message, matching how `marrow check` renders it.
 fn lsp_diagnostic(
     code: &str,
     severity: Severity,
@@ -240,8 +230,8 @@ fn lsp_diagnostic(
     })
 }
 
-/// Convert a byte offset into a 0-based LSP `{line, character}` using the LSP
-/// default UTF-16 code-unit coordinate space.
+/// Convert a byte offset into a 0-based LSP `{line, character}` in the default
+/// UTF-16 code-unit coordinate space.
 fn position(byte: usize, text: &str) -> Value {
     let byte = byte.min(text.len());
     let mut line = 0u32;
@@ -308,8 +298,8 @@ const MAX_HEADER_LINE_BYTES: usize = 8 * 1024;
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 
-/// Read one LSP message: parse the `Content-Length` header block, then read
-/// exactly that many body bytes and parse them as JSON. `Ok(None)` on clean EOF.
+/// Read one LSP message: parse the `Content-Length` header, read that many body
+/// bytes, parse them as JSON. `Ok(None)` on clean EOF.
 fn read_message(reader: &mut impl BufRead) -> io::Result<Option<Value>> {
     let mut content_length: Option<usize> = None;
     let mut header_bytes = 0usize;
