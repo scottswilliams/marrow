@@ -11,14 +11,11 @@ use crate::program::CheckedProgram;
 use super::{Accumulator, catalog_id, required_catalog_id};
 use crate::evolution::{RepairReason, Verdict};
 
-/// Classify the accepted catalog entries current source no longer declares. A retire
-/// intent reserves the proposal entry's spelling: dropping populated data is a
-/// destructive decision that names the exact catalog id and count. A source-dropped
-/// index deletes its derived cell subtree on apply. A member source merely stopped
-/// declaring, with no retire and no dependent, is a dependency-free sparse-field drop:
-/// a legal no-op whose data lingers. A dropped member an active index still reads
-/// cannot be silently dropped; it needs an explicit retire intent that also removes or
-/// rebinds the index.
+/// Classify the accepted catalog entries current source no longer declares. A retire intent
+/// makes dropping populated data a destructive decision naming the exact id and count; a
+/// source-dropped index deletes its derived subtree on apply; a member merely undeclared with
+/// no retire and no dependent is a legal sparse-field drop whose data lingers. A dropped member
+/// an active index still reads cannot be silently dropped — it needs an explicit retire intent.
 pub(super) fn classify_absent_source_entries(
     program: &CheckedProgram,
     store: &TreeStore,
@@ -93,11 +90,9 @@ pub(super) fn classify_absent_source_entries(
     Ok(())
 }
 
-/// The catalog entries discharge must consider for a source drop: the proposal
-/// entries when source proposed a change, else the accepted entries. The proposal
-/// already carries consumed retire reservations and the lingering still-active
-/// entries, so it supersedes the accepted snapshot; when source proposed nothing,
-/// the accepted entries are the snapshot to diff against.
+/// The catalog entries to consider for a source drop: the proposal entries when source proposed
+/// a change, else the accepted snapshot. The proposal already carries consumed retire
+/// reservations and lingering active entries, so it supersedes the accepted snapshot.
 fn catalog_entries_for_drop_discharge(program: &CheckedProgram) -> &[CatalogEntry] {
     match &program.catalog.proposal {
         Some(proposal) => &proposal.entries,
@@ -129,9 +124,8 @@ fn absent_entry_state(program: &CheckedProgram, entry: &CatalogEntry) -> AbsentE
     }
 }
 
-/// Count records that carry a value for the dropped member identified by `entry`.
-/// Only a resource-member entry holds per-record data; a store, index, or enum entry
-/// has none to count. The records are streamed, never materialized.
+/// Count records that carry a value for the dropped member, streamed, never materialized. Only
+/// a resource-member entry holds per-record data.
 fn populated_member_records(
     program: &CheckedProgram,
     store: &TreeStore,
@@ -158,9 +152,8 @@ fn populated_member_records(
     Ok(populated)
 }
 
-/// The store and member catalog ids for a dropped resource-member entry. The store id
-/// comes from the owning resource's store; the member id is the entry's own stable id,
-/// since a dropped member's cells were written under that id.
+/// The store and member catalog ids for a dropped resource-member entry. The member id is the
+/// entry's own stable id, since its cells were written under that id.
 fn dropped_member_addresses(
     program: &CheckedProgram,
     entry: &CatalogEntry,
@@ -176,9 +169,8 @@ fn dropped_member_addresses(
     Ok(Some((store_id, member_id)))
 }
 
-/// The store root whose resource owns the dropped member, found by matching the
-/// member path's resource prefix against a source store's resource. A member path is
-/// `module::Resource::field...`; its resource prefix is the source resource path.
+/// The store root whose resource owns the dropped member, matching the member path's resource
+/// prefix (`module::Resource::field...`) against a source store's resource.
 fn owning_root(program: &CheckedProgram, entry: &CatalogEntry) -> Option<String> {
     let resource_prefix = entry.path.rsplit_once("::").map(|(head, _)| head)?;
     program.modules.iter().find_map(|module| {
@@ -189,12 +181,9 @@ fn owning_root(program: &CheckedProgram, entry: &CatalogEntry) -> Option<String>
     })
 }
 
-/// Whether a retired resource-member entry names a member nested under an unkeyed group
-/// or a keyed layer rather than a top-level member of the record. The member chain is
-/// everything after the owning resource path; a top-level member is a single segment,
-/// while a nested member carries the group or layer segments before its own. A retired
-/// member is gone from current source, so its nesting is read from its catalog path
-/// against the owning source resource, not from the live member tree.
+/// Whether a retired member is nested under a group or keyed layer rather than top-level. A
+/// retired member is gone from current source, so its nesting is read from its catalog path
+/// against the owning resource (a top-level member is a single trailing segment).
 fn retired_member_is_nested(program: &CheckedProgram, entry: &CatalogEntry) -> bool {
     if entry.kind != CatalogEntryKind::ResourceMember {
         return false;
@@ -220,12 +209,9 @@ fn owning_root_arity(program: &CheckedProgram, entry: &CatalogEntry) -> usize {
         .unwrap_or(1)
 }
 
-/// An active source index that reads the dropped member, as its developer-facing name
-/// and its catalog identity. A dropped member an index still needs cannot be silently
-/// deprecated. The name is for the diagnostic; the catalog id is the typed identity the
-/// verdict carries across into apply. The index is matched on its source-declared key
-/// columns, which still name the dropped member, and its stable id is read from the
-/// catalog entry for the index path.
+/// An active source index that reads the dropped member, as its name (for the diagnostic) and
+/// catalog identity (carried into apply). Matched on the index's source-declared key columns,
+/// which still name the dropped member.
 fn index_depends_on(
     program: &CheckedProgram,
     entry: &CatalogEntry,
@@ -263,10 +249,8 @@ fn index_depends_on(
     Ok(Some((index_name, catalog_id(&stable_id)?)))
 }
 
-/// The stable id of the store-index catalog entry at `path`, from the proposal when
-/// source proposed a change, else the accepted snapshot. Both carry the index entry;
-/// the proposal supersedes the accepted snapshot the same way the dropped-entry scan
-/// chooses its source.
+/// The stable id of the store-index catalog entry at `path`, from the proposal when source
+/// proposed a change, else the accepted snapshot, the same source the dropped-entry scan uses.
 fn index_stable_id(program: &CheckedProgram, path: &str) -> Option<String> {
     catalog_entries_for_drop_discharge(program)
         .iter()

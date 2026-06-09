@@ -1,19 +1,10 @@
 //! Data-attached discharge: classify each evolution obligation against the live
-//! store snapshot, read-only.
+//! store snapshot, read-only. Obligations map to [`Verdict`] roles; discharge never
+//! writes — the verdicts and counts feed the witness a future apply consumes.
 //!
-//! An obligation is a claim current source and the catalog proposal make about
-//! durable data: a member must be present, a new index must be buildable, a retired
-//! entry must be approved before its data is dropped, a transform must reshape
-//! stored meaning. Discharge reads the snapshot through the typed store API and
-//! decides, per obligation, one [`Verdict`] role. It never writes: the verdicts and
-//! counts feed the witness a future apply consumes.
-//!
-//! Obligations come from two sources that the per-family helpers below keep
-//! distinct: the members and indexes a [`CheckedSavedPlace`] resolves for each saved
-//! root (what current source requires), and the accepted catalog entries that
-//! current source no longer declares (a retire, or a dropped sparse field). Both read
-//! the same catalog identity facts; neither re-derives identity or re-classifies a
-//! store path.
+//! Obligations come from two sources: the members and indexes a [`CheckedSavedPlace`]
+//! resolves for each saved root, and the accepted catalog entries current source no
+//! longer declares. Both read the same catalog identity facts.
 //!
 //! Records are streamed, never materialized: a single paged scan probes every
 //! required leaf and derives every prospective unique-index key tuple, so the scan
@@ -40,24 +31,21 @@ use crate::executable::{
 use crate::facts::{StoreIndexKeySource, StoredValueMeaning};
 use crate::program::{CheckedProgram, EvolveDefault, EvolveTransform};
 
-/// The most failing-record keys a diagnostic names before summarizing the rest, so
-/// a large gap does not produce an unbounded message.
+/// Cap on failing-record keys a diagnostic names before summarizing the rest, so a
+/// large gap stays bounded.
 const MAX_NAMED_RECORDS: usize = 16;
 
-/// One fail-closed repair message keyed by the catalog id whose obligation it explains.
-/// The witness verdicts that cross into apply stay prose-free; this is the preview-side
-/// prose, carried with the identity it describes so a renderer pairs each message to its
-/// `RepairRequired` verdict by catalog id rather than by iteration order.
+/// A fail-closed repair message paired to the obligation it explains by catalog id, so
+/// a renderer matches it to a `RepairRequired` verdict by identity, not iteration order.
+/// The witness verdicts that cross into apply stay prose-free.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepairDiagnostic {
     pub catalog_id: CatalogId,
     pub message: String,
 }
 
-/// The result of discharging every obligation against a snapshot: the per-obligation
-/// verdicts that cross into apply, the accumulated counts, the catalog ids the change
-/// touches partitioned into data roots and indexes, and the fail-closed diagnostics
-/// naming what blocks activation.
+/// The discharge result: per-obligation verdicts, accumulated counts, the touched
+/// catalog ids partitioned into data roots and indexes, and the fail-closed diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Discharge {
     pub(crate) verdicts: Vec<ObligationVerdict>,
@@ -97,8 +85,7 @@ pub(crate) fn discharge(
     let places = checked_activation_root_places(program);
     for place in &places {
         // A re-keyed store fails closed ahead of the per-record scan: its old records are
-        // unreachable under the new key shape, so a presence scan would read them at a key
-        // arity they were never written at, and the store-level repair already subsumes them.
+        // unreachable under the new key shape, and the store-level repair subsumes them.
         if classify_store_key_shape(program, place, &accepted_key_shapes, &mut acc)? {
             continue;
         }
@@ -106,10 +93,9 @@ pub(crate) fn discharge(
     }
     absent_source::classify_absent_source_entries(program, store, &mut acc)?;
     discharge_transforms(program, store, &places, &enum_members, &mut acc)?;
-    // The default-deny structural backstop runs last, after every targeted classifier has had
-    // its say, so it fails closed only what nothing else claimed. It keeps the fail-closed
-    // invariant total by construction: any member whose structural signature changed and still
-    // carries no verdict is an unhandled transition, so it cannot silently activate.
+    // The default-deny backstop runs last, so it fails closed only what no targeted classifier
+    // claimed. Any member whose signature changed and still carries no verdict is an unhandled
+    // transition, so it cannot silently activate — this keeps the fail-closed invariant total.
     for place in &places {
         classify_structural_backstop(store, place, &mut acc)?;
     }
@@ -117,14 +103,11 @@ pub(crate) fn discharge(
 }
 
 /// Classify every `evolve transform` obligation. A transform recomputes its target per
-/// record from the members its body reads, so the target is excluded from the
-/// presence scan (its value is being replaced) and discharged here directly. The
-/// target becomes an applyable [`Verdict::Transform`] carrying the read-member ids,
-/// guarded by a decodability proof: every record's stored bytes for each read member
-/// must decode under that member's current type, since the transform's soundness rests
-/// on reading those old bytes. A read member with an undecodable record fails closed
-/// with a typed repair, and the target is not classified applyable while any read it
-/// depends on cannot decode.
+/// record from the members it reads, so the target is excluded from the presence scan and
+/// discharged here as an applyable [`Verdict::Transform`] carrying the read-member ids.
+/// Soundness rests on reading the old bytes, so the target is guarded by a decodability
+/// proof: every record's stored bytes for each read member must decode under that member's
+/// current type, or the target fails closed instead of being classified applyable.
 fn discharge_transforms(
     program: &CheckedProgram,
     store: &TreeStore,
@@ -164,13 +147,9 @@ fn discharge_transforms(
                 Some(_) => {}
                 None => read_ids = Some(place_read_ids),
             }
-            // One pass over each place proves decodability and counts the records, the way
-            // `discharge_root` fuses its presence and index probes. The decodability
-            // obligation lands on the transform target, not on the read member: a read member
-            // is often a normal required member with its own presence verdict, so a second
-            // verdict on its id would duplicate the obligation. The target is what cannot be
-            // recomputed when a read it depends on cannot decode, so its verdict carries the
-            // proof and the diagnostic names the failing record.
+            // The decodability obligation lands on the target, not the read member: a read
+            // member often has its own presence verdict, so a second verdict on its id would
+            // duplicate it. The target is what cannot be recomputed when a read cannot decode.
             let scan = scan_transform_records(store, place, &reads, enum_members)?;
             records += scan.records;
             if undecodable.is_none() {
@@ -180,9 +159,6 @@ fn discharge_transforms(
         let read_ids = read_ids.unwrap_or_default();
         let verdict = match &undecodable {
             None => {
-                // An applyable transform rewrites the target cell for every record under
-                // every store using the resource, so the witness counts those records and
-                // apply re-counts the staged writes against this total.
                 acc.counts.records_to_transform += records;
                 Verdict::Transform { reads: read_ids }
             }
@@ -227,20 +203,16 @@ fn transform_places<'a>(
         .collect()
 }
 
-/// The result of the single transform scan: the record count the witness carries, and
-/// the first record whose stored value for some read member does not decode under its
-/// current leaf type. A record that simply lacks a read member places no decodability
-/// obligation; the transform reads what is present.
+/// One transform scan: total record count, and the first record whose stored value for
+/// some read member does not decode under its current leaf type. A record that simply
+/// lacks a read member places no decodability obligation.
 struct TransformScan {
     records: usize,
     undecodable: Option<String>,
 }
 
-/// Prove a transform's reads decode and count its records in one pass over the place,
-/// mirroring how `discharge_root` fuses its presence and index probes into a single
-/// scan. Every record is counted; the first record (in scan order) carrying an
-/// undecodable read value is captured for the repair diagnostic. The count is consumed
-/// only when no read fails, so a blocked transform stages nothing.
+/// Scan one place's records, counting total and capturing the first undecodable read in
+/// scan order for the repair diagnostic.
 fn scan_transform_records(
     store: &TreeStore,
     place: &CheckedSavedPlace,
@@ -271,13 +243,10 @@ fn scan_transform_records(
     })
 }
 
-/// The selectable member identities of each current enum, keyed by the checker-local
-/// enum id a [`StoreLeafKind::Enum`] leaf carries. A stored enum value is valid only when
-/// its decoded member identity is still one of these, so a member removed or moved out of
-/// the enum since the data was written fails closed instead of decoding to a member the
-/// current schema no longer has. Only selectable members are admitted: a value names a
-/// concrete leaf, never a `category` or a member that has since gained children, so a stored
-/// value naming a now-unselectable member is not a valid value of the current enum.
+/// Selectable member identities of each current enum, keyed by the enum id a
+/// [`StoreLeafKind::Enum`] leaf carries. A stored value is valid only when its decoded
+/// member is still selectable here, so a value naming a member the enum removed, marked
+/// `category`, or gave children since the write fails closed.
 struct EnumMembers {
     by_enum: HashMap<crate::facts::EnumId, HashSet<String>>,
 }
@@ -300,9 +269,8 @@ impl EnumMembers {
         Self { by_enum }
     }
 
-    /// Whether `member_id` is a current member of the enum the leaf refers to. A leaf whose
-    /// enum has no recorded members (an unbound first-run enum) cannot validate membership,
-    /// so it admits the value: there is no accepted snapshot to contradict it yet.
+    /// Whether `member_id` is a current member of the enum. An enum with no recorded members
+    /// (unbound first-run) admits any value: there is no accepted snapshot to contradict it.
     fn contains(&self, enum_id: crate::facts::EnumId, member_id: &str) -> bool {
         match self.by_enum.get(&enum_id) {
             Some(members) => members.contains(member_id),
@@ -310,30 +278,21 @@ impl EnumMembers {
         }
     }
 
-    /// The current selectable member catalog ids of the enum, or an empty slice for an
-    /// unbound first-run enum with none recorded.
     fn selectable(&self, enum_id: crate::facts::EnumId) -> Option<&HashSet<String>> {
         self.by_enum.get(&enum_id)
     }
 }
 
-/// The current enums whose selectable-member set shrank relative to the accepted snapshot,
-/// by the checker-local enum id a [`StoreLeafKind::Enum`] leaf carries. An enum that dropped a
-/// selectable member this cycle — removed it, marked it `category`, or gave it children —
-/// keeps its stable identity, so the leaf token is unchanged and the change is not a retype;
-/// but a stored value may name the now-gone member, so every leaf referencing such an enum
-/// must be scanned for validity even when it is optional and otherwise unchanged. A required
-/// enum leaf is always scanned, so it needs no entry here; this drives the optional case.
+/// Enum ids whose selectable-member set shrank since acceptance. Such an enum keeps its
+/// stable identity, so the leaf token is unchanged and the change is not a retype; but a
+/// stored value may name the now-gone member, so optional leaves referencing it must still
+/// be scanned for validity. Required enum leaves are always scanned, so this drives only the
+/// optional case.
 struct ShrunkEnums {
     enums: HashSet<crate::facts::EnumId>,
 }
 
 impl ShrunkEnums {
-    /// Compare each enum's accepted selectable-member set against its current one. A member is
-    /// selectable in the accepted snapshot exactly when it is a leaf of the accepted member-path
-    /// tree (no other accepted member path extends it), which mirrors the source rule that a
-    /// member is a category exactly when it has children. An accepted selectable member whose
-    /// catalog id is no longer in the current selectable set means the enum shrank.
     fn collect(program: &CheckedProgram, current: &EnumMembers) -> Self {
         let enum_id_by_catalog: HashMap<&str, crate::facts::EnumId> = program
             .facts
@@ -365,11 +324,9 @@ impl ShrunkEnums {
     }
 }
 
-/// The selectable member catalog ids of each enum in the accepted snapshot, keyed by the
-/// enum's stable catalog id. A member is selectable when it is a leaf of the accepted
-/// member-path tree: no other accepted member of the same enum carries its path as a strict
-/// prefix. The accepted catalog records the full member tree as paths, so accepted
-/// selectability is read from the paths without a separate recorded flag.
+/// Selectable members of each accepted enum, keyed by its stable catalog id. The accepted
+/// catalog records the member tree only as paths, so selectability is read structurally: a
+/// member is selectable iff no other member's path extends it.
 fn accepted_selectable_enum_members(program: &CheckedProgram) -> HashMap<String, HashSet<String>> {
     let enum_paths: Vec<(&str, &str)> = program
         .catalog
@@ -402,30 +359,25 @@ fn accepted_selectable_enum_members(program: &CheckedProgram) -> HashMap<String,
     by_enum
 }
 
-/// Whether an accepted enum member is selectable: a value may name it. The accepted catalog
-/// records no selectability flag, only the member tree as paths, so this is read structurally —
-/// a member is selectable exactly when it is a leaf of that tree, with no other member carrying
-/// its path as a strict prefix. This mirrors the source rule that a member is a category exactly
-/// when it has children, and is the one home for the accepted-side selectability derivation.
+/// Whether an accepted member is a leaf of the member-path tree — no other member's path
+/// extends it. This mirrors the source rule that a member is a category iff it has children,
+/// and is the one home for the accepted-side selectability derivation.
 fn accepted_member_is_selectable(member: &CatalogEntry, members: &[&CatalogEntry]) -> bool {
     !members
         .iter()
         .any(|other| !std::ptr::eq(*other, member) && is_member_path_of(&other.path, &member.path))
 }
 
-/// Whether `path` names a member strictly under `ancestor`: it starts with `ancestor::` and
-/// adds at least one segment. Used to read the accepted enum member tree from paths alone.
+/// Whether `path` starts with `ancestor::` and adds at least one segment.
 fn is_member_path_of(path: &str, ancestor: &str) -> bool {
     path.strip_prefix(ancestor)
         .and_then(|tail| tail.strip_prefix("::"))
         .is_some_and(|rest| !rest.is_empty())
 }
 
-/// Whether stored bytes are a valid value of a leaf's current type. A scalar decodes by
-/// its type; an identity decodes to its key tuple at the referenced arity; an enum decodes
-/// to a member identity that must still be a member of the current enum. The enum check is
-/// what closes the redefinition hole: bytes that structurally decode but name a member the
-/// current enum no longer has are not a valid value of the current type.
+/// Whether stored bytes are a valid value of a leaf's current type. The enum arm closes the
+/// redefinition hole: bytes that structurally decode but name a member the current enum no
+/// longer has are not a valid value, so they fail closed rather than decode silently.
 fn leaf_value_valid(leaf: &StoreLeafKind, bytes: &[u8], enum_members: &EnumMembers) -> bool {
     match leaf {
         StoreLeafKind::Scalar(scalar) => {
@@ -439,11 +391,9 @@ fn leaf_value_valid(leaf: &StoreLeafKind, bytes: &[u8], enum_members: &EnumMembe
     }
 }
 
-/// The stable ids of catalog entries the proposal changes relative to the accepted
-/// snapshot, each tagged with its catalog entry kind: an entry that is new, retired, or
-/// whose identity moved. These are the catalog ids the change touches, so a future
-/// apply re-verifies exactly them; the kind lets the accumulator partition a store
-/// index from a data root without re-classifying it.
+/// Stable ids of catalog entries the proposal changes (new, retired, or moved), each
+/// tagged with its kind so the accumulator partitions an index from a data root without
+/// re-classifying it.
 fn proposal_changed_catalog_ids(program: &CheckedProgram) -> Vec<(String, CatalogEntryKind)> {
     let Some(proposal) = &program.catalog.proposal else {
         return Vec::new();
@@ -469,12 +419,10 @@ fn proposal_changed_catalog_ids(program: &CheckedProgram) -> Vec<(String, Catalo
         .collect()
 }
 
-/// The stable ids of resource members a rename moved this cycle, as their raw catalog
-/// id strings. A rename preserves the member's stable id and carries its old path
-/// forward as an alias, so a proposal `ResourceMember` entry whose alias set gained a
-/// path the accepted entry did not carry is one this evolution renamed. The rename
-/// moves catalog identity only — the cells stay under the same id — so discharge
-/// classifies these as `CatalogOnly` instead of re-proving their data presence.
+/// Raw catalog ids of resource members a rename moved this cycle, detected by a proposal
+/// `ResourceMember` whose alias set gained a path the accepted entry lacked. A rename moves
+/// catalog identity only — the cells stay under the same id — so these classify as
+/// `CatalogOnly` rather than re-proving data presence.
 fn renamed_member_ids(program: &CheckedProgram) -> HashSet<String> {
     let Some(proposal) = &program.catalog.proposal else {
         return HashSet::new();
@@ -500,15 +448,10 @@ fn renamed_member_ids(program: &CheckedProgram) -> HashSet<String> {
         .collect()
 }
 
-/// The accepted identity-aware leaf token recorded for each resource member in the accepted
-/// snapshot, keyed by its raw catalog id, as `Some(token)` when the entry was a leaf and `None`
-/// when it was a non-leaf (a group or keyed group records no leaf token). The token is derived
-/// from the member's structural signature, the one durable field that records it. A member absent
-/// from this map is brand-new (it has no accepted identity yet). The discharge compares this
-/// against the declared token to detect a type change the new type's decoder might otherwise
-/// silently reinterpret. Under v0.1 every accepted leaf member records its token, so a
-/// leaf member carrying `None` cannot arise from normal use; treating it as a fail-closed retype is
-/// a defensive guard against a hand-edited catalog, not an old-snapshot compatibility path.
+/// Accepted identity-aware leaf token for each resource member, keyed by raw catalog id:
+/// `Some(token)` when the entry was a leaf, `None` when it was a non-leaf. A member absent
+/// from the map is brand-new. Discharge compares this against the declared token to catch a
+/// leaf type change the new decoder might otherwise reinterpret silently.
 fn accepted_member_leaves(program: &CheckedProgram) -> HashMap<String, Option<String>> {
     program
         .catalog
@@ -524,12 +467,11 @@ fn accepted_member_leaves(program: &CheckedProgram) -> HashMap<String, Option<St
         .collect()
 }
 
-/// The accepted identity-aware structural signature recorded for each resource member, keyed
-/// by its raw catalog id, only for members that record one. A member with no recorded
-/// signature carries no baseline (accepted before signatures were recorded, or brand-new this
-/// cycle), so the backstop never fires against it — it freezes the current signature forward so
-/// a later change has a baseline, exactly as the store key shape does. The backstop fail-closes
-/// only against a recorded baseline that the current source diverges from.
+/// Accepted structural signature for each resource member that records one, keyed by raw
+/// catalog id. A member with no recorded signature carries no baseline, so the backstop never
+/// fires against it; the proposal freezes the current signature forward so a later change has
+/// one. The backstop fails closed only against a recorded baseline the current source diverges
+/// from.
 fn accepted_member_structs(program: &CheckedProgram) -> HashMap<String, String> {
     program
         .catalog
@@ -545,11 +487,9 @@ fn accepted_member_structs(program: &CheckedProgram) -> HashMap<String, String> 
         .collect()
 }
 
-/// The accepted identity-key shape recorded for each store in the accepted snapshot, keyed
-/// by its raw catalog id, as `Some(shape)` when the entry records one. A store with no
-/// recorded shape (accepted before key shapes were recorded) is absent from the map: there
-/// is no baseline to compare against, and the proposal freezes the current shape forward, so
-/// the next cycle has one. The discharge fails closed only against a recorded baseline.
+/// Accepted identity-key shape for each store that records one, keyed by raw catalog id. A
+/// store with no recorded shape is absent: there is no baseline, and the proposal freezes the
+/// current shape forward so the next cycle has one.
 fn accepted_store_key_shapes(program: &CheckedProgram) -> HashMap<String, String> {
     program
         .catalog
@@ -566,13 +506,10 @@ fn accepted_store_key_shapes(program: &CheckedProgram) -> HashMap<String, String
 }
 
 /// Fail closed when a store's declared identity-key shape no longer matches the shape its
-/// durable records were keyed under, returning whether such a re-key was detected. The
-/// identity keys live in the saved path itself, so a record written under the old key bytes
-/// is unreachable under the new shape — a different arity or any different key type addresses
-/// no existing record. v0.1 has no graceful store-key migration, so the obligation is
-/// `RepairRequired` rather than a silent activation that would orphan every record. A store
-/// with no recorded accepted shape carries no baseline to compare, so it places no obligation;
-/// the proposal records its current shape so a later re-key has a baseline.
+/// records were keyed under, returning whether such a re-key was detected. Identity keys live
+/// in the saved path itself, so a record under the old key bytes is unreachable under the new
+/// shape. v0.1 has no graceful store-key migration, so this is `RepairRequired` rather than a
+/// silent activation that would orphan every record.
 fn classify_store_key_shape(
     program: &CheckedProgram,
     place: &CheckedSavedPlace,
@@ -612,24 +549,19 @@ fn classify_store_key_shape(
     Ok(true)
 }
 
-/// One step on the record-rooted descent to a structural-backstop candidate. A plain member or
-/// unkeyed group descends by member id alone; a keyed layer is paged per entry, so the populated
-/// probe expands it into one branch per existing entry key. The descent is what makes the
-/// backstop total over nesting depth: an interior member below any number of keyed layers is
-/// reached by resolving each keyed step's entry keys at scan time, since the static path cannot
-/// name them.
+/// One step on the record-rooted descent to a backstop candidate: a plain member, or a keyed
+/// layer paged per entry. Paging each keyed step's entry keys at scan time is what makes the
+/// descent total over nesting depth, since the static path cannot name them.
 #[derive(Clone)]
 enum DescentStep {
     Member(CatalogId),
     KeyedLayer(CatalogId),
 }
 
-/// One member the structural backstop must fail closed when its data is populated: the
-/// record-rooted descent to its subtree, the member id its repair is keyed by, and the typed
-/// reason and prose. The descent ends with the candidate's own member segment, always probed as
-/// a subtree rather than paged into, so a re-keyed candidate layer is judged as one unit. A
-/// candidate is collected only when the member's signature diverged and no targeted classifier
-/// already claimed it; the populated check happens in a single record scan.
+/// A backstop candidate: the record-rooted descent to its subtree, the member id its repair is
+/// keyed by, and the typed reason and prose. The descent ends with the candidate's own member
+/// segment, always probed as a subtree rather than paged into, so a re-keyed candidate layer is
+/// judged as one unit.
 struct StructuralCandidate {
     member_id: CatalogId,
     descent: Vec<DescentStep>,
@@ -637,15 +569,12 @@ struct StructuralCandidate {
     message: String,
 }
 
-/// The default-deny structural backstop: fail closed any durable member whose structural
-/// signature changed, whose old data is still present, and which no targeted classifier
-/// already judged. The signature records kind, key shape, and leaf token identity-aware, so a
-/// keyed-layer re-key, a group<->keyed-group reshape, and any unforeseen structural transition
-/// all read as a divergence. This is the catch-all that keeps the fail-closed invariant total
-/// by construction: a transition v0.1 has no specific handler for cannot silently activate over
-/// existing data, while the additive and identity-preserving changes the targeted classifiers
-/// bless (an optional add, a rename, a retype, a reorder) keep their verdicts and are not
-/// re-judged here.
+/// The default-deny structural backstop: fail closed any member whose structural signature
+/// diverged, whose old data is still present, and which no targeted classifier already judged.
+/// The signature is identity-aware over kind, key shape, and leaf token, so a keyed-layer
+/// re-key, a group<->keyed-group reshape, and any unforeseen transition all read as divergence.
+/// This catch-all keeps the fail-closed invariant total: a transition v0.1 has no handler for
+/// cannot silently activate over existing data.
 fn classify_structural_backstop(
     store: &TreeStore,
     place: &CheckedSavedPlace,
@@ -669,9 +598,8 @@ fn classify_structural_backstop(
     })?;
     for (candidate, present) in candidates.into_iter().zip(populated) {
         if !present {
-            // No record holds data under the diverged member's old shape, so there is nothing to
-            // orphan: an empty store reshapes freely. A new write under the new shape is governed
-            // by the current schema, not this backstop.
+            // No record holds data under the diverged member's old shape, so nothing is
+            // orphaned: an empty store reshapes freely under the current schema.
             continue;
         }
         acc.diagnostic(candidate.member_id.clone(), candidate.message);
@@ -685,12 +613,9 @@ fn classify_structural_backstop(
     Ok(())
 }
 
-/// Whether any concrete record-rooted path the descent names holds a subtree. A plain member
-/// step extends the path by that member id; a keyed-layer step pages every existing entry under
-/// the path so far and continues one branch per entry key, since the layer's interior is
-/// addressed per entry by a key the static path cannot name. The candidate's own member segment
-/// is the last step and is probed as a subtree, never paged into, so a re-keyed candidate layer
-/// is judged whole. An empty layer prunes its branch — there is nothing below it to orphan.
+/// Whether any record-rooted path the descent names holds a subtree. Plain steps extend the
+/// path; a keyed-layer step pages every entry and continues one branch per entry key. An empty
+/// layer prunes its branch — nothing below it to orphan.
 fn descent_subtree_exists(
     store: &TreeStore,
     store_id: &CatalogId,
@@ -728,11 +653,9 @@ fn descend_path(
     }
 }
 
-/// Page every existing entry key under `layer_path` through the store's paged child
-/// cursor, calling `visit` once per entry in key order. The visitor returns `true` to stop
-/// the scan early (a match was found), so the keyed paging cursor lives in one place rather
-/// than being re-spelled at each keyed-layer descent. The loop holds only the current entry
-/// key, so an arbitrarily wide layer is paged without materializing its keys.
+/// Page every existing entry key under `layer_path` in key order, calling `visit` once per
+/// entry; `visit` returns `true` to stop early. The loop holds only the current entry key, so
+/// an arbitrarily wide layer is paged without materializing its keys.
 fn for_each_entry_key(
     store: &TreeStore,
     store_id: &CatalogId,
@@ -750,15 +673,11 @@ fn for_each_entry_key(
     Ok(false)
 }
 
-/// Walk the member tree collecting a backstop candidate for each member whose structural
-/// signature diverged and which no targeted classifier already claimed. The walk descends
-/// through both unkeyed groups and keyed layers, recording one [`DescentStep`] per level so an
-/// interior member below any number of keyed layers is reachable per entry — this is what keeps
-/// the backstop total over nesting depth. A keyed-layer ancestor becomes a paged step; an
-/// unkeyed group or plain layer becomes a plain member step. The candidate's own subtree is the
-/// unit the backstop judges, so once a member fails closed the walk does not descend into its
-/// interior: an enclosing layer's failure subsumes a deeper divergence, so a deeper required
-/// leaf does not also emit a misleading data proof. A pure leaf carries no interior to walk.
+/// Walk the member tree collecting a backstop candidate for each member whose signature
+/// diverged and which no targeted classifier already claimed, recording one [`DescentStep`] per
+/// level (keyed ancestors paged, unkeyed groups plain) so interior members stay reachable. Once
+/// a member is collected the walk stops descending into it: an enclosing failure subsumes a
+/// deeper divergence, so a deeper required leaf does not also emit a misleading data proof.
 fn collect_structural_candidates(
     place: &CheckedSavedPlace,
     members: &[CheckedSavedMember],
@@ -805,11 +724,10 @@ fn collect_structural_candidates(
     Ok(())
 }
 
-/// The typed reason and prose for a structural divergence the backstop fails closed. A change
-/// between two non-leaf shapes that involves a keyed layer — a keyed-layer re-key, or a
-/// group<->keyed-group reshape — is the keyed-layer analogue of a store re-key, so it carries
-/// [`RepairReason::KeyedLayerKeyShapeChange`]. Every other unhandled divergence carries the
-/// general [`RepairReason::StructuralDivergence`].
+/// The typed reason and prose for a structural divergence. A change between two non-leaf shapes
+/// involving a keyed layer is the keyed-layer analogue of a store re-key, so it carries
+/// [`RepairReason::KeyedLayerKeyShapeChange`]; every other divergence carries the general
+/// [`RepairReason::StructuralDivergence`].
 fn structural_repair(
     place: &CheckedSavedPlace,
     member: &CheckedSavedMember,
@@ -841,10 +759,9 @@ fn structural_repair(
     }
 }
 
-/// Classify the member-presence and index obligations a single saved root carries.
-/// A single streaming scan visits each record once, probing every required leaf and
-/// deriving every prospective unique-index key tuple; the verdicts fall out of the
-/// accumulated counts and key tuples after the scan.
+/// Classify the member-presence and index obligations one saved root carries. A single
+/// streaming scan visits each record once, probing every required leaf and deriving every
+/// prospective unique-index key tuple; the verdicts fall out of the accumulated state.
 fn discharge_root(
     store: &TreeStore,
     place: &CheckedSavedPlace,
@@ -870,12 +787,10 @@ fn discharge_root(
         scanned += 1;
         for (leaf, state) in leaves.iter().zip(leaf_state.iter_mut()) {
             if leaf.retyped {
-                // A retype's old bytes may sit under a different shape than the current
-                // member declares — a plain cell where the new shape pages keyed entries,
-                // or keyed entries where the new shape reads a plain cell — so the cell read
-                // at the current shape can miss them. Subtree existence at the member path
-                // finds the old data wherever it physically sits, so a populated retype of any
-                // shape fails closed.
+                // A retype's old bytes may sit under a different shape than the current member
+                // declares, so a cell read at the new shape can miss them. Subtree existence at
+                // the member path finds the old data wherever it sits, failing a populated
+                // retype of any shape closed.
                 if store.data_subtree_exists(&store_id, identity, &leaf.path)? {
                     state.record_present();
                 }
@@ -907,39 +822,30 @@ fn discharge_root(
     Ok(())
 }
 
-/// One leaf obligation the scan visits, of any leaf kind: the catalog id its data cells
-/// use, the data path from the record node to the leaf cell, a human label, and the flags
-/// that pick its verdict. A transform-targeted member is classified eagerly and excluded.
+/// One leaf obligation the scan visits, of any leaf kind. A transform-targeted member is
+/// classified eagerly and excluded.
 struct LeafObligation {
     catalog_id: CatalogId,
     raw_catalog_id: String,
     path: Vec<DataPathSegment>,
     label: String,
-    /// The leaf kind whose bytes the scan validates, or `None` for a leaf position whose
-    /// declared type is non-tokenizable (a `sequence`/`unknown`). A non-tokenizable leaf
-    /// arises only as a retype: there is no current type to decode the old bytes under, so
-    /// any present cell counts as populated and the retype check fails it closed.
+    /// The leaf kind whose bytes the scan validates, or `None` for a non-tokenizable position
+    /// (`sequence`/`unknown`). Such a leaf arises only as a retype, so any present cell counts
+    /// as populated and the retype check fails it closed.
     leaf: Option<StoreLeafKind>,
-    /// Effective requiredness at the member's nesting. A required leaf that is missing or
-    /// undecodable is a repair; an optional leaf's absence is harmless. An optional leaf
-    /// becomes an obligation only when it is retyped, so the scan can learn whether it has
-    /// bytes to reinterpret.
+    /// Effective requiredness at the member's nesting. An optional leaf becomes an obligation
+    /// only when retyped or over a shrunk enum, so the scan can learn whether it has bytes.
     required: bool,
-    /// Set when a rename moved this member this cycle. A clean prove of a renamed leaf
-    /// reports the operative change as catalog-only; a failed decode still repairs.
+    /// Set when a rename moved this member this cycle: a clean prove reports as catalog-only.
     renamed: bool,
-    /// Set when this member's declared leaf type differs from the type its durable bytes
-    /// were accepted as. A populated retyped leaf requires an explicit transform; an
-    /// unpopulated one has no bytes to reinterpret and falls back to its presence verdict.
-    /// The scan supplies the populated count so the decision composes uniformly with
-    /// required and optional leaves at any nesting.
+    /// Set when the declared leaf type differs from the accepted one. A populated retyped leaf
+    /// requires a transform; an unpopulated one falls back to its presence verdict.
     retyped: bool,
 }
 
-/// The required-leaf obligations at the root and inside unkeyed groups: leaves whose
-/// presence cell sits directly under the record node. A required leaf inside a keyed
-/// layer is required per existing entry, not for the record, so it is scanned and
-/// classified separately by [`discharge_keyed_layers`].
+/// Leaf obligations at the root and inside unkeyed groups, whose presence cell sits directly
+/// under the record node. Keyed-layer leaves are required per entry, so [`discharge_keyed_layers`]
+/// scans them separately.
 fn required_leaf_obligations(
     place: &CheckedSavedPlace,
     acc: &mut Accumulator,
@@ -949,10 +855,9 @@ fn required_leaf_obligations(
     Ok(obligations)
 }
 
-/// Walk the member tree, emitting a leaf obligation for each required leaf and each
-/// retyped leaf — of any kind, scalar, enum, or identity — at the root or inside an
-/// unkeyed group. A transform-targeted member is classified eagerly and not scanned.
-/// A keyed member is left to the keyed-layer check.
+/// Walk the member tree, emitting leaf obligations for required and retyped leaves of any kind
+/// at the root or inside an unkeyed group. Transforms are classified eagerly; keyed members are
+/// left to the keyed-layer check.
 fn collect_required_leaves(
     place: &CheckedSavedPlace,
     members: &[CheckedSavedMember],
@@ -971,23 +876,16 @@ fn collect_required_leaves(
         let mut path = prefix.to_vec();
         path.push(DataPathSegment::Member(member_id.clone()));
         match &member.kind {
-            // A group at this position whose accepted snapshot recorded a leaf token is a
-            // plain leaf that became a group: its old single-cell bytes still sit at the
-            // member path the group now occupies. The subtree-existence probe at that path
-            // steers a member whose old leaf cell holds bytes to a transform, the same
-            // fail-closed path a non-leaf-becoming-leaf retype takes. But a record whose old
-            // leaf cell was never populated has no bytes for that probe to find, so the new
-            // group's brand-new required sub-members must ALSO be presence-scanned: a record
-            // that exists without the old leaf value fails closed on the missing required
-            // sub-member rather than activating over an unpopulated old cell. So the walk emits
-            // the disappeared-leaf probe AND descends into the new group's members.
+            // A leaf that became a group: its old single-cell bytes sit at the member path, so
+            // the disappeared-leaf probe steers a populated cell to a transform. But a record
+            // with no old leaf value must still presence-scan the group's new required
+            // sub-members, so the walk emits the probe AND descends.
             CheckedSavedMemberKind::Group if acc.leaf_disappeared(&raw_id) => {
                 emit_disappeared_leaf(place, member, &raw_id, member_id, path.clone(), obligations);
                 collect_required_leaves(place, &member.group_members, &path, obligations, acc)?;
             }
-            // An unkeyed group whose own structural signature diverged is owned whole by the
-            // backstop; descending into it would re-judge a deeper required leaf the enclosing
-            // failure already subsumes, so its interior is left unwalked here.
+            // An unkeyed group whose own signature diverged is owned whole by the backstop;
+            // descending would re-judge a deeper leaf the enclosing failure already subsumes.
             CheckedSavedMemberKind::Group if acc.prunes_interior(&raw_id, &member_id) => {}
             CheckedSavedMemberKind::Group => {
                 collect_required_leaves(place, &member.group_members, &path, obligations, acc)?;
@@ -1000,21 +898,15 @@ fn collect_required_leaves(
     Ok(())
 }
 
-/// One leaf and the decision discharge makes about it before the scan, shared by the
-/// unkeyed and keyed walkers so the rule lives in one place.
+/// The decision discharge makes about one leaf before the scan, shared by the unkeyed and keyed
+/// walkers so the rule lives in one place. The obligation's path stays with the caller, which
+/// alone knows whether the cell is reached directly or through a keyed entry.
 enum MemberLeafOutcome {
-    /// A verdict known without scanning: a transform-targeted leaf, or an unchanged optional
-    /// leaf whose absence is the sparse-absence contract.
+    /// A verdict known without scanning: a transform target, or an unchanged optional leaf.
     Eager(Verdict),
-    /// A leaf with no cell to probe here: a member that resolved no storable leaf kind (a
-    /// non-leaf member, or a type error already reported).
+    /// No cell to probe here: a non-leaf member or a type error already reported.
     Skip,
-    /// A leaf the scan must visit, of any kind. The path stays with the caller, which alone
-    /// knows whether the cell is reached directly or through a keyed entry. `renamed`
-    /// marks a leaf a rename moved this cycle, so a clean prove reports the operative
-    /// change as identity-only rather than a fresh data proof. `retyped` marks a leaf
-    /// whose declared type changed across any leaf kind; the scan's populated count then
-    /// decides whether it needs a transform.
+    /// A leaf the scan must visit.
     Obligation {
         raw_catalog_id: String,
         label: String,
@@ -1026,14 +918,10 @@ enum MemberLeafOutcome {
 }
 
 /// Classify one `Field` member into the single leaf decision both walkers share, total and
-/// uniform over leaf kind. A transform target resolves eagerly out of the scan. Otherwise
-/// the leaf becomes a scan obligation whenever it is required (so its presence and
-/// decodability are proven, an enum value's member-validity included) or retyped (so the
-/// populated probe decides whether it needs a transform); a scalar, an enum, and an
-/// identity are treated alike. An optional, non-retyped leaf places no obligation: its
-/// absence is harmless, so it resolves eagerly to a catalog-only move under a rename or a
-/// no-op. `required` reflects the effective requiredness at the member's nesting (a
-/// keyed-layer leaf is required per existing entry).
+/// uniform over leaf kind. A transform target resolves eagerly out of the scan; otherwise the
+/// leaf becomes an obligation when required, retyped, or over a shrunk enum, and an unchanged
+/// optional leaf resolves eagerly to a catalog-only move under a rename or a no-op. `required`
+/// reflects the effective requiredness at the member's nesting.
 fn classify_member_leaf(
     place: &CheckedSavedPlace,
     member: &CheckedSavedMember,
@@ -1041,27 +929,19 @@ fn classify_member_leaf(
     required: bool,
     acc: &Accumulator,
 ) -> MemberLeafOutcome {
-    // A transform recomputes this member per record, so its presence before the
-    // evolution is irrelevant: skip it from the presence scan and let
-    // `discharge_transforms` classify it from the decodability of the members it reads.
+    // A transform recomputes this member per record; `discharge_transforms` classifies it.
     if acc.is_transform(raw_id) {
         return MemberLeafOutcome::Skip;
     }
     let renamed = acc.is_renamed(raw_id);
     let retyped = acc.is_retyped(raw_id);
     let leaf = member.leaf.clone();
-    // An enum leaf whose enum dropped a selectable member this cycle must be scanned for a
-    // stored value naming the gone member, even when it is optional and otherwise unchanged.
-    // The enum keeps its identity, so this is not a retype; the validity check during the scan
-    // fails a now-invalid stored value closed. A non-enum leaf is never a shrunk-enum scan.
+    // An enum that dropped a selectable member keeps its identity (not a retype), but a stored
+    // value may name the gone member, so even an optional unchanged enum leaf must be scanned.
     let enum_shrank = acc.enum_shrank(leaf.as_ref());
     if leaf.is_none() && !retyped {
-        // No storable leaf kind resolved and no retype: a non-tokenizable leaf position
-        // (a `sequence`/`unknown`) that did not change type, or a non-leaf member. There is
-        // no current cell to probe and no old bytes to reinterpret. A rename still moves
-        // catalog identity only. A non-tokenizable leaf that DID change type falls through to
-        // the obligation below so its populated old bytes fail the retype check closed. A
-        // leaf with no kind cannot be an enum, so a shrunk enum never applies here.
+        // No storable leaf kind and no retype: a non-tokenizable position that did not change
+        // type, or a non-leaf member. Nothing to probe; a rename still moves catalog identity.
         return if renamed {
             MemberLeafOutcome::Eager(Verdict::CatalogOnly)
         } else {
@@ -1069,20 +949,17 @@ fn classify_member_leaf(
         };
     }
     if !required && !retyped && !enum_shrank {
-        // An optional, unchanged leaf of any kind carries no obligation: its absence is the
-        // sparse-absence contract. A rename still moves catalog identity only.
+        // An optional, unchanged leaf carries no obligation: its absence is the sparse-absence
+        // contract. A rename still moves catalog identity only.
         return if renamed {
             MemberLeafOutcome::Eager(Verdict::CatalogOnly)
         } else {
             MemberLeafOutcome::Eager(Verdict::NoOp)
         };
     }
-    // A required leaf of any kind keeps its presence obligation even under a rename, so its
-    // bytes are proven present and valid under the current type. A retyped leaf — required
-    // or optional — also becomes an obligation so the scan reports whether it is populated.
-    // An optional enum leaf over a shrunk enum is scanned for stored validity only: its
-    // absence is harmless, so `classify_leaf` must not treat a missing optional cell as a
-    // repair; only a stored now-invalid value fails it closed. `classify_leaf` makes the call.
+    // A required leaf keeps its presence obligation even under a rename; a retyped leaf reports
+    // its populated count; an optional shrunk-enum leaf is scanned for stored validity only.
+    // `classify_leaf` makes the call from the scan state.
     MemberLeafOutcome::Obligation {
         raw_catalog_id: raw_id.to_string(),
         label: member_label(place, member),
@@ -1093,10 +970,8 @@ fn classify_member_leaf(
     }
 }
 
-/// Apply the shared leaf decision for one `Field` member: push an eager verdict, skip
-/// a non-scalar leaf, or record an obligation at `path`. `raw_id` is the member's bound or
-/// proposal-resolved catalog id, and `member_id` its typed form; `path` is the data path to
-/// the cell, which only the calling walker can build.
+/// Apply the shared leaf decision for one `Field` member: push an eager verdict, skip, or
+/// record an obligation at `path`, the data path only the calling walker can build.
 fn emit_member_leaf(
     place: &CheckedSavedPlace,
     member: &CheckedSavedMember,
@@ -1135,12 +1010,10 @@ fn emit_member_leaf(
     Ok(())
 }
 
-/// Emit the retype obligation for a member that was a plain leaf and is now a non-leaf (a
-/// group or a keyed layer). The new shape declares no leaf cell, so there is no current type
-/// to decode the old bytes under (`leaf: None`); the obligation is purely a retype probe. Its
-/// presence is decided by subtree existence at the member path the now-non-leaf occupies, so a
-/// populated member fails closed to a transform and an empty one passes. Requiredness is
-/// irrelevant — the reshape hazard is the bytes' existence, not their requiredness — so the
+/// Emit the retype obligation for a member that was a plain leaf and is now a non-leaf. The new
+/// shape declares no leaf cell (`leaf: None`), so the obligation is a pure retype probe decided
+/// by subtree existence at the member path: a populated member fails closed to a transform, an
+/// empty one passes. The reshape hazard is the bytes' existence, not requiredness, so the
 /// obligation is optional and carries the retype flag alone.
 fn emit_disappeared_leaf(
     place: &CheckedSavedPlace,
@@ -1162,12 +1035,10 @@ fn emit_disappeared_leaf(
     });
 }
 
-/// Classify every required leaf inside a keyed layer. A keyed layer applies its
-/// required-field checks per existing entry, so the obligation is "every entry that
-/// exists carries this leaf", not "every record does". The scan descends each keyed
-/// layer one entry at a time through the paged child cursor, holding only the current
-/// entry's key path, and classifies each leaf from the accumulated per-entry counts
-/// exactly as an unkeyed leaf is: proven, defaulted, or a fail-closed repair.
+/// Classify every required leaf inside a keyed layer. A keyed layer applies required-field
+/// checks per existing entry, so the obligation is "every entry carries this leaf". The scan
+/// pages each layer one entry at a time, holding only the current entry's key path, then
+/// classifies each leaf from the accumulated per-entry counts exactly as an unkeyed leaf is.
 fn discharge_keyed_layers(
     store: &TreeStore,
     place: &CheckedSavedPlace,
@@ -1178,14 +1049,10 @@ fn discharge_keyed_layers(
     if obligations.is_empty() {
         return Ok(());
     }
-    // A retype that also changed the keyed SHAPE — a leaf becoming a keyed layer, or a
-    // keyed-leaf-map whose value type changed — leaves old data under a path the per-entry scan
-    // at the new shape never visits, so it is probed by subtree existence at its static member
-    // path and excluded from the per-entry scan. A retype that left the keyed shape unchanged (a
-    // leaf nested inside a keyed group whose own type changed) carries no static path: its old
-    // per-entry bytes sit exactly where the per-entry scan descends, so it stays in the scan and
-    // its populated count comes from the per-entry reads. Every other keyed obligation is
-    // required-presence, proven per existing entry.
+    // A retype that also changed the keyed SHAPE leaves old data under a path the per-entry
+    // scan never visits, so it is probed by subtree existence at its static member path and
+    // split out here. A retype that left the keyed shape unchanged carries no static path: its
+    // old bytes sit where the per-entry scan descends, so it stays in the scan.
     let (flat_retyped, per_entry): (Vec<_>, Vec<_>) = obligations
         .into_iter()
         .partition(|leaf| leaf.retyped && !leaf.path.is_empty());
@@ -1218,9 +1085,8 @@ fn discharge_keyed_layers(
     Ok(())
 }
 
-/// The read-only context of one keyed-layer scan. `state` accumulates the per-leaf
-/// presence keyed by leaf catalog id, while the recursive descent carries only the
-/// varying path arguments.
+/// The read-only context of one keyed-layer scan. `state` accumulates per-leaf presence keyed
+/// by leaf catalog id, while the descent carries only the varying path arguments.
 struct KeyedScan<'a> {
     store: &'a TreeStore,
     store_id: &'a CatalogId,
@@ -1230,12 +1096,10 @@ struct KeyedScan<'a> {
 }
 
 impl KeyedScan<'_> {
-    /// Descend the member tree of a record (or a keyed entry) collecting the per-entry
-    /// presence of each keyed-layer leaf and keyed-leaf-map value. At a keyed-group member
-    /// the scan pages every existing entry under the current data path, then recurses into
-    /// the entry with its key appended; at a keyed-leaf-map member it pages every entry and
-    /// records the value cell under each entry's key; an unkeyed group is descended in place;
-    /// a top-level leaf with an obligation records its presence and value-validity directly.
+    /// Descend the member tree of a record or keyed entry, collecting per-entry presence of
+    /// each keyed-layer leaf and keyed-leaf-map value. A keyed group pages every entry and
+    /// recurses with its key appended; a keyed-leaf-map records the value cell under each entry
+    /// key; an unkeyed group descends in place; a top-level leaf records directly.
     fn descend(
         &mut self,
         identity: &[SavedKey],
@@ -1251,9 +1115,8 @@ impl KeyedScan<'_> {
             member_path.push(DataPathSegment::Member(member_id.clone()));
             if !member.key_params.is_empty() {
                 // A keyed layer: page each existing entry under the layer path. A keyed group
-                // recurses into each entry to reach its sub-members; a keyed-leaf-map
-                // (`map[K, V]`) holds its value directly under the entry key, so the value
-                // cell at the key path is recorded against the map member's own obligation.
+                // recurses into each entry; a keyed-leaf-map (`map[K, V]`) holds its value
+                // directly under the entry key, recorded against the map member's obligation.
                 let (store, store_id) = (self.store, self.store_id);
                 for_each_entry_key(store, store_id, identity, &member_path, |entry_key| {
                     let mut entry_path = member_path.clone();
@@ -1282,9 +1145,7 @@ impl KeyedScan<'_> {
         Ok(())
     }
 
-    /// Record one keyed-layer leaf's or keyed-leaf-map value's per-entry presence: present
-    /// when the cell holds a valid value under the current type, invalid when it holds bytes
-    /// that are not, missing when no cell exists. A member with no obligation is skipped.
+    /// Record one keyed leaf's per-entry presence. A member with no obligation is skipped.
     fn record_leaf(
         &mut self,
         member_id: &CatalogId,
@@ -1308,10 +1169,8 @@ impl KeyedScan<'_> {
     }
 }
 
-/// The leaf obligations that live inside a keyed layer, captured once for the scan: a
-/// required leaf, or a retyped leaf — of any kind. A transform-targeted leaf is classified
-/// eagerly and excluded; an unchanged optional leaf places no per-entry obligation and is
-/// recorded as a no-op.
+/// The required and retyped leaf obligations that live inside a keyed layer, captured once for
+/// the scan. A transform target is classified eagerly and excluded.
 fn keyed_leaf_obligations(
     place: &CheckedSavedPlace,
     acc: &mut Accumulator,
@@ -1328,16 +1187,12 @@ fn keyed_leaf_obligations(
     Ok(obligations)
 }
 
-/// Walk the member tree, emitting one keyed-leaf obligation per required leaf and per
-/// retyped leaf — of any kind — that is reached through a keyed layer. `in_keyed` becomes true
-/// once the walk has crossed a keyed layer, so a `Field` inside a keyed group is keyed; a
-/// keyed-leaf-layer (`map[K, V]`) member is itself a keyed leaf, its own key params making it
-/// keyed even at the root. Both are scanned per existing entry by [`KeyedScan`], which knows
-/// each entry's key; here only the per-leaf classification inputs are captured. `prefix` is
-/// the static data path to the layer node, built only while no keyed ancestor sits above it;
-/// a keyed-leaf-map at the root or inside an unkeyed group carries its full member path so a
-/// retype probe can find old data of a different shape, while a leaf below a keyed ancestor
-/// carries none (its path contains an unknown entry key) and relies on the per-entry scan.
+/// Walk the member tree, emitting a keyed-leaf obligation per required or retyped leaf reached
+/// through a keyed layer. `in_keyed` becomes true once the walk crosses a keyed layer; a
+/// `map[K, V]` member is itself keyed by its own key params. The obligation `path` is the
+/// static member path only above the first keyed layer, where a retype probe can find old data
+/// of a different shape; a leaf below a keyed ancestor carries none and relies on the per-entry
+/// scan, which knows each entry's key.
 fn collect_keyed_leaves(
     place: &CheckedSavedPlace,
     members: &[CheckedSavedMember],
@@ -1367,11 +1222,9 @@ fn collect_keyed_leaves(
             static_path.clone()
         };
         match &member.kind {
-            // A keyed group whose accepted snapshot recorded a leaf token is a plain leaf that
-            // became a keyed layer: its old single-cell bytes sit at the member path the layer
-            // now occupies, under no entry key. The subtree-existence probe at that static path
-            // finds them and fails a populated member closed, the same as a leaf becoming an
-            // unkeyed group. Its keyed sub-members are subsumed, so the scan does not descend.
+            // A leaf that became a keyed layer: its old single-cell bytes sit at the static
+            // member path under no entry key. The subtree probe there fails a populated member
+            // closed; its keyed sub-members are subsumed, so the scan does not descend.
             CheckedSavedMemberKind::Group if keyed_here && acc.leaf_disappeared(&raw_id) => {
                 emit_disappeared_leaf(
                     place,
@@ -1382,10 +1235,8 @@ fn collect_keyed_leaves(
                     obligations,
                 );
             }
-            // A keyed layer or group whose own structural signature diverged is owned whole by
-            // the backstop; descending past it would emit a misleading per-entry data proof on a
-            // deeper required leaf the enclosing failure already subsumes, so its interior is left
-            // unwalked. This is the keyed analogue of the store-level re-key skip.
+            // A keyed layer or group whose own signature diverged is owned whole by the
+            // backstop; descending would emit a misleading per-entry proof on a deeper leaf.
             CheckedSavedMemberKind::Group if acc.prunes_interior(&raw_id, &member_id) => {}
             CheckedSavedMemberKind::Group => {
                 collect_keyed_leaves(
@@ -1398,9 +1249,6 @@ fn collect_keyed_leaves(
                 )?;
             }
             CheckedSavedMemberKind::Field { .. } if keyed_here => {
-                // A keyed-layer leaf or a keyed-leaf-map value. The per-entry scan reaches the
-                // value cell through each entry's key path; the obligation carries a static
-                // member path only when no keyed ancestor sits above it.
                 emit_member_leaf(
                     place,
                     member,
@@ -1417,10 +1265,9 @@ fn collect_keyed_leaves(
     Ok(())
 }
 
-/// The running presence state for one leaf: how many records lack it, how many carry
-/// undecodable bytes, how many carry a stored cell at all, and a bounded sample of the
-/// records missing or invalid for the diagnostic. `present_count` answers whether a
-/// retyped leaf has any bytes to reinterpret, independent of decodability.
+/// Running presence state for one leaf, with a bounded sample of missing/invalid records for
+/// the diagnostic. `present_count` answers whether a retyped leaf has any bytes to reinterpret,
+/// independent of decodability.
 #[derive(Default)]
 struct LeafScan {
     missing_count: usize,
@@ -1430,12 +1277,10 @@ struct LeafScan {
 }
 
 impl LeafScan {
-    /// Fold one record's read of a leaf cell into the running state, the single owner of
-    /// the present/invalid/missing decision both the unkeyed and keyed scans share. A cell
-    /// holding bytes valid under the current leaf type is present; one holding bytes that
-    /// are not is invalid (and still counts as populated). A leaf with no current type to
-    /// decode under (a non-tokenizable retype) treats any stored cell as plainly present, so
-    /// the retype check sees its populated old bytes; an absent cell is missing.
+    /// Fold one record's read into the running state, the single owner of the
+    /// present/invalid/missing decision both scans share. Bytes valid under the current type are
+    /// present; bytes that are not are invalid (and still populated); a non-tokenizable retype
+    /// treats any stored cell as present so the retype check sees its old bytes; absent is missing.
     fn record_read(
         &mut self,
         bytes: Option<&[u8]>,
@@ -1473,23 +1318,17 @@ impl LeafScan {
     }
 }
 
-/// Classify one leaf from its scan state. A populated leaf whose declared type changed
-/// is checked first and fails closed: its bytes were written under the old type, so the
-/// new type's decoder would silently coerce them. An unpopulated retype has no bytes to
-/// reinterpret and falls through to the presence verdict it otherwise carries.
-///
-/// Otherwise the leaf is proven when every record carries it, a constant default when an
-/// `evolve default` supplies a typed fill, else a fail-closed repair. A leaf a rename
-/// moved this cycle reports as the catalog-only identity move it is.
+/// Classify one leaf from its scan state. A populated retype is checked first and fails closed:
+/// its bytes were written under the old type, so the new decoder would silently coerce them; an
+/// unpopulated retype falls through to its presence verdict. Otherwise the leaf is proven when
+/// every record carries it, a constant default when an `evolve default` supplies a typed fill,
+/// else a fail-closed repair. A renamed leaf reports as the catalog-only move it is.
 fn classify_leaf(
     leaf: LeafObligation,
     state: LeafScan,
     acc: &mut Accumulator,
 ) -> Result<(), StoreError> {
     let id = leaf.catalog_id;
-    // A populated retype is steered to a transform ahead of every other classification.
-    // An unpopulated retype has no bytes to reinterpret, so it falls through to the
-    // presence verdict the member would otherwise carry.
     if leaf.retyped && state.present_count > 0 {
         acc.diagnostic(
             id.clone(),
@@ -1506,10 +1345,8 @@ fn classify_leaf(
         )?;
         return Ok(());
     }
-    // An optional leaf places no presence obligation: its absence is the sparse-absence
-    // contract, not a repair. It reaches the scan only when retyped (handled above) or when
-    // its enum dropped a selectable member, where a stored value naming the gone member is
-    // invalid and fails closed; a missing optional cell stays harmless.
+    // An optional leaf places no presence obligation; only a stored now-invalid value (a
+    // shrunk-enum scan) fails it closed. A missing optional cell stays harmless.
     if !leaf.required {
         if state.invalid_count > 0 {
             acc.counts.records_lacking_member += state.invalid_count;
@@ -1553,9 +1390,8 @@ fn classify_leaf(
             acc.counts.records_to_backfill += state.missing_count;
             Verdict::Default { value }
         }
-        // The member declares a default the checker cannot encode. This is a distinct
-        // obligation from a member with no default: the verdict names the rejected default
-        // by its typed cause, and the diagnostic renders that cause's prose.
+        // The member declares a default the checker cannot encode: a distinct obligation from
+        // no default at all, so the verdict names the rejected default by its typed cause.
         Some(Err(reason)) => {
             acc.diagnostic(id.clone(), reason.message().to_string());
             Verdict::RepairRequired {
@@ -1576,25 +1412,23 @@ fn classify_leaf(
     Ok(())
 }
 
-/// One unique-index obligation to probe during the record scan: the index catalog id
-/// and how to read each key column's value from a record. The collision state the scan
-/// builds is keyed by `catalog_id`, which the per-index classification then looks up.
+/// One unique-index obligation to probe during the record scan: the index catalog id and how to
+/// read each key column. The scan keys its collision state by `catalog_id`.
 struct UniqueIndexProbe {
     catalog_id: CatalogId,
     columns: Vec<IndexKeyColumn>,
 }
 
-/// The unique-index plan for a place: the indexes the record scan can probe for
-/// collisions, and the catalog ids of any unique index whose key shape the scan cannot
-/// probe. An unprobeable unique index is not silently rebuilt unchecked; the discharge
-/// fails it closed so a uniqueness guarantee is never published without verification.
+/// A place's unique-index plan: the indexes the scan can probe for collisions, and the ids of
+/// any whose key shape it cannot. An unprobeable unique index fails closed rather than rebuild
+/// unchecked, so a uniqueness guarantee is never published without verification.
 struct UniqueIndexPlan {
     probes: Vec<UniqueIndexProbe>,
     unprobeable: Vec<CatalogId>,
 }
 
-/// How to read one index key column for a record: an identity key by its position in
-/// the record's identity tuple, or a top-level member cell decoded by its meaning.
+/// How to read one index key column: an identity key by its tuple position, or a top-level
+/// member cell decoded by its meaning.
 enum IndexKeyColumn {
     Identity {
         position: usize,
@@ -1606,11 +1440,8 @@ enum IndexKeyColumn {
     },
 }
 
-/// Build the unique-index plan for a place. Each column resolves to an identity position
-/// or a top-level member cell with the meaning to decode it; a unique index whose every
-/// column resolves becomes a probe the record scan checks for collisions, while one with
-/// any unresolvable column is recorded as unprobeable and fails closed rather than
-/// rebuilding an unchecked uniqueness guarantee.
+/// Build the unique-index plan: a unique index whose every column resolves becomes a probe; one
+/// with any unresolvable column is recorded unprobeable and fails closed.
 fn unique_index_plan(
     place: &CheckedSavedPlace,
     acc: &Accumulator,
@@ -1639,12 +1470,9 @@ fn unique_index_plan(
     })
 }
 
-/// The key-column readers for one index, or `None` when a column resolves to neither
-/// an identity key position nor a top-level plain field. Every v0.1 index key is a
-/// single-segment top-level field or an identity key, so a unique index resolves here;
-/// a future index over a nested or keyed-layer column would resolve to `None`, and a
-/// unique index that does not resolve fails closed rather than rebuilding an unchecked
-/// uniqueness guarantee.
+/// The key-column readers for one index, or `None` when any column resolves to neither an
+/// identity key position nor a top-level plain field. Every v0.1 index key resolves here; a
+/// future index over a nested or keyed-layer column would resolve to `None` and fail closed.
 fn index_key_columns(
     place: &CheckedSavedPlace,
     index: &CheckedSavedIndex,
@@ -1691,9 +1519,8 @@ fn index_key_columns(
     Ok(Some(columns))
 }
 
-/// The full prospective unique-index key tuple a record would publish, derived from
-/// the record's identity and member values. `None` when any key column is absent, so
-/// the record contributes no index entry and cannot collide.
+/// The full prospective unique-index key tuple a record would publish, or `None` when any
+/// column is absent, so the record contributes no entry and cannot collide.
 fn prospective_index_key(
     store: &TreeStore,
     store_id: &CatalogId,
@@ -1732,10 +1559,9 @@ fn prospective_index_key(
     Ok(Some(tuple))
 }
 
-/// The running collision state for one unique index, keyed by the canonical byte
-/// encoding of each full key tuple (every tuple shares the index's arity, so the
-/// encoding is an injective identity for the tuple). It tracks the tuples seen so far
-/// and the distinct tuples more than one record claims.
+/// Running collision state for one unique index, keyed by the canonical byte encoding of each
+/// key tuple. Every tuple shares the index's arity, so the encoding is an injective identity for
+/// the tuple; `collisions` holds the distinct tuples more than one record claims.
 #[derive(Default)]
 struct IndexScan {
     seen: HashSet<Vec<u8>>,
@@ -1751,14 +1577,10 @@ impl IndexScan {
     }
 }
 
-/// Classify every index the place declares. Each index carries a derived-rebuild
-/// obligation regardless of uniqueness, so apply rebuilds its entries from the records
-/// it covers; a silently empty non-unique index is the symptom of skipping this. A
-/// unique index whose prospective key tuples collide is upgraded to a fail-closed
-/// repair, using the collision state the scan accumulated for it. A unique index the
-/// scan could not probe — its key shape is one the collision scan does not resolve — is
-/// also a fail-closed repair, never an unchecked rebuild, so a uniqueness guarantee is
-/// never published without verification.
+/// Classify every index the place declares. Each carries a derived-rebuild obligation
+/// regardless of uniqueness, so apply rebuilds its entries from the records it covers. A unique
+/// index whose prospective tuples collide, or one the scan could not probe, upgrades to a
+/// fail-closed repair so a uniqueness guarantee is never published without verification.
 fn classify_indexes(
     place: &CheckedSavedPlace,
     collisions: &HashMap<CatalogId, IndexScan>,
@@ -1772,8 +1594,7 @@ fn classify_indexes(
         let index_id = catalog_id(index_catalog_id)?;
         let colliding = collisions
             .get(&index_id)
-            .map(|state| state.collisions.len())
-            .unwrap_or(0);
+            .map_or(0, |state| state.collisions.len());
         let verdict = if index.unique && colliding > 0 {
             acc.counts.index_collisions += colliding;
             acc.diagnostic(
@@ -1859,9 +1680,9 @@ fn format_key(key: &SavedKey) -> String {
 }
 
 /// Accumulates verdicts, counts, affected ids, and diagnostics across the families, and
-/// resolves `evolve default` fills. Affected ids are typed [`CatalogId`]s validated once
-/// on insertion and partitioned at classify time into data roots and store indexes, so
-/// apply never re-classifies them from current source.
+/// resolves `evolve default` fills. Affected ids are typed [`CatalogId`]s validated once on
+/// insertion and partitioned into data roots and store indexes, so apply never re-classifies
+/// them from current source.
 struct Accumulator {
     verdicts: Vec<ObligationVerdict>,
     counts: super::witness::DischargeCounts,
@@ -1911,9 +1732,7 @@ impl Accumulator {
         self.shrunk_enums = shrunk_enums;
     }
 
-    /// Install the accepted and current structural signatures the default-deny backstop
-    /// compares. Set after construction alongside the shrunk-enum set, so the constructor stays
-    /// to the obligation inputs the per-family classifiers consume.
+    /// Install the accepted and current structural signatures the backstop compares.
     fn set_member_structs(
         &mut self,
         accepted_structs: HashMap<String, String>,
@@ -1923,9 +1742,8 @@ impl Accumulator {
         self.declared_structs = declared_structs;
     }
 
-    /// Whether the enum a leaf refers to lost a selectable member this cycle. An enum-typed
-    /// leaf over a shrunk enum must be scanned for stored values naming the gone member, even
-    /// when it is optional and otherwise unchanged.
+    /// Whether the enum a leaf refers to lost a selectable member this cycle, so even an
+    /// optional unchanged leaf over it must be scanned for stored values naming the gone member.
     fn enum_shrank(&self, leaf: Option<&StoreLeafKind>) -> bool {
         matches!(leaf, Some(StoreLeafKind::Enum { enum_id }) if self.shrunk_enums.shrank(*enum_id))
     }
@@ -1938,21 +1756,14 @@ impl Accumulator {
         self.renamed.contains(catalog_id)
     }
 
-    /// Whether a member's declared leaf type differs from the type its durable bytes were
-    /// accepted as, fail-closed and total over leaf kind. The comparison is between two
-    /// identity-aware leaf tokens: a scalar by name, an enum by its referent's stable catalog
-    /// id, a store identity by its referent's stable catalog id and arity. A change between
-    /// any scalar, enum, or identity leaf, or from one enum or store to a different one, is a
-    /// retype; a pure enum or store rename leaves the token unchanged and is not.
+    /// Whether a member's declared leaf type differs from its accepted type, by comparing two
+    /// identity-aware tokens (scalar by name, enum/identity by referent stable id and arity), so
+    /// a pure enum or store rename is not a retype. A non-leaf member has no declared token and
+    /// is never a retype; a member with no accepted identity is brand-new.
     ///
-    /// A member not currently a plain leaf field (a group or keyed layer) has no declared
-    /// token and is never a leaf retype. A member with no accepted identity is brand-new and
-    /// not a retype. The `Some(None)` arm is the non-leaf-to-leaf transition: the member was a
-    /// group or keyed layer in the accepted snapshot, which records no leaf token, and current
-    /// source makes it a plain leaf field. Its old multi-cell subtree would be reread as a
-    /// single leaf cell, so it fails closed the same way a scalar retype does; this is the
-    /// appearance half of a leaf retype, symmetric to [`Self::leaf_disappeared`], and the
-    /// populated probe steers it to a transform rather than silently reinterpreting the bytes.
+    /// The `Some(None)` arm is the non-leaf-to-leaf transition: an old multi-cell subtree would
+    /// be reread as a single leaf cell, so it fails closed the same way a scalar retype does.
+    /// This is the appearance half of a leaf retype, symmetric to [`Self::leaf_disappeared`].
     fn is_retyped(&self, catalog_id: &str) -> bool {
         let Some(declared) = self.declared_leaf_token(catalog_id) else {
             return false;
@@ -1965,10 +1776,8 @@ impl Accumulator {
     }
 
     /// The identity-aware leaf token current source declares for member `catalog_id`, decoded
-    /// from its structural signature through the signature's single owner so the live declared
-    /// side and the durable accepted side ([`CatalogEntry::accepted_leaf_token`]) read leaf
-    /// tokens the same way. `None` for a non-leaf member (a group or keyed group records no leaf
-    /// token) and for a member with no recorded signature (a pending first-run referent).
+    /// through the signature's single owner so the declared and accepted sides read tokens the
+    /// same way. `None` for a non-leaf member or one with no recorded signature.
     fn declared_leaf_token(&self, catalog_id: &str) -> Option<&str> {
         self.declared_structs
             .get(catalog_id)
@@ -1976,23 +1785,18 @@ impl Accumulator {
             .and_then(marrow_project::structural_signature_leaf_token)
     }
 
-    /// Whether a member that WAS a plain leaf has become a non-leaf — a group or a keyed
-    /// layer — so its current declaration produces no leaf token. The accepted snapshot
-    /// recorded a leaf token; current source records none, so its old single-cell bytes live
-    /// under the member position the now-group/now-layer occupies and would be orphaned. This
-    /// is the disappearance half of a leaf retype, symmetric to a non-leaf becoming a leaf, and
-    /// fails closed the same way: a subtree-existence probe at the member path steers a
-    /// populated member to a transform rather than silently reshaping over the old bytes.
+    /// Whether a member that was a plain leaf has become a non-leaf, leaving its old single-cell
+    /// bytes under the now-group/now-layer position where they would be orphaned. This is the
+    /// disappearance half of a leaf retype, symmetric to [`Self::is_retyped`]'s `Some(None)`
+    /// arm; the subtree-existence probe steers a populated member to a transform.
     fn leaf_disappeared(&self, catalog_id: &str) -> bool {
         matches!(self.accepted_leaves.get(catalog_id), Some(Some(_)))
             && self.declared_leaf_token(catalog_id).is_none()
     }
 
-    /// The typed constant fill for a defaulted member, or the typed cause when the default
-    /// value is not a constant the checker can evaluate against the leaf type. `None` when no
-    /// `evolve default` targets the member. A non-scalar leaf — an enum, an identity, or a
-    /// non-tokenizable position with no leaf kind — cannot take a constant default; a computed
-    /// fill is a transform.
+    /// The typed constant fill for a defaulted member, the typed rejection cause when the
+    /// default is not a constant the checker can evaluate, or `None` when no `evolve default`
+    /// targets the member. A non-scalar leaf cannot take a constant default; use a transform.
     fn default_value_for(
         &self,
         raw_catalog_id: &str,
@@ -2013,16 +1817,15 @@ impl Accumulator {
         Ok(())
     }
 
-    /// Record a verdict for a data-root obligation (a member, store, resource, or
-    /// enum). Its catalog id joins the changed-root partition.
+    /// Record a verdict for a data-root obligation. Its catalog id joins the changed-root
+    /// partition.
     fn push(&mut self, id: CatalogId, verdict: Verdict) -> Result<(), StoreError> {
         self.record(id, verdict, false)
     }
 
-    /// Record or aggregate a resource-member leaf verdict. A resource shape may be stored
-    /// by several roots, so a single member id can be discharged once per root. This is the
-    /// only expected duplicate data-root obligation: the counts have already accumulated per
-    /// root, while the witness must still carry one catalog-id verdict for apply.
+    /// Record or merge a resource-member leaf verdict. A resource shape may be stored by several
+    /// roots, so a single member id can be discharged once per root; the counts have already
+    /// accumulated per root, while the witness carries one merged catalog-id verdict for apply.
     fn push_leaf(&mut self, id: CatalogId, verdict: Verdict) -> Result<(), StoreError> {
         self.changed_roots.insert(id.clone());
         self.classified.insert(id.clone());
@@ -2041,8 +1844,8 @@ impl Accumulator {
         Ok(())
     }
 
-    /// Record a verdict for a store-index obligation. Its catalog id joins the
-    /// changed-index partition, so apply stamps it as an index rather than a root.
+    /// Record a verdict for a store-index obligation. Its catalog id joins the changed-index
+    /// partition, so apply stamps it as an index rather than a root.
     fn push_index(&mut self, id: CatalogId, verdict: Verdict) -> Result<(), StoreError> {
         self.record(id, verdict, true)
     }
@@ -2074,39 +1877,32 @@ impl Accumulator {
         Ok(())
     }
 
-    /// Whether obligation `id` already carries a verdict from a targeted classifier. The
-    /// structural backstop fires only on an unclaimed id, so a retype, reshape, rename,
-    /// default, transform, or retire that already classified the member is not double-judged.
+    /// Whether obligation `id` already carries a verdict from a targeted classifier, so the
+    /// backstop fires only on an unclaimed id and never double-judges a member.
     fn is_classified(&self, id: &CatalogId) -> bool {
         self.classified.contains(id)
     }
 
-    /// The accepted and current structural signatures of member `raw_id` when both are
-    /// recorded and they differ — the divergence the backstop fails closed. `None` when the
-    /// member has no recorded accepted signature (no baseline to compare), no current
-    /// signature (a pending referent), or the two match (no structural change).
+    /// The accepted and current structural signatures of member `raw_id` when both are recorded
+    /// and differ — the divergence the backstop fails closed. `None` when either is absent or
+    /// the two match.
     fn struct_divergence(&self, raw_id: &str) -> Option<(&str, &str)> {
         let accepted = self.accepted_structs.get(raw_id)?;
         let declared = self.declared_structs.get(raw_id)?;
         (accepted != declared).then_some((accepted.as_str(), declared.as_str()))
     }
 
-    /// Whether a non-leaf member's interior must be left unwalked by the leaf scans because the
-    /// backstop owns it as a whole. A keyed layer or unkeyed group whose own structural signature
-    /// diverged fails closed as one unit; descending into it would re-judge its interior and emit
-    /// a misleading data proof on a deeper required leaf the enclosing failure already subsumes.
-    /// This mirrors the store-level re-key skip one level down, and applies only to a pure
-    /// structural divergence: a leaf that became a non-leaf (`leaf_disappeared`) is steered by the
-    /// leaf path's own retype probe, which descends deliberately, so it is not pruned here.
+    /// Whether a non-leaf member's interior is owned whole by the backstop and must not be
+    /// descended, since a deeper data proof would mislead under an enclosing failure. Applies
+    /// only to a pure divergence: a `leaf_disappeared` member is steered by its own retype probe.
     fn prunes_interior(&self, raw_id: &str, member_id: &CatalogId) -> bool {
         self.struct_divergence(raw_id).is_some()
             && !self.is_classified(member_id)
             && !self.leaf_disappeared(raw_id)
     }
 
-    /// Record the fail-closed prose for the obligation `id`, carried with that identity
-    /// so a renderer matches it to the obligation's `RepairRequired` verdict by catalog
-    /// id, not by position.
+    /// Record fail-closed prose keyed by catalog id, so a renderer matches it to the
+    /// obligation's `RepairRequired` verdict by identity, not position.
     fn diagnostic(&mut self, id: CatalogId, message: String) {
         self.diagnostics.push(RepairDiagnostic {
             catalog_id: id,
@@ -2114,10 +1910,8 @@ impl Accumulator {
         });
     }
 
-    /// Fail a leaf closed because some record's stored value is not valid under its current
-    /// type: emit `message` keyed by `id` and record the [`RepairReason::InvalidStoredValue`]
-    /// verdict. The required and optional leaf arms share this so the verdict construction
-    /// lives in one place even though their prose differs.
+    /// Fail a leaf closed because a record's stored value is not valid under its current type.
+    /// The required and optional arms share this so the verdict construction lives in one place.
     fn invalid_stored_value(&mut self, id: CatalogId, message: String) -> Result<(), StoreError> {
         self.diagnostic(id.clone(), message);
         self.push_leaf(
