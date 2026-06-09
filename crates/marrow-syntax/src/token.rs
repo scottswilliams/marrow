@@ -27,8 +27,7 @@ pub enum TokenKind {
     Identifier,
     Integer,
     Decimal,
-    /// A duration literal `NUMBER.UNIT`, such as `1.day` or `2.hours`. The token
-    /// text is the whole literal; [`duration_unit_seconds`] names the unit set.
+    /// A duration literal `NUMBER.UNIT` (`1.day`); the token text is the whole literal.
     Duration,
     String,
     InterpolationStart,
@@ -128,10 +127,9 @@ pub enum Keyword {
     ErrorCode,
 }
 
-/// Return the tokens whose spans fall entirely within `[start_byte, end_byte)`.
-/// Tokens are sorted by start byte and (in the value positions that call this)
-/// have monotonic end bytes, so the matches form one contiguous window. Nested
-/// interpolation tokens break that monotonicity but do not occur here.
+/// The tokens whose spans fall entirely within `[start_byte, end_byte)`. Relies
+/// on tokens being sorted by start byte with monotonic end bytes (true in the
+/// value positions that call this; nested interpolation would break it).
 pub(crate) fn tokens_in_range(tokens: &[Token], start_byte: usize, end_byte: usize) -> &[Token] {
     let first = tokens.partition_point(|token| token.span.start_byte < start_byte);
     let last = first + tokens[first..].partition_point(|token| token.span.end_byte <= end_byte);
@@ -224,10 +222,8 @@ pub(crate) fn keyword(text: &str) -> Option<Keyword> {
     })
 }
 
-/// The whole-seconds span of a duration-literal unit, or `None` for a word that
-/// is not a unit. The set is closed and every unit has a fixed length, so months
-/// and years (which vary) are deliberately absent. Singular and plural spellings
-/// name the same span.
+/// The whole-second span of a duration unit (singular and plural alike), or
+/// `None` for a non-unit. Months and years are omitted: their length varies.
 pub fn duration_unit_seconds(unit: &str) -> Option<i64> {
     Some(match unit {
         "second" | "seconds" => 1,
@@ -262,13 +258,11 @@ pub(crate) fn is_qualified_name(text: &str) -> bool {
     is_identifier(first) && parts.all(is_identifier)
 }
 
-/// Is `text` well-formed as a type annotation? This is a lexical guard the
-/// parser uses to disambiguate productions (for example, a key list `name: type`
-/// from other paren content) without resolving meaning. It rejects spellings that
-/// cannot be a type at all, whereas the semantic owner of type structure,
-/// `marrow_schema::Type::resolve`, is total and maps any leftover spelling to a
-/// named type. The two live in different crates by design: shape decisions stay
-/// in the parser, type meaning stays in the schema layer downstream of it.
+/// Is `text` well-formed as a type annotation? A lexical guard the parser uses to
+/// disambiguate productions (for example, a key list `name: type` from other paren
+/// content) without resolving meaning, rejecting spellings that cannot be a type at
+/// all. The two live in different crates by design: shape decisions belong to the
+/// parser, semantic resolution to the schema layer downstream.
 pub(crate) fn is_type_text(text: &str) -> bool {
     let text = text.trim();
     if text.is_empty() || text.contains('=') {

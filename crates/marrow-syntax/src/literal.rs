@@ -3,19 +3,15 @@
 //! A Marrow string literal recognizes exactly five escapes: `\\`, `\"`, `\n`,
 //! `\r`, and `\t`. Any other backslash escape, and a trailing backslash with no
 //! following character, is rejected. Every layer that interprets string-literal
-//! text — the evaluator, the checker's constant defaults, and the saved-path
-//! key parser — decodes through here so the escape set has a single owner.
-//!
-//! Bytes literals (`b"..."`) recognize a wider set including `\xHH` and are
-//! decoded by the runtime's bytes codec, not here.
+//! text — the evaluator, the checker's constant defaults, and the saved-path key
+//! parser — decodes through here so the escape set has a single owner. Bytes
+//! literals use the runtime's wider codec, not this.
 
-/// Why decoding a string literal failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StringLiteralError {
-    /// The text was not wrapped in the surrounding double quotes a literal needs.
+    /// Missing the surrounding double quotes.
     Unquoted,
-    /// An escape sequence is not one of the recognized five, or the text ends on
-    /// a lone backslash.
+    /// An unrecognized escape, or a trailing lone backslash.
     BadEscape,
 }
 
@@ -28,8 +24,8 @@ pub fn decode_string_literal(text: &str) -> Result<String, StringLiteralError> {
     decode_string_escapes(inner)
 }
 
-/// Decode the escapes in already-unquoted string text. Interpolation literal
-/// segments arrive without quotes and use this directly.
+/// Decode escapes in already-unquoted text (interpolation segments use this
+/// directly, having no quotes to strip).
 pub fn decode_string_escapes(inner: &str) -> Result<String, StringLiteralError> {
     let mut decoded = String::with_capacity(inner.len());
     let mut chars = inner.chars();

@@ -9,10 +9,8 @@ use crate::{
     SourceSpan, Token, TokenKind, UnaryOp,
 };
 
-/// Recursive-descent parser for a single Marrow expression over a token slice
-/// with file-absolute spans. It covers the primary, postfix, unary, and binary
-/// precedence levels, including calls and saved paths. A value it does not fully
-/// structure yields `None`, which the caller turns into a syntax diagnostic.
+/// A value the parser does not fully structure yields `None`, which the caller
+/// turns into a syntax diagnostic.
 pub(crate) struct ExprParser<'a> {
     source: &'a str,
     tokens: Vec<Token>,
@@ -35,10 +33,8 @@ impl<'a> ExprParser<'a> {
         }
     }
 
-    /// Parse the whole token slice as one expression, returning `None` unless
-    /// every significant token is consumed. Syntax-rule diagnostics raised while
-    /// parsing (a keyword field name, a positional argument after a named one)
-    /// are drained into the caller's `diagnostics`.
+    /// Returns `None` unless the whole slice parses as one expression. Syntax
+    /// diagnostics raised while parsing are drained into the caller's vec.
     pub(crate) fn parse_complete(
         mut self,
         diagnostics: &mut Vec<Diagnostic>,
@@ -108,9 +104,8 @@ impl<'a> ExprParser<'a> {
     }
 
     /// `is` sits one level looser than equality and tighter than `and`, on its own
-    /// non-associative level: `value is Cat::tiger` is the enum-subtree test, and
-    /// `a is X is Y` is rejected (non-chaining), mirroring `??`. The right operand
-    /// is a member-path expression (`Cat::tiger`).
+    /// non-associative level: a single `is`, never chained (`a is X is Y` is
+    /// rejected). The right operand is a member-path expression (`Cat::tiger`).
     fn is_expr(&mut self) -> Option<Expression> {
         let left = self.equality_expr()?;
         if !matches!(self.peek(), Some(TokenKind::Keyword(Keyword::Is))) {
@@ -133,9 +128,9 @@ impl<'a> ExprParser<'a> {
         Some(binary_expr(op, left, right))
     }
 
-    /// `??` sits one level tighter than equality and looser than comparison, on
-    /// its own non-associative level: `name ?? "anon" == "anon"` parses as
-    /// `(name ?? "anon") == "anon"`, and `a ?? b ?? c` is rejected.
+    /// `??` sits one level tighter than equality and looser than comparison, on its
+    /// own non-associative level: `name ?? "anon" == "anon"` parses as
+    /// `(name ?? "anon") == "anon"`, and `a ?? b ?? c` is rejected (never chained).
     fn coalesce_expr(&mut self) -> Option<Expression> {
         let left = self.comparison_expr()?;
         if !matches!(self.peek(), Some(TokenKind::QuestionQuestion)) {
@@ -278,40 +273,33 @@ impl<'a> ExprParser<'a> {
         Some(expr)
     }
 
-    /// Parse the operator-then-name of a field access — the part after `.` or
-    /// `?.` — consuming both tokens. Returns the field name, whether it was a
-    /// quoted data name, and the span of the name token. The leading operator
-    /// token must already be the current token.
+    /// Parse the name segment after `.` or `?.`, consuming both tokens. Returns
+    /// the field name, whether it was a quoted data name, and the name's span.
     fn field_segment(&mut self) -> Option<(String, bool, SourceSpan)> {
         let op = self.advance();
         let segment = *self.tokens.get(self.pos)?;
+        let text = segment.text(self.source);
         let (name, quoted) = match segment.kind {
-            TokenKind::Identifier => (segment.text(self.source).to_string(), false),
-            // A quoted segment names data with a non-identifier name, e.g.
-            // `^books(id)."old-title"`. Store the raw inner text, escapes
-            // unresolved like other string literals. An unterminated string
-            // (already a lexer error) lacks a closing quote, so fall back to
-            // empty rather than panic.
+            TokenKind::Identifier => (text.to_string(), false),
+            // Store a quoted segment's raw inner text, escapes unresolved like
+            // other string literals. An unterminated string (already a lexer
+            // error) lacks a closing quote, so fall back to empty over panic.
             TokenKind::String => {
-                let text = segment.text(self.source);
                 let inner = text
                     .strip_prefix('"')
                     .and_then(|rest| rest.strip_suffix('"'))
                     .unwrap_or("");
                 (inner.to_string(), true)
             }
-            // Field access always names data, and a field name must be an
-            // identifier or string literal, so a reserved word here is never a
-            // valid field name and must be quoted (`."at"`). Report it where
-            // both tokens are in view.
+            // A reserved word is never a valid field name; report it with both
+            // tokens in view so the help can suggest quoting it.
             TokenKind::Keyword(_) => {
-                let keyword = segment.text(self.source);
                 self.error(
                     join_spans(op.span, segment.span),
                     ParseDiagnosticReason::KeywordFieldName,
-                    format!("`{keyword}` is a keyword and cannot be used as a field name"),
+                    format!("`{text}` is a keyword and cannot be used as a field name"),
                     Some(format!(
-                        "quote the reserved word to use it as a data name: .\"{keyword}\""
+                        "quote the reserved word to use it as a data name: .\"{text}\""
                     )),
                 );
                 return None;
@@ -429,19 +417,14 @@ impl<'a> ExprParser<'a> {
                 literal(LiteralKind::Bool)
             }
             TokenKind::Identifier => self.name_expr(),
-            // A type keyword leading a `::` path is the start of a name, as in the
-            // short-form `bytes::length(...)` after `use std::bytes` (the same
-            // keyword is already valid mid-path, e.g. `std::bytes::length`).
-            // `name_expr` accepts callable keywords as path segments.
+            // A type keyword leading `::` starts a name path (`bytes::length`).
             TokenKind::Keyword(keyword)
                 if is_callable_keyword(keyword)
                     && matches!(self.peek_at(1), Some(TokenKind::DoubleColon)) =>
             {
                 self.name_expr()
             }
-            // Conversion types and `Error` are only values when called, e.g.
-            // `int(value)` or `Error(code: ...)`. A bare type keyword is not an
-            // expression, so require a following `(`.
+            // A type keyword is only a value when called (`int(...)`, `Error(...)`).
             TokenKind::Keyword(keyword)
                 if is_callable_keyword(keyword)
                     && matches!(self.peek_at(1), Some(TokenKind::LeftParen)) =>

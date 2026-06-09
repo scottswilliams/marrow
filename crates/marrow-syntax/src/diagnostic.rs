@@ -164,11 +164,9 @@ impl Severity {
     }
 }
 
-/// The common error surface every diagnostic that reaches the CLI envelope shares:
-/// a dotted code, a broad kind, a human message, a severity, and optional help.
-/// The CLI renders any of these uniformly over `&dyn Diagnose`; the source-span
-/// shape stays per source, since a parse span, a project line/column, and a
-/// path-located finding are not the same object.
+/// The common error surface the CLI renders uniformly over `&dyn Diagnose`. The
+/// source-span shape stays per source: a parse span, a project line/column, and
+/// a path-located finding are not the same object.
 pub trait Diagnose {
     fn code(&self) -> &str;
     fn message(&self) -> &str;
@@ -183,9 +181,8 @@ pub trait Diagnose {
     }
 }
 
-/// The broad `kind` category for a dotted error code, derived from the code's
-/// first segment. The prefix is not always the kind name
-/// (`run.*` is `runtime`, `store.*` is `storage`), so the mapping is explicit.
+/// The broad `kind` category for a dotted error code. The first segment is not
+/// always the kind name (`run.*` is `runtime`), so the mapping is explicit.
 pub fn kind_for_code(code: &str) -> &'static str {
     match code.split('.').next().unwrap_or("") {
         "parse" => "parse",

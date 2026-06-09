@@ -87,9 +87,8 @@ pub enum Declaration {
     Evolve(EvolveDecl),
 }
 
-/// An `evolve` block: durable intent the source declares about catalog-addressable
-/// entities (a resource member, a saved root, a store index, an enum or enum
-/// member). A bare source diff implies no such intent, so identity-preserving and
+/// An `evolve` block: the source's explicit intent for catalog-addressable
+/// entities. A bare source diff implies no intent, so identity-preserving and
 /// destructive changes are stated here rather than inferred from edits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvolveDecl {
@@ -103,23 +102,20 @@ pub struct EvolveDecl {
 /// `Status::archived`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EvolveStep {
-    /// `rename <from> -> <to>`: declares that the entity now spelled `to` is the
-    /// same durable entity formerly spelled `from`, so its stable identity and
-    /// stored data carry over.
+    /// `from` and `to` name the same durable entity, so stable identity and
+    /// stored data carry over the rename.
     Rename {
         from: Expression,
         to: Expression,
         span: SourceSpan,
     },
-    /// `default <target> = <value>`: the value to backfill into existing records
-    /// that lack `target` when it becomes populated for every record.
+    /// `value` backfills existing records that lack `target`.
     Default {
         target: Expression,
         value: Expression,
         span: SourceSpan,
     },
-    /// `retire <target>`: declares destructive intent to remove the entity and its
-    /// stored data.
+    /// Destructive intent to remove the entity and its stored data.
     Retire {
         target: Expression,
         span: SourceSpan,
@@ -149,8 +145,7 @@ pub struct ConstDecl {
     pub docs: Vec<String>,
     pub name: String,
     pub ty: Option<TypeRef>,
-    /// `None` when the value text did not parse as an expression; the parser
-    /// reports a syntax error in that case.
+    /// `None` when the value text did not parse; the parser reports the error.
     pub value: Option<Expression>,
     pub span: SourceSpan,
 }
@@ -168,30 +163,27 @@ pub enum Expression {
         segments: Vec<String>,
         span: SourceSpan,
     },
-    /// A saved-data root such as `^books`. Postfix key lookups and field
-    /// access build the rest of a saved path on top of this.
+    /// A saved-data root such as `^books`. Postfix key lookups and field access
+    /// build the rest of a saved path on top of this.
     SavedRoot { name: String, span: SourceSpan },
-    /// A parenthesized application: a function call, key lookup, conversion, or
-    /// resource constructor. The checker resolves which one from the callee.
+    /// A parenthesized application: the checker resolves call, key lookup,
+    /// conversion, or constructor from the callee.
     Call {
         callee: Box<Expression>,
         args: Vec<Argument>,
         multiline: bool,
         span: SourceSpan,
     },
-    /// Dotted field access, such as `book.title` or `^books(id)."old-title"`.
-    /// `name` is the field name without surrounding quotes; `quoted` records
-    /// whether it was written as a quoted segment (allowed for data names that
-    /// are not identifiers).
+    /// `name` is the field name unquoted; `quoted` records whether it was
+    /// written as a quoted segment (for data names that are not identifiers).
     Field {
         base: Box<Expression>,
         name: String,
         quoted: bool,
         span: SourceSpan,
     },
-    /// Optional field access `base?.name`: the same read as `Field`, but an
-    /// absent base or field short-circuits the rest of the chain to absent
-    /// rather than failing the read. The leaf type matches the plain field.
+    /// Like `Field`, but an absent base or field short-circuits the rest of the
+    /// chain to absent rather than failing the read.
     OptionalField {
         base: Box<Expression>,
         name: String,
@@ -209,8 +201,8 @@ pub enum Expression {
         right: Box<Expression>,
         span: SourceSpan,
     },
-    /// An interpolated string `$"..."` as a sequence of literal text and
-    /// embedded expression parts, in source order.
+    /// An interpolated string `$"..."` as a sequence of literal text and embedded
+    /// expression parts, in source order.
     Interpolation {
         parts: Vec<InterpolationPart>,
         span: SourceSpan,
@@ -233,8 +225,7 @@ impl Expression {
     }
 }
 
-/// One segment of an interpolated string: either literal text (with `{{`/`}}`
-/// still escaped as written) or an embedded expression.
+/// `Text` keeps `{{`/`}}` escaped as written; decoding happens downstream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InterpolationPart {
     Text { text: String, span: SourceSpan },
@@ -259,7 +250,8 @@ pub enum ArgMode {
 pub enum LiteralKind {
     Integer,
     Decimal,
-    /// A duration literal `NUMBER.UNIT` (`1.day`); its text is the whole literal.
+    /// A duration literal `NUMBER.UNIT` (`1.day`); the token text is the whole
+    /// literal and [`crate::duration_unit_seconds`] validates the unit.
     Duration,
     String,
     Bytes,
@@ -379,10 +371,9 @@ pub struct FunctionDecl {
     pub span: SourceSpan,
 }
 
-/// An enum: a named, fixed set of member values, generalizing `bool`. Members
-/// may nest into a tree (`Cat::tiger::bengal`); a flat enum is the degenerate
-/// one-level tree. `public` is recorded for `pub enum` consistency with `pub fn`;
-/// it is not yet enforced.
+/// An enum: a named, fixed set of member values, generalizing `bool`. Members may
+/// nest into a tree (`Cat::tiger::bengal`); a flat enum is the degenerate
+/// one-level tree. `public` is recorded for `pub enum` but not yet enforced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumDecl {
     pub docs: Vec<String>,
@@ -410,14 +401,14 @@ pub struct EnumMember {
 pub struct Block {
     pub statements: Vec<Statement>,
     /// Line comments inside this block, in source order. They are kept as
-    /// block-level trivia (not attached to statement nodes) so the formatter
-    /// can re-emit them and `parse -> format` round-trips comments losslessly.
+    /// block-level trivia (not attached to statement nodes) so the formatter can
+    /// re-emit them and `parse -> format` round-trips comments losslessly.
     pub comments: Vec<Comment>,
     pub span: SourceSpan,
 }
 
-/// A line comment retained as block trivia. `text` is the comment body with the
-/// leading marker and surrounding whitespace removed.
+/// `text` is the comment body with the leading marker and surrounding
+/// whitespace removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Comment {
     pub text: String,
@@ -432,7 +423,7 @@ pub enum CommentMarker {
     Doc,
 }
 
-/// Where a retained comment sits relative to the statements of its block.
+/// Where a retained comment sits relative to its block's statements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommentPlacement {
     /// A comment occupying its own line (a leading or standalone comment).
@@ -522,16 +513,15 @@ pub enum Statement {
     /// A `match` over an enum-typed scrutinee: each arm names one member of the
     /// enum and holds the block to run when the scrutinee selects it. An arm is a
     /// member path *relative* to the scrutinee enum — a bare leaf (`bengal`), a
-    /// qualified path (`tiger::bengal`), or a category (`tiger`, its whole subtree).
-    /// The scrutinee supplies the enum, so an arm carries no enum prefix; a local
-    /// enum's `match` has no wildcard arm. Exhaustiveness and member validity are
-    /// checker rules.
+    /// qualified path (`tiger::bengal`), or a category (`tiger`, its whole
+    /// subtree). The scrutinee supplies the enum, so an arm carries no enum prefix;
+    /// a local enum's `match` has no wildcard arm. Exhaustiveness and member
+    /// validity are checker rules.
     ///
-    /// `enum_name`/`enum_module` are the scrutinee's resolved enum identity,
-    /// filled by the checker (`enum_module` is the owning module's qualified name,
-    /// empty for a module-less script). The parser leaves both `None`; the runtime
+    /// `enum_name`/`enum_module` are the scrutinee's resolved enum identity; the
+    /// parser leaves both `None` and the checker fills them. The runtime
     /// dispatches arms by that exact enum's ordinals, so two enums that share
-    /// member names — even across modules with the same enum name — never alias.
+    /// member names — even across modules — never alias.
     Match {
         scrutinee: Option<Expression>,
         arms: Vec<MatchArm>,
@@ -541,10 +531,8 @@ pub enum Statement {
     },
 }
 
-/// One arm of a `match` statement: a member path relative to the scrutinee enum
-/// and the block run when the scrutinee selects a member under it. `path` is the
-/// `::`-separated segments as written (`["tiger", "bengal"]`, or just `["bengal"]`
-/// for a bare leaf); the checker walks it against the scrutinee enum's member tree.
+/// `path` is the arm's member path relative to the scrutinee enum, as written;
+/// the checker walks it against that enum's member tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchArm {
     pub path: Vec<String>,
@@ -555,7 +543,7 @@ pub struct MatchArm {
 /// One `else if` clause of an `if` statement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ElseIf {
-    /// `None` when the condition text did not parse as an expression.
+    /// `None` when the condition text did not parse; the parser reports the error.
     pub condition: Option<Expression>,
     pub block: Block,
 }
@@ -601,8 +589,7 @@ impl Statement {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParamDecl {
-    /// The run of `;;` doc lines written directly above this parameter, one
-    /// entry per line in source order. Empty for a single-line list, where
+    /// `;;` doc lines above this parameter; empty for single-line lists, where
     /// parameter docs are not written.
     pub docs: Vec<String>,
     pub mode: Option<ParamMode>,
@@ -628,9 +615,8 @@ pub struct TypeRef {
 }
 
 impl fmt::Display for TypeRef {
-    // The parser keeps the verbatim source spelling so the formatter re-emits a
-    // type annotation exactly as written. Resolution to a structured type happens
-    // once in marrow-schema; this text is the AST's only remaining use of it.
+    // Verbatim source spelling, so the formatter re-emits it exactly; structured
+    // resolution happens in marrow-schema.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.text)
     }
