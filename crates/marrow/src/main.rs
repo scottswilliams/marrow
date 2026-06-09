@@ -22,11 +22,11 @@ const HELP: &str = "\
 Marrow
 
 Usage:
-  marrow check [--format text|json|jsonl] <file.mw | projectdir>
-  marrow evolve <preview|apply> <projectdir>
+  marrow check [--data] [--format text|json|jsonl] <file.mw | projectdir>
+  marrow evolve <preview|apply> [--format text|json|jsonl] <projectdir>
   marrow fmt [--check | --write] <file.mw | projectdir>
-  marrow run <projectdir>
-  marrow test <projectdir>
+  marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] [--format text|json|jsonl] <projectdir>
+  marrow test [--trace] [--format text|json|jsonl] <projectdir>
   marrow data <roots|stats|dump|integrity> <projectdir>
   marrow data get <projectdir> <path>
   marrow backup [--format text|json|jsonl] <projectdir> <output-file>
