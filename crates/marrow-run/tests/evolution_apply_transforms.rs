@@ -78,7 +78,6 @@ fn proposal_transform_writes_target_before_catalog_acceptance() {
         !catalog.contains("books::Book::priceCents"),
         "apply must not accept the transform target before the data transaction"
     );
-    fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -135,7 +134,6 @@ fn completion_rejects_missing_transform_cell() {
         .expect("activation commit");
     let error = verify_activation_completion(&program, &store, &commit)
         .expect_err("missing transform cell fails");
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(error, ApplyError::Drift);
 }
@@ -206,7 +204,6 @@ fn proposal_transform_updates_every_store_using_the_resource() {
         read_scalar(&store, &archives_store_id, 2, &cents_id, INT),
         Some(Scalar::Int(700))
     );
-    fs::remove_dir_all(&root).ok();
 }
 
 /// A checked transform computes a new member from a sibling and apply writes the
@@ -277,7 +274,6 @@ fn transform_computes_new_member_per_record_and_stamps() {
         read_scalar(&store, &store_id, 2, &cents_id, INT),
         Some(Scalar::Int(700))
     );
-    fs::remove_dir_all(&root).ok();
 }
 
 /// The activatable->applyable invariant for a transform: a witness whose read members
@@ -323,7 +319,6 @@ fn activatable_transform_with_total_body_applies() {
         Some(Scalar::Int(500))
     );
     assert!(store.read_commit_metadata().expect("read").is_some());
-    fs::remove_dir_all(&root).ok();
 }
 
 /// A transform composes with a default and a retire in one evolve block: apply
@@ -424,5 +419,4 @@ fn transform_composes_with_default_and_retire() {
             .expect("exists"),
         "the retired member is dropped"
     );
-    fs::remove_dir_all(&root).ok();
 }

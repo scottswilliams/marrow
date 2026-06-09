@@ -15,8 +15,6 @@ use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_store::value::{Scalar, encode_value};
 
-use std::fs;
-
 /// An explicit `retire` of a store index deletes its derived cells, exactly as a bare
 /// source-drop does. An index holds no per-record source data, so retiring one is the
 /// same durable operation as dropping it: delete the index-cell subtree under its id.
@@ -88,7 +86,6 @@ fn explicit_index_retire_deletes_index_cells() {
         "an index retire must not require a destructive approval"
     );
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(outcome.receipt.records_retired, 0);
     assert!(
@@ -116,7 +113,7 @@ fn explicit_index_retire_deletes_index_cells() {
 /// subtree from every record and stamps the retire receipt.
 #[test]
 fn destructive_retire_aborts_without_approval_and_deletes_with_matching_approval() {
-    let (root, program, place, store, subtitle_id) =
+    let (_root, program, place, store, subtitle_id) =
         destructive_retire_fixture("apply-retire-approval");
     let witness = witness(&program, &store);
     let store_id = store_id_of(&place);
@@ -158,7 +155,6 @@ fn destructive_retire_aborts_without_approval_and_deletes_with_matching_approval
             "approved retire drops the member subtree"
         );
     }
-    fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -233,7 +229,6 @@ fn completion_rejects_retire_receipt_count_moved_between_ids() {
         .expect("forge retire receipt counts");
     let error = verify_activation_completion(&program, &store, &commit)
         .expect_err("forged retire receipt fails");
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(error, ApplyError::Drift);
 }
@@ -350,7 +345,6 @@ fn destructive_multi_retire_approval_is_matched_per_id() {
     };
     let outcome = apply(&witness, &program, &store, true, Some(&scoped)).expect("apply");
     assert_eq!(outcome.receipt.records_retired, 3);
-    fs::remove_dir_all(&root).ok();
 }
 
 /// Maintenance off blocks a destructive retire even with a matching approval: a hard
@@ -382,7 +376,6 @@ fn destructive_retire_requires_maintenance() {
             )
             .expect("exists")
     );
-    fs::remove_dir_all(&root).ok();
 }
 
 /// Retiring a member nested under an unkeyed group fails closed: apply does not yet
@@ -484,5 +477,4 @@ fn nested_group_retire_fails_closed() {
         None,
         "no stamp"
     );
-    fs::remove_dir_all(&root).ok();
 }

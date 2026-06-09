@@ -15,6 +15,7 @@
 #![allow(dead_code)]
 
 use std::fs;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 use marrow_check::evolution::{EvolutionWitness, preview};
@@ -49,7 +50,31 @@ const BOOKS_SUBTITLE_BASELINE: &str =
 const BOOKS_RETIRE_SUBTITLE: &str =
     include_str!("../../../../fixtures/v01/evolution/books_retire_subtitle.mw");
 
-pub fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
+/// A temporary project directory removed when the value is dropped.
+///
+/// Derefs to its root [`Path`], so it passes straight into the check, preview, and
+/// apply entries and any other `&Path` consumer without an explicit accessor. The
+/// drop removes the directory even when an assertion panics, so a failing test never
+/// leaks its temp dir.
+pub struct TempProject {
+    root: PathBuf,
+}
+
+impl Deref for TempProject {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.root
+    }
+}
+
+impl Drop for TempProject {
+    fn drop(&mut self) {
+        fs::remove_dir_all(&self.root).ok();
+    }
+}
+
+pub fn temp_project(name: &str, build: impl FnOnce(&Path)) -> TempProject {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock after unix epoch")
@@ -57,7 +82,7 @@ pub fn temp_project(name: &str, build: impl FnOnce(&Path)) -> PathBuf {
     let root = std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
     fs::create_dir_all(&root).expect("create project root");
     build(&root);
-    root
+    TempProject { root }
 }
 
 pub fn write(root: &Path, relative: &str, contents: &str) {
@@ -120,7 +145,7 @@ pub fn applied_proposal_default_fixture(
     name: &str,
     records: i64,
 ) -> (
-    PathBuf,
+    TempProject,
     CheckedProgram,
     CheckedSavedPlace,
     TreeStore,
@@ -176,7 +201,7 @@ pub fn read_scalar(
 pub fn destructive_retire_fixture(
     name: &str,
 ) -> (
-    PathBuf,
+    TempProject,
     CheckedProgram,
     CheckedSavedPlace,
     TreeStore,

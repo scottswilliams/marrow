@@ -12,8 +12,6 @@ use marrow_run::evolution::{ApplyError, FenceError, apply, current_engine_profil
 use marrow_store::tree::{EngineProfile, TreeStore};
 use marrow_store::value::Scalar;
 
-use std::fs;
-
 /// A store this binary applies is stamped at the binary's own engine profile, so the
 /// same binary that applied it passes the open fence, while a binary pinned one epoch
 /// behind is locked out. This is the activation lockout the fence enforces without a
@@ -74,8 +72,6 @@ fn applied_store_passes_same_binary_fence_and_locks_out_older() {
             accepted: accepted - 1,
         }
     );
-
-    fs::remove_dir_all(&root).ok();
 }
 
 /// A stale binary must not apply over a store a newer binary already evolved past its
@@ -134,8 +130,6 @@ fn apply_is_fenced_when_store_evolved_past_the_binary() {
     let store_id = store_id_of(&place);
     let pages_id = member_catalog_id(&place, "pages");
     assert_eq!(read_scalar(&store, &store_id, 1, &pages_id, INT), None);
-
-    fs::remove_dir_all(&root).ok();
 }
 
 /// An engine-profile drift fences a run-capable open even when the catalog epoch
@@ -215,8 +209,6 @@ fn apply_without_accepted_catalog_refuses_and_leaves_store_unchanged() {
         None,
         "no commit id churned"
     );
-
-    fs::remove_dir_all(&root).ok();
 }
 
 /// A store stamped under schema A is fenced when opened by a binary compiled against a
@@ -289,7 +281,4 @@ fn schema_drift_at_the_same_epoch_is_fenced_before_execution() {
     .expect_err("schema B fenced against schema A's store");
     assert_eq!(error, FenceError::SchemaDrift);
     assert_eq!(error.code(), "run.schema_drift");
-
-    fs::remove_dir_all(&root_a).ok();
-    fs::remove_dir_all(&root_b).ok();
 }

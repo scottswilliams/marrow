@@ -15,8 +15,6 @@ use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_store::value::Scalar;
 
-use std::fs;
-
 /// An optional sparse add is a no-op: apply stamps the proposal epoch with no data
 /// step. The store is stamped but carries no new member cell.
 #[test]
@@ -74,7 +72,6 @@ fn optional_add_stamps_epoch_without_data_step() {
     if let Some(epoch) = proposal_epoch {
         assert_eq!(store.read_catalog_epoch().expect("epoch"), Some(epoch));
     }
-    fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -140,8 +137,6 @@ fn completion_fails_when_no_effect_resume_recomputes_repair_required() {
     let error = verify_activation_completion(&program, &store, &commit)
         .expect_err("completion fails closed when proof verdict degrades");
     assert_eq!(error, ApplyError::NotActivatable);
-
-    fs::remove_dir_all(&root).ok();
 }
 
 /// Source-digest drift: the witness no longer matches what the source now discharges.
@@ -181,7 +176,6 @@ fn source_digest_drift_aborts() {
         "expected Drift, got {result:#?}"
     );
     assert_eq!(store.read_commit_metadata().expect("read"), None);
-    fs::remove_dir_all(&root).ok();
 }
 
 /// Count drift: the witness backfill count no longer matches the live store, so apply
@@ -226,7 +220,6 @@ fn count_drift_aborts() {
         "expected Drift, got {result:#?}"
     );
     assert_eq!(store.read_commit_metadata().expect("read"), None);
-    fs::remove_dir_all(&root).ok();
 }
 
 /// Store-commit drift: a concurrent writer advanced the store commit id after the
@@ -265,7 +258,6 @@ fn store_commit_drift_aborts() {
         "expected StoreCommitDrift, got {result:#?}"
     );
     assert_eq!(store.read_commit_metadata().expect("read"), None);
-    fs::remove_dir_all(&root).ok();
 }
 
 /// A failed apply leaves no stamp and a resumed apply re-previews and succeeds
@@ -341,8 +333,6 @@ fn failed_apply_rolls_back_and_resumes_idempotently() {
         );
         assert!(rw.read_commit_metadata().expect("read").is_some());
     }
-
-    fs::remove_dir_all(&root).ok();
 }
 
 /// A no-op evolution — the store already sits at the program's accepted epoch with no
@@ -403,6 +393,4 @@ fn no_op_apply_does_not_churn_the_commit_id() {
     let third =
         apply(&witness(&program, &store), &program, &store, false, None).expect("third apply");
     assert_eq!(third.receipt.commit_id, stamped_commit);
-
-    fs::remove_dir_all(&root).ok();
 }

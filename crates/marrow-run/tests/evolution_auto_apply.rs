@@ -14,8 +14,6 @@ use marrow_run::evolution::{AutoApplyOutcome, RunObligation, try_auto_apply};
 use marrow_store::tree::TreeStore;
 use marrow_store::value::Scalar;
 
-use std::fs;
-
 /// Add a sparse field over a populated store: discharging it writes no record, so the run
 /// auto-applies it. The store advances to the proposal epoch and stamps the new shape.
 #[test]
@@ -72,7 +70,6 @@ fn a_sparse_add_over_a_populated_store_auto_applies_and_advances_the_epoch() {
         Some(target_epoch),
         "auto-apply advanced the store to the proposal epoch",
     );
-    fs::remove_dir_all(&root).ok();
 }
 
 /// A required field added over a populated store has records to backfill, so the run must
@@ -126,14 +123,13 @@ fn a_required_add_over_a_populated_store_must_fence() {
         None,
         "a fenced obligation stamps nothing",
     );
-    fs::remove_dir_all(&root).ok();
 }
 
 /// A destructive drop over populated data is the approval-gated case: it never
 /// auto-applies regardless of how valid the change is, and the store keeps no stamp.
 #[test]
 fn a_populated_destructive_drop_never_auto_applies() {
-    let (root, program, _place, store, _subtitle_id) =
+    let (_root, program, _place, store, _subtitle_id) =
         destructive_retire_fixture("autoapply-destructive-drop");
     let w = witness(&program, &store);
 
@@ -147,7 +143,6 @@ fn a_populated_destructive_drop_never_auto_applies() {
         None,
         "a destructive drop stamps nothing on a bare run",
     );
-    fs::remove_dir_all(&root).ok();
 }
 
 /// The adversarial empty-drop race: an empty-target drop classifies as zero-mutation and
@@ -159,7 +154,7 @@ fn a_populated_destructive_drop_never_auto_applies() {
 /// an auto-apply.
 #[test]
 fn an_empty_drop_that_becomes_populated_before_the_stamp_fails_closed() {
-    let (root, program, place, store, subtitle_id) =
+    let (_root, program, place, store, subtitle_id) =
         destructive_retire_fixture("autoapply-empty-drop-race");
     // The fixture seeds two subtitle cells; clear them so the retire targets an empty
     // member and classifies as zero-mutation, exactly the auto-apply case.
@@ -212,7 +207,6 @@ fn an_empty_drop_that_becomes_populated_before_the_stamp_fails_closed() {
         ),
         "the concurrently-written cell survives the failed auto-apply",
     );
-    fs::remove_dir_all(&root).ok();
 }
 
 /// The TOCTOU invariant, encoded deterministically: the auto-apply decision is bound to
@@ -278,5 +272,4 @@ fn a_stale_commit_pin_fails_the_auto_apply_closed() {
         None,
         "the failed auto-apply stamps nothing",
     );
-    fs::remove_dir_all(&root).ok();
 }

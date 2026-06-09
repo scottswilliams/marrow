@@ -27,7 +27,6 @@ use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_store::value::{Scalar, ScalarType};
 
-use std::fs;
 use std::path::Path;
 
 /// The pre-evolution schema: a `Book` keyed store plus a separate `Author` store, with
@@ -156,8 +155,6 @@ fn adding_a_sparse_identity_field_by_evolution_preserves_old_records_and_admits_
         Some(reference),
         "the reference round-trips as the referenced identity's canonical key encoding",
     );
-
-    fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -224,6 +221,4 @@ fn an_evolve_apply_advances_the_epoch_and_fences_the_pre_evolution_program_befor
         &store,
     )
     .expect("the evolved program is not fenced by the store it just advanced");
-
-    fs::remove_dir_all(&root).ok();
 }

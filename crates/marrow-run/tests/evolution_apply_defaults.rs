@@ -122,18 +122,16 @@ fn proposal_required_default_backfills_before_catalog_acceptance() {
         !catalog.contains("books::Book::pages"),
         "apply must not accept the proposal before the data transaction"
     );
-    fs::remove_dir_all(&root).ok();
 }
 
 #[test]
 fn default_receipt_is_bounded_for_many_records() {
-    let (root, _program, _place, store, _pages_id) =
+    let (_root, _program, _place, store, _pages_id) =
         applied_proposal_default_fixture("completion-default-bounded", 128);
     let commit = store
         .read_commit_metadata()
         .expect("read commit")
         .expect("activation commit");
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(commit.activation_records_backfilled, 128);
     assert_eq!(commit.activation_default_records_by_id.len(), 1);
@@ -149,7 +147,7 @@ fn default_receipt_is_bounded_for_many_records() {
 
 #[test]
 fn completion_rejects_forged_default_receipt_digest() {
-    let (root, program, _place, store, _pages_id) =
+    let (_root, program, _place, store, _pages_id) =
         applied_proposal_default_fixture("completion-default-forged-digest", 2);
     let mut commit = store
         .read_commit_metadata()
@@ -163,14 +161,13 @@ fn completion_rejects_forged_default_receipt_digest() {
 
     let error = verify_activation_completion(&program, &store, &commit)
         .expect_err("forged default receipt fails");
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(error, ApplyError::Drift);
 }
 
 #[test]
 fn completion_rejects_missing_default_backfill_cell() {
-    let (root, program, place, store, pages_id) =
+    let (_root, program, place, store, pages_id) =
         applied_proposal_default_fixture("completion-default-missing-cell", 2);
     let store_id = store_id_of(&place);
     store
@@ -187,14 +184,13 @@ fn completion_rejects_missing_default_backfill_cell() {
 
     let error = verify_activation_completion(&program, &store, &commit)
         .expect_err("missing default cell fails");
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(error, ApplyError::Drift);
 }
 
 #[test]
 fn completion_rejects_engine_profile_drift() {
-    let (root, program, _place, store, _pages_id) =
+    let (_root, program, _place, store, _pages_id) =
         applied_proposal_default_fixture("completion-engine-profile-drift", 1);
     let commit = store
         .read_commit_metadata()
@@ -208,14 +204,13 @@ fn completion_rejects_engine_profile_drift() {
 
     let error = verify_activation_completion(&program, &store, &commit)
         .expect_err("engine profile drift fails");
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(error, ApplyError::Drift);
 }
 
 #[test]
 fn completion_rejects_erased_commit_source_digest() {
-    let (root, program, _place, store, _pages_id) =
+    let (_root, program, _place, store, _pages_id) =
         applied_proposal_default_fixture("completion-source-digest-erased", 1);
     let mut commit = store
         .read_commit_metadata()
@@ -228,7 +223,6 @@ fn completion_rejects_erased_commit_source_digest() {
 
     let error = verify_activation_completion(&program, &store, &commit)
         .expect_err("erased source digest fails");
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(error, ApplyError::Drift);
 }
@@ -297,7 +291,6 @@ fn proposal_required_default_rejects_preexisting_target_data() {
     assert_eq!(read_scalar(&store, &store_id, 2, &pages_id, INT), None);
     assert_eq!(store.read_catalog_epoch().expect("epoch"), None);
     assert!(store.read_commit_metadata().expect("read commit").is_none());
-    fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -365,7 +358,6 @@ fn proposal_default_backfills_every_store_using_the_resource() {
         read_scalar(&store, &archives_store_id, 2, &pages_id, INT),
         Some(Scalar::Int(0))
     );
-    fs::remove_dir_all(&root).ok();
 }
 
 /// A required-with-default change backfills exactly the records lacking the member
@@ -450,6 +442,4 @@ fn required_with_default_backfills_exactly_k_and_stamps_epoch() {
         read_scalar(&store, &store_id, 1, &pages_id, INT),
         Some(Scalar::Int(0))
     );
-
-    fs::remove_dir_all(&root).ok();
 }

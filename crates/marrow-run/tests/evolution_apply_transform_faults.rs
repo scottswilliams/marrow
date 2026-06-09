@@ -11,8 +11,6 @@ use marrow_run::evolution::{ApplyError, apply};
 use marrow_store::tree::TreeStore;
 use marrow_store::value::Scalar;
 
-use std::fs;
-
 /// A transform whose read member's stored bytes do not decode under the current type
 /// is non-activatable: apply refuses with a typed not-activatable error, staging no
 /// write and leaving the store unstamped.
@@ -57,7 +55,6 @@ fn transform_undecodable_read_is_refused() {
         None,
         "no stamp"
     );
-    fs::remove_dir_all(&root).ok();
 }
 
 /// A pure transform body can still raise a genuine runtime fault over a record (here an
@@ -101,7 +98,6 @@ fn transform_body_fault_aborts_byte_identical() {
     assert!(w.is_activatable(), "{w:#?}");
     let result = apply(&w, &program, &store, false, None);
     let cents_path = cents_id.clone();
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         matches!(result, Err(ApplyError::TransformBodyFaulted { .. })),
@@ -164,7 +160,6 @@ fn transform_body_fault_midscan_discards_earlier_staged_write() {
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");
     let result = apply(&w, &program, &store, false, None);
-    fs::remove_dir_all(&root).ok();
 
     assert!(
         matches!(result, Err(ApplyError::TransformBodyFaulted { .. })),
@@ -247,7 +242,6 @@ fn transform_constant_drift_aborts_before_apply() {
         Some(Scalar::Int(0)),
         "the target is unchanged when const drift is rejected"
     );
-    fs::remove_dir_all(&root).ok();
 }
 
 /// Editing a transform body after building the witness must abort apply with Drift,
@@ -331,5 +325,4 @@ fn transform_body_drift_aborts_before_apply() {
         Some(Scalar::Int(0)),
         "the target is unchanged when transform-body drift is rejected"
     );
-    fs::remove_dir_all(&root).ok();
 }

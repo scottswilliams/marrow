@@ -72,7 +72,6 @@ fn proposal_index_rebuild_writes_entries_before_catalog_acceptance() {
         !catalog.contains("books::^books::byIsbn"),
         "apply must not accept the index before the rebuild transaction"
     );
-    fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -128,7 +127,6 @@ fn completion_rejects_stale_index_row_with_old_key_arity() {
         .expect("activation commit");
     let error =
         verify_activation_completion(&program, &store, &commit).expect_err("stale index row fails");
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(error, ApplyError::Drift);
 }
@@ -187,7 +185,6 @@ fn proposal_index_rebuild_reads_defaulted_member_before_catalog_acceptance() {
         assert_eq!(scan.entries.len(), 1, "index entry for {id}");
         assert_eq!(scan.entries[0].identity, vec![SavedKey::Int(id)]);
     }
-    fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -234,7 +231,6 @@ fn unique_index_over_defaulted_member_collision_fails_closed() {
     assert_eq!(w.counts.index_collisions, 1, "{w:#?}");
     let error = apply(&w, &program, &store, false, None).expect_err("apply refuses");
     assert_eq!(error, ApplyError::NotActivatable);
-    fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -292,7 +288,6 @@ fn proposal_index_rebuild_reads_transform_target_before_catalog_acceptance() {
         assert_eq!(scan.entries.len(), 1, "index entry for {cents}");
         assert_eq!(scan.entries[0].identity, vec![SavedKey::Int(id)]);
     }
-    fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -339,7 +334,6 @@ fn unique_index_over_transform_target_fails_closed() {
     assert!(!w.is_activatable(), "{w:#?}");
     let error = apply(&w, &program, &store, false, None).expect_err("apply refuses");
     assert_eq!(error, ApplyError::NotActivatable);
-    fs::remove_dir_all(&root).ok();
 }
 
 /// A new unique index over clean data rebuilds its entries and stamps the epoch.
@@ -400,7 +394,6 @@ fn new_index_rebuild_writes_entries_and_stamps() {
         stale.entries.is_empty(),
         "a rebuild must delete stale index entries"
     );
-    fs::remove_dir_all(&root).ok();
 }
 
 /// A new NON-UNIQUE index over existing records rebuilds its entries. The discharge
@@ -463,7 +456,6 @@ fn new_non_unique_index_rebuild_writes_entries() {
             "a new non-unique index must hold record {id}, not be silently empty"
         );
     }
-    fs::remove_dir_all(&root).ok();
 }
 
 /// Dropping a source index deletes its derived cells on apply. The schema with the
@@ -533,7 +525,6 @@ fn dropped_index_apply_deletes_index_cells() {
     // catalog, so apply stamps the accepted epoch while the derived cells are cleared.
     assert!(w.proposal_catalog.is_none());
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
-    fs::remove_dir_all(&root).ok();
 
     assert_eq!(outcome.receipt.catalog_epoch, w.accepted_catalog.epoch);
     assert!(
@@ -621,5 +612,4 @@ fn dropped_index_id_stamped_as_index_not_root() {
             .any(|id| id.as_str() == index_id),
         "dropped index id must not be stamped as a data root: {commit:#?}"
     );
-    fs::remove_dir_all(&root).ok();
 }
