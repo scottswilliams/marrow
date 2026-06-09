@@ -197,39 +197,6 @@ impl Node {
     }
 }
 
-/// The durable root and identity key shape declared by a store. Identity keys
-/// live in the saved path; they are not stored fields.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SavedRootSchema {
-    pub root: String,
-    pub identity_keys: Vec<KeyDef>,
-}
-
-impl SavedRootSchema {
-    /// Does this store root qualify for the default `nextId` allocation policy?
-    /// Only a store with exactly one `int` identity key does; composite
-    /// identities, non-integer identities, and keyless singletons are
-    /// application-provided. This is the one contract both the checker (which
-    /// types `nextId(^root)`) and the runtime write planner (which allocates the
-    /// next id) gate on, so it lives here on the shape they both key off.
-    pub fn single_int_root(&self) -> bool {
-        matches!(self.identity_keys.as_slice(), [key] if key.ty == Type::Scalar(ScalarType::Int))
-    }
-
-    /// Name the identity shape that disqualifies this root from the default
-    /// `nextId` policy, as a noun phrase for the rejection message: a keyless
-    /// singleton, a single non-`int` key, or a composite identity. Both the
-    /// checker diagnostic and the runtime fault reuse this so their wording
-    /// cannot drift apart.
-    pub fn next_id_shape(&self) -> String {
-        match self.identity_keys.as_slice() {
-            [] => "a keyless singleton".into(),
-            [key] => format!("a single `{}` key", key.ty),
-            keys => format!("a composite identity of {} keys", keys.len()),
-        }
-    }
-}
-
 /// The compiled durable store over a resource tree shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreSchema {
@@ -245,19 +212,27 @@ impl StoreSchema {
         Type::Identity(self.root.clone())
     }
 
-    pub fn saved_root(&self) -> SavedRootSchema {
-        SavedRootSchema {
-            root: self.root.clone(),
-            identity_keys: self.identity_keys.clone(),
-        }
-    }
-
+    /// Does this store root qualify for the default `nextId` allocation policy?
+    /// Only a store with exactly one `int` identity key does; composite
+    /// identities, non-integer identities, and keyless singletons are
+    /// application-provided. This is the one contract both the checker (which
+    /// types `nextId(^root)`) and the runtime write planner (which allocates the
+    /// next id) gate on.
     pub fn single_int_root(&self) -> bool {
-        self.saved_root().single_int_root()
+        matches!(self.identity_keys.as_slice(), [key] if key.ty == Type::Scalar(ScalarType::Int))
     }
 
+    /// Name the identity shape that disqualifies this root from the default
+    /// `nextId` policy, as a noun phrase for the rejection message: a keyless
+    /// singleton, a single non-`int` key, or a composite identity. Both the
+    /// checker diagnostic and the runtime fault reuse this so their wording
+    /// cannot drift apart.
     pub fn next_id_shape(&self) -> String {
-        self.saved_root().next_id_shape()
+        match self.identity_keys.as_slice() {
+            [] => "a keyless singleton".into(),
+            [key] => format!("a single `{}` key", key.ty),
+            keys => format!("a composite identity of {} keys", keys.len()),
+        }
     }
 }
 

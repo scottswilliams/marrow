@@ -7,7 +7,7 @@ Every `compile_*` entry returns the schema **and** a `Vec<SchemaError>` together
 ## The shapes
 
 - **Resource** — `compile_resource` / `compile_stored_resource` build a `ResourceSchema`: a source-ordered flat `Vec<Node>`. A `Node` is either a `Slot` (plain field or keyed leaf) or a `Group` (nested members). Keyed-ness is structural, not a flag — empty `key_params` means plain, non-empty means a keyed leaf. Sugar desugars to canonical keyed leaves so downstream paths are identical: `name: sequence[T]` becomes `name(pos: int): T`, `name: map[K,V]` becomes `name(key: K): V`.
-- **Store** — `compile_store` builds a `StoreSchema` (durable root, identity keys, indexes) over a compiled `ResourceSchema`. `SavedRootSchema::single_int_root` is the single-int-root `nextId` policy gate the checker types `nextId(^root)` against; the runtime re-checks the same contract on the lowered place via its own `single_int_identity`. `next_id_shape` is the shared rejection-message wording — single-sourced in the checker and reused verbatim by the runtime, so both report the same shape.
+- **Store** — `compile_store` builds a `StoreSchema` (durable root, identity keys, indexes) over a compiled `ResourceSchema`. `StoreSchema::single_int_root` is the single-int-root `nextId` policy gate the checker types `nextId(^root)` against; the runtime re-checks the same contract on the lowered place via its own `single_int_identity`. `next_id_shape` is the shared rejection-message wording — single-sourced in the checker and reused verbatim by the runtime, so both report the same shape.
 - **Enum** — `compile_enum` builds an `EnumSchema`: members flattened pre-order DFS with parent links. Traversal indices are source-order positions, **not** durable value identity — identity lives in the parent-link tree shape.
 
 ## Rules it owns
@@ -39,7 +39,7 @@ Two single-source tables live here so checker and runtime never grow parallel co
 | File | Responsibility |
 |---|---|
 | `crates/marrow-schema/src/lib.rs` | Thin crate root: module declarations and the `pub use` re-exports that fix the public API paths |
-| `crates/marrow-schema/src/types.rs` | `Type` resolution and the `ResourceSchema`/`StoreSchema`/`SavedRootSchema`/`Node`/`NodeKind`/`KeyDef`/`IndexSchema` tree shapes with their query impls |
+| `crates/marrow-schema/src/types.rs` | `Type` resolution and the `ResourceSchema`/`StoreSchema`/`Node`/`NodeKind`/`KeyDef`/`IndexSchema` tree shapes with their query impls |
 | `crates/marrow-schema/src/enums.rs` | `EnumSchema`/`EnumMemberSchema`/`MemberPathResolution` and the value/`is`/`match` member-path queries |
 | `crates/marrow-schema/src/errors.rs` | The `SchemaError` vocabulary: `SchemaErrorKind`, the typed target enums, the `schema.*` codes, and the message constructors |
 | `crates/marrow-schema/src/compile.rs` | The `compile_*` entries, member→`Node` lowering with sequence/map desugaring (`MapLeaf`), enum flattening, and `map`/`sequence` type-spelling parsing |
@@ -58,5 +58,5 @@ Two single-source tables live here so checker and runtime never grow parallel co
 - `classify_key_type` / `index_arg_type_key_error` (`validate.rs`) — the orderable-scalar allowlist and the one index-arg divergence.
 - `compile_store` (`compile.rs`) / `check_store_index` (`validate.rs`) — keyed-root requirement and the trailing-identity-key rule for non-unique indexes.
 - `EnumSchema::walk_member_path` (`enums.rs`) / `flatten_enum_members` (`compile.rs`) — the shared value/`is`/`match` path walk and category⟺has-children enforcement.
-- `SavedRootSchema::single_int_root` (`types.rs`) — the checker's single-int-root `nextId` gate (the runtime re-checks the same contract via `single_int_identity` in `marrow-run`); `next_id_shape` is the matching rejection-message helper, single-sourced and reused verbatim by the runtime.
+- `StoreSchema::single_int_root` (`types.rs`) — the checker's single-int-root `nextId` gate (the runtime re-checks the same contract via `single_int_identity` in `marrow-run`); `next_id_shape` is the matching rejection-message helper, single-sourced and reused verbatim by the runtime.
 - `TABLE` / `StdOp` / `lookup` (`stdlib.rs`) — the row shape that keeps std typing and dispatch single-sourced.

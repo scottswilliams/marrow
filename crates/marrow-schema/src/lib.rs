@@ -32,9 +32,7 @@ pub use errors::{
     SCHEMA_UNSUPPORTED_TYPE, SchemaDuplicateTarget, SchemaError, SchemaErrorKind, SchemaKeyTarget,
     SchemaNameCollision, SchemaSavedUnknownTarget, SchemaUnsupportedTypeTarget,
 };
-pub use types::{
-    IndexSchema, KeyDef, Node, NodeKind, ResourceSchema, SavedRootSchema, StoreSchema, Type,
-};
+pub use types::{IndexSchema, KeyDef, Node, NodeKind, ResourceSchema, StoreSchema, Type};
 pub use validate::{
     check_saved_member_rules, check_saved_named_member_fields, check_saved_named_member_fields_with,
 };
