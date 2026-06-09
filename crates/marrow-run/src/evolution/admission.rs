@@ -72,7 +72,7 @@ pub(super) fn expected_retire_counts(witness: &EvolutionWitness) -> Vec<(Catalog
 /// approval, and witness comparisons agree on one stable order. Catalog ids are globally
 /// unique, so ordering by id string is a total order over any keyed collection.
 pub(super) fn catalog_id_order<T>(a: &(CatalogId, T), b: &(CatalogId, T)) -> Ordering {
-    a.0.as_str().cmp(b.0.as_str())
+    a.0.cmp(&b.0)
 }
 
 fn sorted_retire_counts(counts: &[(CatalogId, usize)]) -> Vec<(CatalogId, usize)> {

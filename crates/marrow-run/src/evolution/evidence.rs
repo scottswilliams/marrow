@@ -140,7 +140,7 @@ pub(super) fn retire_evidence_digest(
     counts: &[(CatalogId, u64)],
 ) -> String {
     let mut counts = counts.to_vec();
-    counts.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+    counts.sort_by(|a, b| a.0.cmp(&b.0));
     let mut digest = EvidenceDigest::new(ACTIVATION_RETIRE_DIGEST);
     digest.u64(commit_id);
     digest.u64(records_retired);

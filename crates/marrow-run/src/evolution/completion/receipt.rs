@@ -8,9 +8,9 @@ pub(super) fn verify_default_receipt(
     commit: &CommitMetadata,
 ) -> Result<(), ApplyError> {
     let mut expected: Vec<_> = defaults.iter().collect();
-    expected.sort_by(|a, b| a.catalog_id.as_str().cmp(b.catalog_id.as_str()));
+    expected.sort_by(|a, b| a.catalog_id.cmp(&b.catalog_id));
     let mut recorded: Vec<_> = commit.activation_default_records_by_id.iter().collect();
-    recorded.sort_by(|a, b| a.catalog_id.as_str().cmp(b.catalog_id.as_str()));
+    recorded.sort_by(|a, b| a.catalog_id.cmp(&b.catalog_id));
     if expected.len() != recorded.len() {
         return Err(ApplyError::Drift);
     }
