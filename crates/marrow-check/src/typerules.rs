@@ -41,8 +41,21 @@ pub(crate) fn check_literal_range(
             CHECK_LITERAL_RANGE,
             file,
             span,
-            format!("{type_name} literal `{text}` is out of range"),
+            format!("{type_name} literal `{}` is out of range", elide(text)),
         ));
+    }
+}
+
+/// A literal bounded for display: an out-of-range numeric literal can be
+/// arbitrarily long, and echoing the whole of it into a diagnostic floods the
+/// output without adding meaning past the leading digits.
+fn elide(text: &str) -> std::borrow::Cow<'_, str> {
+    const MAX: usize = 48;
+    if text.len() > MAX {
+        let head: String = text.chars().take(MAX).collect();
+        std::borrow::Cow::Owned(format!("{head}…"))
+    } else {
+        std::borrow::Cow::Borrowed(text)
     }
 }
 
