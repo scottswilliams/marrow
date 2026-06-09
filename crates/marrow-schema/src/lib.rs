@@ -6,6 +6,7 @@
 //! validation beyond structure is deferred; see the notes on [`compile_resource`]
 //! and [`compile_store`].
 
+use std::collections::HashSet;
 use std::fmt;
 
 use marrow_syntax::{
@@ -35,8 +36,8 @@ pub enum Type {
     Sequence(Box<Type>),
     /// A store identity such as `Id(^books)`, carrying the store root name.
     Identity(String),
-    /// A bare or qualified name that is not a scalar, sequence, identity, or
-    /// `unknown`: a resource reference (the checker confirms it) or a typo.
+    /// Any bare or qualified name not decidable from the text alone: a resource
+    /// or enum reference the checker confirms, or a typo.
     Named(String),
     /// The explicit dynamic boundary type `unknown`.
     Unknown,
@@ -122,21 +123,16 @@ pub struct ResourceSchema {
 }
 
 impl ResourceSchema {
-    /// The declared type of a stored field named by its saved-path chain — the
-    /// named segments after the identity, outermost first, where the last name is
-    /// a scalar field and every earlier name is a group layer to descend into. A
-    /// single-name chain reads a top-level field; a longer chain descends the
-    /// leading names as groups and reads the last name as a field of the innermost
-    /// group. An empty chain, or any name the schema does not declare as that
-    /// shape, resolves to `None`.
+    /// The declared type of a stored field named by its saved-path chain
+    /// (outermost first), where the last name is a scalar field and every earlier
+    /// name is a group layer to descend into. `None` for an empty chain or a name
+    /// the schema does not declare as that shape.
     ///
     /// A keyed-leaf layer read at the same position is [`Self::leaf_type`]; the two
     /// differ only in whether the terminal name is a field (a [`NodeKind::Slot`]) or
     /// a group (a [`NodeKind::Group`]) to descend, so both share the one walk.
     pub fn field_type(&self, chain: &[&str]) -> Option<&Type> {
         let (&leaf, groups) = chain.split_last()?;
-        // No lead names is a top-level field; otherwise descend the lead names as
-        // group layers and read the terminal as a field of the innermost group.
         let members = match groups {
             [] => &self.members,
             _ => &self.descend_layers(groups)?.members,
@@ -144,11 +140,9 @@ impl ResourceSchema {
         plain_field(members, leaf)
     }
 
-    /// The declared leaf value type of a keyed-leaf layer named by its chain of
-    /// layer names, outermost first. The last name is the keyed-leaf layer being
-    /// read; earlier names are the groups to descend through. Resolves to `None`
-    /// for an empty chain, an unknown layer, or a group layer (which has members,
-    /// not a leaf value).
+    /// The declared leaf value type of the keyed-leaf layer named by its chain
+    /// (outermost first). `None` for an empty chain, an unknown layer, or a group
+    /// layer, which has members rather than a leaf value.
     pub fn leaf_type(&self, layers: &[&str]) -> Option<&Type> {
         match &self.descend_layers(layers)?.kind {
             NodeKind::Slot { ty, .. } => Some(ty),
@@ -156,10 +150,8 @@ impl ResourceSchema {
         }
     }
 
-    /// Descend a non-empty chain of group layer names, following nested layers,
-    /// and return the innermost layer node. `None` for an empty chain or an
-    /// unknown name. Also used by the runtime to check that a layer chain is fully
-    /// declared before touching the store. A plain field (a `Slot` with no key
+    /// The innermost node of a non-empty chain of group layer names. `None` for an
+    /// empty chain or an unknown name. A plain field (a `Slot` with no key
     /// parameters) is not a layer, so a name resolving to one fails the descent.
     pub fn descend_layers(&self, layers: &[&str]) -> Option<&Node> {
         let (&first, rest) = layers.split_first()?;
@@ -190,16 +182,14 @@ fn layer_member<'a>(members: &'a [Node], name: &str) -> Option<&'a Node> {
 }
 
 impl Node {
-    /// Whether this node is a plain top-level (or group-member) field: a `Slot`
-    /// carrying no key parameters. A keyed leaf (`Slot` with key parameters) and a
-    /// group are layers, not plain fields. The write planner and whole-resource
-    /// read use this to pick out the fields they materialize.
+    /// Whether this node is a plain field: a `Slot` carrying no key parameters. A
+    /// keyed leaf (`Slot` with key parameters) and a group are layers, not plain
+    /// fields.
     pub fn is_plain_field(&self) -> bool {
         self.key_params.is_empty() && matches!(self.kind, NodeKind::Slot { .. })
     }
 
-    /// The type of this node when it is a plain field, else `None`. Lets a caller
-    /// select plain fields and bind their type in one pass.
+    /// The type of this node when it is a plain field, else `None`.
     pub fn plain_field_type(&self) -> Option<&Type> {
         match &self.kind {
             NodeKind::Slot { ty, .. } if self.key_params.is_empty() => Some(ty),
@@ -207,11 +197,11 @@ impl Node {
         }
     }
 
-    /// The type a single value cell of this node holds, for any [`NodeKind::Slot`]: a
-    /// plain field's own type, or a keyed-leaf-layer (`map[K, V]`) entry's value type V.
-    /// A group holds no single value cell and resolves to `None`. Evolution records this
-    /// as the member's identity-aware leaf token, so a value-type change is detected by
-    /// referent identity for a keyed-leaf value the same way it is for a plain field.
+    /// The type a single value cell of this `Slot` holds — a plain field's own
+    /// type or a keyed-leaf entry's value type; `None` for a group. Evolution
+    /// records this as the member's identity-aware leaf token, so a value-type
+    /// change on a keyed-leaf value is detected by referent identity exactly as it
+    /// is for a plain field.
     pub fn leaf_value_type(&self) -> Option<&Type> {
         match &self.kind {
             NodeKind::Slot { ty, .. } => Some(ty),
@@ -329,16 +319,14 @@ pub struct IndexSchema {
     pub unique: bool,
 }
 
-/// The compiled form of an enum: a named, fixed set of members. Members are held
-/// flat in pre-order DFS; those positions are source traversal indices for tree
-/// queries, not durable value identity. The tree shape lives in each member's
-/// `parent` link. An enum is its own construct, not a [`ResourceSchema`]; it owns
-/// no saved root.
+/// The compiled form of an enum: a named, fixed set of members held flat in
+/// pre-order DFS, with the tree shape carried by each member's `parent` link. A
+/// member's index is a source traversal handle for tree queries, not durable
+/// value identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumSchema {
     pub name: String,
     pub docs: Vec<String>,
-    /// Members in pre-order DFS; a member's index is a source traversal handle.
     pub members: Vec<EnumMemberSchema>,
 }
 
@@ -381,7 +369,7 @@ impl EnumSchema {
 
     /// Walk a relative member path (`["tiger", "bengal"]`) to a single member. A
     /// qualified path starts at a top-level member and walks parent→child, one
-    /// segment per level; since names are unique among siblings the walk is always
+    /// segment per level; since sibling names are unique the walk is always
     /// unambiguous. A bare single name may sit at any depth and is the one position
     /// a duplicate can leave unresolved: the same name under different parents
     /// (`tiger::paw`, `lion::paw`) is [`MemberPathResolution::Ambiguous`].
@@ -805,7 +793,16 @@ pub fn compile_store(
             resource: decl.resource.clone(),
             docs: decl.docs.clone(),
             identity_keys: decl.root.keys.iter().map(key_def).collect(),
-            indexes: decl.indexes.iter().map(index_schema).collect(),
+            indexes: decl
+                .indexes
+                .iter()
+                .map(|index| IndexSchema {
+                    name: index.name.clone(),
+                    docs: index.docs.clone(),
+                    args: index.args.clone(),
+                    unique: index.unique,
+                })
+                .collect(),
         },
         errors,
     )
@@ -961,9 +958,9 @@ fn flatten_enum_members(
     members: &mut Vec<EnumMemberSchema>,
     errors: &mut Vec<SchemaError>,
 ) {
-    let mut seen: Vec<&str> = Vec::new();
+    let mut seen: HashSet<&str> = HashSet::new();
     for member in siblings {
-        if seen.contains(&member.name.as_str()) {
+        if !seen.insert(&member.name) {
             errors.push(SchemaError {
                 kind: SchemaErrorKind::DuplicateMember {
                     target: SchemaDuplicateTarget::EnumMember,
@@ -975,7 +972,6 @@ fn flatten_enum_members(
             });
             continue;
         }
-        seen.push(&member.name);
         if member.category && member.members.is_empty() {
             errors.push(SchemaError {
                 kind: SchemaErrorKind::CategoryLeaf {
@@ -1722,15 +1718,6 @@ fn check_duplicate_key_params(keys: &[KeyParam], span: SourceSpan, errors: &mut 
     }
 }
 
-fn index_schema(index: &IndexDecl) -> IndexSchema {
-    IndexSchema {
-        name: index.name.clone(),
-        docs: index.docs.clone(),
-        args: index.args.clone(),
-        unique: index.unique,
-    }
-}
-
 fn key_def(key: &KeyParam) -> KeyDef {
     KeyDef {
         name: key.name.clone(),
@@ -1741,20 +1728,20 @@ fn key_def(key: &KeyParam) -> KeyDef {
 /// Tracks member names seen at one nesting level so duplicates can be reported.
 /// Fields, layers, and indexes share one flat namespace per level.
 struct Namespace {
-    seen: Vec<String>,
+    seen: HashSet<String>,
     target: SchemaDuplicateTarget,
 }
 
 impl Namespace {
     fn new(target: SchemaDuplicateTarget) -> Self {
         Self {
-            seen: Vec::new(),
+            seen: HashSet::new(),
             target,
         }
     }
 
     fn check(&mut self, name: &str, span: SourceSpan, errors: &mut Vec<SchemaError>) {
-        if self.seen.iter().any(|existing| existing == name) {
+        if !self.seen.insert(name.to_string()) {
             errors.push(SchemaError {
                 kind: SchemaErrorKind::DuplicateMember {
                     target: self.target,
@@ -1764,8 +1751,6 @@ impl Namespace {
                 message: format!("duplicate {} `{name}`", self.target.message_name()),
                 span,
             });
-        } else {
-            self.seen.push(name.to_string());
         }
     }
 }
