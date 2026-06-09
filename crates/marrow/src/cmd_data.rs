@@ -18,9 +18,8 @@ pub(crate) mod get;
 #[path = "cmd_data/integrity.rs"]
 pub(crate) mod integrity;
 
-/// Parse one positional project directory plus an optional `--format` flag, for
-/// the `data` inspection commands. Reuses the shared `--format` grammar so the flag
-/// is uniform across the CLI; text is the default.
+/// Shared `--format` parsing for the `data` inspection subcommands, so the flag
+/// grammar stays uniform across the CLI; text is the default.
 fn one_positional_with_format(
     command: &str,
     args: &[String],
@@ -59,11 +58,10 @@ fn report_store_error(error: StoreError, format: CheckFormat) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// Pin a coherent read snapshot over an opened store, so every pass an inspection
-/// command runs observes one version of saved data. An empty (`None`) store has
-/// nothing to pin and yields `Ok(None)`. The returned guard must be held for the
-/// duration of the reads it covers; a snapshot failure is reported and returns the
-/// exit code. The shared coherent-read scaffold for the `data` inspection commands.
+/// Pin a read snapshot so every pass of an inspection command observes one version of
+/// saved data. The caller must hold the returned guard for the duration of its reads;
+/// an empty store has nothing to pin and yields `Ok(None)`. The shared coherent-read
+/// scaffold for the `data` inspection commands.
 pub(super) fn pin_snapshot(
     store: &Option<TreeStore>,
     format: CheckFormat,
@@ -77,8 +75,6 @@ pub(super) fn pin_snapshot(
     }
 }
 
-/// Inspect a project's saved data, read-only:
-/// `marrow data <roots|stats|dump|integrity|get> <projectdir>`.
 pub(crate) fn data(args: &[String]) -> ExitCode {
     let Some((subcommand, rest)) = args.split_first() else {
         eprintln!(
@@ -117,8 +113,6 @@ store.
     }
 }
 
-/// `marrow data roots`: list the project's saved roots, one `^root` per line in
-/// text, or a `{ project, roots }` object with `--format json`.
 fn data_roots(args: &[String]) -> ExitCode {
     let (dir, format) = match one_positional_with_format("data roots", args) {
         Ok(parsed) => parsed,
@@ -158,8 +152,6 @@ fn data_roots(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `marrow data stats`: report how many saved roots and records the store holds,
-/// as text lines or a `{ project, roots, records }` object with `--format json`.
 fn data_stats(args: &[String]) -> ExitCode {
     let (dir, format) = match one_positional_with_format("data stats", args) {
         Ok(parsed) => parsed,
@@ -205,8 +197,6 @@ fn data_stats(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `marrow data dump`: print every checked stored `(path, value)` in encoded
-/// order. Values render as their canonical bytes (UTF-8 text or `0x<hex>`).
 fn data_dump(args: &[String]) -> ExitCode {
     let (dir, format) = match one_positional_with_format("data dump", args) {
         Ok(parsed) => parsed,
@@ -244,8 +234,6 @@ fn data_dump(args: &[String]) -> ExitCode {
     }
 }
 
-/// Print each stored `(path, value)` as a tab-separated line, the value rendered as
-/// its canonical bytes (UTF-8 text or `0x<hex>`). An empty store prints a placeholder.
 fn render_dump_text(
     program: &CheckedProgram,
     store: &Option<TreeStore>,
@@ -266,8 +254,6 @@ fn render_dump_text(
     .map(|_| ())
 }
 
-/// Stream the dump as one `{ project, records: [...] }` JSON object. An empty store
-/// emits the same envelope with no records.
 fn render_dump_json(
     dir: &str,
     program: &CheckedProgram,
@@ -282,8 +268,6 @@ fn render_dump_json(
     }
 }
 
-/// Stream the dump as one JSON record per line, followed by a `summary` line with the
-/// record count.
 fn render_dump_jsonl(
     program: &CheckedProgram,
     store: &Option<TreeStore>,
@@ -324,10 +308,10 @@ fn write_dump_json(
 }
 
 /// Stream a `{ <prefix>, "<array_field>": [ <items> ] }` JSON object to `out` in
-/// bounded memory. `write_prefix` emits the leading object fields, and `visit` runs
-/// the record traversal, calling `emit` once per item; this helper owns the `[`, the
-/// comma separators between items, and the closing `]}`. The single owner of the
-/// streaming JSON-array envelope shared by `data dump` and `data integrity`.
+/// bounded memory: `write_prefix` emits the leading fields, `visit` calls `emit` once
+/// per item, and this helper owns the `[`, the comma separators, and the closing `]}`.
+/// The single owner of the streaming JSON-array envelope shared by `data dump` and
+/// `data integrity`.
 pub(super) fn write_json_array_envelope(
     out: &mut impl Write,
     write_prefix: impl FnOnce(&mut dyn Write),
@@ -352,7 +336,6 @@ pub(super) fn write_json_array_envelope(
     Ok(())
 }
 
-/// Render a dump record as JSON: the human path plus base64 of the value bytes.
 fn dump_record(path: &str, value: &[u8]) -> serde_json::Value {
     json!({
         "path": path,

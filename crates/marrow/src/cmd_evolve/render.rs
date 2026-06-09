@@ -86,9 +86,8 @@ pub(super) fn blocked(
     }
 }
 
-/// The shared error envelope for one blocking obligation: the stable code, its derived
-/// `kind`, the message, and the structured facts nested under `data` as the envelope
-/// spec requires.
+/// One blocking obligation as an error envelope. Structured facts nest under `data`,
+/// as the envelope spec requires.
 fn report_envelope(report: &BlockingReport) -> serde_json::Value {
     serde_json::json!({
         "code": report.code,
@@ -151,12 +150,10 @@ fn blocking_reports(
                 let catalog_id = obligation.catalog_id.as_str();
                 reports.push(BlockingReport {
                     code: "evolve.repair_required",
-                    message: messages
-                        .get(catalog_id)
-                        .map(|m| m.to_string())
-                        .unwrap_or_else(|| {
-                            format!("catalog id {catalog_id} requires repair before activation")
-                        }),
+                    message: messages.get(catalog_id).map_or_else(
+                        || format!("catalog id {catalog_id} requires repair before activation"),
+                        |m| m.to_string(),
+                    ),
                     catalog_id: Some(catalog_id.to_string()),
                     populated: None,
                 });
@@ -187,9 +184,8 @@ fn generic_blocking_report() -> BlockingReport {
     }
 }
 
-/// The `evolve.approval_required` prose, the single owner shared by the preview's
-/// blocking report and the apply error so both paths name the same retire-approval
-/// invocation for a destructive evolution.
+/// The `evolve.approval_required` prose, shared by the preview's blocking report and the
+/// apply error so both name the same retire-approval invocation for a destructive evolution.
 fn approval_required_message(catalog_id: &str, populated: usize) -> String {
     format!(
         "catalog id {catalog_id} retires {populated} populated record(s); rerun with --maintenance --approve-retire {catalog_id}:{populated}"
@@ -213,9 +209,9 @@ pub(super) fn apply_success(outcome: &ApplyOutcome, format: CheckFormat) {
     );
 }
 
-/// Report a resume that found the store already activated and only had to bring the
-/// accepted-catalog file forward. No data was re-applied, so every count is zero and
-/// there is no fresh commit; the epoch is the one the store already holds.
+/// Report a resume that only brought the accepted-catalog file forward. No data was
+/// re-applied, so every count is zero, there is no fresh commit, and the epoch is the
+/// one the store already holds.
 pub(super) fn apply_resumed(catalog_epoch: u64, format: CheckFormat) {
     render_apply_outcome(
         "completed evolution",
@@ -235,9 +231,9 @@ struct ApplyCounts {
     indexes_rebuilt: usize,
 }
 
-/// The single owner of the `evolve apply` outcome shape, shared by a fresh apply and
-/// a resume. A resume re-applied nothing, so it carries no `commit_id` and zeroed
-/// counts; the `commit id` line and JSON key appear only when a commit was made.
+/// The `evolve apply` outcome shape, shared by a fresh apply and a resume. The
+/// `commit id` text line and JSON key appear only when a commit was made; a resume
+/// carries none.
 fn render_apply_outcome(
     text_heading: &str,
     status: &str,

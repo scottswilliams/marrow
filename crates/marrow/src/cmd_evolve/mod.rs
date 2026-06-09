@@ -94,11 +94,9 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
     let Ok((config, program)) = load_checked_project_with_format(&input.dir, input.format) else {
         return ExitCode::FAILURE;
     };
-    // Applying an evolution is an authorized state-establishing flow, so a clean
-    // source with pending durable identity has it frozen here before the witness is
-    // built. This is a separate transactional step from consuming the preview witness:
-    // once the catalog is committed, preview and apply run against the accepted
-    // identity exactly as they would for an already-accepted project.
+    // Apply is an authorized state-establishing flow, so pending durable identity is
+    // committed here before the witness is built; preview and apply then run against
+    // the accepted identity exactly as for an already-accepted project.
     let program = match commit_pending_identity(&input.dir, &config, program, input.format) {
         Ok(program) => program,
         Err(code) => return code,
@@ -106,14 +104,12 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
     let Ok(store) = store::apply_store(&input.dir, &config, input.format) else {
         return ExitCode::FAILURE;
     };
-    // The store transaction (data plus epoch stamp) and the accepted-catalog file are
-    // advanced as two steps, with the file written last. A crash between them leaves the
-    // store at the activated epoch while the file still records the prior one. That
-    // window is recoverable: re-running apply finds the store already at the proposal
-    // epoch and completes by writing the file alone, doing no data re-apply and no
-    // second stamp. Detecting it before the fence is essential, because the fence reads
-    // the behind-by-one file as its accepted epoch and would reject the store as
-    // evolved.
+    // The store transaction (data plus epoch stamp) and the accepted-catalog file
+    // advance in two steps, the file last. A crash between them leaves the store at the
+    // activated epoch with the file a step behind; `resume_completion` recovers that
+    // window here by writing the file alone, re-applying no data and adding no second
+    // stamp. Detection has to precede the fence, which would read the behind-by-one file
+    // as its accepted epoch and reject the store as evolved.
     match resume_completion(&input.dir, &config, &program, &store, input.format) {
         Ok(Some(code)) => return code,
         Ok(None) => {}
@@ -134,10 +130,9 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
         input.approval.as_ref(),
     ) {
         Ok(outcome) => {
-            // Advance the accepted-catalog file to the activated proposal as the final
-            // step, after the store transaction has committed. A proposal of `None` is a
-            // change that does not touch durable identity (a pure backfill), so the file
-            // already matches and is left untouched.
+            // Advance the accepted-catalog file last, after the store transaction has
+            // committed. A `None` proposal is a pure backfill that does not touch durable
+            // identity, so the file already matches and is left untouched.
             if let Some(proposal) = &program.catalog.proposal
                 && let Err(code) =
                     write_accepted_catalog(&input.dir, &config, proposal, input.format)
@@ -176,13 +171,9 @@ fn resume_completion(
     let Some(proposal) = &program.catalog.proposal else {
         return Ok(None);
     };
-    let store_epoch = match store.read_catalog_epoch() {
-        Ok(epoch) => epoch,
-        Err(error) => {
-            report_simple_error(error.code(), &error.to_string(), format);
-            return Err(ExitCode::FAILURE);
-        }
-    };
+    let store_epoch = store
+        .read_catalog_epoch()
+        .map_err(|error| report_store_read_error(error, format))?;
     if store_epoch != Some(proposal.epoch) || program.catalog.accepted_epoch >= Some(proposal.epoch)
     {
         return Ok(None);
@@ -192,13 +183,9 @@ fn resume_completion(
     // same next epoch. The completion verifier below recomputes the current witness
     // from source plus the accepted catalog and compares its digest/effects against
     // this stamped commit before the file can publish.
-    let commit = match store.read_commit_metadata() {
-        Ok(commit) => commit,
-        Err(error) => {
-            report_simple_error(error.code(), &error.to_string(), format);
-            return Err(ExitCode::FAILURE);
-        }
-    };
+    let commit = store
+        .read_commit_metadata()
+        .map_err(|error| report_store_read_error(error, format))?;
     let Some(commit) = commit else {
         report_resume_drift(format);
         return Err(ExitCode::FAILURE);
@@ -225,6 +212,11 @@ fn resume_completion(
     write_accepted_catalog(dir, config, proposal, format)?;
     render::apply_resumed(proposal.epoch, format);
     Ok(Some(ExitCode::SUCCESS))
+}
+
+fn report_store_read_error(error: marrow_store::StoreError, format: CheckFormat) -> ExitCode {
+    report_simple_error(error.code(), &error.to_string(), format);
+    ExitCode::FAILURE
 }
 
 fn report_resume_drift(format: CheckFormat) {
