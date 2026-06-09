@@ -1,23 +1,18 @@
 //! Per-record checked transform execution.
 //!
 //! A transform recomputes one saved member per record from the members its body reads
-//! via `old.<member>`. The checker proved the body pure, total, and well-typed against
-//! the current schema, and discharge proved every read member's stored bytes decode
-//! under their current type, so binding those decoded values as `old` and running the
-//! body is sound. This module stages one `WriteData` of the encoded result at the
-//! target cell per record, inside the apply transaction. It reuses the runtime
-//! evaluator (no second interpreter), the canonical stored-value codec (no second
-//! decoder), and the shared read-member resolver (no second classifier); it owns only
-//! the wiring that binds `old` and encodes the result.
+//! via `old.<member>`. The checker proved the body pure, total, and well-typed and
+//! discharge proved every read member's bytes decode under their current type, so
+//! binding the decoded values as `old` and running the body stages one sound `WriteData`
+//! per record. It reuses the runtime evaluator, the canonical stored-value codec, and
+//! the shared read-member resolver rather than re-deriving any of them; it owns only the
+//! wiring that binds `old` and encodes the result.
 //!
-//! Two failure shapes are kept distinct. A wiring resolution that discharge already
-//! gated (the transform, its body, its place, or its owning module not resolving) is a
-//! discharge/apply divergence: it cannot happen under a witness discharge approved, so
-//! it is a loud internal fault, not a silent skip. A genuine per-record body fault (an
-//! overflow, a divide-by-zero, an explicit throw, an absent optional read, or a value
-//! the target leaf cannot encode) is the developer's pure logic faulting on real data;
-//! it aborts apply with a typed [`ApplyError::TransformBodyFaulted`] so the transaction
-//! rolls back without conflating a body fault with store-byte corruption.
+//! Two failure shapes stay distinct: a wiring resolution discharge already gated cannot
+//! happen under an approved witness, so it is a loud internal divergence rather than a
+//! silent skip, while a genuine per-record body fault aborts apply with a typed
+//! [`ApplyError::TransformBodyFaulted`] so the transaction rolls back without conflating
+//! a body fault with store-byte corruption.
 
 use std::cell::RefCell;
 use std::rc::Rc;

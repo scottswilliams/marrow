@@ -1,10 +1,7 @@
 //! Member-tree location and per-record iteration for evolution apply.
 //!
-//! Apply and its staging helpers locate a catalog id within a place's checked member
-//! tree, recording the path of keyed layers and plain members to reach it, and iterate
-//! every stored record of a place. These utilities are read-only over the checked facts
-//! and the store; they own no apply orchestration and are shared by the staging,
-//! transform, and completion passes.
+//! Locate a catalog id within a place's checked member tree, recording the path of keyed
+//! layers and plain members to reach it, and iterate every stored record of a place.
 
 use marrow_check::{CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace, StoreLeafKind};
 use marrow_store::StoreError;

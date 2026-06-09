@@ -92,11 +92,10 @@ struct DefaultCell<'a> {
     leaf: &'a StoreLeafKind,
 }
 
-/// Verify one stored default cell and fold it into the completion digest. Returns `false`
-/// when the cell is missing or does not satisfy its contract, so the caller surfaces a
-/// drifted stamp as `ApplyError::Drift` rather than a store-read fault; a genuine read
-/// failure still propagates as `StoreError`. The folded fields match the staging recipe
-/// exactly, so a completed activation reproduces the digest its stamp recorded.
+/// Verify one stored default cell and fold it into the completion digest. A cell that is
+/// missing or fails its contract returns `false` so the caller raises `ApplyError::Drift`,
+/// while a genuine read failure propagates as `StoreError`. The folded fields match the
+/// staging recipe, so a completed activation reproduces the digest its stamp recorded.
 fn verify_default_cell(
     cell: &DefaultCell<'_>,
     store: &TreeStore,

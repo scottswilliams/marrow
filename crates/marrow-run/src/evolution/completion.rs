@@ -1,9 +1,9 @@
 //! Crash-resume verification for a stamped activation.
 //!
-//! The accepted-catalog file is the last activation step. If a crash leaves the store
-//! stamped at the proposal epoch while the file still names the prior epoch, resume may
-//! publish the current generated proposal only after proving the stamped data and index
-//! effects are still visible and match the exact recomputed witness.
+//! The accepted-catalog file is the last activation step, so a crash can leave the store
+//! stamped at the proposal epoch while the file still names the prior one. Resume may
+//! publish the proposal only after proving the stamped data and index effects are still
+//! visible and match the exact recomputed witness.
 
 mod default;
 mod index;

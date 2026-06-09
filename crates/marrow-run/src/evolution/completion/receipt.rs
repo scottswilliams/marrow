@@ -1,4 +1,4 @@
-use marrow_store::tree::{ActivationDefaultRecordCount, CommitMetadata};
+use marrow_store::tree::CommitMetadata;
 
 use super::super::apply::ApplyError;
 use super::default::DefaultCompletion;
@@ -7,8 +7,10 @@ pub(super) fn verify_default_receipt(
     defaults: &[DefaultCompletion],
     commit: &CommitMetadata,
 ) -> Result<(), ApplyError> {
-    let expected = sorted_default_targets(defaults);
-    let recorded = sorted_default_counts(&commit.activation_default_records_by_id);
+    let mut expected: Vec<_> = defaults.iter().collect();
+    expected.sort_by(|a, b| a.catalog_id.as_str().cmp(b.catalog_id.as_str()));
+    let mut recorded: Vec<_> = commit.activation_default_records_by_id.iter().collect();
+    recorded.sort_by(|a, b| a.catalog_id.as_str().cmp(b.catalog_id.as_str()));
     if expected.len() != recorded.len() {
         return Err(ApplyError::Drift);
     }
@@ -33,18 +35,4 @@ pub(super) fn verify_default_receipt(
         return Err(ApplyError::Drift);
     }
     Ok(())
-}
-
-fn sorted_default_targets(defaults: &[DefaultCompletion]) -> Vec<&DefaultCompletion> {
-    let mut defaults: Vec<_> = defaults.iter().collect();
-    defaults.sort_by(|a, b| a.catalog_id.as_str().cmp(b.catalog_id.as_str()));
-    defaults
-}
-
-fn sorted_default_counts(
-    counts: &[ActivationDefaultRecordCount],
-) -> Vec<&ActivationDefaultRecordCount> {
-    let mut counts: Vec<_> = counts.iter().collect();
-    counts.sort_by(|a, b| a.catalog_id.as_str().cmp(b.catalog_id.as_str()));
-    counts
 }

@@ -1,13 +1,10 @@
 //! Activation-window fencing for write-capable store opens.
 //!
-//! Marrow v0.1 supports one explicit compatibility window: the program's accepted
-//! catalog epoch must match the store's stamped catalog epoch, the schema-bearing
-//! source digest must match the one the store recorded at that epoch, and the engine
-//! profile must match the layout this binary writes. A fresh or pre-window store has no
-//! stamp and is adopted on the first commit. Any older, newer, different-schema, or
-//! different-layout stamp fails closed before `run` execution or evolution `apply`
-//! staging. The stamp this module builds and the fence it enforces read the same facts,
-//! so a store this binary just wrote always passes its own fence.
+//! A write-capable open fails closed unless the store's stamped catalog epoch, schema
+//! source digest, and engine profile all match what this binary writes; a fresh or
+//! pre-stamp store has no stamp and is adopted on the first commit. The stamp this
+//! module builds and the fence it enforces read the same facts, so a store this binary
+//! just wrote always passes its own fence.
 
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;

@@ -1,20 +1,13 @@
 //! Run-time auto-apply of a zero-record-mutation evolution.
 //!
 //! When the activation fence reports schema drift at the current epoch, a `run` may
-//! discharge the evolution itself instead of fencing — but only when discharging it
-//! mutates no stored record. Adding a sparse field, a new resource/store/enum-member,
-//! or any change against an empty affected store stages no data write, so the apply is
-//! a metadata-only stamp the run can perform unattended. A backfill, a record-rewriting
-//! transform, or a destructive drop over populated data still requires explicit
-//! `evolve apply` (and, for a drop, confirmation), so it fences with an actionable
-//! diagnostic.
-//!
-//! The decision is computed from the same evolution witness `evolve preview`/`evolve
-//! apply` own, against committed data, and the apply it performs is the production apply
-//! path. The witness pins the store commit id, and apply re-checks that pin inside the
-//! write transaction, so a write that commits between the probe and the stamp moves the
-//! commit id and fails the apply closed: the auto-apply decision can only become more
-//! conservative under a race, never migrate a store that is no longer empty.
+//! discharge the evolution itself instead of fencing, but only when discharging it
+//! mutates no stored record; any record work or data-loss decision still requires an
+//! explicit `evolve apply`. The decision is computed from the same witness preview/apply
+//! own, and the apply it performs is the production path. The witness pins the store
+//! commit id and apply re-checks that pin inside the write transaction, so a write that
+//! commits between the probe and the stamp fails the apply closed: the decision can only
+//! become more conservative under a race, never migrate a store that is no longer empty.
 
 use marrow_check::CheckedProgram;
 use marrow_check::evolution::{EvolutionWitness, Verdict};
@@ -46,12 +39,11 @@ pub enum RunObligation {
 }
 
 impl RunObligation {
-    /// Classify the witness by the heaviest record obligation it carries, against
-    /// committed data. The order is by escalating severity: a repair blocks everything,
-    /// a populated drop is a data-loss decision, then record-rewriting work, and only an
-    /// evolution with none of these mutates zero records. A drop whose target is empty
-    /// carries a zero populated count and folds into the zero-mutation bucket — its
-    /// retire id is recorded so the auto-apply can authorize the (empty) delete.
+    /// Classify the witness by the heaviest record obligation it carries, in descending
+    /// severity: repair blocks everything, a populated drop is a data-loss decision, then
+    /// record-rewriting work, and only an evolution with none of these is zero-mutation.
+    /// An empty-target drop carries a zero count and folds into the zero-mutation bucket,
+    /// recording its retire id so the auto-apply can authorize the (empty) delete.
     pub fn classify(witness: &EvolutionWitness) -> Self {
         if witness
             .verdicts

@@ -46,18 +46,12 @@ pub(super) fn gate_obligations(
 }
 
 /// Whether the approval names exactly the witness destructive set, each id at its exact
-/// per-id populated count. Comparing the sorted `(id, count)` pairs rejects a wrong
-/// per-id count even when the totals across ids happen to match, so a developer cannot
-/// approve dropping two cells from one member by naming one cell each on two members.
-/// The witness has one entry per destructive id, so the approval is deduped first: a
-/// flag repeated verbatim collapses and still matches, while two entries for one id with
-/// different counts survive the dedup and correctly mismatch the single witness entry.
+/// per-id populated count. Comparing the sorted `(id, count)` pairs rejects a wrong per-id
+/// count even when the totals across ids happen to match. The witness has one entry per
+/// destructive id, so deduping the approval first lets a verbatim-repeated flag collapse
+/// and still match, while two entries for one id with different counts survive and mismatch.
 fn approval_matches(approval: &Approval, destructive: &[(CatalogId, usize)]) -> bool {
-    normalized_retire_approval(approval) == sorted_retire_counts(destructive)
-}
-
-pub(super) fn normalized_retire_approval(approval: &Approval) -> Vec<(CatalogId, usize)> {
-    sorted_retire_counts(&approval.retires)
+    sorted_retire_counts(&approval.retires) == sorted_retire_counts(destructive)
 }
 
 pub(super) fn expected_retire_counts(witness: &EvolutionWitness) -> Vec<(CatalogId, usize)> {

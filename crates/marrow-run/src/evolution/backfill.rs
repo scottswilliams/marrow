@@ -1,18 +1,11 @@
 //! Stage the durable work each applyable verdict implies.
 //!
-//! Each helper here re-derives its work from the live store and the checked saved
-//! places, never from an identity list in the witness. A defaulting obligation writes
-//! the encoded constant at every record (or keyed entry) that lacks the member; a
-//! derived rebuild writes the index entry every record contributes; an approved
-//! destructive retire deletes the retired member subtree per record. The semantic
-//! owners are shared: index keys come from the managed-write index maintenance, and a
-//! member's place in the tree comes from the checked facts.
-//!
-//! Each obligation re-scans its root independently rather than sharing one pass across
-//! obligations. The scan is paged one identity at a time, so the cost is bounded store
-//! reads, not materialized records, and apply runs in a maintenance window where a
-//! second pass per obligation is cheaper than the complexity of fusing them. Fusing the
-//! scans would trade that clarity for a saving that does not matter at this cadence.
+//! Each helper re-derives its work from the live store and the checked saved places,
+//! never from an identity list in the witness, and reuses the shared semantic owners:
+//! index keys come from managed-write index maintenance, and a member's place in the
+//! tree comes from the checked facts. Each obligation re-scans its root independently,
+//! paged one identity at a time, so cost is bounded store reads rather than materialized
+//! records; fusing the scans is not worth the complexity at apply's maintenance cadence.
 
 use marrow_check::evolution::DefaultValue;
 use marrow_check::{CheckedSavedIndex, CheckedSavedPlace};

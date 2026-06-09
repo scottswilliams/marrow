@@ -13,10 +13,9 @@ pub(super) fn verify_retire_completion(
     commit: &CommitMetadata,
     places: &[CheckedSavedPlace],
 ) -> Result<(), ApplyError> {
-    let retired = sorted_catalog_ids(retired_proposal_ids(
-        program,
-        CatalogEntryKind::ResourceMember,
-    )?);
+    let mut retired = retired_proposal_ids(program, CatalogEntryKind::ResourceMember)?;
+    retired.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    retired.dedup();
     let expected = exact_retire_counts_u64(commit.activation_records_retired_by_id.clone())?;
     let recorded_ids: Vec<_> = expected.iter().map(|(id, _count)| id.clone()).collect();
     if recorded_ids != retired {
@@ -48,12 +47,6 @@ pub(super) fn verify_retire_completion(
         }
     }
     Ok(())
-}
-
-fn sorted_catalog_ids(mut ids: Vec<CatalogId>) -> Vec<CatalogId> {
-    ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-    ids.dedup();
-    ids
 }
 
 fn exact_retire_counts_u64(
