@@ -1,3 +1,6 @@
+//! Whether a call target or statement tree transitively writes saved data,
+//! walking callee bodies under cycle protection.
+
 use crate::{
     CheckedBody, CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedFunction,
     CheckedFunctionRef, CheckedInterpolationPart, CheckedProgram, CheckedStmt,

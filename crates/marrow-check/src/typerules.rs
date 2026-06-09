@@ -12,12 +12,10 @@ use crate::{CHECK_LITERAL_RANGE, CheckDiagnostic, DiagnosticPayload, MarrowType}
 /// significant digits and 34 fractional places.
 pub(crate) const DECIMAL_MAX_DIGITS: usize = 34;
 
-/// Flag a numeric literal whose magnitude is provably out of range, so it is
-/// caught at check time rather than only at run time (`run.overflow`). The lexer
-/// emits a number literal as bare ASCII digits (the sign is a separate unary
-/// operator), so an integer is in range exactly when it parses as `i64`, and a
-/// decimal `digits.digits` is in range only within the 34-significant-digit /
-/// 34-fractional-place envelope.
+/// Reject a numeric literal provably out of range at check time. The lexer emits
+/// bare digits with the sign as a separate unary operator, so an integer is in
+/// range exactly when it parses as `i64`; a decimal stays within the 34-digit
+/// envelope.
 pub(crate) fn check_literal_range(
     kind: marrow_syntax::LiteralKind,
     text: &str,
@@ -50,12 +48,10 @@ pub(crate) fn check_literal_range(
     }
 }
 
-/// Whether a decimal literal `digits.digits` (or `digits`) provably falls outside
-/// the 34-digit envelope. Mirrors `marrow_store::decimal`, which normalizes before
-/// the envelope check: leading integer zeros and trailing fraction zeros drop out,
-/// so they are stripped before counting. A literal is rejected only when its
-/// canonical significant digits or fractional places exceed 34 — never a value the
-/// runtime would normalize back into range.
+/// Whether a decimal literal provably exceeds the 34-digit envelope. Mirrors
+/// `marrow_store::decimal`, which normalizes first: leading integer zeros and
+/// trailing fraction zeros drop out, so they are stripped before counting and no
+/// literal the runtime would normalize back into range is rejected.
 pub(crate) fn decimal_out_of_envelope(text: &str) -> bool {
     let (integer, fraction) = text.split_once('.').unwrap_or((text, ""));
     let integer = integer.trim_start_matches('0');
@@ -70,11 +66,9 @@ pub(crate) fn decimal_out_of_envelope(text: &str) -> bool {
     significant > DECIMAL_MAX_DIGITS || fraction.len() > DECIMAL_MAX_DIGITS
 }
 
-/// The scalar a type denotes, or `None` for any non-scalar (resource, identity,
-/// sequence, the checker-only `Error`, or unknown) type. `Error` is concrete, not
-/// untyped: each scalar-requiring site (operator, condition, return, assignment,
-/// argument) handles a `None` from `Error` as a real mismatch, distinct from the
-/// untyped-value path taken for `Unknown`.
+/// The scalar a type denotes, or `None` for any non-scalar. A `None` from the
+/// checker-only `Error` is a real mismatch at scalar-requiring sites, distinct
+/// from the untyped-value path taken for `Unknown`.
 pub(crate) fn as_primitive(ty: &MarrowType) -> Option<ScalarType> {
     match ty {
         MarrowType::Primitive(scalar) => Some(*scalar),
@@ -82,11 +76,10 @@ pub(crate) fn as_primitive(ty: &MarrowType) -> Option<ScalarType> {
     }
 }
 
-/// Whether a type is a concrete non-scalar value type: an identity, a whole
-/// record, a sequence, or an enum. These compare nominally, so an operator that
-/// defaults or equates them resolves by [`type_compatible`] rather than by scalar
-/// shape. The checker-only `Error` and the untyped `Unknown` are excluded: `Error`
-/// has its own operator handling and `Unknown` defers.
+/// Whether a type is a concrete non-scalar value type. These compare nominally,
+/// so an operator that defaults or equates them resolves by [`type_compatible`]
+/// rather than by scalar shape. `Error` has its own operator handling and
+/// `Unknown` defers, so both are excluded.
 pub(crate) fn is_concrete_nonscalar(ty: &MarrowType) -> bool {
     matches!(
         ty,
@@ -100,14 +93,13 @@ pub(crate) fn is_concrete_nonscalar(ty: &MarrowType) -> bool {
 }
 
 /// Whether a value of type `actual` may stand where `expected` is required.
-/// `Some(true)`/`Some(false)` is a verdict; `None` defers — the value's type is
-/// `unknown` (the untyped-value path owns that case) or `expected` itself places
-/// no constraint. Identities and resources compare nominally: same resource name
-/// or nothing, so a key-compatible foreign identity is still a mismatch. A
-/// cross-module identity the checker could not place is `Unknown` and defers,
-/// permissive until the type IR is unified across modules. Enums are nominal too:
-/// a value satisfies an enum place only when it is the same enum, by owning module
-/// and name, so two same-named enums in different modules never alias.
+/// `Some` is a verdict; `None` defers (the value is `unknown`, owned by the
+/// untyped-value path, or `expected` places no constraint). Identities, resources,
+/// and enums compare nominally: an identity matches by resource name, an enum by
+/// owning module and name, so a key-compatible foreign identity or a same-named
+/// enum from another module is still a mismatch. A cross-module identity the
+/// checker could not place is `Unknown` and defers, permissive until the type IR
+/// is unified across modules.
 pub(crate) fn type_compatible(expected: &MarrowType, actual: &MarrowType) -> Option<bool> {
     if matches!(expected, MarrowType::Invalid)
         || matches!(actual, MarrowType::Unknown | MarrowType::Invalid)
@@ -160,18 +152,12 @@ pub(crate) fn type_compatible(expected: &MarrowType, actual: &MarrowType) -> Opt
 
 /// Whether an expected type has a value-conversion boundary, so an `unknown` value
 /// against it is a `check.untyped_value` ("convert it first") rather than a
-/// deferral. Scalars and the checker-only `Error` are reached by the conversion
-/// builtins (`int(...)`, `ErrorCode(...)`, the `Error(...)` constructor), an enum is
-/// a concrete typed place a dynamic value must be made into, and an identity must
-/// pass through a checked store-identity boundary. A whole resource is the same
-/// hazard at the record level: an `unknown` record's fields would land raw scalars
-/// or foreign identities in the resource's typed identity fields — encodings
-/// `data integrity` cannot later distinguish from a genuine reference, since a
-/// stored identity carries only its keys, not its source store. So every
-/// concrete typed place rejects an `unknown` value, which must be converted into the
-/// resource (a constructor, a read of the same resource) first. The only place an
-/// `unknown` flows without conversion is into another `unknown`; a sequence has no
-/// conversion either and is left to the runtime.
+/// deferral. Every concrete typed place rejects an `unknown`: a stored identity
+/// carries only its keys, not its source store, so an unchecked record's fields
+/// could land foreign identities that data integrity cannot later distinguish from
+/// genuine references. The value must be converted through a constructor or a
+/// checked read first. An `unknown` flows freely only into another `unknown`, and a
+/// sequence has no conversion and is left to the runtime.
 pub(crate) fn expects_conversion(ty: &MarrowType) -> bool {
     matches!(
         ty,
@@ -189,9 +175,8 @@ pub(crate) fn is_numeric(scalar: ScalarType) -> bool {
 }
 
 /// Whether a scalar can be the endpoint of a range-for loop. A range walks evenly
-/// spaced values, so its endpoint type must support a step: a number for int and
-/// decimal, a duration for the temporal date and instant. String, bool, bytes, and
-/// duration itself are not steppable endpoints.
+/// spaced values, so its endpoint must support a step: a number for int and
+/// decimal, a duration for date and instant.
 pub(crate) fn is_steppable(scalar: ScalarType) -> bool {
     matches!(
         scalar,
@@ -244,9 +229,7 @@ pub(crate) fn binary_symbol(op: marrow_syntax::BinaryOp) -> &'static str {
     }
 }
 
-/// The source spelling of a type for a diagnostic message: a scalar by name, an
-/// identity as `Id(^root)`, a resource by its name, an enum by its name, a
-/// sequence as `sequence[element]`, the checker-only `Error`, or `value` for a type
+/// The source spelling of a type for a diagnostic message, or `value` for a type
 /// with no surface spelling.
 pub(crate) fn marrow_type_name(ty: &MarrowType) -> String {
     match ty {
@@ -263,11 +246,9 @@ pub(crate) fn marrow_type_name(ty: &MarrowType) -> String {
     }
 }
 
-/// Display names for two mismatched types, qualifying each enum with its owning
-/// module (`module::Name`) only when both sides are enums that share the same
-/// short name but come from different modules — otherwise the bare names ("expects
-/// `Status`, but found `Status`") name no distinguishing detail. Any other pairing
-/// uses each type's plain [`marrow_type_name`].
+/// Display names for two mismatched types, qualifying each enum as `module::Name`
+/// only when both sides are same-named enums from different modules — otherwise the
+/// bare names would read "expects `Status`, but found `Status`".
 pub(crate) fn mismatch_display(left: &MarrowType, right: &MarrowType) -> (String, String) {
     if let (
         MarrowType::Enum {

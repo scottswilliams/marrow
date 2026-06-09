@@ -1,45 +1,25 @@
-//! The one name resolver: module-aware and visibility-aware.
-//!
-//! [`resolve`] maps a referencing module plus a (possibly qualified) name to the
-//! declaration it denotes, applying the language's resolution model in one place
-//! so the checker, the runtime, and the LSP binding index cannot drift:
-//!
-//! - a **bare** name resolves in its *own* module first — visible there
-//!   regardless of `pub` — and nowhere else, because `use` imports module names,
-//!   not the names inside them (the qualified `module::name` is the cross-module
-//!   spelling);
-//! - a **qualified** `module::leaf` name targets exactly that module: a `pub`
-//!   leaf is [`Resolution::Found`], a non-`pub` one is [`Resolution::NotVisible`]
-//!   (a distinct visibility error, not "unresolved"), and a missing module or
-//!   leaf is [`Resolution::Unresolved`];
-//! - **saved roots stay project-wide** ([`resolve_store_by_root`]): a `^root`
-//!   addresses its one owning store from any module — only source names such as
-//!   resource constructors and type references are module-scoped.
-//!
-//! Builtins and `std::` helpers are *not* resolved here: each dispatches before
-//! user declarations, so callers pre-check them and only reach [`resolve`] for a
-//! name that must denote a project declaration. Import aliases are expanded once,
-//! up front, against the referencing module's imports.
+//! The one module-aware, visibility-aware name resolver, shared by the checker,
+//! runtime, and LSP binding index so they cannot drift. A bare name resolves in
+//! its own module only — because `use` imports module names, not their contents —
+//! while saved roots stay project-wide, since a `^root` addresses its one owning
+//! store from any module. Builtins and `std::` helpers dispatch before user
+//! declarations and are the caller's pre-check, never resolved here.
 
 use marrow_schema::{ResourceSchema, StoreSchema};
 
 use crate::program::{CheckedFunction, CheckedModule, CheckedProgram};
 use crate::{build_alias_map, expand_alias};
 
-/// What a name is being resolved *as*. The runtime dispatches builtins, then
-/// constructors, then functions, so the kind picks which declaration table a
-/// module is searched in — a bare `greet` is a function, a bare `Book` a
-/// resource.
+/// What a name is being resolved *as*, picking which declaration table of a
+/// module is searched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolvableKind {
     Function,
     Resource,
 }
 
-/// The declaration a resolved name denotes, borrowed from the program: the
-/// owning module, the kind it was resolved as, and the item itself. Callers read
-/// `module` (for the call frame's import aliases / a go-to-def's source file) and
-/// match on `item` for the concrete declaration.
+/// The declaration a resolved name denotes, borrowed from the program: its owning
+/// module, the kind it was resolved as, and the item itself.
 #[derive(Debug, Clone, Copy)]
 pub struct Def<'p> {
     pub module: &'p CheckedModule,
@@ -76,26 +56,20 @@ pub struct StoreResource<'p> {
     pub resource: &'p ResourceSchema,
 }
 
-/// Resolve `path` as `kind`, referenced from `from_module`, against `program`.
-///
-/// Import aliases are expanded once against `from_module`'s imports, so a
-/// short-form `books::add` resolves like `shelf::books::add`. Then:
-/// a **qualified** `module::leaf` targets that module (pub → [`Resolution::Found`],
-/// non-pub → [`Resolution::NotVisible`], missing → [`Resolution::Unresolved`]);
-/// a **bare** `leaf` resolves in `from_module` only (self-visible regardless of
-/// `pub`), and otherwise is [`Resolution::Unresolved`] — a cross-module scan runs
-/// solely to upgrade the diagnostic (`pub` in two-plus modules →
-/// [`Resolution::Ambiguous`]; a lone non-pub match → [`Resolution::NotVisible`]).
-///
-/// Builtins and `std::` helpers are the caller's pre-check; this never resolves
-/// them.
+/// Resolve `path` as `kind`, referenced from `from_module`. Import aliases are
+/// expanded once against `from_module`'s imports, so a short-form `books::add`
+/// resolves like `shelf::books::add`, then a qualified path dispatches to
+/// [`resolve_qualified`] and a bare one to [`resolve_bare`].
 pub fn resolve<'p>(
     program: &'p CheckedProgram,
     from_module: &str,
     path: &[String],
     kind: ResolvableKind,
 ) -> Resolution<'p> {
-    let aliases = build_alias_map(&module_imports(program, from_module));
+    let imports = find_module(program, from_module)
+        .map(|module| module.imports.clone())
+        .unwrap_or_default();
+    let aliases = build_alias_map(&imports);
     let expanded = expand_alias(path, &aliases);
     let Some((leaf, module_prefix)) = expanded.split_last() else {
         return Resolution::Unresolved;
@@ -107,13 +81,9 @@ pub fn resolve<'p>(
     resolve_qualified(program, &module_prefix.join("::"), leaf, kind)
 }
 
-/// Resolve a bare `leaf` in `from_module` only. A match there is visible
-/// regardless of `pub` (a module sees its own declarations). Otherwise the name
-/// is unresolved — `use` imports module names, not the names inside them — but a
-/// cross-module scan upgrades the diagnostic: a name reachable as `pub` in two or
-/// more modules is [`Resolution::Ambiguous`] (a qualified path is needed to pick
-/// one), and a name that exists elsewhere *only* as a single non-`pub`
-/// declaration is [`Resolution::NotVisible`] rather than a bare "unresolved".
+/// Resolve a bare `leaf` in `from_module` only, where it is visible regardless of
+/// `pub`. A name found nowhere else is unresolved, but a cross-module scan can
+/// upgrade the diagnostic to [`Resolution::Ambiguous`] or [`Resolution::NotVisible`].
 fn resolve_bare<'p>(
     program: &'p CheckedProgram,
     from_module: &str,
@@ -125,11 +95,9 @@ fn resolve_bare<'p>(
     {
         return Resolution::Found(Def { module, kind, item });
     }
-    // Not in our own module, so the bare name does not resolve to a declaration —
-    // `use` imports module names, not the names inside them. Scan the rest of the
-    // project only to enrich the diagnostic for this already-erroring reference:
-    // collect the modules that expose `leaf` as `pub` (each reachable as
-    // `module::leaf`) and note a lone non-`pub` match.
+    // The bare name does not resolve. Scan the rest of the project only to enrich
+    // the diagnostic: collect modules exposing `leaf` as `pub` and note a lone
+    // non-`pub` match.
     let mut public: Vec<String> = Vec::new();
     let mut sole_private: Option<&str> = None;
     let mut private_count = 0usize;
@@ -149,23 +117,21 @@ fn resolve_bare<'p>(
         }
     }
     match (public.len(), private_count, sole_private) {
-        // Two or more modules expose `leaf` as `pub`: the bare name cannot pick
-        // one, so qualifying it is required. Name the candidates for the hint.
+        // Reachable as `pub` from two-plus modules: the bare name cannot pick one,
+        // so name the candidates and require qualification.
         (2.., _, _) => Resolution::Ambiguous(public),
-        // Reachable as `pub` in exactly one module, but only via `module::leaf`;
-        // the bare name still does not resolve to it. Plainly unresolved.
+        // Reachable as `pub` from exactly one module, but only via `module::leaf`,
+        // so the bare name still does not resolve.
         (1, _, _) => Resolution::Unresolved,
-        // The only matches anywhere are a single non-`pub` declaration: a
-        // visibility problem, not a missing one.
+        // The only match anywhere is a single non-`pub` declaration: a visibility
+        // problem, not a missing one.
         (0, 1, Some(module)) => Resolution::NotVisible(format!("{module}::{leaf}")),
         _ => Resolution::Unresolved,
     }
 }
 
-/// Resolve a qualified `module::leaf`: the module must exist, the leaf must be
-/// declared in it, and (cross-module) it must be `pub`. A non-`pub` leaf is a
-/// distinct [`Resolution::NotVisible`]; a missing module or leaf is
-/// [`Resolution::Unresolved`].
+/// Resolve a qualified `module::leaf`, which cross-module must be `pub`. A
+/// non-`pub` leaf is a distinct [`Resolution::NotVisible`], not an unresolved name.
 fn resolve_qualified<'p>(
     program: &'p CheckedProgram,
     module_name: &str,
@@ -242,12 +208,4 @@ fn is_public(item: &DefItem<'_>) -> bool {
 /// The module named `name`, if the program has it.
 fn find_module<'p>(program: &'p CheckedProgram, name: &str) -> Option<&'p CheckedModule> {
     program.modules.iter().find(|module| module.name == name)
-}
-
-/// The resolved `use` targets of `name`, or an empty list when no such module is
-/// in the program. Drives alias expansion.
-fn module_imports(program: &CheckedProgram, name: &str) -> Vec<String> {
-    find_module(program, name)
-        .map(|module| module.imports.clone())
-        .unwrap_or_default()
 }

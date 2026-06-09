@@ -134,7 +134,9 @@ fn collect_statement_effects(
 
 fn collect_expr_reads(facts: &CheckedFacts, expr: &CheckedExpr, effects: &mut DirectEffectFacts) {
     if let Some(place) = expr.saved_place() {
-        push_saved_read(facts, place, effects);
+        if let Some(effect) = saved_effect(facts, place) {
+            push_unique(&mut effects.saved_reads, effect);
+        }
         collect_saved_path_key_reads(facts, expr, effects);
         return;
     }
@@ -213,27 +215,9 @@ fn collect_saved_path_key_reads(
 }
 
 fn collect_saved_write(facts: &CheckedFacts, expr: &CheckedExpr, effects: &mut DirectEffectFacts) {
-    if let Some(place) = expr.saved_place() {
-        push_saved_write(facts, place, effects);
-    }
-}
-
-fn push_saved_read(
-    facts: &CheckedFacts,
-    place: &CheckedSavedPlace,
-    effects: &mut DirectEffectFacts,
-) {
-    if let Some(effect) = saved_effect(facts, place) {
-        push_unique(&mut effects.saved_reads, effect);
-    }
-}
-
-fn push_saved_write(
-    facts: &CheckedFacts,
-    place: &CheckedSavedPlace,
-    effects: &mut DirectEffectFacts,
-) {
-    if let Some(effect) = saved_effect(facts, place) {
+    if let Some(place) = expr.saved_place()
+        && let Some(effect) = saved_effect(facts, place)
+    {
         push_unique(&mut effects.saved_writes, effect);
     }
 }
@@ -246,7 +230,7 @@ fn saved_effect(
 }
 
 fn effect_members(place: &CheckedSavedPlace) -> Vec<String> {
-    let mut members: Vec<String> = place
+    let mut members: Vec<_> = place
         .layers
         .iter()
         .map(|layer| layer.name.clone())
