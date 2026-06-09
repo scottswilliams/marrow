@@ -3,17 +3,12 @@ use std::io::Read;
 
 use marrow_project::CatalogEntry;
 
-/// Hands out catalog ids in the `cat_<32 lowercase hex>` shape as random opaque
-/// 128-bit values, re-rolling against the ids already in use. Allocation is
-/// independent of the entity's source path, so an id never changes when a path
-/// changes, and it is random rather than a monotonic counter so two project
-/// branches that each allocate identity for different entities cannot collide on
-/// one id when they merge — a monotonic sequence is only safe with a single
-/// coordinator, which branch-parallel work has none of. An id is frozen the moment
-/// the catalog is committed and never recomputed afterward. The vanishingly rare
-/// random clash (or a hand-edited or badly merged catalog) is not silently
-/// tolerated: `CatalogMetadata::validate()` rejects two entries sharing a stable id,
-/// and the proposal is validated at check, so a duplicate fails closed there.
+/// Hands out random opaque 128-bit catalog ids (`cat_<32 lowercase hex>`), re-rolling
+/// against the ids already in use. Ids are random rather than a monotonic counter so
+/// branch-parallel work, which has no single coordinator, cannot collide when two
+/// branches allocate identity for different entities and merge. A clash from a hand-edited
+/// or badly merged catalog fails closed at `CatalogMetadata::validate()`, which the
+/// proposal runs at check time.
 pub(super) struct StableIdAllocator<E = OsCatalogIdEntropy> {
     used: HashSet<String>,
     entropy: E,
@@ -27,7 +22,7 @@ impl StableIdAllocator<OsCatalogIdEntropy> {
         }
     }
 
-    /// Seed the in-use set from every recorded entry regardless of lifecycle, so a
+    /// Seeds the in-use set from every recorded entry regardless of lifecycle, so a
     /// retired or deprecated id is never handed back out to a new entity.
     pub(super) fn over(entries: &[CatalogEntry]) -> Self {
         Self {
@@ -41,11 +36,6 @@ impl StableIdAllocator<OsCatalogIdEntropy> {
 }
 
 impl<E: CatalogIdEntropy> StableIdAllocator<E> {
-    #[cfg(test)]
-    fn with_entropy(used: HashSet<String>, entropy: E) -> Self {
-        Self { used, entropy }
-    }
-
     pub(super) fn allocate(&mut self) -> String {
         loop {
             let id = catalog_id_from_bytes(self.entropy.next_id_bytes());
@@ -116,14 +106,20 @@ mod tests {
         }
     }
 
+    fn with_entropy<E: CatalogIdEntropy>(
+        used: HashSet<String>,
+        entropy: E,
+    ) -> StableIdAllocator<E> {
+        StableIdAllocator { used, entropy }
+    }
+
     #[test]
     fn stable_id_allocator_retries_forced_entropy_collisions() {
         let collision = [0x11; 16];
         let unique = [0x22; 16];
         let mut used = HashSet::new();
         used.insert(catalog_id_from_bytes(collision));
-        let mut allocator =
-            StableIdAllocator::with_entropy(used, ScriptedEntropy::new([collision, unique]));
+        let mut allocator = with_entropy(used, ScriptedEntropy::new([collision, unique]));
 
         assert_eq!(catalog_id_from_bytes(unique), allocator.allocate());
     }

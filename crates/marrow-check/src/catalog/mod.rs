@@ -39,9 +39,8 @@ pub(crate) struct CatalogBinding {
     pub(crate) accepted_epoch: Option<u64>,
     pub(crate) accepted_digest: Option<String>,
     pub(crate) ids: HashMap<CatalogKey, String>,
-    /// The `(kind, path) -> stable id` map for resolving a member's referent enum or store
-    /// to its identity-aware leaf token. It covers proposal-only ids the accepted-only `ids`
-    /// omits, and is never bound onto live facts.
+    /// Resolves a member's referent enum or store to its identity-aware leaf token. Covers
+    /// proposal-only ids the accepted-only `ids` omits, and is never bound onto live facts.
     pub(crate) leaf_token_ids: HashMap<CatalogKey, String>,
     pub(crate) proposal: Option<CatalogMetadata>,
 }
@@ -75,12 +74,11 @@ pub(crate) fn bind_catalog(
     program.catalog.proposal = binding.proposal;
 }
 
-/// The single owner of each store's `(stable_id, identity-key shape token)` from source,
-/// for every store whose identity is bound in `ids`. The token is the comma-joined key
-/// types in order, so a key arity or key-type change is recorded even when the program is
-/// otherwise unchanged. A store with no bound identity (pending first-run identity) is
-/// omitted. Both the fact-binding map and the proposal recorder read these pairs, so the
-/// store-key-shape derivation has one source of truth.
+/// The single owner of each store's `(stable_id, identity-key shape token)` from source, for
+/// every store whose identity is bound in `ids`; a store with no bound identity (pending
+/// first-run identity) is omitted. The token records the key types in order, so a key arity or
+/// key-type change drifts it even when the program is otherwise unchanged. Both the
+/// fact-binding map and the proposal recorder read these pairs.
 fn store_key_shapes(
     program: &CheckedProgram,
     ids: &HashMap<CatalogKey, String>,
@@ -104,11 +102,9 @@ fn store_key_shapes(
 /// The single owner of each resource member's `(stable_id, structural signature token)` from
 /// source, for every member whose identity is bound in `ids`. The signature records the
 /// member's kind, its key shape if a keyed layer, and its leaf token if a leaf, so discharge
-/// fails closed on a structural divergence the leaf-token, reshape, rename, default, transform,
-/// and retire classifiers all leave unclaimed. The token is `None` when a leaf member's value
-/// type cannot be tokenized yet (a pending first-run referent); the recorder still writes that
-/// `None` forward, while the fact-binding map omits it. Both paths read these pairs, so the
-/// member-structure derivation has one source of truth.
+/// fails closed on a structural divergence the other classifiers leave unclaimed. The token is
+/// `None` when a leaf member's value type cannot be tokenized yet (a pending first-run
+/// referent); the recorder writes that `None` forward while the fact-binding map omits it.
 fn member_structs(
     program: &CheckedProgram,
     ids: &HashMap<CatalogKey, String>,
@@ -127,8 +123,7 @@ fn member_structs(
         .collect()
 }
 
-/// The current source's identity-key shape token for each store, keyed by its bound stable
-/// catalog id, derived from the single [`store_key_shapes`] owner.
+/// [`store_key_shapes`] keyed by stable catalog id for lookup.
 fn declared_store_key_shapes(
     program: &CheckedProgram,
     ids: &HashMap<CatalogKey, String>,
@@ -136,10 +131,8 @@ fn declared_store_key_shapes(
     store_key_shapes(program, ids).into_iter().collect()
 }
 
-/// The current source's identity-aware structural signature for each resource member, keyed by
-/// its bound stable catalog id, derived from the single [`member_structs`] owner. A member with
-/// no bound identity or an unresolved leaf referent is omitted, the same way the store key
-/// shapes are.
+/// [`member_structs`] keyed by stable catalog id for lookup, dropping members with no bound
+/// identity or an unresolved leaf referent.
 fn declared_member_structs(
     program: &CheckedProgram,
     ids: &HashMap<CatalogKey, String>,
@@ -150,9 +143,7 @@ fn declared_member_structs(
         .collect()
 }
 
-/// The declaring module a member's structural signature resolves its leaf referent under: a
-/// leaf member's own declaring module, or the empty string for a group (whose signature needs
-/// no referent resolution).
+/// A leaf member's declaring module (where its referent resolves), or empty for a group.
 fn member_struct_module(source: &SourceCatalogEntry) -> &str {
     source
         .leaf
@@ -190,13 +181,12 @@ fn read_accepted_catalog(
     }
 }
 
-/// A catalog-intent diagnostic with no source span, for a project-level failure (a
-/// missing or malformed accepted catalog) that is not tied to one declaration.
+/// A catalog-intent error for a project-level failure not tied to one declaration, so it
+/// carries no source span.
 fn catalog_diagnostic(file: std::path::PathBuf, message: String) -> CheckDiagnostic {
     catalog_intent(Severity::Error, file, SourceSpan::default(), message)
 }
 
-/// A catalog-intent error attached to a declaration's source span.
 fn catalog_error(file: std::path::PathBuf, span: SourceSpan, message: String) -> CheckDiagnostic {
     catalog_intent(Severity::Error, file, span, message)
 }
@@ -274,11 +264,10 @@ fn catalog_binding(
     }
 }
 
-/// Bind current source against an existing accepted catalog: carry each declared entity's
-/// accepted identity forward, apply renames and retires, mint identity for genuinely new
-/// entities, and record the store-key and member-structure signatures. Binds the
-/// accepted-or-relocated stable ids into `ids`, and returns the advanced proposal when any
-/// of this is a real change, or `None` when the source matches the accepted catalog exactly.
+/// Bind current source against an existing accepted catalog: carry accepted identity forward,
+/// apply renames and retires, mint identity for new entities, and record signatures, binding
+/// the resolved stable ids into `ids`. Returns the advanced proposal on any real change, or
+/// `None` when the source matches the accepted catalog exactly.
 fn bind_against_accepted(
     program: &CheckedProgram,
     catalog: &CatalogMetadata,
@@ -317,12 +306,12 @@ fn bind_against_accepted(
     changed.then(|| CatalogMetadata::new(catalog.epoch + 1, proposal_entries))
 }
 
-/// Resolve each current source entry to its identity: carry an accepted active entry's id
-/// forward, relocate a renamed one, or mint identity for a genuinely new entity. Binds the
-/// resolved id into `ids` and returns whether any entry is a real change. An accepted active
-/// entry whose source declaration has disappeared but is neither renamed nor retired stays
-/// active here with no source backing — dropping a sparse field is a legal no-op, so that is
-/// a discharge obligation rather than a binding error.
+/// Resolve each current source entry to its identity — carry an accepted active entry's id
+/// forward, relocate a renamed one, or mint identity for a new entity — binding it into `ids`
+/// and returning whether any entry is a real change. An accepted entry whose source
+/// declaration has disappeared but is neither renamed nor retired stays active with no source
+/// backing: dropping a sparse field is a legal no-op, so it is a discharge obligation rather
+/// than a binding error.
 fn bind_source_entries(
     accepted_index: &AcceptedCatalog<'_>,
     source_entries: &[SourceCatalogEntry],
@@ -359,8 +348,8 @@ fn bind_source_entries(
     changed
 }
 
-/// Report every rename whose target the source never declares: it relocates nothing, so the
-/// declared intent must not vanish silently.
+/// Report every rename whose target the source never declares; it relocates nothing, so the
+/// intent must not vanish silently.
 fn report_unresolved_renames(
     renames: &HashMap<String, ResolvedRename>,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -371,10 +360,10 @@ fn report_unresolved_renames(
 }
 
 /// Record each store's identity-key shape and each member's structural signature into the
-/// proposal, once every referent's id is bound so a renamed enum or store resolves to its
-/// preserved identity. The proposal id map covers freshly-minted referents the accepted-only
-/// `ids` map omits, and is never bound onto live facts. Returns whether any signature is a
-/// real change relative to `accepted`.
+/// proposal. Runs after every referent's id is bound, so a renamed enum or store resolves to
+/// its preserved identity through the proposal id map (which covers freshly-minted referents
+/// and is never bound onto live facts). Returns whether any signature changed against
+/// `accepted`.
 fn record_signatures_into(
     program: &CheckedProgram,
     proposal_entries: &mut [CatalogEntry],
@@ -388,9 +377,9 @@ fn record_signatures_into(
     key_shapes_changed || structs_changed
 }
 
-/// Bind current source with no accepted catalog yet: every entity mints fresh identity, and
-/// every rename or retire is an unresolved intent (there is nothing to carry forward). The
-/// first-run proposal is always a real proposal, so this returns it directly.
+/// Bind current source with no accepted catalog: every entity mints fresh identity, and every
+/// rename or retire is an unresolved intent (nothing to carry forward). The first-run proposal
+/// is always real, so this returns it directly rather than as an `Option`.
 fn bind_first_run(
     program: &CheckedProgram,
     evolve: &EvolveIntents,
@@ -412,10 +401,9 @@ fn bind_first_run(
     CatalogMetadata::new(1, proposal_entries)
 }
 
-/// The `(kind, path) -> stable id` map of a proposal's entries, keyed by each entry's
-/// current path. Unlike the accepted-only binding map, this covers freshly-minted and
-/// renamed referents, so the identity-aware leaf token can resolve an enum or store the
-/// accepted catalog does not yet record.
+/// The `(kind, path) -> stable id` map of a proposal's active entries. Unlike the accepted-only
+/// binding map, this covers freshly-minted and renamed referents, so the leaf token can resolve
+/// an enum or store the accepted catalog does not yet record.
 fn proposal_id_map(entries: &[CatalogEntry]) -> HashMap<CatalogKey, String> {
     entries
         .iter()
@@ -429,9 +417,8 @@ fn proposal_id_map(entries: &[CatalogEntry]) -> HashMap<CatalogKey, String> {
         .collect()
 }
 
-/// The active proposal identity map for activation-only readers. It is the same map
-/// catalog binding uses for proposal-only referents, kept here so executable places
-/// do not rebuild proposal identity semantics.
+/// The proposal identity map for activation-only readers, exposed so executable places reuse
+/// catalog binding's proposal identity semantics rather than rebuilding them.
 pub(crate) fn active_proposal_id_map(program: &CheckedProgram) -> HashMap<CatalogKey, String> {
     program
         .catalog
@@ -526,15 +513,15 @@ fn rebind_defaults(
 ) -> Vec<EvolveDefault> {
     defaults
         .iter()
-        .map(|default| {
-            let mut rebound = default.clone();
-            rebound.catalog_id = rebind_catalog_id(
+        .cloned()
+        .map(|mut default| {
+            default.catalog_id = rebind_catalog_id(
                 CatalogEntryKind::ResourceMember,
                 &default.catalog_id,
                 current_paths,
                 replacement_ids,
             );
-            rebound
+            default
         })
         .collect()
 }
@@ -546,11 +533,12 @@ fn rebind_transforms(
 ) -> Vec<EvolveTransform> {
     transforms
         .iter()
-        .map(|transform| {
-            let mut rebound = transform.clone();
-            rebound.catalog_id = rebind_transform_target(transform, current_paths, replacement_ids);
-            rebound.reads = rebind_reads(&transform.reads, current_paths, replacement_ids);
-            rebound
+        .cloned()
+        .map(|mut transform| {
+            transform.catalog_id =
+                rebind_transform_target(&transform, current_paths, replacement_ids);
+            transform.reads = rebind_reads(&transform.reads, current_paths, replacement_ids);
+            transform
         })
         .collect()
 }
@@ -615,9 +603,8 @@ fn rebind_catalog_id(
         .unwrap_or_else(|| stable_id.to_string())
 }
 
-/// The stable id a member-target evolve path binds to, or `None` when it names no
-/// resource member (the type pass already reported it). A default or transform
-/// targets a resource member, so it is keyed by `ResourceMember`.
+/// The stable id a member-target evolve path binds to, or `None` when it names no resource
+/// member (the type pass already reported it).
 fn member_target_id(path: &str, ids: &HashMap<CatalogKey, String>) -> Option<String> {
     ids.get(&CatalogKey::new(
         CatalogEntryKind::ResourceMember,
@@ -884,12 +871,14 @@ fn record_signatures(
     accepted: HashMap<&str, &Option<String>>,
     field: impl Fn(&mut CatalogEntry) -> &mut Option<String>,
 ) -> bool {
+    let index: HashMap<String, usize> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| (entry.stable_id.clone(), i))
+        .collect();
     let mut changed = false;
     for (stable_id, signature) in pairs {
-        let Some(entry) = entries
-            .iter_mut()
-            .find(|entry| entry.stable_id == stable_id)
-        else {
+        let Some(&i) = index.get(stable_id.as_str()) else {
             continue;
         };
         let accepted_signature = accepted.get(stable_id.as_str()).copied();
@@ -898,18 +887,14 @@ fn record_signatures(
         {
             changed = true;
         }
-        *field(entry) = signature;
+        *field(&mut entries[i]) = signature;
     }
     changed
 }
 
-/// Mark each retired entity reserved in the proposal. A retire names a destructive
-/// intent over an accepted entry whose source declaration is gone; a path that
-/// matches no active accepted entry is a target diagnostic. A retire of an entry
-/// the source still declares is rejected: reserving it would silently drop data
-/// the running program still reads and writes, so the destructive intent only
-/// applies once the source declaration is actually gone. Returns whether any entry
-/// changed.
+/// Mark each retired entity reserved in the proposal, returning whether any entry changed. A
+/// retire names a destructive intent over an accepted entry whose source declaration is gone;
+/// a path matching no active accepted entry is a target diagnostic.
 fn apply_retires(
     entries: &mut [CatalogEntry],
     retires: &[RetireIntent],
@@ -918,21 +903,16 @@ fn apply_retires(
 ) -> bool {
     let mut changed = false;
     for retire in retires {
-        // A retire carries no kind; its path names destructive intent over an
-        // accepted entry whose source declaration is gone. Fail closed whenever the
-        // path is still declared by source under any kind, rather than comparing
-        // against whichever same-path entry was found first: reserving a still-declared
-        // entry would drop data the running program still reads and writes.
-        // Once no source entry declares the path, the lone active accepted entry
-        // there is genuinely orphaned and safe to remove.
+        // Fail closed whenever the path is still declared by source under any kind: reserving a
+        // still-declared entry would drop data the running program still reads and writes. Once
+        // no source declares the path, the lone active accepted entry there is safe to remove.
         if source_kinds.contains_key(retire.path.as_str()) {
             push_retire_source_declared(retire, diagnostics);
             continue;
         }
-        // A prior apply that already reserved this path leaves a transient retire
-        // block the author may keep or delete: the entry is gone, so there is nothing
-        // left to retire and no error. A path with no entry of any lifecycle names
-        // nothing and stays an unresolved intent.
+        // A path already reserved by a prior apply leaves a transient retire block the author
+        // may keep or delete: nothing left to retire, no error. A path with no entry of any
+        // lifecycle names nothing and stays an unresolved intent.
         let already_recorded = retire_already_recorded(entries, &retire.path);
         match entries
             .iter_mut()
@@ -1010,12 +990,9 @@ impl<'a> AcceptedCatalog<'a> {
     }
 }
 
-/// The leaf-position facts of a resource member that holds a single value cell: a plain
-/// field or a keyed-leaf layer. The declaring module resolves an unqualified enum referent,
-/// and the value type yields the value half of the member's identity-aware leaf token. The
-/// member's key-param shape lives on the [`SourceCatalogEntry`], which the structural
-/// signature reads, so a value-type change and a key-shape change are both detected by
-/// identity.
+/// The leaf-position facts of a resource member holding a single value cell (a plain field or a
+/// keyed-leaf layer). The module resolves an unqualified enum referent, and the value type
+/// yields the value half of the member's identity-aware leaf token.
 #[derive(Debug)]
 pub(crate) struct MemberLeaf {
     pub(crate) module: String,
@@ -1028,75 +1005,69 @@ pub(crate) struct SourceCatalogEntry {
     pub(crate) path: String,
     pub(crate) file: std::path::PathBuf,
     pub(crate) span: SourceSpan,
-    /// The leaf-position facts of a resource member, `None` for a group (which holds no
-    /// single value cell). A plain field and a keyed-leaf layer (a desugared `sequence`/`map`,
-    /// whose value cell is the member itself) both record their declaring module and value
-    /// type. The module resolves an unqualified enum referent; the value type and the
-    /// member's `key_params` together feed the identity-aware leaf token, so a later change of
-    /// value type OR of key shape (a plain field becoming a keyed leaf, or its key arity/types
-    /// changing) is detected by identity rather than by source spelling.
+    /// The leaf-position facts of a resource member, `None` for a group. With `key_params`,
+    /// these feed the identity-aware leaf token, so a value-type or key-shape change is detected
+    /// by identity rather than by source spelling.
     pub(crate) leaf: Option<MemberLeaf>,
-    /// The member's key-param shape: empty for a plain field or an unkeyed group, non-empty
-    /// for a keyed group or a keyed-leaf layer. The structural signature reads this to tell a
-    /// keyed group from a plain one (and to record its key shape), so a group<->keyed-group
-    /// reshape or a keyed-group re-key is a different signature. A non-member entry leaves it
-    /// empty. A leaf member's key shape is already inside its `leaf` facts; this is the only
-    /// place a group's key shape lives.
+    /// The member's key-param shape: empty for a plain field or unkeyed group, non-empty for a
+    /// keyed group or keyed-leaf layer. The structural signature reads this so a
+    /// group<->keyed-group reshape or a re-key is a different signature. A leaf member's own key
+    /// shape lives in its `leaf` facts; this is the only place a group's key shape lives.
     pub(crate) key_params: Vec<marrow_schema::KeyDef>,
+}
+
+impl SourceCatalogEntry {
+    /// A non-leaf source entry (resource, store, store index, enum, or enum member): one that
+    /// holds no value cell and declares no key params.
+    fn group(kind: CatalogEntryKind, path: String, module: &crate::CheckedModule) -> Self {
+        Self {
+            kind,
+            path,
+            file: module.source_file.clone(),
+            span: SourceSpan::default(),
+            leaf: None,
+            key_params: Vec::new(),
+        }
+    }
 }
 
 pub(crate) fn source_catalog_entries(program: &CheckedProgram) -> Vec<SourceCatalogEntry> {
     let mut entries = Vec::new();
     for module in &program.modules {
         for resource in &module.resources {
-            entries.push(SourceCatalogEntry {
-                kind: CatalogEntryKind::Resource,
-                path: resource_path(&module.name, &resource.name),
-                file: module.source_file.clone(),
-                span: SourceSpan::default(),
-                leaf: None,
-                key_params: Vec::new(),
-            });
+            entries.push(SourceCatalogEntry::group(
+                CatalogEntryKind::Resource,
+                resource_path(&module.name, &resource.name),
+                module,
+            ));
             collect_resource_members(&mut entries, module, &resource.name, &[], &resource.members);
         }
         for store in &module.stores {
-            entries.push(SourceCatalogEntry {
-                kind: CatalogEntryKind::Store,
-                path: store_path(&module.name, &store.root),
-                file: module.source_file.clone(),
-                span: SourceSpan::default(),
-                leaf: None,
-                key_params: Vec::new(),
-            });
+            entries.push(SourceCatalogEntry::group(
+                CatalogEntryKind::Store,
+                store_path(&module.name, &store.root),
+                module,
+            ));
             for index in &store.indexes {
-                entries.push(SourceCatalogEntry {
-                    kind: CatalogEntryKind::StoreIndex,
-                    path: store_index_path(&module.name, &store.root, &index.name),
-                    file: module.source_file.clone(),
-                    span: SourceSpan::default(),
-                    leaf: None,
-                    key_params: Vec::new(),
-                });
+                entries.push(SourceCatalogEntry::group(
+                    CatalogEntryKind::StoreIndex,
+                    store_index_path(&module.name, &store.root, &index.name),
+                    module,
+                ));
             }
         }
         for enum_schema in &module.enums {
-            entries.push(SourceCatalogEntry {
-                kind: CatalogEntryKind::Enum,
-                path: enum_path(&module.name, &enum_schema.name),
-                file: module.source_file.clone(),
-                span: SourceSpan::default(),
-                leaf: None,
-                key_params: Vec::new(),
-            });
+            entries.push(SourceCatalogEntry::group(
+                CatalogEntryKind::Enum,
+                enum_path(&module.name, &enum_schema.name),
+                module,
+            ));
             for index in 0..enum_schema.members.len() {
-                entries.push(SourceCatalogEntry {
-                    kind: CatalogEntryKind::EnumMember,
-                    path: enum_member_path(&module.name, &enum_schema.name, index, enum_schema),
-                    file: module.source_file.clone(),
-                    span: SourceSpan::default(),
-                    leaf: None,
-                    key_params: Vec::new(),
-                });
+                entries.push(SourceCatalogEntry::group(
+                    CatalogEntryKind::EnumMember,
+                    enum_member_path(&module.name, &enum_schema.name, index, enum_schema),
+                    module,
+                ));
             }
         }
     }
@@ -1125,13 +1096,9 @@ fn collect_resource_members(
     }
 }
 
-/// The declaring module and declared type a resource member carries its durable bytes as,
-/// or `None` for a group (which holds no single leaf cell). A plain field records its own
-/// type; a keyed-leaf-layer (`map[K, V]`) member records its value type V, since the map
-/// field is itself the leaf its entries' values are stored under. The module resolves an
-/// unqualified enum referent; both feed the identity-aware leaf token that detects a value
-/// type change by referent identity across leaf kinds, so a map value retype is caught the
-/// same way a plain-field retype is.
+/// The declaring module and value type a resource member stores its durable bytes as, or `None`
+/// for a group. A plain field records its own type; a keyed-leaf layer (`map[K, V]`) records its
+/// value type V, since the map field is itself the leaf its entries' values are stored under.
 fn member_leaf(module: &crate::CheckedModule, node: &marrow_schema::Node) -> Option<MemberLeaf> {
     node.leaf_value_type().map(|ty| MemberLeaf {
         module: module.name.clone(),
@@ -1139,10 +1106,9 @@ fn member_leaf(module: &crate::CheckedModule, node: &marrow_schema::Node) -> Opt
     })
 }
 
-/// A source entity the accepted catalog does not yet record has no durable
-/// identity until a state-establishing flow commits one. That pending state is
-/// informational, not a failure: `check` stays read-only and exits clean while
-/// telling the author durable identity for the entity is not yet frozen.
+/// A source entity the accepted catalog does not yet record has no durable identity until a
+/// state-establishing flow commits one. That pending state is informational, not a failure, so
+/// `check` stays read-only and exits clean.
 fn push_pending_identity(source: &SourceCatalogEntry, diagnostics: &mut Vec<CheckDiagnostic>) {
     diagnostics.push(catalog_intent(
         Severity::Warning,

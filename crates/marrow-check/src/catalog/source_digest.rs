@@ -1,25 +1,24 @@
 use crate::CheckedProgram;
 
-/// A stable digest of the analyzed program's durable shape, in the same
-/// `sha256:<hex>` form the catalog digest uses. This is the digest the store stamps
-/// at commit and the activation-window fence enforces, so it binds exactly the facts a
-/// stored snapshot must satisfy: each `resource`, `store`, `enum`, and module `const`.
+/// A stable `sha256:<hex>` digest of the program's durable shape: each `resource`, `store`,
+/// `enum`, and module `const`. This is what the store stamps at commit and the
+/// activation-window fence enforces, so it binds exactly the facts a stored snapshot must
+/// satisfy.
 ///
-/// It excludes the `evolve` block. A consumed block describes work already recorded in
-/// the accepted catalog, so hashing it would read its deletion as schema drift; the fence
-/// tracks the durable shape, not the transition that produced it.
+/// The `evolve` block is excluded: a consumed block describes work already recorded in the
+/// accepted catalog, so hashing it would read its deletion as schema drift; the fence tracks
+/// the durable shape, not the transition that produced it.
 ///
-/// The digest hashes the canonical formatter's rendering of those declarations rather than
-/// enumerating their fields, so any shape change drifts it while a whitespace reformat does
-/// not. The formatter is therefore a frozen anchor: a golden over its output pins the text,
-/// so a formatter change that moved it for an unchanged shape must be handled as a
-/// store-format decision rather than silently re-reading every committed snapshot as drift.
+/// Hashing the canonical formatter's rendering rather than the fields means a shape change
+/// drifts the digest while a whitespace reformat does not, which makes the formatter a frozen
+/// anchor: a formatter change that moves the text for an unchanged shape must be handled as a
+/// store-format decision, not silently re-read as drift over every committed snapshot.
 pub(crate) fn analyzed_source_digest(program: &CheckedProgram) -> String {
     digest_of(&render_declarations(program), DigestScope::Shape)
 }
 
-/// Both the shape and shape-plus-evolve digests from a single render pass, so a caller that
-/// needs both (the evolution preview witness) reads and parses each module's source once.
+/// Both digests from a single render pass, so a caller that needs both (the evolution preview
+/// witness) reads and parses each module's source once.
 pub(crate) fn source_and_evolution_digests(program: &CheckedProgram) -> (String, String) {
     let renderings = render_declarations(program);
     (
@@ -28,15 +27,15 @@ pub(crate) fn source_and_evolution_digests(program: &CheckedProgram) -> (String,
     )
 }
 
-/// A stable digest of the analyzed shape *and* the evolve decision surface, in the same
-/// `sha256:<hex>` form. It binds everything [`analyzed_source_digest`] binds plus each
-/// `evolve` block, so a changed evolve default value or transform body drifts it.
+/// A stable `sha256:<hex>` digest of the shape plus the evolve decision surface: everything
+/// [`analyzed_source_digest`] binds plus each `evolve` block, so a changed default value or
+/// transform body drifts it.
 ///
-/// The evolution witness records this digest, not the shape digest, so apply aborts
-/// when the source it activates no longer matches what was discharged — including a
-/// transform-body edit the shape digest cannot see. The two digests divide the work:
-/// the store fences on shape so a consumed block is deletable, and the witness fences on
-/// shape-plus-intent so the preview-to-apply transition cannot silently change.
+/// The evolution witness records this digest, not the shape digest, so apply aborts when the
+/// source it activates no longer matches what was discharged — including a transform-body edit
+/// the shape digest cannot see. The store fences on shape so a consumed block is deletable;
+/// the witness fences on shape-plus-intent so the preview-to-apply transition cannot silently
+/// change.
 pub(crate) fn evolution_digest(program: &CheckedProgram) -> String {
     digest_of(&render_declarations(program), DigestScope::ShapeAndEvolve)
 }
@@ -50,7 +49,6 @@ enum DigestScope {
 }
 
 impl DigestScope {
-    /// Whether a declaration of `kind` contributes to a digest at this scope.
     fn binds(self, kind: DurableKind) -> bool {
         match self {
             DigestScope::Shape => kind != DurableKind::Evolve,
@@ -59,14 +57,11 @@ impl DigestScope {
     }
 }
 
-/// Render every durable declaration of the program into the deterministically ordered
-/// renderings the digests hash. Each scope hashes a subset of this single pass, so the source
-/// is read and parsed once per render rather than once per digest.
-///
-/// The rendering reads each module's source file because the formatter operates on the
-/// syntax tree, which the checked program drops. A source file that no longer reads or
-/// parses (a checked-program invariant violation) contributes a path-tagged marker so
-/// the digest stays deterministic and never silently collides with a clean rendering.
+/// Every durable declaration rendered in deterministic order, the single pass each scope's
+/// digest hashes a subset of. The source file is re-read because the formatter operates on the
+/// syntax tree, which the checked program drops; a file that no longer reads or parses (a
+/// checked-program invariant violation) contributes a path-tagged marker so the digest stays
+/// deterministic and never silently collides with a clean rendering.
 fn render_declarations(program: &CheckedProgram) -> Vec<DurableRendering> {
     let mut entries: Vec<DurableRendering> = Vec::new();
     for module in &program.modules {
@@ -116,8 +111,8 @@ fn digest_of(entries: &[DurableRendering], scope: DigestScope) -> String {
     marrow_project::sha256_digest(payload.as_bytes())
 }
 
-/// One digest-bound declaration's normalized rendering, with the keys that order it
-/// deterministically: its module, declaration kind, and declaration name.
+/// One declaration's normalized rendering, with the `(module, kind, name)` keys that order it
+/// deterministically.
 struct DurableRendering {
     module: String,
     kind: DurableKind,
@@ -125,9 +120,9 @@ struct DurableRendering {
     text: String,
 }
 
-/// The declaration kinds whose shape or transform-visible value a stored snapshot
-/// must satisfy. The discriminant orders renderings deterministically within a module;
-/// an evolve block carries no name, so its kind alone keeps it last.
+/// The declaration kinds a stored snapshot must satisfy. The discriminant orders renderings
+/// deterministically within a module; an evolve block carries no name, so its kind alone keeps
+/// it last.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DurableKind {
     Resource = 0,
@@ -138,8 +133,8 @@ enum DurableKind {
     Unreadable = 5,
 }
 
-/// The digest kind of a declaration, or `None` for a function. Transform bodies cannot
-/// call user functions, but they can read module constants.
+/// The digest kind of a declaration, or `None` for a function: transform bodies cannot call
+/// user functions, though they can read module constants.
 fn durable_kind(declaration: &marrow_syntax::Declaration) -> Option<DurableKind> {
     match declaration {
         marrow_syntax::Declaration::Resource(_) => Some(DurableKind::Resource),
@@ -151,9 +146,8 @@ fn durable_kind(declaration: &marrow_syntax::Declaration) -> Option<DurableKind>
     }
 }
 
-/// The ordering name for a durable declaration: its declared name, the store root, or
-/// the empty string for a nameless evolve block. The normalized text disambiguates
-/// equal names, so this only needs a stable within-module sort key.
+/// The within-module sort key for a declaration: its declared name, the store root, or the
+/// empty string for a nameless evolve block. The normalized text disambiguates equal names.
 fn declaration_name(declaration: &marrow_syntax::Declaration) -> String {
     match declaration {
         marrow_syntax::Declaration::Resource(decl) => decl.name.clone(),
