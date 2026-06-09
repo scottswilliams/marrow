@@ -91,39 +91,36 @@ pub(super) fn split_top_level_commas(tokens: &[Token]) -> Vec<&[Token]> {
 pub(super) fn find_top_level_equal(tokens: &[Token]) -> Option<usize> {
     find_top_level(tokens, TokenKind::Equal)
 }
-/// Index of the leading `-` of a top-level `->` arrow (the `-` `>` token pair the
-/// lexer emits). The arrow separates an evolve rename's two paths; restricting to
-/// depth 0 keeps an arrow inside a parenthesized key from splitting the rename.
-pub(super) fn find_arrow(tokens: &[Token]) -> Option<usize> {
+/// Index of the first token satisfying `predicate` at parenthesis/bracket depth 0.
+/// The traversal tracks delimiter depth; the predicate receives each candidate
+/// index and the full slice so it can peek at neighbouring tokens.
+fn find_at_top_level(
+    tokens: &[Token],
+    predicate: impl Fn(usize, &[Token]) -> bool,
+) -> Option<usize> {
     let mut depth = 0usize;
     for (index, token) in tokens.iter().enumerate() {
         match token.kind {
             TokenKind::LeftParen | TokenKind::LeftBracket => depth += 1,
             TokenKind::RightParen | TokenKind::RightBracket => depth = depth.saturating_sub(1),
-            TokenKind::Minus
-                if depth == 0
-                    && tokens.get(index + 1).map(|token| token.kind)
-                        == Some(TokenKind::Greater) =>
-            {
-                return Some(index);
-            }
+            _ if depth == 0 && predicate(index, tokens) => return Some(index),
             _ => {}
         }
     }
     None
 }
+/// Index of the leading `-` of a top-level `->` arrow (the `-` `>` token pair the
+/// lexer emits). The arrow separates an evolve rename's two paths; restricting to
+/// depth 0 keeps an arrow inside a parenthesized key from splitting the rename.
+pub(super) fn find_arrow(tokens: &[Token]) -> Option<usize> {
+    find_at_top_level(tokens, |index, tokens| {
+        tokens[index].kind == TokenKind::Minus
+            && tokens.get(index + 1).map(|token| token.kind) == Some(TokenKind::Greater)
+    })
+}
 /// Index of the first occurrence of `kind` at parenthesis/bracket depth 0.
 pub(super) fn find_top_level(tokens: &[Token], kind: TokenKind) -> Option<usize> {
-    let mut depth = 0usize;
-    for (index, token) in tokens.iter().enumerate() {
-        match token.kind {
-            TokenKind::LeftParen | TokenKind::LeftBracket => depth += 1,
-            TokenKind::RightParen | TokenKind::RightBracket => depth = depth.saturating_sub(1),
-            other if other == kind && depth == 0 => return Some(index),
-            _ => {}
-        }
-    }
-    None
+    find_at_top_level(tokens, |index, tokens| tokens[index].kind == kind)
 }
 pub(super) fn expr_of(
     source: &str,
