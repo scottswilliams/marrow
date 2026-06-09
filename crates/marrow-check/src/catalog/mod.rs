@@ -3,7 +3,7 @@ use std::path::Path;
 
 use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 use marrow_store::cell::CatalogId;
-use marrow_syntax::{Severity, SourceSpan};
+use marrow_syntax::SourceSpan;
 
 use crate::evolution::leaf_type;
 use crate::evolution::{DefaultIntent, EvolveIntents, RenameIntent, RetireIntent, TransformIntent};
@@ -184,27 +184,11 @@ fn read_accepted_catalog(
 /// A catalog-intent error for a project-level failure not tied to one declaration, so it
 /// carries no source span.
 fn catalog_diagnostic(file: std::path::PathBuf, message: String) -> CheckDiagnostic {
-    catalog_intent(Severity::Error, file, SourceSpan::default(), message)
+    CheckDiagnostic::error(CHECK_CATALOG_INTENT, &file, SourceSpan::default(), message)
 }
 
 fn catalog_error(file: std::path::PathBuf, span: SourceSpan, message: String) -> CheckDiagnostic {
-    catalog_intent(Severity::Error, file, span, message)
-}
-
-fn catalog_intent(
-    severity: Severity,
-    file: std::path::PathBuf,
-    span: SourceSpan,
-    message: String,
-) -> CheckDiagnostic {
-    CheckDiagnostic {
-        code: CHECK_CATALOG_INTENT,
-        severity,
-        file,
-        message,
-        span,
-        payload: DiagnosticPayload::None,
-    }
+    CheckDiagnostic::error(CHECK_CATALOG_INTENT, &file, span, message)
 }
 
 fn catalog_binding(
@@ -1107,9 +1091,9 @@ fn member_leaf(module: &crate::CheckedModule, node: &marrow_schema::Node) -> Opt
 /// state-establishing flow commits one. That pending state is informational, not a failure, so
 /// `check` stays read-only and exits clean.
 fn push_pending_identity(source: &SourceCatalogEntry, diagnostics: &mut Vec<CheckDiagnostic>) {
-    diagnostics.push(catalog_intent(
-        Severity::Warning,
-        source.file.clone(),
+    diagnostics.push(CheckDiagnostic::warning(
+        CHECK_CATALOG_INTENT,
+        &source.file,
         source.span,
         format!(
             "durable identity for `{}` is not yet recorded; running the program or applying an evolution will record it",
