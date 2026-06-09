@@ -233,14 +233,10 @@ fn eval_call_assignment(
 
 fn eval_expr_statement(value: &ExecExpr, env: &mut Env<'_>) -> Result<(), RuntimeError> {
     if let ExecExpr::Call {
-        callee,
-        args,
-        target,
-        span,
-        ..
+        args, target, span, ..
     } = value
     {
-        eval_call(value, callee, args, target, *span, env)?;
+        eval_call(value, args, target, *span, env)?;
     } else {
         eval_expr(value, env)?;
     }

@@ -29,7 +29,6 @@ use crate::value::Value;
 
 pub(crate) fn eval_call(
     call: &ExecExpr,
-    _callee: &ExecExpr,
     args: &[ExecArg],
     target: &CheckedCallTarget,
     span: SourceSpan,

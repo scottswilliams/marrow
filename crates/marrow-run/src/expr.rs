@@ -58,12 +58,8 @@ pub(crate) fn eval_expr(expr: &ExecExpr, env: &mut Env<'_>) -> Result<Value, Run
             span,
         } => eval_binary(*op, left, right, *span, env),
         ExecExpr::Call {
-            callee,
-            args,
-            target,
-            span,
-            ..
-        } => eval_call_expr(expr, callee, args, target, *span, env),
+            args, target, span, ..
+        } => eval_call_expr(expr, args, target, *span, env),
         ExecExpr::Interpolation { parts, span } => eval_interpolation(parts, *span, env),
         ExecExpr::Field {
             base, name, span, ..
@@ -117,13 +113,12 @@ fn enum_member_value(
 
 fn eval_call_expr(
     call: &ExecExpr,
-    callee: &ExecExpr,
     args: &[marrow_check::CheckedArg],
     target: &marrow_check::CheckedCallTarget,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    match eval_call(call, callee, args, target, span, env)? {
+    match eval_call(call, args, target, span, env)? {
         Some(value) => Ok(value),
         None => Err(RuntimeError::fault(
             RUN_NO_VALUE,
