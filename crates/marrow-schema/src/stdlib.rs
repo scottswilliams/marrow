@@ -59,7 +59,7 @@ use ParamType::{Error as ErrorArg, Path, Scalar};
 use ReturnType::{Sequence, Void};
 use ScalarType::{Bool, Bytes, Date, Decimal, Duration, Instant, Int, Str};
 
-/// One descriptor row, written terse so the table reads as a signature list.
+/// Keeps the table terse enough to read as a flat signature list.
 const fn row(
     module: &'static str,
     op: &'static str,
@@ -76,7 +76,6 @@ const fn row(
     }
 }
 
-/// A scalar result, the common case.
 const fn scalar(scalar: ScalarType) -> ReturnType {
     ReturnType::Scalar(scalar)
 }
