@@ -1,5 +1,5 @@
-//! The type-check driver passes over a parsed file: return placement, operator,
-//! condition, assignment, call, and saved-key argument checks.
+//! Type-check driver over a parsed file: return placement, operator, condition,
+//! assignment, call, and saved-key argument checks.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -36,11 +36,9 @@ use crate::{
     resolve_resource_schema_type, resource_type_name, std_call_params, std_call_return_type,
 };
 
-/// Resolve every `use` against `resolvable`, run the type pass over each parsed
-/// file against `program`, then suppress resolution reports that target modules
-/// whose files failed to parse or read. This is the shared tail of check_project
-/// and check_tests: pass 1 differs and stays in the caller, but once the
-/// resolvable module set and program are known every step is identical.
+/// The shared tail of library and test checking: once the resolvable module set
+/// and `program` are known, import resolution and the type pass run identically;
+/// only pass 1 differs and stays in the caller.
 pub(crate) struct ResolvedFileCheck<'a> {
     pub(crate) files: &'a [marrow_project::ModuleFile],
     pub(crate) parsed_files: &'a [(&'a marrow_project::ModuleFile, marrow_syntax::ParsedSource)],
@@ -58,8 +56,7 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
         program,
     } = input;
 
-    // Pass 2: every `use` must name a project module, a sibling module, or a
-    // standard-library module, now that the full resolvable module set is known.
+    // Every `use` must name a resolvable module now that the full set is known.
     for (file, parsed) in parsed_files {
         for use_decl in &parsed.file.uses {
             if !is_resolved_import(&use_decl.name, resolvable) {
@@ -75,15 +72,14 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
         }
     }
 
-    // Pass 3: flag type annotations that name an unknown type.
     for (file, parsed) in parsed_files {
         check_file_types(program, &file.path, parsed, &mut report.diagnostics);
     }
 
     // A file that failed to parse or read is excluded from the program, so exact
     // imports of its module and qualified calls into it would look unresolved
-    // even though the source may contain the definition. Suppress only those
-    // reports; other clean files' local resolution diagnostics remain trustworthy.
+    // even though the source may define them. Suppress only those reports; other
+    // clean files' local resolution diagnostics remain trustworthy.
     let incomplete_modules =
         incomplete_module_names(files, parsed_files, module_name_policy, program);
     if !incomplete_modules.is_empty() {
@@ -183,32 +179,25 @@ pub(crate) struct FilePrelude {
     pub(crate) module_constants: HashMap<String, MarrowType>,
 }
 
-/// Build a file's [`FilePrelude`]: the alias map from its imports and the typed
-/// module constants, in source order so an earlier constant is in scope for a
-/// later one. The type-check pass and the editor queries both start from this,
-/// so the bindings a function body sees are derived in exactly one place.
+/// Build a file's [`FilePrelude`], in source order so an earlier constant is in
+/// scope for a later one. Both the type pass and editor queries start here, so
+/// the bindings a function body sees are derived in exactly one place.
 pub(crate) fn file_prelude(
     program: &CheckedProgram,
     file: &Path,
     parsed: &marrow_syntax::ParsedSource,
 ) -> FilePrelude {
-    // Short→full import aliases, used to expand short-form calls
-    // (`clock::now()` → `std::clock::now`) before resolution. The runtime
-    // rebuilds the same map from `CheckedModule::imports`.
-    let aliases = build_alias_map(
-        &parsed
-            .file
-            .uses
-            .iter()
-            .map(|use_decl| use_decl.name.clone())
-            .collect::<Vec<_>>(),
-    );
-    // A module's top-level constants are in scope (bare) for its functions, an
-    // annotated one carrying its annotation and an unannotated one its inferred
-    // type, so a typed use like `var x: int = M` resolves rather than
-    // false-positiving `check.untyped_value`. Initializer validity (constant
-    // expression, literal range) is owned by the const-value pass, so the
-    // inference diagnostics raised here are discarded.
+    let import_paths: Vec<String> = parsed
+        .file
+        .uses
+        .iter()
+        .map(|use_decl| use_decl.name.clone())
+        .collect();
+    let aliases = build_alias_map(&import_paths);
+    // Top-level constants are in scope (bare) for the file's functions, so a typed
+    // use like `var x: int = M` resolves rather than false-positiving
+    // `check.untyped_value`. Initializer validity is owned by the const-value pass,
+    // so the inference diagnostics raised here are discarded.
     let mut module_constants: HashMap<String, MarrowType> = HashMap::new();
     for declaration in &parsed.file.declarations {
         if let marrow_syntax::Declaration::Const(constant) = declaration {
@@ -234,12 +223,9 @@ pub(crate) fn file_prelude(
     }
 }
 
-/// Run the type-inference pass over one parsed file against the resolved
-/// `program`: unknown-type annotations, return-value placement, the
-/// expression/statement type checks (operator/condition/assignment/call/argument
-/// types, std arity, the `nextId` single-`int` gate), and missing-return
-/// analysis. Library files (via [`check_project`]) and test scripts (via
-/// [`check_tests`]) share this pass.
+/// Run the type pass over one parsed file: unknown-type annotations, return-value
+/// placement, the expression/statement type checks, and missing-return analysis.
+/// Shared by library files and test scripts.
 pub(crate) fn check_file_types(
     program: &CheckedProgram,
     file: &Path,
@@ -368,8 +354,6 @@ fn check_qualified_saved_named_field_annotations(
     }
 }
 
-/// Record diagnostics for a declaration type annotation. Located at `span` (the
-/// declaration), since a type annotation carries no span of its own.
 struct TypeAnnotationContext<'a> {
     program: &'a CheckedProgram,
     aliases: &'a HashMap<String, Vec<String>>,
@@ -569,10 +553,9 @@ fn check_statement_type_annotations(
     }
 }
 
-/// Flag each `return` whose value presence does not match the function's declared
-/// return type: a value-returning function must return a value, and a function
-/// with no return type must not return one. Recurses into nested blocks; `finally`
-/// is left to `check.finally_control_flow`.
+/// Flag each `return` whose value presence does not match the declared return
+/// type. Recurses into nested blocks; `finally` is left to
+/// `check.finally_control_flow`.
 pub(crate) fn check_return_values(
     file: &Path,
     body: &marrow_syntax::Block,
@@ -640,11 +623,9 @@ pub(crate) fn check_return_values(
     }
 }
 
-/// Whether `block` definitely returns (or otherwise diverges) on every path —
-/// a sound under-approximation of "every reachable path returns". It is
-/// conservative: a function ending in a call or a loop may diverge, so it is not
-/// flagged; only a clearly falling-through end is. This favors no false positives
-/// over catching every genuine case.
+/// A sound under-approximation of "every reachable path returns or diverges". It
+/// is conservative — a body ending in a call or a loop may diverge, so it is not
+/// flagged — favoring no false positives over catching every genuine case.
 pub(crate) fn block_returns(block: &marrow_syntax::Block) -> bool {
     block.statements.last().is_some_and(statement_returns)
 }
@@ -672,14 +653,13 @@ pub(crate) fn statement_returns(statement: &marrow_syntax::Statement) -> bool {
                     .as_ref()
                     .is_none_or(|clause| block_returns(&clause.block))
         }
-        // A `match` is exhaustive with no fall-through, so it returns on every
-        // path exactly when every arm does. An empty (member-less) match cannot
-        // arise, so `all` over no arms is not a spurious "returns".
+        // An exhaustive match returns on every path exactly when every arm does;
+        // an empty match cannot arise, so `all` over no arms is not a false yes.
         Statement::Match { arms, .. } => {
             !arms.is_empty() && arms.iter().all(|arm| block_returns(&arm.block))
         }
-        // A loop may not run or may run forever; conservatively treat a function
-        // ending in one as diverging rather than risk a false positive.
+        // A loop may not run or may run forever; conservatively treat its end as
+        // diverging rather than risk a false positive.
         Statement::While { .. } | Statement::For { .. } => true,
         Statement::Const { .. }
         | Statement::Var { .. }
@@ -690,16 +670,10 @@ pub(crate) fn statement_returns(statement: &marrow_syntax::Statement) -> bool {
     }
 }
 
-/// Type-check a function body: flag operators applied to operands they do not
-/// accept, `if`/`while` conditions that are not `bool`, and calls whose arguments
-/// do not match the function they resolve to. Walks the body tracking the type of
-/// each in-scope binding (parameters and `const`/`var` locals) and inferring the
-/// type of each expression. A check fires only when a type or signature is known
+/// Type-check a function body, tracking the type of each in-scope binding and
+/// inferring each expression. A check fires only when a type or signature is known
 /// to be wrong, so an unresolved value — a saved-data read, a cross-module value,
-/// an unresolved call — is never a false positive. The operator rules are:
-/// matching numeric operands for `+ - * /`, `int` for
-/// `%`, `string` for `_`, ordered same-typed operands for comparisons, and `bool`
-/// for `and`/`or`/`not`.
+/// an unresolved call — is never a false positive.
 pub(crate) fn check_function_types(
     program: &CheckedProgram,
     file: &Path,
@@ -708,9 +682,8 @@ pub(crate) fn check_function_types(
     aliases: &HashMap<String, Vec<String>>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    // The base scope frame is the module's constants overlaid with the parameter
-    // list (a parameter shadows a like-named constant). Types resolve against the
-    // project's resources so resource-typed bindings feed field-type inference.
+    // Module constants overlaid with the parameter list; a parameter shadows a
+    // like-named constant.
     let mut base = module_constants.clone();
     for param in &function.params {
         base.insert(
@@ -719,8 +692,6 @@ pub(crate) fn check_function_types(
         );
     }
     let mut scope: Vec<HashMap<String, MarrowType>> = vec![base];
-    // The declared return type (unknown for a void function), used to check each
-    // `return` expression's type as the walk reaches it.
     let return_type = function
         .return_type
         .as_ref()
@@ -738,8 +709,7 @@ pub(crate) fn check_function_types(
     );
 }
 
-/// Type-check every statement in a block, with a scope frame for the
-/// `const`/`var` bindings the block introduces.
+/// Type-check a block under a fresh scope frame for its `const`/`var` bindings.
 pub(crate) fn check_block_types(
     program: &CheckedProgram,
     file: &Path,
@@ -764,8 +734,8 @@ pub(crate) fn check_block_types(
     scope.pop();
 }
 
-/// Check one statement: type-check the expressions it contains, recurse into any
-/// nested blocks, and record the type of any binding it introduces.
+/// Type-check one statement, recursing into nested blocks and recording the type
+/// of any binding it introduces.
 pub(crate) fn check_statement_types(
     program: &CheckedProgram,
     file: &Path,
@@ -1094,12 +1064,10 @@ impl StatementCheck<'_> {
     }
 }
 
-/// The scope frame a `for` loop's body runs under, mirroring
-/// [`check_statement_types`]: the loop binding(s) in scope for the body.
-/// Collection loops bind the collection's element, with `keys(...)` preserving
+/// The scope frame a `for` loop's body runs under: its binding(s) typed against
+/// the iterable. Collection loops bind the element, with `keys(...)` preserving
 /// address-only traversal and two-name loops binding address plus element.
-/// Inference here discards diagnostics; the type pass emits the iterable's
-/// separately.
+/// Inference here discards diagnostics; the type pass emits the iterable's.
 pub(crate) fn for_frame(
     program: &CheckedProgram,
     binding: &marrow_syntax::ForBinding,
@@ -1121,9 +1089,8 @@ pub(crate) fn for_frame(
     }
     let first_type = match (&binding.second, &iterable_type) {
         (None, MarrowType::Sequence(element)) => (**element).clone(),
-        // A range binds its single variable to its endpoint type, so the body type-
-        // checks (`for x in lo..hi`: `x` is the endpoint scalar). Only a same-typed
-        // steppable-endpoint range types its variable; anything else stays unknown.
+        // A range binds its variable to its endpoint scalar; only a same-typed
+        // steppable-endpoint range types it, anything else stays unknown.
         (None, _) => range_endpoint_type(program, iterable, scope, aliases, file)
             .unwrap_or(MarrowType::Unknown),
         _ => MarrowType::Unknown,
@@ -1451,8 +1418,7 @@ fn range_endpoint_type(
     }
 }
 
-/// The two endpoint expressions of a range, or `None` if the iterable is not a
-/// range.
+/// The two endpoint expressions of a range, or `None` for a non-range iterable.
 fn range_endpoints(
     iterable: &marrow_syntax::Expression,
 ) -> Option<(&marrow_syntax::Expression, &marrow_syntax::Expression)> {
@@ -1504,14 +1470,12 @@ fn check_range_iterable_value_parts(
     }
 }
 
-/// Validate a range-for header beyond what the operator and binding checks cover:
-/// the endpoints must be the same steppable type, the `by` step (if any) must
-/// match — a number for int/decimal, a duration for date/instant — decimal and
-/// instant ranges require an explicit step, and a step that statically cannot run
-/// (a literal wrong-direction step, or a zero step) is rejected as a dead loop. A
-/// step on a non-range iterable is also rejected. The endpoint operator-typing is
-/// already reported by the type pass, so a non-steppable or mismatched endpoint
-/// pair is left to it; this pass owns the step and direction rules.
+/// Validate a range-for header's step and direction rules: the `by` step must
+/// match the endpoint type (a number for int/decimal, a duration for
+/// date/instant), decimal and instant require an explicit step, and a step that
+/// statically cannot run (wrong-direction or zero) is a dead loop. A step on a
+/// non-range iterable is rejected. Endpoint typing is owned by the type pass, so a
+/// non-steppable or mismatched endpoint pair is left to it.
 pub(crate) fn check_range_header(
     program: &CheckedProgram,
     file: &Path,
@@ -1555,12 +1519,10 @@ pub(crate) fn check_range_header(
     check_dead_loop(file, iterable, left, right, step, diagnostics);
 }
 
-/// Reject a negated duration step on a `date`/`instant` range. A duration is always
-/// non-negative — `-1.day` faults, duration subtraction is rejected, and
-/// `parseDuration` rejects negatives — so a descending temporal range can never be
-/// produced at runtime: such a loop only faults. Rather than green-light a guaranteed
-/// fault, the check reports it now. Descending date/instant ranges are not yet
-/// expressible; int/decimal ranges still descend by a negative step.
+/// Reject a negated duration step on a `date`/`instant` range. A duration is
+/// always non-negative, so a descending temporal range can only fault at runtime;
+/// the check reports that guaranteed fault now. Int/decimal ranges still descend
+/// by a negative step.
 fn check_temporal_step_sign(
     file: &Path,
     endpoint: ScalarType,
@@ -1584,11 +1546,10 @@ fn check_temporal_step_sign(
 }
 
 /// Reject a literal duration step on a `date` range that is not a whole number of
-/// days. A date has no time of day, so a sub-day or fractional-day step (`by 1.hour`,
-/// `by 25.hours`) faults at runtime; the checker reports the guaranteed fault now. An
-/// `instant` range carries a time component, so any positive duration steps it — this
-/// rule is `date`-only. Only a literal step is statically known; a variable step that
-/// is not a whole-day multiple still faults at runtime, which is correct.
+/// days. A date has no time of day, so a sub-day step faults at runtime; the
+/// checker reports that guaranteed fault now. `instant` carries a time component
+/// and steps by any positive duration, so this rule is `date`-only. A non-literal
+/// step is left to the runtime, which still faults on a fractional-day multiple.
 fn check_date_step_whole_days(
     file: &Path,
     endpoint: ScalarType,
@@ -1613,8 +1574,8 @@ fn check_date_step_whole_days(
 }
 
 /// The total seconds of a literal duration step (`1.hour` => 3600), or `None` for a
-/// non-literal or non-duration step. A negated duration is read through the negation
-/// so its magnitude is measured; the sign is handled separately.
+/// non-literal or non-duration step. A negation is read through to its magnitude;
+/// the sign is handled separately.
 fn literal_duration_seconds(expr: &marrow_syntax::Expression) -> Option<i64> {
     use marrow_syntax::{Expression, LiteralKind, UnaryOp, duration_unit_seconds};
     match expr {
@@ -1683,10 +1644,9 @@ fn check_step_type(
     }
 }
 
-/// A scalar named with its indefinite article and backtick spelling — `an `int``,
-/// `a `decimal``, `an `instant`` — so a range diagnostic reads naturally for both
-/// consonant- and vowel-initial type names. The two vowel-initial steppable
-/// spellings are `int` and `instant`.
+/// A scalar named with its indefinite article and backtick spelling (`` an `int` ``)
+/// so a range diagnostic reads naturally. `int` and `instant` are the vowel-initial
+/// steppable spellings.
 fn article_for(scalar: ScalarType) -> String {
     let article = if matches!(scalar, ScalarType::Int | ScalarType::Instant) {
         "an"
@@ -1761,8 +1721,7 @@ fn literal_step_sign(step: Option<&marrow_syntax::Expression>) -> Option<Orderin
 }
 
 /// The value of a literal decimal expression (`0.5`, `-0.5`), or `None` for a
-/// non-literal or non-decimal literal. Used to decide a static decimal range's
-/// direction and step sign.
+/// non-literal or non-decimal literal.
 fn literal_decimal_value(expr: &marrow_syntax::Expression) -> Option<Decimal> {
     use marrow_syntax::{Expression, LiteralKind, UnaryOp};
     match expr {
@@ -1781,8 +1740,7 @@ fn literal_decimal_value(expr: &marrow_syntax::Expression) -> Option<Decimal> {
 }
 
 /// The signed value of a literal integer expression (`5`, `-1`), or `None` for a
-/// non-literal or a duration/other literal. Used to decide a static range
-/// direction; a duration step's sign is read separately.
+/// non-literal or non-integer literal.
 fn literal_int_value(expr: &marrow_syntax::Expression) -> Option<i64> {
     use marrow_syntax::{Expression, LiteralKind, UnaryOp};
     match expr {
@@ -1831,9 +1789,8 @@ fn duration_or_int_magnitude(text: &str) -> Option<i64> {
         .or(Some(if digits.is_empty() { 0 } else { i64::MAX }))
 }
 
-/// Build a payload-free error diagnostic at `span` carrying `code` and `message`.
-/// The single-code constructors name their code and delegate here so the struct
-/// shape lives in one place.
+/// Build a payload-free error diagnostic. The per-code constructors delegate here
+/// so the struct shape lives in one place.
 fn error_at(code: &'static str, file: &Path, span: SourceSpan, message: String) -> CheckDiagnostic {
     CheckDiagnostic {
         code,
@@ -1849,10 +1806,8 @@ fn range_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckDiag
     error_at(CHECK_RANGE, file, span, message)
 }
 
-/// Type-check an `if`/`while` condition. Inferring it also operator-checks it;
-/// then a condition whose type is a known primitive other than `bool` is flagged,
-/// since conditions must be `bool`. An
-/// unknown type — an unresolved call such as `exists(...)`, a saved-data read — is
+/// Type-check an `if`/`while` condition (must be `bool`). Inferring it also
+/// operator-checks it. An unknown type — an unresolved call, a saved-data read — is
 /// left alone, so the check never fires on an uncertain condition.
 pub(crate) fn check_condition(
     program: &CheckedProgram,
@@ -1871,24 +1826,22 @@ pub(crate) fn check_condition(
             span,
             format!("condition must be `bool`, found `{}`", primitive.name()),
         )),
-        // An unresolved condition is reported as untyped rather than as a wrong type,
-        // since strict typing cannot show it to be `bool`.
+        // An unresolved condition is untyped rather than a wrong type, since strict
+        // typing cannot show it to be `bool`.
         None if matches!(condition_type, MarrowType::Unknown) => diagnostics.push(error_at(
             CHECK_UNTYPED_VALUE,
             file,
             span,
             "condition has no known type; it must be `bool`".to_string(),
         )),
-        // `Error` is a concrete (non-scalar) type, not an unknown one, so it is
-        // flagged like a wrong scalar rather than as an untyped value.
+        // `Error` and other concrete non-scalars are known types, not unknown ones,
+        // so they are flagged like a wrong scalar rather than swallowed.
         None if matches!(condition_type, MarrowType::Error) => diagnostics.push(error_at(
             CHECK_CONDITION_TYPE,
             file,
             span,
             "condition must be `bool`, found `Error`".to_string(),
         )),
-        // A concrete non-scalar — an identity, whole record, or sequence — is flagged
-        // like a wrong scalar rather than swallowed.
         None if is_concrete_nonscalar(&condition_type) => diagnostics.push(error_at(
             CHECK_CONDITION_TYPE,
             file,
@@ -1927,11 +1880,10 @@ pub(crate) fn check_throw_type(
     }
 }
 
-/// Flag a `return` value whose type does not match the function's declared
-/// return type. Fires only when both are known, incompatible primitives, so a
-/// void function (unknown return type), a non-primitive return (a resource or
-/// identity), or an unresolved returned value is left alone. Value presence is
-/// checked separately by `check.return_value`.
+/// Flag a `return` value whose type does not match the declared return type.
+/// Fires only when both are known, incompatible types, so a void function or an
+/// unresolved returned value is left alone. Value presence is checked separately
+/// by `check.return_value`.
 pub(crate) fn check_return_type(
     file: &Path,
     span: SourceSpan,
@@ -1956,10 +1908,9 @@ pub(crate) fn check_return_type(
                 found: value_type.clone(),
             },
         }),
-        // Strict typing: a value with no known type returned where a convertible type
-        // is declared must be converted first. A void function (unknown return type),
-        // or one returning a whole resource or a sequence (no conversion boundary),
-        // places no such constraint and is left alone.
+        // Strict typing: an untyped value returned where a convertible type is
+        // declared must be converted first. A return type with no conversion boundary
+        // (void, a whole resource, a sequence) places no such constraint.
         None if matches!(value_type, MarrowType::Unknown) && expects_conversion(return_type) => {
             diagnostics.push(CheckDiagnostic {
                 code: CHECK_UNTYPED_VALUE,
@@ -1977,14 +1928,12 @@ pub(crate) fn check_return_type(
     }
 }
 
-/// Flag a value stored into a concrete place when its type is wrong or cannot be
-/// resolved. A known-incompatible value is a `check.assignment_type` mismatch; an
-/// `Unknown` value stored into a place with a conversion boundary (a scalar, an
-/// identity, an enum, a whole resource) is a `check.untyped_value` error (strict
-/// typing: dynamic data must be converted before typed use). An untyped place (a
-/// sequence, `unknown`) is left alone. A whole group-entry assignment may take a
-/// value of the owning resource type because the runtime writes matching fields
-/// from that resource value into the addressed group entry.
+/// Flag a value stored into a concrete place when its type is wrong (a
+/// `check.assignment_type` mismatch) or untyped against a conversion boundary (a
+/// `check.untyped_value`, under strict typing). An untyped place (a sequence,
+/// `unknown`) is left alone. A whole group-entry assignment may take a value of the
+/// owning resource type, since the runtime writes matching fields from that value
+/// into the addressed entry.
 pub(crate) fn check_assignment(
     file: &Path,
     span: SourceSpan,
@@ -2014,9 +1963,7 @@ pub(crate) fn check_assignment(
                 },
             });
         }
-        // A value the checker could not resolve, stored into a convertible place. An
-        // untyped place (a sequence, `unknown`) has no conversion boundary and is
-        // left alone.
+        // An untyped value stored into a place with a conversion boundary.
         None if matches!(value, MarrowType::Unknown) && expects_conversion(place) => {
             diagnostics.push(CheckDiagnostic {
                 code: CHECK_UNTYPED_VALUE,
@@ -2035,11 +1982,8 @@ pub(crate) fn check_assignment(
 }
 
 /// Type-check the key arguments of a saved access against the keys it addresses.
-/// A record lookup `^root(key…)` is checked against the root's identity keys; a
-/// keyed-layer access `^root(key…).layer(key…)` against that layer's key
-/// parameters. A foreign identity spliced into a keyspace, or a scalar of the
-/// wrong type, is a `check.key_type`. Non-saved callees (a function call, an index
-/// lookup) and unresolved roots are left alone.
+/// A foreign identity spliced into a keyspace, or a scalar of the wrong type, is a
+/// `check.key_type`. Non-saved callees and unresolved roots are left alone.
 pub(crate) fn check_saved_key_args(
     program: &CheckedProgram,
     callee: &marrow_syntax::Expression,
@@ -2050,9 +1994,9 @@ pub(crate) fn check_saved_key_args(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     use marrow_syntax::Expression;
-    // A whole-record lookup `^root(key…)`: the sole identity argument may be the
-    // resource's own identity value (a splice), checked nominally; otherwise the
-    // per-key scalars are checked against the declared identity keys.
+    // A whole-record lookup `^root(key…)`: a sole identity argument may be the
+    // resource's own identity (a splice), checked nominally; otherwise the per-key
+    // scalars are checked against the declared identity keys.
     if let Expression::SavedRoot { name: root, .. } = callee {
         let Some(store) = resolve_store_by_root(program, root) else {
             return;
@@ -2103,7 +2047,7 @@ pub(crate) fn check_saved_key_args(
         return;
     }
     // A keyed-layer access `^root(key…).layer(key…)`: check this layer's key
-    // parameters. The layer chain peels the named layers from the accessor.
+    // parameters.
     if let Some((root, layers)) = saved_layer_chain(callee)
         && let Some(store) = resolve_store_by_root(program, root)
         && let Some(node) = store.resource.descend_layers(&layers)
@@ -2196,12 +2140,11 @@ fn check_index_args_against(
     }
 }
 
-/// Compare a saved access's argument types against the declared key parameters
-/// they fill. A count mismatch is reported once (the per-key mapping is then
-/// undefined); otherwise each argument is checked nominally against its key's
-/// type. An `unknown` argument is rejected here: saved keyspaces are nominal
-/// identity boundaries, so dynamic reentry must first convert to the declared key
-/// type instead of acting as `any`.
+/// Check argument types against the declared key parameters they fill. A count
+/// mismatch is reported once (the per-key mapping is then undefined); otherwise
+/// each argument is checked nominally. An `unknown` argument is rejected: saved
+/// keyspaces are nominal identity boundaries, so dynamic reentry must convert to
+/// the declared key type instead of acting as `any`.
 pub(crate) fn check_keys_against(
     keys: &[marrow_schema::KeyDef],
     arg_types: &[MarrowType],
@@ -2268,11 +2211,9 @@ pub(crate) fn check_unary(
     if matches!(operand, MarrowType::Invalid) {
         return MarrowType::Invalid;
     }
-    // A concrete non-scalar operand — an identity, record, sequence, or the
-    // checker-only `Error` — has no unary operator, so flag it as an operator
-    // misuse rather than silently passing it through. This must precede the
-    // `as_primitive` gate, which treats every non-primitive as `None` and would
-    // otherwise drop these to `Unknown`.
+    // A concrete non-scalar operand (an identity, record, sequence, or the
+    // checker-only `Error`) has no unary operator. Flag it before the `as_primitive`
+    // gate, which would otherwise drop every non-primitive to `Unknown`.
     if matches!(operand, MarrowType::Error) || is_concrete_nonscalar(operand) {
         diagnostics.push(operator_diagnostic(
             file,
@@ -2322,10 +2263,8 @@ pub(crate) fn check_binary(
     if matches!(left, MarrowType::Invalid) || matches!(right, MarrowType::Invalid) {
         return MarrowType::Invalid;
     }
-    // `Error` is a concrete type, not an untyped one: no binary operator applies to
-    // it, so flag it as an operator misuse rather than silently passing it through
-    // (matching the unary case). This must come before the `as_primitive` gate,
-    // which treats `Error` as a non-primitive `None` and would otherwise skip it.
+    // `Error` is a concrete type with no binary operator. Flag it before the
+    // `as_primitive` gate, which would otherwise drop it to `Unknown`.
     if matches!(left, MarrowType::Error) || matches!(right, MarrowType::Error) {
         diagnostics.push(operator_diagnostic(
             file,
@@ -2337,22 +2276,15 @@ pub(crate) fn check_binary(
         ));
         return MarrowType::Invalid;
     }
-    // Equality is decided over concrete non-scalar types before the `as_primitive`
-    // gate, which would otherwise drop them to `Unknown`. Whole records and
-    // sequences have no equality; identities and enums compare nominally, so a
-    // same-store identity or same-enum pair is equatable (`bool`) while a
-    // cross-store pair, a different enum, or either against a scalar is a
-    // category error. An `Unknown` operand defers to the scalar path, where untyped
-    // values are handled.
+    // Equality over concrete non-scalars is decided before the `as_primitive` gate;
+    // an `Unknown` operand defers to the scalar path.
     if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual)
         && let Some(result) = check_equality(op, left, right, span, file, diagnostics)
     {
         return result;
     }
-    // No non-equality operator applies to a concrete non-scalar operand — an
-    // identity, whole record, sequence, or enum. Flag it as an operator misuse
-    // rather than letting the scalar gate below drop it to `Unknown`. An `Unknown`
-    // operand still defers there, where untyped values are handled.
+    // No non-equality operator applies to a concrete non-scalar operand. Flag it
+    // before the scalar gate; an `Unknown` operand still defers there.
     if is_concrete_nonscalar(left) || is_concrete_nonscalar(right) {
         diagnostics.push(operator_diagnostic(
             file,
@@ -2429,14 +2361,8 @@ pub(crate) fn check_binary(
 }
 
 /// Decide `==`/`!=` over concrete non-scalar operands, returning `Some(result)`
-/// once a verdict is reached and `None` to defer to the scalar path. Whole records
-/// and sequences are not equatable; identities and enums compare nominally, so a
-/// same-store identity or same-enum pair is `bool` and any other pairing —
-/// different identities, different enums, or either against a scalar — is a
-/// category error. An `Unknown` operand defers (the untyped-value path owns it); a
-/// scalar pair defers to the ordinary scalar-equality check. A diagnostic is pushed
-/// on the rejected cases, which still yield `bool` so a surrounding expression sees
-/// the natural result type of a comparison.
+/// once a verdict is reached and `None` to defer to the scalar path. A rejected
+/// pairing still yields `bool`, the natural result type of a comparison.
 pub(crate) fn check_equality(
     op: marrow_syntax::BinaryOp,
     left: &MarrowType,
@@ -2552,12 +2478,9 @@ pub(crate) fn check_coalesce(
         ));
         return MarrowType::Unknown;
     }
-    // A concrete non-scalar leaf (an identity, record, or sequence read) defaults
-    // only with a value of the same nominal type, so an identity from `^books`
-    // cannot take an identity from `^magazines` as its default, and a non-scalar
-    // paired with a scalar is a category error either way. The scalar path below
-    // would drop the non-scalar to `Unknown` and silently accept the mismatch, so
-    // resolve any pairing with a non-scalar side here; an `Unknown` operand still
+    // A concrete non-scalar leaf defaults only with a value of the same nominal
+    // type. The scalar path below would drop it to `Unknown` and silently accept a
+    // mismatch, so resolve any non-scalar pairing here; an `Unknown` operand still
     // defers there.
     if is_concrete_nonscalar(left_type) || is_concrete_nonscalar(right_type) {
         return match type_compatible(left_type, right_type) {
@@ -2952,11 +2875,9 @@ fn check_builtin_call_args(
     }
 }
 
-/// Check an `Error(...)` constructor against the one `Error` field contract owned
-/// by `marrow_schema::error`. `Error` is constructed with named fields, so each
-/// argument names a field whose type is checked like a resource field, and every
-/// required field must be supplied. The field set and types live in the schema so
-/// the checker and runtime validate one definition.
+/// Check an `Error(...)` constructor against the named-field contract owned by
+/// `marrow_schema::error`; every required field must be supplied. The field set
+/// lives in the schema so the checker and runtime validate one definition.
 fn check_error_constructor_args(
     args: &[marrow_syntax::Argument],
     arg_types: &[MarrowType],
@@ -3297,11 +3218,8 @@ fn constructor_field_type(
 
 /// Check one positional/named argument against the type its parameter expects: a
 /// known-but-different type is a `check.call_argument`; an `Unknown` argument for a
-/// concrete parameter is a `check.untyped_value` (strict typing — convert dynamic
-/// data before typed use). Shared by the user-function and std argument loops;
-/// `label` names the callee for the message. The expectation is a scalar for every
-/// std slot except `std::log::error` (the checker-only `Error` value); user
-/// parameters and constructor fields can carry any checked type.
+/// concrete parameter is a `check.untyped_value` (strict typing). Shared by the
+/// user-function and std argument loops; `label` names the callee for the message.
 pub(crate) fn check_one_arg(
     label: &str,
     parameter: &MarrowType,
@@ -3312,11 +3230,9 @@ pub(crate) fn check_one_arg(
 ) {
     match type_compatible(parameter, arg_type) {
         Some(true) => {}
-        // A known type the parameter does not accept — a different scalar, a foreign
-        // identity, a resource, a sequence, an enum, or an `Error` — is a real
-        // argument mismatch. Two same-named enums from different modules are
-        // qualified so the message distinguishes them.
         Some(false) => {
+            // `mismatch_display` qualifies two same-named enums from different
+            // modules so the message distinguishes them.
             let (expected, found) = mismatch_display(parameter, arg_type);
             diagnostics.push(call_diagnostic(
                 file,
@@ -3324,9 +3240,8 @@ pub(crate) fn check_one_arg(
                 format!("argument to `{label}` expects `{expected}`, but found `{found}`"),
             ));
         }
-        // The parameter places no constraint, or the argument is `unknown`. Only an
-        // `unknown` argument against a convertible parameter is reported, under
-        // strict typing: dynamic data must be converted before typed use.
+        // Strict typing: an untyped argument against a convertible parameter must be
+        // converted first.
         None if matches!(arg_type, MarrowType::Unknown) && expects_conversion(parameter) => {
             diagnostics.push(CheckDiagnostic {
                 code: CHECK_UNTYPED_VALUE,
@@ -3375,12 +3290,11 @@ pub(crate) fn check_args_against(
     }
 }
 
-/// Type `nextId(^root)` and gate it on a single-`int` saved root. A single-`int`
-/// root types to `Id(^root)`; any other identity shape reports
-/// `check.next_id_requires_single_int`. A non-`^root` or
-/// wrong-arity argument is left to the runtime (matching how other builtins
-/// behave), and an undeclared root is already reported elsewhere (a `^bogus` read
-/// has no schema), so neither is double-reported here.
+/// Type `nextId(^root)` and gate it on a single-`int` saved root, which types to
+/// `Id(^root)`; any other identity shape reports
+/// `check.next_id_requires_single_int`. A non-`^root` or wrong-arity argument is
+/// left to the runtime, and an undeclared root is reported elsewhere, so neither is
+/// double-reported here.
 pub(crate) fn check_next_id(
     program: &CheckedProgram,
     args: &[marrow_syntax::Argument],
@@ -3416,17 +3330,12 @@ pub(crate) fn check_next_id(
     MarrowType::Unknown
 }
 
-/// Type `next(<element>)` / `prev(<element>)`: the navigated neighbor's identity
-/// type. A primary keyed root `^root` or a single-key record `^root(id)` navigates
-/// among record identities, so the result is the owning store's `Id(^root)` — the
-/// type that makes `^root(next(^root(id))).field` check. A keyed child-layer
-/// position `^root(id…).layer(k)` or a bare child layer `^root(id…).layer`
-/// navigates among that layer's keys, so the result is the layer's single key type.
-/// A composite-identity record and an index branch are statically unsupported — the
-/// runtime would reject them with an uncatchable fault — so each is reported here as
-/// a clear compile error. Any other shape is left `Unknown`; the runtime reports an
-/// unsupported navigation, and a surrounding `??` still types the default. The edge
-/// fault (stepping off the first/last) stays a runtime, `??`-catchable concern.
+/// Type `next(<element>)` / `prev(<element>)`. A keyed root or single-key record
+/// navigates among record identities (result `Id(^root)`); a keyed or bare child
+/// layer navigates among that layer's keys (result the layer's key type). A
+/// composite-identity record and an index branch would fault uncatchably at
+/// runtime, so each is reported as a compile error. Any other shape is left
+/// `Unknown` for the runtime, where a surrounding `??` still types the default.
 pub(crate) fn check_neighbor(
     program: &CheckedProgram,
     which: &str,
@@ -3443,7 +3352,7 @@ pub(crate) fn check_neighbor(
     match &arg.value {
         // A bare primary keyed root `^root`: its first/last record is sought. A
         // composite identity has no single returned key value, so reject it before
-        // the runtime can degrade the identity to one component.
+        // the runtime degrades it to one component.
         Expression::SavedRoot { name: root, .. } => {
             if composite_identity(program, root) {
                 return neighbor_unsupported(
@@ -3457,8 +3366,8 @@ pub(crate) fn check_neighbor(
             record_identity_type(program, root)
         }
         Expression::Call { callee, .. } => match callee.as_ref() {
-            // `^root(id…)`: a keyed record. `next`/`prev` anchor at one key level, so
-            // a composite multi-key identity is out of scope — reject it statically.
+            // `^root(id…)`: a keyed record, anchoring at one key level, so a composite
+            // identity is out of scope.
             Expression::SavedRoot { name: root, .. } => {
                 if composite_identity(program, root) {
                     return neighbor_unsupported(
@@ -3531,9 +3440,8 @@ pub(crate) fn check_append(
     }
 }
 
-/// Whether the store at saved root `root` has a composite (multi-key) identity.
-/// `next`/`prev` over a record anchor at one key level, so a composite identity is
-/// out of scope. A non-keyed root or an unknown root is not composite.
+/// Whether the store at saved root `root` has a composite (multi-key) identity. A
+/// non-keyed root or an unknown root is not composite.
 pub(crate) fn composite_identity(program: &CheckedProgram, root: &str) -> bool {
     resolve_store_by_root(program, root).is_some_and(|store| store.store.identity_keys.len() > 1)
 }
