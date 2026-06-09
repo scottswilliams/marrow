@@ -36,7 +36,7 @@ A value the grammar cannot structure yields `None` plus a `parse.syntax` diagnos
 | `crates/marrow-syntax/src/lib.rs` | Crate root; re-exports the public surface and defines `parse_source` (lex, parse, merge+sort diagnostics). |
 | `crates/marrow-syntax/src/lexer.rs` | The lexer: line splitting, indentation, `INDENT`/`DEDENT`/`NEWLINE`, numbers/durations/strings/bytes/interpolation/punctuation, tab/operator rejection. |
 | `crates/marrow-syntax/src/token.rs` | `Token`/`TokenKind`/`Keyword`/`LexedSource`, the keyword table, `duration_unit_seconds`, lexical predicates (`is_identifier`, `is_type_text`, `tokens_in_range`). |
-| `crates/marrow-syntax/src/parse_decl.rs` | `DeclParser` and `StmtParser`: top-level framing plus all token-slice header/key/param/index/field helpers. |
+| `crates/marrow-syntax/src/parse_decl/` | The declaration and statement parsers, split by concern: `decl` (top-level dispatch and declaration bodies), `cursor` (shared `DeclParser` navigation and diagnostics), `members` (resource/store/enum member bodies), `evolve` (evolution steps), `head` and `params` (token-slice declaration heads), `stmt` (`StmtParser` and compound-statement framing), `statement_lines` (single-statement-line parsers), `tokens` (low-level token-slice helpers); `mod.rs` holds the shared types and re-exports `DeclParser`. |
 | `crates/marrow-syntax/src/parse_expr.rs` | `ExprParser`: single-expression recursive descent with the full precedence ladder. |
 | `crates/marrow-syntax/src/ast.rs` | The full AST: `ParsedSource`, `SourceFile`, every declaration/statement/expression node, comment trivia, `span()` accessors, `TypeRef`. |
 | `crates/marrow-syntax/src/diagnostic.rs` | `Diagnostic`, the typed reason tree, `Severity`, `SourceSpan`, the `Diagnose` trait, `kind_for_code`. |
@@ -54,7 +54,7 @@ A value the grammar cannot structure yields `None` plus a `parse.syntax` diagnos
 ## Read next
 
 - `crates/marrow-syntax/src/lib.rs` — `parse_source` (the whole pipeline in one function).
-- `crates/marrow-syntax/src/parse_decl.rs` — `DeclParser::dispatch_top_level`, `DeclParser::parse_function_body` (space-after gate, resource/store split, body byte-bounding).
+- `crates/marrow-syntax/src/parse_decl/decl.rs` — `DeclParser::dispatch_top_level`, `DeclParser::parse_function_body` (space-after gate, resource/store split, body byte-bounding).
 - `crates/marrow-syntax/src/parse_expr.rs` — `ExprParser::expression`, `ExprParser::primary_expr` (precedence ladder; pairs with `format.rs` `binary_precedence`).
 - `crates/marrow-syntax/src/lexer.rs` — `Lexer::lex`, `Lexer::apply_indent`, `Lexer::lex_interpolation` (text to layout tokens).
 - `crates/marrow-syntax/src/format.rs` — `format_source`, `format_block` (re-parse and lossless comment interleaving).
