@@ -1,11 +1,42 @@
 mod support;
 
-use support::{marrow_sub, temp_project, write};
+use support::{ParsedResult, marrow_sub, parse_result_line, temp_project, write};
+
+/// Parse the single fault line a failed run prints on stderr into its typed slots. The
+/// fault is the last non-empty stderr line; a leading `std::log` stream, if any,
+/// precedes it. The line's grammar (`file:line:col: code: message` located, `code:
+/// message` bare) is parsed by the shared [`parse_result_line`].
+fn parse_fault(stderr: &[u8]) -> ParsedResult {
+    let text = String::from_utf8(stderr.to_vec()).expect("stderr utf8");
+    let line = text
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .expect("a fault line");
+    parse_result_line(line)
+}
+
+/// The thrown user code an uncaught `throw Error(code: ...)` carries, read from the
+/// `[code]` payload bracket the `run.uncaught_error` message renders on the last
+/// non-empty stderr line. This payload shape is specific to `marrow run`, so it is read
+/// here rather than in the shared fault parser.
+fn thrown_code(stderr: &[u8]) -> Option<String> {
+    let text = String::from_utf8(stderr.to_vec()).expect("stderr utf8");
+    let line = text
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .expect("a fault line");
+    let open = line.find('[')?;
+    let close = line[open..].find(']')? + open;
+    Some(line[open + 1..close].to_string())
+}
 
 #[test]
-fn an_uncaught_throw_exits_one_with_the_thrown_code_on_stderr() {
-    // The headline runtime failure surface: a throw that propagates out of the
-    // entry surfaces as run.uncaught_error with the thrown dotted code embedded.
+fn an_uncaught_throw_surfaces_the_thrown_code() {
+    // The headline runtime failure surface: a throw that propagates out of the entry
+    // exits non-zero, wraps as `run.uncaught_error`, and carries the user's thrown
+    // dotted code in the message payload so an operator sees which error escaped.
     let root = temp_project("run-throw", |root| {
         write(
             root,
@@ -21,15 +52,16 @@ fn an_uncaught_throw_exits_one_with_the_thrown_code_on_stderr() {
     let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("book.absent"), "{stderr}");
+    let fault = parse_fault(&output.stderr);
+    assert_eq!(fault.code, "run.uncaught_error");
+    assert_eq!(thrown_code(&output.stderr).as_deref(), Some("book.absent"));
 }
 
 #[test]
-fn an_uncaught_unique_conflict_exits_one_with_its_write_code_on_stderr() {
-    // A managed-write fault that escapes the entry is fatal: it exits non-zero and
-    // its `write.unique_conflict` dotted code reaches stderr, even though the fault
-    // is also catchable from within the program.
+fn an_uncaught_unique_conflict_surfaces_its_write_code() {
+    // A managed-write fault that escapes the entry is fatal: it exits non-zero and its
+    // `write.unique_conflict` code surfaces, even though the fault is also catchable
+    // from within the program.
     let root = temp_project("run-conflict", |root| {
         write(
             root,
@@ -47,15 +79,14 @@ fn an_uncaught_unique_conflict_exits_one_with_its_write_code_on_stderr() {
     let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("write.unique_conflict"), "{stderr}");
+    assert_eq!(parse_fault(&output.stderr).code, "write.unique_conflict");
 }
 
 #[test]
-fn an_uncaught_fault_is_located_on_stderr() {
-    // A divide-by-zero that escapes the entry prints located on stderr —
-    // `file:line:col: code: message`, the same shape `check` and `test` use —
-    // not the bare `code: message` it printed before.
+fn an_uncaught_fault_is_located() {
+    // A divide-by-zero that escapes the entry surfaces located: it carries the
+    // originating file and line as structural fields, not the bare `code: message`
+    // it printed before.
     let root = temp_project("run-located", |root| {
         write(
             root,
@@ -71,20 +102,24 @@ fn an_uncaught_fault_is_located_on_stderr() {
     let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    let fault = parse_fault(&output.stderr);
+    assert_eq!(fault.code, "run.divide_by_zero");
+    // Located, not bare: the fault carries an origin file and line.
     assert!(
-        stderr.contains("src/app.mw:5:")
-            && stderr.contains("run.divide_by_zero:")
-            && !stderr.starts_with("run.divide_by_zero"),
-        "fault must be located at its file:line:col, got: {stderr}"
+        fault
+            .file
+            .as_deref()
+            .is_some_and(|f| f.ends_with("src/app.mw")),
+        "{:?}",
+        fault.file
     );
+    assert_eq!(fault.line, Some(5));
 }
 
 #[test]
 fn a_cross_module_fault_names_the_callee_file() {
-    // The entry in `app` calls into `lib`, which divides by zero. The located
-    // render must name `lib`'s file — the file the fault was raised in — not the
-    // entry's `app`.
+    // The entry in `app` calls into `lib`, which divides by zero. The located fault
+    // names `lib`'s file — the file the fault was raised in — not the entry's `app`.
     let root = temp_project("run-located-cross", |root| {
         write(
             root,
@@ -105,12 +140,12 @@ fn a_cross_module_fault_names_the_callee_file() {
     let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(
-        stderr.contains("src/lib.mw:5:") && !stderr.contains("src/app.mw"),
-        "a cross-module fault must name the callee's file, got: {stderr}"
-    );
-    assert!(stderr.contains("run.divide_by_zero:"), "{stderr}");
+    let fault = parse_fault(&output.stderr);
+    assert_eq!(fault.code, "run.divide_by_zero");
+    let file = fault.file.expect("a located cross-module fault");
+    assert!(file.ends_with("src/lib.mw"), "{file}");
+    assert!(!file.contains("src/app.mw"), "{file}");
+    assert_eq!(fault.line, Some(5));
 }
 
 #[test]
@@ -130,11 +165,17 @@ fn an_overflow_fault_is_located() {
     let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    let fault = parse_fault(&output.stderr);
+    assert_eq!(fault.code, "run.overflow");
     assert!(
-        stderr.contains("src/app.mw:5:") && stderr.contains("run.overflow:"),
-        "overflow must be located, got: {stderr}"
+        fault
+            .file
+            .as_deref()
+            .is_some_and(|f| f.ends_with("src/app.mw")),
+        "{:?}",
+        fault.file
     );
+    assert_eq!(fault.line, Some(5));
 }
 
 #[test]
@@ -155,11 +196,17 @@ fn an_absent_element_fault_is_located() {
     let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    let fault = parse_fault(&output.stderr);
+    assert_eq!(fault.code, "run.absent_element");
     assert!(
-        stderr.contains("src/app.mw:7:") && stderr.contains("run.absent_element:"),
-        "absent_element must be located, got: {stderr}"
+        fault
+            .file
+            .as_deref()
+            .is_some_and(|f| f.ends_with("src/app.mw")),
+        "{:?}",
+        fault.file
     );
+    assert_eq!(fault.line, Some(7));
 }
 
 #[test]
@@ -179,17 +226,24 @@ fn an_uncaught_throw_is_located() {
     let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    let fault = parse_fault(&output.stderr);
+    assert_eq!(fault.code, "run.uncaught_error");
     assert!(
-        stderr.contains("src/app.mw:3:") && stderr.contains("run.uncaught_error:"),
-        "an uncaught throw must be located, got: {stderr}"
+        fault
+            .file
+            .as_deref()
+            .is_some_and(|f| f.ends_with("src/app.mw")),
+        "{:?}",
+        fault.file
     );
+    assert_eq!(fault.line, Some(3));
 }
 
 #[test]
 fn a_fault_with_no_origin_keeps_the_bare_fallback() {
-    // A missing entry never reaches a project file, so its fault carries no
-    // origin and must keep the bare `code: message` form — no spurious `:0:0:`.
+    // A missing entry never reaches a project file, so its fault carries no origin and
+    // renders bare: the code leads the line with no location prefix and no spurious
+    // `:0:0:`.
     let root = temp_project("run-located-noorigin", |root| {
         write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
         write(
@@ -201,9 +255,9 @@ fn a_fault_with_no_origin_keeps_the_bare_fallback() {
     let output = marrow_sub("run", &["--entry", "app::nope", root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(
-        stderr.contains("run.unknown_function") && !stderr.contains(":0:0:"),
-        "a no-origin fault must stay bare, got: {stderr}"
-    );
+    let fault = parse_fault(&output.stderr);
+    assert_eq!(fault.code, "run.unknown_function");
+    // Bare: no origin file and no line, so nothing rendered a `:0:0:` location.
+    assert_eq!(fault.file, None);
+    assert_eq!(fault.line, None);
 }

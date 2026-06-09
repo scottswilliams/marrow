@@ -89,6 +89,89 @@ pub(crate) fn marrow_sub(cmd: &str, args: &[&str]) -> Output {
         .expect("run marrow subcommand")
 }
 
+/// Whether `token` reads as a diagnostic code: a dotted lowercase identifier with no
+/// spaces, so a path fragment or a prose word never parses as the code. This is the
+/// one oracle for "is this segment the dotted code" shared by every CLI surface that
+/// prints `... code: message` without a structured envelope.
+#[allow(dead_code)]
+pub(crate) fn is_code(token: &str) -> bool {
+    token.contains('.')
+        && !token.contains(' ')
+        && token
+            .chars()
+            .all(|character| character.is_ascii_lowercase() || character == '.' || character == '_')
+}
+
+/// Locate the dotted code among `": "`-delimited `segments`, returning its index and
+/// value. The code is the first segment that reads as a dotted code (see [`is_code`]);
+/// every segment before it is the location, and every segment after it is the message.
+/// This is the one position-finding contract shared by the located and bare fault
+/// grammars.
+#[allow(dead_code)]
+pub(crate) fn find_code_segment<'a>(segments: &[&'a str]) -> (usize, &'a str) {
+    let index = segments
+        .iter()
+        .position(|segment| is_code(segment))
+        .expect("a dotted code segment");
+    (index, segments[index])
+}
+
+/// Split a `file:line:col` location into its file path and 1-based line/column. The
+/// trailing two `:`-delimited fields are the numeric line and column; the rest, which
+/// may itself contain `:` on some paths, is the file. Callers that need only part of
+/// the result discard the fields they do not assert on.
+#[allow(dead_code)]
+pub(crate) fn parse_location(location: &str) -> (String, u32, u32) {
+    let mut fields = location.rsplitn(3, ':');
+    let column: u32 = fields
+        .next()
+        .expect("column field")
+        .parse()
+        .expect("column");
+    let line: u32 = fields.next().expect("line field").parse().expect("line");
+    let file = fields.next().expect("file field").to_string();
+    (file, line, column)
+}
+
+/// One CLI fault line parsed into its typed slots. `marrow run` and `marrow test`
+/// share one rendered grammar — `file:line:col: code: message` when located,
+/// `code: message` when bare — and neither has a structured envelope, so this is the
+/// single typed surface both read. A located fault carries `file` and `line`; a bare
+/// fault carries only the `code`. Domain-specific unpacking (a thrown-code bracket
+/// payload, a per-test outcome label) belongs in the calling test, not here.
+#[allow(dead_code)]
+pub(crate) struct ParsedResult {
+    pub(crate) file: Option<String>,
+    pub(crate) line: Option<u32>,
+    pub(crate) code: String,
+}
+
+/// Parse one rendered fault line into its typed slots. The code is the first
+/// `": "`-delimited segment that reads as a dotted code (see [`find_code_segment`]);
+/// everything before it is the `file:line:col` location, and a line whose code leads
+/// with no preceding segments is bare and carries no origin. This is the one grammar
+/// contract `marrow run` and `marrow test` share.
+#[allow(dead_code)]
+pub(crate) fn parse_result_line(line: &str) -> ParsedResult {
+    let segments: Vec<&str> = line.trim().split(": ").collect();
+    let (code_index, code) = find_code_segment(&segments);
+    let code = code.to_string();
+    if code_index == 0 {
+        return ParsedResult {
+            file: None,
+            line: None,
+            code,
+        };
+    }
+    let location = segments[..code_index].join(": ");
+    let (file, line, _column) = parse_location(&location);
+    ParsedResult {
+        file: Some(file),
+        line: Some(line),
+        code,
+    }
+}
+
 /// The canonical native-store config selecting `src` and a `.data` store, with
 /// no default entry. Tests that need a default entry write their own config.
 #[allow(dead_code)]
