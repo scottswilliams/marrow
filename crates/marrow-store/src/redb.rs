@@ -1,17 +1,14 @@
 //! Private native persistent ordered-byte engine, over [redb](https://docs.rs/redb).
 //!
-//! One redb table (`marrow`) maps encoded tree-cell or implementation-substrate
-//! keys to values. redb's `&[u8]` keys order byte-lexicographically, the same
-//! order as the in-memory `BTreeMap`, so range scans need no custom comparator.
+//! redb's `&[u8]` keys order byte-lexicographically, the same order as the
+//! in-memory `BTreeMap`, so range scans need no custom comparator.
 //!
-//! Transactions hold one redb write transaction for their whole life: every read
-//! and write inside the transaction goes through it, so reads see their own
-//! writes. Nesting is an undo journal, not redb savepoints (which cannot be
-//! created once a transaction has written): each level records the pre-image of
-//! every change, so an inner `rollback` replays its journal in reverse, an inner
-//! `commit` merges its journal outward, the outermost `commit` persists the redb
-//! transaction, and the outermost `rollback` aborts it. Outside a transaction
-//! each write is its own short, immediately durable redb transaction.
+//! A transaction holds one redb write transaction for its whole life, so reads
+//! inside it see their own writes. Nesting is an undo journal rather than redb
+//! savepoints (which cannot be created once a transaction has written): each
+//! level records pre-images, so an inner `rollback` replays its journal in
+//! reverse, an inner `commit` merges its journal outward, and only the outermost
+//! `commit`/`rollback` persists or aborts the redb transaction.
 
 use std::ops::Bound;
 use std::path::Path;
@@ -24,22 +21,19 @@ use redb::{
 use crate::backend::{Backend, ScanPage, StoreError};
 use crate::traversal;
 
-/// The single table holding every encoded key/value pair.
 const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("marrow");
 
-/// A small table holding store metadata, currently just the format version.
 const META: TableDefinition<&str, u32> = TableDefinition::new("marrow.meta");
 
 /// The on-disk format version this build writes and accepts. A file recording a
-/// different version is refused rather than misread (no auto-migration).
+/// different version is refused rather than misread; there is no auto-migration.
 const FORMAT_VERSION: u32 = 1;
 
 const DELETE_BATCH_LIMIT: usize = 256;
 
-/// One undone change: a key and the value it held before the change.
+/// A key and the value it held before a change, so a rollback can restore it.
 type Undo = (Vec<u8>, Option<Vec<u8>>);
 
-/// A redb-backed ordered-byte engine implementing the private [`Backend`] contract.
 pub(crate) struct RedbStore {
     db: DatabaseHandle,
     /// The live write transaction while one is open (`Some` iff `journals` is
@@ -52,7 +46,6 @@ pub(crate) struct RedbStore {
     read_view: Option<ReadTransaction>,
 }
 
-/// The redb handle is either writable or truly read-only at the storage layer.
 enum DatabaseHandle {
     ReadWrite(Database),
     ReadOnly(ReadOnlyDatabase),
@@ -81,11 +74,26 @@ impl DatabaseHandle {
     }
 }
 
-/// Map any redb error to a [`StoreError::Io`] naming the operation.
 fn io<E: std::fmt::Display>(op: &'static str) -> impl Fn(E) -> StoreError {
     move |error| StoreError::Io {
         op,
         message: error.to_string(),
+    }
+}
+
+/// Classify the version recorded in a store's meta table. A missing version is
+/// corruption: a store this build wrote always stamps one, and an unstamped file
+/// is foreign, not a fresh store (callers stamp fresh stores before this check).
+fn check_format_version(recorded: Option<u32>) -> Result<(), StoreError> {
+    match recorded {
+        Some(FORMAT_VERSION) => Ok(()),
+        Some(found) => Err(StoreError::FormatVersion {
+            found,
+            supported: FORMAT_VERSION,
+        }),
+        None => Err(StoreError::Corruption {
+            message: "store is missing its format version".into(),
+        }),
     }
 }
 
@@ -112,15 +120,8 @@ fn streamed_scan<T>(table: &T, prefix: &[u8], limit: usize) -> Result<ScanPage, 
 where
     T: ReadableTable<&'static [u8], &'static [u8]>,
 {
-    let mut scan = traversal::ScanAccumulator::new(prefix, limit);
-    for entry in table.range::<&[u8]>(prefix..).map_err(io("scan"))? {
-        let (key, value) = entry.map_err(io("scan"))?;
-        match scan.step(key.value(), value.value()) {
-            traversal::ScanStep::Done => break,
-            traversal::ScanStep::Continue => {}
-        }
-    }
-    Ok(scan.into_page())
+    let range = table.range::<&[u8]>(prefix..).map_err(io("scan"))?;
+    accumulate_scan(range, prefix, limit, "scan")
 }
 
 fn streamed_scan_after<T>(
@@ -132,12 +133,29 @@ fn streamed_scan_after<T>(
 where
     T: ReadableTable<&'static [u8], &'static [u8]>,
 {
-    let mut scan = traversal::ScanAccumulator::new(prefix, limit);
     let range = table
         .range::<&[u8]>((Bound::Excluded(cursor), Bound::Unbounded))
         .map_err(io("scan_after"))?;
+    accumulate_scan(range, prefix, limit, "scan_after")
+}
+
+fn accumulate_scan<'a, R>(
+    range: R,
+    prefix: &[u8],
+    limit: usize,
+    op: &'static str,
+) -> Result<ScanPage, StoreError>
+where
+    R: Iterator<
+        Item = redb::Result<(
+            redb::AccessGuard<'a, &'static [u8]>,
+            redb::AccessGuard<'a, &'static [u8]>,
+        )>,
+    >,
+{
+    let mut scan = traversal::ScanAccumulator::new(prefix, limit);
     for entry in range {
-        let (key, value) = entry.map_err(io("scan_after"))?;
+        let (key, value) = entry.map_err(io(op))?;
         match scan.step(key.value(), value.value()) {
             traversal::ScanStep::Done => break,
             traversal::ScanStep::Continue => {}
@@ -146,10 +164,10 @@ where
     Ok(scan.into_page())
 }
 
-/// Run a read `$body` over the current view's table: the open transaction's
-/// table (so a transaction reads its own writes), or a fresh read transaction
-/// otherwise. A macro, not a `&dyn` helper, because redb's `ReadableTable` is not
-/// object-safe — the body is monomorphized for each table type instead.
+/// Run a read `$body` over the current read view: the open write transaction's
+/// table, the pinned snapshot, or a fresh read transaction. A macro rather than a
+/// `&dyn` helper because redb's `ReadableTable` is not object-safe, so the body is
+/// monomorphized per table type.
 macro_rules! read_view {
     ($self:expr, $op:expr, |$table:ident| $body:expr) => {
         match (&$self.txn, &$self.read_view) {
@@ -175,9 +193,8 @@ macro_rules! read_view {
 
 impl RedbStore {
     /// Open the redb-backed store at `path`, creating the file if needed. A
-    /// second writer for the same file is rejected as [`StoreError::Locked`]
-    /// (redb holds an OS lock), and a file recording a different
-    /// [`FORMAT_VERSION`] is rejected as [`StoreError::FormatVersion`].
+    /// second writer is rejected as [`StoreError::Locked`], and a file recording
+    /// a different [`FORMAT_VERSION`] as [`StoreError::FormatVersion`].
     pub(crate) fn open(path: &Path) -> Result<Self, StoreError> {
         let db = Database::create(path).map_err(|error| match error {
             redb::DatabaseError::DatabaseAlreadyOpen => StoreError::Locked {
@@ -189,38 +206,25 @@ impl RedbStore {
             },
         })?;
         let write = db.begin_write().map_err(io("open"))?;
-        // `Database::create` also opens an existing file, so a brand-new database
-        // must be told apart from one that already has tables. A fresh database has
-        // none; stamp the version only then. A non-empty file with no meta is a
-        // foreign or meta-less store, rejected as corruption (matching
-        // `open_read_only`) rather than silently adopted and written into.
+        // `Database::create` opens existing files too, so a brand-new database
+        // (no tables) is told apart from one that already has them: stamp the
+        // version only when fresh, and reject a non-empty file with no meta as
+        // corruption rather than adopting a foreign store.
         let is_new = write.list_tables().map_err(io("open"))?.next().is_none();
+        // Verify or stamp format version before creating data table.
         {
-            // Check or stamp the format version before touching data. Read the
-            // value into an owned `Option<u32>` first so the access guard drops
-            // before the `insert` below.
+            // Read the recorded version into an owned `Option` so the access guard
+            // drops before the `insert` below.
             let mut meta = write.open_table(META).map_err(io("open"))?;
             let recorded = meta
                 .get("format_version")
                 .map_err(io("open"))?
                 .map(|guard| guard.value());
-            match recorded {
-                Some(found) if found != FORMAT_VERSION => {
-                    return Err(StoreError::FormatVersion {
-                        found,
-                        supported: FORMAT_VERSION,
-                    });
-                }
-                Some(_) => {}
-                None if is_new => {
-                    meta.insert("format_version", FORMAT_VERSION)
-                        .map_err(io("open"))?;
-                }
-                None => {
-                    return Err(StoreError::Corruption {
-                        message: "store is missing its format version".into(),
-                    });
-                }
+            if recorded.is_none() && is_new {
+                meta.insert("format_version", FORMAT_VERSION)
+                    .map_err(io("open"))?;
+            } else {
+                check_format_version(recorded)?;
             }
         }
         // Create the data table now so later reads never meet a missing table.
@@ -234,11 +238,10 @@ impl RedbStore {
         })
     }
 
-    /// Open an existing store for read-only inspection. Unlike [`open`](Self::open)
-    /// it never creates the file — a missing path is an error — and it only
-    /// verifies the recorded [`FORMAT_VERSION`] rather than stamping it. The
-    /// returned store uses redb's read-only handle, and Marrow's write-capability
-    /// operations fail before starting any write transaction.
+    /// Open an existing store read-only. Unlike [`open`](Self::open) it never
+    /// creates the file and only verifies the recorded [`FORMAT_VERSION`] rather
+    /// than stamping it; write-capability operations fail before any write
+    /// transaction begins.
     pub(crate) fn open_read_only(path: &Path) -> Result<Self, StoreError> {
         let db = ReadOnlyDatabase::open(path).map_err(|error| match error {
             redb::DatabaseError::DatabaseAlreadyOpen => StoreError::Locked {
@@ -250,36 +253,18 @@ impl RedbStore {
             },
         })?;
         {
-            // Verify (never stamp) the format version through a read transaction. A
-            // file with no meta table is not a Marrow store, not a fresh one.
+            // A file with no meta table is not a Marrow store; it cannot be a
+            // fresh one because read-only never creates.
             let read = db.begin_read().map_err(io("open"))?;
-            let meta = match read.open_table(META) {
-                Ok(meta) => meta,
-                Err(redb::TableError::TableDoesNotExist(_)) => {
-                    return Err(StoreError::Corruption {
-                        message: "store is missing its format version".into(),
-                    });
-                }
+            let recorded = match read.open_table(META) {
+                Ok(meta) => meta
+                    .get("format_version")
+                    .map_err(io("open"))?
+                    .map(|guard| guard.value()),
+                Err(redb::TableError::TableDoesNotExist(_)) => None,
                 Err(other) => return Err(io("open")(other)),
             };
-            let recorded = meta
-                .get("format_version")
-                .map_err(io("open"))?
-                .map(|guard| guard.value());
-            match recorded {
-                Some(found) if found != FORMAT_VERSION => {
-                    return Err(StoreError::FormatVersion {
-                        found,
-                        supported: FORMAT_VERSION,
-                    });
-                }
-                Some(_) => {}
-                None => {
-                    return Err(StoreError::Corruption {
-                        message: "store is missing its format version".into(),
-                    });
-                }
-            }
+            check_format_version(recorded)?;
         }
         Ok(Self {
             db: DatabaseHandle::ReadOnly(db),
@@ -289,8 +274,6 @@ impl RedbStore {
         })
     }
 
-    /// Record `entry` in the innermost open journal, so a later `rollback` can
-    /// undo the change it describes.
     fn record(&mut self, entry: Undo) {
         self.journals
             .last_mut()
@@ -298,9 +281,8 @@ impl RedbStore {
             .push(entry);
     }
 
-    /// The shared write prologue: a write-capability operation needs a writable
-    /// handle and no pinned read snapshot. `on_snapshot` names the operation in the
-    /// snapshot-conflict error.
+    /// Require a writable handle and no pinned read snapshot. `on_snapshot` names
+    /// the snapshot-conflict error for this operation.
     fn ensure_writable(
         &self,
         op: &'static str,
@@ -313,11 +295,10 @@ impl RedbStore {
         Ok(())
     }
 
-    /// Run `mutate` against the current write table and journal the preimages it
-    /// reports. Outside a transaction the mutation is its own short, immediately
-    /// durable redb transaction (the preimages are discarded); inside one it runs
-    /// through the open transaction and each preimage joins the innermost journal so
-    /// a later rollback can undo it.
+    /// Run `mutate` against the current write table. Outside a transaction it is
+    /// its own short, immediately durable redb transaction and the reported
+    /// preimages are discarded; inside one they join the innermost journal for
+    /// rollback.
     fn mutate(
         &mut self,
         op: &'static str,
@@ -354,8 +335,6 @@ impl Backend for RedbStore {
     fn write(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
         self.ensure_writable("write", StoreError::write_while_snapshot_pinned)?;
         self.mutate("write", |table| {
-            // The value `insert` returns is the prior value, journaled so a rollback
-            // can restore it.
             let old = table
                 .insert(key, value.as_slice())
                 .map_err(io("write"))?
@@ -367,8 +346,8 @@ impl Backend for RedbStore {
     fn delete(&mut self, prefix: &[u8]) -> Result<(), StoreError> {
         self.ensure_writable("delete", StoreError::delete_while_snapshot_pinned)?;
         self.mutate("delete", |table| {
-            // Remove the prefix in bounded key batches, collecting each removed
-            // preimage so a rollback can restore it.
+            // Collect and remove keys in bounded batches so a large prefix subtree
+            // never materializes every key at once.
             let mut undo = Vec::new();
             loop {
                 let keys = delete_key_batch(&*table, prefix)?;
@@ -412,16 +391,14 @@ impl Backend for RedbStore {
     }
 
     fn commit(&mut self) -> Result<(), StoreError> {
-        // With no open transaction, commit is a no-op (the in-memory store agrees):
-        // callers pair begin with commit, so a stray commit is a harmless misuse.
+        // No open transaction is a harmless no-op, matching the in-memory store.
         let Some(journal) = self.journals.pop() else {
             return Ok(());
         };
+        // An inner commit keeps its writes but moves its undo log outward, so an
+        // outer rollback still undoes them; the outermost commit persists redb.
         match self.journals.last_mut() {
-            // An inner commit keeps its writes; its undo log moves outward so an
-            // outer rollback still undoes them.
             Some(outer) => outer.extend(journal),
-            // The outermost commit persists the whole redb transaction.
             None => {
                 let write = self.txn.take().expect("a transaction while committing");
                 write.commit().map_err(io("commit"))?;
@@ -431,19 +408,17 @@ impl Backend for RedbStore {
     }
 
     fn rollback(&mut self) -> Result<(), StoreError> {
-        // With no open transaction, rollback is a no-op (matching the in-memory
-        // store), so an unbalanced rollback is harmless rather than a store.io error.
+        // No open transaction is a harmless no-op, matching the in-memory store.
         let Some(journal) = self.journals.pop() else {
             return Ok(());
         };
         if self.journals.is_empty() {
-            // Outermost: abort the redb transaction, discarding every change.
             let write = self.txn.take().expect("a transaction while rolling back");
             write.abort().map_err(io("rollback"))?;
             return Ok(());
         }
-        // Inner: undo this level's changes in reverse, against the open
-        // transaction, leaving the outer levels in place.
+        // Undo this level in reverse against the open transaction, leaving outer
+        // levels in place.
         let write = self.txn.as_ref().expect("a transaction while rolling back");
         let mut table = write.open_table(TABLE).map_err(io("rollback"))?;
         for (key, old) in journal.into_iter().rev() {
@@ -468,8 +443,7 @@ impl Backend for RedbStore {
         if self.read_view.is_some() {
             return Err(StoreError::snapshot_already_pinned());
         }
-        // A read transaction is a stable version, unaffected by later writes. It
-        // works on read-only and writable handles alike.
+        // A redb read transaction is a stable version unaffected by later writes.
         self.read_view = Some(self.db.begin_read("snapshot")?);
         Ok(())
     }
