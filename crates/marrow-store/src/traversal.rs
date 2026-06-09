@@ -2,13 +2,6 @@
 
 use crate::backend::{ScanPage, StoreError};
 
-pub(crate) trait Entries<'a>:
-    Iterator<Item = Result<(&'a [u8], &'a [u8]), StoreError>>
-{
-}
-
-impl<'a, I> Entries<'a> for I where I: Iterator<Item = Result<(&'a [u8], &'a [u8]), StoreError>> {}
-
 pub(crate) enum ScanStep {
     Done,
     Continue,
@@ -47,7 +40,7 @@ impl<'a> ScanAccumulator<'a> {
 }
 
 pub(crate) fn scan<'a>(
-    entries: impl Entries<'a>,
+    entries: impl Iterator<Item = Result<(&'a [u8], &'a [u8]), StoreError>>,
     prefix: &[u8],
     limit: usize,
 ) -> Result<ScanPage, StoreError> {

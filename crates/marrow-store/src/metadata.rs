@@ -232,10 +232,13 @@ impl<'a> MetadataCursor<'a> {
         self.bytes.is_empty()
     }
 
+    fn take_array<const N: usize>(&mut self) -> Result<[u8; N], StoreError> {
+        let bytes = self.take(N)?;
+        bytes.try_into().map_err(|_| corrupt_metadata(bytes))
+    }
+
     fn take_u64(&mut self) -> Result<u64, StoreError> {
-        let bytes = self.take(8)?;
-        let raw: [u8; 8] = bytes.try_into().map_err(|_| corrupt_metadata(bytes))?;
-        Ok(u64::from_be_bytes(raw))
+        Ok(u64::from_be_bytes(self.take_array()?))
     }
 
     fn take_bytes(&mut self) -> Result<&'a [u8], StoreError> {
@@ -265,11 +268,7 @@ impl<'a> MetadataCursor<'a> {
         if len > self.bytes.len() / MIN_ENCODED_CATALOG_ID_BYTES {
             return Err(corrupt_metadata(self.bytes));
         }
-        let mut ids = Vec::new();
-        for _ in 0..len {
-            ids.push(self.take_catalog_id()?);
-        }
-        Ok(ids)
+        (0..len).map(|_| self.take_catalog_id()).collect()
     }
 
     fn take_retire_counts(&mut self) -> Result<Vec<(CatalogId, u64)>, StoreError> {
@@ -277,11 +276,9 @@ impl<'a> MetadataCursor<'a> {
         if len > self.bytes.len() / (MIN_ENCODED_CATALOG_ID_BYTES + 8) {
             return Err(corrupt_metadata(self.bytes));
         }
-        let mut counts = Vec::new();
-        for _ in 0..len {
-            counts.push((self.take_catalog_id()?, self.take_u64()?));
-        }
-        Ok(counts)
+        (0..len)
+            .map(|_| Ok((self.take_catalog_id()?, self.take_u64()?)))
+            .collect()
     }
 
     fn take_default_counts(&mut self) -> Result<Vec<ActivationDefaultRecordCount>, StoreError> {
@@ -289,22 +286,20 @@ impl<'a> MetadataCursor<'a> {
         if len > self.bytes.len() / (MIN_ENCODED_CATALOG_ID_BYTES + 16 + MIN_LENGTH_PREFIX_BYTES) {
             return Err(corrupt_metadata(self.bytes));
         }
-        let mut counts = Vec::new();
-        for _ in 0..len {
-            counts.push(ActivationDefaultRecordCount {
-                catalog_id: self.take_catalog_id()?,
-                records_backfilled: self.take_u64()?,
-                target_records: self.take_u64()?,
-                evidence_digest: self.take_string()?,
-            });
-        }
-        Ok(counts)
+        (0..len)
+            .map(|_| {
+                Ok(ActivationDefaultRecordCount {
+                    catalog_id: self.take_catalog_id()?,
+                    records_backfilled: self.take_u64()?,
+                    target_records: self.take_u64()?,
+                    evidence_digest: self.take_string()?,
+                })
+            })
+            .collect()
     }
 
     fn take_u32(&mut self) -> Result<u32, StoreError> {
-        let bytes = self.take(4)?;
-        let raw: [u8; 4] = bytes.try_into().map_err(|_| corrupt_metadata(bytes))?;
-        Ok(u32::from_be_bytes(raw))
+        Ok(u32::from_be_bytes(self.take_array()?))
     }
 
     fn take(&mut self, len: usize) -> Result<&'a [u8], StoreError> {

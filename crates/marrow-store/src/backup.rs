@@ -133,15 +133,12 @@ impl std::fmt::Display for TreeBackupCellReadError {
 
 impl std::error::Error for TreeBackupCellReadError {}
 
-/// Name the conversion-to-[`MalformedCell`] mapping once, for the `try_into`,
-/// UTF-8, catalog-id, and key-decode failures a framed cell can carry.
 fn malformed<E>(_: E) -> TreeBackupCellReadError {
     TreeBackupCellReadError::MalformedCell
 }
 
-/// Decode a raw physical key into its typed data-cell target and check the value
-/// against that target, mapping any failure to [`StoreError::Corruption`]. The
-/// single owner of the from-store backup-cell decode-and-validate step.
+/// Single owner of the from-store decode-and-validate step: failures here mean
+/// the persisted bytes are corrupt, not merely an early end of a backup stream.
 fn decode_and_validate(key: &[u8], value: &[u8]) -> Result<DataCellKey, StoreError> {
     let target = decode_data_cell_key(key).ok_or_else(|| StoreError::Corruption {
         message: "backup cell key is not a well-formed data cell".into(),
@@ -185,30 +182,10 @@ fn encode_target_frame(target: &DataCellKey) -> Vec<u8> {
 
 fn decode_target_frame(bytes: &[u8]) -> Result<DataCellKey, TreeBackupCellReadError> {
     let mut frame = FrameCursor::new(bytes);
-    let version = frame.read_u8()?;
-    if version != TARGET_VERSION_V0 {
+    if frame.read_u8()? != TARGET_VERSION_V0 {
         return Err(TreeBackupCellReadError::MalformedCell);
     }
-    let kind_tag = frame.read_u8()?;
-    let kind = match kind_tag {
-        KIND_NODE => DataCellKind::Node,
-        KIND_LEAF => DataCellKind::Leaf {
-            member: frame.read_catalog_id()?,
-        },
-        KIND_SEQUENCE => {
-            let member = frame.read_catalog_id()?;
-            let position = SequencePosition::new(frame.read_u64()?);
-            DataCellKind::Sequence { member, position }
-        }
-        KIND_VALUE => {
-            let path = frame.read_path()?;
-            if path.is_empty() {
-                return Err(TreeBackupCellReadError::MalformedCell);
-            }
-            DataCellKind::Value { path }
-        }
-        _ => return Err(TreeBackupCellReadError::MalformedCell),
-    };
+    let kind = decode_kind(&mut frame)?;
     let store = frame.read_catalog_id()?;
     let identity = frame.read_keys()?;
     if !frame.is_empty() {
@@ -219,6 +196,27 @@ fn decode_target_frame(bytes: &[u8]) -> Result<DataCellKey, TreeBackupCellReadEr
         identity,
         kind,
     })
+}
+
+fn decode_kind(frame: &mut FrameCursor) -> Result<DataCellKind, TreeBackupCellReadError> {
+    match frame.read_u8()? {
+        KIND_NODE => Ok(DataCellKind::Node),
+        KIND_LEAF => Ok(DataCellKind::Leaf {
+            member: frame.read_catalog_id()?,
+        }),
+        KIND_SEQUENCE => Ok(DataCellKind::Sequence {
+            member: frame.read_catalog_id()?,
+            position: SequencePosition::new(frame.read_u64()?),
+        }),
+        KIND_VALUE => {
+            let path = frame.read_path()?;
+            if path.is_empty() {
+                return Err(TreeBackupCellReadError::MalformedCell);
+            }
+            Ok(DataCellKind::Value { path })
+        }
+        _ => Err(TreeBackupCellReadError::MalformedCell),
+    }
 }
 
 fn encode_catalog_id(id: &CatalogId, out: &mut Vec<u8>) {
@@ -274,14 +272,16 @@ impl<'a> FrameCursor<'a> {
         Ok(*byte)
     }
 
+    fn read_array<const N: usize>(&mut self) -> Result<[u8; N], TreeBackupCellReadError> {
+        self.take(N)?.try_into().map_err(malformed)
+    }
+
     fn read_u32(&mut self) -> Result<u32, TreeBackupCellReadError> {
-        let bytes = self.take(4)?;
-        Ok(u32::from_be_bytes(bytes.try_into().map_err(malformed)?))
+        Ok(u32::from_be_bytes(self.read_array()?))
     }
 
     fn read_u64(&mut self) -> Result<u64, TreeBackupCellReadError> {
-        let bytes = self.take(8)?;
-        Ok(u64::from_be_bytes(bytes.try_into().map_err(malformed)?))
+        Ok(u64::from_be_bytes(self.read_array()?))
     }
 
     fn read_chunk(&mut self) -> Result<&'a [u8], TreeBackupCellReadError> {
@@ -306,24 +306,18 @@ impl<'a> FrameCursor<'a> {
 
     fn read_keys(&mut self) -> Result<Vec<SavedKey>, TreeBackupCellReadError> {
         let len = self.read_bounded_count(MIN_KEY_FRAME_BYTES)?;
-        let mut keys = Vec::new();
-        for _ in 0..len {
-            keys.push(self.read_key()?);
-        }
-        Ok(keys)
+        (0..len).map(|_| self.read_key()).collect()
     }
 
     fn read_path(&mut self) -> Result<Vec<DataPathSegment>, TreeBackupCellReadError> {
         let len = self.read_bounded_count(MIN_PATH_SEGMENT_FRAME_BYTES)?;
-        let mut path = Vec::new();
-        for _ in 0..len {
-            match self.read_u8()? {
-                SEGMENT_MEMBER => path.push(DataPathSegment::Member(self.read_catalog_id()?)),
-                SEGMENT_KEY => path.push(DataPathSegment::Key(self.read_key()?)),
-                _ => return Err(TreeBackupCellReadError::MalformedCell),
-            }
-        }
-        Ok(path)
+        (0..len)
+            .map(|_| match self.read_u8()? {
+                SEGMENT_MEMBER => Ok(DataPathSegment::Member(self.read_catalog_id()?)),
+                SEGMENT_KEY => Ok(DataPathSegment::Key(self.read_key()?)),
+                _ => Err(TreeBackupCellReadError::MalformedCell),
+            })
+            .collect()
     }
 
     fn read_bounded_count(
