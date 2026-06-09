@@ -25,7 +25,13 @@ The shape is three stages. **Intents** turn each `evolve` block step into a type
 | --- | --- |
 | `crates/marrow-check/src/evolution/mod.rs` | Module root: declares submodules, re-exports the public surface, hosts resume-verification helpers `default_value_for_bound_member` and `rebind_activation_resume_program`. |
 | `crates/marrow-check/src/evolution/intents.rs` | Intent extraction and evolve-body type checking: collects rename/retire/default/transform intents, maps target spellings to catalog paths, type-checks defaults and transform bodies, enforces transform read restrictions and purity. |
-| `crates/marrow-check/src/evolution/discharge.rs` | The classifier: streams the store read-only, produces per-obligation verdicts, counts, partitioned changed catalog ids, and fail-closed diagnostics. Owns the record scan, leaf presence/decodability/retype/enum-shrink checks, index collision probing, and the default-deny backstop. |
+| `crates/marrow-check/src/evolution/discharge/mod.rs` | The discharge root: the `discharge` driver that orders the families, the `Accumulator` that collects verdicts/counts/changed-id partitions/diagnostics and resolves defaults, `RepairDiagnostic`, and the shared id/label helpers. |
+| `crates/marrow-check/src/evolution/discharge/leaf_obligations.rs` | The per-record presence scan: `discharge_root` and the keyed-layer scan, the leaf-obligation walkers, and `classify_leaf`/`classify_member_leaf` — the per-leaf verdict (retype-vs-populated, required/optional/renamed, default fill, enum validity). |
+| `crates/marrow-check/src/evolution/discharge/index.rs` | Unique-index probing: builds the per-record key-tuple plan, accumulates collisions streaming, and classifies each index to a derived rebuild or a fail-closed repair (collision or unprobeable). |
+| `crates/marrow-check/src/evolution/discharge/transforms.rs` | Discharges `evolve transform` targets: excludes the target from the presence scan and proves every read member decodes, else fails the target closed. |
+| `crates/marrow-check/src/evolution/discharge/structural_backstop.rs` | The default-deny backstop: fails closed any populated member whose identity-aware structural signature diverged and that no targeted classifier claimed. |
+| `crates/marrow-check/src/evolution/discharge/enum_shrink.rs` | Selectable enum members (current and accepted), shrunk-enum detection, and the stored-value validity check `leaf_value_valid`. |
+| `crates/marrow-check/src/evolution/discharge/accepted_state.rs` | Reads the accepted catalog baselines (changed ids, renamed members, accepted leaf tokens/structs/key shapes) and the store-key-shape re-key backstop. |
 | `crates/marrow-check/src/evolution/discharge/absent_source.rs` | Classifies accepted catalog entries current source no longer declares: retire over data, dropped index, dependency-free dropped member, member an index still reads, nested retire. |
 | `crates/marrow-check/src/evolution/witness.rs` | The read-only witness types: `Verdict`, `RepairReason`, `DefaultValue`, `ObligationVerdict`, `CatalogFingerprint`, `DischargeCounts`, `EvolutionWitness`, plus `is_activatable`. Prose-free data. |
 | `crates/marrow-check/src/evolution/const_default.rs` | Single interpreter of an evolve default literal: evaluates a constant scalar expression to an encoded `DefaultValue` or a typed `RejectedDefault`. |
@@ -38,7 +44,7 @@ The evolution module root is `mod.rs`; there is no top-level `evolution.rs`.
 ## Read next
 
 - `crates/marrow-check/src/evolution/witness.rs` → `Verdict`, `RepairReason`, `is_activatable` — the cross-crate vocabulary; read this first.
-- `crates/marrow-check/src/evolution/discharge.rs` → `discharge` — top-level ordering: store-key-shape skip, per-root scan, `absent_source` classification, transform discharge, structural backstop.
-- `crates/marrow-check/src/evolution/discharge.rs` → `classify_leaf` / `classify_member_leaf` — the per-leaf decision tree (retype-vs-populated, required/optional/renamed, default fill, enum validity).
+- `crates/marrow-check/src/evolution/discharge/mod.rs` → `discharge` — top-level ordering: store-key-shape skip, per-root scan, `absent_source` classification, transform discharge, structural backstop.
+- `crates/marrow-check/src/evolution/discharge/leaf_obligations.rs` → `classify_leaf` / `classify_member_leaf` — the per-leaf decision tree (retype-vs-populated, required/optional/renamed, default fill, enum validity).
 - `crates/marrow-check/src/evolution/preview.rs` → `preview` — how verdicts plus fingerprints become the witness apply consumes.
 - `crates/marrow-check/src/evolution/intents.rs` → `check_evolve_types`, `impurity_reason` — the check-time gate that decides which intents reach discharge.
