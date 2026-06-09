@@ -9,6 +9,15 @@
 
 use crate::Type;
 
+/// The `code` field name, the required dotted error identifier every `Error`
+/// carries. The single owner of this spelling; the runtime builds and reads the
+/// field through it so the descriptor below and the value layout cannot drift.
+pub const CODE: &str = "code";
+
+/// The `message` field name, the required human-readable text every `Error`
+/// carries. Owned here alongside [`CODE`] for the same reason.
+pub const MESSAGE: &str = "message";
+
 /// One field of the builtin `Error` shape: its name, its declared type, and
 /// whether a constructed `Error` must supply it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,12 +32,12 @@ pub struct ErrorField {
 /// `data` is an open `unknown` payload the checker does not constrain.
 const FIELDS: &[ErrorField] = &[
     ErrorField {
-        name: "code",
+        name: CODE,
         ty: Type::Scalar(crate::ScalarType::Str),
         required: true,
     },
     ErrorField {
-        name: "message",
+        name: MESSAGE,
         ty: Type::Scalar(crate::ScalarType::Str),
         required: true,
     },

@@ -271,7 +271,10 @@ fn civil_from_days(days: i64) -> (i32, u32, u32) {
 }
 
 const NANOS_PER_SEC: i128 = 1_000_000_000;
-const NANOS_PER_DAY: i128 = 86_400 * NANOS_PER_SEC;
+
+/// Nanoseconds in a 24-hour day, the date<->nanos conversion factor. Owned here
+/// alongside the date/instant codecs; the runtime imports it for the same model.
+pub const NANOS_PER_DAY: i128 = 86_400 * NANOS_PER_SEC;
 
 /// Appends the canonical sub-second fraction of `nanos_fraction` (in `[0, 10^9)`):
 /// nothing when zero, else `.` and the nine-digit fraction with trailing zeros

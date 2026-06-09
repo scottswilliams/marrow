@@ -1,6 +1,7 @@
 //! Runtime handlers for host-backed stdlib capabilities.
 
 use marrow_check::CheckedArg as ExecArg;
+use marrow_store::value::NANOS_PER_DAY;
 use marrow_syntax::SourceSpan;
 
 use crate::env::Env;
@@ -11,8 +12,6 @@ use crate::error::{
 use crate::expr::eval_expr;
 use crate::stdlib::eval_text;
 use crate::value::Value;
-
-const NANOS_PER_DAY: i128 = 86_400_000_000_000;
 
 fn no_capability(capability: &str, module: &str, op: &str, span: SourceSpan) -> RuntimeError {
     RuntimeError::fault(
@@ -103,9 +102,9 @@ pub(crate) fn eval_log(
         ("warn", [Value::Str(message)]) => format!("WARN {message}\n"),
         ("info" | "warn", [_]) => return Err(type_error("expected a string message", span)),
         ("error", [value]) => {
-            let code = error_field(value, "code")
+            let code = error_field(value, marrow_schema::error::CODE)
                 .ok_or_else(|| type_error("`std::log::error` expects an Error", span))?;
-            let message = error_field(value, "message").unwrap_or_default();
+            let message = error_field(value, marrow_schema::error::MESSAGE).unwrap_or_default();
             format!("ERROR [{code}] {message}\n")
         }
         ("info" | "warn" | "error", _) => return Err(std_arity("log", op, span)),

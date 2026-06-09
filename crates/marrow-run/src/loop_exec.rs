@@ -8,6 +8,7 @@ use marrow_check::{
     CheckedForBinding as ForBinding,
 };
 use marrow_store::Decimal;
+use marrow_store::value::NANOS_PER_DAY;
 use marrow_syntax::SourceSpan;
 
 use crate::collection::{Direction, durable_collection_value, values_or_entries};
@@ -243,8 +244,6 @@ fn loop_step_flow(step: LoopStep) -> Result<ControlFlow<Flow>, RuntimeError> {
         LoopStep::Propagate(flow) => ControlFlow::Break(flow),
     })
 }
-
-const NANOS_PER_DAY: i128 = 86_400 * 1_000_000_000;
 
 enum RangeIter {
     Integer {

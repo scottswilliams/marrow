@@ -144,8 +144,8 @@ pub const RUN_TRAVERSAL: &str = "run.traversal";
 /// `message`; a malformed one renders blank, which the constructor and the throw
 /// guard make unreachable in practice.
 pub(crate) fn raise(error: Value, span: SourceSpan, origin: Option<FileId>) -> RuntimeError {
-    let code = error_field(&error, "code").unwrap_or_default();
-    let message = error_field(&error, "message").unwrap_or_default();
+    let code = error_field(&error, marrow_schema::error::CODE).unwrap_or_default();
+    let message = error_field(&error, marrow_schema::error::MESSAGE).unwrap_or_default();
     RuntimeError {
         code: RUN_UNCAUGHT_THROW,
         message: format!("uncaught error [{code}]: {message}"),
@@ -216,7 +216,7 @@ pub(crate) fn reraise_fault(
 ) -> RuntimeError {
     RuntimeError {
         code,
-        message: error_field(&error, "message").unwrap_or_default(),
+        message: error_field(&error, marrow_schema::error::MESSAGE).unwrap_or_default(),
         span,
         throw: Some(Box::new(error)),
         // Kept from the completion so the file the fault was raised in survives
@@ -246,8 +246,14 @@ pub(crate) fn raise_fault(code: &'static str, message: String, span: SourceSpan)
 /// that order. The single owner of the runtime's Error-value layout.
 fn error_resource(code: &str, message: &str) -> Value {
     Value::Resource(vec![
-        ("code".to_string(), Value::Str(code.to_string())),
-        ("message".to_string(), Value::Str(message.to_string())),
+        (
+            marrow_schema::error::CODE.to_string(),
+            Value::Str(code.to_string()),
+        ),
+        (
+            marrow_schema::error::MESSAGE.to_string(),
+            Value::Str(message.to_string()),
+        ),
     ])
 }
 
