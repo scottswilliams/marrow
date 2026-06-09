@@ -1057,7 +1057,7 @@ pub(crate) fn build_alias_map(
     import_paths
         .iter()
         .map(|path| {
-            let short = path.rsplit("::").next().unwrap_or(path).to_string();
+            let short = short_name(path).to_string();
             (short, split_type_path(path))
         })
         .collect()
@@ -1066,6 +1066,11 @@ pub(crate) fn build_alias_map(
 /// Split a `::`-separated type or name path into its owned segments.
 pub(crate) fn split_type_path(path: &str) -> Vec<String> {
     path.split("::").map(str::to_string).collect()
+}
+
+/// The unqualified last segment of a `::`-separated path (`shelf::books` → `books`).
+fn short_name(path: &str) -> &str {
+    path.rsplit("::").next().unwrap_or(path)
 }
 
 /// Expand a call/name's leading segment through the file's import aliases, applied
@@ -1175,7 +1180,7 @@ fn check_duplicate_declarations(
     // A `use shelf::books` introduces the short name `books`.
     let mut introduced: Vec<(&str, SourceSpan, NameKind)> = Vec::new();
     for use_decl in &source.uses {
-        let short = use_decl.name.rsplit("::").next().unwrap_or(&use_decl.name);
+        let short = short_name(&use_decl.name);
         introduced.push((short, use_decl.span, NameKind::Import));
     }
     for declaration in &source.declarations {

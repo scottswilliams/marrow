@@ -112,7 +112,7 @@ pub(super) fn saved_place(
     root: &str,
     members: &[String],
 ) -> Option<SavedPlaceEffect> {
-    let store = facts.stores().iter().find(|store| store.root == root)?;
+    let store = facts.store_by_root(root)?;
     let member_names: Vec<&str> = members.iter().map(String::as_str).collect();
     Some(SavedPlaceEffect {
         resource: store.resource,
@@ -184,11 +184,7 @@ fn store_index_place(
     root: &str,
     index_name: &str,
 ) -> Option<StoreIndexId> {
-    let store = program
-        .facts
-        .stores()
-        .iter()
-        .find(|store| store.root == root)?;
+    let store = program.facts.store_by_root(root)?;
     program
         .facts
         .store_indexes()

@@ -145,6 +145,10 @@ impl CheckedFacts {
         &self.stores[id.0 as usize]
     }
 
+    pub fn store_by_root(&self, root: &str) -> Option<&StoreFact> {
+        self.stores.iter().find(|store| store.root == root)
+    }
+
     pub fn store_indexes(&self) -> &[StoreIndexFact] {
         &self.store_indexes
     }
