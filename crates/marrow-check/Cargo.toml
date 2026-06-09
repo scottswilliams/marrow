@@ -23,3 +23,6 @@ marrow-store = { path = "../marrow-store" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+marrow-check = { path = ".", features = ["test-support"] }
