@@ -1359,7 +1359,7 @@ impl<'a> DeclParser<'a> {
         let (members, indexes, comments) = self.parse_resource_members(true);
         for member in members {
             self.error_span(
-                resource_member_span(&member),
+                member.span(),
                 ParseDiagnosticReason::ResourceMemberInStoreBody,
                 "store bodies accept only index declarations",
             );
@@ -1445,91 +1445,123 @@ impl<'a> DeclParser<'a> {
                     // error points at the content after the indentation.
                     let span = self.header_span();
                     let err = self.content_span();
-                    if matches!(kind, TokenKind::Keyword(Keyword::Index)) {
-                        let member_docs = self.take_docs_for_current_item(&mut docs, &mut comments);
-                        let header = self.take_header_line();
-                        match parse_index_tokens(self.source, &header[1..]) {
-                            Ok(index) => {
-                                if allow_indexes {
-                                    indexes.push(IndexDecl {
-                                        docs: member_docs,
-                                        span,
-                                        ..index
-                                    });
-                                } else {
-                                    self.error_span(
-                                        err,
-                                        ParseDiagnosticReason::IndexOutsideStoreBody,
-                                        "index declarations belong in a store body",
-                                    );
-                                }
-                            }
-                            Err(error) => self.error_span(err, error.reason, error.message),
-                        }
-                        continue;
-                    }
                     let member_docs = self.take_docs_for_current_item(&mut docs, &mut comments);
                     let header = self.take_header_line();
-                    match parse_field_or_group_tokens(self.source, &header) {
-                        Ok(MemberHead::Field {
-                            required,
-                            name,
-                            keys,
-                            ty,
-                        }) => {
-                            if !is_type_text(&ty.text) {
-                                self.error_span(
-                                    err,
-                                    ParseDiagnosticReason::Expected(ExpectedSyntax::FieldType),
-                                    "expected field type annotation",
-                                );
-                            }
-                            members.push(ResourceMember::Field(FieldDecl {
-                                docs: member_docs,
-                                required,
-                                name,
-                                keys,
-                                ty,
-                                span,
-                            }));
+                    if matches!(kind, TokenKind::Keyword(Keyword::Index)) {
+                        if let Some(index) =
+                            self.parse_index_member(allow_indexes, span, err, member_docs, &header)
+                        {
+                            indexes.push(index);
                         }
-                        Ok(MemberHead::Group { name, keys }) => {
-                            let (children, child_indexes, child_comments) =
-                                if matches!(self.peek(), Some(TokenKind::Indent)) {
-                                    self.parse_resource_members(false)
-                                } else {
-                                    self.error_span(
-                                        err,
-                                        ParseDiagnosticReason::Expected(
-                                            ExpectedSyntax::ResourceBody,
-                                        ),
-                                        "expected an indented resource group body",
-                                    );
-                                    (Vec::new(), Vec::new(), Vec::new())
-                                };
-                            for index in child_indexes {
-                                self.error_span(
-                                    index.span,
-                                    ParseDiagnosticReason::IndexOutsideStoreBody,
-                                    "index declarations belong in a store body",
-                                );
-                            }
-                            members.push(ResourceMember::Group(GroupDecl {
-                                docs: member_docs,
-                                name,
-                                keys,
-                                members: children,
-                                comments: child_comments,
-                                span,
-                            }));
-                        }
-                        Err(error) => self.error_span(err, error.reason, error.message),
+                    } else if let Some(member) =
+                        self.parse_field_or_group_member(span, err, member_docs, &header)
+                    {
+                        members.push(member);
                     }
                 }
             }
         }
         self.flush_docs_as_comments(&mut docs, &mut comments);
         (members, indexes, comments)
+    }
+
+    /// Parse one `index` line in a resource or store body. Returns the index only
+    /// when indexes are allowed here and the line parses; otherwise it reports the
+    /// relevant diagnostic and yields nothing.
+    fn parse_index_member(
+        &mut self,
+        allow_indexes: bool,
+        span: SourceSpan,
+        err: SourceSpan,
+        docs: Vec<String>,
+        header: &[Token],
+    ) -> Option<IndexDecl> {
+        match parse_index_tokens(self.source, &header[1..]) {
+            Ok(index) if allow_indexes => Some(IndexDecl {
+                docs,
+                span,
+                ..index
+            }),
+            Ok(_) => {
+                self.error_span(
+                    err,
+                    ParseDiagnosticReason::IndexOutsideStoreBody,
+                    "index declarations belong in a store body",
+                );
+                None
+            }
+            Err(error) => {
+                self.error_span(err, error.reason, error.message);
+                None
+            }
+        }
+    }
+
+    /// Parse one field or group header line and, for a group, its nested member
+    /// block. Returns the member, or `None` when the header does not parse.
+    fn parse_field_or_group_member(
+        &mut self,
+        span: SourceSpan,
+        err: SourceSpan,
+        docs: Vec<String>,
+        header: &[Token],
+    ) -> Option<ResourceMember> {
+        match parse_field_or_group_tokens(self.source, header) {
+            Ok(MemberHead::Field {
+                required,
+                name,
+                keys,
+                ty,
+            }) => {
+                if !is_type_text(&ty.text) {
+                    self.error_span(
+                        err,
+                        ParseDiagnosticReason::Expected(ExpectedSyntax::FieldType),
+                        "expected field type annotation",
+                    );
+                }
+                Some(ResourceMember::Field(FieldDecl {
+                    docs,
+                    required,
+                    name,
+                    keys,
+                    ty,
+                    span,
+                }))
+            }
+            Ok(MemberHead::Group { name, keys }) => {
+                let (children, child_indexes, child_comments) =
+                    if matches!(self.peek(), Some(TokenKind::Indent)) {
+                        self.parse_resource_members(false)
+                    } else {
+                        self.error_span(
+                            err,
+                            ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceBody),
+                            "expected an indented resource group body",
+                        );
+                        (Vec::new(), Vec::new(), Vec::new())
+                    };
+                for index in child_indexes {
+                    self.error_span(
+                        index.span,
+                        ParseDiagnosticReason::IndexOutsideStoreBody,
+                        "index declarations belong in a store body",
+                    );
+                }
+                Some(ResourceMember::Group(GroupDecl {
+                    docs,
+                    name,
+                    keys,
+                    members: children,
+                    comments: child_comments,
+                    span,
+                }))
+            }
+            Err(error) => {
+                self.error_span(err, error.reason, error.message);
+                None
+            }
+        }
     }
 
     fn parse_enum(&mut self, docs: Vec<String>) -> EnumDecl {
@@ -2178,13 +2210,6 @@ fn parse_store_head(source: &str, tokens: &[Token]) -> ParseResult<(SavedRoot, S
         }
     };
     Ok((SavedRoot { root, keys }, resource))
-}
-
-fn resource_member_span(member: &ResourceMember) -> SourceSpan {
-    match member {
-        ResourceMember::Field(field) => field.span,
-        ResourceMember::Group(group) => group.span,
-    }
 }
 
 /// Parse a parenthesized `(name: type, ...)` key parameter list spanning the

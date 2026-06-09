@@ -330,6 +330,15 @@ pub enum ResourceMember {
     Group(GroupDecl),
 }
 
+impl ResourceMember {
+    pub fn span(&self) -> SourceSpan {
+        match self {
+            ResourceMember::Field(field) => field.span,
+            ResourceMember::Group(group) => group.span,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldDecl {
     pub docs: Vec<String>,

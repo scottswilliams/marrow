@@ -268,12 +268,9 @@ fn format_enum_member(member: &EnumMember, level: usize) -> String {
 fn format_resource_body(members: &[ResourceMember], comments: &[Comment], level: usize) -> String {
     format_body(
         comments,
-        members.iter().map(|member| {
-            (
-                resource_member_span(member),
-                format_resource_member(member, level),
-            )
-        }),
+        members
+            .iter()
+            .map(|member| (member.span(), format_resource_member(member, level))),
     )
 }
 
@@ -321,13 +318,6 @@ fn format_body(
 struct FormattedBodyLine {
     span: crate::SourceSpan,
     text: String,
-}
-
-fn resource_member_span(member: &ResourceMember) -> crate::SourceSpan {
-    match member {
-        ResourceMember::Field(field) => field.span,
-        ResourceMember::Group(group) => group.span,
-    }
 }
 
 fn format_resource_member(member: &ResourceMember, level: usize) -> String {
