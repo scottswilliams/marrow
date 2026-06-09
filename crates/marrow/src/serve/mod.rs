@@ -402,6 +402,22 @@ fn serve_connection_within(
     };
     let stale = marrow_check::tooling::store_is_newer_than_program(&metadata);
     let session = protocol::ProtocolSession::new(stale);
+    handle_requests(reader, writer, program, store, &session, limit)?;
+    drop(snapshot);
+    Ok(())
+}
+
+/// Read newline-delimited request lines and reply to each, until the client hangs up
+/// (clean EOF). The pinned snapshot and session live in the caller, which holds the
+/// snapshot for the whole loop so every read observes one coherent store version.
+fn handle_requests(
+    reader: &mut impl BufRead,
+    writer: &mut impl Write,
+    program: &CheckedProgram,
+    store: &TreeStore,
+    session: &protocol::ProtocolSession,
+    limit: u64,
+) -> io::Result<()> {
     loop {
         let line = match read_line_bounded_within(reader, limit)? {
             Line::Eof => break,
@@ -422,7 +438,6 @@ fn serve_connection_within(
         };
         write_reply(writer, &reply)?;
     }
-    drop(snapshot);
     Ok(())
 }
 

@@ -122,11 +122,7 @@ fn check_one_file_project(
     // A library file (`module a::b`) must sit at `a/b.mw`; a module-less script
     // is path-free, so any `.mw` name under the root works.
     let relative = module_relative_path(module);
-    let target = root.join(&relative);
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| (parent.to_path_buf(), error))?;
-    }
-    std::fs::write(&target, source).map_err(|error| (target.clone(), error))?;
+    write_scratch_file(&root.join(&relative), source)?;
 
     let config = marrow_project::ProjectConfig {
         source_roots: vec![".".to_string()],
@@ -146,6 +142,16 @@ fn check_one_file_project(
         diagnostic.file = real.clone();
     }
     Ok(report)
+}
+
+/// Write the single file into its synthesized project, creating any parent
+/// directories its module path implies. Each I/O fault is reported against the path
+/// that failed so a scratch-write error names the directory or file it could not create.
+fn write_scratch_file(target: &Path, source: &str) -> Result<(), (PathBuf, std::io::Error)> {
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| (parent.to_path_buf(), error))?;
+    }
+    std::fs::write(target, source).map_err(|error| (target.to_path_buf(), error))
 }
 
 /// The source-root-relative path a single file is written to inside its

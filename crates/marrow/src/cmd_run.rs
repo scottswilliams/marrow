@@ -391,25 +391,34 @@ fn populated_unstamped_store(
     }
     for module in &program.modules {
         for saved in &module.stores {
-            let Some(place) = marrow_check::checked_saved_root_place(
-                program,
-                &saved.root,
-                marrow_syntax::SourceSpan::default(),
-            ) else {
-                continue;
-            };
-            let Some(raw_store_id) = place.store_catalog_id else {
-                continue;
-            };
-            let Ok(store_id) = marrow_store::cell::CatalogId::new(raw_store_id) else {
-                continue;
-            };
-            if store.record_child_count(&store_id, &[])? > 0 {
+            if saved_root_holds_records(program, store, &saved.root)? {
                 return Ok(true);
             }
         }
     }
     Ok(false)
+}
+
+/// Whether one saved root holds any record in `store`. A root that does not resolve to a
+/// checked place, carries no store catalog id, or whose id does not parse cannot anchor
+/// stored records, so it holds none.
+fn saved_root_holds_records(
+    program: &marrow_check::CheckedProgram,
+    store: &marrow_store::tree::TreeStore,
+    root: &str,
+) -> Result<bool, marrow_store::StoreError> {
+    let Some(place) =
+        marrow_check::checked_saved_root_place(program, root, marrow_syntax::SourceSpan::default())
+    else {
+        return Ok(false);
+    };
+    let Some(raw_store_id) = place.store_catalog_id else {
+        return Ok(false);
+    };
+    let Ok(store_id) = marrow_store::cell::CatalogId::new(raw_store_id) else {
+        return Ok(false);
+    };
+    Ok(store.record_child_count(&store_id, &[])? > 0)
 }
 
 /// The host capabilities a run and a test share: the real system clock, environment,
