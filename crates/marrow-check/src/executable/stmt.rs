@@ -419,7 +419,7 @@ fn infer_match_enum(
 }
 
 fn resolves_resource_type(program: &CheckedProgram, from_module: &str, name: &str) -> bool {
-    let segments: Vec<String> = name.split("::").map(str::to_string).collect();
+    let segments = crate::split_type_path(name);
     matches!(
         resolve(program, from_module, &segments, ResolvableKind::Resource),
         Resolution::Found(Def {
