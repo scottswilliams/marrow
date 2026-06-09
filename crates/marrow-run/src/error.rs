@@ -232,10 +232,7 @@ pub(crate) fn reraise_fault(
 /// the fault's own dotted code rather than `RUN_UNCAUGHT_THROW`, so an
 /// uncaught fault surfaces with the same code it did before it became catchable.
 pub(crate) fn raise_fault(code: &'static str, message: String, span: SourceSpan) -> RuntimeError {
-    let error = Value::Resource(vec![
-        ("code".to_string(), Value::Str(code.to_string())),
-        ("message".to_string(), Value::Str(message.clone())),
-    ]);
+    let error = error_resource(code, &message);
     RuntimeError {
         code,
         message,
@@ -243,6 +240,15 @@ pub(crate) fn raise_fault(code: &'static str, message: String, span: SourceSpan)
         throw: Some(Box::new(error)),
         origin: None,
     }
+}
+
+/// The catchable `Error` resource shape: a `code` field and a `message` field, in
+/// that order. The single owner of the runtime's Error-value layout.
+fn error_resource(code: &str, message: &str) -> Value {
+    Value::Resource(vec![
+        ("code".to_string(), Value::Str(code.to_string())),
+        ("message".to_string(), Value::Str(message.to_string())),
+    ])
 }
 
 /// The type error for a value that cannot be converted to `name`.
@@ -260,13 +266,7 @@ pub(crate) fn std_arity(module: &str, op: &str, span: SourceSpan) -> RuntimeErro
 
 /// Build a catchable `Error` value (code + message) for a failed `std::io` call.
 pub(crate) fn io_error(code: &str, op: &str, path: &str, error: &std::io::Error) -> Value {
-    Value::Resource(vec![
-        ("code".to_string(), Value::Str(code.to_string())),
-        (
-            "message".to_string(),
-            Value::Str(format!("std::io::{op} failed for `{path}`: {error}")),
-        ),
-    ])
+    error_resource(code, &format!("std::io::{op} failed for `{path}`: {error}"))
 }
 
 /// The string value of an `Error` resource's named field (`code`/`message`), or

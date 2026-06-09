@@ -12,7 +12,7 @@ use crate::stdlib::{
     eval_bytes_arg, eval_date_arg, eval_decimal_arg, eval_duration_arg, eval_instant_arg,
     eval_text, int_modulo, int_remainder,
 };
-use crate::value::{Value, canonical_scalar_text};
+use crate::value::{Value, canonical_scalar_text, saved_value_to_value};
 
 pub(crate) fn eval_std(
     module: &str,
@@ -166,127 +166,66 @@ fn eval_clock_std(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
+    let unary = || -> Result<&ExecArg, RuntimeError> {
+        match args {
+            [value] => Ok(value),
+            _ => Err(std_arity("clock", op, span)),
+        }
+    };
     match op {
-        "formatInstant" => format_clock_instant(args, op, span, env),
-        "parseInstant" => parse_clock_instant(args, op, span, env),
-        "formatDate" => format_clock_date(args, op, span, env),
-        "parseDate" => parse_clock_date(args, op, span, env),
-        "formatDuration" => format_clock_duration(args, op, span, env),
-        "parseDuration" => parse_clock_duration(args, op, span, env),
-        "add" => add_clock_duration(args, op, span, env),
+        "formatInstant" => format_scalar(
+            SavedValue::Instant(eval_instant_arg(unary()?, env, span)?),
+            span,
+        ),
+        "parseInstant" => parse_clock(
+            &eval_text(unary()?, env, span)?,
+            ScalarType::Instant,
+            "parseInstant: invalid instant text",
+            span,
+        ),
+        "formatDate" => format_scalar(SavedValue::Date(eval_date_arg(unary()?, env, span)?), span),
+        "parseDate" => parse_clock(
+            &eval_text(unary()?, env, span)?,
+            ScalarType::Date,
+            "parseDate: invalid date text",
+            span,
+        ),
+        "formatDuration" => format_scalar(
+            SavedValue::Duration(eval_duration_arg(unary()?, env, span)?),
+            span,
+        ),
+        "parseDuration" => parse_clock(
+            &eval_text(unary()?, env, span)?,
+            ScalarType::Duration,
+            "parseDuration: invalid duration text",
+            span,
+        ),
+        "add" => {
+            let [instant, span_arg] = args else {
+                return Err(std_arity("clock", op, span));
+            };
+            let nanos = eval_instant_arg(instant, env, span)?;
+            let offset = eval_duration_arg(span_arg, env, span)?;
+            nanos
+                .checked_add(offset)
+                .map(Value::Instant)
+                .ok_or_else(|| overflow(span))
+        }
         other => Err(unsupported(&format!("std::clock::{other}"), span)),
     }
 }
 
-fn clock_unary_arg<'a>(
-    args: &'a [ExecArg],
-    op: &str,
+/// Decode canonical temporal text back to its runtime value, faulting on text the
+/// codec rejects for that scalar type.
+fn parse_clock(
+    text: &str,
+    ty: ScalarType,
+    invalid_message: &str,
     span: SourceSpan,
-) -> Result<&'a ExecArg, RuntimeError> {
-    let [value] = args else {
-        return Err(std_arity("clock", op, span));
-    };
-    Ok(value)
-}
-
-fn format_clock_instant(
-    args: &[ExecArg],
-    op: &str,
-    span: SourceSpan,
-    env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    format_scalar(
-        SavedValue::Instant(eval_instant_arg(
-            clock_unary_arg(args, op, span)?,
-            env,
-            span,
-        )?),
-        span,
-    )
-}
-
-fn parse_clock_instant(
-    args: &[ExecArg],
-    op: &str,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Value, RuntimeError> {
-    let text = eval_text(clock_unary_arg(args, op, span)?, env, span)?;
-    match decode_value(text.as_bytes(), ScalarType::Instant) {
-        Some(SavedValue::Instant(nanos)) => Ok(Value::Instant(nanos)),
-        _ => Err(type_error("parseInstant: invalid instant text", span)),
-    }
-}
-
-fn format_clock_date(
-    args: &[ExecArg],
-    op: &str,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Value, RuntimeError> {
-    format_scalar(
-        SavedValue::Date(eval_date_arg(clock_unary_arg(args, op, span)?, env, span)?),
-        span,
-    )
-}
-
-fn parse_clock_date(
-    args: &[ExecArg],
-    op: &str,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Value, RuntimeError> {
-    let text = eval_text(clock_unary_arg(args, op, span)?, env, span)?;
-    match decode_value(text.as_bytes(), ScalarType::Date) {
-        Some(SavedValue::Date(days)) => Ok(Value::Date(days)),
-        _ => Err(type_error("parseDate: invalid date text", span)),
-    }
-}
-
-fn format_clock_duration(
-    args: &[ExecArg],
-    op: &str,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Value, RuntimeError> {
-    format_scalar(
-        SavedValue::Duration(eval_duration_arg(
-            clock_unary_arg(args, op, span)?,
-            env,
-            span,
-        )?),
-        span,
-    )
-}
-
-fn parse_clock_duration(
-    args: &[ExecArg],
-    op: &str,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Value, RuntimeError> {
-    let text = eval_text(clock_unary_arg(args, op, span)?, env, span)?;
-    match decode_value(text.as_bytes(), ScalarType::Duration) {
-        Some(SavedValue::Duration(nanos)) => Ok(Value::Duration(nanos)),
-        _ => Err(type_error("parseDuration: invalid duration text", span)),
-    }
-}
-
-fn add_clock_duration(
-    args: &[ExecArg],
-    op: &str,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Value, RuntimeError> {
-    let [instant, span_arg] = args else {
-        return Err(std_arity("clock", op, span));
-    };
-    let nanos = eval_instant_arg(instant, env, span)?;
-    let offset = eval_duration_arg(span_arg, env, span)?;
-    nanos
-        .checked_add(offset)
-        .map(Value::Instant)
-        .ok_or_else(|| overflow(span))
+    decode_value(text.as_bytes(), ty)
+        .map(saved_value_to_value)
+        .ok_or_else(|| type_error(invalid_message, span))
 }
 
 fn format_scalar(value: SavedValue, span: SourceSpan) -> Result<Value, RuntimeError> {

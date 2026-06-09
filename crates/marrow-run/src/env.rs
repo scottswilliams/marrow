@@ -174,8 +174,7 @@ pub(crate) struct Env<'p> {
     /// then moved back after nested activations return.
     pub(crate) hook: Option<&'p mut dyn StepHook>,
     /// This activation's call depth: 1 for the entry function, one more per
-    /// nested call. A debugger uses it to express step-over and step-out by
-    /// comparing depths across statements.
+    /// nested call.
     pub(crate) depth: usize,
 }
 
@@ -212,7 +211,17 @@ impl<'p> Env<'p> {
         affected: &TraversedLayer,
         span: SourceSpan,
     ) -> Result<(), RuntimeError> {
-        if self.traversed_layers.iter().any(|layer| layer == affected) {
+        self.guard_against_traversed_layer(span, |layer| layer == affected)
+    }
+
+    /// Fault if any actively traversed layer matches `conflicts`. A write that
+    /// changes a layer a loop is mid-traversal over would corrupt the iteration.
+    fn guard_against_traversed_layer(
+        &self,
+        span: SourceSpan,
+        conflicts: impl Fn(&TraversedLayer) -> bool,
+    ) -> Result<(), RuntimeError> {
+        if self.traversed_layers.iter().any(conflicts) {
             return Err(traversal_fault(span));
         }
         Ok(())
@@ -249,9 +258,8 @@ impl<'p> Env<'p> {
         let mut plan = plan.map_err(|error| write_fault(error, span))?;
         self.guard_plan_traversal(&plan, span)?;
         self.guard_generated_index_mutations(&plan, span)?;
-        // Offer each staged operation to an installed write observer before it
-        // lands, in commit order. An ordinary run has no hook, so this is a single
-        // `is_some` check; only an opt-in debugger pays the per-step iteration.
+        // Offer each staged operation to an installed write observer in commit
+        // order; an ordinary run has no hook and pays only this `is_some` check.
         if let Some(hook) = self.hook.as_deref_mut() {
             for (op, target, value) in plan.steps() {
                 hook.before_write(op, &target, value, self.depth);
@@ -603,27 +611,21 @@ impl<'p> Env<'p> {
         address: &DataAddress,
         span: SourceSpan,
     ) -> Result<(), RuntimeError> {
-        for layer in &self.traversed_layers {
-            match layer {
-                TraversedLayer::Record { store }
-                    if store == &address.store && !address.identity.is_empty() =>
-                {
-                    return Err(traversal_fault(span));
-                }
-                TraversedLayer::Data {
-                    store,
-                    identity,
-                    path,
-                } if store == &address.store
-                    && identity == &address.identity
-                    && data_child_under(path, &address.path).is_some() =>
-                {
-                    return Err(traversal_fault(span));
-                }
-                _ => {}
+        self.guard_against_traversed_layer(span, |layer| match layer {
+            TraversedLayer::Record { store } => {
+                store == &address.store && !address.identity.is_empty()
             }
-        }
-        Ok(())
+            TraversedLayer::Data {
+                store,
+                identity,
+                path,
+            } => {
+                store == &address.store
+                    && identity == &address.identity
+                    && data_child_under(path, &address.path).is_some()
+            }
+            TraversedLayer::Index { .. } => false,
+        })
     }
 
     fn guard_record_subtree_delete(
@@ -631,20 +633,13 @@ impl<'p> Env<'p> {
         address: &DataAddress,
         span: SourceSpan,
     ) -> Result<(), RuntimeError> {
-        for layer in &self.traversed_layers {
-            match layer {
-                TraversedLayer::Record { store } if store == &address.store => {
-                    return Err(traversal_fault(span));
-                }
-                TraversedLayer::Data {
-                    store, identity, ..
-                } if store == &address.store && identity.starts_with(&address.identity) => {
-                    return Err(traversal_fault(span));
-                }
-                _ => {}
-            }
-        }
-        Ok(())
+        self.guard_against_traversed_layer(span, |layer| match layer {
+            TraversedLayer::Record { store } => store == &address.store,
+            TraversedLayer::Data {
+                store, identity, ..
+            } => store == &address.store && identity.starts_with(&address.identity),
+            TraversedLayer::Index { .. } => false,
+        })
     }
 
     fn guard_index_mutation(
@@ -652,15 +647,10 @@ impl<'p> Env<'p> {
         address: &IndexAddress,
         span: SourceSpan,
     ) -> Result<(), RuntimeError> {
-        for layer in &self.traversed_layers {
-            if let TraversedLayer::Index { index, keys } = layer
-                && index == &address.index
-                && address.keys.starts_with(keys)
-            {
-                return Err(traversal_fault(span));
-            }
-        }
-        Ok(())
+        self.guard_against_traversed_layer(span, |layer| {
+            matches!(layer, TraversedLayer::Index { index, keys }
+                if index == &address.index && address.keys.starts_with(keys))
+        })
     }
 
     fn guard_index_subtree_delete(
@@ -668,15 +658,10 @@ impl<'p> Env<'p> {
         address: &IndexAddress,
         span: SourceSpan,
     ) -> Result<(), RuntimeError> {
-        for layer in &self.traversed_layers {
-            if let TraversedLayer::Index { index, keys } = layer
-                && index == &address.index
-                && keys.starts_with(&address.keys)
-            {
-                return Err(traversal_fault(span));
-            }
-        }
-        Ok(())
+        self.guard_against_traversed_layer(span, |layer| {
+            matches!(layer, TraversedLayer::Index { index, keys }
+                if index == &address.index && keys.starts_with(&address.keys))
+        })
     }
 
     fn record_exists(&self, address: &DataAddress, span: SourceSpan) -> Result<bool, RuntimeError> {
@@ -825,22 +810,16 @@ fn pending_commit_metadata_at_depth(
     transaction: &mut TransactionState,
     depth: usize,
 ) -> &mut PendingCommitMetadata {
-    if let Some(index) = transaction
-        .pending_commit_metadata
-        .iter()
-        .position(|pending| pending.depth == depth)
-    {
-        return &mut transaction.pending_commit_metadata[index];
+    let pending = &mut transaction.pending_commit_metadata;
+    if let Some(index) = pending.iter().position(|entry| entry.depth == depth) {
+        return &mut pending[index];
     }
-    transaction
-        .pending_commit_metadata
-        .push(PendingCommitMetadata {
-            depth,
-            root_catalog_ids: BTreeSet::new(),
-            index_catalog_ids: BTreeSet::new(),
-        });
-    transaction
-        .pending_commit_metadata
+    pending.push(PendingCommitMetadata {
+        depth,
+        root_catalog_ids: BTreeSet::new(),
+        index_catalog_ids: BTreeSet::new(),
+    });
+    pending
         .last_mut()
         .expect("pending metadata was just inserted")
 }

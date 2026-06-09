@@ -14,6 +14,14 @@ use crate::value::Value;
 
 const NANOS_PER_DAY: i128 = 86_400_000_000_000;
 
+fn no_capability(capability: &str, module: &str, op: &str, span: SourceSpan) -> RuntimeError {
+    RuntimeError::fault(
+        RUN_CAPABILITY,
+        format!("this run provides no {capability} capability for `std::{module}::{op}`"),
+        span,
+    )
+}
+
 pub(crate) fn eval_clock_capability(
     op: &str,
     args: &[ExecArg],
@@ -26,13 +34,10 @@ pub(crate) fn eval_clock_capability(
             span,
         ));
     }
-    let nanos = env.host.clock.ok_or_else(|| RuntimeError {
-        throw: None,
-        origin: None,
-        code: RUN_CAPABILITY,
-        message: format!("this run provides no clock capability for `std::clock::{op}`"),
-        span,
-    })?;
+    let nanos = env
+        .host
+        .clock
+        .ok_or_else(|| no_capability("clock", "clock", op, span))?;
     match op {
         "now" => Ok(Value::Instant(nanos)),
         "today" => Ok(Value::Date(nanos.div_euclid(NANOS_PER_DAY) as i32)),
@@ -50,13 +55,11 @@ pub(crate) fn eval_env(
         .iter()
         .map(|arg| eval_text(arg, env, span))
         .collect::<Result<_, _>>()?;
-    let variables = env.host.environment.as_ref().ok_or_else(|| RuntimeError {
-        throw: None,
-        origin: None,
-        code: RUN_CAPABILITY,
-        message: format!("this run provides no environment capability for `std::env::{op}`"),
-        span,
-    })?;
+    let variables = env
+        .host
+        .environment
+        .as_ref()
+        .ok_or_else(|| no_capability("environment", "env", op, span))?;
     match (op, names.as_slice()) {
         ("exists", [name]) => Ok(Value::Bool(variables.contains_key(name))),
         ("get", [name, default]) => Ok(Value::Str(
@@ -90,13 +93,11 @@ pub(crate) fn eval_log(
         .iter()
         .map(|arg| eval_expr(&arg.value, env))
         .collect::<Result<_, _>>()?;
-    let sink = env.host.log.as_ref().ok_or_else(|| RuntimeError {
-        throw: None,
-        origin: None,
-        code: RUN_CAPABILITY,
-        message: format!("this run provides no log capability for `std::log::{op}`"),
-        span,
-    })?;
+    let sink = env
+        .host
+        .log
+        .as_ref()
+        .ok_or_else(|| no_capability("log", "log", op, span))?;
     let line = match (op, values.as_slice()) {
         ("info", [Value::Str(message)]) => format!("INFO {message}\n"),
         ("warn", [Value::Str(message)]) => format!("WARN {message}\n"),
@@ -128,20 +129,6 @@ enum IoOp<'a> {
 }
 
 impl IoOp<'_> {
-    fn is_write(&self) -> bool {
-        matches!(self, IoOp::Write(_))
-    }
-
-    /// The catchable error code a failed call raises: a read failure and a write
-    /// failure are distinct, catchable categories.
-    fn error_code(&self) -> &'static str {
-        if self.is_write() {
-            "io.write"
-        } else {
-            "io.read"
-        }
-    }
-
     fn run(self, path: &str) -> std::io::Result<Option<Value>> {
         match self {
             IoOp::ReadText => std::fs::read_to_string(path).map(|text| Some(Value::Str(text))),
@@ -162,11 +149,7 @@ pub(crate) fn eval_io(
         .map(|arg| eval_expr(&arg.value, env))
         .collect::<Result<_, _>>()?;
     if !env.host.filesystem {
-        return Err(RuntimeError::fault(
-            RUN_CAPABILITY,
-            format!("this run provides no filesystem capability for `std::io::{op}`"),
-            span,
-        ));
+        return Err(no_capability("filesystem", "io", op, span));
     }
     let (path, io) = match (op, values.as_slice()) {
         ("readText", [Value::Str(path)]) => (path, IoOp::ReadText),
@@ -181,12 +164,15 @@ pub(crate) fn eval_io(
         }
         _ => unreachable!("the stdlib table routes only the four io ops to eval_io"),
     };
-    // A write is a rollback-sensitive effect; reject it inside an open
+    // A read failure and a write failure are distinct, catchable categories; a
+    // write is also a rollback-sensitive effect, rejected inside an open
     // transaction before touching the filesystem.
-    if io.is_write() {
+    let error_code = if matches!(io, IoOp::Write(_)) {
         env.guard_rollback_sensitive_host_effect(&format!("std::io::{op}"), span)?;
-    }
-    let error_code = io.error_code();
+        "io.write"
+    } else {
+        "io.read"
+    };
     io.run(path)
         .map_err(|error| raise(io_error(error_code, op, path, &error), span, None))
 }
