@@ -3,7 +3,7 @@ use marrow_check::tooling::{MAX_PREVIEW_ITEMS, walk_data};
 use marrow_store::tree::TreeStore;
 use serde_json::{Value, json};
 
-use super::codec::{LimitBounds, LimitDefault, request_limit, request_query};
+use super::codec::{LimitDefault, request_limit, request_query};
 use super::cursor::CursorState;
 use super::{ProtocolError, tooling_error};
 
@@ -16,14 +16,7 @@ pub(super) fn op_debug_data_walk(
     cursors: &CursorState,
 ) -> Result<Value, ProtocolError> {
     let query = request_query(program, request)?;
-    let limit = request_limit(
-        request,
-        &LimitBounds {
-            default: LimitDefault::Required,
-            max: MAX_WALK,
-            op: "debug_data_walk",
-        },
-    )?;
+    let limit = request_limit(request, LimitDefault::Required, MAX_WALK, "debug_data_walk")?;
     let cursor = request
         .get("cursor")
         .map(|value| cursors.decode_cursor(program, value, &query))

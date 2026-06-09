@@ -6,9 +6,7 @@ use marrow_run::base64;
 use marrow_store::tree::TreeStore;
 use serde_json::{Value, json};
 
-use super::codec::{
-    LimitBounds, LimitDefault, encode_key, request_limit, request_path, request_query,
-};
+use super::codec::{LimitDefault, encode_key, request_limit, request_path, request_query};
 use super::cursor::CursorState;
 use super::walk::MAX_WALK;
 use super::{ProtocolError, bad_request, store_error, tooling_error};
@@ -57,11 +55,9 @@ pub(super) fn op_debug_data_children(
     let limit = if supports_paging {
         request_limit(
             request,
-            &LimitBounds {
-                default: LimitDefault::ServerMaximum,
-                max: MAX_WALK,
-                op: "debug_data_children",
-            },
+            LimitDefault::ServerMaximum,
+            MAX_WALK,
+            "debug_data_children",
         )?
     } else {
         MAX_WALK

@@ -57,11 +57,8 @@ pub(crate) mod test_support {
         }
     }
 
-    /// A state whose program was checked but never committed an identity, so its
-    /// saved roots carry no catalog id. Resolving a query against it makes the
-    /// shared tooling raise `StoreError::Corruption` for the missing checked
-    /// catalog id, standing in for a missing or malformed checked catalog id on
-    /// the serve path.
+    /// Program checked but identity never committed, so its saved roots carry no
+    /// catalog id; resolving a query against it raises `StoreError::Corruption`.
     pub(crate) fn uncommitted_state() -> ServeState {
         ServeState {
             program: checked_program(false),
@@ -88,43 +85,39 @@ pub(crate) mod test_support {
         title: &str,
     ) -> Result<(), StoreError> {
         let place = books_place(&state.program);
-        let store_id = catalog_id(&place.store_catalog_id);
-        let title_path = field_path(&place, "title");
         state.store.write_data_value(
-            &store_id,
+            &catalog_id(&place.store_catalog_id),
             &[SavedKey::Int(id)],
-            &title_path,
+            &field_path(&place, "title"),
             title.as_bytes().to_vec(),
         )
     }
 
     pub(crate) fn write_tag(state: &ServeState, pos: i64, tag: &str) {
         let place = books_place(&state.program);
-        let store_id = catalog_id(&place.store_catalog_id);
         let mut path = field_path(&place, "tags");
         path.push(DataPathSegment::Key(SavedKey::Int(pos)));
-        state
-            .store
-            .write_data_value(
-                &store_id,
-                &[SavedKey::Int(1)],
-                &path,
-                tag.as_bytes().to_vec(),
-            )
-            .expect("write checked tree-cell fixture data");
+        write_field(&state.store, &place, &path, tag);
     }
 
     pub(crate) fn write_summary(state: &ServeState, summary: &str) {
         let place = books_place(&state.program);
-        let store_id = catalog_id(&place.store_catalog_id);
         let path = nested_field_path(&place, "details", "summary");
-        state
-            .store
+        write_field(&state.store, &place, &path, summary);
+    }
+
+    fn write_field(
+        store: &TreeStore,
+        place: &CheckedSavedPlace,
+        path: &[DataPathSegment],
+        data: &str,
+    ) {
+        store
             .write_data_value(
-                &store_id,
+                &catalog_id(&place.store_catalog_id),
                 &[SavedKey::Int(1)],
-                &path,
-                summary.as_bytes().to_vec(),
+                path,
+                data.as_bytes().to_vec(),
             )
             .expect("write checked tree-cell fixture data");
     }
@@ -240,9 +233,8 @@ printed on startup; `--port 0` (the default) lets the OS choose a free port.
 /// cannot force an unbounded allocation.
 const MAX_REQUEST_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Per-connection read timeout. The server is single-threaded and accepts
-/// connections one at a time, so a client that connects and then stalls would
-/// otherwise wedge the server for every other client. A stalled read past this
+/// Per-connection read timeout. The server accepts one connection at a time, so
+/// a stalled client would otherwise wedge every other; a stalled read past this
 /// bound closes that connection and the accept loop moves on.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -386,19 +378,15 @@ fn serve_connection_within(
     store: &TreeStore,
     limit: u64,
 ) -> io::Result<()> {
+    // Held for the whole request loop so every read observes one coherent store
+    // version; only `metadata` shapes the session.
     let snapshot = match store.read_snapshot() {
         Ok(snapshot) => snapshot,
-        Err(error) => {
-            write_reply(writer, &snapshot_error_reply(&error.to_string()))?;
-            return Ok(());
-        }
+        Err(error) => return write_reply(writer, &snapshot_error_reply(&error.to_string())),
     };
     let metadata = match marrow_check::tooling::tooling_metadata(program, store) {
         Ok(metadata) => metadata,
-        Err(error) => {
-            write_reply(writer, &snapshot_error_reply(&error.to_string()))?;
-            return Ok(());
-        }
+        Err(error) => return write_reply(writer, &snapshot_error_reply(&error.to_string())),
     };
     let stale = marrow_check::tooling::store_is_newer_than_program(&metadata);
     let session = protocol::ProtocolSession::new(stale);
@@ -510,13 +498,10 @@ fn read_line_bounded_within(reader: &mut impl BufRead, limit: u64) -> io::Result
     }
 }
 
-/// Consume and discard bytes up to and including the next newline. Used to drop the
-/// tail of an oversized line so it is not parsed as a fresh request.
-///
-/// Returns `true` once the line's newline has been consumed, so the next read starts
-/// at the following request. Returns `false` when the newline is unreachable — a
-/// stalled client whose read timeout has fired, or a hang-up mid-line — because the
-/// undrained tail must not be re-read as a request; the caller ends the connection.
+/// Consume and discard bytes up to and including the next newline, dropping the
+/// tail of an oversized line so it is not parsed as a fresh request. `false` means
+/// the newline was unreachable — a stalled client or a mid-line hang-up — so the
+/// undrained tail must not resume as a request and the caller ends the connection.
 fn discard_to_newline(reader: &mut impl BufRead) -> io::Result<bool> {
     loop {
         let available = match reader.fill_buf() {

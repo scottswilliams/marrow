@@ -13,7 +13,7 @@ use marrow_check::CheckedProgram;
 use marrow_store::tree::TreeStore;
 use serde_json::{Value, json};
 
-/// A request was malformed: not an object, or missing a string `op`.
+/// Not an object, or missing a string `op`.
 pub(crate) const PROTOCOL_MALFORMED: &str = "protocol.malformed";
 /// A request named an operation the server does not support.
 pub(crate) const PROTOCOL_UNKNOWN_OP: &str = "protocol.unknown_op";
