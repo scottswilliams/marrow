@@ -454,12 +454,11 @@ fn walk_finally(
                 }
             }
             Statement::While { label, body, .. } | Statement::For { label, body, .. } => {
-                let pushed = label.clone();
-                if let Some(label) = &pushed {
+                if let Some(label) = label {
                     loop_labels.push(label.clone());
                 }
                 walk_finally(file, body, loop_depth + 1, loop_labels, out);
-                if pushed.is_some() {
+                if label.is_some() {
                     loop_labels.pop();
                 }
             }
