@@ -58,10 +58,8 @@ pub(crate) fn check_function_body(
     walk_loop_layer_mutations(file, &function.body, &mut Vec::new(), out);
 }
 
-/// Apply the structural body rules to an `evolve transform` block. The transform
-/// has no function parameters, so it is checked as a body with no read-only
-/// bindings: catch/assign-target shape, loop control flow, and loop-layer mutation
-/// rules. The transform's typed old/new views are supplied by discharge, not here.
+/// Apply the structural body rules to an `evolve transform` block, which has no
+/// function parameters and so no read-only bindings.
 pub(crate) fn check_transform_body(file: &Path, body: &Block, out: &mut Vec<CheckDiagnostic>) {
     walk_block(file, body, &HashSet::new(), &HashSet::new(), out);
     walk_loop_control_flow(file, body, 0, &mut Vec::new(), out);
@@ -84,9 +82,8 @@ pub(crate) fn check_const_value(file: &Path, value: &Expression, out: &mut Vec<C
     check_range_value(file, value, out);
 }
 
-/// Range-check every literal inside a `const` value so an out-of-range integer or
-/// decimal literal is reported at check time, not only at runtime. Mirrors the
-/// constant-expression shape walked by `is_constant_expr`.
+/// Range-check every literal in a `const` value, mirroring the constant-expression
+/// shape walked by `is_constant_expr`.
 fn check_literal_ranges(file: &Path, expr: &Expression, out: &mut Vec<CheckDiagnostic>) {
     match expr {
         Expression::Literal { kind, text, span } => {
@@ -112,8 +109,7 @@ fn check_literal_ranges(file: &Path, expr: &Expression, out: &mut Vec<CheckDiagn
 }
 
 /// Walk a block applying the catch and assign-target rules to each statement,
-/// recursing into nested blocks. A `try`'s `finally` block is handed to the
-/// dedicated finally walk.
+/// recursing into nested blocks. A `try`'s `finally` block also gets the finally walk.
 fn walk_block(
     file: &Path,
     block: &Block,
@@ -192,8 +188,6 @@ fn walk_statement(
                 walk_block(file, &catch.block, read_only_params, local_collections, out);
             }
             if let Some(finally) = finally {
-                // The finally block is also an ordinary block for the other
-                // rules, plus the escaping-control-flow rule.
                 walk_block(file, finally, read_only_params, local_collections, out);
                 walk_finally(file, finally, 0, &mut Vec::new(), out);
             }
@@ -521,13 +515,10 @@ fn jump_resolves_in_scope(label: Option<&str>, loop_depth: usize, loop_labels: &
     }
 }
 
-/// Walk a block reporting a `break`/`continue` that names no loop it can reach:
-/// an unlabeled jump with no enclosing loop (`loop_depth == 0`), or a labeled
-/// jump whose label names no enclosing loop (`loop_labels`). Mirrors the runtime,
-/// which otherwise only fails late with `run.no_enclosing_loop`. A `finally`
-/// block's own escaping jumps are the `walk_finally` rule's concern, but they
-/// still sit inside the function's loop nesting, so this walk descends into them
-/// with the surrounding loop context.
+/// Walk a block reporting a `break`/`continue` that resolves to no enclosing loop,
+/// which the runtime would otherwise only catch late with `run.no_enclosing_loop`.
+/// Descends into `finally` blocks with the surrounding loop context, since their
+/// jumps still sit inside the function's loop nesting.
 fn walk_loop_control_flow(
     file: &Path,
     block: &Block,
@@ -612,10 +603,9 @@ fn walk_loop_control_flow(
 }
 
 /// Walk a block reporting a write, delete, or append that mutates the same saved
-/// layer an enclosing `for` loop is traversing, which is forbidden because mutating
-/// a tree layer while iterating it has undefined ordering. `traversed` holds the
-/// canonical text of each enclosing loop's traversed saved layer; a mutation whose
-/// affected layer matches one of them removes or adds keys from a layer being iterated.
+/// layer an enclosing `for` loop is traversing, forbidden because mutating a tree
+/// layer while iterating it has undefined ordering. `traversed` holds the canonical
+/// text of each enclosing loop's traversed saved layer.
 fn walk_loop_layer_mutations(
     file: &Path,
     block: &Block,
@@ -623,7 +613,6 @@ fn walk_loop_layer_mutations(
     out: &mut Vec<CheckDiagnostic>,
 ) {
     for statement in &block.statements {
-        // Flag a mutation whose affected layer is one a loop is iterating.
         if let Some(affected) = mutated_layer(statement)
             && traversed.iter().any(|layer| layer == &affected)
         {
@@ -695,11 +684,9 @@ fn walk_loop_layer_mutations(
     }
 }
 
-/// The saved layer a `for` loop traverses, as canonical text, or `None` for a
-/// loop over a range or a local value. A loop traverses a saved layer only when
-/// its iterable is a saved path directly or wrapped in collection views such as
-/// `keys`, `values`, `entries`, or `reversed`; iterating a local (the "collect keys
-/// first" pattern) traverses no saved layer.
+/// The saved layer a `for` loop traverses, as canonical text, or `None` for a loop
+/// over a range or a local value (the "collect keys first" pattern). Collection-view
+/// wrappers such as `keys`/`values`/`entries`/`reversed` are peeled first.
 fn traversed_layer(iterable: &Expression) -> Option<String> {
     let path = traversal_path(iterable);
     is_saved_path(path).then(|| format_expression(path))
@@ -866,7 +853,6 @@ fn is_constant_expr(expr: &Expression) -> bool {
     }
 }
 
-/// A diagnostic located at an expression's span.
 fn diagnostic(
     code: &'static str,
     file: &Path,
@@ -884,7 +870,6 @@ fn diagnostic(
     }
 }
 
-/// A diagnostic located at a statement's span.
 fn diagnostic_at(
     code: &'static str,
     file: &Path,

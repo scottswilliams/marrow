@@ -25,9 +25,8 @@ use crate::{
     resolve_resource_type, resource_type_name,
 };
 
-/// Infer an expression's type without recording diagnostics. Resolution runs after
-/// the checking pass, which already reported any type errors, so a throwaway sink
-/// keeps it from double-reporting.
+/// Infer a type during post-check resolution, discarding diagnostics the checking
+/// pass already reported so they are not double-counted.
 pub(crate) fn infer_only(
     program: &CheckedProgram,
     expr: &marrow_syntax::Expression,
@@ -60,13 +59,10 @@ pub(crate) fn bind(scope: &mut [HashMap<String, MarrowType>], name: &str, ty: Ma
     }
 }
 
-/// The `(name, type)` a `const`/`var` statement introduces into its block,
-/// computed exactly as [`check_statement_types`] computes it: the annotation when
-/// written, otherwise the inferred initializer type, resolved against `scope`. Any
-/// other statement introduces no block-frame binding and returns `None`. The
-/// checker and the editor scope reconstruction share this so a binding's type is
-/// derived in one place. Initializer diagnostics belong to the type-check pass, so
-/// inference here discards them.
+/// The `(name, type)` a `const`/`var` statement introduces into its block:
+/// annotation when written, else inferred initializer type. `None` for any other
+/// statement. The checker and the editor scope reconstruction share this so a
+/// binding's type is derived in one place.
 pub(crate) fn local_binding(
     program: &CheckedProgram,
     statement: &marrow_syntax::Statement,
@@ -116,9 +112,8 @@ pub(crate) fn local_binding(
 }
 
 /// Infer an expression's type, recording a `check.operator_type` diagnostic for
-/// any operator whose operands are known to be incompatible. Returns
-/// [`MarrowType::Unknown`] whenever the type cannot be determined with certainty,
-/// so a containing operator never fires on an uncertain operand.
+/// any operator with known-incompatible operands. Returns [`MarrowType::Unknown`]
+/// whenever the type is uncertain, so a containing operator never fires on it.
 pub(crate) fn infer_type(
     program: &CheckedProgram,
     expr: &marrow_syntax::Expression,
@@ -234,12 +229,8 @@ pub(crate) fn infer_type(
         Expression::Call {
             callee, args, span, ..
         } => {
-            // Visit the callee subtree (it may hold nested calls, e.g. the
-            // `^books(id)` inside `^books(id).tags(pos)`) and infer each argument
-            // once. A bare single-segment callee names a function, not a value, so
-            // it is left to `check_call` to resolve rather than flagged as an
-            // unresolved value name. `check_call` validates the call and yields its
-            // return type.
+            // A bare single-segment callee names a function, not a value, so it is
+            // left to `check_call` rather than flagged as an unresolved value name.
             if !is_bare_name(callee) {
                 infer_type(program, callee, scope, aliases, file, diagnostics);
             }
@@ -268,14 +259,11 @@ pub(crate) fn infer_type(
                 file,
                 diagnostics,
             });
-            // A saved access `^root(key…)` or `^root(key…).layer(key…)` carries key
-            // arguments the function-call path does not type. Check them against the
-            // root's identity keys or the layer's key parameters here, where the
-            // saved-path helpers live.
+            // A saved access carries key arguments the function-call path does not
+            // type; check them against the root identity or layer key parameters.
             check_saved_key_args(program, callee, args, &arg_types, *span, file, diagnostics);
-            // A keyed-leaf read `^root(key…).layer(key…)` is call-shaped but is not
-            // a function call; it types to the layer's declared leaf type. A whole
-            // record read `^root(key…)` types to its resource.
+            // A call-shaped saved read (keyed-leaf or whole-record) is not a function
+            // call; type it through its saved shape once the call path comes back Unknown.
             if matches!(call_type, MarrowType::Unknown) {
                 saved_call_type(program, callee, args).unwrap_or(MarrowType::Unknown)
             } else {
@@ -287,31 +275,15 @@ pub(crate) fn infer_type(
         // behavior on absence, not the type of a populated leaf.
         Expression::Field { base, name, .. } | Expression::OptionalField { base, name, .. } => {
             let base_type = infer_type(program, base, scope, aliases, file, diagnostics);
-            // A saved field read resolves to its declared type: a top-level field
-            // `^root(key…).field` or a group-layer field `^root(key…).layer(key…).field`.
-            // A field off a resource-typed local (`book.title`) resolves through the
-            // resource's schema.
             saved_field_type(program, base, name)
                 .or_else(|| singleton_saved_group_field_type(program, base, name))
                 .or_else(|| saved_group_field_type(program, base, name))
                 .or_else(|| local_field_type(program, &base_type, name))
                 .unwrap_or(MarrowType::Unknown)
         }
-        // A member-path literal `Enum::seg…` (`Status::active`, `Cat::tiger::bengal`,
-        // or a qualified `a::b::Status::active`) resolves to the enum's nominal
-        // `{module, name}` identity. The enum is the longest visible-enum prefix and
-        // the rest is the member path, walked down the enum's tree. In value position
-        // the resolved member must be a concrete leaf: a category groups its
-        // descendants and is not selectable, and a bare name duplicated under several
-        // parents is ambiguous (the full path always disambiguates).
         Expression::Name { segments, span } if segments.len() >= 2 => {
             enum_member_value_type(program, expr, segments, *span, aliases, file, diagnostics)
         }
-        // A bare `^root` naming a keyless singleton store reads the whole record
-        // by its root, so it types to that resource shape — the same `Resource` a
-        // keyed `^books(key…)` whole read yields through its `Call` form. A keyed
-        // root used bare names no value (it needs keys), and any other
-        // multi-segment name has no known type.
         Expression::SavedRoot { name, .. } => singleton_resource_type(program, name),
         Expression::Name { .. } => MarrowType::Unknown,
     }
@@ -536,11 +508,10 @@ fn singleton_resource_type(program: &CheckedProgram, root: &str) -> MarrowType {
     }
 }
 
-/// The declared type of a top-level saved field read: `base` is either a keyed
-/// record access `^root(key…)` (a call whose callee is the saved root) or — for a
-/// keyless singleton store addressed by its root —
-/// the saved root `^root` itself. Group-layer fields and keyed-leaf reads are not
-/// resolved here.
+/// The declared type of a top-level saved field read `^root(key…).field`, or the
+/// keyless singleton form `^root.field`. `base` is a keyed record access
+/// `^root(key…)` (a call whose callee is the saved root) or the singleton saved
+/// root `^root`. Group layers and keyed leaves resolve elsewhere.
 fn saved_field_type(
     program: &CheckedProgram,
     base: &marrow_syntax::Expression,
@@ -562,10 +533,9 @@ fn saved_field_type(
     field_member_type(program, store.resource, &[field], &store.module.name)
 }
 
-/// The resource type of a whole-record read `^root(key…)`: the call's callee is
-/// the saved root, and the value is the owning resource (mirrors the runtime's
-/// whole-resource read producing a `Value::Resource`). Lets field access off a
-/// saved read stored in a local be typed.
+/// The resource type of a whole-record read `^root(key…)`, where the call's callee
+/// is the saved root, mirroring the runtime's whole-resource read producing a
+/// `Value::Resource`. Enables field access off a saved read stored in a local.
 fn saved_resource_type(
     program: &CheckedProgram,
     callee: &marrow_syntax::Expression,
@@ -628,8 +598,7 @@ fn saved_index_identity_type(
     index.unique.then(|| identity_type_for_store(store.store))
 }
 
-/// The declared type of a field read off a resource-typed value, e.g. `book.title`
-/// where `book: Book`. `base_type` must be a known resource type; the field is
+/// The declared type of a field read off a resource-typed value (`book.title`),
 /// looked up in that resource's schema.
 fn local_field_type(
     program: &CheckedProgram,
@@ -663,10 +632,8 @@ fn error_field_type(field: &str) -> Option<MarrowType> {
     ))
 }
 
-/// The declared type of a group field read at any nesting depth, reached through
-/// keyed layers (`^root(key…).layer(key…)….field`) or unkeyed groups
-/// (`^root(key…).name.field`). `base` is the group entry — the part before the
-/// leaf field.
+/// The declared type of a group field read at any depth, through keyed layers
+/// (`^root(key…).layer(key…)….field`) or unkeyed groups (`^root(key…).name.field`).
 fn saved_group_field_type(
     program: &CheckedProgram,
     base: &marrow_syntax::Expression,
@@ -697,11 +664,8 @@ fn singleton_saved_group_field_type(
     field_member_type(program, store.resource, &[layer, field], &store.module.name)
 }
 
-/// Extract `(root, [member…])` from a group entry — the base of a group field
-/// read — peeling each level outermost-last: a keyed layer `.layer(key…)` (a call
-/// whose callee is the layer field) or an unkeyed group hop `.name` (a field off a
-/// deeper saved path). The innermost base is the keyed record `^root(key…)` or the
-/// singleton root `^root`.
+/// Extract `(root, [member…])` from a group entry, members ordered outermost-first.
+/// The innermost base is the keyed record `^root(key…)` or the singleton root `^root`.
 pub(crate) fn saved_group_chain(expr: &marrow_syntax::Expression) -> Option<(&str, Vec<&str>)> {
     use marrow_syntax::Expression;
     // A keyed layer entry `….layer(key…)`: a call whose callee is the layer field.
@@ -804,11 +768,9 @@ pub(crate) fn saved_layer_chain(expr: &marrow_syntax::Expression) -> Option<(&st
     }
 }
 
-/// The checker type of a stored field read named by its saved-path chain — the
-/// named segments after the identity, outermost first, terminating in a scalar
-/// field. Resolves through the shared schema walk and lifts the result to the
-/// checker's lattice. `owning_module` is the module that declares the resource, so
-/// an enum-typed field reads as that module's enum rather than `Unknown`.
+/// The checker type of a stored field read named by its `chain` of segments,
+/// outermost first. `owning_module` is the resource's declaring module, so an
+/// enum-typed field reads as that module's enum rather than `Unknown`.
 fn field_member_type(
     program: &CheckedProgram,
     resource: &marrow_schema::ResourceSchema,
@@ -820,10 +782,7 @@ fn field_member_type(
         .map(|ty| lift_member_type(program, ty.clone(), owning_module))
 }
 
-/// The checker type of a keyed-leaf layer read named by its chain of layer names,
-/// outermost first. Resolves through the same shared schema walk as
-/// [`field_member_type`], differing only in that the terminal name is a keyed-leaf
-/// layer rather than a field.
+/// The checker type of a keyed-leaf layer read named by its `layers`, outermost first.
 fn leaf_member_type(
     program: &CheckedProgram,
     resource: &marrow_schema::ResourceSchema,
@@ -887,9 +846,8 @@ fn resolve_member_enum_name(
     })
 }
 
-/// Look up a name's binding, innermost scope frame first; `None` when unbound.
-/// A bound name may still be [`MarrowType::Unknown`] (an `unknown`-typed binding
-/// or one whose type could not be inferred), which is distinct from being unbound.
+/// Look up a name's binding, innermost frame first; `None` when unbound. A bound
+/// name may still be [`MarrowType::Unknown`], which is distinct from being unbound.
 fn lookup_opt(scope: &[HashMap<String, MarrowType>], name: &str) -> Option<MarrowType> {
     scope
         .iter()
@@ -898,14 +856,11 @@ fn lookup_opt(scope: &[HashMap<String, MarrowType>], name: &str) -> Option<Marro
         .cloned()
 }
 
-/// Whether an expression is a bare single-segment name (`foo`, not `a::b` or
-/// `^books`). In callee position such a name is a function name resolved by
-/// `check_call`, so it is not treated as an unresolved value reference.
+/// Whether an expression is a bare single-segment name (`foo`, not `a::b` or `^books`).
 fn is_bare_name(expr: &marrow_syntax::Expression) -> bool {
     matches!(expr, marrow_syntax::Expression::Name { segments, .. } if segments.len() == 1)
 }
 
-/// The type of a literal by its lexical kind.
 fn literal_type(kind: marrow_syntax::LiteralKind) -> MarrowType {
     use marrow_syntax::LiteralKind;
     MarrowType::Primitive(match kind {
