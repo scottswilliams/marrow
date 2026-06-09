@@ -39,23 +39,17 @@ pub(crate) fn write_saved_field(
     let identity = path.identity.as_slice();
     let created_required_path =
         created_required_field_path(&path.place, identity, &[], &path.members, field, span, env)?;
-    if let Some((store_root, arity)) = saved_field_identity_info(&path) {
-        write_identity_saved_field(&path, field, value, store_root, arity, span, env)?;
+    if let Terminal::Field {
+        leaf: Some(StoreLeafKind::Identity { store_root, arity }),
+        ..
+    } = &path.terminal
+    {
+        write_identity_saved_field(&path, field, value, store_root, *arity, span, env)?;
     } else {
         write_scalar_saved_field(&path, field, value, span, env)?;
     }
     finish_saved_field_write(&path, created_required_path, env);
     Ok(())
-}
-
-fn saved_field_identity_info(path: &SavedPath) -> Option<(&str, usize)> {
-    match &path.terminal {
-        Terminal::Field {
-            leaf: Some(StoreLeafKind::Identity { store_root, arity }),
-            ..
-        } => Some((store_root, *arity)),
-        _ => None,
-    }
 }
 
 fn write_identity_saved_field(

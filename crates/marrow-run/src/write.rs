@@ -7,9 +7,8 @@ use marrow_store::value::ValueError;
 use marrow_syntax::SourceSpan;
 
 use crate::index_maintenance::{
-    FieldIndexRewrite, reject_field_unique_conflicts, reject_resource_unique_conflicts,
-    stage_field_index_deletes, stage_field_index_rewrites, stage_resource_index_deletes,
-    stage_resource_index_rewrites,
+    reject_field_unique_conflicts, reject_resource_unique_conflicts, stage_field_index_deletes,
+    stage_field_index_rewrites, stage_resource_index_deletes, stage_resource_index_rewrites,
 };
 use crate::store::{
     DataAddress, IndexAddress, LayerAddress, data_exists, max_int_data_child, max_int_record_child,
@@ -134,10 +133,11 @@ pub(crate) fn plan_data_delete(address: DataAddress) -> Result<WritePlan, WriteE
     })
 }
 
-/// Plan a bare data delete of one member under `layers`. The store address is
-/// resolved eagerly here; the resulting plan is applied (and any resolution
-/// error surfaced) later by `env.apply_plan`, after the required-field
-/// maintenance guard in `delete_field`.
+/// The store address is resolved eagerly here, but the resulting plan (and any
+/// resolution error) is carried into `delete_field` and only surfaced later by
+/// `env.apply_plan`, after the required-field maintenance guard has run. This
+/// ordering keeps the guard, not address resolution, as the first failure on
+/// the delete path.
 pub(crate) fn plan_member_delete(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
@@ -179,28 +179,17 @@ pub(crate) fn plan_field_write(
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
     resolve_store_identity(place, identity)?;
-    let (_, leaf, _) =
-        checked_field_slot(&place.root_members, field).ok_or_else(|| WriteError {
-            code: WRITE_UNKNOWN_FIELD,
-            message: format!("resource `{}` has no field `{field}`", place.resource_name),
-        })?;
+    let leaf = checked_field_leaf(&place.root_members, field).ok_or_else(|| WriteError {
+        code: WRITE_UNKNOWN_FIELD,
+        message: format!("resource `{}` has no field `{field}`", place.resource_name),
+    })?;
     check_type(field, leaf, value)?;
     reject_field_unique_conflicts(place, identity, field, value, store, span)?;
     let mut steps = vec![PlanStep::WriteData {
         address: data_address(place, identity, &[], &[field.to_string()], span)?,
         value: value.bytes()?,
     }];
-    stage_field_index_rewrites(
-        &mut steps,
-        FieldIndexRewrite {
-            place,
-            identity,
-            field,
-            value,
-            store,
-            span,
-        },
-    )?;
+    stage_field_index_rewrites(&mut steps, place, identity, field, value, store, span)?;
     Ok(WritePlan { steps })
 }
 
@@ -213,11 +202,10 @@ pub(crate) fn plan_identity_field_write(
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
     resolve_store_identity(place, identity)?;
-    let (_, leaf, _) =
-        checked_field_slot(&place.root_members, field).ok_or_else(|| WriteError {
-            code: WRITE_UNKNOWN_FIELD,
-            message: format!("resource `{}` has no field `{field}`", place.resource_name),
-        })?;
+    let leaf = checked_field_leaf(&place.root_members, field).ok_or_else(|| WriteError {
+        code: WRITE_UNKNOWN_FIELD,
+        message: format!("resource `{}` has no field `{field}`", place.resource_name),
+    })?;
     Ok(WritePlan {
         steps: vec![PlanStep::WriteData {
             address: data_address(place, identity, &[], &[field.to_string()], span)?,
@@ -235,7 +223,7 @@ pub(crate) fn validate_required_fields_after_field_write(
     span: SourceSpan,
 ) -> Result<(), WriteError> {
     let members = checked_members_for_layers(place, layers)?;
-    if checked_field_slot(members, field).is_none() {
+    if checked_field_leaf(members, field).is_none() {
         return Err(WriteError {
             code: WRITE_UNKNOWN_FIELD,
             message: format!("resource `{}` has no field `{field}`", place.resource_name),
@@ -315,7 +303,7 @@ pub(crate) fn plan_field_delete(
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
     resolve_store_identity(place, identity)?;
-    if checked_field_slot(&place.root_members, field).is_none() {
+    if checked_field_leaf(&place.root_members, field).is_none() {
         return Err(WriteError {
             code: WRITE_UNKNOWN_FIELD,
             message: format!("resource `{}` has no field `{field}`", place.resource_name),
@@ -385,7 +373,7 @@ pub(crate) fn plan_nested_field_write(
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
     let members = checked_members_for_layers(place, layers)?;
-    let (_, leaf, _) = checked_field_slot(members, field).ok_or_else(|| WriteError {
+    let leaf = checked_field_leaf(members, field).ok_or_else(|| WriteError {
         code: WRITE_UNKNOWN_FIELD,
         message: format!("group layer has no field `{field}`"),
     })?;
@@ -408,7 +396,7 @@ pub(crate) fn plan_nested_identity_field_write(
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
     let members = checked_members_for_layers(place, layers)?;
-    let (_, leaf, _) = checked_field_slot(members, field).ok_or_else(|| WriteError {
+    let leaf = checked_field_leaf(members, field).ok_or_else(|| WriteError {
         code: WRITE_UNKNOWN_FIELD,
         message: format!("group layer has no field `{field}`"),
     })?;
@@ -601,18 +589,15 @@ fn materialized_field_name(path: &[String]) -> String {
     path.join(".")
 }
 
-pub(crate) fn checked_field_slot<'a>(
+pub(crate) fn checked_field_leaf<'a>(
     members: &'a [CheckedSavedMember],
     field: &str,
-) -> Option<(&'a CheckedSavedMember, &'a StoreLeafKind, bool)> {
+) -> Option<&'a StoreLeafKind> {
     members
         .iter()
         .find(|member| member.name == field)
-        .and_then(|member| {
-            member
-                .plain_field()
-                .map(|(leaf, required)| (member, leaf, required))
-        })
+        .and_then(|member| member.plain_field())
+        .map(|(leaf, _)| leaf)
 }
 
 fn staged_identity_value(
@@ -778,9 +763,10 @@ fn check_type(field: &str, leaf: &StoreLeafKind, value: &LeafValue) -> Result<()
 }
 
 fn single_int_identity(place: &CheckedSavedPlace) -> bool {
-    place.identity_keys.as_slice().first().is_some_and(|key| {
-        place.identity_keys.len() == 1 && key.scalar == Some(marrow_schema::ScalarType::Int)
-    })
+    matches!(
+        place.identity_keys.as_slice(),
+        [key] if key.scalar == Some(marrow_schema::ScalarType::Int)
+    )
 }
 
 fn store_error(error: crate::error::RuntimeError) -> WriteError {

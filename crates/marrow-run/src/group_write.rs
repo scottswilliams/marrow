@@ -12,11 +12,8 @@ use crate::expr::eval_expr;
 use crate::path::{lower, lower_keys};
 use crate::store::{DataAddress, LayerAddress};
 use crate::value::{Value, identity_keys_of, value_to_leaf};
-use crate::write::{
-    WriteError, plan_layer_group_write, plan_layer_identity_leaf_write, plan_layer_leaf_write,
-};
+use crate::write::{plan_layer_group_write, plan_layer_identity_leaf_write, plan_layer_leaf_write};
 use crate::write_dispatch::{created_required_paths_for_value, resource_value_of};
-use crate::write_plan::WritePlan;
 
 pub(crate) fn eval_group_entry_write(
     target: &ExecExpr,
@@ -50,15 +47,13 @@ pub(crate) fn eval_group_entry_write(
 
     if let Some(leaf) = &layer_facts.leaf {
         return write_layer_leaf(
-            LayerLeafWrite {
-                place,
-                identity: &identity,
-                parent_addresses: &parent_addresses,
-                keys,
-                leaf: leaf.clone(),
-                value,
-                span,
-            },
+            place,
+            &identity,
+            &parent_addresses,
+            keys,
+            leaf.clone(),
+            value,
+            span,
             env,
         );
     }
@@ -69,26 +64,17 @@ pub(crate) fn eval_group_entry_write(
     write_direct_group_entry(place, &identity, keys, value, span, env)
 }
 
-struct LayerLeafWrite<'a> {
-    place: &'a CheckedSavedPlace,
-    identity: &'a [SavedKey],
-    parent_addresses: &'a [LayerAddress],
-    keys: &'a [ExecArg],
+#[allow(clippy::too_many_arguments)]
+fn write_layer_leaf(
+    place: &CheckedSavedPlace,
+    identity: &[SavedKey],
+    parent_addresses: &[LayerAddress],
+    keys: &[ExecArg],
     leaf: StoreLeafKind,
-    value: &'a ExecExpr,
+    value: &ExecExpr,
     span: SourceSpan,
-}
-
-fn write_layer_leaf(input: LayerLeafWrite<'_>, env: &mut Env<'_>) -> Result<(), RuntimeError> {
-    let LayerLeafWrite {
-        place,
-        identity,
-        parent_addresses,
-        keys,
-        leaf,
-        value,
-        span,
-    } = input;
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
     let value = eval_expr(value, env)?;
     let expected = place
         .layers
@@ -101,64 +87,17 @@ fn write_layer_leaf(input: LayerLeafWrite<'_>, env: &mut Env<'_>) -> Result<(), 
     };
     layers.push(LayerAddress::from_checked(layer_facts, layer_keys.clone()));
 
-    let plan = layer_leaf_plan(LeafPlanInput {
-        place,
-        identity,
-        layers: &layers,
-        leaf,
-        value,
-        span,
-    })?;
-    env.apply_plan(plan, span)
-}
-
-struct LeafPlanInput<'a> {
-    place: &'a CheckedSavedPlace,
-    identity: &'a [SavedKey],
-    layers: &'a [LayerAddress],
-    leaf: StoreLeafKind,
-    value: Value,
-    span: SourceSpan,
-}
-
-fn layer_leaf_plan(
-    input: LeafPlanInput<'_>,
-) -> Result<Result<WritePlan, WriteError>, RuntimeError> {
-    match input.leaf.clone() {
+    let plan = match &leaf {
         StoreLeafKind::Identity { store_root, arity } => {
-            identity_layer_leaf_plan(input, &store_root, arity)
+            let keys = identity_keys_of(value, store_root, span)?;
+            plan_layer_identity_leaf_write(place, identity, &layers, &keys, *arity, span)
         }
-        StoreLeafKind::Scalar(_) | StoreLeafKind::Enum { .. } => scalar_layer_leaf_plan(input),
-    }
-}
-
-fn identity_layer_leaf_plan(
-    input: LeafPlanInput<'_>,
-    store_root: &str,
-    arity: usize,
-) -> Result<Result<WritePlan, WriteError>, RuntimeError> {
-    let identity_keys = identity_keys_of(input.value, store_root, input.span)?;
-    Ok(plan_layer_identity_leaf_write(
-        input.place,
-        input.identity,
-        input.layers,
-        &identity_keys,
-        arity,
-        input.span,
-    ))
-}
-
-fn scalar_layer_leaf_plan(
-    input: LeafPlanInput<'_>,
-) -> Result<Result<WritePlan, WriteError>, RuntimeError> {
-    let saved = value_to_leaf(input.value, &input.leaf, input.span)?;
-    Ok(plan_layer_leaf_write(
-        input.place,
-        input.identity,
-        input.layers,
-        &saved,
-        input.span,
-    ))
+        StoreLeafKind::Scalar(_) | StoreLeafKind::Enum { .. } => {
+            let saved = value_to_leaf(value, &leaf, span)?;
+            plan_layer_leaf_write(place, identity, &layers, &saved, span)
+        }
+    };
+    env.apply_plan(plan, span)
 }
 
 fn write_direct_group_entry(

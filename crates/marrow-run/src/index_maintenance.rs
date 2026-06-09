@@ -151,63 +151,41 @@ pub(crate) fn reject_field_unique_conflicts(
 ) -> Result<(), WriteError> {
     for index in &place.indexes {
         if index.unique && index.keys.iter().any(|key| key.name == field) {
-            let new_keys = field_write_index_keys(FieldWriteIndexKeys {
-                keys: &index.keys,
-                place,
-                identity,
-                field,
-                value,
-                store,
-                span,
-            })?;
+            let new_keys =
+                field_write_index_keys(&index.keys, place, identity, field, value, store, span)?;
             check_unique_conflict(index, identity, new_keys.as_deref(), store, span)?;
         }
     }
     Ok(())
 }
 
-pub(crate) struct FieldIndexRewrite<'a> {
-    pub(crate) place: &'a CheckedSavedPlace,
-    pub(crate) identity: &'a [SavedKey],
-    pub(crate) field: &'a str,
-    pub(crate) value: &'a LeafValue,
-    pub(crate) store: &'a TreeStore,
-    pub(crate) span: SourceSpan,
-}
-
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn stage_field_index_rewrites(
     steps: &mut Vec<PlanStep>,
-    rewrite: FieldIndexRewrite<'_>,
+    place: &CheckedSavedPlace,
+    identity: &[SavedKey],
+    field: &str,
+    value: &LeafValue,
+    store: &TreeStore,
+    span: SourceSpan,
 ) -> Result<(), WriteError> {
-    for index in &rewrite.place.indexes {
-        if !index.keys.iter().any(|key| key.name == rewrite.field) {
+    for index in &place.indexes {
+        if !index.keys.iter().any(|key| key.name == field) {
             continue;
         }
-        if let Some(old_keys) = stored_index_keys(
-            &index.keys,
-            rewrite.place,
-            rewrite.identity,
-            rewrite.store,
-            rewrite.span,
-        )? {
+        if let Some(old_keys) = stored_index_keys(&index.keys, place, identity, store, span)? {
             steps.push(PlanStep::DeleteIndex {
-                address: index_address(index, old_keys, rewrite.span)?,
-                identity: rewrite.identity.to_vec(),
+                address: index_address(index, old_keys, span)?,
+                identity: identity.to_vec(),
             });
         }
-        if let Some(new_keys) = field_write_index_keys(FieldWriteIndexKeys {
-            keys: &index.keys,
-            place: rewrite.place,
-            identity: rewrite.identity,
-            field: rewrite.field,
-            value: rewrite.value,
-            store: rewrite.store,
-            span: rewrite.span,
-        })? {
+        if let Some(new_keys) =
+            field_write_index_keys(&index.keys, place, identity, field, value, store, span)?
+        {
             steps.push(PlanStep::WriteIndex {
-                address: index_address(index, new_keys, rewrite.span)?,
-                identity: rewrite.identity.to_vec(),
-                value: index_entry_value(index.unique, rewrite.identity),
+                address: index_address(index, new_keys, span)?,
+                identity: identity.to_vec(),
+                value: index_entry_value(index.unique, identity),
             });
         }
     }
@@ -330,27 +308,22 @@ fn stored_index_keys_with_staged(
         .collect()
 }
 
-struct FieldWriteIndexKeys<'a> {
-    keys: &'a [CheckedSavedIndexKey],
-    place: &'a CheckedSavedPlace,
-    identity: &'a [SavedKey],
-    field: &'a str,
-    value: &'a LeafValue,
-    store: &'a TreeStore,
-    span: SourceSpan,
-}
-
+#[allow(clippy::too_many_arguments)]
 fn field_write_index_keys(
-    input: FieldWriteIndexKeys<'_>,
+    keys: &[CheckedSavedIndexKey],
+    place: &CheckedSavedPlace,
+    identity: &[SavedKey],
+    field: &str,
+    value: &LeafValue,
+    store: &TreeStore,
+    span: SourceSpan,
 ) -> Result<Option<Vec<SavedKey>>, WriteError> {
-    input
-        .keys
-        .iter()
+    keys.iter()
         .map(|key| {
-            if key.name == input.field {
-                Ok(input.value.as_key())
+            if key.name == field {
+                Ok(value.as_key())
             } else {
-                stored_arg_key(key, input.place, input.identity, input.store, input.span)
+                stored_arg_key(key, place, identity, store, span)
             }
         })
         .collect()

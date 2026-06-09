@@ -122,12 +122,10 @@ fn collect_resource_value(
 
 fn flattened_field_name(prefix: &[String], name: &str) -> String {
     if prefix.is_empty() {
-        return name.to_string();
+        name.to_string()
+    } else {
+        format!("{}.{name}", prefix.join("."))
     }
-    let mut field = prefix.join(".");
-    field.push('.');
-    field.push_str(name);
-    field
 }
 
 fn plain_field_leaf<'a>(
