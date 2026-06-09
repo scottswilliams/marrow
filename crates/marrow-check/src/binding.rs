@@ -762,17 +762,7 @@ impl UseWalker<'_, '_> {
                 // The initializer is in the scope *before* the binding, so resolve
                 // it first, then bind the name for later statements.
                 self.walk_expr(value, scope);
-                let id = self.define_local(*span);
-                bind(scope, name, id);
-                if let Some((_, ty)) = local_binding(
-                    self.builder.program,
-                    statement,
-                    type_scope,
-                    self.aliases,
-                    self.file,
-                ) {
-                    bind_type(type_scope, name, ty);
-                }
+                self.bind_local(statement, name, *span, scope, type_scope);
             }
             Statement::Var {
                 name,
@@ -791,17 +781,7 @@ impl UseWalker<'_, '_> {
                 if let Some(value) = value {
                     self.walk_expr(value, scope);
                 }
-                let id = self.define_local(*span);
-                bind(scope, name, id);
-                if let Some((_, ty)) = local_binding(
-                    self.builder.program,
-                    statement,
-                    type_scope,
-                    self.aliases,
-                    self.file,
-                ) {
-                    bind_type(type_scope, name, ty);
-                }
+                self.bind_local(statement, name, *span, scope, type_scope);
             }
             Statement::Assign { target, value, .. } => {
                 self.walk_expr(target, scope);
@@ -862,6 +842,30 @@ impl UseWalker<'_, '_> {
                 scrutinee, arms, ..
             } => self.walk_match(scrutinee.as_ref(), arms, scope, type_scope),
             Statement::Break { .. } | Statement::Continue { .. } => {}
+        }
+    }
+
+    /// Bind the local a `const`/`var` introduces: a fresh def id in the value
+    /// scope, plus its inferred type in the type scope when one is known. The
+    /// caller resolves the initializer first, since it runs before the binding.
+    fn bind_local(
+        &mut self,
+        statement: &Statement,
+        name: &str,
+        span: SourceSpan,
+        scope: &mut [HashMap<String, DefId>],
+        type_scope: &mut [HashMap<String, MarrowType>],
+    ) {
+        let id = self.define_local(span);
+        bind(scope, name, id);
+        if let Some((_, ty)) = local_binding(
+            self.builder.program,
+            statement,
+            type_scope,
+            self.aliases,
+            self.file,
+        ) {
+            bind(type_scope, name, ty);
         }
     }
 
@@ -1313,15 +1317,9 @@ fn lookup(scope: &[HashMap<String, DefId>], name: &str) -> Option<DefId> {
 }
 
 /// Record `name`'s binding in the innermost scope frame.
-fn bind(scope: &mut [HashMap<String, DefId>], name: &str, id: DefId) {
+fn bind<V>(scope: &mut [HashMap<String, V>], name: &str, value: V) {
     if let Some(frame) = scope.last_mut() {
-        frame.insert(name.to_string(), id);
-    }
-}
-
-fn bind_type(scope: &mut [HashMap<String, MarrowType>], name: &str, ty: MarrowType) {
-    if let Some(frame) = scope.last_mut() {
-        frame.insert(name.to_string(), ty);
+        frame.insert(name.to_string(), value);
     }
 }
 
