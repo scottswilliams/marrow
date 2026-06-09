@@ -173,18 +173,18 @@ marrow data dump .
 ```
 
 ```text
+^books(1).title	Small Gods
 ^books(1).author	Terry Pratchett
 ^books(1).shelf	fiction
-^books(1).title	Small Gods
+^books(2).title	Sourcery
 ^books(2).author	Terry Pratchett
 ^books(2).shelf	fiction
-^books(2).title	Sourcery
+^books(3).title	Small Gods
 ^books(3).author	Terry Pratchett
 ^books(3).shelf	fiction
-^books(3).title	Small Gods
+^books(4).title	Sourcery
 ^books(4).author	Terry Pratchett
 ^books(4).shelf	fiction
-^books(4).title	Sourcery
 ```
 
 `data dump` reports stored field values, not the generated index entries, which
@@ -205,7 +205,7 @@ marrow data integrity .
 ```
 
 ```text
-ok: store integrity verified (12 records)
+ok: . integrity verified (12 records)
 ```
 
 Every `marrow data` subcommand also takes `--format text|json|jsonl` for
