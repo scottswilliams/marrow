@@ -267,10 +267,9 @@ fn modes_match(arg: Option<ArgMode>, param: Option<ParamMode>) -> bool {
     )
 }
 
-/// A local assignable place an `inout` argument reads its current value from and
-/// writes its final value back to: either a local binding or a field of one. The
-/// names come straight from a single-segment `ExecExpr::Name`, so they are bare
-/// strings rather than checked identifiers.
+/// An assignable local an `inout` argument reads from and writes back to. Names
+/// come from a single-segment `ExecExpr::Name`, so they are bare strings rather
+/// than checked identifiers.
 pub(crate) enum Place {
     Local(String),
     LocalField { base: String, field: String },
@@ -278,25 +277,24 @@ pub(crate) enum Place {
 
 impl Place {
     fn from_expr(expr: &ExecExpr, span: SourceSpan) -> Result<Place, RuntimeError> {
-        match expr {
-            ExecExpr::Name { segments, .. } if segments.len() == 1 => {
-                Ok(Place::Local(segments[0].clone()))
-            }
-            ExecExpr::Field { base, name, .. } if matches!(base.as_ref(), ExecExpr::Name { segments, .. } if segments.len() == 1) =>
-            {
-                let ExecExpr::Name { segments, .. } = base.as_ref() else {
-                    unreachable!("guarded by the match arm")
-                };
-                Ok(Place::LocalField {
-                    base: segments[0].clone(),
-                    field: name.clone(),
-                })
-            }
-            _ => Err(unsupported(
-                "an inout argument that is not a local assignable place",
-                span,
-            )),
+        if let ExecExpr::Name { segments, .. } = expr
+            && segments.len() == 1
+        {
+            return Ok(Place::Local(segments[0].clone()));
         }
+        if let ExecExpr::Field { base, name, .. } = expr
+            && let ExecExpr::Name { segments, .. } = base.as_ref()
+            && segments.len() == 1
+        {
+            return Ok(Place::LocalField {
+                base: segments[0].clone(),
+                field: name.clone(),
+            });
+        }
+        Err(unsupported(
+            "an inout argument that is not a local assignable place",
+            span,
+        ))
     }
 
     fn read(&self, span: SourceSpan, env: &mut Env<'_>) -> Result<Value, RuntimeError> {

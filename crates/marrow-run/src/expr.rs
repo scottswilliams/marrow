@@ -25,19 +25,15 @@ use crate::read::eval_local_field_get;
 use crate::stdlib::int_remainder;
 use crate::value::{Value, enum_id_from_ref, enum_value_from_member, render};
 
-/// Evaluate `path ?? default`: the value at the left path read, or `default` when
-/// it is absent. Schema/type errors are not hidden — only an absent element
-/// (`run.absent_element`) falls back to the default.
 pub(crate) fn eval_coalesce(
     path: &ExecExpr,
     default: &ExecExpr,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     match eval_expr(path, env) {
-        // `??` absorbs an absent read as ordinary control flow, falling back to
-        // the default. The absent fault's catchable `throw` value rides the `Err`
-        // and is simply discarded here, so it never unwinds as a throw. A `?.`
-        // chain on the left short-circuits to this same absent fault.
+        // `??` absorbs an absent read as ordinary control flow, not an error,
+        // falling back to the default. Only an absent read falls back; schema and
+        // type faults still propagate.
         Err(error) if error.code == RUN_ABSENT => eval_expr(default, env),
         other => other,
     }
@@ -155,9 +151,8 @@ fn eval_field(
     }
 }
 
-/// Evaluate an interpolated string `$"...{expr}..."` to a string value: literal
-/// segments contribute their text (with `{{`/`}}` unescaped to single braces),
-/// and embedded expressions are rendered to text.
+/// Evaluate an interpolated string `$"...{expr}..."`, rendering embedded
+/// expressions to text and unescaping `{{`/`}}` in literal segments.
 pub(crate) fn eval_interpolation(
     parts: &[InterpolationPart],
     span: SourceSpan,
@@ -223,10 +218,9 @@ pub(crate) fn eval_literal(
     }
 }
 
-/// Decode a duration literal `NUMBER.UNIT` to its fixed nanosecond span, the
-/// same value `duration("PT<seconds>S")` produces. The lexer guarantees the
-/// shape — digits, a dot, and a known unit — so only an out-of-range magnitude
-/// faults, sharing the int/decimal overflow path.
+/// Decode a duration literal `NUMBER.UNIT` to its nanosecond span. The lexer
+/// guarantees the shape (digits, a dot, a known unit), so the runtime checks
+/// only an out-of-range magnitude.
 fn eval_duration_literal(text: &str, span: SourceSpan) -> Result<Value, RuntimeError> {
     let overflow = || {
         raise_fault(
@@ -245,8 +239,7 @@ fn eval_duration_literal(text: &str, span: SourceSpan) -> Result<Value, RuntimeE
     Ok(Value::Duration(nanos))
 }
 
-/// Decode a string literal's value. The literal `text` is the raw source,
-/// including the surrounding quotes.
+/// Decode a string literal; `text` is the raw source, including surrounding quotes.
 pub(crate) fn eval_string_literal(text: &str, span: SourceSpan) -> Result<Value, RuntimeError> {
     decode_string_literal(text)
         .map(Value::Str)
@@ -260,8 +253,8 @@ fn string_literal_fault(error: StringLiteralError, span: SourceSpan) -> RuntimeE
     }
 }
 
-/// Decode a bytes literal `b"..."` to its raw bytes. Ordinary text contributes
-/// its UTF-8 bytes, while bytes escapes can emit arbitrary byte values.
+/// Decode a bytes literal `b"..."`: ordinary text contributes its UTF-8 bytes,
+/// while bytes escapes can emit arbitrary byte values.
 pub(crate) fn eval_bytes_literal(text: &str, span: SourceSpan) -> Result<Value, RuntimeError> {
     let inner = text
         .strip_prefix("b\"")
@@ -382,8 +375,8 @@ pub(crate) fn eval_binary(
     }
 }
 
-/// Evaluate `left is right`: whether the left enum value sits at or under the
-/// checked right-member fact in its enum's hierarchy.
+/// Whether the left enum value sits at or under the right member in its enum's
+/// descendant hierarchy.
 pub(crate) fn eval_is(
     left: &ExecExpr,
     right: &ExecExpr,
@@ -416,9 +409,8 @@ pub(crate) fn eval_is(
     )))
 }
 
-/// Apply a checked numeric operation to two operands of the same numeric type —
-/// both integers or both decimals — mapping overflow to a typed runtime fault. The
-/// checker rejects mixed int/decimal operands, so a mismatch here is a type error.
+/// The checker rejects mixed int/decimal operands, so a mismatch here is
+/// defensive; overflow maps to a typed runtime fault.
 pub(crate) fn numeric_op(
     left: &ExecExpr,
     right: &ExecExpr,
@@ -441,8 +433,8 @@ pub(crate) fn numeric_op(
     }
 }
 
-/// Divide two numeric operands as decimals (`/` always yields a decimal). A zero
-/// divisor is `run.divide_by_zero`; a result outside the decimal envelope is
+/// Divide two numeric operands as decimals: a zero divisor faults as
+/// `run.divide_by_zero`, a result outside the decimal envelope as
 /// `run.decimal_overflow`.
 pub(crate) fn decimal_div(
     left: &ExecExpr,
@@ -461,8 +453,8 @@ pub(crate) fn decimal_div(
         .ok_or_else(|| decimal_overflow(span))
 }
 
-/// Coerce a numeric value to a decimal: an integer becomes an exact decimal, a
-/// decimal is itself. Any other type is a runtime type error.
+/// Coerce a value to a decimal: an integer becomes exact, decimals are
+/// preserved, other types fault.
 pub(crate) fn to_decimal(value: Value, span: SourceSpan) -> Result<Decimal, RuntimeError> {
     match value {
         Value::Decimal(decimal) => Ok(decimal),
@@ -472,10 +464,9 @@ pub(crate) fn to_decimal(value: Value, span: SourceSpan) -> Result<Decimal, Runt
     }
 }
 
-/// Evaluate the integer remainder operator (`%`) over two operands. The `/`
-/// operator yields a decimal and uses `decimal_div`, so `%` is the only integer
-/// division-family operator; it shares the one integer-remainder path (and its
-/// "integer remainder by zero" message) with `std::math::remainder`.
+/// The only integer division-family operator (division yields decimals via
+/// `decimal_div`). Shares the integer-remainder path and zero-divisor message
+/// with `std::math::remainder`.
 pub(crate) fn int_remainder_op(
     left: &ExecExpr,
     right: &ExecExpr,
@@ -487,8 +478,9 @@ pub(crate) fn int_remainder_op(
     int_remainder(a, b, span).map(Value::Int)
 }
 
-/// Compare two values of the same orderable type — integers or strings — and
-/// test the resulting ordering. Booleans and mismatched types are not orderable.
+/// Operands must be the same orderable type (integers or strings). Booleans and
+/// mismatched types are not orderable; the checker rejects those statically, so
+/// a mismatch here is defensive.
 pub(crate) fn compare_values(
     left: &ExecExpr,
     right: &ExecExpr,
@@ -528,8 +520,8 @@ pub(crate) fn concat(
     }
 }
 
-/// Whether two values are equal. They must share a scalar type; comparing across
-/// types is a runtime type error (the checker rejects it statically).
+/// Operands must share a type; the checker rejects cross-type comparison
+/// statically, so the mismatch arm is defensive.
 pub(crate) fn values_equal(
     left: &ExecExpr,
     right: &ExecExpr,
@@ -548,10 +540,8 @@ pub(crate) fn values_equal(
         (Value::Enum(a), Value::Enum(b)) => {
             Ok(a.enum_id == b.enum_id && a.member_id == b.member_id)
         }
-        // Two identities compare by their key segments. The checker's nominal rule
-        // already requires both to name the same resource, so a value comparison of
-        // the keys is the whole verdict; identities of different resources never
-        // reach here in a well-typed program.
+        // The checker's nominal rule requires both identities to name the same
+        // resource, so comparing key segments is the whole verdict.
         (Value::Identity(a), Value::Identity(b)) => Ok(a == b),
         _ => Err(type_error("cannot compare values of different types", span)),
     }
@@ -564,9 +554,8 @@ pub(crate) fn eval_int(expr: &ExecExpr, env: &mut Env<'_>) -> Result<i64, Runtim
     }
 }
 
-/// Evaluate an `if`/`while`/`else if` condition. The condition is `None` only when
-/// it did not parse, which the checker rejects before a program reaches the runtime;
-/// guard against it anyway so a malformed condition faults rather than panics.
+/// A `None` condition means it did not parse, which the checker rejects before
+/// the runtime; guard anyway so it faults rather than panics.
 pub(crate) fn eval_condition(
     condition: Option<&ExecExpr>,
     span: SourceSpan,

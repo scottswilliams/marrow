@@ -140,15 +140,13 @@ fn eval_control_statement(statement: &ExecStmt, env: &mut Env<'_>) -> Result<Flo
 }
 
 fn before_statement_hook(statement: &ExecStmt, env: &mut Env<'_>) -> Result<(), RuntimeError> {
-    if env.hook.is_none() {
+    // The hook is moved out so the callback can borrow `env` for its `Frame`
+    // without aliasing the hook, then restored for the next statement.
+    let Some(hook) = env.hook.take() else {
         return Ok(());
-    }
-    let mut hook = env.hook.take();
-    let result = hook
-        .as_deref_mut()
-        .expect("hook is Some")
-        .before_statement(statement.span(), Frame { env });
-    env.hook = hook;
+    };
+    let result = hook.before_statement(statement.span(), Frame { env });
+    env.hook = Some(hook);
     result
 }
 

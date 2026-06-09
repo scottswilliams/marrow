@@ -73,10 +73,8 @@ fn eval_program_function<'p>(
     complete_call(completion, span)
 }
 
-/// Run `function` as a child activation of `env`: build its call context, snapshot
-/// the loop-traversal layers it inherits, move the debugger hook in for the nested
-/// frame and back out when it returns, and surface the completion plus the final
-/// values of any `writeback` parameters. Callers differ only in how they bind
+/// Runs `function` as a child activation of `env`, moving the debugger hook into
+/// the nested frame and back out on return. Callers differ only in how they bind
 /// arguments and what they do with the writeback finals.
 fn invoke_function<'p>(
     env: &mut Env<'p>,

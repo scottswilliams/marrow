@@ -319,8 +319,7 @@ impl RangeIter {
     }
 }
 
-/// Which way a range walks, derived from the sign of its step. A zero step never
-/// yields, so a range built from a zero step is empty.
+/// A zero step never advances, so it yields the empty range.
 enum RangeDirection {
     Ascending,
     Descending,

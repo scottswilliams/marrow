@@ -11,9 +11,8 @@ use crate::error::{RuntimeError, type_error, unsupported};
 use crate::expr::eval_expr;
 use crate::value::{Value, enum_id_from_ref};
 
-/// Evaluate a block in its own scope, stopping at the first `return`. The scope
-/// is popped on every exit, including when a statement raises an error, so the
-/// environment is left balanced for reuse.
+/// The scope is popped on every exit, including the error path, so the
+/// environment stays balanced for reuse.
 pub(crate) fn eval_block(block: &ExecBody, env: &mut Env<'_>) -> Result<Flow, RuntimeError> {
     env.push_scope();
     let result = eval_statements(block.statements(), env);
@@ -21,7 +20,6 @@ pub(crate) fn eval_block(block: &ExecBody, env: &mut Env<'_>) -> Result<Flow, Ru
     result
 }
 
-/// Evaluate statements in order until one returns or the block ends.
 pub(crate) fn eval_statements(
     statements: &[ExecStmt],
     env: &mut Env<'_>,
@@ -35,9 +33,8 @@ pub(crate) fn eval_statements(
     Ok(Flow::Normal)
 }
 
-/// Dispatch a `match` over an enum-typed scrutinee using checked enum-member
-/// facts. The checker proves a covering arm exists, so a missing match is a
-/// defensive fault, not a reachable path.
+/// The checker proves a covering arm exists, so a missing match is a defensive
+/// fault, not a reachable path.
 pub(crate) fn eval_match(
     scrutinee: Option<&ExecExpr>,
     arms: &[ExecMatchArm],
@@ -70,8 +67,8 @@ pub(crate) fn eval_match(
     Err(unsupported("a match with no arm for this enum value", span))
 }
 
-/// The single local name an assignment targets, or an "unsupported" error for a
-/// saved path or qualified name (those are dispatched before reaching here).
+/// Saved paths and qualified names are dispatched before reaching here, so only
+/// a single local name is a valid target.
 pub(crate) fn local_target(target: &ExecExpr, span: SourceSpan) -> Result<&str, RuntimeError> {
     match target {
         ExecExpr::Name { segments, .. } if segments.len() == 1 => Ok(&segments[0]),
