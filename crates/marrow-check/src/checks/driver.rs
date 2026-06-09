@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use marrow_schema::Type;
-use marrow_syntax::{Severity, SourceSpan};
+use marrow_syntax::SourceSpan;
 
 use crate::enums::{private_enum_type_reference, resolve_type};
 use crate::infer::infer_type;
@@ -44,14 +44,15 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
     for (file, parsed) in parsed_files {
         for use_decl in &parsed.file.uses {
             if !is_resolved_import(&use_decl.name, resolvable) {
-                report.diagnostics.push(CheckDiagnostic {
-                    code: CHECK_UNRESOLVED_IMPORT,
-                    severity: Severity::Error,
-                    file: file.path.clone(),
-                    message: format!("cannot resolve import `{}`", use_decl.name),
-                    span: use_decl.span,
-                    payload: DiagnosticPayload::UnresolvedImport(use_decl.name.clone()),
-                });
+                report.diagnostics.push(
+                    CheckDiagnostic::error(
+                        CHECK_UNRESOLVED_IMPORT,
+                        &file.path,
+                        use_decl.span,
+                        format!("cannot resolve import `{}`", use_decl.name),
+                    )
+                    .with_payload(DiagnosticPayload::UnresolvedImport(use_decl.name.clone())),
+                );
             }
         }
     }
@@ -274,17 +275,15 @@ pub(crate) fn check_file_types(
                     diagnostics,
                 );
                 if function.return_type.is_some() && !block_returns(&function.body) {
-                    diagnostics.push(CheckDiagnostic {
-                        code: CHECK_MISSING_RETURN,
-                        severity: Severity::Error,
-                        file: file.to_path_buf(),
-                        message: format!(
+                    diagnostics.push(CheckDiagnostic::error(
+                        CHECK_MISSING_RETURN,
+                        file,
+                        function.span,
+                        format!(
                             "function `{}` may reach its end without returning a value",
                             function.name
                         ),
-                        span: function.span,
-                        payload: DiagnosticPayload::None,
-                    });
+                    ));
                 }
             }
             marrow_syntax::Declaration::Const(constant) => {
@@ -356,16 +355,17 @@ fn check_type_annotation(
         && let Some(private) =
             private_enum_type_reference(ty, context.program, context.aliases, context.file)
     {
-        diagnostics.push(CheckDiagnostic {
-            code: CHECK_PRIVATE_ENUM,
-            severity: Severity::Error,
-            file: context.file.to_path_buf(),
-            message: format!(
-                "enum `{private}` is private to its module; mark it `pub` to use it from another module"
-            ),
-            span,
-            payload: DiagnosticPayload::PrivateEnum(private),
-        });
+        diagnostics.push(
+            CheckDiagnostic::error(
+                CHECK_PRIVATE_ENUM,
+                context.file,
+                span,
+                format!(
+                    "enum `{private}` is private to its module; mark it `pub` to use it from another module"
+                ),
+            )
+            .with_payload(DiagnosticPayload::PrivateEnum(private)),
+        );
         return;
     }
     let unknown_identity = unknown_identity_type_ref(ty, context);
@@ -374,14 +374,15 @@ fn check_type_annotation(
         || !annotation_type_known(&schema_type, &resolved_type)
     {
         let name = unknown_identity.unwrap_or_else(|| ty.text.trim().to_string());
-        diagnostics.push(CheckDiagnostic {
-            code: CHECK_UNKNOWN_TYPE,
-            severity: Severity::Error,
-            file: context.file.to_path_buf(),
-            message: format!("unknown type `{name}`"),
-            span,
-            payload: DiagnosticPayload::UnknownType(schema_type),
-        });
+        diagnostics.push(
+            CheckDiagnostic::error(
+                CHECK_UNKNOWN_TYPE,
+                context.file,
+                span,
+                format!("unknown type `{name}`"),
+            )
+            .with_payload(DiagnosticPayload::UnknownType(schema_type)),
+        );
     }
 }
 
@@ -416,14 +417,15 @@ fn check_resource_identity_annotations(
         match member {
             marrow_syntax::ResourceMember::Field(field) => {
                 if let Some(identity) = unknown_identity_type_ref(&field.ty, context) {
-                    diagnostics.push(CheckDiagnostic {
-                        code: CHECK_UNKNOWN_TYPE,
-                        severity: Severity::Error,
-                        file: context.file.to_path_buf(),
-                        message: format!("unknown type `{identity}`"),
-                        span: field.span,
-                        payload: DiagnosticPayload::UnknownType(Type::resolve(&field.ty)),
-                    });
+                    diagnostics.push(
+                        CheckDiagnostic::error(
+                            CHECK_UNKNOWN_TYPE,
+                            context.file,
+                            field.span,
+                            format!("unknown type `{identity}`"),
+                        )
+                        .with_payload(DiagnosticPayload::UnknownType(Type::resolve(&field.ty))),
+                    );
                 }
             }
             marrow_syntax::ResourceMember::Group(group) => {

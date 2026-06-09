@@ -6,13 +6,11 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use marrow_syntax::{Severity, SourceSpan};
+use marrow_syntax::SourceSpan;
 
 use crate::enums::{MatchCheck, check_match, resolve_type};
 use crate::infer::{bind, infer_type, local_binding};
-use crate::{
-    CHECK_COLLECTION_UNSUPPORTED, CheckDiagnostic, CheckedProgram, DiagnosticPayload, MarrowType,
-};
+use crate::{CHECK_COLLECTION_UNSUPPORTED, CheckDiagnostic, CheckedProgram, MarrowType};
 
 use super::collections::{check_for_collection_support, for_frame, is_saved_index_branch_path};
 use super::operators::{check_assignment, check_condition, check_return_type, check_throw_type};
@@ -244,14 +242,12 @@ impl StatementCheck<'_> {
         let value_type = self.infer(value);
         check_range_value(self.file, value, self.diagnostics);
         if is_saved_index_branch_path(self.program, target) {
-            self.diagnostics.push(CheckDiagnostic {
-                code: crate::rules::CHECK_INVALID_ASSIGN_TARGET,
-                severity: Severity::Error,
-                file: self.file.to_path_buf(),
-                message: "generated index branches cannot be assigned".to_string(),
-                span: target.span(),
-                payload: DiagnosticPayload::None,
-            });
+            self.diagnostics.push(CheckDiagnostic::error(
+                crate::rules::CHECK_INVALID_ASSIGN_TARGET,
+                self.file,
+                target.span(),
+                "generated index branches cannot be assigned",
+            ));
         }
         check_assignment(self.file, span, &target_type, &value_type, self.diagnostics);
     }
@@ -259,14 +255,12 @@ impl StatementCheck<'_> {
     fn check_delete_statement(&mut self, path: &marrow_syntax::Expression) {
         self.infer(path);
         if is_saved_index_branch_path(self.program, path) {
-            self.diagnostics.push(CheckDiagnostic {
-                code: CHECK_COLLECTION_UNSUPPORTED,
-                severity: Severity::Error,
-                file: self.file.to_path_buf(),
-                message: "generated index branches cannot be deleted".to_string(),
-                span: path.span(),
-                payload: DiagnosticPayload::None,
-            });
+            self.diagnostics.push(CheckDiagnostic::error(
+                CHECK_COLLECTION_UNSUPPORTED,
+                self.file,
+                path.span(),
+                "generated index branches cannot be deleted",
+            ));
         }
     }
 

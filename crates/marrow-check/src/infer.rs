@@ -5,7 +5,7 @@ use std::path::Path;
 
 use marrow_schema::{MemberPathResolution, Type};
 use marrow_store::value::ScalarType;
-use marrow_syntax::{Severity, SourceSpan};
+use marrow_syntax::SourceSpan;
 
 use crate::checks::{
     CallCheck, check_binary, check_call, check_coalesce, check_saved_key_args, check_unary,
@@ -125,15 +125,12 @@ pub(crate) fn infer_type(
     use marrow_syntax::Expression;
     if let Some(rejection) = saved_access_rejection(program, expr) {
         match rejection {
-            SavedAccessRejection::GeneratedIndexBranch => diagnostics.push(CheckDiagnostic {
-                code: CHECK_COLLECTION_UNSUPPORTED,
-                severity: Severity::Error,
-                file: file.to_path_buf(),
-                message: "generated index branches do not expose resource members or chained calls"
-                    .to_string(),
-                span: expr.span(),
-                payload: DiagnosticPayload::None,
-            }),
+            SavedAccessRejection::GeneratedIndexBranch => diagnostics.push(CheckDiagnostic::error(
+                CHECK_COLLECTION_UNSUPPORTED,
+                file,
+                expr.span(),
+                "generated index branches do not expose resource members or chained calls",
+            )),
             SavedAccessRejection::KeyedRootMemberWithoutIdentity(root) => {
                 diagnostics.push(key_type_diagnostic(
                     file,
@@ -172,14 +169,12 @@ pub(crate) fn infer_type(
         Expression::Name { segments, span } if segments.len() == 1 => {
             let name = &segments[0];
             lookup_opt(scope, name).unwrap_or_else(|| {
-                diagnostics.push(CheckDiagnostic {
-                    code: CHECK_UNRESOLVED_NAME,
-                    severity: Severity::Error,
-                    file: file.to_path_buf(),
-                    message: format!("`{name}` is not defined"),
-                    span: *span,
-                    payload: DiagnosticPayload::None,
-                });
+                diagnostics.push(CheckDiagnostic::error(
+                    CHECK_UNRESOLVED_NAME,
+                    file,
+                    *span,
+                    format!("`{name}` is not defined"),
+                ));
                 MarrowType::Unknown
             })
         }
@@ -298,14 +293,8 @@ fn interpolation_unsupported_source_diagnostic(
         "interpolation cannot render `{}`; convert it explicitly",
         marrow_type_name(&source)
     );
-    CheckDiagnostic {
-        code: CHECK_OPERATOR_TYPE,
-        severity: Severity::Error,
-        file: file.to_path_buf(),
-        message,
-        span,
-        payload: DiagnosticPayload::InterpolationUnsupportedSource { source },
-    }
+    CheckDiagnostic::error(CHECK_OPERATOR_TYPE, file, span, message)
+        .with_payload(DiagnosticPayload::InterpolationUnsupportedSource { source })
 }
 
 /// The declared type of a call-shaped saved read, tried after a function call
@@ -344,34 +333,38 @@ fn enum_member_value_type(
         return MarrowType::Unknown;
     };
     if let Some(private) = resolved.private {
-        diagnostics.push(CheckDiagnostic {
-            code: CHECK_PRIVATE_ENUM,
-            severity: Severity::Error,
-            file: file.to_path_buf(),
-            message: format!(
-                "enum `{private}` is private to its module; mark it `pub` to use it from another module"
-            ),
-            span,
-            payload: DiagnosticPayload::PrivateEnum(private),
-        });
+        diagnostics.push(
+            CheckDiagnostic::error(
+                CHECK_PRIVATE_ENUM,
+                file,
+                span,
+                format!(
+                    "enum `{private}` is private to its module; mark it `pub` to use it from another module"
+                ),
+            )
+            .with_payload(DiagnosticPayload::PrivateEnum(private)),
+        );
         return MarrowType::Invalid;
     }
     let enum_name = &resolved.enum_name;
     match resolved.member {
         MemberPathResolution::Found(ordinal) if resolved.schema.is_category(ordinal) => {
-            diagnostics.push(CheckDiagnostic {
-                code: CHECK_CATEGORY_NOT_SELECTABLE,
-                severity: Severity::Error,
-                file: file.to_path_buf(),
-                message: format!(
-                    "`{}` is a category and cannot be selected; pick a concrete member under it",
-                    segments.join("::")
-                ),
-                span,
-                payload: DiagnosticPayload::Enum(EnumDiagnostic::CategoryNotSelectable {
-                    label: resolved.member_label.clone(),
-                }),
-            });
+            diagnostics.push(
+                CheckDiagnostic::error(
+                    CHECK_CATEGORY_NOT_SELECTABLE,
+                    file,
+                    span,
+                    format!(
+                        "`{}` is a category and cannot be selected; pick a concrete member under it",
+                        segments.join("::")
+                    ),
+                )
+                .with_payload(DiagnosticPayload::Enum(
+                    EnumDiagnostic::CategoryNotSelectable {
+                        label: resolved.member_label.clone(),
+                    },
+                )),
+            );
             MarrowType::Invalid
         }
         MemberPathResolution::Found(_) => MarrowType::Enum {
@@ -379,39 +372,45 @@ fn enum_member_value_type(
             name: enum_name.clone(),
         },
         MemberPathResolution::Ambiguous(paths) => {
-            diagnostics.push(CheckDiagnostic {
-                code: CHECK_AMBIGUOUS_MEMBER,
-                severity: Severity::Error,
-                file: file.to_path_buf(),
-                message: format!(
-                    "`{}` names more than one member of `{enum_name}`; qualify as {}",
-                    segments.join("::"),
-                    join_or(&paths)
-                ),
-                span,
-                payload: DiagnosticPayload::Enum(EnumDiagnostic::AmbiguousMember {
-                    enum_name: enum_name.clone(),
-                    label: resolved.member_label,
-                    candidates: paths,
-                }),
-            });
+            diagnostics.push(
+                CheckDiagnostic::error(
+                    CHECK_AMBIGUOUS_MEMBER,
+                    file,
+                    span,
+                    format!(
+                        "`{}` names more than one member of `{enum_name}`; qualify as {}",
+                        segments.join("::"),
+                        join_or(&paths)
+                    ),
+                )
+                .with_payload(DiagnosticPayload::Enum(
+                    EnumDiagnostic::AmbiguousMember {
+                        enum_name: enum_name.clone(),
+                        label: resolved.member_label,
+                        candidates: paths,
+                    },
+                )),
+            );
             MarrowType::Invalid
         }
         MemberPathResolution::NotFound => {
-            diagnostics.push(CheckDiagnostic {
-                code: CHECK_UNKNOWN_ENUM_MEMBER,
-                severity: Severity::Error,
-                file: file.to_path_buf(),
-                message: format!(
-                    "`{enum_name}` has no member `{}`",
-                    segments[segments.len() - 1]
-                ),
-                span,
-                payload: DiagnosticPayload::Enum(EnumDiagnostic::UnknownMember {
-                    enum_name: enum_name.clone(),
-                    member: resolved.member_label,
-                }),
-            });
+            diagnostics.push(
+                CheckDiagnostic::error(
+                    CHECK_UNKNOWN_ENUM_MEMBER,
+                    file,
+                    span,
+                    format!(
+                        "`{enum_name}` has no member `{}`",
+                        segments[segments.len() - 1]
+                    ),
+                )
+                .with_payload(DiagnosticPayload::Enum(
+                    EnumDiagnostic::UnknownMember {
+                        enum_name: enum_name.clone(),
+                        member: resolved.member_label,
+                    },
+                )),
+            );
             MarrowType::Invalid
         }
     }

@@ -4,9 +4,7 @@
 
 use std::path::Path;
 
-use marrow_syntax::Severity;
-
-use crate::{CHECK_RETURN_VALUE, CheckDiagnostic, DiagnosticPayload};
+use crate::{CHECK_RETURN_VALUE, CheckDiagnostic};
 
 /// Flag each `return` whose value presence does not match the declared return
 /// type. Recurses into nested blocks; `finally` is left to
@@ -26,14 +24,12 @@ pub(crate) fn check_return_values(
                     (false, true) => "a function with no return type cannot return a value",
                     _ => continue,
                 };
-                diagnostics.push(CheckDiagnostic {
-                    code: CHECK_RETURN_VALUE,
-                    severity: Severity::Error,
-                    file: file.to_path_buf(),
-                    message: message.to_string(),
-                    span: *span,
-                    payload: DiagnosticPayload::None,
-                });
+                diagnostics.push(CheckDiagnostic::error(
+                    CHECK_RETURN_VALUE,
+                    file,
+                    *span,
+                    message,
+                ));
             }
             Statement::If {
                 then_block,

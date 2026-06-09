@@ -1,5 +1,3 @@
-use marrow_syntax::Severity;
-
 use super::scope::NameScope;
 use super::target::{
     ReadTarget, declaration_proves_presence, proof_place, read_file, read_target_with_scope,
@@ -8,9 +6,7 @@ use crate::facts::{
     PresenceProofDraft, PresenceProofPlace, PresenceProofRead, PresenceProofSource,
     PresenceProofStatus,
 };
-use crate::{
-    CHECK_BARE_MAYBE_PRESENT_READ, CheckDiagnostic, CheckedExpr, CheckedProgram, DiagnosticPayload,
-};
+use crate::{CHECK_BARE_MAYBE_PRESENT_READ, CheckDiagnostic, CheckedExpr, CheckedProgram};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ReadContext {
@@ -67,14 +63,13 @@ pub(super) fn record_read(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     if proof.status == PresenceProofStatus::PendingAttachedData && context == ReadContext::Bare {
-        diagnostics.push(CheckDiagnostic {
-            code: CHECK_BARE_MAYBE_PRESENT_READ,
-            severity: Severity::Error,
-            file: read_file(program, &proof.place).unwrap_or_default(),
-            message: "maybe-present saved read must be resolved at the read site".to_string(),
-            span: expr.span(),
-            payload: DiagnosticPayload::None,
-        });
+        let file = read_file(program, &proof.place).unwrap_or_default();
+        diagnostics.push(CheckDiagnostic::error(
+            CHECK_BARE_MAYBE_PRESENT_READ,
+            &file,
+            expr.span(),
+            "maybe-present saved read must be resolved at the read site",
+        ));
     }
     program.facts.record_presence_proof(PresenceProofDraft {
         place: proof.place,

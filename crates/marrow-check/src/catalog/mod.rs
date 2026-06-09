@@ -938,15 +938,12 @@ fn retire_already_recorded(entries: &[CatalogEntry], path: &str) -> bool {
 }
 
 fn report_unresolved_intent(file: &Path, span: SourceSpan, diagnostics: &mut Vec<CheckDiagnostic>) {
-    diagnostics.push(CheckDiagnostic {
-        code: CHECK_EVOLVE_TARGET,
-        severity: Severity::Error,
-        file: file.to_path_buf(),
-        message: "evolve target does not name an accepted catalog entry to carry forward"
-            .to_string(),
+    diagnostics.push(CheckDiagnostic::error(
+        CHECK_EVOLVE_TARGET,
+        file,
         span,
-        payload: DiagnosticPayload::None,
-    });
+        "evolve target does not name an accepted catalog entry to carry forward",
+    ));
 }
 
 struct AcceptedCatalog<'a> {
@@ -1170,21 +1167,22 @@ fn push_reserved_reuse(
     reserved: &CatalogEntry,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    diagnostics.push(CheckDiagnostic {
-        code: CHECK_CATALOG_INTENT,
-        severity: Severity::Error,
-        file: source.file.clone(),
-        message: format!(
-            "`{}` is reserved by catalog id `{}` and cannot be reused",
-            source.path, reserved.stable_id
-        ),
-        span: source.span,
-        payload: DiagnosticPayload::ReservedCatalogPathReuse {
+    diagnostics.push(
+        CheckDiagnostic::error(
+            CHECK_CATALOG_INTENT,
+            &source.file,
+            source.span,
+            format!(
+                "`{}` is reserved by catalog id `{}` and cannot be reused",
+                source.path, reserved.stable_id
+            ),
+        )
+        .with_payload(DiagnosticPayload::ReservedCatalogPathReuse {
             source_kind: source.kind,
             source_path: source.path.clone(),
             reserved_stable_id: reserved.stable_id.clone(),
-        },
-    });
+        }),
+    );
 }
 
 fn prepare_proposal_path(entries: &mut Vec<CatalogEntry>, kind: CatalogEntryKind, path: &str) {

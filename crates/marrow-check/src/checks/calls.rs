@@ -8,7 +8,7 @@ use std::path::Path;
 
 use marrow_schema::{ResourceSchema, Type};
 use marrow_store::value::ScalarType;
-use marrow_syntax::{Severity, SourceSpan};
+use marrow_syntax::SourceSpan;
 
 use crate::infer::{layer_key_type, record_identity_type, saved_group_chain};
 use crate::resolve::resolve_store_by_root;
@@ -243,17 +243,15 @@ fn check_user_function_call(
         }) => function,
         Resolution::NotVisible(name) => {
             if file_in_program(env.program, env.file) {
-                env.diagnostics.push(CheckDiagnostic {
-                    code: CHECK_PRIVATE_FUNCTION,
-                    severity: Severity::Error,
-                    file: env.file.to_path_buf(),
-                    message: format!(
+                env.diagnostics.push(CheckDiagnostic::error(
+                    CHECK_PRIVATE_FUNCTION,
+                    env.file,
+                    env.span,
+                    format!(
                         "function `{name}` is private to its module; mark it `pub` to call it \
                          from another module"
                     ),
-                    span: env.span,
-                    payload: DiagnosticPayload::None,
-                });
+                ));
             }
             return MarrowType::Unknown;
         }
@@ -265,30 +263,27 @@ fn check_user_function_call(
                     .map(|module| format!("`{module}::{leaf}`"))
                     .collect::<Vec<_>>()
                     .join(", ");
-                env.diagnostics.push(CheckDiagnostic {
-                    code: CHECK_AMBIGUOUS_CALL,
-                    severity: Severity::Error,
-                    file: env.file.to_path_buf(),
-                    message: format!(
-                        "call to `{leaf}` is ambiguous; qualify it as one of {options}"
-                    ),
-                    span: env.span,
-                    payload: DiagnosticPayload::None,
-                });
+                env.diagnostics.push(CheckDiagnostic::error(
+                    CHECK_AMBIGUOUS_CALL,
+                    env.file,
+                    env.span,
+                    format!("call to `{leaf}` is ambiguous; qualify it as one of {options}"),
+                ));
             }
             return MarrowType::Unknown;
         }
         Resolution::Found(_) | Resolution::Unresolved => {
             if file_in_program(env.program, env.file) {
                 let name = segments.join("::");
-                env.diagnostics.push(CheckDiagnostic {
-                    code: CHECK_UNRESOLVED_CALL,
-                    severity: Severity::Error,
-                    file: env.file.to_path_buf(),
-                    message: format!("function `{name}` is not defined"),
-                    span: env.span,
-                    payload: DiagnosticPayload::UnresolvedCall(name),
-                });
+                env.diagnostics.push(
+                    CheckDiagnostic::error(
+                        CHECK_UNRESOLVED_CALL,
+                        env.file,
+                        env.span,
+                        format!("function `{name}` is not defined"),
+                    )
+                    .with_payload(DiagnosticPayload::UnresolvedCall(name)),
+                );
             }
             return MarrowType::Unknown;
         }
@@ -325,17 +320,20 @@ fn check_user_function_call(
         if let Some(param_index) = param_index {
             let param = &function.params[param_index];
             if supplied[param_index] {
-                env.diagnostics.push(CheckDiagnostic {
-                    code: CHECK_CALL_ARGUMENT,
-                    severity: Severity::Error,
-                    file: env.file.to_path_buf(),
-                    message: format!(
-                        "function `{callee}` parameter `{}` is supplied more than once",
-                        param.name
-                    ),
-                    span: env.span,
-                    payload: DiagnosticPayload::DuplicateNamedArgument(param.name.clone()),
-                });
+                env.diagnostics.push(
+                    CheckDiagnostic::error(
+                        CHECK_CALL_ARGUMENT,
+                        env.file,
+                        env.span,
+                        format!(
+                            "function `{callee}` parameter `{}` is supplied more than once",
+                            param.name
+                        ),
+                    )
+                    .with_payload(DiagnosticPayload::DuplicateNamedArgument(
+                        param.name.clone(),
+                    )),
+                );
                 continue;
             }
             supplied[param_index] = true;
@@ -403,14 +401,15 @@ fn check_error_constructor_args(
             continue;
         };
         if supplied[index] {
-            diagnostics.push(CheckDiagnostic {
-                code: CHECK_CALL_ARGUMENT,
-                severity: Severity::Error,
-                file: file.to_path_buf(),
-                message: format!("field `{name}` is supplied more than once"),
-                span,
-                payload: DiagnosticPayload::DuplicateNamedArgument(name.clone()),
-            });
+            diagnostics.push(
+                CheckDiagnostic::error(
+                    CHECK_CALL_ARGUMENT,
+                    file,
+                    span,
+                    format!("field `{name}` is supplied more than once"),
+                )
+                .with_payload(DiagnosticPayload::DuplicateNamedArgument(name.clone())),
+            );
             continue;
         }
         supplied[index] = true;
@@ -442,14 +441,12 @@ fn check_value_materialization_args(
     {
         return;
     }
-    diagnostics.push(CheckDiagnostic {
-        code: CHECK_COLLECTION_UNSUPPORTED,
-        severity: Severity::Error,
-        file: file.to_path_buf(),
-        message: format!("`{name}` cannot materialize values from an index branch; use `keys`"),
+    diagnostics.push(CheckDiagnostic::error(
+        CHECK_COLLECTION_UNSUPPORTED,
+        file,
         span,
-        payload: DiagnosticPayload::None,
-    });
+        format!("`{name}` cannot materialize values from an index branch; use `keys`"),
+    ));
 }
 
 fn check_append_args(
@@ -464,16 +461,17 @@ fn check_append_args(
         return;
     };
     if matches!(node.kind, marrow_schema::NodeKind::Group) {
-        diagnostics.push(CheckDiagnostic {
-            code: CHECK_CALL_ARGUMENT,
-            severity: Severity::Error,
-            file: file.to_path_buf(),
-            message:
-                "`append` target must be a keyed leaf layer, but this path names a group layer"
-                    .to_string(),
-            span,
-            payload: DiagnosticPayload::AppendTarget(AppendTargetDiagnostic::GroupLayer),
-        });
+        diagnostics.push(
+            CheckDiagnostic::error(
+                CHECK_CALL_ARGUMENT,
+                file,
+                span,
+                "`append` target must be a keyed leaf layer, but this path names a group layer",
+            )
+            .with_payload(DiagnosticPayload::AppendTarget(
+                AppendTargetDiagnostic::GroupLayer,
+            )),
+        );
     }
 }
 
@@ -498,25 +496,26 @@ fn check_conversion_arg(
     if target.accepts(arg_type) {
         return;
     }
-    diagnostics.push(CheckDiagnostic {
-        code: CHECK_CALL_ARGUMENT,
-        severity: Severity::Error,
-        file: file.to_path_buf(),
-        message: format!(
-            "`{}` cannot convert `{}`; supported sources are {}",
-            target.spelling(),
-            marrow_type_name(arg_type),
-            target.supported_sources_message()
-        ),
-        span,
-        payload: DiagnosticPayload::ConversionUnsupportedSource(
+    diagnostics.push(
+        CheckDiagnostic::error(
+            CHECK_CALL_ARGUMENT,
+            file,
+            span,
+            format!(
+                "`{}` cannot convert `{}`; supported sources are {}",
+                target.spelling(),
+                marrow_type_name(arg_type),
+                target.supported_sources_message()
+            ),
+        )
+        .with_payload(DiagnosticPayload::ConversionUnsupportedSource(
             ConversionUnsupportedSourceDiagnostic {
                 target,
                 source: arg_type.clone(),
                 accepted_sources: target.accepted_source_types(),
             },
-        ),
-    });
+        )),
+    );
 }
 
 fn check_plain_call_modes(
@@ -559,14 +558,12 @@ fn check_call_mode(
         ));
     }
     if arg.mode.is_some() && !crate::rules::is_assignable(&arg.value) {
-        diagnostics.push(CheckDiagnostic {
-            code: crate::rules::CHECK_INVALID_ASSIGN_TARGET,
-            severity: Severity::Error,
-            file: file.to_path_buf(),
-            message: "inout argument is not a writable place".to_string(),
-            span: arg.value.span(),
-            payload: DiagnosticPayload::None,
-        });
+        diagnostics.push(CheckDiagnostic::error(
+            crate::rules::CHECK_INVALID_ASSIGN_TARGET,
+            file,
+            arg.value.span(),
+            "inout argument is not a writable place",
+        ));
     }
 }
 
@@ -663,14 +660,15 @@ fn check_resource_constructor_args(input: ResourceConstructorCheck<'_>) {
             continue;
         };
         if supplied[index] {
-            diagnostics.push(CheckDiagnostic {
-                code: CHECK_CALL_ARGUMENT,
-                severity: Severity::Error,
-                file: file.to_path_buf(),
-                message: format!("field `{name}` is supplied more than once"),
-                span,
-                payload: DiagnosticPayload::DuplicateNamedArgument(name.clone()),
-            });
+            diagnostics.push(
+                CheckDiagnostic::error(
+                    CHECK_CALL_ARGUMENT,
+                    file,
+                    span,
+                    format!("field `{name}` is supplied more than once"),
+                )
+                .with_payload(DiagnosticPayload::DuplicateNamedArgument(name.clone())),
+            );
             continue;
         }
         supplied[index] = true;
@@ -741,17 +739,15 @@ pub(crate) fn check_one_arg(
         // Strict typing: an untyped argument against a convertible parameter must be
         // converted first.
         None if matches!(arg_type, MarrowType::Unknown) && expects_conversion(parameter) => {
-            diagnostics.push(CheckDiagnostic {
-                code: CHECK_UNTYPED_VALUE,
-                severity: Severity::Error,
-                file: file.to_path_buf(),
-                message: format!(
+            diagnostics.push(CheckDiagnostic::error(
+                CHECK_UNTYPED_VALUE,
+                file,
+                span,
+                format!(
                     "argument to `{label}` has no known type, but `{}` is expected; convert it first",
                     marrow_type_name(parameter),
                 ),
-                span,
-                payload: DiagnosticPayload::None,
-            });
+            ));
         }
         None => {}
     }
@@ -812,19 +808,17 @@ pub(crate) fn check_next_id(
     if store.store.single_int_root() {
         return identity_type_for_store(store.store);
     }
-    diagnostics.push(CheckDiagnostic {
-        code: CHECK_NEXT_ID_REQUIRES_SINGLE_INT,
-        severity: Severity::Error,
-        file: file.to_path_buf(),
-        message: format!(
+    diagnostics.push(CheckDiagnostic::error(
+        CHECK_NEXT_ID_REQUIRES_SINGLE_INT,
+        file,
+        span,
+        format!(
             "`nextId` requires a store with one `int` identity key, but `^{root}` \
              ({}) has no default allocation policy; composite and non-integer \
              identities are application-provided",
             store.store.next_id_shape(),
         ),
-        span,
-        payload: DiagnosticPayload::None,
-    });
+    ));
     MarrowType::Unknown
 }
 
@@ -922,19 +916,20 @@ pub(crate) fn check_append(
         return;
     };
     if !matches!(as_primitive(&key_type), Some(ScalarType::Int)) {
-        diagnostics.push(CheckDiagnostic {
-            code: CHECK_CALL_ARGUMENT,
-            severity: Severity::Error,
-            file: file.to_path_buf(),
-            message: format!(
-                "`append` requires an int-keyed layer, but this layer is keyed by `{}`",
-                marrow_type_name(&key_type)
-            ),
-            span,
-            payload: DiagnosticPayload::AppendTarget(AppendTargetDiagnostic::NonIntKeyedLayer {
-                key_type,
-            }),
-        });
+        diagnostics.push(
+            CheckDiagnostic::error(
+                CHECK_CALL_ARGUMENT,
+                file,
+                span,
+                format!(
+                    "`append` requires an int-keyed layer, but this layer is keyed by `{}`",
+                    marrow_type_name(&key_type)
+                ),
+            )
+            .with_payload(DiagnosticPayload::AppendTarget(
+                AppendTargetDiagnostic::NonIntKeyedLayer { key_type },
+            )),
+        );
     }
 }
 
@@ -953,14 +948,12 @@ pub(crate) fn neighbor_unsupported(
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> MarrowType {
-    diagnostics.push(CheckDiagnostic {
-        code: CHECK_NEIGHBOR_UNSUPPORTED,
-        severity: Severity::Error,
-        file: file.to_path_buf(),
-        message: format!("`{which}` cannot navigate {shape}"),
+    diagnostics.push(CheckDiagnostic::error(
+        CHECK_NEIGHBOR_UNSUPPORTED,
+        file,
         span,
-        payload: DiagnosticPayload::None,
-    });
+        format!("`{which}` cannot navigate {shape}"),
+    ));
     MarrowType::Unknown
 }
 

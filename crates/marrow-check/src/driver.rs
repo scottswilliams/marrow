@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use marrow_project::{DiscoverError, ProjectConfig, discover_test_modules};
 use marrow_schema::stdlib::{self, ParamType, ReturnType};
-use marrow_syntax::{Severity, SourceSpan, parse_source};
+use marrow_syntax::{SourceSpan, parse_source};
 
 use crate::analysis;
 use crate::checks;
@@ -645,21 +645,22 @@ fn split_duplicate_test_modules(
     let mut unique = Vec::new();
     for module in modules {
         if let Some(first) = project_module_sources.get(module.name.as_str()) {
-            report.diagnostics.push(CheckDiagnostic {
-                code: CHECK_DUPLICATE_MODULE,
-                severity: Severity::Error,
-                file: module.source_file.clone(),
-                message: format!(
-                    "module `{}` is already declared by `{}`",
-                    module.name,
-                    first.display()
-                ),
-                span: SourceSpan::default(),
-                payload: DiagnosticPayload::DuplicateModule {
+            report.diagnostics.push(
+                CheckDiagnostic::error(
+                    CHECK_DUPLICATE_MODULE,
+                    &module.source_file,
+                    SourceSpan::default(),
+                    format!(
+                        "module `{}` is already declared by `{}`",
+                        module.name,
+                        first.display()
+                    ),
+                )
+                .with_payload(DiagnosticPayload::DuplicateModule {
                     name: module.name.clone(),
                     first_file: (*first).clone(),
-                },
-            });
+                }),
+            );
             duplicates.insert(module.name);
         } else {
             unique.push(module);
@@ -715,14 +716,12 @@ pub(crate) fn read_source(
     match std::fs::read_to_string(file_path) {
         Ok(source) => Some(source),
         Err(error) => {
-            diagnostics.push(CheckDiagnostic {
-                code: IO_READ,
-                severity: Severity::Error,
-                file: file_path.to_path_buf(),
-                message: format!("failed to read source: {error}"),
-                span: SourceSpan::default(),
-                payload: DiagnosticPayload::None,
-            });
+            diagnostics.push(CheckDiagnostic::error(
+                IO_READ,
+                file_path,
+                SourceSpan::default(),
+                format!("failed to read source: {error}"),
+            ));
             None
         }
     }
@@ -812,17 +811,15 @@ pub(crate) fn check_file_source(
                     }
                     stores.push(schema);
                 } else {
-                    diagnostics.push(CheckDiagnostic {
-                        code: CHECK_UNKNOWN_TYPE,
-                        severity: Severity::Error,
-                        file: file_path.to_path_buf(),
-                        message: format!(
+                    diagnostics.push(CheckDiagnostic::error(
+                        CHECK_UNKNOWN_TYPE,
+                        file_path,
+                        store.span,
+                        format!(
                             "unknown resource `{}` for store `^{}`",
                             store.resource, store.root.root
                         ),
-                        span: store.span,
-                        payload: DiagnosticPayload::None,
-                    });
+                    ));
                 }
             }
             marrow_syntax::Declaration::Enum(decl) => {
@@ -929,14 +926,8 @@ fn schema_diagnostic(file_path: &Path, error: marrow_schema::SchemaError) -> Che
         message,
         span,
     } = error;
-    CheckDiagnostic {
-        code,
-        severity: Severity::Error,
-        file: file_path.to_path_buf(),
-        message,
-        span,
-        payload: DiagnosticPayload::Schema(kind),
-    }
+    CheckDiagnostic::error(code, file_path, span, message)
+        .with_payload(DiagnosticPayload::Schema(kind))
 }
 
 /// Resolve a function declaration for the checked-program artifact: its
@@ -1136,17 +1127,12 @@ pub(crate) fn module_path_error(
     message: String,
     expected: Option<String>,
 ) -> CheckDiagnostic {
-    CheckDiagnostic {
-        code: CHECK_MODULE_PATH,
-        severity: Severity::Error,
-        file: file.path.clone(),
-        message,
-        span: module.span,
-        payload: DiagnosticPayload::ModulePath {
+    CheckDiagnostic::error(CHECK_MODULE_PATH, &file.path, module.span, message).with_payload(
+        DiagnosticPayload::ModulePath {
             declared: module.name.clone(),
             expected,
         },
-    }
+    )
 }
 
 /// How a name enters a file's top-level namespace. Only declarations may
@@ -1203,31 +1189,30 @@ fn check_duplicate_declarations(
             continue;
         }
         if *kind == NameKind::Declaration && is_builtin_name(name) {
-            diagnostics.push(CheckDiagnostic {
-                code: CHECK_DUPLICATE_DECLARATION,
-                severity: Severity::Error,
-                file: file.to_path_buf(),
-                message: format!(
+            diagnostics.push(CheckDiagnostic::error(
+                CHECK_DUPLICATE_DECLARATION,
+                file,
+                *span,
+                format!(
                     "`{name}` is a builtin name and cannot be used as a module-level {}",
                     kind.label()
                 ),
-                span: *span,
-                payload: DiagnosticPayload::None,
-            });
+            ));
             continue;
         }
         match first_seen.get(name) {
-            Some(first) => diagnostics.push(CheckDiagnostic {
-                code: CHECK_DUPLICATE_DECLARATION,
-                severity: Severity::Error,
-                file: file.to_path_buf(),
-                message: format!("`{name}` is already declared on line {}", first.line),
-                span: *span,
-                payload: DiagnosticPayload::DuplicateDeclaration {
+            Some(first) => diagnostics.push(
+                CheckDiagnostic::error(
+                    CHECK_DUPLICATE_DECLARATION,
+                    file,
+                    *span,
+                    format!("`{name}` is already declared on line {}", first.line),
+                )
+                .with_payload(DiagnosticPayload::DuplicateDeclaration {
                     name: (*name).to_string(),
                     first_span: *first,
-                },
-            }),
+                }),
+            ),
             None => {
                 first_seen.insert(name, *span);
             }

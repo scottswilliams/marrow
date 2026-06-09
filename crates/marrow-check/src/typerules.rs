@@ -4,9 +4,9 @@
 use std::path::Path;
 
 use marrow_store::value::ScalarType;
-use marrow_syntax::{Severity, SourceSpan};
+use marrow_syntax::SourceSpan;
 
-use crate::{CHECK_LITERAL_RANGE, CheckDiagnostic, DiagnosticPayload, MarrowType};
+use crate::{CHECK_LITERAL_RANGE, CheckDiagnostic, MarrowType};
 
 /// The decimal envelope, mirroring `marrow_store::decimal`: at most 34
 /// significant digits and 34 fractional places.
@@ -37,14 +37,12 @@ pub(crate) fn check_literal_range(
             LiteralKind::Integer => "int",
             _ => "decimal",
         };
-        diagnostics.push(CheckDiagnostic {
-            code: CHECK_LITERAL_RANGE,
-            severity: Severity::Error,
-            file: file.to_path_buf(),
-            message: format!("{type_name} literal `{text}` is out of range"),
+        diagnostics.push(CheckDiagnostic::error(
+            CHECK_LITERAL_RANGE,
+            file,
             span,
-            payload: DiagnosticPayload::None,
-        });
+            format!("{type_name} literal `{text}` is out of range"),
+        ));
     }
 }
 

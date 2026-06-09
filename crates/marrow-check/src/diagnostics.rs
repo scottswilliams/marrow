@@ -2,7 +2,7 @@
 //! payloads that travel beside a rendered message, and the [`CheckDiagnostic`] /
 //! [`CheckReport`] result types.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use marrow_syntax::{Severity, SourceSpan};
 
@@ -435,6 +435,52 @@ pub struct CheckDiagnostic {
     /// Typed facts for diagnostics whose consumers need structured data. Set at
     /// the emit site so consumers do not read the rendered message.
     pub payload: DiagnosticPayload,
+}
+
+impl CheckDiagnostic {
+    /// An error diagnostic with no typed payload. The single owner of the
+    /// `Severity::Error` and owned-file defaults; attach structured facts with
+    /// [`with_payload`](Self::with_payload).
+    pub fn error(
+        code: &'static str,
+        file: &Path,
+        span: SourceSpan,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            code,
+            severity: Severity::Error,
+            file: file.to_path_buf(),
+            message: message.into(),
+            span,
+            payload: DiagnosticPayload::None,
+        }
+    }
+
+    /// A warning diagnostic with no typed payload. Counterpart to
+    /// [`error`](Self::error) for non-fatal findings.
+    pub fn warning(
+        code: &'static str,
+        file: &Path,
+        span: SourceSpan,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            code,
+            severity: Severity::Warning,
+            file: file.to_path_buf(),
+            message: message.into(),
+            span,
+            payload: DiagnosticPayload::None,
+        }
+    }
+
+    /// Attach typed facts for consumers that read structured data instead of the
+    /// rendered message.
+    pub fn with_payload(mut self, payload: DiagnosticPayload) -> Self {
+        self.payload = payload;
+        self
+    }
 }
 
 impl marrow_syntax::Diagnose for CheckDiagnostic {

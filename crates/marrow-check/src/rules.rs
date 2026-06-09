@@ -10,14 +10,13 @@ use std::path::Path;
 
 use marrow_schema::Type;
 use marrow_syntax::{
-    Block, CatchClause, Expression, FunctionDecl, InterpolationPart, Severity, Statement,
-    format_expression,
+    Block, CatchClause, Expression, FunctionDecl, InterpolationPart, Statement, format_expression,
 };
 
 use crate::checks::check_range_value;
 use crate::typerules::check_literal_range;
 use crate::walk::for_each_child_expr;
-use crate::{CHECK_TRY_HANDLER, CheckDiagnostic, DiagnosticPayload};
+use crate::{CHECK_TRY_HANDLER, CheckDiagnostic};
 
 /// A `finally` block must not let control flow escape it via `return`, `break`,
 /// or `continue`.
@@ -399,14 +398,12 @@ fn check_catch(file: &Path, catch: &CatchClause, out: &mut Vec<CheckDiagnostic>)
     if let Some(ty) = &catch.ty
         && ty.text != "Error"
     {
-        out.push(CheckDiagnostic {
-            code: CHECK_CATCH_TYPE,
-            severity: Severity::Error,
-            file: file.to_path_buf(),
-            message: format!("catch type must be `Error`, found `{}`", ty.text),
-            span: catch.block.span,
-            payload: DiagnosticPayload::None,
-        });
+        out.push(CheckDiagnostic::error(
+            CHECK_CATCH_TYPE,
+            file,
+            catch.block.span,
+            format!("catch type must be `Error`, found `{}`", ty.text),
+        ));
     }
 }
 
@@ -859,15 +856,7 @@ fn diagnostic(
     expr: &Expression,
     message: &str,
 ) -> CheckDiagnostic {
-    let span = expr.span();
-    CheckDiagnostic {
-        code,
-        severity: Severity::Error,
-        file: file.to_path_buf(),
-        message: message.to_string(),
-        span,
-        payload: DiagnosticPayload::None,
-    }
+    CheckDiagnostic::error(code, file, expr.span(), message)
 }
 
 fn diagnostic_at(
@@ -876,13 +865,5 @@ fn diagnostic_at(
     statement: &Statement,
     message: &str,
 ) -> CheckDiagnostic {
-    let span = statement.span();
-    CheckDiagnostic {
-        code,
-        severity: Severity::Error,
-        file: file.to_path_buf(),
-        message: message.to_string(),
-        span,
-        payload: DiagnosticPayload::None,
-    }
+    CheckDiagnostic::error(code, file, statement.span(), message)
 }

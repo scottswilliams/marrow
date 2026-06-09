@@ -1,8 +1,6 @@
 use std::path::Path;
 
-use marrow_syntax::{
-    ArgMode, Block, Declaration, EvolveStep, Expression, Severity, SourceSpan, Statement,
-};
+use marrow_syntax::{ArgMode, Block, Declaration, EvolveStep, Expression, SourceSpan, Statement};
 
 use crate::infer::saved_layer_chain;
 use crate::resolve::resolve_store_by_root;
@@ -262,12 +260,7 @@ fn push(
     payload: DiagnosticPayload,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    diagnostics.push(CheckDiagnostic {
-        code: CHECK_REJECTED_SURFACE,
-        severity: Severity::Error,
-        file: file.to_path_buf(),
-        message: message.to_string(),
-        span,
-        payload,
-    });
+    diagnostics.push(
+        CheckDiagnostic::error(CHECK_REJECTED_SURFACE, file, span, message).with_payload(payload),
+    );
 }

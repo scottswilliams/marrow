@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use marrow_schema::{IndexSchema, ResourceSchema, StoreSchema};
-use marrow_syntax::Severity;
 
 use crate::infer::{
     infer_type, layer_key_type, lift_member_type, saved_group_entry_type, saved_layer_chain,
@@ -14,8 +13,8 @@ use crate::infer::{
 };
 use crate::resolve::resolve_store_by_root;
 use crate::{
-    CHECK_COLLECTION_UNSUPPORTED, CheckDiagnostic, CheckedProgram, DiagnosticPayload, MarrowType,
-    TypeNames, identity_type_for_store, resource_type_name,
+    CHECK_COLLECTION_UNSUPPORTED, CheckDiagnostic, CheckedProgram, MarrowType, TypeNames,
+    identity_type_for_store, resource_type_name,
 };
 
 use super::diagnostics::key_type_diagnostic;
@@ -145,14 +144,12 @@ pub(super) fn check_for_collection_support(
     if non_unique_index_branch_yields_identity(store, index, arg_count) {
         return;
     }
-    diagnostics.push(CheckDiagnostic {
-        code: CHECK_COLLECTION_UNSUPPORTED,
-        severity: Severity::Error,
-        file: file.to_path_buf(),
-        message: "a two-name loop over an index branch must yield identity values".to_string(),
-        span: iterable.span(),
-        payload: DiagnosticPayload::None,
-    });
+    diagnostics.push(CheckDiagnostic::error(
+        CHECK_COLLECTION_UNSUPPORTED,
+        file,
+        iterable.span(),
+        "a two-name loop over an index branch must yield identity values",
+    ));
 }
 
 fn reversed_call_arg(expr: &marrow_syntax::Expression) -> Option<&marrow_syntax::Expression> {

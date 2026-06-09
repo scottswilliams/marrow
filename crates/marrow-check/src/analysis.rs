@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use marrow_project::{DiscoverError, ProjectConfig, discover_modules};
-use marrow_syntax::{Severity, SourceSpan};
+use marrow_syntax::SourceSpan;
 
 use crate::checks::{ModuleNamePolicy, ResolvedFileCheck, check_resolved_files};
 use crate::enums::normalize_program_named_types;
@@ -181,21 +181,22 @@ pub(crate) fn analyze_source_project(
                 continue;
             };
             match root_owners.get(&store.root.root) {
-                Some(first) => report.diagnostics.push(CheckDiagnostic {
-                    code: SCHEMA_DUPLICATE_ROOT_OWNER,
-                    severity: Severity::Error,
-                    file: file.path.clone(),
-                    message: format!(
-                        "saved root `^{}` is already owned by a store in `{}`",
-                        store.root.root,
-                        first.display()
-                    ),
-                    span: store.span,
-                    payload: DiagnosticPayload::DuplicateRootOwner {
+                Some(first) => report.diagnostics.push(
+                    CheckDiagnostic::error(
+                        SCHEMA_DUPLICATE_ROOT_OWNER,
+                        &file.path,
+                        store.span,
+                        format!(
+                            "saved root `^{}` is already owned by a store in `{}`",
+                            store.root.root,
+                            first.display()
+                        ),
+                    )
+                    .with_payload(DiagnosticPayload::DuplicateRootOwner {
                         root: store.root.root.clone(),
                         first_owner: first.clone(),
-                    },
-                }),
+                    }),
+                ),
                 None => {
                     root_owners.insert(store.root.root.clone(), file.path.clone());
                 }
@@ -210,20 +211,23 @@ pub(crate) fn analyze_source_project(
                 // A valid library module: enforce uniqueness of the name.
                 Some(expected) if expected == &module.name => {
                     if let Some(first) = declared.get(expected) {
-                        report.diagnostics.push(CheckDiagnostic {
-                            code: CHECK_DUPLICATE_MODULE,
-                            severity: Severity::Error,
-                            file: file.path.clone(),
-                            message: format!(
-                                "module `{expected}` is already declared by `{}`",
-                                first.display()
+                        report.diagnostics.push(
+                            CheckDiagnostic::error(
+                                CHECK_DUPLICATE_MODULE,
+                                &file.path,
+                                module.span,
+                                format!(
+                                    "module `{expected}` is already declared by `{}`",
+                                    first.display()
+                                ),
+                            )
+                            .with_payload(
+                                DiagnosticPayload::DuplicateModule {
+                                    name: expected.clone(),
+                                    first_file: first.clone(),
+                                },
                             ),
-                            span: module.span,
-                            payload: DiagnosticPayload::DuplicateModule {
-                                name: expected.clone(),
-                                first_file: first.clone(),
-                            },
-                        });
+                        );
                     } else {
                         declared.insert(expected.clone(), file.path.clone());
                         // The artifact takes a clean, path-matched, first-seen
@@ -316,16 +320,13 @@ pub(crate) fn analyze_source_project(
         program.modules.append(&mut scripts);
     } else {
         for script in &scripts {
-            report.diagnostics.push(CheckDiagnostic {
-                code: CHECK_MULTIPLE_SCRIPTS,
-                severity: Severity::Error,
-                file: script.source_file.clone(),
-                message: "a project may have at most one file without a `module` \
-                    declaration (its single-file script); declare a `module` for this file"
-                    .to_string(),
-                span: SourceSpan::default(),
-                payload: DiagnosticPayload::None,
-            });
+            report.diagnostics.push(CheckDiagnostic::error(
+                CHECK_MULTIPLE_SCRIPTS,
+                &script.source_file,
+                SourceSpan::default(),
+                "a project may have at most one file without a `module` \
+                    declaration (its single-file script); declare a `module` for this file",
+            ));
         }
     }
 

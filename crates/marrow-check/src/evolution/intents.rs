@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use marrow_syntax::{
-    Block, Declaration, EvolveStep, Expression, ParsedSource, Severity, SourceSpan, Statement,
+    Block, Declaration, EvolveStep, Expression, ParsedSource, SourceSpan, Statement,
 };
 
 use crate::catalog::{SourceCatalogEntry, source_catalog_entries};
@@ -23,7 +23,7 @@ use crate::typerules::{marrow_type_name, type_compatible};
 use crate::walk::for_each_child_expr;
 use crate::{
     CHECK_EVOLVE_TARGET, CHECK_EVOLVE_TRANSFORM, CHECK_EVOLVE_TYPE, CheckDiagnostic, CheckedBody,
-    CheckedModule, CheckedProgram, DiagnosticPayload, MarrowType,
+    CheckedModule, CheckedProgram, MarrowType,
 };
 
 /// One declared rename: the entity is now spelled `to_path` and was formerly
@@ -226,14 +226,12 @@ pub(crate) fn check_transform_effects(
         };
         let reason = impurity_reason(program, body);
         if let Some(reason) = reason {
-            diagnostics.push(CheckDiagnostic {
-                code: CHECK_EVOLVE_TRANSFORM,
-                severity: Severity::Error,
-                file: transform.file.clone(),
-                message: format!("an evolve transform body must be pure: {reason}"),
-                span: transform.body_span,
-                payload: DiagnosticPayload::None,
-            });
+            diagnostics.push(CheckDiagnostic::error(
+                CHECK_EVOLVE_TRANSFORM,
+                &transform.file,
+                transform.body_span,
+                format!("an evolve transform body must be pure: {reason}"),
+            ));
         }
     }
 }
@@ -337,19 +335,17 @@ impl TypeContext<'_> {
             diagnostics,
         );
         if type_compatible(&member_type, &actual) == Some(false) {
-            diagnostics.push(CheckDiagnostic {
-                code: CHECK_EVOLVE_TYPE,
-                severity: Severity::Error,
-                file: self.file.to_path_buf(),
-                message: format!(
+            diagnostics.push(CheckDiagnostic::error(
+                CHECK_EVOLVE_TYPE,
+                self.file,
+                value.span(),
+                format!(
                     "default value is `{}` but `{}` is `{}`",
                     marrow_type_name(&actual),
                     marrow_syntax::format_expression(target),
                     marrow_type_name(&member_type)
                 ),
-                span: value.span(),
-                payload: DiagnosticPayload::None,
-            });
+            ));
         }
     }
 
@@ -451,14 +447,7 @@ impl TypeContext<'_> {
     }
 
     fn transform_error(&self, span: SourceSpan, message: String) -> CheckDiagnostic {
-        CheckDiagnostic {
-            code: crate::CHECK_EVOLVE_TRANSFORM,
-            severity: Severity::Error,
-            file: self.file.to_path_buf(),
-            message,
-            span,
-            payload: DiagnosticPayload::None,
-        }
+        CheckDiagnostic::error(crate::CHECK_EVOLVE_TRANSFORM, self.file, span, message)
     }
 
     /// Whether the target names a top-level member of a resource: a bare resource name
@@ -785,16 +774,13 @@ fn target_span(target: &Expression, step: SourceSpan) -> SourceSpan {
 }
 
 fn report_target(file: &Path, span: SourceSpan, diagnostics: &mut Vec<CheckDiagnostic>) {
-    diagnostics.push(CheckDiagnostic {
-        code: CHECK_EVOLVE_TARGET,
-        severity: Severity::Error,
-        file: file.to_path_buf(),
-        message: "evolve target does not name a catalog-addressable entity \
-            (a resource member, saved root, store index, enum, or enum member)"
-            .to_string(),
+    diagnostics.push(CheckDiagnostic::error(
+        CHECK_EVOLVE_TARGET,
+        file,
         span,
-        payload: DiagnosticPayload::None,
-    });
+        "evolve target does not name a catalog-addressable entity \
+            (a resource member, saved root, store index, enum, or enum member)",
+    ));
 }
 
 #[cfg(test)]

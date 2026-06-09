@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use marrow_store::value::ScalarType;
-use marrow_syntax::{Severity, SourceSpan};
+use marrow_syntax::SourceSpan;
 
 use crate::infer::infer_type;
 use crate::typerules::{
@@ -18,7 +18,7 @@ use crate::{
     CHECK_UNTYPED_VALUE, CheckDiagnostic, CheckedProgram, DiagnosticPayload, MarrowType,
 };
 
-use super::diagnostics::{error_at, operator_diagnostic};
+use super::diagnostics::operator_diagnostic;
 
 /// Type-check an `if`/`while` condition (must be `bool`). Inferring it also
 /// operator-checks it. An unknown type — an unresolved call, a saved-data read — is
@@ -34,29 +34,35 @@ pub(crate) fn check_condition(
     let condition_type = infer_type(program, condition, scope, aliases, file, diagnostics);
     let span = condition.span();
     match as_primitive(&condition_type) {
-        Some(primitive) if primitive != ScalarType::Bool => diagnostics.push(error_at(
-            CHECK_CONDITION_TYPE,
-            file,
-            span,
-            format!("condition must be `bool`, found `{}`", primitive.name()),
-        )),
+        Some(primitive) if primitive != ScalarType::Bool => {
+            diagnostics.push(CheckDiagnostic::error(
+                CHECK_CONDITION_TYPE,
+                file,
+                span,
+                format!("condition must be `bool`, found `{}`", primitive.name()),
+            ))
+        }
         // An unresolved condition is untyped rather than a wrong type, since strict
         // typing cannot show it to be `bool`.
-        None if matches!(condition_type, MarrowType::Unknown) => diagnostics.push(error_at(
-            CHECK_UNTYPED_VALUE,
-            file,
-            span,
-            "condition has no known type; it must be `bool`".to_string(),
-        )),
+        None if matches!(condition_type, MarrowType::Unknown) => {
+            diagnostics.push(CheckDiagnostic::error(
+                CHECK_UNTYPED_VALUE,
+                file,
+                span,
+                "condition has no known type; it must be `bool`",
+            ))
+        }
         // `Error` and other concrete non-scalars are known types, not unknown ones,
         // so they are flagged like a wrong scalar rather than swallowed.
-        None if matches!(condition_type, MarrowType::Error) => diagnostics.push(error_at(
-            CHECK_CONDITION_TYPE,
-            file,
-            span,
-            "condition must be `bool`, found `Error`".to_string(),
-        )),
-        None if is_concrete_nonscalar(&condition_type) => diagnostics.push(error_at(
+        None if matches!(condition_type, MarrowType::Error) => {
+            diagnostics.push(CheckDiagnostic::error(
+                CHECK_CONDITION_TYPE,
+                file,
+                span,
+                "condition must be `bool`, found `Error`",
+            ))
+        }
+        None if is_concrete_nonscalar(&condition_type) => diagnostics.push(CheckDiagnostic::error(
             CHECK_CONDITION_TYPE,
             file,
             span,
@@ -80,17 +86,15 @@ pub(crate) fn check_throw_type(
 ) {
     match value_type {
         MarrowType::Error | MarrowType::Unknown => {}
-        _ => diagnostics.push(CheckDiagnostic {
-            code: CHECK_THROW_TYPE,
-            severity: Severity::Error,
-            file: file.to_path_buf(),
-            message: format!(
+        _ => diagnostics.push(CheckDiagnostic::error(
+            CHECK_THROW_TYPE,
+            file,
+            span,
+            format!(
                 "`throw` requires an `Error` value, found `{}`",
                 marrow_type_name(value_type)
             ),
-            span,
-            payload: DiagnosticPayload::None,
-        }),
+        )),
     }
 }
 
@@ -107,36 +111,35 @@ pub(crate) fn check_return_type(
 ) {
     match type_compatible(return_type, value_type) {
         Some(true) => {}
-        Some(false) => diagnostics.push(CheckDiagnostic {
-            code: CHECK_RETURN_TYPE,
-            severity: Severity::Error,
-            file: file.to_path_buf(),
-            message: format!(
-                "function returns `{}`, but this value is `{}`",
-                marrow_type_name(return_type),
-                marrow_type_name(value_type),
-            ),
-            span,
-            payload: DiagnosticPayload::TypeMismatch {
+        Some(false) => diagnostics.push(
+            CheckDiagnostic::error(
+                CHECK_RETURN_TYPE,
+                file,
+                span,
+                format!(
+                    "function returns `{}`, but this value is `{}`",
+                    marrow_type_name(return_type),
+                    marrow_type_name(value_type),
+                ),
+            )
+            .with_payload(DiagnosticPayload::TypeMismatch {
                 expected: return_type.clone(),
                 found: value_type.clone(),
-            },
-        }),
+            }),
+        ),
         // Strict typing: an untyped value returned where a convertible type is
         // declared must be converted first. A return type with no conversion boundary
         // (void, a whole resource, a sequence) places no such constraint.
         None if matches!(value_type, MarrowType::Unknown) && expects_conversion(return_type) => {
-            diagnostics.push(CheckDiagnostic {
-                code: CHECK_UNTYPED_VALUE,
-                severity: Severity::Error,
-                file: file.to_path_buf(),
-                message: format!(
+            diagnostics.push(CheckDiagnostic::error(
+                CHECK_UNTYPED_VALUE,
+                file,
+                span,
+                format!(
                     "this `return` value has no known type, but the function returns `{}`; convert it first",
                     marrow_type_name(return_type),
                 ),
-                span,
-                payload: DiagnosticPayload::None,
-            });
+            ));
         }
         None => {}
     }
@@ -165,31 +168,30 @@ pub(crate) fn check_assignment(
         Some(true) => {}
         Some(false) => {
             let (expected, found) = mismatch_display(place, value);
-            diagnostics.push(CheckDiagnostic {
-                code: CHECK_ASSIGNMENT_TYPE,
-                severity: Severity::Error,
-                file: file.to_path_buf(),
-                message: format!("expected `{expected}`, but the value is `{found}`"),
-                span,
-                payload: DiagnosticPayload::TypeMismatch {
+            diagnostics.push(
+                CheckDiagnostic::error(
+                    CHECK_ASSIGNMENT_TYPE,
+                    file,
+                    span,
+                    format!("expected `{expected}`, but the value is `{found}`"),
+                )
+                .with_payload(DiagnosticPayload::TypeMismatch {
                     expected: place.clone(),
                     found: value.clone(),
-                },
-            });
+                }),
+            );
         }
         // An untyped value stored into a place with a conversion boundary.
         None if matches!(value, MarrowType::Unknown) && expects_conversion(place) => {
-            diagnostics.push(CheckDiagnostic {
-                code: CHECK_UNTYPED_VALUE,
-                severity: Severity::Error,
-                file: file.to_path_buf(),
-                message: format!(
+            diagnostics.push(CheckDiagnostic::error(
+                CHECK_UNTYPED_VALUE,
+                file,
+                span,
+                format!(
                     "the value stored into `{}` has no known type; convert it before typed use",
                     marrow_type_name(place),
                 ),
-                span,
-                payload: DiagnosticPayload::None,
-            });
+            ));
         }
         None => {}
     }

@@ -9,12 +9,12 @@ use std::path::Path;
 
 use marrow_store::Decimal;
 use marrow_store::value::ScalarType;
-use marrow_syntax::{Severity, SourceSpan};
+use marrow_syntax::SourceSpan;
 
 use crate::infer::infer_only;
 use crate::typerules::{as_primitive, is_steppable};
 use crate::walk::for_each_child_expr;
-use crate::{CHECK_RANGE_VALUE, CheckDiagnostic, CheckedProgram, DiagnosticPayload, MarrowType};
+use crate::{CHECK_RANGE_VALUE, CheckDiagnostic, CheckedProgram, MarrowType};
 
 use super::diagnostics::range_diagnostic;
 
@@ -67,14 +67,12 @@ pub(crate) fn check_range_value(
         ..
     } = expr
     {
-        diagnostics.push(CheckDiagnostic {
-            code: CHECK_RANGE_VALUE,
-            severity: Severity::Error,
-            file: file.to_path_buf(),
-            message: "a range can only be used as a `for` iterable".to_string(),
-            span: *span,
-            payload: DiagnosticPayload::None,
-        });
+        diagnostics.push(CheckDiagnostic::error(
+            CHECK_RANGE_VALUE,
+            file,
+            *span,
+            "a range can only be used as a `for` iterable",
+        ));
     }
     for_each_child_expr(expr, |child| check_range_value(file, child, diagnostics));
 }
