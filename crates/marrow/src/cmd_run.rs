@@ -64,6 +64,10 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
                     eprintln!("missing value for --entry");
                     return ExitCode::from(2);
                 };
+                if entry.is_some() {
+                    eprintln!("duplicate --entry");
+                    return ExitCode::from(2);
+                }
                 entry = Some(value.clone());
             }
             // An operator must type `--maintenance`; the default run and

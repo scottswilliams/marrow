@@ -28,6 +28,10 @@ reports diagnostics for open `.mw` documents; point an LSP-capable editor at it.
         eprintln!("unknown lsp option: {option}");
         return ExitCode::from(2);
     }
+    if let Some(argument) = args.first() {
+        eprintln!("unknown lsp argument: {argument}");
+        return ExitCode::from(2);
+    }
 
     let stdin = io::stdin();
     let stdout = io::stdout();
