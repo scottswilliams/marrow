@@ -4,10 +4,9 @@
 //! trailing-zero scale, so each value has one representation) within a
 //! 34-significant-digit / 34-fractional-place envelope. This module provides
 //! parsing, canonical formatting, exact add/sub/mul, half-to-even division, and
-//! value comparison.
-//!
-//! The same canonical form backs [`SavedValue::Decimal`](crate::value::SavedValue),
-//! so a decimal round-trips through storage unchanged.
+//! value comparison. The same canonical form backs
+//! [`SavedValue::Decimal`](crate::value::SavedValue), so a decimal round-trips
+//! through storage unchanged.
 
 use std::cmp::Ordering;
 
@@ -31,7 +30,7 @@ pub enum DecimalParseError {
 /// An exact base-10 decimal, value `coefficient * 10^(-scale)`, in canonical form.
 ///
 /// Canonical means the scale carries no trailing zero (`1.50` and `1.5` are the
-/// same `Decimal`), so equal values compare equal by their parts and `Eq` is the
+/// same `Decimal`), so equal values share one representation and `Eq` is the
 /// derived field equality. Ordering compares by numeric value, not by parts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Decimal {
@@ -300,8 +299,7 @@ impl PartialOrd for Decimal {
     }
 }
 
-/// Compare two non-negative magnitudes `a * 10^(-sa)` and `b * 10^(-sb)` without
-/// overflow, by their integer then fractional parts.
+/// Compare non-negative magnitudes `a * 10^(-sa)` and `b * 10^(-sb)` without overflow.
 fn cmp_magnitude(a: u128, sa: u32, b: u128, sb: u32) -> Ordering {
     let (a_int, a_frac) = split(a, sa);
     let (b_int, b_frac) = split(b, sb);
@@ -309,15 +307,15 @@ fn cmp_magnitude(a: u128, sa: u32, b: u128, sb: u32) -> Ordering {
         Ordering::Equal => {}
         ordering => return ordering,
     }
-    // Equal integer parts: align the fractional parts to the common scale. Each
-    // aligned value is below `10^(common scale) <= 10^34`, so it fits `u128`.
+    // Aligning the fractional parts to the common scale keeps each below
+    // `10^(common scale) <= 10^34`, so each aligned value fits `u128`.
     let common = sa.max(sb);
     let a_frac = a_frac * 10u128.pow(common - sa);
     let b_frac = b_frac * 10u128.pow(common - sb);
     a_frac.cmp(&b_frac)
 }
 
-/// Split a magnitude `m * 10^(-scale)` into its integer and fractional parts.
+/// Split a magnitude into its integer and fractional parts at `scale`.
 fn split(magnitude: u128, scale: u32) -> (u128, u128) {
     let divisor = 10u128.pow(scale);
     (magnitude / divisor, magnitude % divisor)
@@ -330,14 +328,11 @@ fn scaled_coefficient(coefficient: i128, power: u32) -> Option<i128> {
 
 /// The significant digits of a quotient produced by long division.
 struct DividedDigits {
-    /// Quotient digits, most significant first, with one guard digit past the
-    /// requested precision.
+    /// Quotient digits, most significant first, with one guard digit past precision.
     digits: Vec<u8>,
-    /// The power of ten of the leading digit (`0` for a units digit, negative
-    /// below one).
+    /// Power of ten of the leading digit (`0` for units, negative below one).
     leading_power: i32,
-    /// Whether a nonzero remainder survives past the generated digits, the sticky
-    /// bit for half-even ties.
+    /// Sticky bit: a nonzero remainder survives past `digits`, used for half-even ties.
     inexact: bool,
 }
 
@@ -354,8 +349,9 @@ fn divide_to_digits(dividend: u128, by: u128, precision: usize) -> DividedDigits
         leading_power = text.len() as i32 - 1;
         digits.extend(text.bytes().map(|b| b - b'0'));
     } else {
-        // The value is below 1: walk past leading fractional zeros (at most 34,
-        // since `dividend >= 1` and `by <= 10^34`) to the first nonzero digit.
+        // Value below 1: skip leading fractional zeros to the first nonzero digit.
+        // At most 34 of them, since `dividend >= 1` and `by <= 10^34`, so the loop
+        // terminates.
         leading_power = -1;
         loop {
             rem *= 10;
@@ -453,7 +449,7 @@ fn cmp_dropped_to_half(dropped: &[u8], drop: usize) -> Ordering {
     }
     match dropped[0].cmp(&5) {
         Ordering::Equal => {
-            if dropped[1..].iter().any(|digit| *digit != 0) {
+            if dropped[1..].iter().any(|&digit| digit != 0) {
                 Ordering::Greater
             } else {
                 Ordering::Equal
@@ -511,16 +507,13 @@ fn abs_coefficient_digits(coefficient: i128) -> Vec<u8> {
 }
 
 fn digits_to_i128(digits: &[u8]) -> Option<i128> {
-    let mut value = 0i128;
-    for digit in digits {
-        value = value.checked_mul(10)?.checked_add(i128::from(*digit))?;
-    }
-    Some(value)
+    digits.iter().try_fold(0i128, |value, &digit| {
+        value.checked_mul(10)?.checked_add(i128::from(digit))
+    })
 }
 
 fn trim_leading_zeros(digits: Vec<u8>) -> Vec<u8> {
-    let first_nonzero = digits.iter().position(|digit| *digit != 0);
-    match first_nonzero {
+    match digits.iter().position(|&digit| digit != 0) {
         Some(index) => digits[index..].to_vec(),
         None => vec![0],
     }
