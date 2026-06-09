@@ -41,10 +41,9 @@ pub(crate) fn write_saved_field(
         created_required_field_path(&path.place, identity, &[], &path.members, field, span, env)?;
     if let Some((store_root, arity)) = saved_field_identity_info(&path) {
         write_identity_saved_field(&path, field, value, store_root, arity, span, env)?;
-        finish_saved_field_write(&path, created_required_path, env);
-        return Ok(());
+    } else {
+        write_scalar_saved_field(&path, field, value, span, env)?;
     }
-    write_scalar_saved_field(&path, field, value, span, env)?;
     finish_saved_field_write(&path, created_required_path, env);
     Ok(())
 }
