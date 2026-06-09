@@ -38,6 +38,7 @@ Usage:
 ";
 
 fn main() -> ExitCode {
+    install_broken_pipe_exit();
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let Some((command, rest)) = args.split_first() else {
         print!("{HELP}");
@@ -68,6 +69,32 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// Exit cleanly when a downstream reader closes our stdout, instead of panicking.
+///
+/// Rust ignores `SIGPIPE`, so a write to a pipe whose read end has closed returns
+/// `EPIPE` rather than killing the process. The `print!`/`println!` macros turn that
+/// error into a panic ("failed printing to stdout: Broken pipe"), and the streaming
+/// JSON writers surface the same `BrokenPipe` error through `.expect`. A consumer like
+/// `head`, `less`, or `grep -m1` closing the pipe early is normal Unix behavior, not a
+/// failure, so we install a panic hook that recognizes that one panic by its payload
+/// and exits 0. Every other panic is delegated to the default hook so real crashes
+/// still print their message and backtrace. This keeps the fix global without
+/// rewriting the CLI's many `print!` sites to handle `EPIPE` individually.
+fn install_broken_pipe_exit() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload();
+        let message = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str));
+        if message.is_some_and(|message| message.contains("Broken pipe")) {
+            std::process::exit(0);
+        }
+        default_hook(info);
+    }));
 }
 
 pub(crate) fn report_project(
