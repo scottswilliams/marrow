@@ -13,7 +13,6 @@ fn parses_the_documented_example_config() {
     let config = parse_config(json).expect("valid config");
     assert_eq!(config.source_roots, ["src"]);
     assert_eq!(config.default_entry.as_deref(), Some("shelf::sample::main"));
-    assert_eq!(config.accepted_catalog.as_str(), "marrow.catalog.json");
     let store = config.store.expect("store");
     assert_eq!(store.backend, StoreBackend::Native);
     assert_eq!(store.data_dir.as_deref(), Some(".marrow/data"));
@@ -26,17 +25,7 @@ fn fills_optional_fields_with_defaults() {
     assert_eq!(config.source_roots, ["src", "lib"]);
     assert_eq!(config.default_entry, None);
     assert_eq!(config.store, None);
-    assert_eq!(config.accepted_catalog.as_str(), "marrow.catalog.json");
     assert!(config.tests.is_empty());
-}
-
-#[test]
-fn parses_an_explicit_accepted_catalog_path() {
-    let config =
-        parse_config(r#"{ "sourceRoots": ["src"], "acceptedCatalog": "catalog/accepted.json" }"#)
-            .expect("valid config");
-
-    assert_eq!(config.accepted_catalog.as_str(), "catalog/accepted.json");
 }
 
 #[test]
@@ -135,12 +124,6 @@ fn rejects_path_entries_that_escape_the_project_root() {
             "/abs/tests",
             ConfigPathViolation::Absolute,
         ),
-        (
-            r#"{ "sourceRoots": ["src"], "acceptedCatalog": "../catalog.json" }"#,
-            ConfigPathField::AcceptedCatalog,
-            "../catalog.json",
-            ConfigPathViolation::ParentDir,
-        ),
     ] {
         let error = parse_config(json).expect_err("should reject");
         assert_eq!(error.code, "config.invalid", "{json}");
@@ -163,7 +146,7 @@ fn rejects_unknown_top_level_keys() {
     assert_eq!(error.kind, ConfigErrorKind::InvalidJson);
     assert_eq!(
         error.message,
-        "unknown field `globals`, expected one of `sourceRoots`, `run`, `store`, `tests`, `acceptedCatalog` at line 1 column 35"
+        "unknown field `globals`, expected one of `sourceRoots`, `run`, `store`, `tests` at line 1 column 35"
     );
 }
 

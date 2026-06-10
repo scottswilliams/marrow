@@ -144,7 +144,6 @@ fn check_one_file_project(
         default_entry: None,
         store: None,
         tests: Vec::new(),
-        accepted_catalog: "marrow.catalog.json".to_string(),
     };
     let (mut report, _program) = marrow_check::check_project(root, &config)
         .map_err(|error| (error.path.clone(), std::io::Error::other(error.message)))?;

@@ -184,14 +184,18 @@ value, or the type of the field. In the example above, code still reads and writ
 ```
 
 Durable identity is owned by an invisible catalog, not by source spelling. The
-catalog is compiler and tooling infrastructure: there are no stable-id
-annotations in source and no user-facing catalog command. Each resource, store,
-field, keyed layer, index, and enum member gets an opaque stable id, recorded
-automatically the first time the project runs and advanced only by `evolve
-apply`; `check` never writes it. Because identity lives in the catalog, renaming
-a field in source does not change its durable identity or move stored data — the
-rename carries identity forward through `evolve rename` or an alias the accepted
-catalog already records (see Evolution below).
+catalog is engine-resident: its accepted entries live in the store alongside the
+data they identify, not in a committed file, and there is no JSON ABI, no
+`^catalog` root, no catalog resource, query, standard-library, or data-CLI
+surface, and no stable-id annotations in source. Each resource, store, field,
+keyed layer, index, and enum member gets an opaque stable id, recorded into the
+store the first time the project runs against a durable store and advanced only
+by `evolve apply`; both write through one store transaction, and `check` reads
+the accepted snapshot back read-only without ever writing it. Because identity
+lives in the catalog, renaming a field in source does not change its durable
+identity or move stored data — the rename carries identity forward through
+`evolve rename` or an alias the accepted catalog already records (see Evolution
+below).
 
 Adding a sparse field is a source change. Adding a required field requires
 explicit data-evolution work that populates existing saved resources before code

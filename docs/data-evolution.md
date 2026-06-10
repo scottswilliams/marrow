@@ -138,7 +138,7 @@ marrow evolve apply ./project
 ## Renames
 
 A field's source name is how code spells it. Its durable identity is owned by the
-accepted catalog metadata file, not by source annotations, source order, or a
+engine-resident accepted catalog, not by source annotations, source order, or a
 best-effort source diff. A rename is an explicit catalog decision:
 
 ```mw
@@ -155,9 +155,10 @@ intent.
 
 ## Accepted Catalog Metadata
 
-The accepted catalog file is generated metadata committed in the source tree. Its
-path is configured by `acceptedCatalog` in `marrow.json` and defaults to
-`marrow.catalog.json`.
+The accepted catalog is engine-resident: it lives in the store as a private
+catalog table, not as a committed file, and it has no `marrow.json` input. It is
+not Marrow language data — there is no `^catalog` root, resource, query,
+standard-library, or data-CLI surface that can read, scan, or mutate it.
 
 Each entry records:
 
@@ -173,34 +174,36 @@ must not be reused after a retire; a later source declaration at the same catalo
 path is rejected rather than minted as a fresh identity. `reserved` is the
 durable inactive spelling for a retired catalog path.
 
-Source-only checks read this file when present. They propose replacement metadata
-when it is missing or stale, but never write it, so `marrow check` stays
-read-only and CI-safe; a project whose durable identity is not yet recorded is
-reported informationally, not as a failure. Checked facts expose catalog-backed
-IDs for resources, stores, store indexes, resource members, enums, and enum
-members. Runtime value encoding remains a separate storage concern; the catalog
-is the durable schema identity exposed to tools, evolution, and checked facts.
+Source-only checks read the accepted snapshot from the store through a read-only
+handle when one exists. They propose replacement metadata when no snapshot is
+recorded or it is stale, but never write it, so `marrow check` stays read-only
+and CI-safe; a project whose durable identity is not yet recorded is reported
+informationally, not as a failure. Checked facts expose catalog-backed IDs for
+resources, stores, store indexes, resource members, enums, and enum members.
+Runtime value encoding remains a separate storage concern; the catalog is the
+durable schema identity exposed to tools, evolution, and checked facts.
 
-The file is written transparently by the flows that establish durable state —
-running the program and `marrow evolve apply`. The first such command on a
-project with a durable surface freezes the proposed identity into the file; once
-a baseline exists, later identity changes flow through `evolve apply` rather than
-being written from a check. There is no separate command to inspect or accept a
-proposal.
+The accepted snapshot is advanced only by the flows that establish durable
+state — running the program and `marrow evolve apply` — each writing the catalog
+rows in the same store transaction as the data and metadata they commit. The
+first such command on a project with a durable surface freezes the proposed
+identity into the store; once a baseline exists, later identity changes flow
+through `evolve apply` rather than being written from a check. There is no
+separate command to inspect or accept a proposal.
 
 A stable ID is a random opaque 128-bit value in the `cat_<32 lowercase hex>`
 shape. It is allocated independently of the source path, so it never changes
 when a path changes, and it is random rather than a counter so identity minted
 on two branches for different entities cannot collide when they merge. Once
-committed it is frozen and never recomputed. A duplicate ID — from a manual
-catalog change, bad branch integration, or an astronomically unlikely clash —
-fails closed at check rather than corrupting storage.
+committed it is frozen and never recomputed. A duplicate ID — from a corrupt
+catalog table or an astronomically unlikely clash — fails closed rather than
+corrupting storage.
 
-The catalog digest is `sha256:<64 lowercase hex>` over the canonical JSON object
-`{"epoch": <u64>, "entries": <entries in file order>}` serialized by the
-metadata writer. The digest covers stable IDs, paths, aliases, lifecycle states,
-and accepted structural tokens, and is recomputed when catalog metadata is read;
-an edited file whose digest no longer matches is rejected before its IDs bind.
+The catalog digest is `sha256:<64 lowercase hex>` over the canonical object
+`{"epoch": <u64>, "entries": <entries in catalog order>}`. The digest covers
+stable IDs, paths, aliases, lifecycle states, and accepted structural tokens, and
+is recomputed when the snapshot is read; a snapshot whose digest no longer
+matches is rejected before its IDs bind.
 
 ## Activation Fencing
 
@@ -243,10 +246,11 @@ data effects: proposal/evolution digests, changed catalog IDs, default
 backfill counts and bounded effect digests, transform counts, exact per-id
 retire counts with a bounded evidence digest, and rebuilt-index counts. Receipts
 do not store proposal catalog bodies or executable migration steps. The accepted
-catalog file publishes only after those effects are verifiable; crash resume
-recomputes the current proposal from source plus the accepted catalog, checks
-the evidence against the current store effects, and then writes that generated
-proposal.
+catalog rows, the catalog epoch, the commit metadata, and the data and index
+cells all advance in that one store transaction, so a reader sees either the
+whole activation or none of it. There is no separate file-publish step and no
+crash-resume window to reconcile: a failure before commit rolls every effect back
+to the prior accepted snapshot.
 
 A program with no accepted catalog has no durable activation context, so there is
 nothing to fence against. A run records the baseline catalog before it reaches the

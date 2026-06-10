@@ -53,7 +53,7 @@ names, member names, index names, enum member spelling, or declaration order.
 |---|---|---|
 | Placement prefix | `00` | Reserved empty/default placement prefix for v0. |
 | Profile byte | `01` | Tree-cell key profile v0. |
-| Family tags | `10`, `20`, `30` | Meta, data, and index families. Other family tags are reserved. |
+| Family tags | `10`, `20`, `30`, `40` | Meta, data, index, and catalog families. Other family tags are reserved. |
 | Catalog IDs | `cat_` + 32 lowercase hex | Opaque 128-bit storage ID shape. |
 | ID bytes | escaped bytes + `00 00` | IDs use the same escaped byte-run terminator as typed string keys. |
 | Node cell | data family + store ID + record-key tuple + `00` | Node marker and prefix for the record's leaf and sequence cells. |
@@ -61,6 +61,7 @@ names, member names, index names, enum member spelling, or declaration order.
 | Sequence cell | node prefix + `20` + member ID + `u64_be(position)` | A sequence element under a node/member, ordered by position. |
 | Index cell | index family + index ID + index-key tuple + `00` + record-key tuple + `00` | Sorts by exact index tuple, then record identity. |
 | Meta cells | meta family + `01`, `02`, `03`, or `04` | Catalog epoch, layout epoch, engine profile digest, or latest commit metadata. |
+| Catalog cells | catalog family + `00` header row, then `10` + `u64_be(ordinal)` per entry | The accepted catalog snapshot: one header row (epoch and digest), one row per entry in catalog order. |
 | Prefix ranges | `[prefix, successor(prefix))` | A prefix range includes exactly keys beginning with the prefix. Empty/all-`ff` prefixes have no upper bound. |
 
 Index tuple scans use an exact tuple prefix. Scanning the exact tuple `["a"]`
@@ -74,6 +75,7 @@ uses the in-memory development/test engine; `TreeStore::open(path)` and
 
 - `begin`, `commit`, and `rollback`;
 - write/read catalog epoch and layout epoch;
+- read/replace the accepted catalog snapshot and read its digest;
 - write/read the engine profile digest;
 - write/read commit metadata;
 - write node markers and test node existence;
@@ -133,13 +135,21 @@ digest, proposal catalog digest, changed root/index IDs, per-default bounded
 effect digests plus counts, rebuilt-index count, retire count digest plus per-id
 counts, and transform count. These fields are receipts over the committed
 activation, not executable migration history and not proposal catalog bodies.
-Crash resume recomputes the current proposal from source plus the accepted
-catalog, verifies the receipt evidence against the current store effects, and
-only then publishes that current generated proposal.
+The accepted catalog rows advance in the same transaction as this metadata and
+the data and index cells they describe, so there is no post-commit publish step
+to resume: a failure before commit rolls every effect back together.
+
+The catalog family is private engine metadata, not language data. No source
+declaration, runtime expression, standard-library call, data CLI operation, or
+user transaction can address, scan, or mutate catalog rows; they are reached only
+through the typed snapshot read/replace operations. A read rebuilds the snapshot
+from its rows and recomputes the digest against the stored header, so a tampered
+catalog row — even one that decodes into a structurally valid entry — fails closed
+as `store.corruption`.
 
 Malformed tree-cell metadata, malformed node markers, malformed tree-cell
-reference/enum values, and malformed index identity suffixes report
-`store.corruption`.
+reference/enum values, malformed index identity suffixes, and a catalog snapshot
+whose recomputed digest does not match its header report `store.corruption`.
 
 ## Value Codecs
 
@@ -222,7 +232,10 @@ as import/export or host bridges ship as separate packages, never in the default
 install.
 
 Portability is the typed tree-cell data plus the source and catalog facts needed
-to interpret it, not a raw engine byte stream. A backup carries catalog IDs,
-typed values, sequence state, and engine-profile metadata; generated indexes are
-derived and rebuilt on restore rather than trusted as bytes. Backups are portable
-across conforming backends at the same layout and value-codec version.
+to interpret it, not a raw engine byte stream. A backup carries the accepted
+catalog rows, catalog IDs, typed values, sequence state, and engine-profile
+metadata; generated indexes are derived and rebuilt on restore rather than
+trusted as bytes. Restore reconstructs the data, metadata, and catalog rows in
+one transaction, so a restored store opens at its accepted catalog with no
+file-publish step to resume. Backups are portable across conforming backends at
+the same layout and value-codec version.

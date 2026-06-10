@@ -509,7 +509,6 @@ pub(super) mod test_support {
             default_entry: None,
             store: None,
             tests: Vec::new(),
-            accepted_catalog: "marrow.catalog.json".into(),
         }
     }
 

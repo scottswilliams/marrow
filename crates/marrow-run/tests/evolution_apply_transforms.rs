@@ -14,8 +14,6 @@ use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_store::value::Scalar;
 
-use std::fs;
-
 #[test]
 fn proposal_transform_writes_target_before_catalog_acceptance() {
     let root = temp_project("apply-proposal-transform", |root| {
@@ -71,11 +69,6 @@ fn proposal_transform_writes_target_before_catalog_acceptance() {
     assert_eq!(
         read_scalar(&store, &store_id, 2, &cents_id, INT),
         Some(Scalar::Int(700))
-    );
-    let catalog = fs::read_to_string(root.join("marrow.catalog.json")).expect("accepted catalog");
-    assert!(
-        !catalog.contains("books::Book::priceCents"),
-        "apply must not accept the transform target before the data transaction"
     );
 }
 

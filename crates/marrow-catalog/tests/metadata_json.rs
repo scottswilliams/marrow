@@ -1,91 +1,58 @@
-mod support;
+//! The accepted catalog's canonical JSON round-trip and validation invariants: a
+//! committed snapshot serializes and parses back identically, identity collisions and a
+//! non-SHA or mismatched digest fail closed, and an unrepresentable lifecycle is rejected.
+//! This is the on-the-wire contract the engine-resident store and the backup catalog
+//! section both persist through.
 
-use std::fs;
+use std::hash::{Hash, Hasher};
 
-use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
+use marrow_catalog::{
+    CATALOG_INVALID, CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata,
+};
 
-use support::catalog::{catalog, catalog_path, derived_id, entry as literal_entry, write_catalog};
-use support::{config, temp_project};
+/// An `Active` catalog entry with a `cat_`-shaped stable id minted deterministically from
+/// `label`, so a fixture names a member readably and the assertions agree on its id.
+fn entry(kind: CatalogEntryKind, path: &str, label: &str, aliases: &[&str]) -> CatalogEntry {
+    literal_entry(kind, path, &derived_id(label), aliases)
+}
 
-/// A catalog entry whose stable id is minted deterministically from `label`, so a
-/// fixture refers to a member by a readable name and still gets a `cat_`-shaped id the
-/// catalog parser accepts. Tests that need a specific literal id call
-/// [`literal_entry`] (the shared builder) directly.
-fn entry(
+/// An `Active` catalog entry with a caller-chosen literal stable id, for cases that pin a
+/// specific id rather than a label-derived one.
+fn literal_entry(
     kind: CatalogEntryKind,
-    canonical_path: &str,
-    label: &str,
+    path: &str,
+    stable_id: &str,
     aliases: &[&str],
 ) -> CatalogEntry {
-    literal_entry(kind, canonical_path, &derived_id(label), aliases)
+    CatalogEntry {
+        kind,
+        path: path.to_string(),
+        stable_id: stable_id.to_string(),
+        aliases: aliases.iter().map(|alias| alias.to_string()).collect(),
+        lifecycle: CatalogLifecycle::Active,
+        accepted_key_shape: None,
+        accepted_struct: None,
+    }
 }
 
-/// The accepted catalog is the durable ABI: a torn write would brick the project, so
-/// `write_accepted_catalog` must be all-or-nothing. Overwriting a prior, smaller catalog
-/// with a larger one must leave exactly one artifact in the directory — the target file —
-/// with no temp staging file beside it and no partial older content exposed.
-#[test]
-fn write_accepted_catalog_leaves_only_the_target_file() {
-    let root = temp_project("catalog-atomic-no-temp", |_| {});
-
-    let prior = catalog(vec![entry(
-        CatalogEntryKind::Resource,
-        "books::Book",
-        "res-book",
-        &[],
-    )]);
-    write_catalog(&root, &prior);
-
-    let next = larger_catalog();
-    marrow_check::write_accepted_catalog(&root, &config(), &next).expect("write accepted catalog");
-
-    let entries: Vec<String> = fs::read_dir(&*root)
-        .expect("read project root")
-        .map(|entry| {
-            entry
-                .expect("dir entry")
-                .file_name()
-                .to_string_lossy()
-                .into()
-        })
-        .collect();
-    assert_eq!(
-        entries,
-        vec![String::from("marrow.catalog.json")],
-        "a successful write leaves only the target file, with no temp staging artifact"
-    );
+/// Wrap `entries` in a catalog at a fixed epoch so a fixture lists only what it cares about.
+fn catalog(entries: Vec<CatalogEntry>) -> CatalogMetadata {
+    CatalogMetadata::new(7, entries)
 }
 
-/// The bytes `write_accepted_catalog` lands on disk are the complete catalog, not a
-/// truncated prefix: reading the target back parses to the same metadata that was written.
-#[test]
-fn write_accepted_catalog_lands_the_complete_catalog() {
-    let root = temp_project("catalog-atomic-complete", |_| {});
-
-    let written = larger_catalog();
-    marrow_check::write_accepted_catalog(&root, &config(), &written)
-        .expect("write accepted catalog");
-
-    let bytes = fs::read_to_string(catalog_path(&root)).expect("read catalog");
-    let read_back = CatalogMetadata::from_json(&bytes).expect("complete, parseable catalog");
-    assert_eq!(read_back, written);
-}
-
-fn larger_catalog() -> CatalogMetadata {
-    catalog(vec![
-        entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
-        entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
-        entry(
-            CatalogEntryKind::ResourceMember,
-            "books::Book.title",
-            "member-title",
-            &[],
-        ),
-    ])
+/// Mint a deterministic `cat_<32 hex>` stable id from a readable label.
+fn derived_id(label: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    label.hash(&mut hasher);
+    let first = hasher.finish();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (label, "catalog-json-fixture").hash(&mut hasher);
+    let second = hasher.finish();
+    format!("cat_{first:016x}{second:016x}")
 }
 
 #[test]
-fn accepted_catalog_rejects_alias_and_stable_id_collisions() {
+fn rejects_alias_and_stable_id_collisions() {
     for metadata in [
         catalog(vec![
             entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
@@ -104,12 +71,12 @@ fn accepted_catalog_rejects_alias_and_stable_id_collisions() {
         let json = metadata.to_json_pretty();
         let error = CatalogMetadata::from_json(&json).expect_err("collision is rejected");
 
-        assert_eq!(error.code, marrow_catalog::CATALOG_INVALID);
+        assert_eq!(error.code, CATALOG_INVALID);
     }
 }
 
 #[test]
-fn accepted_catalog_round_trips_stable_ids_aliases_lifecycle_epoch_and_digest() {
+fn round_trips_stable_ids_aliases_lifecycle_epoch_and_digest() {
     let metadata = catalog(vec![
         entry(
             CatalogEntryKind::Resource,
@@ -143,7 +110,7 @@ fn accepted_catalog_round_trips_stable_ids_aliases_lifecycle_epoch_and_digest() 
 }
 
 #[test]
-fn accepted_catalog_round_trips_reserved_lifecycle() {
+fn round_trips_reserved_lifecycle() {
     let metadata = catalog(vec![CatalogEntry {
         lifecycle: CatalogLifecycle::Reserved,
         ..entry(
@@ -162,7 +129,7 @@ fn accepted_catalog_round_trips_reserved_lifecycle() {
 }
 
 #[test]
-fn non_sha_catalog_digest_is_rejected() {
+fn non_sha_digest_is_rejected() {
     let metadata = catalog(vec![entry(
         CatalogEntryKind::Resource,
         "books::Book",
@@ -177,7 +144,7 @@ fn non_sha_catalog_digest_is_rejected() {
 
     let error = CatalogMetadata::from_json(&json).expect_err("non-SHA digest rejected");
 
-    assert_eq!(error.code, marrow_catalog::CATALOG_INVALID);
+    assert_eq!(error.code, CATALOG_INVALID);
 }
 
 /// A retired identity is dropped from the catalog, never carried as a `removed` lifecycle
@@ -186,7 +153,7 @@ fn non_sha_catalog_digest_is_rejected() {
 /// the byte-identical `active` catalog, which parses clean, pins the rejection to the
 /// lifecycle value rather than the digest or another field.
 #[test]
-fn removed_catalog_lifecycle_is_rejected() {
+fn removed_lifecycle_is_rejected() {
     let metadata = catalog(vec![entry(
         CatalogEntryKind::Resource,
         "books::Book",
@@ -204,11 +171,11 @@ fn removed_catalog_lifecycle_is_rejected() {
     let removed = json.replacen(field, "\"lifecycle\": \"removed\"", 1);
 
     let error = CatalogMetadata::from_json(&removed).expect_err("removed lifecycle rejected");
-    assert_eq!(error.code, marrow_catalog::CATALOG_INVALID);
+    assert_eq!(error.code, CATALOG_INVALID);
 }
 
 #[test]
-fn parallel_catalog_additions_merge_without_regenerating_ids() {
+fn parallel_additions_merge_without_regenerating_ids() {
     let branch_a_id = "cat_11111111111111111111111111111111";
     let branch_b_id = "cat_22222222222222222222222222222222";
     let metadata = CatalogMetadata::new(

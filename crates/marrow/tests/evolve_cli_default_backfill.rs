@@ -1,5 +1,3 @@
-use std::fs;
-
 use marrow_store::tree::TreeStore;
 use marrow_store::value::{Scalar, ScalarType};
 
@@ -123,11 +121,11 @@ fn evolve_apply_rejects_repair_required_witness() {
 }
 
 #[test]
-fn evolve_apply_noop_when_store_and_file_already_at_target() {
+fn evolve_apply_noop_when_store_already_at_target() {
     // A defaulting evolution that backfills one record, then applies a second time with
-    // the store and file already at the target: the catalog shape is unchanged by a
-    // backfill, so the proposal is identity-stable and the second apply must touch
-    // neither the catalog file nor the commit id.
+    // the store already at the target: the catalog shape is unchanged by a backfill, so
+    // the proposal is identity-stable and the second apply must touch neither the store's
+    // accepted catalog snapshot nor the commit id.
     let root = native_books_project("evolve-apply-noop", REQUIRED_DEFAULT_SOURCE);
     let accepted = commit_catalog(&root);
     let accepted_place = root_place(&accepted, "books");
@@ -139,71 +137,39 @@ fn evolve_apply_noop_when_store_and_file_already_at_target() {
     let first = marrow(&["evolve", "apply", root.to_str().unwrap()]);
     assert_eq!(first.status.code(), Some(0), "{first:?}");
 
-    let path = root.join("marrow.catalog.json");
-    let before = fs::read_to_string(&path).expect("read catalog");
-    let before_commit = TreeStore::open(&native_store_path(&root))
-        .expect("reopen")
-        .read_commit_metadata()
-        .expect("read commit")
-        .expect("commit stamp")
-        .commit_id;
+    let snapshot_before = catalog_snapshot_digest(&root);
+    let before_commit = commit_id(&root);
 
     let second = marrow(&["evolve", "apply", root.to_str().unwrap()]);
     assert_eq!(second.status.code(), Some(0), "no-op apply: {second:?}");
 
-    let after = fs::read_to_string(&path).expect("read catalog");
-    let after_commit = TreeStore::open(&native_store_path(&root))
-        .expect("reopen")
-        .read_commit_metadata()
-        .expect("read commit")
-        .expect("commit stamp")
-        .commit_id;
-
-    assert_eq!(before, after, "no-op apply does not churn the catalog file");
     assert_eq!(
-        before_commit, after_commit,
+        snapshot_before,
+        catalog_snapshot_digest(&root),
+        "no-op apply does not churn the store's accepted catalog snapshot"
+    );
+    assert_eq!(
+        before_commit,
+        commit_id(&root),
         "no-op apply does not bump the commit id"
     );
 }
 
-#[cfg(unix)]
-#[test]
-fn evolve_apply_renders_a_catalog_write_failure_through_the_selected_format() {
-    use std::os::unix::fs::PermissionsExt;
+/// The digest of the store's published accepted-catalog snapshot, the durable identity
+/// state a no-op apply must leave untouched.
+fn catalog_snapshot_digest(root: impl AsRef<std::path::Path>) -> Option<String> {
+    TreeStore::open(&native_store_path(root))
+        .expect("reopen")
+        .catalog_snapshot_digest()
+        .expect("read snapshot digest")
+}
 
-    // `evolve apply` freezes the project's pending identity through the production
-    // catalog writer before touching the store. When that write fails — here a
-    // read-only project directory blocks the catalog file — the failure is an IO
-    // error that must render through the selected `--format`, not as hard-coded
-    // text, so a machine consumer parsing stdout as JSON still sees the error.
-    let root = native_books_project("evolve-apply-catalog-write", REQUIRED_DEFAULT_SOURCE);
-    let restore = fs::metadata(&root).expect("project metadata").permissions();
-    fs::set_permissions(&root, fs::Permissions::from_mode(0o555))
-        .expect("make the project directory read-only");
-
-    let output = marrow(&[
-        "evolve",
-        "apply",
-        "--format",
-        "json",
-        root.to_str().unwrap(),
-    ]);
-
-    // Restore write permission so the temp-project guard can clean up on drop.
-    fs::set_permissions(&root, restore).expect("restore project permissions");
-
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
-    let value: serde_json::Value = serde_json::from_str(stdout.trim())
-        .expect("a catalog-write failure must be JSON on stdout");
-    assert_eq!(
-        value["kind"], "io",
-        "a catalog-write IO failure must carry the io kind: {value}"
-    );
-    assert!(
-        value["code"]
-            .as_str()
-            .is_some_and(|code| code.starts_with("io.")),
-        "the error must carry an io code: {value}"
-    );
+/// The store's last commit id, which a no-op apply must not advance.
+fn commit_id(root: impl AsRef<std::path::Path>) -> u64 {
+    TreeStore::open(&native_store_path(root))
+        .expect("reopen")
+        .read_commit_metadata()
+        .expect("read commit")
+        .expect("commit stamp")
+        .commit_id
 }

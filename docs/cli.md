@@ -69,7 +69,9 @@ diagnostics.
   rules that need a project are not applied.
 - Given a project directory, it loads `marrow.json` and runs the project checker
   over every source root plus configured test files: parse, type, effect, and
-  durable-place checks.
+  durable-place checks. When a durable store exists, it reads the accepted catalog
+  snapshot from the store read-only to bind durable identity; it never writes the
+  store or freezes identity.
 - `--data` is project-only. It opens the configured store read-only and runs the
   same data-attached evolution preview that `marrow evolve preview` uses. A
   repair-required or approval-required witness exits `1`.
@@ -115,12 +117,12 @@ witness, then reports the counts and blocking diagnostics.
 requires an exact match, checks the activation window, and commits the data work
 plus metadata stamp in one transaction. Like `run`, it records a project's
 baseline durable identity first when the project has none yet, then applies the
-evolution against the accepted catalog. The accepted catalog file is published
-only after the store commit carries verifiable activation evidence for defaults,
-transforms, retires, and rebuilt indexes. That evidence is bounded receipt data:
-digests, affected IDs, counts, approvals, commit IDs, and source/catalog/engine
-facts, not proposal catalog bodies or executable migration history. Destructive
-retire needs
+evolution against the accepted catalog. The advanced accepted catalog rows commit
+in that same store transaction as the data work and its activation evidence for
+defaults, transforms, retires, and rebuilt indexes, so the catalog never advances
+without the data behind it. That evidence is bounded receipt data: digests,
+affected IDs, counts, approvals, commit IDs, and source/catalog/engine facts, not
+proposal catalog bodies or executable migration history. Destructive retire needs
 `--maintenance` and an approval whose catalog ID and populated count match the
 preview.
 
@@ -173,10 +175,10 @@ an in-memory store when none is configured (see
 runs.
 
 A clean run records the project's baseline durable identity if it has none yet:
-the first run of a project with a durable surface writes the accepted catalog
-file transparently before touching the store. A project already past its
-baseline proposes no change and the file is left untouched. There is no separate
-acceptance step. See [data-evolution.md](data-evolution.md).
+the first run of a project with a durable surface freezes the accepted catalog
+into the store transactionally as it commits. A project already past its baseline
+proposes no change and the store's catalog rows are left untouched. There is no
+separate acceptance step. See [data-evolution.md](data-evolution.md).
 
 The entry is `--entry` if given, otherwise the project's `run.defaultEntry`.
 Qualified entries (`module::function`) resolve exactly. A bare entry name is

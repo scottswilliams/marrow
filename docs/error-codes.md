@@ -151,7 +151,7 @@ over every configured source and test file.
 | `check.ambiguous_call` | A bare call names a `pub` function reachable in two or more modules, so the bare name cannot pick one — it must be qualified (`module::fn`). |
 | `check.next_id_requires_single_int` | `nextId(^root)` names a root with no default integer allocation policy (composite identity, a non-integer key, or a keyless singleton). The static counterpart of `write.next_id_unsupported`. |
 | `check.rejected_surface` | Source uses a parsed construct outside the accepted v0.1 surface, such as saved-path `inout` call arguments or old saved traversal method shapers such as `.take(...)`, `.window(...)`, and `.resume(...)`. Reserved syntax forms such as `merge`, `lock`, `out`, and `~` are parser diagnostics instead. |
-| `check.catalog_intent` | Accepted catalog metadata is invalid, or an `evolve` intent has no durable identity to act on — a rename without an accepted entry carrying the new canonical path and old alias. A source declaration the accepted catalog does not yet record is informational, not an error: it reports that durable identity is not yet frozen, and running the program or applying an evolution records it. |
+| `check.catalog_intent` | Binding source against the accepted catalog cannot resolve durable identity soundly: a proposed catalog whose identities collide, a reserved spelling reused without an `evolve` intent, or an `evolve` intent that cannot carry identity forward — a rename without an accepted entry holding the new canonical path and old alias. A source declaration the accepted catalog does not yet record is informational, not an error: it reports that durable identity is not yet frozen, and running the program or applying an evolution records it. |
 | `check.bare_maybe_present_read` | A maybe-present saved read appears in value position without a read-site resolution form such as `??`, `exists(...)`, optional chaining, or an attached-data traversal. |
 | `check.literal_range` | A numeric literal is provably outside its type's range (an integer beyond `i64`, or a decimal outside the 34-digit / 34-place envelope). The static counterpart of the runtime numeric range faults. |
 | `check.finally_control_flow` | A `finally` block lets control flow escape via `return`, `break`, or `continue`. |
@@ -275,7 +275,8 @@ one is reported under its own `write.*` code.
 ### `store.*` — kind `storage`
 
 Store faults. The tree-cell facade produces `store.corruption` for malformed
-tree-cell metadata, value codecs, or index cells. A persistent backend can also
+tree-cell metadata, value codecs, index cells, or accepted catalog rows. A
+persistent backend can also
 produce the I/O, locking, format, corruption, limit, and read-only variants. A
 store fault met during a program read or write travels as `run.store` or
 `write.store`; the `serve` server passes the `store.*` code through unchanged.
@@ -285,7 +286,7 @@ store fault met during a program read or write travels as `run.store` or
 | `store.io` | An I/O operation on a persistent backend failed. |
 | `store.locked` | The store file is already held open by another writer. |
 | `store.format_version` | The store's recorded format version is not the one this build supports. |
-| `store.corruption` | The store file, tree-cell metadata, or tree-cell index cell is corrupt and could not be opened or decoded. |
+| `store.corruption` | The store file, tree-cell metadata, tree-cell index cell, or accepted catalog table is corrupt and could not be opened or decoded — including a catalog snapshot whose recomputed digest does not match its stored header. |
 | `store.limit` | A Marrow framing layer could not encode a tree-cell metadata or value-codec length above a `u32` field. Backends enforce no key/value size limit. |
 | `store.cursor` | A bounded scan cursor does not belong to the scan being resumed. |
 | `store.transaction` | A transaction or snapshot operation was requested in an invalid store state. |
@@ -346,6 +347,7 @@ Source-native data-evolution preview/apply faults.
 | `evolve.repair_required` | The attached data snapshot cannot discharge a required obligation. Repair the data through explicit maintenance/admin code, then preview again. |
 | `evolve.drift` | The live source, catalog, store snapshot, engine metadata, affected IDs, or counts no longer match the preview witness. Preview again. |
 | `evolve.store_commit_drift` | The store commit changed after preview. Preview again against the current store. |
+| `evolve.catalog_drift` | The store's accepted catalog snapshot changed after preview, so the witness was discharged against a catalog the store no longer holds. Apply refuses before staging. Preview again. |
 | `evolve.maintenance_required` | A destructive retire was reached without the maintenance gate. |
 | `evolve.approval_required` | A destructive retire needs an approval naming the catalog ID and populated count from preview. |
 | `evolve.approval_mismatch` | The supplied destructive approval did not match the exact preview witness. |

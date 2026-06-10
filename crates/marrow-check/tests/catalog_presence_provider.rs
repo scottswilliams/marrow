@@ -1,16 +1,13 @@
-//! The checker consumes the accepted catalog as a caller-supplied provider input,
-//! not by reading `marrow.catalog.json` itself. These tests inject the snapshot
-//! directly through the `analyze_project` parameter and prove that identity binds
-//! exactly as the disk-driven path does: same bound ids, same proposal. The catalog
-//! file is never written here.
+//! The checker consumes the accepted catalog as a caller-supplied provider input: the
+//! CLI reads the snapshot from the engine-resident store and threads it through the
+//! `analyze_project` parameter. These tests inject the snapshot directly and prove that
+//! identity binds against it: the accepted ids carry forward onto live facts, and a
+//! source-only check proposes a first epoch while writing nothing.
 
 mod support;
 
 use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogMetadata};
-use marrow_check::{
-    CHECK_CATALOG_INTENT, CheckDiagnostic, ProjectSources, accepted_catalog_from_json,
-    analyze_project,
-};
+use marrow_check::{ProjectSources, analyze_project};
 
 use support::catalog::{catalog, derived_id, entry as literal_entry};
 use support::{config, temp_root, write};
@@ -67,10 +64,16 @@ fn source_only_check_proposes_epoch_one_and_writes_nothing() {
         .expect("first-run proposal");
     assert_eq!(proposal.epoch, 1);
     assert_eq!(snapshot.program.catalog.accepted_epoch, None);
-    // The checker is read-only: providing no accepted snapshot leaves no file behind.
-    assert!(
-        !root.join("marrow.catalog.json").exists(),
-        "a source-only check must not write the accepted catalog"
+    // The checker is read-only: it proposes a baseline but establishes no durable state,
+    // so the project directory holds only the source it came in with.
+    let entries: Vec<_> = std::fs::read_dir(&*root)
+        .expect("read project root")
+        .map(|entry| entry.expect("dir entry").file_name())
+        .collect();
+    assert_eq!(
+        entries,
+        [std::ffi::OsString::from("src")],
+        "a source-only check must not write any durable artifact: {entries:?}"
     );
 }
 
@@ -109,23 +112,6 @@ fn injected_snapshot_binds_identity_exactly_as_the_accepted_catalog_did() {
     assert_eq!(
         program.catalog.accepted_entries, accepted.entries,
         "the accepted entries are the injected snapshot's, verbatim"
-    );
-}
-
-#[test]
-fn invalid_injected_snapshot_surfaces_catalog_intent() {
-    let mut diagnostics: Vec<CheckDiagnostic> = Vec::new();
-    let accepted = accepted_catalog_from_json(
-        "{ not valid catalog json",
-        std::path::Path::new("marrow.catalog.json"),
-        &mut diagnostics,
-    );
-
-    assert!(accepted.is_none(), "invalid bytes parse to no snapshot");
-    assert_eq!(
-        with_code_in(&diagnostics, CHECK_CATALOG_INTENT).len(),
-        1,
-        "an invalid snapshot raises exactly one catalog-intent diagnostic: {diagnostics:#?}"
     );
 }
 
@@ -186,13 +172,4 @@ fn proposal_only_member_binds_activation_default_not_ordinary_facts() {
             .any(|entry| entry.stable_id == pages_proposal_id),
         "a proposal-only id is not an accepted entry"
     );
-}
-
-/// The diagnostics whose code is `code`, in order. The shared report helper takes a
-/// `CheckReport`; these provider cases hold a bare diagnostics vec.
-fn with_code_in<'a>(diagnostics: &'a [CheckDiagnostic], code: &str) -> Vec<&'a CheckDiagnostic> {
-    diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.code == code)
-        .collect()
 }

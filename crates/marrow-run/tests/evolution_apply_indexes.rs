@@ -14,8 +14,6 @@ use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_store::value::{Scalar, encode_value};
 
-use std::fs;
-
 #[test]
 fn proposal_index_rebuild_writes_entries_before_catalog_acceptance() {
     let root = temp_project("apply-proposal-index-rebuild", |root| {
@@ -66,11 +64,6 @@ fn proposal_index_rebuild_writes_entries_before_catalog_acceptance() {
         assert_eq!(scan.entries.len(), 1, "index entry for {isbn}");
         assert_eq!(scan.entries[0].identity, vec![SavedKey::Int(id)]);
     }
-    let catalog = fs::read_to_string(root.join("marrow.catalog.json")).expect("accepted catalog");
-    assert!(
-        !catalog.contains("books::^books::byIsbn"),
-        "apply must not accept the index before the rebuild transaction"
-    );
 }
 
 #[test]

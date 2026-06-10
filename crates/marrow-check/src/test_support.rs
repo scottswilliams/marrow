@@ -22,15 +22,13 @@ use crate::{
     check_project_with_catalog, checked_saved_root_place,
 };
 
-/// The standard single-`src`-root project config the source-driven suites check
-/// under, with the well-known accepted-catalog file name.
+/// The standard single-`src`-root project config the source-driven suites check under.
 pub fn test_config() -> ProjectConfig {
     ProjectConfig {
         source_roots: vec!["src".into()],
         default_entry: None,
         store: None,
         tests: Vec::new(),
-        accepted_catalog: "marrow.catalog.json".into(),
     }
 }
 

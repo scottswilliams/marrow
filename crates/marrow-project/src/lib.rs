@@ -29,8 +29,6 @@ pub struct ProjectConfig {
     pub store: Option<StoreConfig>,
     /// Test file glob patterns.
     pub tests: Vec<String>,
-    /// Generated accepted catalog metadata, relative to the project root.
-    pub accepted_catalog: String,
 }
 
 /// The storage selection: which backend, and where its data lives.
@@ -91,7 +89,6 @@ pub enum ConfigPathField {
     SourceRootsEntry,
     DataDir,
     TestsEntry,
-    AcceptedCatalog,
 }
 
 /// Why a configured project-relative path is invalid.
@@ -118,7 +115,6 @@ impl ConfigPathField {
             Self::SourceRootsEntry => "sourceRoots entry",
             Self::DataDir => "dataDir",
             Self::TestsEntry => "tests entry",
-            Self::AcceptedCatalog => "acceptedCatalog",
         }
     }
 }
@@ -207,17 +203,11 @@ pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
         None => None,
     };
 
-    let accepted_catalog = raw
-        .accepted_catalog
-        .unwrap_or_else(|| "marrow.catalog.json".to_string());
-    check_under_root(ConfigPathField::AcceptedCatalog, &accepted_catalog)?;
-
     Ok(ProjectConfig {
         source_roots: raw.source_roots,
         default_entry: raw.run.and_then(|run| run.default_entry),
         store,
         tests: raw.tests,
-        accepted_catalog,
     })
 }
 
@@ -523,8 +513,6 @@ struct RawConfig {
     store: Option<RawStore>,
     #[serde(default)]
     tests: Vec<String>,
-    #[serde(default)]
-    accepted_catalog: Option<String>,
 }
 
 #[derive(Deserialize)]

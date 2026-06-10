@@ -139,7 +139,6 @@ pub fn test_project_config() -> ProjectConfig {
         default_entry: None,
         store: None,
         tests: Vec::new(),
-        accepted_catalog: "marrow.catalog.json".into(),
     }
 }
 

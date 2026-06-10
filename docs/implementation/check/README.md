@@ -36,7 +36,6 @@ Evolution discharge and the analysis/tooling surface sit beside this spine, cons
 - `crates/marrow-check/src/lib.rs` — the crate root: module declarations and the public re-export surface, nothing else.
 - `crates/marrow-check/src/driver.rs` — `check_project` and `check_tests*`, the per-file structural check, and the name/path/builtin resolution helpers shared with the type passes.
 - `crates/marrow-check/src/diagnostics.rs` — the diagnostic vocabulary: the `check.*` codes, the typed `DiagnosticPayload`, and `CheckDiagnostic` / `CheckReport`.
-- `crates/marrow-check/src/commit.rs` — `write_accepted_catalog`, the catalog-file writer `evolve apply` still advances; production baselines are engine-resident (`marrow_run::evolution::commit_catalog_baseline`).
 - `crates/marrow-check/src/analysis.rs` — `analyze_source_project`, the phase orchestrator.
 - `crates/marrow-check/src/program.rs` — `CheckedProgram`, `MarrowType`, `lower_runtime_bodies`.
 - `crates/marrow-check/src/resolve.rs` — `resolve`, the single name resolver every consumer routes through.

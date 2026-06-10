@@ -1,14 +1,26 @@
 mod support;
 
-use std::fs;
-
 use std::hash::{Hash, Hasher};
+use std::path::Path;
 
 use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogMetadata};
-use marrow_check::CHECK_CATALOG_INTENT;
+use marrow_check::{CHECK_CATALOG_INTENT, check_project_with_catalog};
 
-use support::catalog::{catalog, catalog_path, derived_id, entry as literal_entry, write_catalog};
+use support::catalog::{catalog, derived_id, entry as literal_entry, write_catalog};
 use support::{check_with_accepted, config, temp_project, write};
+
+/// The baseline accepted catalog a state-establishing flow freezes for the project under
+/// `root`: the proposal a first-run check produces. A real run commits this same snapshot
+/// into the engine-resident store; a checker test reads it straight off the proposal.
+fn commit_baseline(root: &Path) -> CatalogMetadata {
+    let (report, program) =
+        check_project_with_catalog(root, &config(), None).expect("first-run check");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    program
+        .catalog
+        .proposal
+        .expect("a first-run check proposes a baseline catalog")
+}
 
 /// A catalog entry whose stable id is minted deterministically from `label`, so a
 /// fixture refers to a member by a readable name and still gets a `cat_`-shaped id the
@@ -173,28 +185,20 @@ fn committed_ids_are_stable_across_rechecks() {
         );
     });
 
-    let (report, program) = check_with_accepted(&root);
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    marrow_check::commit_pending_identity(&root, &config(), &program)
-        .expect("commit baseline")
-        .expect("baseline written");
+    // The first-run proposal is the baseline a state-establishing flow freezes. Its
+    // Book id is the committed identity, so re-checking against it must bind that exact
+    // id rather than minting a fresh one.
+    let baseline = commit_baseline(&root);
+    let frozen = baseline
+        .entries
+        .iter()
+        .find(|entry| entry.kind == CatalogEntryKind::Resource && entry.path == "books::Book")
+        .expect("committed Book entry")
+        .stable_id
+        .clone();
 
-    // The accepted file now carries the frozen ids. Read it directly so the
-    // assertion is against the committed identity, then confirm a re-check binds
-    // exactly that id rather than minting a fresh one.
-    let frozen = {
-        let json = fs::read_to_string(catalog_path(&root)).expect("read accepted catalog");
-        let accepted = CatalogMetadata::from_json(&json).expect("accepted catalog parses");
-        accepted
-            .entries
-            .iter()
-            .find(|entry| entry.kind == CatalogEntryKind::Resource && entry.path == "books::Book")
-            .expect("committed Book entry")
-            .stable_id
-            .clone()
-    };
-
-    let (recheck, program) = check_with_accepted(&root);
+    let (recheck, program) =
+        check_project_with_catalog(&root, &config(), Some(&baseline)).expect("re-check");
     assert!(!recheck.has_errors(), "{:#?}", recheck.diagnostics);
 
     let module = program.facts.module_id("books").expect("books module");
@@ -221,20 +225,14 @@ fn committed_leaf_member_records_its_token_in_the_structural_signature_only() {
         );
     });
 
-    let (report, program) = check_with_accepted(&root);
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    marrow_check::commit_pending_identity(&root, &config(), &program)
-        .expect("commit baseline")
-        .expect("baseline written");
+    let accepted = commit_baseline(&root);
 
-    let json = fs::read_to_string(catalog_path(&root)).expect("read accepted catalog");
-
+    let json = accepted.to_json_pretty();
     assert!(
         !json.contains("acceptedLeaf"),
         "the committed catalog must not persist a redundant acceptedLeaf field: {json}"
     );
 
-    let accepted = CatalogMetadata::from_json(&json).expect("accepted catalog parses");
     let title = accepted
         .entries
         .iter()
@@ -268,15 +266,7 @@ fn committed_keyed_leaf_map_member_folds_its_key_shape_into_the_signature() {
         );
     });
 
-    let (report, program) = check_with_accepted(&root);
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    marrow_check::commit_pending_identity(&root, &config(), &program)
-        .expect("commit baseline")
-        .expect("baseline written");
-
-    let json = fs::read_to_string(catalog_path(&root)).expect("read accepted catalog");
-
-    let accepted = CatalogMetadata::from_json(&json).expect("accepted catalog parses");
+    let accepted = commit_baseline(&root);
     let tags = accepted
         .entries
         .iter()
