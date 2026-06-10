@@ -192,82 +192,31 @@ fn approval_required_message(catalog_id: &str, populated: usize) -> String {
     )
 }
 
+/// Report a committed evolution apply: the activated epoch, the fresh commit id, and the
+/// per-kind record counts the receipt proves.
 pub(super) fn apply_success(outcome: &ApplyOutcome, format: CheckFormat) {
     let receipt = &outcome.receipt;
-    render_apply_outcome(
-        "applied evolution",
-        "applied",
-        receipt.catalog_epoch,
-        Some(receipt.commit_id),
-        ApplyCounts {
-            records_backfilled: receipt.records_backfilled,
-            records_transformed: receipt.records_transformed,
-            records_retired: receipt.records_retired,
-            indexes_rebuilt: receipt.indexes_rebuilt,
-        },
-        format,
-    );
-}
-
-/// Report a resume that only brought the accepted-catalog file forward. No data was
-/// re-applied, so every count is zero, there is no fresh commit, and the epoch is the
-/// one the store already holds.
-pub(super) fn apply_resumed(catalog_epoch: u64, format: CheckFormat) {
-    render_apply_outcome(
-        "completed evolution",
-        "completed",
-        catalog_epoch,
-        None,
-        ApplyCounts::default(),
-        format,
-    );
-}
-
-#[derive(Default)]
-struct ApplyCounts {
-    records_backfilled: usize,
-    records_transformed: usize,
-    records_retired: usize,
-    indexes_rebuilt: usize,
-}
-
-/// The `evolve apply` outcome shape, shared by a fresh apply and a resume. The
-/// `commit id` text line and JSON key appear only when a commit was made; a resume
-/// carries none.
-fn render_apply_outcome(
-    text_heading: &str,
-    status: &str,
-    catalog_epoch: u64,
-    commit_id: Option<u64>,
-    counts: ApplyCounts,
-    format: CheckFormat,
-) {
     match format {
         CheckFormat::Text => {
-            println!("{text_heading}");
-            println!("catalog epoch: {catalog_epoch}");
-            if let Some(commit_id) = commit_id {
-                println!("commit id: {commit_id}");
-            }
-            println!("records backfilled: {}", counts.records_backfilled);
-            println!("records transformed: {}", counts.records_transformed);
-            println!("records retired: {}", counts.records_retired);
-            println!("indexes rebuilt: {}", counts.indexes_rebuilt);
+            println!("applied evolution");
+            println!("catalog epoch: {}", receipt.catalog_epoch);
+            println!("commit id: {}", receipt.commit_id);
+            println!("records backfilled: {}", receipt.records_backfilled);
+            println!("records transformed: {}", receipt.records_transformed);
+            println!("records retired: {}", receipt.records_retired);
+            println!("indexes rebuilt: {}", receipt.indexes_rebuilt);
         }
         CheckFormat::Json | CheckFormat::Jsonl => {
-            let mut record = serde_json::json!({
+            write_json(serde_json::json!({
                 "kind": "evolve_apply",
-                "status": status,
-                "catalog_epoch": catalog_epoch,
-                "records_backfilled": counts.records_backfilled,
-                "records_transformed": counts.records_transformed,
-                "records_retired": counts.records_retired,
-                "indexes_rebuilt": counts.indexes_rebuilt,
-            });
-            if let Some(commit_id) = commit_id {
-                record["commit_id"] = serde_json::json!(commit_id);
-            }
-            write_json(record);
+                "status": "applied",
+                "catalog_epoch": receipt.catalog_epoch,
+                "commit_id": receipt.commit_id,
+                "records_backfilled": receipt.records_backfilled,
+                "records_transformed": receipt.records_transformed,
+                "records_retired": receipt.records_retired,
+                "indexes_rebuilt": receipt.indexes_rebuilt,
+            }));
         }
     }
 }
@@ -287,6 +236,13 @@ pub(super) fn apply_error(error: ApplyError, format: CheckFormat) {
         ApplyError::StoreCommitDrift { pinned, found } => report_simple_error(
             "evolve.store_commit_drift",
             &format!("store commit changed after preview (pinned {pinned:?}, found {found:?})"),
+            format,
+        ),
+        ApplyError::CatalogDrift { pinned, found } => report_simple_error(
+            "evolve.catalog_drift",
+            &format!(
+                "store accepted catalog changed after preview (pinned {pinned}, found {found:?})"
+            ),
             format,
         ),
         ApplyError::MaintenanceRequired => report_simple_error(

@@ -8,7 +8,7 @@ use marrow_store::cell::CatalogId;
 use super::apply::{ApplyError, Approval};
 
 /// Whether the witness carries any `RepairRequired` verdict. A repair obligation makes a
-/// catalog not activatable. The resumed-completion check rejects on this predicate; the
+/// catalog not activatable. The completion verifier rejects on this predicate; the
 /// apply gate rejects on the same verdict inside its obligation loop, where the first
 /// gating obligation in witness order decides which error the write path returns.
 pub(super) fn has_repair_verdict(witness: &EvolutionWitness) -> bool {

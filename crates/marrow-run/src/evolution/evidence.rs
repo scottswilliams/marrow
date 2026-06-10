@@ -6,7 +6,7 @@ use marrow_store::tree::DataPathSegment;
 use sha2::{Digest, Sha256};
 
 /// Domain-separation tag for the per-cell evidence digest of an activation-default
-/// backfill. Backfill staging and crash-resume completion both seed their digest
+/// backfill. Backfill staging and completion verification both seed their digest
 /// with this exact label; the completion digest is meaningful only because it must
 /// equal the staged one, so the two sides share a single const rather than two
 /// literals that could silently drift apart.

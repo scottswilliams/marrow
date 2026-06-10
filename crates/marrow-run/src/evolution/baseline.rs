@@ -11,7 +11,7 @@ use marrow_check::program::CheckedProgram;
 use marrow_store::StoreError;
 use marrow_store::tree::TreeStore;
 
-use crate::write_plan::PlanStep;
+use crate::write_plan::WritePlan;
 
 use super::window::{StampFacts, metadata_stamp};
 
@@ -43,40 +43,15 @@ pub fn commit_catalog_baseline(
 
     let stamp = metadata_stamp(StampFacts {
         catalog_epoch: proposal.epoch,
+        catalog_snapshot: Some(Box::new(proposal.clone())),
         commit_id: 0,
         source_digest: program.source_digest(),
         changed_root_catalog_ids: Vec::new(),
         changed_index_catalog_ids: Vec::new(),
         activation: None,
     });
-    let PlanStep::StampMetadata {
-        catalog_epoch,
-        profile,
-        commit,
-    } = stamp
-    else {
-        unreachable!("metadata_stamp always builds a StampMetadata step");
-    };
 
-    store.begin()?;
-    let result = (|| {
-        store.replace_catalog_snapshot(proposal)?;
-        store.write_catalog_epoch(catalog_epoch)?;
-        store.write_engine_profile(&profile)?;
-        store.write_commit_metadata(&commit)?;
-        Ok(())
-    })();
-    match result {
-        Ok(()) => match store.commit() {
-            Ok(()) => Ok(true),
-            Err(error) => {
-                let _ = store.rollback();
-                Err(error)
-            }
-        },
-        Err(error) => {
-            let _ = store.rollback();
-            Err(error)
-        }
-    }
+    WritePlan { steps: vec![stamp] }
+        .commit(store, false)
+        .map(|()| true)
 }

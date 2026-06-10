@@ -25,9 +25,9 @@ fn config(root: impl AsRef<Path>) -> ProjectConfig {
 
 /// Freeze a project's baseline durable identity into its engine-resident store, the way
 /// a state-establishing run does, and return the program re-bound against the accepted
-/// store snapshot. The evolution-apply advance still tracks the accepted-catalog file
-/// (a later lane folds that publish into the store), so the baseline is also written to
-/// the file here, keeping the apply/resume fixtures that rewind it intact.
+/// store snapshot. The store snapshot is the source of truth the production read paths
+/// bind. The baseline is also written to the transitional `marrow.catalog.json` fixture
+/// file so the fixture-reading test helpers still resolve it; that file is being retired.
 #[allow(dead_code)]
 pub(crate) fn commit_catalog(root: impl AsRef<Path>) -> CheckedProgram {
     let root = root.as_ref();

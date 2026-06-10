@@ -444,54 +444,6 @@ pub(crate) fn recheck_against_store_catalog(
     Ok(program)
 }
 
-/// Publish `catalog` as the store's accepted snapshot in its own transaction, after the
-/// activation transaction has advanced the epoch stamp. The catalog rows and the epoch
-/// stamp move in two adjacent commits until the apply path folds the publish into its own
-/// transaction. Must run only after the store transaction commits.
-pub(crate) fn publish_catalog_snapshot(
-    store: &marrow_store::tree::TreeStore,
-    catalog: &marrow_catalog::CatalogMetadata,
-    format: CheckFormat,
-) -> Result<(), ExitCode> {
-    let result = (|| {
-        store.begin()?;
-        match store.replace_catalog_snapshot(catalog) {
-            Ok(()) => store.commit(),
-            Err(error) => {
-                let _ = store.rollback();
-                Err(error)
-            }
-        }
-    })();
-    result.map_err(|error| {
-        report_simple_error(error.code(), &error.to_string(), format);
-        ExitCode::FAILURE
-    })
-}
-
-/// Advance the accepted-catalog file to `catalog`. Must run only after the store
-/// transaction commits, so the file moves in lockstep with the store it activates.
-pub(crate) fn write_accepted_catalog(
-    dir: &str,
-    config: &marrow_project::ProjectConfig,
-    catalog: &marrow_catalog::CatalogMetadata,
-    format: CheckFormat,
-) -> Result<(), ExitCode> {
-    marrow_check::write_accepted_catalog(Path::new(dir), config, catalog).map_err(|error| {
-        match error {
-            marrow_check::CommitIdentityError::Io { path, error } => {
-                report_io_error(&path.display().to_string(), &error, format);
-            }
-            marrow_check::CommitIdentityError::Discover(error) => report_simple_error(
-                error.code,
-                &format!("{}: {}", error.path.display(), error.message),
-                format,
-            ),
-        }
-        ExitCode::FAILURE
-    })
-}
-
 #[derive(Clone, Copy)]
 pub(crate) enum CheckFormat {
     Text,

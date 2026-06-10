@@ -27,7 +27,7 @@ use super::locate::{MemberLocation, PathStep, for_each_place_record, locate_memb
 
 /// Fold one default-target cell's identity into the activation-default evidence digest:
 /// the store id, the record identity, the cell path, and the cell's bytes, in that fixed
-/// order. Backfill staging, the read-only presence receipt, and crash-resume completion
+/// order. Backfill staging, the read-only presence receipt, and completion verification
 /// all build their digest from this one recipe so the staged and verified digests cannot
 /// drift apart by a reordering or a missed field.
 pub(super) fn fold_default_cell(
@@ -147,7 +147,7 @@ pub(super) fn stage_default_presence_receipt(
 
 /// Finish the activation-default digest with the backfilled and target counts and record
 /// the per-id receipt. The two counts close the digest in the same order both the staging
-/// helpers and crash-resume completion expect, so a receipt verifies against its stamp.
+/// helpers and completion verification expect, so a receipt verifies against its stamp.
 fn push_default_receipt(
     staged: &mut StagedWork,
     catalog_id: &CatalogId,
@@ -261,7 +261,7 @@ pub(super) fn stage_index_rebuild(
 /// is gone from current source, so it is addressed directly by its catalog id rather
 /// than located in a place: an empty key prefix names the whole index-cell subtree.
 /// Catalog ids are globally unique, so this drops exactly the dropped index's cells and
-/// nothing else. The delete is idempotent — a resumed apply over an already-cleared
+/// nothing else. The delete is idempotent — a re-apply over an already-cleared
 /// index subtree deletes nothing.
 pub(super) fn stage_index_drop(
     catalog_id: &CatalogId,

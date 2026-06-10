@@ -30,14 +30,20 @@ pub(crate) enum PlanStep {
     DeleteIndexSubtree {
         address: IndexAddress,
     },
-    /// Stamp the catalog epoch, engine profile, and commit metadata. This commits in
-    /// the same transaction as the data steps so the store's epoch never advances
-    /// without the data the new epoch describes. It is a metadata stamp, not a data or
-    /// index write, so the read-only projection reports it as a [`WriteTarget::Meta`].
+    /// Stamp the catalog epoch, engine profile, and commit metadata, and publish the
+    /// activated catalog snapshot when one is present. This commits in the same
+    /// transaction as the data steps so the store's epoch never advances without the
+    /// data the new epoch describes, and the activated catalog rows land atomically with
+    /// the epoch they belong to. The snapshot publish is a store-internal activation
+    /// write, not a data or index write, so the read-only projection reports the step as
+    /// a [`WriteTarget::Meta`] keyed by the catalog epoch alone and never exposes the
+    /// rows as a data write. A `None` snapshot is an apply that does not advance the
+    /// accepted catalog (a pure backfill), so the published catalog is left untouched.
     StampMetadata {
         catalog_epoch: u64,
+        catalog_snapshot: Option<Box<marrow_catalog::CatalogMetadata>>,
         profile: EngineProfile,
-        commit: CommitMetadata,
+        commit: Box<CommitMetadata>,
     },
 }
 
@@ -150,9 +156,13 @@ fn apply_steps(steps: Vec<PlanStep>, store: &TreeStore) -> Result<(), StoreError
             }
             PlanStep::StampMetadata {
                 catalog_epoch,
+                catalog_snapshot,
                 profile,
                 commit,
             } => {
+                if let Some(snapshot) = catalog_snapshot {
+                    store.replace_catalog_snapshot(&snapshot)?;
+                }
                 store.write_catalog_epoch(catalog_epoch)?;
                 store.write_engine_profile(&profile)?;
                 store.write_commit_metadata(&commit)?;
@@ -219,18 +229,102 @@ mod tests {
             activation_records_retired_by_id: Vec::new(),
             activation_records_transformed: 0,
         };
+        let snapshot = marrow_catalog::CatalogMetadata::new(5, Vec::new());
         let plan = WritePlan {
             steps: vec![PlanStep::StampMetadata {
                 catalog_epoch: 5,
+                catalog_snapshot: Some(Box::new(snapshot)),
                 profile,
-                commit,
+                commit: Box::new(commit),
             }],
         };
 
+        // Even carrying an activated catalog snapshot, the stamp projects to a single
+        // `Meta` write keyed by the epoch and no value: the snapshot rows are a
+        // store-internal activation write, never a data or index write a dry-run reports.
         let projected: Vec<_> = plan.steps().collect();
         assert_eq!(
             projected,
             vec![(WriteOp::Write, WriteTarget::Meta { catalog_epoch: 5 }, None)]
+        );
+    }
+
+    fn sample_commit(
+        commit_id: u64,
+        catalog_epoch: u64,
+        profile: &EngineProfile,
+    ) -> CommitMetadata {
+        CommitMetadata {
+            commit_id,
+            catalog_epoch,
+            layout_epoch: profile.layout_epoch(),
+            source_digest:
+                "sha256:0000000000000000000000000000000000000000000000000000000000000005"
+                    .to_string(),
+            engine_profile_digest: profile.digest_bytes(),
+            changed_root_catalog_ids: Vec::new(),
+            changed_index_catalog_ids: Vec::new(),
+            activation_evolution_digest: String::new(),
+            activation_proposal_catalog_digest: None,
+            activation_proposal_new_catalog_ids: Vec::new(),
+            activation_records_backfilled: 0,
+            activation_default_records_by_id: Vec::new(),
+            activation_indexes_rebuilt: 0,
+            activation_records_retired: 0,
+            activation_retire_evidence_digest: String::new(),
+            activation_records_retired_by_id: Vec::new(),
+            activation_records_transformed: 0,
+        }
+    }
+
+    /// A stamp carrying no catalog snapshot leaves the store's published catalog untouched.
+    /// A same-epoch apply that does not advance identity (no proposal) must neither
+    /// republish nor clear the accepted catalog — only an activation that carries a
+    /// proposal publishes one.
+    #[test]
+    fn stamp_metadata_without_a_snapshot_leaves_the_catalog_unchanged() {
+        use marrow_store::tree::TreeStore;
+
+        let store = TreeStore::memory();
+        let accepted = marrow_catalog::CatalogMetadata::new(
+            5,
+            vec![marrow_catalog::CatalogEntry {
+                kind: marrow_catalog::CatalogEntryKind::Store,
+                path: "books".to_string(),
+                stable_id: "cat_00000000000000000000000000000001".to_string(),
+                aliases: Vec::new(),
+                lifecycle: marrow_catalog::CatalogLifecycle::Active,
+                accepted_key_shape: Some("int".to_string()),
+                accepted_struct: None,
+            }],
+        );
+        store
+            .replace_catalog_snapshot(&accepted)
+            .expect("publish the accepted catalog");
+        let digest_before = store.catalog_snapshot_digest().expect("digest");
+
+        let profile = EngineProfile::new(3);
+        let commit = sample_commit(1, 5, &profile);
+        WritePlan {
+            steps: vec![PlanStep::StampMetadata {
+                catalog_epoch: 5,
+                catalog_snapshot: None,
+                profile,
+                commit: Box::new(commit),
+            }],
+        }
+        .commit(&store, false)
+        .expect("commit a stamp with no snapshot");
+
+        assert_eq!(
+            store.catalog_snapshot_digest().expect("digest"),
+            digest_before,
+            "a stamp with no snapshot must not touch the published catalog"
+        );
+        assert_eq!(
+            store.read_catalog_snapshot().expect("snapshot"),
+            Some(accepted),
+            "the accepted catalog rows are unchanged"
         );
     }
 }

@@ -1,9 +1,9 @@
-//! Crash-resume verification for a stamped activation.
+//! Re-proving a stamped activation against a recomputed witness.
 //!
-//! The accepted-catalog file is the last activation step, so a crash can leave the store
-//! stamped at the proposal epoch while the file still names the prior one. Resume may
-//! publish the proposal only after proving the stamped data and index effects are still
-//! visible and match the exact recomputed witness.
+//! A committed activation stamps its data, index, and metadata effects in one transaction.
+//! This re-derives the witness from the live source and store and proves every recorded
+//! effect is still present and matches it exactly. Backup restore and the apply suites use
+//! it to confirm a store-stamped activation is complete and self-consistent.
 
 mod default;
 mod index;
@@ -28,9 +28,10 @@ use retire::verify_retire_completion;
 use transform::verify_transform_completion;
 use verdict::verify_no_repair_verdicts;
 
-/// Prove a store-stamped activation is complete before crash resume publishes the
-/// accepted-catalog file. Any missing receipt field, changed witness fingerprint, or
-/// absent data/index effect is drift and must fail closed.
+/// Prove a store-stamped activation is complete: every receipt field, witness fingerprint,
+/// and data/index effect the stamp recorded is still present and matches the recomputed
+/// witness. Any missing field, changed fingerprint, or absent effect is drift and fails
+/// closed.
 pub fn verify_activation_completion(
     program: &CheckedProgram,
     store: &TreeStore,

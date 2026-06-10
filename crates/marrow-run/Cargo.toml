@@ -9,6 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+marrow-catalog = { path = "../marrow-catalog" }
 marrow-check = { path = "../marrow-check" }
 marrow-schema = { path = "../marrow-schema" }
 marrow-store = { path = "../marrow-store" }

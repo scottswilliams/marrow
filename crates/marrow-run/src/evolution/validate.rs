@@ -15,9 +15,31 @@ pub(super) fn validate_witness(
     store: &TreeStore,
 ) -> Result<(), ApplyError> {
     assert_commit_pin(witness, store)?;
+    assert_accepted_catalog_pin(witness, store)?;
     let current = preview(program, store).map_err(ApplyError::Store)?.0;
     if current != *witness {
         return Err(ApplyError::Drift);
+    }
+    Ok(())
+}
+
+/// Confirm the store's published accepted-catalog snapshot is the one the witness was
+/// built against. The witness discharged its obligations over `accepted_catalog`; if the
+/// store's published rows drifted from that digest, staging against the witness would
+/// write a shape the store no longer accepts. A store with no published snapshot predates
+/// its baseline (a fresh store the first apply adopts), so there is nothing to pin yet.
+pub(super) fn assert_accepted_catalog_pin(
+    witness: &EvolutionWitness,
+    store: &TreeStore,
+) -> Result<(), ApplyError> {
+    let Some(found) = store.catalog_snapshot_digest()? else {
+        return Ok(());
+    };
+    if found != witness.accepted_catalog.digest {
+        return Err(ApplyError::CatalogDrift {
+            pinned: witness.accepted_catalog.digest.clone(),
+            found: Some(found),
+        });
     }
     Ok(())
 }

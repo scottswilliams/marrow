@@ -317,11 +317,10 @@ fn finish_open(
 /// zero-record-mutation change or fence with the obligation as the actionable cause.
 ///
 /// A zero-mutation evolution is discharged through the production apply path, which
-/// stamps the new shape and advances the epoch under the write lock with the witness
-/// commit-id pin, so a concurrent write fails the apply closed rather than letting a
-/// stale decision stamp. After the store commits, the accepted catalog snapshot advances
-/// in lockstep and the project is re-checked so the run binds against the activated epoch
-/// and re-fences clean.
+/// stamps the new shape, publishes the activated catalog snapshot, and advances the epoch
+/// in one transaction under the write lock with the witness commit-id pin, so a concurrent
+/// write fails the apply closed rather than letting a stale decision stamp. The project is
+/// then re-checked so the run binds against the activated epoch and re-fences clean.
 fn auto_apply_then_reopen(
     dir: &str,
     program: marrow_check::CheckedProgram,
@@ -357,12 +356,6 @@ fn auto_apply_then_reopen(
             );
             return Err(ExitCode::FAILURE);
         }
-    }
-    // The store transaction committed the new epoch; advance the accepted catalog snapshot
-    // the store publishes to match, exactly as an explicit `evolve apply` does as its final
-    // step.
-    if let Some(proposal) = &program.catalog.proposal {
-        crate::publish_catalog_snapshot(&store, proposal, format)?;
     }
     // Release the file lock the native backend holds before re-opening below; one process
     // may not hold two handles to the same store file at once.

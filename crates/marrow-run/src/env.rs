@@ -776,6 +776,7 @@ fn build_commit_metadata_stamp(
     Ok(Some(crate::evolution::metadata_stamp(
         crate::evolution::StampFacts {
             catalog_epoch,
+            catalog_snapshot: None,
             commit_id,
             source_digest: source_digest.to_string(),
             changed_root_catalog_ids,

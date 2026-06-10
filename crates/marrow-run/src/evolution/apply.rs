@@ -68,6 +68,15 @@ pub enum ApplyError {
     /// nothing to activate, and stamping a proposal epoch would invent a baseline.
     NoAcceptedCatalog,
     Drift,
+    /// The store's published accepted-catalog snapshot is not the one the witness was
+    /// built against. The witness fingerprints the accepted catalog it discharged the
+    /// obligations over; if the store's published rows drifted from it (a concurrent
+    /// activation, or a tampered catalog table), staging against the witness would write
+    /// the wrong shape. Apply fails closed before staging.
+    CatalogDrift {
+        pinned: String,
+        found: Option<String>,
+    },
     StoreCommitDrift {
         pinned: Option<u64>,
         found: Option<u64>,
@@ -186,6 +195,7 @@ pub fn apply(
     let parts = receipt_parts(program, commit_id, &staged, &destructive_retire_counts)?;
     steps.push(activation_stamp(
         witness,
+        program,
         commit_id,
         target_epoch,
         &staged,
@@ -266,16 +276,30 @@ fn receipt_parts(
 }
 
 /// The metadata stamp a committing activation appends to its plan, carrying the activation
-/// facts the commit records at `commit_id`.
+/// facts the commit records at `commit_id` and the activated catalog snapshot it publishes.
+///
+/// The snapshot is the proposal catalog the witness activates: present exactly when the
+/// witness carries a `proposal_catalog`, so it publishes atomically with the epoch it
+/// belongs to. An apply that does not advance the accepted catalog (a pure backfill at the
+/// same epoch) carries no proposal, so it publishes nothing and the accepted catalog the
+/// store holds stays. The full snapshot rows live on the checked program; the witness
+/// fingerprint, re-verified before staging, pins which catalog those rows must be.
 fn activation_stamp(
     witness: &EvolutionWitness,
+    program: &CheckedProgram,
     commit_id: u64,
     target_epoch: u64,
     staged: &StagedWork,
     parts: &ReceiptParts,
 ) -> PlanStep {
+    let catalog_snapshot = witness
+        .proposal_catalog
+        .as_ref()
+        .and(program.catalog.proposal.clone())
+        .map(Box::new);
     metadata_stamp(StampFacts {
         catalog_epoch: target_epoch,
+        catalog_snapshot,
         commit_id,
         source_digest: witness.source_digest.clone(),
         changed_root_catalog_ids: witness.changed_root_catalog_ids.clone(),
@@ -534,7 +558,7 @@ fn stage_obligation(
 
 /// Whether `catalog_id` names a resource member the accepted catalog already owns. A
 /// default whose target is not yet accepted is proposal-new: apply must fail closed on an
-/// existing target cell, and crash-resume completion holds it to the exact constant. The
+/// existing target cell, and completion verification holds it to the exact constant. The
 /// single owner of that classification so staging and completion cannot disagree.
 pub(super) fn accepted_resource_member(program: &CheckedProgram, catalog_id: &CatalogId) -> bool {
     program.catalog.accepted_entries.iter().any(|entry| {

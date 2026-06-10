@@ -6,6 +6,7 @@
 //! module builds and the fence it enforces read the same facts, so a store this binary
 //! just wrote always passes its own fence.
 
+use marrow_catalog::CatalogMetadata;
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::tree::{ActivationDefaultRecordCount, CommitMetadata, EngineProfile, TreeStore};
@@ -23,9 +24,13 @@ pub fn current_engine_profile() -> EngineProfile {
 }
 
 /// The catalog epoch, schema-bearing source digest, and changed catalog ids a managed
-/// write or an evolution apply records for the commit it stamps.
+/// write or an evolution apply records for the commit it stamps. `catalog_snapshot` is
+/// the activated catalog to publish atomically with the stamp, or `None` when the commit
+/// does not advance the accepted catalog (a non-activation managed write or a pure
+/// backfill).
 pub(crate) struct StampFacts {
     pub(crate) catalog_epoch: u64,
+    pub(crate) catalog_snapshot: Option<Box<CatalogMetadata>>,
     pub(crate) commit_id: u64,
     pub(crate) source_digest: String,
     pub(crate) changed_root_catalog_ids: Vec<CatalogId>,
@@ -78,8 +83,9 @@ pub(crate) fn metadata_stamp(facts: StampFacts) -> PlanStep {
     };
     PlanStep::StampMetadata {
         catalog_epoch: facts.catalog_epoch,
+        catalog_snapshot: facts.catalog_snapshot,
         profile,
-        commit,
+        commit: Box::new(commit),
     }
 }
 
@@ -204,6 +210,7 @@ mod tests {
         stamp(store, epoch);
         let step = metadata_stamp(StampFacts {
             catalog_epoch: epoch,
+            catalog_snapshot: None,
             commit_id: 1,
             source_digest: digest.to_string(),
             changed_root_catalog_ids: Vec::new(),
