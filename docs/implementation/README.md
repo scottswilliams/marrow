@@ -69,7 +69,8 @@ over data the checker has not proven safe.
 | `marrow-check` | Resolution, types, facts, catalog identity, evolution, lowering | [check/](check/README.md) |
 | `marrow-store` | Tree-cell storage contract; key/value codecs; mem + redb engines | [store.md](store.md) |
 | `marrow-run` | Tree-walking interpreter; saved reads/writes; evolution apply | [runtime/](runtime/README.md) |
-| `marrow-project` | `marrow.json` schema, discovery, accepted-catalog snapshot | [cli.md](cli.md) |
+| `marrow-catalog` | Accepted-catalog model: epoch/digest/entries, validation, structural-signature decode | [check/](check/README.md) |
+| `marrow-project` | `marrow.json` schema, discovery, the project digest | [cli.md](cli.md) |
 | `marrow` | CLI dispatch, run/test/fmt, data/backup/evolve, LSP, serve | [cli.md](cli.md), [serve-lsp.md](serve-lsp.md) |
 
 `marrow-check` and `marrow-run` are large enough to split into a directory of

@@ -2,8 +2,8 @@ mod support;
 
 use std::fs;
 
+use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 use marrow_check::{CHECK_CATALOG_INTENT, DiagnosticPayload, check_project};
-use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 
 use support::catalog::{catalog, catalog_path, derived_id, entry as literal_entry, write_catalog};
 use support::{config, temp_project, write};

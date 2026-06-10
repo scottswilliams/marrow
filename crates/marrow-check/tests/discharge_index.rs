@@ -1,9 +1,9 @@
 mod support;
 mod support_discharge;
 
+use marrow_catalog::CatalogEntryKind;
 use marrow_check::check_project;
 use marrow_check::evolution::{RepairReason, Verdict, preview};
-use marrow_project::CatalogEntryKind;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};

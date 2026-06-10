@@ -180,6 +180,7 @@ checksum = "616ec5685824bcc94416c6d4a7a446eea774a31efd7062c8480ba6fd06d7a6e5"
 name = "marrow"
 version = "0.1.0"
 dependencies = [
+ "marrow-catalog",
  "marrow-check",
  "marrow-project",
  "marrow-run",
@@ -189,9 +190,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "marrow-catalog"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "marrow-check"
 version = "0.1.0"
 dependencies = [
+ "marrow-catalog",
  "marrow-check",
  "marrow-project",
  "marrow-schema",
@@ -232,6 +243,7 @@ dependencies = [
 name = "marrow-store"
 version = "0.1.0"
 dependencies = [
+ "marrow-catalog",
  "redb",
  "tempfile",
 ]

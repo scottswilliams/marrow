@@ -16,6 +16,7 @@ test-support = []
 
 [dependencies]
 marrow-syntax = { path = "../marrow-syntax" }
+marrow-catalog = { path = "../marrow-catalog" }
 marrow-project = { path = "../marrow-project" }
 marrow-schema = { path = "../marrow-schema" }
 # Default features only: the canonical scalar type, not the native backend.

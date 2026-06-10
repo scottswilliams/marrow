@@ -1,8 +1,8 @@
 mod support;
 mod support_discharge;
 
+use marrow_catalog::CatalogEntryKind;
 use marrow_check::evolution::{EvolutionWitness, RepairDiagnostic, RepairReason, Verdict, preview};
-use marrow_project::CatalogEntryKind;
 use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::TreeStore;
 use marrow_store::value::Scalar;

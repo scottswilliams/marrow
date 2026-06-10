@@ -159,7 +159,7 @@ pub mod catalog {
     use std::hash::{Hash, Hasher};
     use std::path::{Path, PathBuf};
 
-    use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
+    use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 
     /// The well-known accepted-catalog file under a project root.
     pub fn catalog_path(root: &Path) -> PathBuf {

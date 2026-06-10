@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use marrow_project::{CatalogEntry, CatalogEntryKind};
+use marrow_catalog::{CatalogEntry, CatalogEntryKind};
 use marrow_store::StoreError;
 
 use crate::evolution::witness::{RepairReason, Verdict};

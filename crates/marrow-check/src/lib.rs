@@ -81,8 +81,8 @@ pub use facts::{
     PresenceProofFact, PresenceProofId, PresenceProofPlace, PresenceProofSource,
     PresenceProofStatus,
 };
+pub use marrow_catalog::{CatalogEntryKind, CatalogLifecycle};
 pub use marrow_project::ProjectConfig;
-pub use marrow_project::{CatalogEntryKind, CatalogLifecycle};
 pub use marrow_schema::{IndexSchema, ResourceSchema, StoreSchema, Type};
 pub use program::{
     CheckedConst, CheckedEntryFunction, CheckedFunction, CheckedModule, CheckedParam,

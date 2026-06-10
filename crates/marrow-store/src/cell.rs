@@ -14,6 +14,7 @@ const TREE_CELL_PROFILE_V0: u8 = 0x01;
 const FAMILY_META: u8 = 0x10;
 const FAMILY_DATA: u8 = 0x20;
 const FAMILY_INDEX: u8 = 0x30;
+const FAMILY_CATALOG: u8 = 0x40;
 
 const NODE_END: u8 = 0x00;
 const LEAF_CELL: u8 = 0x10;
@@ -185,6 +186,13 @@ impl CellKey {
     /// The prefix covering every index-family cell.
     pub(crate) fn index_family() -> Self {
         Self(family(FAMILY_INDEX))
+    }
+
+    /// The prefix covering every catalog-family cell. The accepted-catalog table
+    /// lives under its own family, disjoint from the data, index, and meta keys, so
+    /// no data/index/meta API can read, write, or scan a catalog row.
+    pub(crate) fn catalog_family() -> Self {
+        Self(family(FAMILY_CATALOG))
     }
 
     pub(crate) fn as_bytes(&self) -> &[u8] {

@@ -1,4 +1,4 @@
-use marrow_project::StructuralSignature;
+use marrow_catalog::StructuralSignature;
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
@@ -195,7 +195,7 @@ fn structural_repair(
     declared: &str,
 ) -> (RepairReason, String) {
     let label = member_label(place, member);
-    let shapes = [accepted, declared].map(marrow_project::structural_signature);
+    let shapes = [accepted, declared].map(marrow_catalog::structural_signature);
     let leaf_involved = shapes
         .iter()
         .any(|shape| matches!(shape, Some(StructuralSignature::Leaf(_))));

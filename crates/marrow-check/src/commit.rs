@@ -76,7 +76,7 @@ pub fn commit_pending_identity(
 pub fn write_accepted_catalog(
     project_root: &Path,
     config: &ProjectConfig,
-    catalog: &marrow_project::CatalogMetadata,
+    catalog: &marrow_catalog::CatalogMetadata,
 ) -> Result<(), CommitIdentityError> {
     let path = project_root.join(&config.accepted_catalog);
     let parent = path.parent().unwrap_or(project_root);

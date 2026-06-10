@@ -14,9 +14,9 @@
 
 #![allow(dead_code)]
 
+use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogMetadata};
 use marrow_check::evolution::{EvolutionWitness, Verdict, preview};
 use marrow_check::{CheckedProgram, CheckedSavedPlace};
-use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogMetadata};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};

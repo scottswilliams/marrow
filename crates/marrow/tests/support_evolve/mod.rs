@@ -135,10 +135,10 @@ pub(crate) fn native_books_project(name: &str, source: &str) -> TempProject {
 }
 
 #[allow(dead_code)]
-pub(crate) fn accepted_catalog(root: impl AsRef<Path>) -> marrow_project::CatalogMetadata {
+pub(crate) fn accepted_catalog(root: impl AsRef<Path>) -> marrow_catalog::CatalogMetadata {
     let json = fs::read_to_string(root.as_ref().join("marrow.catalog.json"))
         .expect("read accepted catalog");
-    marrow_project::CatalogMetadata::from_json(&json).expect("parse accepted catalog")
+    marrow_catalog::CatalogMetadata::from_json(&json).expect("parse accepted catalog")
 }
 
 #[allow(dead_code)]

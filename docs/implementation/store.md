@@ -13,6 +13,7 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 - **Value forms** — `value` (canonical scalar codec, calendar years 0001–9999) and `decimal` (exact base-10, 34-digit/34-place envelope, half-to-even division).
 - **Public facade** — `TreeStore` wraps a boxed `Backend` and exposes every typed write/read/navigation/transaction/snapshot/backup call other crates use.
 - **Durable receipts** — `metadata` (`CommitMetadata`, `EngineProfile`, the source digest the activation fence binds).
+- **Catalog table** — `catalog` persists the accepted `marrow_catalog::CatalogMetadata` as a header row plus one row per entry in its own physical family (`FAMILY_CATALOG`), written in the caller's transaction and invisible to data/index/meta access; a read rebuilds through `CatalogMetadata::new` and fails closed if the recomputed digest does not match the stored header.
 - **Backup** — `backup` streams the data family only; index and meta cells are restamped on restore, never archived.
 
 ## Modules
@@ -25,8 +26,9 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 | `crates/marrow-store/src/value.rs` | `Scalar`/`SavedValue`/`ScalarType`, language spellings, and the canonical (unordered) value codec with strict round-trip-only decode. |
 | `crates/marrow-store/src/decimal.rs` | Exact canonical base-10 `Decimal`: parse, `to_text`, checked add/sub/mul, long-division `checked_div`, floor/abs/compare. |
 | `crates/marrow-store/src/cell.rs` | The v0 physical key grammar: `CatalogId` validation, `CellKey` constructors per family, `DataPathSegment`, `MetaCell` tags, key decoders, `CellRange`. |
-| `crates/marrow-store/src/tree.rs` | `TreeStore` facade over a boxed `Backend`: metadata, typed writes/reads, child/record/index navigation, paged index scans, backup streaming, snapshots. |
+| `crates/marrow-store/src/tree.rs` | `TreeStore` facade over a boxed `Backend`: metadata, the catalog-table read/replace surface, typed writes/reads, child/record/index navigation, paged index scans, backup streaming, snapshots. |
 | `crates/marrow-store/src/metadata.rs` | `EngineProfile`, `CommitMetadata`, and their length-prefixed binary codec with bounded-count guards. |
+| `crates/marrow-store/src/catalog.rs` | The accepted-catalog table codec: header/entry rows under `FAMILY_CATALOG`, bounded paged scan, ordinal-contiguity and digest-recompute integrity, read/replace through `TreeStore`. |
 | `crates/marrow-store/src/mem.rs` | `MemStore`: in-memory `Backend` with full-map clone savepoints and a frozen pinned-read snapshot. |
 | `crates/marrow-store/src/redb.rs` | `RedbStore`: persistent `Backend` with format-version stamp, undo-journal nesting (not redb savepoints), batched prefix delete, pinned read snapshots. |
 | `crates/marrow-store/src/traversal.rs` | Shared prefix-scan accumulator both engines feed to build a bounded, prefix-clipped, truncation-flagged `ScanPage`. |

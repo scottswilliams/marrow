@@ -20,7 +20,7 @@ mod transforms;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use marrow_project::CatalogEntryKind;
+use marrow_catalog::CatalogEntryKind;
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
@@ -268,7 +268,7 @@ impl Accumulator {
         self.declared_structs
             .get(catalog_id)
             .map(String::as_str)
-            .and_then(marrow_project::structural_signature_leaf_token)
+            .and_then(marrow_catalog::structural_signature_leaf_token)
     }
 
     /// Whether a member that was a plain leaf has become a non-leaf, leaving its old single-cell

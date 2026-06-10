@@ -154,6 +154,31 @@ impl TreeStore {
             .transpose()
     }
 
+    /// The accepted catalog the store holds, or `None` when none is published. The
+    /// catalog rows live in their own physical family, invisible to every data,
+    /// index, and meta access, and a read fails closed if any row was tampered.
+    pub fn read_catalog_snapshot(
+        &self,
+    ) -> Result<Option<marrow_catalog::CatalogMetadata>, StoreError> {
+        crate::catalog::read_catalog_snapshot(&**self.backend.borrow())
+    }
+
+    /// Replace the accepted catalog with `snapshot`, writing its rows under the
+    /// caller's active transaction. The whole prior catalog is cleared first, so the
+    /// stored rows are exactly this snapshot's.
+    pub fn replace_catalog_snapshot(
+        &self,
+        snapshot: &marrow_catalog::CatalogMetadata,
+    ) -> Result<(), StoreError> {
+        crate::catalog::replace_catalog_snapshot(&mut **self.backend.borrow_mut(), snapshot)
+    }
+
+    /// The digest of the accepted catalog the store holds, or `None` when none is
+    /// published. Reconstructed from the stored entries, so it reflects any tamper.
+    pub fn catalog_snapshot_digest(&self) -> Result<Option<String>, StoreError> {
+        crate::catalog::read_catalog_snapshot_digest(&**self.backend.borrow())
+    }
+
     pub fn write_node(&self, store: &CatalogId, identity: &[SavedKey]) -> Result<(), StoreError> {
         self.write_cell(
             CellKey::node(store, identity).as_bytes(),
@@ -977,6 +1002,17 @@ fn corrupt_cell(bytes: &[u8]) -> StoreError {
 }
 
 #[cfg(test)]
+impl TreeStore {
+    /// Write raw bytes at a key inside the catalog family, so a corruption test can
+    /// seed a malformed catalog row without going through the codec.
+    pub(crate) fn write_raw_catalog_cell_for_test(&self, key_tail: &[u8], value: Vec<u8>) {
+        let mut key = CellKey::catalog_family().into_bytes();
+        key.extend_from_slice(key_tail);
+        self.write_cell(&key, value).expect("seed raw catalog cell");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::cell::Cell;
 
@@ -1443,6 +1479,151 @@ mod tests {
             .write_data_value(&store_id, &[SavedKey::Int(2)], &path, b"second".to_vec())
             .expect("write after snapshot");
         assert_eq!(collect_backup_cells(&store).len(), 2);
+    }
+
+    fn sample_catalog() -> marrow_catalog::CatalogMetadata {
+        marrow_catalog::CatalogMetadata::new(
+            1,
+            vec![marrow_catalog::CatalogEntry {
+                kind: marrow_catalog::CatalogEntryKind::Store,
+                path: "books".to_string(),
+                stable_id: "cat_00000000000000000000000000000009".to_string(),
+                aliases: Vec::new(),
+                lifecycle: marrow_catalog::CatalogLifecycle::Active,
+                accepted_key_shape: Some("int".to_string()),
+                accepted_struct: None,
+            }],
+        )
+    }
+
+    /// A rollback covers the catalog table and data together: a transaction that
+    /// publishes a catalog snapshot and writes a data cell, then rolls back, leaves
+    /// both at their pre-transaction state. Commit advances both atomically, so the
+    /// catalog and the backfills evolution apply stages always move as one.
+    #[test]
+    fn rollback_reverts_the_catalog_and_data_together() {
+        let store_id = catalog("cat_00000000000000000000000000000001");
+        let member = catalog("cat_00000000000000000000000000000002");
+        let path = [DataPathSegment::Member(member)];
+        let store = TreeStore::memory();
+
+        store.begin().expect("begin");
+        store
+            .write_data_value(&store_id, &[SavedKey::Int(1)], &path, b"first".to_vec())
+            .expect("write data");
+        store
+            .replace_catalog_snapshot(&sample_catalog())
+            .expect("publish catalog");
+        store.rollback().expect("rollback");
+
+        assert_eq!(
+            store
+                .read_data_value(&store_id, &[SavedKey::Int(1)], &path)
+                .expect("read data"),
+            None,
+            "the data write must not survive the rollback"
+        );
+        assert_eq!(
+            store.read_catalog_snapshot().expect("read catalog"),
+            None,
+            "the catalog snapshot must not survive the rollback"
+        );
+
+        // The same plan committed lands both together.
+        store.begin().expect("begin commit path");
+        store
+            .write_data_value(&store_id, &[SavedKey::Int(1)], &path, b"first".to_vec())
+            .expect("write data");
+        store
+            .replace_catalog_snapshot(&sample_catalog())
+            .expect("publish catalog");
+        store.commit().expect("commit");
+        assert_eq!(
+            store
+                .read_data_value(&store_id, &[SavedKey::Int(1)], &path)
+                .expect("read data"),
+            Some(b"first".to_vec())
+        );
+        assert_eq!(
+            store.read_catalog_snapshot().expect("read catalog"),
+            Some(sample_catalog())
+        );
+    }
+
+    /// Replacing the catalog is one transaction even with no caller transaction
+    /// open, so a replace that is later undone restores the exact prior catalog
+    /// rather than the half-written or empty state a non-atomic delete-then-write
+    /// would leave. A standalone first publish commits durably; a second replace
+    /// inside a transaction is visible within it but a rollback brings the first
+    /// catalog back in full.
+    #[test]
+    fn a_rolled_back_replace_restores_the_prior_catalog() {
+        let store = TreeStore::memory();
+        let first = sample_catalog();
+        store
+            .replace_catalog_snapshot(&first)
+            .expect("publish the first catalog with no open transaction");
+        assert_eq!(
+            store.read_catalog_snapshot().expect("read first"),
+            Some(first.clone()),
+            "a standalone replace must commit on its own"
+        );
+
+        let second = marrow_catalog::CatalogMetadata::new(
+            2,
+            vec![marrow_catalog::CatalogEntry {
+                kind: marrow_catalog::CatalogEntryKind::Store,
+                path: "authors".to_string(),
+                stable_id: "cat_00000000000000000000000000000042".to_string(),
+                aliases: Vec::new(),
+                lifecycle: marrow_catalog::CatalogLifecycle::Active,
+                accepted_key_shape: Some("int".to_string()),
+                accepted_struct: None,
+            }],
+        );
+        store.begin().expect("begin");
+        store
+            .replace_catalog_snapshot(&second)
+            .expect("replace inside the transaction");
+        assert_eq!(
+            store.read_catalog_snapshot().expect("read second"),
+            Some(second),
+            "the replacement is visible inside the open transaction"
+        );
+        store.rollback().expect("rollback");
+
+        assert_eq!(
+            store.read_catalog_snapshot().expect("read after rollback"),
+            Some(first),
+            "the rollback restores the prior catalog, not an empty or partial one"
+        );
+    }
+
+    /// The public catalog read path fails closed when a well-formed entry row exists
+    /// with no header row to anchor it. The read must reject the catalog rather than
+    /// reconstruct a headerless snapshot, surfaced through `TreeStore`'s public API.
+    #[test]
+    fn the_public_catalog_read_rejects_an_entry_row_without_a_header() {
+        let store = TreeStore::memory();
+        // A fully valid entry row value: version, ordinal 0, a store-kind tag, a path,
+        // zero aliases, an active lifecycle, and no optional fields. The only thing
+        // wrong is the absent header, so corruption can come from nothing else.
+        let mut value = vec![0x00];
+        value.extend_from_slice(&0u64.to_be_bytes());
+        value.push(0); // CatalogEntryKind::Store tag
+        value.extend_from_slice(&4u32.to_be_bytes());
+        value.extend_from_slice(b"book");
+        value.extend_from_slice(&0u32.to_be_bytes()); // no aliases
+        value.push(0); // CatalogLifecycle::Active tag
+        value.push(0); // no accepted_key_shape
+        value.push(0); // no accepted_struct
+
+        let mut key_tail = vec![0x10]; // entry-row tag
+        key_tail.extend_from_slice(b"cat_00000000000000000000000000000009");
+        store.write_raw_catalog_cell_for_test(&key_tail, value);
+
+        assert_corruption(store.read_catalog_snapshot());
+        assert_corruption(store.catalog_snapshot_digest());
     }
 
     fn catalog(raw: &str) -> CatalogId {

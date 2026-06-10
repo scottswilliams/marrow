@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogLifecycle};
+use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle};
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::tree::{DataPathSegment, TreeStore};

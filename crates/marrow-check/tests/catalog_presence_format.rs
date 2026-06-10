@@ -2,7 +2,7 @@ mod support;
 
 use std::fs;
 
-use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
+use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 
 use support::catalog::{catalog, catalog_path, derived_id, entry as literal_entry, write_catalog};
 use support::{config, temp_project};
@@ -104,7 +104,7 @@ fn accepted_catalog_rejects_alias_and_stable_id_collisions() {
         let json = metadata.to_json_pretty();
         let error = CatalogMetadata::from_json(&json).expect_err("collision is rejected");
 
-        assert_eq!(error.code, marrow_project::CATALOG_INVALID);
+        assert_eq!(error.code, marrow_catalog::CATALOG_INVALID);
     }
 }
 
@@ -177,7 +177,7 @@ fn non_sha_catalog_digest_is_rejected() {
 
     let error = CatalogMetadata::from_json(&json).expect_err("non-SHA digest rejected");
 
-    assert_eq!(error.code, marrow_project::CATALOG_INVALID);
+    assert_eq!(error.code, marrow_catalog::CATALOG_INVALID);
 }
 
 /// A retired identity is dropped from the catalog, never carried as a `removed` lifecycle
@@ -204,7 +204,7 @@ fn removed_catalog_lifecycle_is_rejected() {
     let removed = json.replacen(field, "\"lifecycle\": \"removed\"", 1);
 
     let error = CatalogMetadata::from_json(&removed).expect_err("removed lifecycle rejected");
-    assert_eq!(error.code, marrow_project::CATALOG_INVALID);
+    assert_eq!(error.code, marrow_catalog::CATALOG_INVALID);
 }
 
 #[test]

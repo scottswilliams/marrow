@@ -1,7 +1,7 @@
 mod support;
 
+use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 use marrow_check::{CHECK_CATALOG_INTENT, check_project};
-use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 
 use support::catalog::{catalog, derived_id, entry as literal_entry, write_catalog};
 use support::{config, temp_project, write};

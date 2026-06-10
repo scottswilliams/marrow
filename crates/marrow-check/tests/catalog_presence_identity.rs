@@ -4,8 +4,8 @@ use std::fs;
 
 use std::hash::{Hash, Hasher};
 
+use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogMetadata};
 use marrow_check::{CHECK_CATALOG_INTENT, check_project};
-use marrow_project::{CatalogEntry, CatalogEntryKind, CatalogMetadata};
 
 use support::catalog::{catalog, catalog_path, derived_id, entry as literal_entry, write_catalog};
 use support::{config, temp_project, write};

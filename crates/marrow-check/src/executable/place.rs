@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use marrow_project::CatalogEntryKind;
+use marrow_catalog::CatalogEntryKind;
 use marrow_schema::{KeyDef, Node, NodeKind, Type};
 use marrow_syntax::SourceSpan;
 

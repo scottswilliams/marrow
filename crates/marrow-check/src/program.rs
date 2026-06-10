@@ -257,7 +257,7 @@ pub struct ProgramCatalog {
     /// The accepted catalog entries the snapshot was computed against. Discharge
     /// diffs these against current source to find a source-dropped or retired entry
     /// the proposal alone, when unchanged, would not surface.
-    pub accepted_entries: Vec<marrow_project::CatalogEntry>,
+    pub accepted_entries: Vec<marrow_catalog::CatalogEntry>,
     /// The constant fill values an `evolve default` step supplies, keyed by the
     /// member's stable catalog id. Discharge evaluates each value to a typed fill so
     /// a newly-required member is defaultable rather than a fail-closed data
@@ -283,7 +283,7 @@ pub struct ProgramCatalog {
     /// single decoder, and it comes from source, so the divergence is detected even for an
     /// otherwise-unchanged program that emits no proposal.
     pub declared_member_structs: HashMap<String, String>,
-    pub proposal: Option<marrow_project::CatalogMetadata>,
+    pub proposal: Option<marrow_catalog::CatalogMetadata>,
 }
 
 /// A bound `evolve default`: the member's stable catalog id and the constant value

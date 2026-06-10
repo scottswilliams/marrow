@@ -8,6 +8,7 @@
 
 mod backend;
 mod backup;
+mod catalog;
 pub mod cell;
 pub mod decimal;
 pub mod key;

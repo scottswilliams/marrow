@@ -13,7 +13,8 @@
 
 use std::path::Path;
 
-use marrow_project::{CatalogEntryKind, ProjectConfig};
+use marrow_catalog::CatalogEntryKind;
+use marrow_project::ProjectConfig;
 use marrow_store::cell::CatalogId;
 
 use crate::{

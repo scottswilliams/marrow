@@ -247,7 +247,7 @@ impl CheckedFacts {
             })
             .collect();
         for (resource, path) in self.resources.iter_mut().zip(resource_paths) {
-            resource.catalog_id = catalog_id(ids, marrow_project::CatalogEntryKind::Resource, path);
+            resource.catalog_id = catalog_id(ids, marrow_catalog::CatalogEntryKind::Resource, path);
         }
     }
 
@@ -265,7 +265,7 @@ impl CheckedFacts {
             })
             .collect();
         for (store, path) in self.stores.iter_mut().zip(store_paths) {
-            store.catalog_id = catalog_id(ids, marrow_project::CatalogEntryKind::Store, path);
+            store.catalog_id = catalog_id(ids, marrow_catalog::CatalogEntryKind::Store, path);
         }
     }
 
@@ -284,7 +284,7 @@ impl CheckedFacts {
             })
             .collect();
         for (index, path) in self.store_indexes.iter_mut().zip(store_index_paths) {
-            index.catalog_id = catalog_id(ids, marrow_project::CatalogEntryKind::StoreIndex, path);
+            index.catalog_id = catalog_id(ids, marrow_catalog::CatalogEntryKind::StoreIndex, path);
         }
     }
 
@@ -308,7 +308,7 @@ impl CheckedFacts {
             .collect();
         for (member, path) in self.resource_members.iter_mut().zip(resource_member_paths) {
             member.catalog_id =
-                catalog_id(ids, marrow_project::CatalogEntryKind::ResourceMember, path);
+                catalog_id(ids, marrow_catalog::CatalogEntryKind::ResourceMember, path);
         }
     }
 
@@ -326,7 +326,7 @@ impl CheckedFacts {
             })
             .collect();
         for (enum_fact, path) in self.enums.iter_mut().zip(enum_paths) {
-            enum_fact.catalog_id = catalog_id(ids, marrow_project::CatalogEntryKind::Enum, path);
+            enum_fact.catalog_id = catalog_id(ids, marrow_catalog::CatalogEntryKind::Enum, path);
         }
     }
 
@@ -350,7 +350,7 @@ impl CheckedFacts {
             })
             .collect();
         for (member, path) in self.enum_members.iter_mut().zip(enum_member_paths) {
-            member.catalog_id = catalog_id(ids, marrow_project::CatalogEntryKind::EnumMember, path);
+            member.catalog_id = catalog_id(ids, marrow_catalog::CatalogEntryKind::EnumMember, path);
         }
     }
 
@@ -1285,7 +1285,7 @@ fn flatten_enum_member_spans(members: &[marrow_syntax::EnumMember], spans: &mut 
 
 fn catalog_id(
     ids: &HashMap<CatalogKey, String>,
-    kind: marrow_project::CatalogEntryKind,
+    kind: marrow_catalog::CatalogEntryKind,
     path: String,
 ) -> Option<String> {
     ids.get(&CatalogKey::new(kind, path)).cloned()

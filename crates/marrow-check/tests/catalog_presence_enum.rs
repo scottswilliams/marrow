@@ -1,7 +1,7 @@
 mod support;
 
+use marrow_catalog::{CatalogEntry, CatalogEntryKind};
 use marrow_check::{ScalarType, StoreIndexKeySource, StoredValueMeaning, check_project};
-use marrow_project::{CatalogEntry, CatalogEntryKind};
 
 use support::catalog::{catalog, derived_id, entry as literal_entry, write_catalog};
 use support::{config, temp_project, write};

@@ -405,7 +405,7 @@ pub(crate) fn commit_pending_identity(
 pub(crate) fn write_accepted_catalog(
     dir: &str,
     config: &marrow_project::ProjectConfig,
-    catalog: &marrow_project::CatalogMetadata,
+    catalog: &marrow_catalog::CatalogMetadata,
     format: CheckFormat,
 ) -> Result<(), ExitCode> {
     marrow_check::write_accepted_catalog(Path::new(dir), config, catalog).map_err(|error| {

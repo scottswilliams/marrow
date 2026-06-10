@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::io::Read;
 
-use marrow_project::CatalogEntry;
+use marrow_catalog::CatalogEntry;
 
 /// Hands out random opaque 128-bit catalog ids (`cat_<32 lowercase hex>`), re-rolling
 /// against the ids already in use. Ids are random rather than a monotonic counter so
