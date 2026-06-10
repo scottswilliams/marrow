@@ -34,7 +34,7 @@ Identity is path-independent. A stable id is a random 128-bit `cat_<32hex>` mint
 
 - `catalog/mod.rs` → `bind_against_accepted`, `bind_source_entries`, `resolve_renames` — the core of carry-forward, rename relocation, retire, and mint.
 - `catalog/mod.rs` → `record_signatures`, `store_key_shapes`, `member_structs` — how reshape/re-key/retype is detected independent of spelling.
-- `catalog/mod.rs` → `CatalogBinding`, `CatalogKey`, `active_proposal_id_map`, `rebind_activation_resume_program` — the binding result, the `(kind, path)` index, and the activation-resume rebind path.
+- `catalog/mod.rs` → `CatalogBinding`, `CatalogKey`, `active_proposal_id_map` — the binding result, the `(kind, path)` index, and the proposal identity map activation readers reuse.
 - `catalog/source_digest.rs` → `render_declarations`, `digest_of`, `analyzed_source_digest`, `evolution_digest` — the shape vs shape-plus-evolve fences.
 - `catalog/stable_id.rs` → `StableIdAllocator::allocate`, `over` — path-independence and retired-id exclusion.
 - `rejected_surface.rs` → `check_rejected_surface`, `REJECTED_TRAVERSAL_METHODS` — the single owner of the rejected operator vocabulary.

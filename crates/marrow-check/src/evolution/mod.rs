@@ -18,7 +18,6 @@ mod preview;
 mod transform_reads;
 mod witness;
 
-use marrow_store::cell::CatalogId;
 use marrow_syntax::Expression;
 
 pub(crate) use intents::{
@@ -26,7 +25,6 @@ pub(crate) use intents::{
     check_transform_effects, collect_evolve_intents, transform_body_in_source,
 };
 
-pub use crate::catalog::ActivationResumeRebindError;
 pub use discharge::RepairDiagnostic;
 pub use preview::preview;
 pub use transform_reads::{TransformReadMember, transform_read_members};
@@ -50,17 +48,6 @@ pub fn default_value_for_bound_member(
         .iter()
         .find_map(|place| member_leaf(&place.root_members, catalog_id))?;
     Some(const_default::default_value_for_leaf(value, Some(&leaf)))
-}
-
-/// Rebind a freshly regenerated proposal to the random IDs recorded by an activation
-/// commit during crash resume. The commit stores only the new IDs in proposal-entry
-/// order, not the proposal body; the caller must verify the rebound proposal digest
-/// and activation completion before publishing the proposal as accepted.
-pub fn rebind_activation_resume_program(
-    program: &CheckedProgram,
-    proposal_ids: &[CatalogId],
-) -> Result<CheckedProgram, ActivationResumeRebindError> {
-    crate::catalog::rebind_activation_resume_program(program, proposal_ids)
 }
 
 fn member_leaf(members: &[CheckedSavedMember], catalog_id: &str) -> Option<StoreLeafKind> {

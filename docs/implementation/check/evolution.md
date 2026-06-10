@@ -23,7 +23,7 @@ The shape is three stages. **Intents** turn each `evolve` block step into a type
 
 | File | Responsibility |
 | --- | --- |
-| `crates/marrow-check/src/evolution/mod.rs` | Module root: declares submodules, re-exports the public surface, hosts resume-verification helpers `default_value_for_bound_member` and `rebind_activation_resume_program`. |
+| `crates/marrow-check/src/evolution/mod.rs` | Module root: declares submodules, re-exports the public surface, and hosts `default_value_for_bound_member` for resume-default verification. |
 | `crates/marrow-check/src/evolution/intents.rs` | Intent extraction and evolve-body type checking: collects rename/retire/default/transform intents, maps target spellings to catalog paths, type-checks defaults and transform bodies, enforces transform read restrictions and purity. |
 | `crates/marrow-check/src/evolution/discharge/mod.rs` | The discharge root: the `discharge` driver that orders the families, the `Accumulator` that collects verdicts/counts/changed-id partitions/diagnostics and resolves defaults, `RepairDiagnostic`, and the shared id/label helpers. |
 | `crates/marrow-check/src/evolution/discharge/leaf_obligations.rs` | The per-record presence scan: `discharge_root` and the keyed-layer scan, the leaf-obligation walkers, and `classify_leaf`/`classify_member_leaf` — the per-leaf verdict (retype-vs-populated, required/optional/renamed, default fill, enum validity). |

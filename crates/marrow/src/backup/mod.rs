@@ -1,12 +1,19 @@
 //! Typed portable backup of a project's saved data.
 //!
 //! A backup is a Marrow artifact, not a raw engine-file copy: a small header, a
-//! typed manifest, and the canonical ordered data-cell stream. The manifest binds
-//! the data to the program that wrote it — its source digest, accepted catalog
-//! epoch, engine profile, value-codec version, and a checksum over the cell
-//! stream — so a restore refuses data outside this binary's checked contract.
-//! The stream carries the store's data cells only; generated indexes are
-//! derived, so a restore rebuilds them rather than replaying them.
+//! typed manifest, the accepted-catalog section, and the canonical ordered
+//! data-cell stream. The manifest binds the data to the program that wrote it —
+//! its source digest, accepted catalog epoch and digest, engine profile,
+//! value-codec version, and one integrity checksum — so a restore refuses data
+//! outside this binary's checked contract. The catalog section carries the
+//! engine-resident accepted catalog rows so a restored store is self-contained
+//! and runs immediately; the data stream carries the store's data cells only,
+//! never catalog rows. Generated indexes are derived, so a restore rebuilds them
+//! rather than replaying them.
+//!
+//! The integrity checksum is one bounded streaming fold over the manifest bytes,
+//! the catalog section, and the data cells, so a tampered manifest or catalog row
+//! is rejected on restore just as a tampered data cell is.
 //!
 //! The cell stream is backend-independent and stores typed cell targets derived
 //! from catalog stable IDs. Stable IDs are random opaque values that freeze when
@@ -15,22 +22,22 @@
 //! catalog facts, engine profile, value codec, and stored data.
 //!
 //! [`create`] writes a backup over a stable read snapshot; [`restore`] validates a
-//! backup against the project and replays it into an empty store in one
-//! transaction. The on-disk framing and the manifest live here; the two
-//! operations live in their own modules.
+//! backup against the project and replays its catalog rows and data cells into an
+//! empty store in one transaction. The on-disk framing and the manifest live
+//! here; the two operations live in their own modules.
 
 mod archive;
 mod create;
 mod restore;
 
 pub(crate) use create::create_backup;
-pub(crate) use restore::restore_backup;
+pub(crate) use restore::{BackupPrologue, read_backup_prologue, restore_backup_with_prologue};
 
 use marrow_store::tree::{CommitMetadata, EngineProfile, EngineProfileDigest};
 
 /// The on-disk format version. It advances only on an incompatible change to the
 /// header, manifest, or cell framing.
-pub(crate) const FORMAT_VERSION: u32 = 3;
+pub(crate) const FORMAT_VERSION: u32 = 4;
 
 /// A short name identifying the engine family a backup was taken from. v0.1 has
 /// one; the layout, key-profile, and value-codec versions distinguish revisions.
@@ -45,6 +52,10 @@ pub(crate) struct BackupManifest {
     pub(crate) source_digest: String,
     /// `None` for an unstamped store.
     pub(crate) catalog_epoch: Option<u64>,
+    /// The accepted catalog's digest, fingerprinting the rows the catalog section
+    /// carries (the digest is taken over the epoch and every entry, so it also pins
+    /// their count). `None` for a store with no accepted catalog.
+    pub(crate) catalog_digest: Option<String>,
     /// The engine profile the data was written under, so restore refuses a layout
     /// or codec it cannot reproduce (reporting an engine recompile is required).
     pub(crate) engine: EngineDescriptor,
@@ -53,8 +64,10 @@ pub(crate) struct BackupManifest {
     pub(crate) commit: Option<CommitDescriptor>,
     /// How many tree cells the data stream carries.
     pub(crate) record_count: u64,
-    /// A checksum over the canonical cell stream, so a corrupt chunk is rejected.
-    pub(crate) data_checksum: u64,
+    /// One bounded streaming fold over the manifest bytes (with this field zeroed),
+    /// the catalog section, and the data cells. A tampered manifest, catalog row, or
+    /// data cell fails this check before restore commits.
+    pub(crate) archive_checksum: u64,
 }
 
 /// The engine identity a restore must match to replay bytes verbatim.
@@ -396,7 +409,11 @@ pub(crate) enum BackupCorruptProblem {
     CellTooLarge,
     MalformedCell,
     ManifestCommitBindingMismatch,
+    ManifestCatalogBindingMismatch,
     MalformedCatalogId,
+    CatalogSectionTooLarge,
+    CatalogSectionInvalid,
+    CatalogDigestMismatch,
     ChecksumMismatch,
     TrailingBytes,
 }

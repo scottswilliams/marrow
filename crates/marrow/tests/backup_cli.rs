@@ -50,13 +50,42 @@ fn seeded_project(name: &str) -> (TempProject, PathBuf) {
     (root, data_dir)
 }
 
-/// Empty a project's saved data before a restore, re-establishing its baseline catalog.
-/// The accepted catalog is engine-resident, so removing the store data dir also removes
-/// the accepted snapshot; re-committing the baseline leaves the restore target with the
-/// same accepted identity (epoch and entries) the backup was taken under, with no records.
-fn empty_store_data(root: &Path, data_dir: &Path) {
+/// Empty a project's saved data before a restore, leaving a truly empty store. The
+/// accepted catalog is engine-resident, so removing the store data dir removes the
+/// accepted snapshot too; restore replays the catalog rows the backup carries, so the
+/// target needs no re-established baseline and binds the backup's own accepted identity.
+fn empty_store_data(_root: &Path, data_dir: &Path) {
     fs::remove_dir_all(data_dir).expect("remove store data");
-    support::commit_catalog_if_clean(root);
+}
+
+/// Assert a restore target holds nothing durable: no data or index cells and no accepted
+/// catalog. A rejected restore rolls its whole transaction back, so the target is exactly
+/// as empty as it was found, carrying neither replayed data nor catalog rows.
+fn assert_store_empty(data_dir: &Path) {
+    let store =
+        TreeStore::open_read_only(&data_dir.join("marrow.redb")).expect("open target store");
+    assert!(
+        store.is_empty().expect("read target data"),
+        "a rejected restore leaves no data or index cells"
+    );
+    assert_eq!(
+        store.read_catalog_snapshot().expect("read target catalog"),
+        None,
+        "a rejected restore leaves no accepted catalog"
+    );
+}
+
+/// The accepted catalog snapshot a native store holds, read through the read-only store
+/// API. `None` when the store file is absent or holds no accepted catalog.
+fn read_store_catalog(data_dir: &Path) -> Option<marrow_catalog::CatalogMetadata> {
+    let path = data_dir.join("marrow.redb");
+    if !path.exists() {
+        return None;
+    }
+    TreeStore::open_read_only(&path)
+        .expect("open store read-only")
+        .read_catalog_snapshot()
+        .expect("read store catalog snapshot")
 }
 
 fn evolution_default_project(name: &str) -> (TempProject, PathBuf) {
@@ -141,10 +170,6 @@ fn data_get_value(root: impl AsRef<Path>, path: &str) -> Option<Vec<u8>> {
         .map(|b64| marrow_run::base64::decode(b64).expect("decode value"))
 }
 
-// A full data round-trip requires the backup to carry the engine-resident catalog rows
-// and restore to replay them, which is the next lane's work. Until then a restore target
-// re-establishes its baseline catalog but cannot validate the replayed data against it.
-#[ignore = "blocked on the backup-and-restore-carry-catalog-rows lane"]
 #[test]
 fn backup_then_restore_round_trips_saved_data() {
     let (root, data_dir) = seeded_project("backup-roundtrip");
@@ -184,25 +209,24 @@ fn backup_then_restore_round_trips_saved_data() {
     );
 }
 
-#[ignore = "blocked on the backup-and-restore-carry-catalog-rows lane"]
+/// With engine-resident atomic publish there is no activation window: an `evolve apply`
+/// advances the store's catalog and data together, so a backup taken after it carries the
+/// evolved accepted catalog. A restore replays those rows, so the restored store is
+/// self-contained and runs immediately — no resume or re-evolve step, and a fresh `evolve
+/// apply` finds nothing to do.
 #[test]
-fn restore_crash_window_backup_then_evolve_resume_completes() {
-    let (root, data_dir) = evolution_default_project("backup-crash-window");
+fn restore_of_an_evolved_store_runs_immediately_with_no_resume() {
+    let (root, data_dir) = evolution_default_project("backup-evolved-restore");
     let dir = root.to_str().unwrap().to_string();
-    let archive = root.join("crash-window.mwbackup");
+    let archive = root.join("evolved.mwbackup");
     let archive_arg = archive.to_str().unwrap().to_string();
-    let baseline_catalog_json =
-        fs::read_to_string(root.join("marrow.catalog.json")).expect("baseline catalog");
 
     add_pages_default_evolution(&root);
-    let first = marrow(&["evolve", "apply", &dir]);
-    assert_eq!(
-        first.status.code(),
-        Some(0),
-        "first evolve apply: {first:?}"
-    );
+    let apply = marrow(&["evolve", "apply", &dir]);
+    assert_eq!(apply.status.code(), Some(0), "evolve apply: {apply:?}");
+    let applied_catalog = read_store_catalog(&data_dir).expect("evolved catalog snapshot");
+    let applied_catalog_epoch = Some(applied_catalog.epoch);
 
-    fs::write(root.join("marrow.catalog.json"), &baseline_catalog_json).expect("rewind catalog");
     let backup = marrow(&["backup", &dir, &archive_arg]);
     assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
 
@@ -210,23 +234,37 @@ fn restore_crash_window_backup_then_evolve_resume_completes() {
     let restore = marrow(&["restore", &dir, &archive_arg]);
     assert_eq!(restore.status.code(), Some(0), "restore: {restore:?}");
 
-    let resume = marrow(&["evolve", "apply", "--format", "json", &dir]);
-    assert_eq!(resume.status.code(), Some(0), "resume: {resume:?}");
-    // The store reached the proposal epoch before the crash, so resuming re-applies no
-    // data and only brings the accepted catalog file forward: a `completed` apply.
-    let record = support::json(resume.stdout);
-    assert_eq!(record["kind"], serde_json::json!("evolve_apply"));
-    assert_eq!(record["status"], serde_json::json!("completed"));
+    // Restore replayed the evolved catalog rows, so the restored store carries the same
+    // accepted identity the apply published, not a freshly proposed baseline.
+    assert_eq!(
+        read_store_catalog(&data_dir),
+        Some(applied_catalog),
+        "restore replays the evolved catalog snapshot from the backup"
+    );
 
+    // The restored store runs immediately: the evolved data and backfilled default are
+    // readable with no resume step.
     assert_eq!(
         data_get_value(&root, "^books(1).title"),
         Some(b"Mort".to_vec()),
-        "the restored book survives resume"
+        "the restored book is readable with no resume"
     );
     assert_eq!(
         data_get_value(&root, "^books(1).pages"),
         Some(b"0".to_vec()),
-        "the backfilled default survives resume"
+        "the backfilled default is readable with no resume"
+    );
+
+    // A fresh apply against the restored store finds nothing new to evolve: the source
+    // already matches the restored accepted catalog, so the apply is idempotent and leaves
+    // the accepted identity exactly where the restore put it — there is no activation
+    // window to resume.
+    let reapply = marrow(&["evolve", "apply", "--format", "json", &dir]);
+    assert_eq!(reapply.status.code(), Some(0), "reapply: {reapply:?}");
+    assert_eq!(
+        read_store_catalog(&data_dir).map(|catalog| catalog.epoch),
+        applied_catalog_epoch,
+        "a no-op apply does not advance the restored accepted catalog"
     );
 }
 
@@ -327,7 +365,6 @@ fn indexed_project(name: &str) -> (TempProject, PathBuf) {
 /// A backup carries data only; restore rebuilds the generated indexes from the
 /// restored records. After a backup, an emptied store, and a restore, both a unique
 /// lookup and a non-unique `keys` traversal resolve the rebuilt entries.
-#[ignore = "blocked on the backup-and-restore-carry-catalog-rows lane"]
 #[test]
 fn restore_rebuilds_indexes_usable_through_lookups() {
     let (root, data_dir) = indexed_project("backup-index-rebuild");
@@ -428,18 +465,13 @@ fn restore_rejects_a_backup_carrying_an_orphan_cell() {
 
     empty_store_data(&root, &data_dir);
     let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
-    let roots_after_failed_restore = marrow(&["data", "roots", "--format", "json", &dir]);
     assert_eq!(
         restore.status.code(),
         Some(1),
         "restore rejects a backup with orphan debris: {restore:?}"
     );
     assert_eq!(json_code(&restore), "restore.data_invalid");
-    assert_eq!(
-        support::json(roots_after_failed_restore.stdout)["roots"],
-        serde_json::json!([]),
-        "failed restore leaves the target empty"
-    );
+    assert_store_empty(&data_dir);
 }
 
 #[test]
@@ -479,18 +511,13 @@ fn restore_rejects_a_backup_carrying_an_impossible_data_cell_shape() {
 
     empty_store_data(&root, &data_dir);
     let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
-    let roots_after_failed_restore = marrow(&["data", "roots", "--format", "json", &dir]);
     assert_eq!(
         restore.status.code(),
         Some(1),
         "restore rejects a backup with an impossible data cell shape: {restore:?}"
     );
     assert_eq!(json_code(&restore), "restore.data_invalid");
-    assert_eq!(
-        support::json(roots_after_failed_restore.stdout)["roots"],
-        serde_json::json!([]),
-        "failed restore leaves the target empty"
-    );
+    assert_store_empty(&data_dir);
 }
 
 /// A faithful backup ends exactly at its last cell. Appending bytes makes the file
@@ -521,7 +548,6 @@ fn restore_rejects_trailing_bytes() {
 /// `nextId(^books)` allocates from the highest stored record id, which lives in the
 /// data the backup carries. After a round-trip into an emptied store, the next id
 /// continues from the same value the original store would have allocated.
-#[ignore = "blocked on the backup-and-restore-carry-catalog-rows lane"]
 #[test]
 fn restore_continues_next_id_from_the_restored_data() {
     let root = temp_project("backup-next-id", |root| {

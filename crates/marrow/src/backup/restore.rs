@@ -1,6 +1,8 @@
 //! Restoring a backup: validate it against the project and engine, then replay
-//! its cells into an empty store in one transaction so the target either gains
-//! the whole backup or is left unchanged.
+//! its catalog rows and data cells into an empty store in one transaction so the
+//! target either gains the whole backup or is left unchanged. The restored
+//! catalog re-establishes accepted identity, so a restored store runs immediately
+//! with no resume step.
 
 use std::io::Read;
 
@@ -9,7 +11,10 @@ use marrow_run::evolution::{ApplyError, current_engine_profile, rebuild_store_in
 use marrow_store::cell::DataCellKind;
 use marrow_store::tree::{TreeBackupCellBuf, TreeStore};
 
-use super::archive::{self, CHECKSUM_SEED, checksum_cell};
+use super::archive::{
+    self, CHECKSUM_SEED, CatalogSection, checksum_catalog_section, checksum_cell, checksum_manifest,
+};
+use super::create::validate_catalog_manifest_binding;
 use super::{BackupCorruptProblem, BackupError, BackupManifest, EngineDescriptor};
 
 /// What a completed restore replayed.
@@ -19,25 +24,60 @@ pub(crate) struct RestoreReport {
     pub(crate) catalog_epoch: Option<u64>,
 }
 
-/// Restore the backup in `input` into `store`, an empty native store for
-/// `program`. The whole replay runs in one transaction: a checksum mismatch, a
-/// short stream, or a `verify` failure rolls the target back to empty. `verify`
-/// proves the restored data compiles against the project schema before the
-/// transaction commits.
-pub(crate) fn restore_backup(
+/// The validated backup prologue: the manifest and the decoded catalog section. The
+/// catalog rows it carries are the accepted identity a caller re-checks the project
+/// against before replaying, so a restore into an empty store binds the backup's own
+/// catalog rather than a freshly proposed baseline.
+pub(crate) struct BackupPrologue {
+    manifest: BackupManifest,
+    section: CatalogSection,
+}
+
+impl BackupPrologue {
+    /// The accepted catalog the backup carries, the snapshot a restore re-checks the
+    /// project against.
+    pub(crate) fn catalog(&self) -> Option<&marrow_catalog::CatalogMetadata> {
+        self.section.snapshot.as_ref()
+    }
+
+    pub(crate) fn source_digest(&self) -> &str {
+        &self.manifest.source_digest
+    }
+}
+
+/// Read and validate the backup header and catalog section from `input`, leaving the
+/// reader positioned at the data-cell stream. The catalog section fails closed here if
+/// a row was tampered or its fingerprint disagrees with the manifest, before any data
+/// is replayed.
+pub(crate) fn read_backup_prologue(input: &mut impl Read) -> Result<BackupPrologue, BackupError> {
+    let manifest = archive::read_header(input)?;
+    let section = archive::read_catalog_section(input)?;
+    validate_catalog_section(&manifest, &section)?;
+    Ok(BackupPrologue { manifest, section })
+}
+
+/// Restore the backup whose `prologue` was already read from `input` into `store`, an
+/// empty native store for `program`. `program` must be bound to the backup's catalog
+/// (see [`BackupPrologue::catalog`]). The whole replay runs in one transaction: a
+/// checksum mismatch, a short stream, or a `verify` failure rolls the target back to
+/// empty. The catalog rows replay alongside the data, so the restored store carries its
+/// own accepted identity. `verify` proves the restored data compiles against the
+/// restored catalog before the transaction commits.
+pub(crate) fn restore_backup_with_prologue(
     program: &CheckedProgram,
     store: &TreeStore,
+    prologue: BackupPrologue,
     input: &mut impl Read,
     verify: impl Fn(&CheckedProgram, &TreeStore) -> Result<(), BackupError>,
 ) -> Result<RestoreReport, BackupError> {
-    let manifest = archive::read_header(input)?;
+    let BackupPrologue { manifest, section } = prologue;
     let restore_program = restore_program(program, &manifest)?;
     if !store.is_empty()? {
         return Err(BackupError::NotEmpty);
     }
 
     store.begin()?;
-    match replay(&restore_program, store, &manifest, input, &verify) {
+    match replay(&restore_program, store, &manifest, &section, input, &verify) {
         Ok(report) => {
             store.commit()?;
             Ok(report)
@@ -50,9 +90,46 @@ pub(crate) fn restore_backup(
     }
 }
 
+/// Restore the backup in `input` into `store`, an empty native store already bound to
+/// the backup's catalog through `program`. Reads the prologue and replays in one step;
+/// the CLI splits the two so it can re-check the project against the carried catalog.
+#[cfg(test)]
+pub(crate) fn restore_backup(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    input: &mut impl Read,
+    verify: impl Fn(&CheckedProgram, &TreeStore) -> Result<(), BackupError>,
+) -> Result<RestoreReport, BackupError> {
+    let prologue = read_backup_prologue(input)?;
+    restore_backup_with_prologue(program, store, prologue, input, verify)
+}
+
+/// The catalog section's recomputed digest and row count must equal the manifest's
+/// fingerprint: the section already failed closed if its stored digest disagreed
+/// with its rows, so this also catches a manifest whose fingerprint was tampered to
+/// claim a catalog the section does not carry.
+fn validate_catalog_section(
+    manifest: &BackupManifest,
+    section: &CatalogSection,
+) -> Result<(), BackupError> {
+    validate_catalog_manifest_binding(manifest)?;
+    let section_digest = section.snapshot.as_ref().map(|snapshot| &snapshot.digest);
+    if section_digest != manifest.catalog_digest.as_ref() {
+        return Err(catalog_digest_mismatch());
+    }
+    Ok(())
+}
+
+fn catalog_digest_mismatch() -> BackupError {
+    BackupError::corrupt(
+        BackupCorruptProblem::CatalogDigestMismatch,
+        "backup catalog section does not match its manifest fingerprint",
+    )
+}
+
 /// Refuse a backup outside this binary's checked replay contract: a different
 /// engine, layout, or value codec needs a recompile; a different schema or
-/// catalog epoch belongs to a different program state.
+/// catalog identity belongs to a different program state.
 fn restore_program(
     program: &CheckedProgram,
     manifest: &BackupManifest,
@@ -75,68 +152,39 @@ fn restore_program(
         commit.validate_manifest_binding(manifest)?;
     }
 
-    let Some(backup_epoch) = manifest.catalog_epoch else {
-        return Ok(program.clone());
-    };
-    if Some(backup_epoch) == program.catalog.accepted_epoch {
-        return Ok(program.clone());
+    if manifest.catalog_epoch != program.catalog.accepted_epoch
+        || manifest.catalog_digest.as_deref() != program.catalog.accepted_digest.as_deref()
+    {
+        return Err(BackupError::CatalogMismatch(
+            "backup catalog does not match this project's accepted catalog".to_string(),
+        ));
     }
-
-    activation_window_program(program, manifest, backup_epoch)
-}
-
-fn activation_window_program(
-    program: &CheckedProgram,
-    manifest: &BackupManifest,
-    backup_epoch: u64,
-) -> Result<CheckedProgram, BackupError> {
-    let Some(commit) = &manifest.commit else {
-        return catalog_mismatch();
-    };
-    let Some(commit_proposal_digest) = commit.activation_proposal_catalog_digest.as_deref() else {
-        return catalog_mismatch();
-    };
-    let rebound = marrow_check::evolution::rebind_activation_resume_program(
-        program,
-        &commit.to_metadata()?.activation_proposal_new_catalog_ids,
-    )
-    .map_err(|_| {
-        BackupError::CatalogMismatch(
-            "backup catalog epoch does not match this project's accepted catalog".to_string(),
-        )
-    })?;
-    let Some(proposal) = &rebound.catalog.proposal else {
-        return catalog_mismatch();
-    };
-    if proposal.epoch != backup_epoch || proposal.digest != commit_proposal_digest {
-        return catalog_mismatch();
-    }
-    Ok(rebound)
-}
-
-fn catalog_mismatch<T>() -> Result<T, BackupError> {
-    Err(BackupError::CatalogMismatch(
-        "backup catalog epoch does not match this project's accepted catalog".to_string(),
-    ))
+    Ok(program.clone())
 }
 
 fn replay(
     program: &CheckedProgram,
     store: &TreeStore,
     manifest: &BackupManifest,
+    section: &CatalogSection,
     input: &mut impl Read,
     verify: &impl Fn(&CheckedProgram, &TreeStore) -> Result<(), BackupError>,
 ) -> Result<RestoreReport, BackupError> {
-    let mut checksum = CHECKSUM_SEED;
+    if let Some(snapshot) = &section.snapshot {
+        store.replace_catalog_snapshot(snapshot)?;
+    }
+
+    let mut checksum = checksum_manifest(CHECKSUM_SEED, manifest);
+    checksum = checksum_catalog_section(checksum, &section.bytes);
     for _ in 0..manifest.record_count {
         let cell = archive::read_cell(input)?;
         checksum = checksum_cell(checksum, cell.as_ref());
         restore_cell(store, &cell)?;
     }
-    if checksum != manifest.data_checksum {
+    if checksum != manifest.archive_checksum {
         return Err(BackupError::corrupt(
             BackupCorruptProblem::ChecksumMismatch,
-            "backup data checksum does not match its manifest".to_string(),
+            "backup integrity checksum does not match its manifest".to_string(),
         ));
     }
     // Count and checksum matched, so any byte past the last cell is junk the backup
@@ -150,7 +198,8 @@ fn replay(
 
     // Indexes are derived, so rebuild them from the replayed records rather than
     // trusting bytes that could disagree. The rebuild runs inside this open
-    // transaction, so the commit makes indexes durable atomically with the data.
+    // transaction, so the commit makes indexes durable atomically with the catalog
+    // rows and data.
     rebuild_store_indexes(program, store).map_err(rebuild_error)?;
 
     // Stamp the durable identity the data was written under, so the restored store
@@ -164,8 +213,9 @@ fn replay(
         store.write_commit_metadata(&commit.to_metadata()?)?;
     }
 
-    // Reads inside the open transaction see the staged data, so verification runs
-    // before commit and a failure rolls the whole restore back.
+    // Reads inside the open transaction see the staged catalog and data, so
+    // verification runs against the restored catalog before commit and a failure
+    // rolls the whole restore back.
     verify(program, store)?;
 
     Ok(RestoreReport {
@@ -220,12 +270,14 @@ fn rebuild_error(error: ApplyError) -> BackupError {
 mod tests {
     use std::path::Path;
 
+    use marrow_catalog::CatalogMetadata;
     use marrow_check::CheckedProgram;
     use marrow_store::cell::CatalogId;
     use marrow_store::key::{SavedKey, encode_identity_payload};
     use marrow_store::tree::{CommitMetadata, DataPathSegment, TreeStore};
 
     use super::super::test_support::{BOOK_SOURCE, committed_program};
+    use super::super::{BackupCorruptProblem, archive};
     use super::{BackupError, CHECKSUM_SEED, RestoreReport, restore_backup};
     use crate::backup::create_backup;
 
@@ -235,8 +287,17 @@ mod tests {
         Ok(())
     }
 
-    /// Seed one book through the managed tree-cell write path, then build a valid
-    /// in-memory backup of the store under `program`.
+    /// The accepted catalog snapshot the program's checked baseline carries, the rows a
+    /// faithful backup writes into its catalog section.
+    fn accepted_catalog(program: &CheckedProgram) -> CatalogMetadata {
+        CatalogMetadata::new(
+            program.catalog.accepted_epoch.expect("accepted epoch"),
+            program.catalog.accepted_entries.clone(),
+        )
+    }
+
+    /// Seed one book through the managed tree-cell write path, write the accepted
+    /// catalog rows, then build a valid in-memory backup of the store under `program`.
     fn seeded_backup(program: &CheckedProgram) -> Vec<u8> {
         let store = TreeStore::memory();
         let place = marrow_check::checked_saved_root_place(
@@ -267,9 +328,15 @@ mod tests {
                 .expect("encode title"),
             )
             .expect("seed title");
-        if let Some(epoch) = program.catalog.accepted_epoch {
-            store.write_catalog_epoch(epoch).expect("stamp epoch");
-        }
+        let snapshot = accepted_catalog(program);
+        store.begin().expect("begin catalog stamp");
+        store
+            .replace_catalog_snapshot(&snapshot)
+            .expect("write accepted catalog snapshot");
+        store
+            .write_catalog_epoch(snapshot.epoch)
+            .expect("stamp epoch");
+        store.commit().expect("commit catalog stamp");
         let profile = marrow_run::evolution::current_engine_profile();
         store
             .write_commit_metadata(&CommitMetadata {
@@ -450,6 +517,147 @@ mod tests {
         cleanup(&root);
     }
 
+    #[test]
+    fn restore_replays_the_accepted_catalog_rows() {
+        let (root, program) = committed_program("restore-catalog-rows", BOOK_SOURCE);
+        let archive = seeded_backup(&program);
+        let target = TreeStore::memory();
+        restore_backup(&program, &target, &mut &archive[..], accept).expect("restore");
+
+        let restored = target
+            .read_catalog_snapshot()
+            .expect("read restored catalog")
+            .expect("restored catalog is present");
+        assert_eq!(
+            restored,
+            accepted_catalog(&program),
+            "restore replays the accepted catalog rows verbatim"
+        );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn rejects_a_manifest_catalog_digest_that_disagrees_with_the_section() {
+        let (root, program) = committed_program("restore-catalog-digest", BOOK_SOURCE);
+        let archive = seeded_backup(&program);
+        // Tamper only the manifest's catalog fingerprint, leaving the catalog section
+        // rows untouched, so the recomputed section digest no longer matches.
+        let archive = rewrite_manifest(&archive, |manifest| {
+            manifest["catalog_digest"] = serde_json::json!(
+                "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+            );
+        });
+
+        let target = TreeStore::memory();
+        let error = restore_backup(&program, &target, &mut &archive[..], accept)
+            .expect_err("a catalog digest that disagrees with the section is rejected");
+        assert_eq!(error.code(), "restore.corrupt_chunk");
+        assert!(matches!(
+            error,
+            BackupError::CorruptChunk {
+                problem: BackupCorruptProblem::CatalogDigestMismatch,
+                ..
+            }
+        ));
+        assert!(
+            target
+                .read_catalog_snapshot()
+                .expect("read target")
+                .is_none(),
+            "a rejected restore leaves the target without a catalog"
+        );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn rejects_a_tampered_manifest_through_the_folded_checksum() {
+        let (root, program) = committed_program("restore-manifest-tamper", BOOK_SOURCE);
+        let archive = seeded_backup(&program);
+        // Flip a manifest field that passes every structural check but is not part of
+        // any prior binding: the record count stays, the engine and catalog still agree,
+        // yet the folded integrity checksum no longer matches the manifest bytes.
+        let archive = rewrite_manifest(&archive, |manifest| {
+            let commit = manifest.get_mut("commit").expect("commit object");
+            commit["commit_id"] = serde_json::json!(999);
+        });
+
+        let target = TreeStore::memory();
+        let error = restore_backup(&program, &target, &mut &archive[..], accept)
+            .expect_err("a tampered manifest is rejected by the folded checksum");
+        assert_eq!(error.code(), "restore.corrupt_chunk");
+        assert!(matches!(
+            error,
+            BackupError::CorruptChunk {
+                problem: BackupCorruptProblem::ChecksumMismatch,
+                ..
+            }
+        ));
+        assert!(
+            target.is_empty().expect("read target")
+                && target
+                    .read_catalog_snapshot()
+                    .expect("read catalog")
+                    .is_none(),
+            "a rejected restore leaves the target untouched"
+        );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn rolls_back_when_a_catalog_row_corrupts_mid_replay() {
+        let (root, program) = committed_program("restore-catalog-rollback", BOOK_SOURCE);
+        let archive = seeded_backup(&program);
+        // Corrupt one catalog row inside the section. The section decode recomputes the
+        // catalog digest from the rows, so a tampered row fails closed before any data
+        // or catalog write reaches the target.
+        let archive = with_corrupt_catalog_row(&archive);
+        let target = TreeStore::memory();
+        let error = restore_backup(&program, &target, &mut &archive[..], accept)
+            .expect_err("a corrupt catalog row is rejected");
+        assert_eq!(error.code(), "restore.corrupt_chunk");
+        assert!(
+            target.is_empty().expect("data empty")
+                && target
+                    .read_catalog_snapshot()
+                    .expect("catalog read")
+                    .is_none(),
+            "a corrupt catalog row leaves the target empty with no catalog"
+        );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn the_catalog_section_and_data_stream_are_disjoint() {
+        let (root, program) = committed_program("restore-section-disjoint", BOOK_SOURCE);
+        let archive = seeded_backup(&program);
+        let parts = split_archive(&archive);
+
+        // The catalog section carries exactly the accepted rows.
+        let section_text = std::str::from_utf8(&parts.catalog).expect("catalog section is utf8");
+        let section: CatalogMetadata =
+            serde_json::from_str(section_text).expect("catalog section parses");
+        assert_eq!(section, accepted_catalog(&program));
+        assert!(
+            !section.entries.is_empty(),
+            "the fixture has accepted catalog rows to carry"
+        );
+
+        // Every chunk in the data stream decodes through the production backup-cell reader
+        // as a data-family cell. Catalog rows use a different family and grammar, so a
+        // catalog row framed into the data stream would fail this read.
+        let mut cursor = &parts.data[..];
+        let mut data_cells = 0;
+        while !cursor.is_empty() {
+            archive::read_cell(&mut cursor).expect("data stream holds only data cells");
+            data_cells += 1;
+        }
+        assert_eq!(
+            data_cells, 1,
+            "the data stream carries only the seeded cell"
+        );
+        cleanup(&root);
+    }
+
     /// Re-encode the manifest with a layout epoch bumped past the running build's, so a
     /// restore validates it as a foreign engine. The cell stream is left intact.
     fn with_bumped_layout_epoch(archive: &[u8]) -> Vec<u8> {
@@ -480,32 +688,20 @@ mod tests {
     }
 
     fn with_malformed_first_target(archive: &[u8]) -> Vec<u8> {
-        let (mut manifest, stream) = split_archive(archive);
-        let mut cursor = &stream[..];
+        let parts = split_archive(archive);
+        let mut cursor = &parts.data[..];
         let mut first = read_raw_test_cell(&mut cursor);
         first.0[0] = 0xff;
 
         let mut rewritten = Vec::new();
         write_raw_test_cell(&mut rewritten, &first.0, &first.1);
         rewritten.extend_from_slice(cursor);
-
-        let mut checksum = CHECKSUM_SEED;
-        let mut checksum_cursor = &rewritten[..];
-        let count = manifest
-            .get("record_count")
-            .and_then(|v| v.as_u64())
-            .unwrap();
-        for _ in 0..count {
-            let (key, value) = read_raw_test_cell(&mut checksum_cursor);
-            checksum = checksum_raw_test_cell(checksum, &key, &value);
-        }
-        manifest["data_checksum"] = serde_json::json!(checksum);
-        frame(&manifest, rewritten)
+        reframe_with_matching_checksum(parts.manifest, parts.catalog, rewritten)
     }
 
     fn with_impossible_first_target_count(archive: &[u8]) -> Vec<u8> {
-        let (mut manifest, stream) = split_archive(archive);
-        let mut cursor = &stream[..];
+        let parts = split_archive(archive);
+        let mut cursor = &parts.data[..];
         let mut first = read_raw_test_cell(&mut cursor);
         first.0.truncate(2);
         write_test_chunk(&mut first.0, b"cat_0123456789abcdef");
@@ -514,13 +710,12 @@ mod tests {
         let mut rewritten = Vec::new();
         write_raw_test_cell(&mut rewritten, &first.0, &first.1);
         rewritten.extend_from_slice(cursor);
-        write_matching_checksum(&mut manifest, &rewritten);
-        frame(&manifest, rewritten)
+        reframe_with_matching_checksum(parts.manifest, parts.catalog, rewritten)
     }
 
     fn with_empty_path_value_target(program: &CheckedProgram, archive: &[u8]) -> Vec<u8> {
-        let (mut manifest, _stream) = split_archive(archive);
-        manifest["record_count"] = serde_json::json!(1);
+        let mut parts = split_archive(archive);
+        parts.manifest["record_count"] = serde_json::json!(1);
 
         let place = marrow_check::checked_saved_root_place(
             program,
@@ -539,38 +734,74 @@ mod tests {
 
         let mut rewritten = Vec::new();
         write_raw_test_cell(&mut rewritten, &target, b"not-a-node-marker");
-        write_matching_checksum(&mut manifest, &rewritten);
-        frame(&manifest, rewritten)
+        reframe_with_matching_checksum(parts.manifest, parts.catalog, rewritten)
     }
 
     /// Parse the manifest JSON, apply `edit`, and re-frame the archive with the rewritten
-    /// manifest and an unchanged cell stream.
+    /// manifest, leaving the catalog section and cell stream unchanged.
     fn rewrite_manifest(archive: &[u8], edit: impl FnOnce(&mut serde_json::Value)) -> Vec<u8> {
-        let (mut manifest, stream) = split_archive(archive);
-        edit(&mut manifest);
-        frame(&manifest, stream)
+        let mut parts = split_archive(archive);
+        edit(&mut parts.manifest);
+        frame(&parts.manifest, &parts.catalog, parts.data)
     }
 
-    /// Re-checksum the cell stream in `archive` and write the matching `data_checksum`
-    /// into the manifest, so a value mutation is not caught as a checksum error first.
+    /// Re-checksum the whole archive and write the matching `archive_checksum` into the
+    /// manifest, so a value mutation is not caught as a checksum error first.
     fn rebuild_checksum(archive: &[u8]) -> Vec<u8> {
-        let (mut manifest, stream) = split_archive(archive);
-        write_matching_checksum(&mut manifest, &stream);
-        frame(&manifest, stream)
+        let parts = split_archive(archive);
+        reframe_with_matching_checksum(parts.manifest, parts.catalog, parts.data)
     }
 
-    fn write_matching_checksum(manifest: &mut serde_json::Value, stream: &[u8]) {
-        let mut checksum = CHECKSUM_SEED;
-        let mut cursor = stream;
+    /// Tamper one catalog entry's path inside the section, leaving the section's stored
+    /// digest unchanged. The section decode recomputes the digest from the rows, so the
+    /// mismatch fails the row closed; the archive checksum is rebuilt over the mutated
+    /// bytes so the row decode, not the checksum, is the gate under test.
+    fn with_corrupt_catalog_row(archive: &[u8]) -> Vec<u8> {
+        let parts = split_archive(archive);
+        let mut section: CatalogMetadata =
+            serde_json::from_slice(&parts.catalog).expect("parse catalog section");
+        // Mutate a row but leave the stored digest, which was computed over the original
+        // rows, so the section's recompute-compare on read rejects the tampered row.
+        let entry = section
+            .entries
+            .first_mut()
+            .expect("a catalog entry to tamper");
+        entry.path.push_str("-tampered");
+        let catalog = section.to_json_pretty().into_bytes();
+        reframe_with_matching_checksum(parts.manifest, catalog, parts.data)
+    }
+
+    /// Recompute the integrity checksum over the manifest, catalog section, and data
+    /// cells, write it into the manifest, and re-frame, the read side's exact contract.
+    fn reframe_with_matching_checksum(
+        mut manifest: serde_json::Value,
+        catalog: Vec<u8>,
+        data: Vec<u8>,
+    ) -> Vec<u8> {
+        manifest["archive_checksum"] = serde_json::json!(0u64);
+        let checksum = archive_checksum(&manifest, &catalog, &data);
+        manifest["archive_checksum"] = serde_json::json!(checksum);
+        frame(&manifest, &catalog, data)
+    }
+
+    /// The integrity checksum over the manifest (with its checksum field zeroed), the
+    /// catalog-section chunk, and the data cells, in archive order.
+    fn archive_checksum(manifest: &serde_json::Value, catalog: &[u8], data: &[u8]) -> u64 {
+        let mut zeroed = manifest.clone();
+        zeroed["archive_checksum"] = serde_json::json!(0u64);
+        let manifest_bytes = serde_json::to_vec(&zeroed).expect("serialize manifest");
+        let mut hash = fold_raw_test_chunk(CHECKSUM_SEED, &manifest_bytes);
+        hash = fold_raw_test_chunk(hash, catalog);
         let count = manifest
             .get("record_count")
             .and_then(|v| v.as_u64())
             .unwrap();
+        let mut cursor = data;
         for _ in 0..count {
             let (key, value) = read_raw_test_cell(&mut cursor);
-            checksum = checksum_raw_test_cell(checksum, &key, &value);
+            hash = checksum_raw_test_cell(hash, &key, &value);
         }
-        manifest["data_checksum"] = serde_json::json!(checksum);
+        hash
     }
 
     fn read_raw_test_cell(input: &mut &[u8]) -> (Vec<u8>, Vec<u8>) {
@@ -600,10 +831,15 @@ mod tests {
     }
 
     fn checksum_raw_test_cell(hash: u64, key: &[u8], value: &[u8]) -> u64 {
-        let mut hash = fold_raw_test_checksum(hash, &(key.len() as u32).to_be_bytes());
-        hash = fold_raw_test_checksum(hash, key);
-        hash = fold_raw_test_checksum(hash, &(value.len() as u32).to_be_bytes());
-        fold_raw_test_checksum(hash, value)
+        let hash = fold_raw_test_chunk(hash, key);
+        fold_raw_test_chunk(hash, value)
+    }
+
+    /// Fold one length-prefixed chunk the way the production checksum frames the manifest,
+    /// catalog section, and each cell chunk.
+    fn fold_raw_test_chunk(hash: u64, bytes: &[u8]) -> u64 {
+        let hash = fold_raw_test_checksum(hash, &(bytes.len() as u32).to_be_bytes());
+        fold_raw_test_checksum(hash, bytes)
     }
 
     fn fold_raw_test_checksum(mut hash: u64, bytes: &[u8]) -> u64 {
@@ -614,30 +850,47 @@ mod tests {
         hash
     }
 
-    /// Split a framed archive into its parsed manifest JSON and the trailing cell stream.
-    fn split_archive(archive: &[u8]) -> (serde_json::Value, Vec<u8>) {
+    /// A framed archive split into its parsed manifest JSON, the raw catalog section
+    /// bytes, and the trailing cell stream.
+    struct ArchiveParts {
+        manifest: serde_json::Value,
+        catalog: Vec<u8>,
+        data: Vec<u8>,
+    }
+
+    fn split_archive(archive: &[u8]) -> ArchiveParts {
         let magic_and_version = 12; // 8-byte magic + 4-byte version.
         let len_end = magic_and_version + 4;
-        let manifest_len = u32::from_be_bytes(
-            archive[magic_and_version..len_end]
-                .try_into()
-                .expect("manifest length"),
-        ) as usize;
+        let manifest_len = read_len(archive, magic_and_version);
         let manifest_end = len_end + manifest_len;
         let manifest: serde_json::Value =
             serde_json::from_slice(&archive[len_end..manifest_end]).expect("parse manifest");
-        (manifest, archive[manifest_end..].to_vec())
+
+        let catalog_len = read_len(archive, manifest_end);
+        let catalog_start = manifest_end + 4;
+        let catalog_end = catalog_start + catalog_len;
+        ArchiveParts {
+            manifest,
+            catalog: archive[catalog_start..catalog_end].to_vec(),
+            data: archive[catalog_end..].to_vec(),
+        }
     }
 
-    /// Re-frame an archive from a manifest value and a cell stream: magic, version,
-    /// manifest length, manifest bytes, then the stream.
-    fn frame(manifest: &serde_json::Value, stream: Vec<u8>) -> Vec<u8> {
+    fn read_len(archive: &[u8], at: usize) -> usize {
+        u32::from_be_bytes(archive[at..at + 4].try_into().expect("length frame")) as usize
+    }
+
+    /// Re-frame an archive from a manifest value, a catalog section, and a cell stream:
+    /// magic, version, manifest length, manifest, catalog length, catalog, then the cells.
+    fn frame(manifest: &serde_json::Value, catalog: &[u8], stream: Vec<u8>) -> Vec<u8> {
         let manifest = serde_json::to_vec(manifest).expect("serialize manifest");
         let mut out = Vec::new();
         out.extend_from_slice(b"MARROWBK");
         out.extend_from_slice(&crate::backup::FORMAT_VERSION.to_be_bytes());
         out.extend_from_slice(&(manifest.len() as u32).to_be_bytes());
         out.extend_from_slice(&manifest);
+        out.extend_from_slice(&(catalog.len() as u32).to_be_bytes());
+        out.extend_from_slice(catalog);
         out.extend_from_slice(&stream);
         out
     }

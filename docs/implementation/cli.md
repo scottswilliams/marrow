@@ -25,7 +25,7 @@ Stream separation is load-bearing: a program's own `print`/`write` output owns s
 | `fmt` | `cmd_fmt.rs` | Formats one file to stdout, or `--check`/`--write` over source roots; refuses stdin and a bare dir with no mode. |
 | `data <roots\|stats\|dump\|integrity\|get>` | `cmd_data.rs`, `cmd_data/` | Read-only inspection; pins one `ReadSnapshot` so multi-pass views describe one store version. |
 | `evolve <preview\|apply>` | `cmd_evolve/` | Read-only preview vs managed-write apply; apply gates destructive obligations and recovers half-applied evolutions. |
-| `backup` / `restore` | `cmd_backup.rs`, `cmd_restore.rs`, `backup/` | Read-only archive write over a pinned snapshot; transactional all-or-nothing replay into an empty native store. |
+| `backup` / `restore` | `cmd_backup.rs`, `cmd_restore.rs`, `backup/` | Read-only archive write over a pinned snapshot, carrying the accepted-catalog rows in a typed section; transactional all-or-nothing replay of catalog rows and data into an empty native store, which then runs with no resume step. |
 
 ## Module map
 
@@ -60,10 +60,10 @@ Stream separation is load-bearing: a program's own `print`/`write` output owns s
 | `crates/marrow/src/cmd_evolve/render.rs` | all evolve output, including the `ApplyError` to code/message map. |
 | `crates/marrow/src/cmd_evolve/store.rs` | `preview_store` (read-only) / `apply_store` (writable native). |
 | `crates/marrow/src/cmd_backup.rs`, `cmd_restore.rs` | command wiring for `backup` / `restore`. |
-| `crates/marrow/src/backup/mod.rs` | `BackupManifest`, `EngineDescriptor`, `CommitDescriptor`, `BackupError` taxonomy. |
-| `crates/marrow/src/backup/archive.rs` | on-disk framing: `MARROWBK` magic, length-prefixed JSON manifest, length-prefixed cell stream, checksum fold. |
-| `crates/marrow/src/backup/create.rs` | `create_backup`: two-pass cell traversal in bounded memory behind the manifest header. |
-| `crates/marrow/src/backup/restore.rs` | `restore_backup`: validate engine/source/catalog, replay cells in one transaction, rebuild indexes, restamp identity, verify before commit. |
+| `crates/marrow/src/backup/mod.rs` | `BackupManifest` (catalog digest/row-count fingerprint and one `archive_checksum`), `EngineDescriptor`, `CommitDescriptor`, `BackupError` taxonomy. |
+| `crates/marrow/src/backup/archive.rs` | on-disk framing: `MARROWBK` magic, length-prefixed JSON manifest, length-prefixed catalog section, length-prefixed cell stream, and the one integrity-checksum fold over manifest+catalog+cells. |
+| `crates/marrow/src/backup/create.rs` | `create_backup`: capture the catalog snapshot into a typed section, stream the data cells in bounded memory, fold the whole archive into the manifest checksum. |
+| `crates/marrow/src/backup/restore.rs` | `read_backup_prologue` + `restore_backup_with_prologue`: validate engine/source/catalog and the catalog-section fingerprint, replay catalog rows and cells in one transaction, rebuild indexes, restamp identity, verify before commit. |
 
 ## Load-bearing invariants
 
@@ -79,5 +79,5 @@ Stream separation is load-bearing: a program's own `print`/`write` output owns s
 - `crates/marrow/src/main.rs` — `load_checked_project`, `resolve_store_path`, `read_accepted_store_catalog`, `establish_store_baseline`: the shared spine behind every command's first lines.
 - `crates/marrow/src/cmd_run.rs` — `open_run_store`, `auto_apply_then_reopen`, `execute`: fence, drift auto-apply, and the execution/report split.
 - `crates/marrow/src/cmd_evolve/mod.rs` — `apply_cmd`: read store identity, freeze baseline, preview, apply (which publishes the catalog atomically).
-- `crates/marrow/src/backup/restore.rs` — `restore_backup`: transactional replay, validation gate, and verify-before-commit rollback.
+- `crates/marrow/src/backup/restore.rs` — `read_backup_prologue` / `restore_backup_with_prologue`: catalog-section fingerprint gate, transactional catalog+data replay, and verify-before-commit rollback.
 - `crates/marrow/src/trace.rs` — `WriteTargetNames::from_program`, `render_write_target`: catalog ids to human names, shared by trace and dry-run.

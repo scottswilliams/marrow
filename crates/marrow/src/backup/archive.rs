@@ -1,9 +1,11 @@
-//! The on-disk backup framing: a magic header, a JSON manifest, and the
-//! length-prefixed cell stream, plus the checksum over that stream. The framing
-//! is deterministic, so equal data produces a byte-identical backup.
+//! The on-disk backup framing: a magic header, a JSON manifest, the
+//! length-prefixed catalog section, and the length-prefixed cell stream, plus one
+//! integrity checksum over all three. The framing is deterministic, so equal data
+//! produces a byte-identical backup.
 
 use std::io::{Read, Write};
 
+use marrow_catalog::CatalogMetadata;
 use serde_json::{Value, json};
 
 use super::{
@@ -21,9 +23,11 @@ const MAGIC: &[u8; 8] = b"MARROWBK";
 /// Upper bounds that keep a truncated or foreign file from forcing a huge
 /// allocation before the framing is validated.
 const MAX_MANIFEST_BYTES: u32 = 16 * 1024 * 1024;
+const MAX_CATALOG_SECTION_BYTES: u32 = 64 * 1024 * 1024;
 const MAX_CELL_BYTES: u32 = 256 * 1024 * 1024;
 
 const CHECKSUM_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const CHECKSUM_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// Fold one cell into the running checksum over its framed bytes; write and read
 /// sides must agree on exactly these bytes.
@@ -32,6 +36,51 @@ pub(super) fn checksum_cell(hash: u64, cell: TreeBackupCell<'_>) -> u64 {
 }
 
 pub(super) const CHECKSUM_SEED: u64 = CHECKSUM_OFFSET;
+
+/// Fold a length-prefixed byte run into the running checksum, the same framing the
+/// header and catalog section are written with.
+fn fold_chunk(hash: u64, bytes: &[u8]) -> u64 {
+    let hash = fold(hash, &(bytes.len() as u32).to_be_bytes());
+    fold(hash, bytes)
+}
+
+fn fold(mut hash: u64, bytes: &[u8]) -> u64 {
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(CHECKSUM_PRIME);
+    }
+    hash
+}
+
+/// The integrity-checksum contribution of the manifest: its canonical bytes with
+/// `archive_checksum` zeroed, so the field that records the checksum is excluded
+/// from the bytes it covers. The read side recomputes this from the parsed
+/// manifest, so a tampered manifest field changes the recomputed checksum.
+pub(super) fn checksum_manifest(hash: u64, manifest: &BackupManifest) -> u64 {
+    fold_chunk(hash, &manifest_checksum_bytes(manifest))
+}
+
+/// The integrity-checksum contribution of the catalog section: its framed bytes,
+/// so a tampered catalog row changes the recomputed checksum.
+pub(super) fn checksum_catalog_section(hash: u64, section: &[u8]) -> u64 {
+    fold_chunk(hash, section)
+}
+
+fn manifest_checksum_bytes(manifest: &BackupManifest) -> Vec<u8> {
+    let mut value = manifest_to_json(manifest);
+    value["archive_checksum"] = json!(0u64);
+    serde_json::to_vec(&value).expect("a manifest serializes")
+}
+
+/// The catalog section bytes for `snapshot`: the empty section when there is no
+/// accepted catalog, else the canonical catalog JSON. The section is self-bracketing
+/// so the read side decodes it without consulting the manifest.
+pub(super) fn catalog_section_bytes(snapshot: Option<&CatalogMetadata>) -> Vec<u8> {
+    match snapshot {
+        None => Vec::new(),
+        Some(snapshot) => snapshot.to_json_pretty().into_bytes(),
+    }
+}
 
 pub(super) fn write_header(
     out: &mut impl Write,
@@ -43,6 +92,14 @@ pub(super) fn write_header(
     out.write_all(&(manifest.len() as u32).to_be_bytes())?;
     out.write_all(&manifest)?;
     Ok(())
+}
+
+/// Write the length-prefixed catalog section. An absent catalog writes a zero-length
+/// section, so every backup carries the frame and the read side never branches on its
+/// presence.
+pub(super) fn write_catalog_section(out: &mut impl Write, section: &[u8]) -> std::io::Result<()> {
+    out.write_all(&(section.len() as u32).to_be_bytes())?;
+    out.write_all(section)
 }
 
 pub(super) fn write_cell(out: &mut impl Write, cell: TreeBackupCell<'_>) -> std::io::Result<()> {
@@ -88,6 +145,50 @@ pub(super) fn read_header(input: &mut impl Read) -> Result<BackupManifest, Backu
     manifest_from_json(&value)
 }
 
+/// A catalog section read from the archive: its decoded snapshot (`None` when the
+/// section is empty) and the exact framed bytes, which restore folds into the
+/// integrity checksum so a tampered row is rejected.
+pub(super) struct CatalogSection {
+    pub(super) snapshot: Option<CatalogMetadata>,
+    pub(super) bytes: Vec<u8>,
+}
+
+/// Read the length-prefixed catalog section. A zero-length section decodes to no
+/// catalog; otherwise the bytes must be a valid catalog whose stored digest matches
+/// its entries, so a tampered row fails closed here before any data is replayed.
+pub(super) fn read_catalog_section(input: &mut impl Read) -> Result<CatalogSection, BackupError> {
+    let len = read_u32(input).map_err(catalog_section_io)?;
+    if len > MAX_CATALOG_SECTION_BYTES {
+        return Err(BackupError::corrupt(
+            BackupCorruptProblem::CatalogSectionTooLarge,
+            "backup catalog section is implausibly large",
+        ));
+    }
+    let mut bytes = vec![0u8; len as usize];
+    input.read_exact(&mut bytes).map_err(catalog_section_io)?;
+    let snapshot = if bytes.is_empty() {
+        None
+    } else {
+        let text = std::str::from_utf8(&bytes).map_err(|_| catalog_section_invalid())?;
+        Some(CatalogMetadata::from_json(text).map_err(|_| catalog_section_invalid())?)
+    };
+    Ok(CatalogSection { snapshot, bytes })
+}
+
+fn catalog_section_io(error: std::io::Error) -> BackupError {
+    BackupError::corrupt(
+        BackupCorruptProblem::CatalogSectionInvalid,
+        format!("backup catalog section is truncated: {error}"),
+    )
+}
+
+fn catalog_section_invalid() -> BackupError {
+    BackupError::corrupt(
+        BackupCorruptProblem::CatalogSectionInvalid,
+        "backup catalog section is not a valid accepted catalog",
+    )
+}
+
 /// Read one framed cell, or a checksum/framing error if the stream is short.
 pub(super) fn read_cell(input: &mut impl Read) -> Result<TreeBackupCellBuf, BackupError> {
     TreeBackupCellBuf::read_framed(input, MAX_CELL_BYTES).map_err(read_cell_error)
@@ -128,6 +229,7 @@ fn manifest_to_json(manifest: &BackupManifest) -> Value {
         "format_version": manifest.format_version,
         "source_digest": manifest.source_digest,
         "catalog_epoch": manifest.catalog_epoch,
+        "catalog_digest": manifest.catalog_digest,
         "engine": {
             "name": manifest.engine.name,
             "layout_epoch": manifest.engine.layout_epoch,
@@ -137,7 +239,7 @@ fn manifest_to_json(manifest: &BackupManifest) -> Value {
         },
         "commit": manifest.commit.as_ref().map(commit_to_json),
         "record_count": manifest.record_count,
-        "data_checksum": manifest.data_checksum,
+        "archive_checksum": manifest.archive_checksum,
     })
 }
 
@@ -177,6 +279,7 @@ fn manifest_from_json(value: &Value) -> Result<BackupManifest, BackupError> {
         format_version: u32_field(value, "format_version")?,
         source_digest: str_field(value, "source_digest")?.to_string(),
         catalog_epoch: opt_u64_field(value, "catalog_epoch")?,
+        catalog_digest: opt_str_field(value, "catalog_digest")?,
         engine: EngineDescriptor {
             name: str_field(engine, "name")?.to_string(),
             layout_epoch: u64_field(engine, "layout_epoch")?,
@@ -190,7 +293,7 @@ fn manifest_from_json(value: &Value) -> Result<BackupManifest, BackupError> {
             Some(_) => return Err(wrong_type("commit", "object")),
         },
         record_count: u64_field(value, "record_count")?,
-        data_checksum: u64_field(value, "data_checksum")?,
+        archive_checksum: u64_field(value, "archive_checksum")?,
     })
 }
 
@@ -427,6 +530,7 @@ mod tests {
             "format_version": super::FORMAT_VERSION,
             "source_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
             "catalog_epoch": null,
+            "catalog_digest": null,
             "engine": {
                 "name": super::super::ENGINE_NAME,
                 "layout_epoch": 0,
@@ -436,7 +540,7 @@ mod tests {
             },
             "commit": null,
             "record_count": 0,
-            "data_checksum": 0,
+            "archive_checksum": 0,
         })
     }
 
@@ -452,6 +556,7 @@ mod tests {
             format_version: super::FORMAT_VERSION,
             source_digest: digest(1),
             catalog_epoch: Some(7),
+            catalog_digest: Some(digest(6)),
             engine: EngineDescriptor {
                 name: super::super::ENGINE_NAME.to_string(),
                 layout_epoch: 3,
@@ -489,7 +594,7 @@ mod tests {
                 activation_records_transformed: 4,
             }),
             record_count: 42,
-            data_checksum: 0xdead_beef,
+            archive_checksum: 0xdead_beef,
         };
 
         let restored =
