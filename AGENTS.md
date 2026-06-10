@@ -123,6 +123,8 @@ belong together.
 
 ## Repository Shape
 
+- `ROADMAP.md` is the forward-only v0.1 execution backlog. Orchestrated
+  work starts there and follows its Orchestration section.
 - `docs/language/` is the language reference.
 - `docs/implementation/` is the code-truth architecture map: a thin,
   progressive-disclosure guide to what each crate and module does and where to
