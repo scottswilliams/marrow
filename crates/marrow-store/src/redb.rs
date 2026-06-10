@@ -11,11 +11,12 @@
 //! `commit`/`rollback` persists or aborts the redb transaction.
 
 use std::ops::Bound;
+use std::panic::AssertUnwindSafe;
 use std::path::Path;
 
 use redb::{
-    Database, ReadOnlyDatabase, ReadTransaction, ReadableDatabase, ReadableTable, Table,
-    TableDefinition, WriteTransaction,
+    Database, DatabaseError, ReadOnlyDatabase, ReadTransaction, ReadableDatabase, ReadableTable,
+    StorageError, Table, TableDefinition, WriteTransaction,
 };
 
 use crate::backend::{Backend, ScanPage, StoreError};
@@ -81,6 +82,89 @@ fn io<E: std::fmt::Display>(op: &'static str) -> impl Fn(E) -> StoreError {
     }
 }
 
+/// Map a redb open error to the store error that faithfully reflects the damage,
+/// so a torn body, a recoverable unclean shutdown, and a transient fault are not
+/// collapsed into one untyped bucket. redb internals never leak as the surfaced
+/// message: Marrow authors its own prose and reports stable typed codes.
+///
+/// - a second writer is the store lock;
+/// - a file left needing repair is recoverable, not corrupt;
+/// - reported corruption, and a torn or truncated body (an I/O `InvalidData` or
+///   unexpected EOF as redb walks the file), are hard corruption;
+/// - anything else is transient I/O.
+fn map_open_error(path: &Path, error: DatabaseError) -> StoreError {
+    match error {
+        DatabaseError::DatabaseAlreadyOpen => StoreError::Locked {
+            data_dir: path.to_path_buf(),
+        },
+        DatabaseError::RepairAborted => StoreError::RecoveryRequired,
+        DatabaseError::Storage(storage) => map_storage_error(storage),
+        other => StoreError::Io {
+            op: "open",
+            message: other.to_string(),
+        },
+    }
+}
+
+/// Classify a redb storage error surfaced while opening or probing a store:
+/// reported corruption and a torn or truncated body (an I/O `InvalidData` or
+/// unexpected EOF as redb walks the file) are hard corruption; anything else is
+/// transient I/O. redb internals never become the whole surfaced message.
+fn map_storage_error(error: StorageError) -> StoreError {
+    match error {
+        StorageError::Corrupted(message) => StoreError::Corruption {
+            message: format!("the storage engine reported corruption: {message}"),
+        },
+        StorageError::Io(error) if is_torn_body(&error) => StoreError::Corruption {
+            message: "the store body is truncated or torn".into(),
+        },
+        other => StoreError::Io {
+            op: "open",
+            message: other.to_string(),
+        },
+    }
+}
+
+/// Whether an I/O error from a store open reflects a damaged on-disk body rather
+/// than a transient fault: redb surfaces a truncated or torn file as invalid data
+/// or an unexpected end of file while it walks the structure it expects.
+fn is_torn_body(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
+    )
+}
+
+/// Run a store open and its structural probe under a panic backstop.
+///
+/// redb does not return an error for every damaged file: a truncated or clobbered
+/// body drives its open-and-repair path into a layout assertion or an
+/// `unreachable!()` in btree traversal, which panics. Marrow builds unwind on
+/// panic, so the backstop catches that escape here and converts it into
+/// [`StoreError::Corruption`], leaving the process alive and the fault fail-closed
+/// with a typed code instead of a redb backtrace on stderr.
+///
+/// The catch wraps only the open and its probe so it cannot mask an unrelated bug;
+/// the closure itself maps redb open errors through [`map_open_error`]. A no-op
+/// panic hook is installed for the duration of the open so an expected redb open
+/// panic does not print its message and backtrace, then the previous hook is
+/// restored — every other panic in the process still reports normally. The hook is
+/// process-global, so this is sound only because every store open is serialized on
+/// one thread: the CLI runs on a single worker, and serve and lsp open one store at
+/// a time. A future concurrent opener would have to serialize this swap.
+fn catch_open<T>(open: impl FnOnce() -> Result<T, StoreError>) -> Result<T, StoreError> {
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let caught = std::panic::catch_unwind(AssertUnwindSafe(open));
+    std::panic::set_hook(previous_hook);
+    match caught {
+        Ok(result) => result,
+        Err(_) => Err(StoreError::Corruption {
+            message: "the storage engine could not open the store file".into(),
+        }),
+    }
+}
+
 /// Classify the version recorded in a store's meta table. A missing version is
 /// corruption: a store this build wrote always stamps one, and an unstamped file
 /// is foreign, not a fresh store (callers stamp fresh stores before this check).
@@ -94,6 +178,91 @@ fn check_format_version(recorded: Option<u32>) -> Result<(), StoreError> {
         None => Err(StoreError::Corruption {
             message: "store is missing its format version".into(),
         }),
+    }
+}
+
+/// Stamp the format version on a brand-new file or verify it on an existing one,
+/// then ensure the data table exists, in one write transaction. `Database::create`
+/// opens existing files too, so a database with no tables is fresh and gets stamped;
+/// a non-empty file with no `marrow.meta` is foreign and rejected as corruption
+/// rather than adopted. This probe also forces redb to walk the file's structure,
+/// so a damaged body surfaces here (as a typed error or a caught panic) rather than
+/// on first use.
+fn stamp_or_verify_format_version(db: &Database) -> Result<(), StoreError> {
+    let write = db.begin_write().map_err(open_transaction_error)?;
+    let is_new = write
+        .list_tables()
+        .map_err(open_storage_error)?
+        .next()
+        .is_none();
+    {
+        // Read the recorded version into an owned `Option` so the access guard
+        // drops before the `insert` below.
+        let mut meta = write.open_table(META).map_err(open_table_error)?;
+        let recorded = meta
+            .get("format_version")
+            .map_err(open_storage_error)?
+            .map(|guard| guard.value());
+        if recorded.is_none() && is_new {
+            meta.insert("format_version", FORMAT_VERSION)
+                .map_err(open_storage_error)?;
+        } else {
+            check_format_version(recorded)?;
+        }
+    }
+    // Create the data table now so later reads never meet a missing table.
+    write.open_table(TABLE).map_err(open_table_error)?;
+    write.commit().map_err(open_commit_error)
+}
+
+/// Verify the recorded format version on a read-only open. A file with no meta
+/// table is not a Marrow store; read-only never creates, so it cannot be a fresh
+/// one. This probe walks the file structure for the same fail-fast reason as the
+/// writable open.
+fn verify_read_only_format_version(db: &ReadOnlyDatabase) -> Result<(), StoreError> {
+    let read = db.begin_read().map_err(open_transaction_error)?;
+    let recorded = match read.open_table(META) {
+        Ok(meta) => meta
+            .get("format_version")
+            .map_err(open_storage_error)?
+            .map(|guard| guard.value()),
+        Err(redb::TableError::TableDoesNotExist(_)) => None,
+        Err(other) => return Err(open_table_error(other)),
+    };
+    check_format_version(recorded)
+}
+
+fn open_transaction_error(error: redb::TransactionError) -> StoreError {
+    match error {
+        redb::TransactionError::Storage(storage) => map_storage_error(storage),
+        other => StoreError::Io {
+            op: "open",
+            message: other.to_string(),
+        },
+    }
+}
+
+fn open_table_error(error: redb::TableError) -> StoreError {
+    match error {
+        redb::TableError::Storage(storage) => map_storage_error(storage),
+        other => StoreError::Io {
+            op: "open",
+            message: other.to_string(),
+        },
+    }
+}
+
+fn open_storage_error(error: StorageError) -> StoreError {
+    map_storage_error(error)
+}
+
+fn open_commit_error(error: redb::CommitError) -> StoreError {
+    match error {
+        redb::CommitError::Storage(storage) => map_storage_error(storage),
+        other => StoreError::Io {
+            op: "open",
+            message: other.to_string(),
+        },
     }
 }
 
@@ -194,42 +363,15 @@ macro_rules! read_view {
 impl RedbStore {
     /// Open the redb-backed store at `path`, creating the file if needed. A
     /// second writer is rejected as [`StoreError::Locked`], and a file recording
-    /// a different [`FORMAT_VERSION`] as [`StoreError::FormatVersion`].
+    /// a different [`FORMAT_VERSION`] as [`StoreError::FormatVersion`]. A damaged
+    /// body fails closed as [`StoreError::Corruption`] rather than panicking the
+    /// process; the open and its structural probe run under [`catch_open`].
     pub(crate) fn open(path: &Path) -> Result<Self, StoreError> {
-        let db = Database::create(path).map_err(|error| match error {
-            redb::DatabaseError::DatabaseAlreadyOpen => StoreError::Locked {
-                data_dir: path.to_path_buf(),
-            },
-            other => StoreError::Io {
-                op: "open",
-                message: other.to_string(),
-            },
+        let db = catch_open(|| {
+            let db = Database::create(path).map_err(|error| map_open_error(path, error))?;
+            stamp_or_verify_format_version(&db)?;
+            Ok(db)
         })?;
-        let write = db.begin_write().map_err(io("open"))?;
-        // `Database::create` opens existing files too, so a brand-new database
-        // (no tables) is told apart from one that already has them: stamp the
-        // version only when fresh, and reject a non-empty file with no meta as
-        // corruption rather than adopting a foreign store.
-        let is_new = write.list_tables().map_err(io("open"))?.next().is_none();
-        // Verify or stamp format version before creating data table.
-        {
-            // Read the recorded version into an owned `Option` so the access guard
-            // drops before the `insert` below.
-            let mut meta = write.open_table(META).map_err(io("open"))?;
-            let recorded = meta
-                .get("format_version")
-                .map_err(io("open"))?
-                .map(|guard| guard.value());
-            if recorded.is_none() && is_new {
-                meta.insert("format_version", FORMAT_VERSION)
-                    .map_err(io("open"))?;
-            } else {
-                check_format_version(recorded)?;
-            }
-        }
-        // Create the data table now so later reads never meet a missing table.
-        write.open_table(TABLE).map_err(io("open"))?;
-        write.commit().map_err(io("open"))?;
         Ok(Self {
             db: DatabaseHandle::ReadWrite(db),
             txn: None,
@@ -241,31 +383,17 @@ impl RedbStore {
     /// Open an existing store read-only. Unlike [`open`](Self::open) it never
     /// creates the file and only verifies the recorded [`FORMAT_VERSION`] rather
     /// than stamping it; write-capability operations fail before any write
-    /// transaction begins.
+    /// transaction begins. A store left needing repair by an unclean shutdown is
+    /// reported as [`StoreError::RecoveryRequired`]: a write-capable open attempts
+    /// the replay and reports whether the data survived, so a store damaged beyond
+    /// replay still surfaces corruption. The open and its probe run under
+    /// [`catch_open`].
     pub(crate) fn open_read_only(path: &Path) -> Result<Self, StoreError> {
-        let db = ReadOnlyDatabase::open(path).map_err(|error| match error {
-            redb::DatabaseError::DatabaseAlreadyOpen => StoreError::Locked {
-                data_dir: path.to_path_buf(),
-            },
-            other => StoreError::Io {
-                op: "open",
-                message: other.to_string(),
-            },
+        let db = catch_open(|| {
+            let db = ReadOnlyDatabase::open(path).map_err(|error| map_open_error(path, error))?;
+            verify_read_only_format_version(&db)?;
+            Ok(db)
         })?;
-        {
-            // A file with no meta table is not a Marrow store; it cannot be a
-            // fresh one because read-only never creates.
-            let read = db.begin_read().map_err(io("open"))?;
-            let recorded = match read.open_table(META) {
-                Ok(meta) => meta
-                    .get("format_version")
-                    .map_err(io("open"))?
-                    .map(|guard| guard.value()),
-                Err(redb::TableError::TableDoesNotExist(_)) => None,
-                Err(other) => return Err(io("open")(other)),
-            };
-            check_format_version(recorded)?;
-        }
         Ok(Self {
             db: DatabaseHandle::ReadOnly(db),
             txn: None,
@@ -457,9 +585,76 @@ impl Backend for RedbStore {
 mod tests {
     use redb::{Database, ReadableDatabase, TableDefinition};
 
-    use super::{DELETE_BATCH_LIMIT, DatabaseHandle, FORMAT_VERSION, META, RedbStore, TABLE};
+    use super::{
+        DELETE_BATCH_LIMIT, DatabaseHandle, FORMAT_VERSION, META, RedbStore, TABLE, catch_open,
+        map_open_error,
+    };
     use crate::backend::{Backend, StoreError};
     use crate::conformance;
+
+    /// A redb panic during open or repair must not abort the process: the backstop
+    /// converts it into typed corruption. Proven by injecting a panicking open so the
+    /// catch is exercised even without a file that forces redb's exact `unreachable!`.
+    #[test]
+    fn catch_open_converts_a_panicking_open_into_corruption() {
+        let result: Result<(), StoreError> = catch_open(|| panic!("redb unreachable during open"));
+        match result {
+            Err(StoreError::Corruption { .. }) => {}
+            other => panic!("expected corruption from a caught open panic, got {other:?}"),
+        }
+    }
+
+    /// A non-panicking closure passes its result through unchanged, so the backstop
+    /// adds no behavior beyond catching a panic.
+    #[test]
+    fn catch_open_passes_a_clean_result_through() {
+        assert_eq!(catch_open(|| Ok(7)).expect("clean open"), 7);
+    }
+
+    /// The redb-error mapping is damage-faithful: a recoverable unclean shutdown, a
+    /// reported corruption, a torn body, a second writer, and a transient fault each
+    /// land on their own typed code instead of collapsing to `store.io`.
+    #[test]
+    fn map_open_error_classifies_each_redb_failure() {
+        let path = std::path::Path::new("/tmp/marrow-store.redb");
+
+        assert_eq!(
+            map_open_error(path, redb::DatabaseError::RepairAborted).code(),
+            "store.recovery_required"
+        );
+        assert_eq!(
+            map_open_error(
+                path,
+                redb::DatabaseError::Storage(redb::StorageError::Corrupted("torn page".into()))
+            )
+            .code(),
+            "store.corruption"
+        );
+        assert_eq!(
+            map_open_error(
+                path,
+                redb::DatabaseError::Storage(redb::StorageError::Io(std::io::Error::from(
+                    std::io::ErrorKind::UnexpectedEof
+                )))
+            )
+            .code(),
+            "store.corruption"
+        );
+        match map_open_error(path, redb::DatabaseError::DatabaseAlreadyOpen) {
+            StoreError::Locked { data_dir } => assert_eq!(data_dir, path),
+            other => panic!("expected store.locked, got {other:?}"),
+        }
+        assert_eq!(
+            map_open_error(
+                path,
+                redb::DatabaseError::Storage(redb::StorageError::Io(std::io::Error::from(
+                    std::io::ErrorKind::PermissionDenied
+                )))
+            )
+            .code(),
+            "store.io"
+        );
+    }
 
     /// The native store satisfies the same backend conformance suite as the
     /// in-memory store — one contract, two backends.

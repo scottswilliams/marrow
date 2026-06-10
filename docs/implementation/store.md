@@ -43,6 +43,7 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 - Scans are always bounded and resumable. A truncated page with no resume key is treated as corrupt scan state (`store.cursor`), never as the end.
 - Corruption is fail-closed and typed: malformed keys, value frames, metadata, or backup frames decode to `StoreError::Corruption`, never partial values. Decoders enforce exact-length consumption and bounded list counts.
 - On-disk format is version-gated with no auto-migration: a mismatched `FORMAT_VERSION` is refused, a non-empty redb file with no `marrow.meta` table is corruption, a second writer is `store.locked`.
+- Native open fails closed, never crashes: `RedbStore::open`/`open_read_only` run the redb open and its structural probe under a panic backstop (`catch_open`), so a truncated or torn body that drives redb into a layout assertion or btree `unreachable!()` becomes `store.corruption` instead of aborting the process. Redb open errors map by damage (`map_open_error`): a torn body to corruption, an unclean-shutdown repair-needed file to the typed `store.recovery_required` (a write-capable open attempts the replay and reports whether the data survived), a second writer to `store.locked`, everything else to `store.io`.
 - Diagnostics are render-only: tests assert codes and typed payloads, not prose.
 
 ## Code-reality notes

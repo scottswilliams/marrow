@@ -58,7 +58,8 @@ Storage errors include the failed operation and the capability or limit
 involved. Machine-readable facts belong in `data`; clients do not parse
 `message`. The store reports a `store.*` code:
 `store.io`, `store.locked`, `store.format_version`, `store.corruption`,
-`store.limit`, `store.cursor`, `store.transaction`, and `store.read_only`.
+`store.recovery_required`, `store.limit`, `store.cursor`, `store.transaction`,
+and `store.read_only`.
 Backends enforce no key or value size limit, so `store.limit` is produced only
 when Marrow framing cannot encode a tree-cell metadata or value-codec length
 above a `u32` field.
@@ -278,17 +279,21 @@ one is reported under its own `write.*` code.
 
 Store faults. The tree-cell facade produces `store.corruption` for malformed
 tree-cell metadata, value codecs, index cells, or accepted catalog rows. A
-persistent backend can also
-produce the I/O, locking, format, corruption, limit, and read-only variants. A
-store fault met during a program read or write travels as `run.store` or
-`write.store`; the `serve` server passes the `store.*` code through unchanged.
+persistent backend can also produce the I/O, locking, format, corruption,
+recovery, limit, and read-only variants. Opening a damaged native store fails
+closed with a typed code — never a process crash: a truncated or torn body is
+`store.corruption`, and a store left needing repair by an unclean shutdown is
+`store.recovery_required`. A store fault met during a program read or write
+travels as `run.store` or `write.store`; the `serve` server passes the `store.*`
+code through unchanged.
 
 | Code | Meaning |
 |---|---|
 | `store.io` | An I/O operation on a persistent backend failed. |
 | `store.locked` | The store file is already held open by another writer. |
 | `store.format_version` | The store's recorded format version is not the one this build supports. |
-| `store.corruption` | The store file, tree-cell metadata, tree-cell index cell, or accepted catalog table is corrupt and could not be opened or decoded — including a catalog snapshot whose recomputed digest does not match its stored header. |
+| `store.corruption` | The store file, tree-cell metadata, tree-cell index cell, or accepted catalog table is corrupt and could not be opened or decoded — including a truncated or torn store body and a catalog snapshot whose recomputed digest does not match its stored header. |
+| `store.recovery_required` | The store was not shut down cleanly, so a read-only open is refused until a write-capable open replays the interrupted commit. The recovery is attempted, not guaranteed: a write open reports whether the data survived, and a store damaged beyond replay surfaces `store.corruption`. |
 | `store.limit` | A Marrow framing layer could not encode a tree-cell metadata or value-codec length above a `u32` field. Backends enforce no key/value size limit. |
 | `store.cursor` | A bounded scan cursor does not belong to the scan being resumed. |
 | `store.transaction` | A transaction or snapshot operation was requested in an invalid store state. |

@@ -1,0 +1,163 @@
+//! A tampered or crash-damaged native store must fail every store-opening command
+//! closed with a typed `store.*` code and exit 1, never abort the process (exit
+//! 101) on a redb panic. A truncated body is hard corruption; a store left needing
+//! repair by an unclean shutdown is the typed recoverable status, with a Marrow
+//! message rather than a raw redb string.
+
+use std::io::{Seek, SeekFrom, Write};
+use std::path::Path;
+
+mod support;
+mod support_data;
+
+use support::{find_code_segment, marrow, write};
+use support_data::{native_project, seeded_project};
+
+/// The native store file a seeded project writes its data into.
+fn store_path(project: &Path) -> std::path::PathBuf {
+    project.join(".data").join("marrow.redb")
+}
+
+/// Truncate the store body below its recorded length: a valid header over a damaged
+/// body, the shape that drives redb's open path into a panic without the backstop.
+fn truncate_store_body(project: &Path) {
+    let path = store_path(project);
+    let len = std::fs::metadata(&path).expect("store metadata").len();
+    assert!(len > 4096, "a seeded store should exceed one redb page");
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .expect("open store for truncation");
+    file.set_len(4096).expect("truncate store body");
+}
+
+/// The dotted code a `marrow` command printed on stderr, located the same way the
+/// CLI's own fault grammar reports it. The fault is the last non-empty stderr line,
+/// so any preamble cannot displace the located code.
+fn stderr_code(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8(output.stderr.clone()).expect("utf8 stderr");
+    let fault = stderr
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .expect("a fault line on stderr");
+    let segments: Vec<&str> = fault.split(": ").collect();
+    let (_, code) = find_code_segment(&segments);
+    code.to_string()
+}
+
+/// A store-opening command over a truncated store exits 1 with `store.corruption`,
+/// never 101 from a redb panic. Run over every store-opening verb, read and write.
+#[test]
+fn store_opening_commands_report_corruption_not_a_panic() {
+    let (project, dir) = seeded_project("cli-store-corruption");
+    truncate_store_body(&project);
+
+    let backup_target = project.join("backup.mw-backup");
+    let backup_target = backup_target.to_str().expect("backup path utf8");
+    let commands: &[&[&str]] = &[
+        &["data", "dump", &dir],
+        &["data", "integrity", &dir],
+        &["data", "stats", &dir],
+        &["run", "--entry", "app::seed", &dir],
+        &["backup", &dir, backup_target],
+    ];
+
+    for command in commands {
+        let output = marrow(command);
+        let code = output.status.code();
+        assert_ne!(
+            code,
+            Some(101),
+            "`marrow {}` must not abort on a redb panic: {output:?}",
+            command.join(" ")
+        );
+        assert_eq!(
+            code,
+            Some(1),
+            "`marrow {}` must exit 1 on a corrupt store: {output:?}",
+            command.join(" ")
+        );
+        assert_eq!(
+            stderr_code(&output),
+            "store.corruption",
+            "`marrow {}` must report store.corruption: {output:?}",
+            command.join(" ")
+        );
+        let stderr = String::from_utf8(output.stderr.clone()).expect("utf8 stderr");
+        assert!(
+            !stderr.contains("panicked at") && !stderr.contains("RUST_BACKTRACE"),
+            "`marrow {}` must not leak a redb panic backtrace: {stderr}",
+            command.join(" ")
+        );
+    }
+}
+
+/// A store left needing repair by an unclean shutdown surfaces the typed
+/// `store.recovery_required` on a read-only command, with a Marrow-authored guiding
+/// message — not redb's raw `Database repair aborted.` string — and exits 1.
+#[test]
+fn read_only_command_reports_recovery_required_for_an_unclean_store() {
+    let (project, dir) = seeded_project("cli-store-recovery");
+
+    // redb records "recovery required" in the file header; flipping that flag bit
+    // reproduces an unclean shutdown without touching tree data.
+    let path = store_path(&project);
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .expect("open store header");
+    file.seek(SeekFrom::Start(9))
+        .expect("seek to recovery flag");
+    let mut byte = [0u8; 1];
+    {
+        use std::io::Read;
+        file.read_exact(&mut byte).expect("read recovery flag");
+    }
+    file.seek(SeekFrom::Start(9)).expect("seek back");
+    file.write_all(&[byte[0] ^ 0x01])
+        .expect("flip recovery flag");
+    drop(file);
+
+    let output = marrow(&["data", "dump", &dir]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(
+        stderr_code(&output),
+        "store.recovery_required",
+        "{output:?}"
+    );
+    let stderr = String::from_utf8(output.stderr.clone()).expect("utf8");
+    assert!(
+        !stderr.to_lowercase().contains("repair aborted"),
+        "recovery message must be Marrow-authored, not a raw redb string: {stderr}"
+    );
+}
+
+/// A healthy seeded store still serves a read-only command, so the backstop and the
+/// new error mapping add no regression for the clean path.
+#[test]
+fn a_clean_store_still_serves_a_read_only_command() {
+    let (_project, dir) = seeded_project("cli-store-clean");
+    let output = marrow(&["data", "stats", &dir]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+}
+
+/// A project with no store file yet is a first run, not a corrupt store: a read-only
+/// command reports an empty store rather than a corruption fault.
+#[test]
+fn a_missing_store_file_is_a_first_run_not_corruption() {
+    let project = native_project("cli-store-missing");
+    let dir = project.to_str().expect("dir utf8").to_string();
+    // No `run` has created the store yet.
+    assert!(!store_path(&project).exists());
+
+    let output = marrow(&["data", "stats", &dir]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a first run with no store is not corruption: {output:?}"
+    );
+    // A sanity check that the fixture really configures a native store path.
+    write(&project, ".keep", "");
+}

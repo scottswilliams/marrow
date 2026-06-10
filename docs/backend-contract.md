@@ -202,8 +202,14 @@ with another version is refused as `store.format_version`. A store file already
 held by another writer is refused as `store.locked`. Read-only opens never
 create a missing file and use a redb read-only handle.
 
-Corrupt or foreign redb files are rejected as `store.corruption` or `store.io`
-depending on whether redb can open the file and Marrow metadata can be read.
+Opening a damaged native store fails closed with a typed code, never a process
+crash. A truncated or torn body — including a file whose damage drives the engine
+into a panic during its open-and-repair path — is rejected as `store.corruption`;
+a foreign redb file with no Marrow metadata is `store.corruption`; a transient
+I/O fault is `store.io`. A store left needing repair by an unclean shutdown is
+reported on a read-only open as `store.recovery_required`: a write-capable open
+attempts to replay the interrupted commit and reports whether the data survived,
+so a store damaged beyond replay still surfaces `store.corruption`.
 
 ## Conformance
 

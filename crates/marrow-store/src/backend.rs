@@ -11,6 +11,11 @@ pub enum StoreError {
     FormatVersion { found: u32, supported: u32 },
     /// The persistent store or a tree-cell payload is corrupt.
     Corruption { message: String },
+    /// The store was not shut down cleanly, so a read-only open is refused until a
+    /// write-capable run replays the interrupted commit. The replay is attempted, not
+    /// guaranteed: it reports whether the data survived, and a store damaged beyond
+    /// replay surfaces [`Corruption`](Self::Corruption) instead.
+    RecoveryRequired,
     /// A store-owned framing field could not hold a key, value, or metadata length.
     LimitExceeded { limit: &'static str },
     /// A bounded scan cursor does not belong to the scan being resumed.
@@ -60,6 +65,7 @@ impl StoreError {
             Self::Locked { .. } => "store.locked",
             Self::FormatVersion { .. } => "store.format_version",
             Self::Corruption { .. } => "store.corruption",
+            Self::RecoveryRequired => "store.recovery_required",
             Self::LimitExceeded { .. } => "store.limit",
             Self::InvalidCursor { .. } => "store.cursor",
             Self::InvalidTransaction { .. } => "store.transaction",
@@ -82,6 +88,13 @@ impl std::fmt::Display for StoreError {
                 "store format version {found} is unsupported (this build uses {supported})"
             ),
             Self::Corruption { message } => write!(f, "the store is corrupt: {message}"),
+            Self::RecoveryRequired => write!(
+                f,
+                "the store was not shut down cleanly and needs a write-capable recovery before \
+                 a read-only open. Run `marrow run` so a write open can replay the interrupted \
+                 commit; it reports whether the data survived, and a store damaged beyond replay \
+                 surfaces store.corruption"
+            ),
             Self::LimitExceeded { limit } => write!(f, "a storage limit was exceeded: {limit}"),
             Self::InvalidCursor { message } => write!(f, "storage cursor is invalid: {message}"),
             Self::InvalidTransaction { message } => {
