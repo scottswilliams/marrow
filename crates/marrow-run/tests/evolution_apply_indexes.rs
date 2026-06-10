@@ -450,11 +450,11 @@ fn new_non_unique_index_rebuild_writes_entries() {
     }
 }
 
-/// Dropping a source index deletes its derived cells on apply. The schema with the
-/// index is committed and base records seed live index cells; current source drops the
-/// index, so discharge classifies `IndexDropped` and apply deletes the whole index
-/// subtree, leaving no cells under the dropped id. The base records and their members
-/// are untouched.
+/// Dropping a source index discharges: apply deletes its derived cells, advances the
+/// catalog epoch, and drops the index entry from the published catalog. The schema with
+/// the index is committed and base records seed live index cells; current source drops the
+/// index, so discharge classifies `IndexDropped` and apply clears the whole index subtree.
+/// The base records and their members are untouched, and re-previewing finds nothing left.
 #[test]
 fn dropped_index_apply_deletes_index_cells() {
     let root = temp_project("apply-index-drop", |root| {
@@ -513,12 +513,18 @@ fn dropped_index_apply_deletes_index_cells() {
     let program = checked(&root);
 
     let w = witness(&program, &store);
-    // Dropping an index leaves the accepted entry lingering rather than proposing a new
-    // catalog, so apply stamps the accepted epoch while the derived cells are cleared.
-    assert!(w.proposal_catalog.is_none());
+    // Dropping an index discharges as its own evolution: it builds a proposal that advances
+    // the epoch and removes the index entry, so the catalog no longer carries a derived index
+    // with no cells behind it.
+    let proposal_epoch = w
+        .proposal_catalog
+        .as_ref()
+        .expect("a dropped index builds a proposal")
+        .epoch;
+    assert_eq!(proposal_epoch, w.accepted_catalog.epoch + 1);
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
 
-    assert_eq!(outcome.receipt.catalog_epoch, w.accepted_catalog.epoch);
+    assert_eq!(outcome.receipt.catalog_epoch, proposal_epoch);
     assert!(
         !index_has_children(&store, &index_id),
         "the dropped index must have no remaining cells"
@@ -536,6 +542,22 @@ fn dropped_index_apply_deletes_index_cells() {
             .expect("isbn present");
         assert_eq!(bytes, encode_value(&Scalar::Str(isbn.into())).unwrap());
     }
+
+    // The published catalog dropped the index entry and advanced its epoch, so re-checking
+    // and re-previewing against the committed snapshot finds no further index drop.
+    let accepted = store
+        .read_catalog_snapshot()
+        .expect("read snapshot")
+        .expect("a snapshot");
+    assert_eq!(accepted.epoch, proposal_epoch);
+    assert!(
+        !accepted
+            .entries
+            .iter()
+            .any(|entry| entry.stable_id == index_id.as_str()),
+        "the dropped index entry is gone from the committed catalog: {:#?}",
+        accepted.entries
+    );
 }
 
 /// Dropping a unique index from source stamps its catalog id in the commit metadata's

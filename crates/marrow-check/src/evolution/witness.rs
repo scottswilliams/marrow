@@ -120,6 +120,12 @@ pub enum RepairReason {
     /// identity, not its developer-facing name; the name lives in the fail-closed
     /// diagnostic the discharge emits.
     RetireRequired { index: CatalogId },
+    /// A source-dropped member still holds stored cells, but source declares no `evolve
+    /// retire` intent for it. Bare deletion would orphan that data silently, so the change
+    /// fails closed until the developer states the destructive intent with `evolve retire`,
+    /// which then routes the drop through the approved-retire path. An unpopulated member has
+    /// nothing to orphan and stays a free no-op; this fences only the populated case.
+    PopulatedDropRequiresRetire,
     /// A retire targets a member nested under an unkeyed group or a keyed layer. A
     /// top-level retire drops a cell directly under the record node, but a nested
     /// retire must descend the owning group or page each keyed entry to find the

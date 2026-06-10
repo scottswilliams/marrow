@@ -255,6 +255,9 @@ fn bind_against_accepted(
     ) {
         changed = true;
     }
+    if drop_absent_indexes(&mut proposal_entries, &source_kinds) {
+        changed = true;
+    }
     if record_signatures_into(program, &mut proposal_entries, Some(catalog)) {
         changed = true;
     }
@@ -707,6 +710,26 @@ fn apply_retires(
         }
     }
     changed
+}
+
+/// Remove from the proposal each active store-index entry current source no longer declares,
+/// returning whether any was dropped. An index is derived schema, not user data: its entries
+/// rebuild from the records it covers, so a source drop removes its catalog entry outright
+/// rather than reserving it. Dropping the entry advances the epoch and publishes a catalog
+/// without the index; the discharge stages the deletion of its generated cells from the
+/// accepted snapshot in the same activation. A re-declared index later mints fresh identity,
+/// which is sound because the index holds no durable identity of its own.
+fn drop_absent_indexes(
+    entries: &mut Vec<CatalogEntry>,
+    source_kinds: &HashMap<&str, CatalogEntryKind>,
+) -> bool {
+    let before = entries.len();
+    entries.retain(|entry| {
+        !(entry.kind == CatalogEntryKind::StoreIndex
+            && entry.lifecycle == CatalogLifecycle::Active
+            && !source_kinds.contains_key(entry.path.as_str()))
+    });
+    entries.len() != before
 }
 
 /// Whether a prior apply already reserved this path, so a retire block left in

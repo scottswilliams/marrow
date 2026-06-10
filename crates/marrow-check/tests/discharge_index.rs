@@ -224,6 +224,209 @@ fn dropped_sparse_field_is_no_op_not_error() {
     );
 }
 
+/// Dropping a source field that still holds stored data, with no `evolve retire` intent
+/// and no dependent index, fails closed rather than silently orphaning the data. The
+/// accepted entry lingers, but its cells are populated, so the bare drop is repair-required
+/// and names `evolve retire`; this is the only difference from the empty-store no-op above.
+#[test]
+fn dropped_field_with_populated_data_fails_closed() {
+    let subtitle_id = hex_id(4);
+    let root = temp_project("discharge-dropped-field-populated", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required title: string\n\
+             pub fn add(title: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+        let accepted = accepted_catalog(
+            11,
+            "books::Book",
+            "books::^books",
+            None,
+            vec![
+                entry(
+                    CatalogEntryKind::ResourceMember,
+                    "books::Book::title",
+                    &hex_id(3),
+                ),
+                entry(
+                    CatalogEntryKind::ResourceMember,
+                    "books::Book::subtitle",
+                    &subtitle_id,
+                ),
+            ],
+        );
+        write_catalog(root, &accepted);
+    });
+    let program = checked(&root);
+    let place = root_place(&program, "books");
+    let store = TreeStore::memory();
+    // Seed `subtitle` so the dropped member has stored data to orphan.
+    let seed = Seed::new(&store, &place);
+    seed.record(1);
+    seed.member_by_id(1, &subtitle_id, Scalar::Str("Appendix".into()));
+
+    let (result, diagnostics) = preview(&program, &store).expect("preview");
+
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &subtitle_id,
+        RepairReason::PopulatedDropRequiresRetire,
+    );
+}
+
+/// Dropping a whole resource (its `resource` block, its `store`, and its members) whose
+/// store still holds records would orphan every record under the gone root. The store entry
+/// the accepted catalog still records is no longer declared in source, so the discharge
+/// fences the dropped store with the same `PopulatedDropRequiresRetire` reason a populated
+/// member drop uses, naming the root once. The now-also-absent member entry stays a no-op,
+/// covered by the store fence, so a dropped populated root yields exactly one fence.
+#[test]
+fn dropped_populated_store_fails_closed() {
+    let book_store_id = hex_id(5);
+    let book_member_id = hex_id(6);
+    let root = temp_project("discharge-drop-populated-store", |root| {
+        // Source keeps only `Author`; the `Book` resource, its store, and its member are gone.
+        write(
+            root,
+            "src/library.mw",
+            "module library\n\
+             resource Author at ^authors(id: int)\n\
+             \x20   required name: string\n\
+             pub fn add(name: string): Id(^authors)\n\
+             \x20   return nextId(^authors)\n",
+        );
+        let accepted = marrow_catalog::CatalogMetadata::new(
+            20,
+            vec![
+                entry(CatalogEntryKind::Resource, "library::Author", &hex_id(1)),
+                store_entry("library::^authors", &hex_id(2), "int"),
+                entry(
+                    CatalogEntryKind::ResourceMember,
+                    "library::Author::name",
+                    &hex_id(3),
+                ),
+                entry(CatalogEntryKind::Resource, "library::Book", &hex_id(4)),
+                store_entry("library::^books", &book_store_id, "int"),
+                entry(
+                    CatalogEntryKind::ResourceMember,
+                    "library::Book::title",
+                    &book_member_id,
+                ),
+            ],
+        );
+        write_catalog(root, &accepted);
+    });
+    let (_report, program) = check_with_accepted(&root);
+    let store = TreeStore::memory();
+    // Seed one `Book` record under its accepted store id, so the dropped store holds data.
+    let book_store = CatalogId::new(book_store_id.clone()).unwrap();
+    store.write_node(&book_store, &[SavedKey::Int(1)]).unwrap();
+    store
+        .write_data_value(
+            &book_store,
+            &[SavedKey::Int(1)],
+            &[DataPathSegment::Member(
+                CatalogId::new(book_member_id.clone()).unwrap(),
+            )],
+            encode_value(&Scalar::Str("Dune".into())).unwrap(),
+        )
+        .unwrap();
+
+    let (result, diagnostics) = preview(&program, &store).expect("preview");
+
+    // The store entry naming the dropped root is the single fence.
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &book_store_id,
+        RepairReason::PopulatedDropRequiresRetire,
+    );
+    // The dropped member is covered by the store fence, not double-fenced.
+    assert!(
+        matches!(verdict_for(&result, &book_member_id), Verdict::NoOp),
+        "the dropped member is covered by the store fence: {:#?}",
+        result.verdicts
+    );
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.catalog_id.as_str() == book_member_id),
+        "exactly one diagnostic per dropped root: {diagnostics:#?}"
+    );
+    let diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.catalog_id.as_str() == book_store_id)
+        .expect("store diagnostic");
+    assert!(
+        diagnostic.message.contains("^books") && diagnostic.message.contains("evolve retire"),
+        "the fence names the dropped root and points at retire: {}",
+        diagnostic.message
+    );
+}
+
+/// Dropping a whole resource whose store holds no records is a free no-op: there is no data
+/// to orphan, so the carve-out keeps the empty store activatable, consistent with the
+/// empty-member-drop case.
+#[test]
+fn dropped_empty_store_is_a_free_no_op() {
+    let book_store_id = hex_id(5);
+    let book_member_id = hex_id(6);
+    let root = temp_project("discharge-drop-empty-store", |root| {
+        write(
+            root,
+            "src/library.mw",
+            "module library\n\
+             resource Author at ^authors(id: int)\n\
+             \x20   required name: string\n\
+             pub fn add(name: string): Id(^authors)\n\
+             \x20   return nextId(^authors)\n",
+        );
+        let accepted = marrow_catalog::CatalogMetadata::new(
+            20,
+            vec![
+                entry(CatalogEntryKind::Resource, "library::Author", &hex_id(1)),
+                store_entry("library::^authors", &hex_id(2), "int"),
+                entry(
+                    CatalogEntryKind::ResourceMember,
+                    "library::Author::name",
+                    &hex_id(3),
+                ),
+                entry(CatalogEntryKind::Resource, "library::Book", &hex_id(4)),
+                store_entry("library::^books", &book_store_id, "int"),
+                entry(
+                    CatalogEntryKind::ResourceMember,
+                    "library::Book::title",
+                    &book_member_id,
+                ),
+            ],
+        );
+        write_catalog(root, &accepted);
+    });
+    let (_report, program) = check_with_accepted(&root);
+    // The `Book` store was never seeded, so it holds no records to orphan.
+    let store = TreeStore::memory();
+
+    let (result, diagnostics) = preview(&program, &store).expect("preview");
+
+    assert!(
+        matches!(verdict_for(&result, &book_store_id), Verdict::NoOp),
+        "an empty dropped store stays a no-op: {:#?}",
+        result.verdicts
+    );
+    assert!(result.is_activatable(), "{result:#?}");
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.catalog_id.as_str() == book_store_id),
+        "no fence on a drop with no data to lose: {diagnostics:#?}"
+    );
+}
+
 /// A dropped source field a unique index still reads is not a silent deprecation;
 /// discharge requires a retire intent. The accepted catalog keeps a member `isbn`
 /// and an index `byIsbn(isbn)`; current source drops the member but keeps the index,
@@ -464,6 +667,24 @@ fn dropped_index_is_index_dropped() {
     );
     assert!(result.is_activatable(), "{result:#?}");
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+
+    // A source-only index drop must build a proposal that advances the epoch and drops the
+    // index catalog entry; without it apply would stamp the same epoch and leave the index
+    // active in the catalog forever, the heart of the silent index no-op.
+    let proposal = program
+        .catalog
+        .proposal
+        .as_ref()
+        .expect("a source-dropped index builds a proposal");
+    assert_eq!(proposal.epoch, 14, "the dropped index advances the epoch");
+    assert!(
+        !proposal
+            .entries
+            .iter()
+            .any(|entry| entry.stable_id == index_id),
+        "the dropped index entry is gone from the published catalog: {:#?}",
+        proposal.entries
+    );
 }
 
 /// A composite unique index over distinct full key tuples that happen to share

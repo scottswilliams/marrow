@@ -13,9 +13,13 @@ use crate::evolution::{RepairReason, Verdict};
 
 /// Classify the accepted catalog entries current source no longer declares. A retire intent
 /// makes dropping populated data a destructive decision naming the exact id and count; a
-/// source-dropped index deletes its derived subtree on apply; a member merely undeclared with
-/// no retire and no dependent is a legal sparse-field drop whose data lingers. A dropped member
-/// an active index still reads cannot be silently dropped — it needs an explicit retire intent.
+/// source-dropped index deletes its derived subtree on apply. A member or whole store merely
+/// undeclared with no retire intent is a legal no-op only when it holds no records; a populated
+/// drop with no retire intent, or a member an active index still reads, fails closed and needs
+/// an explicit `evolve retire`, so populated data is never orphaned by a bare source diff. A
+/// dropped whole resource takes its store with it, so the store entry — addressed by its own
+/// accepted id — owns the single fence for the root, and its orphaned member entries stay
+/// no-ops covered by it.
 pub(super) fn classify_absent_source_entries(
     program: &CheckedProgram,
     store: &TreeStore,
@@ -27,16 +31,28 @@ pub(super) fn classify_absent_source_entries(
         .map(|entry| (entry.kind, entry.path.as_str()))
         .collect();
 
+    // A source-dropped index is removed from the proposal outright, so it no longer appears in
+    // the drop-discharge entries; its derived cells were written under its accepted stable id,
+    // so the deletion obligation is read from the accepted snapshot here. The catalog binding
+    // has already dropped its entry and advanced the epoch.
+    for entry in &program.catalog.accepted_entries {
+        if entry.kind != CatalogEntryKind::StoreIndex
+            || entry.lifecycle != CatalogLifecycle::Active
+            || declared.contains(&(entry.kind, entry.path.as_str()))
+        {
+            continue;
+        }
+        acc.push_index(catalog_id(&entry.stable_id)?, Verdict::IndexDropped)?;
+    }
+
     for entry in catalog_entries_for_drop_discharge(program) {
-        if declared.contains(&(entry.kind, entry.path.as_str())) {
+        if entry.kind == CatalogEntryKind::StoreIndex
+            || declared.contains(&(entry.kind, entry.path.as_str()))
+        {
             continue;
         }
         let entry_id = catalog_id(&entry.stable_id)?;
-        let is_index = entry.kind == CatalogEntryKind::StoreIndex;
         match absent_entry_state(program, entry) {
-            AbsentEntryState::RetiredThisProposal if is_index => {
-                acc.record(entry_id, Verdict::IndexDropped, true)?;
-            }
             AbsentEntryState::RetiredThisProposal => {
                 if retired_member_is_nested(program, entry) {
                     acc.diagnostic(
@@ -46,27 +62,20 @@ pub(super) fn classify_absent_source_entries(
                             entry.path
                         ),
                     );
-                    acc.record(
+                    acc.push(
                         entry_id,
                         Verdict::RepairRequired {
                             reason: RepairReason::NestedRetireUnsupported,
                         },
-                        is_index,
                     )?;
                 } else {
                     let populated = populated_member_records(program, store, entry)?;
-                    acc.record(
-                        entry_id,
-                        Verdict::DestructiveDecisionRequired { populated },
-                        is_index,
-                    )?;
+                    acc.push(entry_id, Verdict::DestructiveDecisionRequired { populated })?;
                 }
             }
             AbsentEntryState::Reserved => {}
             AbsentEntryState::Active | AbsentEntryState::Deprecated => {
-                if is_index {
-                    acc.record(entry_id, Verdict::IndexDropped, true)?;
-                } else if let Some((index_name, index_id)) = index_depends_on(program, entry)? {
+                if let Some((index_name, index_id)) = index_depends_on(program, entry)? {
                     acc.diagnostic(
                         entry_id.clone(),
                         format!(
@@ -74,15 +83,51 @@ pub(super) fn classify_absent_source_entries(
                             entry.path
                         ),
                     );
-                    acc.record(
+                    acc.push(
                         entry_id,
                         Verdict::RepairRequired {
                             reason: RepairReason::RetireRequired { index: index_id },
                         },
-                        false,
+                    )?;
+                } else if dropped_store_holds_records(program, store, entry)? {
+                    // Dropping a whole resource takes its store with it, so the now-absent
+                    // member resolves no owning root and its own scan finds nothing — yet the
+                    // store subtree still holds every record. Fence the store entry once,
+                    // naming the root; the orphaned member entries stay no-ops below, covered
+                    // by this fence. An empty store has nothing to lose and stays a no-op.
+                    acc.diagnostic(
+                        entry_id.clone(),
+                        format!(
+                            "dropped store `{}` still holds records; retire it with `evolve retire {}` and apply with approval, or repair the data before activation",
+                            entry.path, entry.path
+                        ),
+                    );
+                    acc.push(
+                        entry_id,
+                        Verdict::RepairRequired {
+                            reason: RepairReason::PopulatedDropRequiresRetire,
+                        },
+                    )?;
+                } else if populated_member_records(program, store, entry)? > 0 {
+                    // A dropped member with no retire intent whose cells are still populated
+                    // would orphan that data on a bare activation. Fence it closed until the
+                    // developer states the destructive intent with `evolve retire`; an empty
+                    // member has nothing to lose and stays a no-op below.
+                    acc.diagnostic(
+                        entry_id.clone(),
+                        format!(
+                            "dropped `{}` still holds stored data; retire it with `evolve retire {}` and apply with approval, or repair the data before activation",
+                            entry.path, entry.path
+                        ),
+                    );
+                    acc.push(
+                        entry_id,
+                        Verdict::RepairRequired {
+                            reason: RepairReason::PopulatedDropRequiresRetire,
+                        },
                     )?;
                 } else {
-                    acc.record(entry_id, Verdict::NoOp, false)?;
+                    acc.push(entry_id, Verdict::NoOp)?;
                 }
             }
         }
@@ -122,6 +167,45 @@ fn absent_entry_state(program: &CheckedProgram, entry: &CatalogEntry) -> AbsentE
         CatalogLifecycle::Deprecated => AbsentEntryState::Deprecated,
         CatalogLifecycle::Reserved => AbsentEntryState::Reserved,
     }
+}
+
+/// Whether a source-dropped store still holds at least one record, streamed and short-circuited
+/// on the first one. A dropped store's cells were written under its own accepted stable id, so
+/// the store is addressed by `entry.stable_id`, and the record arity is read from the accepted
+/// identity-key shape (a keyless singleton or an unrecorded shape descends one level). Only a
+/// store entry holds records; every other kind returns `false`. A store with no records has no
+/// data to orphan and stays a free no-op.
+fn dropped_store_holds_records(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    entry: &CatalogEntry,
+) -> Result<bool, StoreError> {
+    if entry.kind != CatalogEntryKind::Store {
+        return Ok(false);
+    }
+    let store_id = catalog_id(&entry.stable_id)?;
+    let arity = accepted_store_arity(program, &entry.stable_id);
+    let mut found = false;
+    store.for_each_record(&store_id, arity, &mut |_identity| {
+        found = true;
+        Ok(())
+    })?;
+    Ok(found)
+}
+
+/// The record arity of a store from its accepted identity-key shape: the count of comma-joined
+/// key types the shape records (`int` is one, `int,string` is two). A keyless singleton renders
+/// the empty shape and a store recorded before key shapes were tracked has none; both descend a
+/// single identity level, matching [`TreeStore::for_each_record`]'s floor.
+fn accepted_store_arity(program: &CheckedProgram, store_stable_id: &str) -> usize {
+    program
+        .catalog
+        .accepted_entries
+        .iter()
+        .find(|entry| entry.kind == CatalogEntryKind::Store && entry.stable_id == store_stable_id)
+        .and_then(|entry| entry.accepted_key_shape.as_deref())
+        .filter(|shape| !shape.is_empty())
+        .map_or(1, |shape| shape.split(',').count())
 }
 
 /// Count records that carry a value for the dropped member, streamed, never materialized. Only

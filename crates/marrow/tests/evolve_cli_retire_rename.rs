@@ -86,6 +86,70 @@ fn evolve_apply_accepts_two_repeated_approve_retire_flags() {
     assert_eq!(notes_present, None, "notes was retired");
 }
 
+/// A bare source rename of a populated member — `subtitle` renamed to `blurb` in source
+/// with no `evolve rename` intent — must not silently auto-apply on a plain `marrow run`.
+/// A bare diff is ambiguous between rename and delete-and-add; reading it as delete-and-add
+/// would orphan the populated `subtitle` and silently advance the epoch. The populated-drop
+/// fence catches it: the run fails closed naming the required repair rather than dropping
+/// the data, and the epoch does not advance.
+#[test]
+fn a_bare_rename_of_a_populated_member_does_not_silently_auto_apply() {
+    let root = native_books_project("bare-rename-fences", RETIRE_BASELINE_SOURCE);
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(
+            &store,
+            &accepted_place,
+            1,
+            "subtitle",
+            Scalar::Str("Appendix".into()),
+        );
+    }
+
+    // Rename `subtitle` to `blurb` in source only, with no `evolve rename` block and a
+    // runnable entry that reads the renamed member.
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required title: string\n\
+         \x20   blurb: string\n\
+         pub fn show(): string\n\
+         \x20   return (^books(1).blurb ?? \"absent\")\n",
+    );
+
+    let run = marrow(&["run", "--entry", "books::show", root.to_str().unwrap()]);
+    assert_eq!(
+        run.status.code(),
+        Some(1),
+        "a bare rename over populated data must fence, not silently auto-apply: {run:?}"
+    );
+    let stderr = String::from_utf8(run.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("run.schema_drift"),
+        "the run fences on schema drift rather than dropping the data: {stderr}"
+    );
+
+    // The epoch did not advance and the old `subtitle` cell still carries its data: nothing
+    // was silently dropped.
+    assert_eq!(
+        store_epoch(&root),
+        Some(baseline_epoch),
+        "a fenced bare rename does not advance the epoch"
+    );
+    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    assert_eq!(
+        read_scalar(&store, &accepted_place, 1, "subtitle", ScalarType::Str),
+        Some(Scalar::Str("Appendix".into())),
+        "the populated member's cell survives the fenced run"
+    );
+}
+
 #[test]
 fn evolve_apply_advances_accepted_catalog_in_lockstep_for_retire() {
     let root = native_books_project("evolve-apply-retire-lockstep", RETIRE_BASELINE_SOURCE);

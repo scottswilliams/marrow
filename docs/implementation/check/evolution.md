@@ -8,7 +8,7 @@ The shape is three stages. **Intents** turn each `evolve` block step into a type
 
 `Verdict` (in `witness.rs`) is the contract that crosses crates. Seven variants activate unattended — `NoOp`, `CatalogOnly` (rename), `IndexDropped`, `DataProof`, `Default{value}`, `DerivedRebuild`, `Transform{reads}`. Two block on a developer: `DestructiveDecisionRequired{populated}` (a retire over live data) and `RepairRequired{reason}`. `is_activatable` is true iff every verdict is activatable.
 
-`RepairReason` is the typed fail-closed cause: missing required member, rejected default, invalid stored value, unique-index collision or unprobeability, retire required, undecodable transform input, a type/key-shape change that needs a transform, and `StructuralDivergence` — the default-deny backstop.
+`RepairReason` is the typed fail-closed cause: missing required member, rejected default, invalid stored value, unique-index collision or unprobeability, retire required (a dropped member an index still reads, or `PopulatedDropRequiresRetire` for a populated drop with no retire intent), undecodable transform input, a type/key-shape change that needs a transform, and `StructuralDivergence` — the default-deny backstop.
 
 ## Load-bearing invariants
 
@@ -32,7 +32,7 @@ The shape is three stages. **Intents** turn each `evolve` block step into a type
 | `crates/marrow-check/src/evolution/discharge/structural_backstop.rs` | The default-deny backstop: fails closed any populated member whose identity-aware structural signature diverged and that no targeted classifier claimed. |
 | `crates/marrow-check/src/evolution/discharge/enum_shrink.rs` | Selectable enum members (current and accepted), shrunk-enum detection, and the stored-value validity check `leaf_value_valid`. |
 | `crates/marrow-check/src/evolution/discharge/accepted_state.rs` | Reads the accepted catalog baselines (changed ids, renamed members, accepted leaf tokens/structs/key shapes) and the store-key-shape re-key backstop. |
-| `crates/marrow-check/src/evolution/discharge/absent_source.rs` | Classifies accepted catalog entries current source no longer declares: retire over data, dropped index, dependency-free dropped member, member an index still reads, nested retire. |
+| `crates/marrow-check/src/evolution/discharge/absent_source.rs` | Classifies accepted catalog entries current source no longer declares: retire over data, source-dropped index (deletes derived cells), a populated dependency-free member dropped with no retire (fail-closed), a populated whole store dropped with the resource (fail-closed, one fence per root), the same drops over an empty member or store (no-op), a member an index still reads, nested retire. |
 | `crates/marrow-check/src/evolution/witness.rs` | The read-only witness types: `Verdict`, `RepairReason`, `DefaultValue`, `ObligationVerdict`, `CatalogFingerprint`, `DischargeCounts`, `EvolutionWitness`, plus `is_activatable`. Prose-free data. |
 | `crates/marrow-check/src/evolution/const_default.rs` | Single interpreter of an evolve default literal: evaluates a constant scalar expression to an encoded `DefaultValue` or a typed `RejectedDefault`. |
 | `crates/marrow-check/src/evolution/leaf_type.rs` | Identity-aware leaf and structural tokenization: derives a member's leaf token and structural signature so a rename leaves the token unchanged and a retype/reshape changes it. |

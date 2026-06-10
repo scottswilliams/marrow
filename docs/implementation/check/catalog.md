@@ -4,7 +4,7 @@ After type analysis builds a `CheckedProgram`, this layer gives every durable de
 
 ## The big idea
 
-Identity is path-independent. A stable id is a random 128-bit `cat_<32hex>` minted from OS entropy, not derived from the source path — so renaming an entity carries its id forward instead of inventing a new one, and branch-parallel allocation cannot collide the way a counter would. Reconciliation matches source entries to accepted entries by `(kind, path)`, relocates renamed entries (recording the old path as an alias), reserves retired entries, and mints fresh ids only for genuinely new ones. Structural change is detected from recorded signatures, not source spelling, so a re-key, a group↔keyed-group reshape, or a value retype advances the proposal even when names are unchanged.
+Identity is path-independent. A stable id is a random 128-bit `cat_<32hex>` minted from OS entropy, not derived from the source path — so renaming an entity carries its id forward instead of inventing a new one, and branch-parallel allocation cannot collide the way a counter would. Reconciliation matches source entries to accepted entries by `(kind, path)`, relocates renamed entries (recording the old path as an alias), reserves retired entries, drops a source-absent store index outright (it is derived, not durable identity, so re-adding it mints fresh), and mints fresh ids only for genuinely new ones. Structural change is detected from recorded signatures, not source spelling, so a re-key, a group↔keyed-group reshape, or a value retype advances the proposal even when names are unchanged.
 
 ## Parts
 
