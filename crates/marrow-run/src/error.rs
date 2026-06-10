@@ -135,6 +135,28 @@ pub const RUN_UNCAUGHT_THROW: &str = "run.uncaught_error";
 /// obvious cases; this is the dynamic guard for a path the checker cannot prove.
 pub const RUN_TRAVERSAL: &str = "run.traversal";
 
+/// Function-call nesting exceeded [`RECURSION_LIMIT`]. Runaway or unbounded
+/// recursion stops here as a located fault rather than overflowing the native
+/// stack.
+pub const RUN_RECURSION: &str = "run.recursion_limit";
+
+/// The deepest call nesting a run will descend before raising [`RUN_RECURSION`].
+/// The entry function runs at depth 1, so this bounds the call chain below it. It
+/// is sized to sit far inside the worker stack the CLI runs on, so the typed fault
+/// always wins over a stack overflow. Python-like and fixed in v0.1, not
+/// configurable.
+pub const RECURSION_LIMIT: usize = 1024;
+
+/// A `run.recursion_limit` fault raised at the call site that would have descended
+/// past [`RECURSION_LIMIT`].
+pub(crate) fn recursion_limit(span: SourceSpan) -> RuntimeError {
+    RuntimeError::fault(
+        RUN_RECURSION,
+        format!("call nesting exceeded the recursion limit of {RECURSION_LIMIT}"),
+        span,
+    )
+}
+
 /// Raise `error` as a catchable language throw on the `Err` channel: the value
 /// rides the [`RuntimeError`]'s `throw` field, so a surrounding `try`/`catch`
 /// binds it. With no surrounding handler, the activation re-surfaces it. The

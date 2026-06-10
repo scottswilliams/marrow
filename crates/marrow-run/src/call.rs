@@ -16,7 +16,9 @@ use crate::collection::{
 };
 use crate::durable_read::{eval_index_lookup, eval_resource_read, eval_saved_layer_read};
 use crate::env::{Context, Env};
-use crate::error::{RUN_UNKNOWN_FUNCTION, RuntimeError, unsupported};
+use crate::error::{
+    RECURSION_LIMIT, RUN_UNKNOWN_FUNCTION, RuntimeError, recursion_limit, unsupported,
+};
 use crate::host_effects::{eval_clock_capability, eval_env, eval_io, eval_log};
 use crate::local_collection::eval_local_collection_read;
 use crate::neighbor::eval_neighbor;
@@ -68,20 +70,29 @@ fn eval_program_function<'p>(
     env: &mut Env<'p>,
 ) -> Result<Option<Value>, RuntimeError> {
     let values = bind_arguments(&function.params, args, span, env)?;
-    let (completion, _) = invoke_function(env, module, function, &values, &[])?;
+    let (completion, _) = invoke_function(env, module, function, &values, &[], span)?;
     complete_call(completion, span)
 }
 
 /// Runs `function` as a child activation of `env`, moving the debugger hook into
 /// the nested frame and back out on return. Callers differ only in how they bind
 /// arguments and what they do with the writeback finals.
+///
+/// The child runs at `env.depth + 1`; descending past [`RECURSION_LIMIT`] raises a
+/// located `run.recursion_limit` fault at the call `span` instead of recursing
+/// into a stack overflow. This is the one place every program-function call
+/// descends, so guarding here bounds both the plain and inout-mode call paths.
 fn invoke_function<'p>(
     env: &mut Env<'p>,
     module: &'p CheckedRuntimeModule,
     function: &'p CheckedRuntimeFunction,
     values: &[Value],
     writeback: &[&'p str],
+    span: SourceSpan,
 ) -> Result<(Completion, Vec<Option<Value>>), RuntimeError> {
+    if env.depth >= RECURSION_LIMIT {
+        return Err(recursion_limit(span));
+    }
     let ctx = Context {
         program: env.program,
         store: env.store,
@@ -205,7 +216,7 @@ pub(crate) fn eval_call_with_modes<'p>(
         .filter(|param| param.mode.is_some())
         .map(|param| param.name.as_str())
         .collect();
-    let (completion, finals) = invoke_function(env, module, function, &values, &writeback)?;
+    let (completion, finals) = invoke_function(env, module, function, &values, &writeback, span)?;
     for (place, final_value) in places.into_iter().zip(finals) {
         if let (Some(place), Some(value)) = (place, final_value) {
             place.write(value, span, env)?;

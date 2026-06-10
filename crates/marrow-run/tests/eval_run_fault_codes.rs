@@ -177,6 +177,59 @@ fn a_qualified_entry_naming_a_private_function_is_rejected() {
     );
 }
 
+/// A clean-checking but unbounded recursion. `sumTo(n)` recurses once per
+/// decrement, so a large `n` descends past the runtime recursion limit.
+const RECURSION_SOURCE: &str = "\
+fn sumTo(n: int): int
+    if n <= 0
+        return 0
+    return n + sumTo(n - 1)
+
+pub fn deep(): int
+    return sumTo(2000)
+
+pub fn shallow(): int
+    return sumTo(1000)
+";
+
+/// Run an entry of [`RECURSION_SOURCE`] on a worker thread with the generous stack
+/// the CLI runs on, so the runtime recursion limit — sized for that stack — trips
+/// before the recursion overflows the small default test-thread stack.
+fn run_recursion_entry(entry: &'static str) -> Result<i64, &'static str> {
+    std::thread::Builder::new()
+        .stack_size(256 * 1024 * 1024)
+        .spawn(move || {
+            let program = checked_program(RECURSION_SOURCE);
+            let store = TreeStore::memory();
+            match run_entry(&store, checked_entry!(&program, entry)) {
+                Ok(output) => match output.value {
+                    Some(Value::Int(total)) => Ok(total),
+                    other => panic!("expected an int result, got {other:?}"),
+                },
+                Err(error) => Err(error.code),
+            }
+        })
+        .expect("spawn recursion worker")
+        .join()
+        .expect("recursion worker did not panic")
+}
+
+#[test]
+fn unbounded_recursion_faults_with_the_recursion_limit() {
+    // Recursing past the 1024-frame limit raises a typed `run.recursion_limit`
+    // fault rather than overflowing the native stack.
+    assert_eq!(
+        run_recursion_entry("test::deep"),
+        Err(marrow_run::RUN_RECURSION),
+    );
+}
+
+#[test]
+fn recursion_within_the_limit_returns_its_result() {
+    // A recursion that stays inside the limit runs to completion: 1 + 2 + … + 1000.
+    assert_eq!(run_recursion_entry("test::shallow"), Ok(500_500));
+}
+
 #[test]
 fn binding_a_no_value_call_result_faults_at_run_time() {
     // A function with no return type yields no value. Binding its call to a `const`

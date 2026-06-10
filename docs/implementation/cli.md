@@ -6,7 +6,7 @@ Two crates: `marrow-project` owns the `marrow.json` schema, source/test discover
 
 ## The shared spine
 
-`main::main` installs a broken-pipe panic hook (a `Broken pipe` payload exits 0, every other panic defers to the default hook) and dispatches `argv[1]` to one command. Each command's first lines call the shared loaders in `main.rs`:
+`main::main` installs a broken-pipe panic hook (a `Broken pipe` payload exits 0, every other panic defers to the default hook), then dispatches `argv[1]` to one command on a worker thread with a large stack (`run_on_worker_stack`). The parser and runtime recurse over untrusted source on that stack, sized so their fixed depth limits (`check.nesting_limit`, `run.recursion_limit`) always trip before it overflows. Each command's first lines call the shared loaders in `main.rs`:
 
 - `load_config` / `load_checked_project` — dir to `ProjectConfig`, then to a `CheckedProgram` bound against the accepted catalog the store publishes.
 - `resolve_store_path` / `open_store_for_inspection` — locate and open the configured store; inspection always uses `open_read_only`.

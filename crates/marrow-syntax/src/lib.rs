@@ -37,6 +37,19 @@ use parse_decl::DeclParser;
 
 pub const PARSE_SYNTAX: &str = "parse.syntax";
 
+/// The maximum nesting depth the recursive-descent parser will structure before
+/// it stops and reports [`NESTING_LIMIT`]. It bounds both expression nesting
+/// (parentheses, unary and binary operands) and statement-block nesting (`if`,
+/// `while`, `for`, …), so deeply nested source fails closed with a located
+/// diagnostic rather than overflowing the native stack. 256 follows the
+/// Clang/rustc convention; it is fixed in v0.1, not configurable.
+pub const NESTING_DEPTH_LIMIT: usize = 256;
+
+/// Reported when source nests deeper than [`NESTING_DEPTH_LIMIT`]. It renders as
+/// a `check`-kind diagnostic so it surfaces alongside the type-check findings the
+/// operator already reads, even though the parser raises it.
+pub const NESTING_LIMIT: &str = "check.nesting_limit";
+
 pub fn parse_source(source: &str) -> ParsedSource {
     let lexed = lex_source(source);
     let mut parsed = DeclParser::new(source, &lexed.tokens).parse();
@@ -223,6 +236,88 @@ mod decl_parser_corpus {
             decl.value.is_none(),
             "expected no value for `const Bad = int`: {:#?}",
             decl.value
+        );
+    }
+}
+
+#[cfg(test)]
+mod nesting_limit {
+    use super::{NESTING_DEPTH_LIMIT, NESTING_LIMIT, ParsedSource, parse_source};
+
+    /// Parse on a worker thread with the same generous stack the CLI runs the
+    /// parser on, so the nesting limit — calibrated for that stack — trips before
+    /// the recursion overflows the small default test-thread stack.
+    fn parse_on_large_stack(source: String) -> ParsedSource {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024 * 1024)
+            .spawn(move || parse_source(&source))
+            .expect("spawn parse worker")
+            .join()
+            .expect("parse worker did not panic")
+    }
+
+    fn codes(source: String) -> Vec<&'static str> {
+        parse_on_large_stack(source)
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect()
+    }
+
+    /// A source with `depth` nested `if` blocks, the deep-statement form. Each
+    /// level indents one more level and holds the next `if`.
+    fn nested_ifs(depth: usize) -> String {
+        let mut source = String::from("module app\n\npub fn main()\n");
+        for level in 0..depth {
+            let indent = "    ".repeat(level + 1);
+            source.push_str(&format!("{indent}if {level} < {}\n", level + 1));
+        }
+        source.push_str(&"    ".repeat(depth + 1));
+        source.push_str("return\n");
+        source
+    }
+
+    /// A source returning `depth` nested parentheses, the deep-expression form.
+    fn nested_parens(depth: usize) -> String {
+        let expr = format!("{}1{}", "(".repeat(depth), ")".repeat(depth));
+        format!("module app\n\npub fn main()\n    return {expr}\n")
+    }
+
+    #[test]
+    fn deeply_nested_statements_report_the_nesting_limit() {
+        let located = parse_on_large_stack(nested_ifs(NESTING_DEPTH_LIMIT + 50))
+            .diagnostics
+            .into_iter()
+            .find(|diagnostic| diagnostic.code == NESTING_LIMIT)
+            .expect("a nesting-limit diagnostic for deep `if` nesting");
+        assert!(
+            located.span.line > 0,
+            "the diagnostic is located: {located:?}"
+        );
+    }
+
+    #[test]
+    fn deeply_nested_expressions_report_the_nesting_limit() {
+        let located = parse_on_large_stack(nested_parens(NESTING_DEPTH_LIMIT + 50))
+            .diagnostics
+            .into_iter()
+            .find(|diagnostic| diagnostic.code == NESTING_LIMIT)
+            .expect("a nesting-limit diagnostic for deep parens");
+        assert!(
+            located.span.line > 0,
+            "the diagnostic is located: {located:?}"
+        );
+    }
+
+    #[test]
+    fn nesting_just_under_the_limit_parses_clean() {
+        assert!(
+            !codes(nested_ifs(NESTING_DEPTH_LIMIT - 1)).contains(&NESTING_LIMIT),
+            "statements just under the limit should parse without the nesting error"
+        );
+        assert!(
+            !codes(nested_parens(NESTING_DEPTH_LIMIT - 1)).contains(&NESTING_LIMIT),
+            "expressions just under the limit should parse without the nesting error"
         );
     }
 }

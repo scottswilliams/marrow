@@ -240,6 +240,74 @@ fn an_uncaught_throw_is_located() {
 }
 
 #[test]
+fn unbounded_recursion_surfaces_a_located_recursion_limit() {
+    // A clean-checking but unbounded recursion (`sumTo(2000)`, deeper than the
+    // 1024-frame limit) aborted the process with a native stack overflow (exit 134)
+    // before the guard. Now it fails closed with a located `run.recursion_limit`
+    // fault at the recursive call site and exit 1.
+    let root = temp_project("run-recursion", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             fn sumTo(n: int): int\n\
+             \x20\x20\x20\x20if n <= 0\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20return 0\n\
+             \x20\x20\x20\x20return n + sumTo(n - 1)\n\n\
+             pub fn main()\n\
+             \x20\x20\x20\x20print(sumTo(2000))\n",
+        );
+    });
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let fault = parse_fault(&output.stderr);
+    assert_eq!(fault.code, "run.recursion_limit");
+    assert!(
+        fault
+            .file
+            .as_deref()
+            .is_some_and(|file| file.ends_with("src/app.mw")),
+        "the recursion fault is located in the source file: {:?}",
+        fault.file
+    );
+}
+
+#[test]
+fn recursion_within_the_limit_runs_normally() {
+    // A recursion that stays inside the 1024-frame limit runs to completion and
+    // prints its result, so the bound rejects only runaway recursion.
+    let root = temp_project("run-recursion-ok", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             fn sumTo(n: int): int\n\
+             \x20\x20\x20\x20if n <= 0\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20return 0\n\
+             \x20\x20\x20\x20return n + sumTo(n - 1)\n\n\
+             pub fn main()\n\
+             \x20\x20\x20\x20print(sumTo(1000))\n",
+        );
+    });
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert_eq!(stdout.trim(), "500500");
+}
+
+#[test]
 fn a_fault_with_no_origin_keeps_the_bare_fallback() {
     // A missing entry never reaches a project file, so its fault carries no origin and
     // renders bare: the code leads the line with no location prefix and no spurious

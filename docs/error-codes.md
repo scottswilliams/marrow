@@ -176,6 +176,7 @@ over every configured source and test file.
 | `check.range_value` | A range expression appears outside a `for` iterable. Ranges are loop shapes, not values. |
 | `check.collection_unsupported` | `values` or `entries` is applied to an address-only collection, such as a non-unique index branch, that has no materialized values distinct from its keys. |
 | `check.private_enum` | A cross-module enum reference names an enum that exists but is not `pub`; the enum resolves, the visibility does not. |
+| `check.nesting_limit` | Source nests expressions or statement blocks deeper than the fixed parser limit (256). Raised by the parser at the offending span so pathologically nested source fails closed rather than overflowing the stack; see the [cost model](language/cost-model.md). |
 | `check.evolve_target` | An `evolve` intent names an entity — a resource member, saved root, store index, enum, or enum member — that the current source does not declare (or, for a rename's source side, that the accepted catalog does not record). |
 | `check.evolve_type` | An `evolve default` value does not match its target member's type, or an `evolve transform` body does not type-check. |
 | `check.evolve_transform` | An `evolve transform` body is ill-formed: it is impure, reads its own target or a member another `default`/`transform` rewrites in the same block, or does not compute a top-level member as a pure function of `old`'s other decodable members. |
@@ -233,6 +234,7 @@ code, except `run.uncaught_error` — see "Typed Errors In Running Programs".
 | `run.assertion` | A `std::assert::*` assertion did not hold. `marrow test` reports these as located test failures. |
 | `run.uncaught_error` | An `Error` raised by `throw` reached the top of a function with no `catch`. The original code travels in the message (e.g. `[io.read]`). |
 | `run.traversal` | A write, delete, or append changed the saved layer a loop was actively traversing. Fatal dynamic counterpart of `check.loop_mutates_traversed_layer`. |
+| `run.recursion_limit` | Function-call nesting exceeded the fixed recursion limit (1024). Located at the offending call site so runaway or unbounded recursion fails closed rather than overflowing the stack; see the [cost model](language/cost-model.md). |
 | `run.no_entry` | `marrow run` found no entry: no `--entry` was given and `marrow.json` sets no `run.defaultEntry`. |
 | `run.store_evolved` | The store was stamped at a catalog epoch newer than this program accepted, so a newer binary evolved it. Recompile or upgrade against the current accepted catalog. Fenced before any execution; the store is unchanged. |
 | `run.store_behind` | The store was stamped at a catalog epoch older than this program accepted, so its data predates the catalog. Activate the store with an evolution apply first. Fenced before any execution; the store is unchanged. |

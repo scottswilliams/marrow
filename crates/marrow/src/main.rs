@@ -44,7 +44,19 @@ fn main() -> ExitCode {
         print!("{HELP}");
         return ExitCode::SUCCESS;
     };
-    match command.as_str() {
+    // Every command that parses, checks, or runs untrusted `.mw` source recurses
+    // over the source on the call stack, so dispatch on a worker thread with a
+    // generous stack. The recursion guards in the parser and runtime are sized to
+    // trip far inside this stack, so deeply nested source or runaway recursion
+    // surfaces a typed `check.nesting_limit` / `run.recursion_limit` diagnostic
+    // instead of aborting the process with a native stack overflow.
+    let command = command.clone();
+    let rest = rest.to_vec();
+    run_on_worker_stack(move || dispatch(&command, &rest))
+}
+
+fn dispatch(command: &str, rest: &[String]) -> ExitCode {
+    match command {
         "check" => cmd_check::check(rest),
         "evolve" => cmd_evolve::evolve(rest),
         "fmt" => cmd_fmt::fmt(rest),
@@ -69,6 +81,26 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// The stack the parse/check/run pipeline runs on. 256 MiB comfortably holds the
+/// recursion the typed limits permit — 256 nested parser frames and 1024 runtime
+/// call frames — with wide margin, so a limit always trips before the stack does.
+const WORKER_STACK_BYTES: usize = 256 * 1024 * 1024;
+
+/// Run `command` on a worker thread with [`WORKER_STACK_BYTES`] of stack and
+/// return its exit code. The main thread only waits, so the deep recursion the
+/// parser and runtime perform over untrusted source has room to reach a typed
+/// depth-limit diagnostic rather than overflowing the default main-thread stack.
+/// A panic on the worker (a genuine bug, not a depth limit) is re-raised on the
+/// main thread so it surfaces the same way it would unthreaded.
+fn run_on_worker_stack(command: impl FnOnce() -> ExitCode + Send + 'static) -> ExitCode {
+    std::thread::Builder::new()
+        .stack_size(WORKER_STACK_BYTES)
+        .spawn(command)
+        .expect("spawn the marrow worker thread")
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
 /// Exit cleanly when a downstream reader closes our stdout, instead of panicking.

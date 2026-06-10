@@ -75,3 +75,20 @@ To do less work, write different code — and every lever is in the language:
 
 These are ordinary modeling choices with visible cost. There is no lower level to
 drop to for cheaper storage work, because the program names the access path.
+
+## Depth Limits
+
+Two fixed ceilings keep pathological depth from exhausting the native stack.
+Both are fail-closed: the program stops with a located diagnostic, never a
+process crash.
+
+- **Nesting limit (256).** Source may nest expressions (parentheses, operators)
+  and statement blocks (`if`, `while`, `for`, …) up to 256 levels deep. Deeper
+  source stops at the offending span with `check.nesting_limit`.
+- **Recursion limit (1024).** A running program may nest function calls up to
+  1024 deep. A deeper call stops at its call site with `run.recursion_limit`.
+
+Both ceilings are fixed in v0.1 and not configurable. The toolchain runs the
+parse, check, and run pipeline on a worker thread with a large stack, sized so a
+limit always trips before the stack can overflow — so deeply nested or unbounded
+recursion is a typed diagnostic, not an abort.

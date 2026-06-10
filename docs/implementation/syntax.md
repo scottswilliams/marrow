@@ -9,7 +9,7 @@
 1. `lex_source` — text to a flat token stream. The lexer maintains an indent stack and an `open_delimiters` counter, synthesizing `INDENT`/`DEDENT`/`NEWLINE` layout tokens (not lexical characters) and suppressing them inside `(`/`[`. Tabs and obsolete operators (`&&`, `||`, `!`, `#`) and the reserved `~` are lexer diagnostics.
 2. `DeclParser::parse` — tokens to declarations/statements/expressions via recursive descent.
 
-Diagnostics from both stages are concatenated and sorted by `(line, start_byte)`. All output uses the `parse.syntax` code; tests assert on the typed `reason`, never prose.
+Diagnostics from both stages are concatenated and sorted by `(line, start_byte)`. Output uses the `parse.syntax` code, except that the expression and statement parsers each carry a descent-depth counter and stop at `NESTING_DEPTH_LIMIT` (256) with a located `check.nesting_limit`, so deeply nested source fails closed rather than overflowing the stack. Tests assert on the typed `reason`, never prose.
 
 ## Three parser layers, one token stream
 

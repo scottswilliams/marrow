@@ -54,6 +54,7 @@ pub enum ParseDiagnosticReason {
     KeywordFieldName,
     LateModuleDeclaration,
     MatchArmMemberPath,
+    NestingLimit,
     PositionalArgumentAfterNamed,
     Reserved(ReservedSyntax),
     ResourceMemberInStoreBody,

@@ -5,8 +5,8 @@
 use crate::token::is_trivia;
 use crate::{
     ArgMode, Argument, BinaryOp, Diagnostic, DiagnosticReason, Expression, InterpolationPart,
-    Keyword, LiteralKind, PARSE_SYNTAX, ParseDiagnosticReason, ReservedSyntax, Severity,
-    SourceSpan, Token, TokenKind, UnaryOp,
+    Keyword, LiteralKind, NESTING_DEPTH_LIMIT, NESTING_LIMIT, PARSE_SYNTAX, ParseDiagnosticReason,
+    ReservedSyntax, Severity, SourceSpan, Token, TokenKind, UnaryOp,
 };
 
 /// A value the parser does not fully structure yields `None`, which the caller
@@ -15,6 +15,11 @@ pub(crate) struct ExprParser<'a> {
     source: &'a str,
     tokens: Vec<Token>,
     pos: usize,
+    /// How deep the recursive descent currently is. Each parenthesized,
+    /// unary-operand, or interpolated sub-expression descends one level;
+    /// exceeding [`NESTING_DEPTH_LIMIT`] stops the recursion with a located
+    /// [`NESTING_LIMIT`] error before the native stack can overflow.
+    depth: usize,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -29,6 +34,7 @@ impl<'a> ExprParser<'a> {
             source,
             tokens,
             pos: 0,
+            depth: 0,
             diagnostics: Vec::new(),
         }
     }
@@ -80,7 +86,47 @@ impl<'a> ExprParser<'a> {
     }
 
     fn expression(&mut self) -> Option<Expression> {
-        self.or_expr()
+        self.descend(Self::or_expr)
+    }
+
+    /// Run one recursive-descent level, bounding nesting depth. The binary
+    /// precedence tower (`or_expr` … `unary_expr`) is a fixed-height chain, so a
+    /// single `expression` call descends one logical level; the recursive entries
+    /// — a parenthesized sub-expression, a unary operand, and an interpolated
+    /// expression — each route through here, so deeply nested source stops with a
+    /// located [`NESTING_LIMIT`] error at the offending token rather than
+    /// overflowing the stack. The counter is decremented on the way back up so a
+    /// wide-but-shallow expression is never penalized.
+    fn descend(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> Option<Expression>,
+    ) -> Option<Expression> {
+        self.depth += 1;
+        if self.depth > NESTING_DEPTH_LIMIT {
+            self.depth -= 1;
+            self.nesting_limit_error();
+            return None;
+        }
+        let result = parse(self);
+        self.depth -= 1;
+        result
+    }
+
+    /// Report the nesting-limit overflow at the next unconsumed token (the deepest
+    /// construct the parser reached), or at end of input when none remains.
+    fn nesting_limit_error(&mut self) {
+        let span = self
+            .tokens
+            .get(self.pos)
+            .map_or_else(SourceSpan::default, |token| token.span);
+        self.diagnostics.push(Diagnostic {
+            code: NESTING_LIMIT,
+            reason: DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
+            severity: Severity::Error,
+            message: format!("expression nests deeper than the limit of {NESTING_DEPTH_LIMIT}"),
+            help: None,
+            span,
+        });
     }
 
     fn or_expr(&mut self) -> Option<Expression> {
@@ -215,7 +261,7 @@ impl<'a> ExprParser<'a> {
             _ => return self.postfix_expr(),
         };
         let op_token = self.advance();
-        let operand = self.unary_expr()?;
+        let operand = self.descend(Self::unary_expr)?;
         let span = join_spans(op_token.span, operand.span());
         Some(Expression::Unary {
             op,
