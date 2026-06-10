@@ -199,15 +199,18 @@ pub struct RunOutput {
     pub output: String,
 }
 
-/// A child key as a runtime value, or `None` for the temporal keys (date,
-/// duration, instant) this conversion does not produce.
-pub(crate) fn saved_key_to_value(key: SavedKey) -> Option<Value> {
+/// A child key as its runtime value. Every saved key kind converts — including
+/// the temporal date, duration, and instant keys — so a layer keyed by any scalar
+/// type iterates to usable values.
+pub(crate) fn saved_key_to_value(key: SavedKey) -> Value {
     match key {
-        SavedKey::Int(n) => Some(Value::Int(n)),
-        SavedKey::Bool(b) => Some(Value::Bool(b)),
-        SavedKey::Str(s) => Some(Value::Str(s)),
-        SavedKey::Bytes(b) => Some(Value::Bytes(b)),
-        _ => None,
+        SavedKey::Int(n) => Value::Int(n),
+        SavedKey::Bool(b) => Value::Bool(b),
+        SavedKey::Str(s) => Value::Str(s),
+        SavedKey::Date(d) => Value::Date(d),
+        SavedKey::Duration(n) => Value::Duration(n),
+        SavedKey::Instant(n) => Value::Instant(n),
+        SavedKey::Bytes(b) => Value::Bytes(b),
     }
 }
 
@@ -455,5 +458,46 @@ fn render_identity(identity: &IdentityValue) -> String {
     match rendered.as_slice() {
         [key] => key.clone(),
         _ => format!("identity({})", rendered.join(", ")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Value, saved_key_to_value};
+    use marrow_store::key::SavedKey;
+
+    #[test]
+    fn saved_key_to_value_carries_every_scalar_key_kind() {
+        // Every saved key kind converts to its runtime value, including the temporal
+        // ones, so iterating a layer keyed by any scalar type yields a usable value
+        // rather than faulting `run.unsupported`.
+        assert!(matches!(
+            saved_key_to_value(SavedKey::Int(7)),
+            Value::Int(7)
+        ));
+        assert!(matches!(
+            saved_key_to_value(SavedKey::Bool(true)),
+            Value::Bool(true)
+        ));
+        assert!(matches!(
+            saved_key_to_value(SavedKey::Str("k".into())),
+            Value::Str(_)
+        ));
+        assert!(matches!(
+            saved_key_to_value(SavedKey::Bytes(vec![1])),
+            Value::Bytes(_)
+        ));
+        assert!(matches!(
+            saved_key_to_value(SavedKey::Date(18_000)),
+            Value::Date(18_000)
+        ));
+        assert!(matches!(
+            saved_key_to_value(SavedKey::Duration(5_000)),
+            Value::Duration(5_000)
+        ));
+        assert!(matches!(
+            saved_key_to_value(SavedKey::Instant(1_600)),
+            Value::Instant(1_600)
+        ));
     }
 }

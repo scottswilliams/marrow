@@ -105,10 +105,7 @@ pub(crate) fn enumerate_local_collection_dir(
                     seen.push(key);
                 }
             }
-            seen.into_iter()
-                .map(saved_key_to_value)
-                .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| iterable_key_type_error(span))?
+            seen.into_iter().map(saved_key_to_value).collect()
         }
         _ => return Err(unsupported("keys over this value", span)),
     };
@@ -133,7 +130,7 @@ pub(crate) fn materialize_local_collection_dir(
                     .keys
                     .first()
                     .cloned()
-                    .and_then(saved_key_to_value)
+                    .map(saved_key_to_value)
                     .ok_or_else(|| iterable_key_type_error(span))?;
                 Ok((key, entry.value))
             })

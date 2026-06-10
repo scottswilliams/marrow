@@ -37,8 +37,7 @@ pub(crate) fn eval_neighbor(
     match neighbor {
         Some(key) => match identity_root {
             Some(root) => Ok(identity_value(&root, vec![key])),
-            None => saved_key_to_value(key)
-                .ok_or_else(|| unsupported("a neighbor key of this type", span)),
+            None => Ok(saved_key_to_value(key)),
         },
         None => {
             let edge = if dir == Direction::Ascending {

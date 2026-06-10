@@ -81,8 +81,7 @@ impl ChildLayerScan {
         env: &mut Env<'_>,
         visit: &mut impl FnMut(SavedLoopRow, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
     ) -> Result<ControlFlow<Flow>, RuntimeError> {
-        let key_value = saved_key_to_value(key.clone())
-            .ok_or_else(|| unsupported("iterating keys of this type", self.span))?;
+        let key_value = saved_key_to_value(key.clone());
         match self.shape {
             LoopShape::Keys => visit(SavedLoopRow::Single(key_value), env),
             LoopShape::Values => {

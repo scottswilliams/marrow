@@ -401,7 +401,7 @@ pub(crate) fn collected_identity_value(
     let [key] = keys else {
         return Err(unsupported("iterating a composite non-identity key", span));
     };
-    saved_key_to_value(key.clone()).ok_or_else(|| unsupported("iterating keys of this type", span))
+    Ok(saved_key_to_value(key.clone()))
 }
 
 /// Read a field of a local resource value, e.g. `book.shelf`. An unpopulated
