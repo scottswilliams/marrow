@@ -21,7 +21,7 @@ pub(crate) struct StorageDataQuery {
 pub fn resolve_data_query(
     program: &CheckedProgram,
     segments: &[DataQuerySegment],
-) -> Result<DataQuery, ToolingError> {
+) -> Result<Option<DataQuery>, ToolingError> {
     let steps: Vec<QuerySegment<'_>> = segments.iter().map(QuerySegment::from_data).collect();
     resolve_query_steps(program, render_query_segments(segments), &steps)
 }
@@ -29,7 +29,7 @@ pub fn resolve_data_query(
 pub fn resolve_source_text_data_query(
     program: &CheckedProgram,
     segments: &[crate::PathSegment],
-) -> Result<DataQuery, ToolingError> {
+) -> Result<Option<DataQuery>, ToolingError> {
     let steps: Vec<QuerySegment<'_>> = segments
         .iter()
         .map(QuerySegment::from_source_text)
@@ -41,7 +41,7 @@ fn resolve_query_steps(
     program: &CheckedProgram,
     path: String,
     segments: &[QuerySegment<'_>],
-) -> Result<DataQuery, ToolingError> {
+) -> Result<Option<DataQuery>, ToolingError> {
     let Some((QuerySegment::Root(root), rest)) = segments.split_first() else {
         return Err(QueryError::MissingRoot.into());
     };
@@ -49,7 +49,9 @@ fn resolve_query_steps(
         .ok_or_else(|| QueryError::UnknownRoot {
             root: (*root).to_string(),
         })?;
-    let store = tooling_catalog_id(&place.store_catalog_id, "store")?;
+    let Some(store) = tooling_catalog_id(&place.store_catalog_id, "store")? else {
+        return Ok(None);
+    };
     let mut identity = Vec::new();
     let mut rendered_segments = vec![DataQuerySegment::Root((*root).to_string())];
     let mut index = 0usize;
@@ -97,10 +99,10 @@ fn resolve_query_steps(
                 name: name.to_string(),
             })?;
         rendered_segments.push(query_segment_for_member(member));
-        data_path.push(DataPathSegment::Member(tooling_catalog_id(
-            &member.catalog_id,
-            "resource member",
-        )?));
+        let Some(member_id) = tooling_catalog_id(&member.catalog_id, "resource member")? else {
+            return Ok(None);
+        };
+        data_path.push(DataPathSegment::Member(member_id));
         index += 1;
 
         let mut key_count = 0usize;
@@ -140,7 +142,7 @@ fn resolve_query_steps(
         };
     }
 
-    Ok(DataQuery::new(
+    Ok(Some(DataQuery::new(
         path,
         (*root).to_string(),
         rendered_segments,
@@ -150,7 +152,7 @@ fn resolve_query_steps(
             identity_arity: place.identity_keys.len(),
             data_path,
         },
-    ))
+    )))
 }
 
 #[derive(Clone, Copy)]

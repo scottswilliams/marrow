@@ -86,6 +86,40 @@ fn data_dump_of_an_unseeded_project_prints_empty_and_writes_no_records() {
 }
 
 #[test]
+fn data_tools_skip_a_pending_member_instead_of_reporting_corruption() {
+    // A committed store, then source adds a sparse field not yet applied: its
+    // catalog id is unbound. The data tools skip the pending member rather than
+    // reporting `store.corruption`, and the committed data still reads.
+    let (project, dir) = seeded_project("data-pending-member");
+    support::write(
+        &project,
+        "src/app.mw",
+        "module app\n\
+         \n\
+         resource Counter at ^counter(id: int)\n\
+         \x20\x20\x20\x20required value: int\n\
+         \x20\x20\x20\x20note: string\n\
+         \n\
+         pub fn seed()\n\
+         \x20\x20\x20\x20var c: Counter\n\
+         \x20\x20\x20\x20c.value = 42\n\
+         \x20\x20\x20\x20transaction\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20^counter(1) = c\n",
+    );
+
+    let integrity = marrow(&["data", "integrity", "--format", "json", &dir]);
+    assert_eq!(integrity.status.code(), Some(0), "{integrity:?}");
+    let dump = marrow(&["data", "dump", &dir]);
+    assert_eq!(dump.status.code(), Some(0), "{dump:?}");
+    let get = marrow(&["data", "get", &dir, "^counter(1).value"]);
+    assert_eq!(get.status.code(), Some(0), "{get:?}");
+    assert!(
+        String::from_utf8_lossy(&get.stdout).contains("42"),
+        "committed data still reads: {get:?}"
+    );
+}
+
+#[test]
 fn data_roots_format_json_emits_a_structured_envelope() {
     let (_project, dir) = seeded_project("data-roots-json");
     let output = marrow(&["data", "roots", "--format", "json", &dir]);

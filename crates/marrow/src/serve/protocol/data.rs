@@ -1,6 +1,7 @@
 use marrow_check::CheckedProgram;
 use marrow_check::tooling::{
-    DataChild, data_children, data_children_supports_paging, data_roots_in_store, read_data_query,
+    DataChild, DataPresence, data_children, data_children_supports_paging, data_roots_in_store,
+    read_data_query,
 };
 use marrow_run::base64;
 use marrow_store::tree::TreeStore;
@@ -24,7 +25,9 @@ pub(super) fn op_debug_data_get(
     store: &TreeStore,
     request: &Value,
 ) -> Result<Value, ProtocolError> {
-    let query = request_query(program, request)?;
+    let Some(query) = request_query(program, request)? else {
+        return Ok(json!({ "presence": DataPresence::Absent.as_label(), "value": Value::Null }));
+    };
     let (value, presence) = read_data_query(store, &query).map_err(store_error)?;
     Ok(json!({
         "presence": presence.as_label(),

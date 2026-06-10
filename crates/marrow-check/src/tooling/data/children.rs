@@ -21,6 +21,9 @@ enum ChildScanKind {
     },
     KeyChildren(DataQuery),
     Leaf,
+    /// The path names durable identity that was never committed (a never-run
+    /// project or a pending member), so it has no children yet.
+    Empty,
 }
 
 impl ChildScanKind {
@@ -36,7 +39,9 @@ fn classify_child_scan(
     if segments.is_empty() {
         return Ok(ChildScanKind::Roots);
     }
-    let query = resolve_data_query(program, segments)?;
+    let Some(query) = resolve_data_query(program, segments)? else {
+        return Ok(ChildScanKind::Empty);
+    };
     if query.storage.identity.len() < query.storage.identity_arity {
         return Ok(ChildScanKind::RecordChildren(query));
     }
@@ -88,6 +93,11 @@ pub fn data_children(
         }
         ChildScanKind::Leaf => Err(QueryError::NoChildScan.into()),
         ChildScanKind::KeyChildren(query) => data_key_children(store, &query, limit, resume),
+        ChildScanKind::Empty => Ok(DataChildrenPage {
+            children: Vec::new(),
+            truncated: false,
+            cursor: None,
+        }),
     }
 }
 
@@ -124,7 +134,9 @@ fn member_children(
 ) -> Result<DataChildrenPage, ToolingError> {
     let mut children = Vec::new();
     for member in members {
-        let catalog = tooling_catalog_id(&member.catalog_id, "resource member")?;
+        let Some(catalog) = tooling_catalog_id(&member.catalog_id, "resource member")? else {
+            continue;
+        };
         let mut path = query.storage.data_path.clone();
         path.push(DataPathSegment::Member(catalog));
         let present = if member.is_plain_field() {

@@ -25,7 +25,20 @@ pub(super) fn data_get(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
     let query = match resolve_source_text_data_query(&program, &parsed_segments) {
-        Ok(query) => query,
+        Ok(Some(query)) => query,
+        // Durable identity that was never committed — a never-run project or a
+        // pending member — has no stored value, so the read is absent, not a fault.
+        Ok(None) => {
+            match format {
+                CheckFormat::Text => println!("(absent)"),
+                CheckFormat::Json | CheckFormat::Jsonl => write_json(json!({
+                    "path": path_text,
+                    "presence": DataPresence::Absent.as_label(),
+                    "value_b64": serde_json::Value::Null,
+                })),
+            }
+            return ExitCode::SUCCESS;
+        }
         // A malformed path is a usage error; a corrupt checked catalog id is a
         // store fault and must report under the store code, not as usage.
         Err(ToolingError::Query(error)) => {

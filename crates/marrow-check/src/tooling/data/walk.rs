@@ -145,7 +145,9 @@ fn walk_member(
     data_path: &mut Vec<DataPathSegment>,
     path: &mut Vec<DataQuerySegment>,
 ) -> Result<(), ToolingError> {
-    let catalog = tooling_catalog_id(&member.catalog_id, "resource member")?;
+    let Some(catalog) = tooling_catalog_id(&member.catalog_id, "resource member")? else {
+        return Ok(());
+    };
     data_path.push(DataPathSegment::Member(catalog));
     path.push(query_segment_for_member(member));
     if path_can_match(data_path, walk.filter_prefix) {

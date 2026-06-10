@@ -16,7 +16,7 @@ pub(super) fn request_path(request: &Value) -> Result<Vec<DataQuerySegment>, Pro
 pub(super) fn request_query(
     program: &CheckedProgram,
     request: &Value,
-) -> Result<DataQuery, ProtocolError> {
+) -> Result<Option<DataQuery>, ProtocolError> {
     let segments = request_path(request)?;
     resolve_data_query(program, &segments).map_err(tooling_error)
 }

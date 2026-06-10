@@ -68,7 +68,9 @@ pub(crate) fn checked_places(program: &CheckedProgram) -> Vec<CheckedSavedPlace>
 }
 
 fn place_has_data(place: &CheckedSavedPlace, store: &TreeStore) -> Result<bool, StoreError> {
-    let store_id = tooling_catalog_id(&place.store_catalog_id, "store")?;
+    let Some(store_id) = tooling_catalog_id(&place.store_catalog_id, "store")? else {
+        return Ok(false);
+    };
     if place.identity_keys.is_empty() {
         return store.data_subtree_exists(&store_id, &[], &[]);
     }
@@ -82,7 +84,9 @@ fn visit_place_records(
     store: &TreeStore,
     visit: &mut impl FnMut(DataRecord) -> Result<(), StoreError>,
 ) -> Result<usize, StoreError> {
-    let store_id = tooling_catalog_id(&place.store_catalog_id, "store")?;
+    let Some(store_id) = tooling_catalog_id(&place.store_catalog_id, "store")? else {
+        return Ok(0);
+    };
     let mut identity = Vec::new();
     let mut path = format!("^{}", place.root);
     visit_identity_records(
@@ -192,7 +196,9 @@ fn visit_member(
     mismatch: Option<KeyMismatch>,
     visit: &mut impl FnMut(DataRecord) -> Result<(), StoreError>,
 ) -> Result<usize, StoreError> {
-    let catalog_id = tooling_catalog_id(&member.catalog_id, "resource member")?;
+    let Some(catalog_id) = tooling_catalog_id(&member.catalog_id, "resource member")? else {
+        return Ok(0);
+    };
     let prior_len = push_member(path, &member.name);
     data_path.push(DataPathSegment::Member(catalog_id));
     let records = if member.key_params.is_empty() {

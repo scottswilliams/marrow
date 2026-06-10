@@ -8,18 +8,25 @@ use crate::{CheckedSavedMember, CheckedSavedMemberKind, ScalarType};
 use super::query_error::MemberFlavor;
 use super::{DataQuerySegment, KeyMismatch};
 
+/// Resolve a checked store or member catalog id for a store read.
+///
+/// A `None` id is not corruption: it is durable identity that was never
+/// committed — a never-run project, or a member just added in source and not yet
+/// applied. That entity simply has no committed data, so callers treat `Ok(None)`
+/// as "no data here" (empty roots, zero records, an absent read) rather than a
+/// fault. Only a committed but malformed id is genuine `store.corruption`.
 pub(crate) fn tooling_catalog_id(
     raw: &Option<String>,
     context: &'static str,
-) -> Result<CatalogId, StoreError> {
+) -> Result<Option<CatalogId>, StoreError> {
     let Some(raw) = raw.as_deref() else {
-        return Err(StoreError::Corruption {
-            message: format!("checked {context} catalog id is missing"),
-        });
+        return Ok(None);
     };
-    CatalogId::new(raw.to_string()).map_err(|_| StoreError::Corruption {
-        message: format!("checked {context} catalog id is malformed"),
-    })
+    CatalogId::new(raw.to_string())
+        .map(Some)
+        .map_err(|_| StoreError::Corruption {
+            message: format!("checked {context} catalog id is malformed"),
+        })
 }
 
 pub(crate) fn key_mismatch(expected: Option<ScalarType>, key: &SavedKey) -> Option<KeyMismatch> {

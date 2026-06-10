@@ -15,7 +15,9 @@ pub(super) fn op_debug_data_walk(
     request: &Value,
     cursors: &CursorState,
 ) -> Result<Value, ProtocolError> {
-    let query = request_query(program, request)?;
+    let Some(query) = request_query(program, request)? else {
+        return Ok(json!({ "entries": [], "truncated": false, "nextCursor": Value::Null }));
+    };
     let limit = request_limit(request, LimitDefault::Required, MAX_WALK, "debug_data_walk")?;
     let cursor = request
         .get("cursor")

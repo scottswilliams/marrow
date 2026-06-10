@@ -68,7 +68,9 @@ impl CursorState {
             },
         )?;
         let segments = decode_query_path(&path)?;
-        let query = resolve_data_query(program, &segments).map_err(tooling_error)?;
+        let Some(query) = resolve_data_query(program, &segments).map_err(tooling_error)? else {
+            return Err(bad_request("`cursor` path is no longer committed"));
+        };
         if !data_query_under_prefix(&query, prefix) {
             return Err(bad_request("`cursor` is outside the requested path"));
         }

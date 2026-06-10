@@ -401,20 +401,25 @@ fn debug_data_children_rejects_a_cursor_replayed_under_a_different_path() {
 }
 
 #[test]
-fn a_query_against_a_corrupt_checked_catalog_id_is_a_store_corruption() {
-    // A missing or malformed checked catalog id raised while resolving a query is
-    // a server-side store corruption, not a client request error. It must surface
-    // under the store code so admin tooling can tell the two apart, instead of
-    // collapsing into `protocol.bad_request`.
+fn a_query_on_an_uncommitted_project_is_absent_not_corruption() {
+    // A never-run project has durable identity that was never committed, so its
+    // catalog ids are unbound. A data query over it has no stored value: the reply
+    // is `absent`, and `debug_data_roots` is empty — the store is fine, identity is
+    // simply not frozen yet, so this is never a `store.corruption`.
     let state = uncommitted_state();
-    let reply = request(
+    let get = request(
         &state,
         json!({
             "op": "debug_data_get",
             "path": [{"root": "books"}, {"key": {"int": 1}}, {"field": "title"}],
         }),
     );
-    assert_eq!(reply["error"]["code"], json!("store.corruption"), "{reply}");
+    assert!(get.get("error").is_none(), "{get}");
+    assert_eq!(get["ok"]["presence"], json!("absent"), "{get}");
+
+    let roots = request(&state, json!({ "op": "debug_data_roots" }));
+    assert!(roots.get("error").is_none(), "{roots}");
+    assert_eq!(roots["ok"]["roots"], json!([]), "{roots}");
 }
 
 #[test]
