@@ -2,7 +2,6 @@ mod support;
 mod support_discharge;
 
 use marrow_catalog::CatalogEntryKind;
-use marrow_check::check_project;
 use marrow_check::evolution::{RepairReason, Verdict, preview};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
@@ -10,7 +9,7 @@ use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_store::value::{Scalar, encode_value};
 
 use support::catalog::write_catalog;
-use support::{TempProject, config, temp_project, write};
+use support::{TempProject, check_with_accepted, temp_project, write};
 use support_discharge::*;
 
 fn composite_index_project(name: &str) -> TempProject {
@@ -283,7 +282,7 @@ fn dropped_field_an_index_needs_requires_retire() {
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let (_report, program) = check_project(&root, &config()).expect("check");
+    let (_report, program) = check_with_accepted(&root);
     let store = TreeStore::memory();
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
@@ -370,7 +369,7 @@ fn dropped_field_ignores_same_named_index_on_another_resource() {
          \x20   subtitle: string\n\
          \x20   index bySubtitle(subtitle) unique\n",
     );
-    let (_report, program) = check_project(&root, &config()).expect("check");
+    let (_report, program) = check_with_accepted(&root);
     let store = TreeStore::memory();
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
@@ -446,7 +445,7 @@ fn dropped_index_is_index_dropped() {
          pub fn add(title: string, isbn: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let (_report, program) = check_project(&root, &config()).expect("check");
+    let (_report, program) = check_with_accepted(&root);
     let store = TreeStore::memory();
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 

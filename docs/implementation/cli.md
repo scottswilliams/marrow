@@ -8,9 +8,10 @@ Two crates: `marrow-project` owns the `marrow.json` schema, source/test discover
 
 `main::main` installs a broken-pipe panic hook (a `Broken pipe` payload exits 0, every other panic defers to the default hook) and dispatches `argv[1]` to one command. Each command's first lines call the shared loaders in `main.rs`:
 
-- `load_config` / `load_checked_project` — dir to `ProjectConfig`, then to a `CheckedProgram`.
+- `load_config` / `load_checked_project` — dir to `ProjectConfig`, then to a `CheckedProgram` bound against the accepted catalog the store publishes.
 - `resolve_store_path` / `open_store_for_inspection` — locate and open the configured store; inspection always uses `open_read_only`.
-- `commit_pending_identity` — freeze pending durable identity before a state-establishing flow.
+- `read_accepted_store_catalog` — the one owner of "open the store read-only and read its accepted snapshot"; absent store or in-memory backend binds no catalog (a first run), a decode error surfaces a typed `store.*` code. `check`/`lsp`/`data`/`serve` read durable identity only through this, never a file.
+- `establish_store_baseline` — freeze a project's first proposed identity into a write-capable store in one transaction (catalog rows, epoch, engine profile, commit metadata via `marrow_run::evolution::commit_catalog_baseline`), then rebind the program against the now-accepted snapshot. Runs only over an empty store with a pending non-empty proposal; a project past its baseline never churns.
 
 Stream separation is load-bearing: a program's own `print`/`write` output owns stdout; every tooling report (trace, dry-run plan, test summary, run diagnostics) goes to stderr, so a stdout JSON consumer never sees interleaving. Exit codes are 0 success, 1 failure, 2 usage.
 
@@ -67,15 +68,15 @@ Stream separation is load-bearing: a program's own `print`/`write` output owns s
 ## Load-bearing invariants
 
 - **Path containment.** Every project-relative path (source roots, `dataDir`, tests, `acceptedCatalog`) is rejected if empty, absolute, or containing `..`, because each is later `Path::join`ed onto the project root. `parse_config` double-parses (raw `Value` then typed `RawConfig`) to catch non-object roots and unknown-key spans.
-- **Run auto-apply.** `run` freezes pending identity before touching the store; on native schema-drift a zero-record-mutation change is auto-applied through the production apply path, advancing the accepted-catalog file in lockstep and re-checking+re-fencing. Any backfill/transform/destructive change fences naming `evolve apply` instead. The redb file lock forces `auto_apply_then_reopen` to drop its first handle before reopening.
+- **Run baseline and auto-apply.** A clean project with a pending durable identity has its baseline frozen into the store the first time `run` opens it write-capable; a memory-backed project with a durable surface refuses with `run.durable_store_required` rather than running an identity nothing stamps, and a plain script runs over memory. On native schema-drift a zero-record-mutation change is auto-applied through the production apply path, publishing the advanced catalog snapshot into the store and re-checking+re-fencing. Any backfill/transform/destructive change fences naming `evolve apply` instead. The redb file lock forces `auto_apply_then_reopen` to drop its first handle before reopening. A store holding records under no accepted catalog is refused as populated-but-unstamped.
 - **Restore is all-or-nothing.** The whole replay runs in one transaction; any checksum/framing/verify failure rolls the target back to empty. Restore refuses a non-empty target, carries data cells only (indexes are rebuilt), replays bytes verbatim only when `EngineDescriptor` matches exactly, and proves the data compiles against the schema via the `verify` closure before commit. Raw byte validity is never enough.
-- **Evolve resume.** `evolve apply` advances the store transaction then the accepted-catalog file as two steps with the file last; a crash between them is recovered by `resume_completion`, which re-reads commit metadata, rebinds the resume program, and re-verifies the proposal digest before publishing — so a divergent edit proposing the same next epoch is rejected as drift.
+- **Evolve apply.** `evolve apply` reads accepted identity from the store, freezes a pending baseline into it, applies the witness's durable work, then advances the accepted catalog: it publishes the proposal into the store snapshot the read paths bind against (a separate transaction, pending the apply path folding it in) and advances the accepted-catalog file in lockstep. A crash before the file write is recovered by `resume_completion`, which re-reads commit metadata, rebinds the resume program, and re-verifies the proposal digest before publishing.
 - **Render-only prose.** Integrity, evolve, and restore code assert stable dotted codes and typed verdicts/problems; diagnostic prose is never matched semantically.
 
 ## Read next
 
 - `crates/marrow-project/src/lib.rs` — `parse_config`, `check_under_root`, `expected_module_name`, `CatalogMetadata::validate`: the config schema, path-containment guarantee, and catalog identity invariants.
-- `crates/marrow/src/main.rs` — `load_checked_project`, `resolve_store_path`, `commit_pending_identity`: the shared spine behind every command's first lines.
+- `crates/marrow/src/main.rs` — `load_checked_project`, `resolve_store_path`, `read_accepted_store_catalog`, `establish_store_baseline`: the shared spine behind every command's first lines.
 - `crates/marrow/src/cmd_run.rs` — `open_run_store`, `auto_apply_then_reopen`, `execute`: fence, drift auto-apply, and the execution/report split.
 - `crates/marrow/src/cmd_evolve/mod.rs` — `resume_completion`: crash-window recovery for a half-applied evolution.
 - `crates/marrow/src/backup/restore.rs` — `restore_backup`: transactional replay, validation gate, and verify-before-commit rollback.

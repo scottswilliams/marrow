@@ -136,20 +136,24 @@ pub(crate) mod test_support {
             fs::remove_dir_all(&root).ok();
             return program;
         }
-        let accepted = marrow_check::commit_pending_identity(&root, &config, &program)
-            .expect("commit fixture catalog");
+        // Freeze the baseline into an engine-resident store and re-bind the program
+        // against the accepted snapshot, exactly as a state-establishing run does.
+        let store = TreeStore::memory();
+        marrow_run::evolution::commit_catalog_baseline(&store, &program)
+            .expect("commit fixture catalog baseline");
+        let accepted = store
+            .read_catalog_snapshot()
+            .expect("read fixture catalog snapshot");
+        let (report, program) =
+            marrow_check::check_project_with_catalog(&root, &config, accepted.as_ref())
+                .expect("re-check fixture against accepted catalog");
         fs::remove_dir_all(&root).ok();
-        match accepted {
-            Some((report, program)) => {
-                assert!(
-                    !report.has_errors(),
-                    "accepted serve fixture catalog must check cleanly: {:#?}",
-                    report.diagnostics
-                );
-                program
-            }
-            None => program,
-        }
+        assert!(
+            !report.has_errors(),
+            "accepted serve fixture catalog must check cleanly: {:#?}",
+            report.diagnostics
+        );
+        program
     }
 
     fn temp_dir(name: &str) -> PathBuf {

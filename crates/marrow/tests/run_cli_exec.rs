@@ -110,7 +110,7 @@ fn run_cli_executes_identity_oriented_collection_loops() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,

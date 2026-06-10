@@ -19,7 +19,7 @@ use marrow_store::cell::CatalogId;
 
 use crate::{
     CheckReport, CheckedProgram, CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace,
-    check_project, checked_saved_root_place, commit_pending_identity,
+    check_project_with_catalog, checked_saved_root_place,
 };
 
 /// The standard single-`src`-root project config the source-driven suites check
@@ -34,26 +34,49 @@ pub fn test_config() -> ProjectConfig {
     }
 }
 
-/// Check the project already written under `root`, asserting it is clean, and return
-/// the checked program. The caller owns the project directory; this helper carries no
-/// filesystem setup of its own so it pulls in no temp-directory dependency.
+/// Check the project already written under `root`, binding any accepted catalog the
+/// fixture wrote to `marrow.catalog.json`, asserting it is clean, and return the checked
+/// program. The catalog file is a test fixture spelling of the accepted snapshot the
+/// engine-resident store holds in production; reading it through the migration parser
+/// lets a suite pin a hand-built accepted catalog the source has moved away from. The
+/// caller owns the project directory, so this helper carries no filesystem setup.
 pub fn checked(root: &Path) -> CheckedProgram {
-    let (report, program) = check_project(root, &test_config()).expect("check project");
+    let accepted = read_fixture_catalog(root);
+    let (report, program) =
+        check_project_with_catalog(root, &test_config(), accepted.as_ref()).expect("check project");
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     program
 }
 
-/// Check the source with no committed catalog, freeze its proposal through the
-/// production commit path, then re-check. The returned program's schema is fully
-/// committed, so its bound catalog ids address the store.
+/// Check the source with no committed catalog, freeze the proposal it produced as the
+/// accepted catalog under `root`, then re-check binding it. The returned program's schema
+/// is fully committed, so its bound catalog ids address the store, exactly as a
+/// state-establishing run leaves them after freezing the baseline. The accepted catalog
+/// is also written to the fixture file so a later [`checked`] over a changed source binds
+/// it, mirroring the engine-resident snapshot a real project would carry forward.
 pub fn commit_then_check(root: &Path) -> CheckedProgram {
-    let (report, program) = check_project(root, &test_config()).expect("check for commit");
+    let (report, program) =
+        check_project_with_catalog(root, &test_config(), None).expect("check for commit");
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let (report, program) = commit_pending_identity(root, &test_config(), &program)
-        .expect("commit catalog")
+    let proposal = program
+        .catalog
+        .proposal
+        .clone()
         .expect("a catalog proposal to commit");
+    std::fs::write(root.join("marrow.catalog.json"), proposal.to_json_pretty())
+        .expect("freeze fixture catalog");
+    let (report, committed) =
+        check_project_with_catalog(root, &test_config(), Some(&proposal)).expect("re-check");
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    program
+    committed
+}
+
+/// Read the accepted-catalog fixture file under `root`, if a suite wrote one. A missing
+/// file is a first-run project with no accepted catalog.
+fn read_fixture_catalog(root: &Path) -> Option<marrow_catalog::CatalogMetadata> {
+    let path = root.join("marrow.catalog.json");
+    let json = std::fs::read_to_string(path).ok()?;
+    Some(marrow_catalog::CatalogMetadata::from_json(&json).expect("fixture catalog parses"))
 }
 
 /// The checked saved place rooted at `root`, ready to resolve member and index ids.

@@ -16,11 +16,10 @@
 mod evolution_apply_support;
 
 use evolution_apply_support::{
-    Seed, commit_then_check, member_catalog_id, proposal_catalog_id, read_scalar, root_place,
-    store_id_of, witness,
+    Seed, checked, commit_then_check, member_catalog_id, proposal_catalog_id, read_scalar,
+    root_place, store_id_of, witness,
 };
 
-use marrow_check::{ProjectConfig, check_project};
 use marrow_run::evolution::{FenceError, apply, current_engine_profile, fence};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::{SavedKey, encode_identity_payload};
@@ -52,16 +51,6 @@ const REFERENCE_EVOLVED: &str = "module lib\n\
 
 fn write_source(root: &Path, source: &str) {
     evolution_apply_support::write(root, "src/lib.mw", source);
-}
-
-fn evolved_config() -> ProjectConfig {
-    ProjectConfig {
-        source_roots: vec!["src".into()],
-        default_entry: None,
-        store: None,
-        tests: Vec::new(),
-        accepted_catalog: "marrow.catalog.json".into(),
-    }
 }
 
 #[test]
@@ -100,8 +89,7 @@ fn adding_a_sparse_identity_field_by_evolution_preserves_old_records_and_admits_
     // Evolve: add the sparse reference field, then discharge it through the production
     // preview/apply path against the live store.
     write_source(&root, REFERENCE_EVOLVED);
-    let (report, evolved) = check_project(&root, &evolved_config()).expect("check evolved source");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let evolved = checked(&root);
     let outcome = apply(&witness(&evolved, &store), &evolved, &store, false, None)
         .expect("apply sparse identity-field evolution");
     assert_eq!(
@@ -184,8 +172,7 @@ fn an_evolve_apply_advances_the_epoch_and_fences_the_pre_evolution_program_befor
     // Evolve and apply against a fresh re-check of the evolved source. Apply advances the
     // store to the proposal epoch and re-stamps the durable shape under it.
     write_source(&root, REFERENCE_EVOLVED);
-    let (report, evolved) = check_project(&root, &evolved_config()).expect("check evolved source");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let evolved = checked(&root);
     let outcome = apply(&witness(&evolved, &store), &evolved, &store, false, None)
         .expect("apply advances the store epoch");
     assert_eq!(

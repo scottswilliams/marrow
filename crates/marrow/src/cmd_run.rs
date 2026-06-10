@@ -9,10 +9,7 @@ use marrow_run::evolution::{AutoApplyOutcome, FenceError, RunObligation, fence, 
 use crate::cmd_check::report_runtime_fault;
 use crate::dry_run::{self, DryRunHook};
 use crate::trace::TraceHook;
-use crate::{
-    CheckFormat, commit_pending_identity, load_checked_project, report_simple_error,
-    resolve_store_path, write_accepted_catalog,
-};
+use crate::{CheckFormat, load_checked_project, report_simple_error, resolve_store_path};
 
 /// How a run observes itself: a plain run with no tooling report, an execution
 /// `--trace`, a `--dry-run` that rolls its writes back, or both composed (trace the
@@ -159,14 +156,6 @@ fn run_project_dir(
         Ok(checked) => checked,
         Err(code) => return code,
     };
-    // Running the program is an authorized state-establishing flow, so a clean source
-    // with a pending catalog proposal has its durable identity frozen here before the
-    // run touches the store. A clean accepted catalog proposes no change and is left
-    // untouched.
-    let program = match commit_pending_identity(dir, &config, program, CheckFormat::Text) {
-        Ok(program) => program,
-        Err(code) => return code,
-    };
 
     if entry_override.or(config.default_entry.as_deref()).is_none() {
         report_simple_error(
@@ -177,9 +166,10 @@ fn run_project_dir(
         return ExitCode::FAILURE;
     }
 
-    // The store open binds the program against the catalog the store sits at: an
-    // auto-applied evolution advances the epoch, so the returned program may be a
-    // re-check past the one loaded above.
+    // The store open binds the program against the catalog the store sits at. Running is
+    // an authorized state-establishing flow, so a pending durable identity is frozen into
+    // the store here as its baseline, and an auto-applied evolution advances the epoch, so
+    // the returned program may be a re-check past the one loaded above.
     let (program, store) = match open_run_store(dir, &config, program, observe.format()) {
         Ok(OpenStore::Memory(program)) => (program, marrow_store::tree::TreeStore::memory()),
         Ok(OpenStore::Native { program, store }) => (program, store),
@@ -223,16 +213,49 @@ fn open_run_store(
     format: CheckFormat,
 ) -> Result<OpenStore, ExitCode> {
     let Some(store) = open_store_file(dir, config, format)? else {
-        return Ok(OpenStore::Memory(program));
+        return open_memory_store(program, format);
     };
+    let program = crate::establish_store_baseline(dir, config, &store, program, format)?;
     match fence_run(&program, &store) {
         Ok(()) => finish_open(program, store),
-        Err(FenceError::SchemaDrift) => auto_apply_then_reopen(dir, config, program, store, format),
+        Err(FenceError::SchemaDrift) => auto_apply_then_reopen(dir, program, store, format),
         Err(error) => {
             report_simple_error(error.code(), &error.message(), CheckFormat::Text);
             Err(ExitCode::FAILURE)
         }
     }
+}
+
+/// Admit an in-memory-backed run, or refuse one whose durable surface needs a baseline.
+/// A plain script with no resources, stores, or enums proposes no catalog and runs over
+/// the throwaway memory store. A project with a durable surface proposes durable identity
+/// that only a persistent store can hold, so it fails closed rather than running with an
+/// identity nothing ever stamps.
+fn open_memory_store(
+    program: marrow_check::CheckedProgram,
+    format: CheckFormat,
+) -> Result<OpenStore, ExitCode> {
+    if pending_baseline(&program) {
+        report_simple_error(
+            "run.durable_store_required",
+            "a durable store is required to establish accepted identity; configure a native store in marrow.json",
+            format,
+        );
+        return Err(ExitCode::FAILURE);
+    }
+    Ok(OpenStore::Memory(program))
+}
+
+/// Whether the program holds a pending catalog baseline: an unaccepted proposal that
+/// declares at least one durable entry. A project past its baseline or a plain script
+/// has none.
+fn pending_baseline(program: &marrow_check::CheckedProgram) -> bool {
+    program.catalog.accepted_epoch.is_none()
+        && program
+            .catalog
+            .proposal
+            .as_ref()
+            .is_some_and(|proposal| !proposal.entries.is_empty())
 }
 
 /// Open the project's configured native store file for writing, or `Ok(None)` when the
@@ -296,12 +319,11 @@ fn finish_open(
 /// A zero-mutation evolution is discharged through the production apply path, which
 /// stamps the new shape and advances the epoch under the write lock with the witness
 /// commit-id pin, so a concurrent write fails the apply closed rather than letting a
-/// stale decision stamp. After the store commits, the accepted catalog file advances in
-/// lockstep and the project is re-checked so the run binds against the activated epoch
+/// stale decision stamp. After the store commits, the accepted catalog snapshot advances
+/// in lockstep and the project is re-checked so the run binds against the activated epoch
 /// and re-fences clean.
 fn auto_apply_then_reopen(
     dir: &str,
-    config: &marrow_project::ProjectConfig,
     program: marrow_check::CheckedProgram,
     store: marrow_store::tree::TreeStore,
     format: CheckFormat,
@@ -336,17 +358,19 @@ fn auto_apply_then_reopen(
             return Err(ExitCode::FAILURE);
         }
     }
-    // The store transaction committed the new epoch; advance the accepted catalog file to
-    // match, exactly as an explicit `evolve apply` does as its final step.
+    // The store transaction committed the new epoch; advance the accepted catalog snapshot
+    // the store publishes to match, exactly as an explicit `evolve apply` does as its final
+    // step.
     if let Some(proposal) = &program.catalog.proposal {
-        write_accepted_catalog(dir, config, proposal, format)?;
+        crate::publish_catalog_snapshot(&store, proposal, format)?;
     }
     // Release the file lock the native backend holds before re-opening below; one process
     // may not hold two handles to the same store file at once.
     drop(store);
     // Re-check the project so the program binds against the freshly accepted epoch, then
-    // re-open and re-fence the store, which now matches. The reload sees the catalog file
-    // this auto-apply just advanced, so it proposes no further change and fences clean.
+    // re-open and re-fence the store, which now matches. The reload reads the catalog
+    // snapshot this auto-apply just advanced, so it proposes no further change and fences
+    // clean.
     let (config, program) = load_checked_project(dir)?;
     let Some(store) = open_store_file(dir, &config, format)? else {
         return Ok(OpenStore::Memory(program));
@@ -379,10 +403,21 @@ fn fence_message(obligation: &RunObligation) -> String {
     format!("{base}{cause}")
 }
 
+/// Whether the store holds saved records but no accepted catalog the run can bind. A
+/// project past its baseline whose store epoch stamp is missing is one such case; a store
+/// that holds records under no accepted catalog at all (a pending baseline this run refused
+/// to stamp because the store was not empty) is the other. Either way the run must refuse
+/// rather than execute against records it cannot place.
 fn populated_unstamped_store(
     program: &marrow_check::CheckedProgram,
     store: &marrow_store::tree::TreeStore,
 ) -> Result<bool, marrow_store::StoreError> {
+    // A pending baseline over a non-empty store: the store carries records but no accepted
+    // catalog, so the baseline commit declined to stamp it. The records cannot be placed
+    // against an identity nothing accepted.
+    if pending_baseline(program) {
+        return Ok(!store.is_empty()?);
+    }
     if program.catalog.accepted_epoch.is_none() || store.read_catalog_epoch()?.is_some() {
         return Ok(false);
     }

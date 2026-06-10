@@ -63,65 +63,29 @@ impl ProjectSources {
     }
 }
 
-/// Discover, read, and parse every `.mw` file in the project, collecting parse
-/// diagnostics and module/path resolution problems. Fails only when a source
-/// root cannot be walked; per-file read errors become diagnostics.
+/// Discover, read, and parse every `.mw` file in the project, binding durable
+/// identity against no accepted catalog: the first-run shape, where every saved
+/// surface proposes a fresh baseline. Callers that hold a committed catalog bind it
+/// through [`check_project_with_catalog`]. Fails only when a source root cannot be
+/// walked; per-file read errors become diagnostics.
 pub fn check_project(
     project_root: &Path,
     config: &ProjectConfig,
 ) -> Result<(CheckReport, CheckedProgram), DiscoverError> {
-    check_project_with_sources(project_root, config, &ProjectSources::new())
+    check_project_with_catalog(project_root, config, None)
 }
 
-/// Like [`check_project`], but analyzing `sources` over disk: any path with an
-/// overlay entry is checked from that text instead of being re-read. An empty
-/// overlay is identical to [`check_project`].
-///
-/// The accepted catalog is read from the project's `marrow.catalog.json` here, the
-/// disk-driven provider these convenience wrappers own; the analysis core itself takes
-/// the snapshot as a caller-supplied input.
-pub fn check_project_with_sources(
+/// Like [`check_project`], but binding durable identity against the caller-supplied
+/// `accepted` snapshot. The accepted catalog is engine-resident: the CLI opens the
+/// project's store, reads its accepted snapshot, and threads it here, so the checker
+/// never reads a catalog file.
+pub fn check_project_with_catalog(
     project_root: &Path,
     config: &ProjectConfig,
-    sources: &ProjectSources,
+    accepted: Option<&marrow_catalog::CatalogMetadata>,
 ) -> Result<(CheckReport, CheckedProgram), DiscoverError> {
-    let mut catalog_diagnostics = Vec::new();
-    let accepted = read_accepted_catalog(project_root, config, &mut catalog_diagnostics);
-    analysis::analyze_source_project(project_root, config, sources, accepted.as_ref()).map(
-        |mut snapshot| {
-            snapshot
-                .report
-                .diagnostics
-                .splice(0..0, catalog_diagnostics);
-            (snapshot.report, snapshot.program)
-        },
-    )
-}
-
-/// Read the project's accepted-catalog snapshot from `marrow.catalog.json`, the
-/// disk-driven provider the convenience checker wrappers own. A missing file is a
-/// first run (no accepted catalog); a read failure or invalid bytes raise a
-/// catalog-intent diagnostic and bind no identity. The JSON parse and its diagnostic
-/// belong to the checker's catalog owner, so this routes through it.
-fn read_accepted_catalog(
-    project_root: &Path,
-    config: &ProjectConfig,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) -> Option<marrow_catalog::CatalogMetadata> {
-    let path = project_root.join(&config.accepted_catalog);
-    match std::fs::read_to_string(&path) {
-        Ok(json) => crate::catalog::accepted_catalog_from_json(&json, &path, diagnostics),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => {
-            diagnostics.push(CheckDiagnostic::error(
-                crate::diagnostics::CHECK_CATALOG_INTENT,
-                &path,
-                SourceSpan::default(),
-                format!("could not read accepted catalog metadata: {error}"),
-            ));
-            None
-        }
-    }
+    analysis::analyze_source_project(project_root, config, &ProjectSources::new(), accepted)
+        .map(|snapshot| (snapshot.report, snapshot.program))
 }
 
 /// The schema of the resource stored at saved root `^root`, if any. Saved roots

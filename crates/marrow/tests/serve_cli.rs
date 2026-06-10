@@ -126,7 +126,10 @@ fn serve_answers_path_addressed_reads_over_a_loopback_socket() {
 }
 
 #[test]
-fn serving_an_unseeded_project_serves_empty_roots_and_creates_no_store() {
+fn serving_an_unseeded_project_serves_empty_roots_and_writes_no_data() {
+    // The project's identity is committed (its catalog lives in the engine-resident
+    // store), but no run has seeded a record. Serving reports empty saved roots and writes
+    // no record of its own: the store's saved-data dump is empty before and after.
     let project = native_project("serve-empty");
     let dir = project.to_str().unwrap().to_string();
 
@@ -134,9 +137,12 @@ fn serving_an_unseeded_project_serves_empty_roots_and_creates_no_store() {
     let reply = request(&address, &json!({ "id": 2, "op": "debug_data_roots" }));
     child.kill().ok();
     child.wait().ok();
-    // Serving is read-only: it must not materialize the store file.
-    let created = project.join(".data").join("marrow.redb").exists();
 
     assert_eq!(reply["ok"]["roots"], json!([]), "{reply}");
-    assert!(!created, "serve must not create the store");
+    let dump = support::marrow(&["data", "dump", "--format", "json", &dir]);
+    assert_eq!(
+        support::json(dump.stdout)["records"],
+        json!([]),
+        "serve must not write a record"
+    );
 }

@@ -1,10 +1,10 @@
 mod support;
 
 use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
-use marrow_check::{CHECK_CATALOG_INTENT, check_project};
+use marrow_check::CHECK_CATALOG_INTENT;
 
 use support::catalog::{catalog, derived_id, entry as literal_entry, write_catalog};
-use support::{config, temp_project, write};
+use support::{check_with_accepted, temp_project, write};
 
 /// A catalog entry whose stable id is minted deterministically from `label`, so a
 /// fixture refers to a member by a readable name and still gets a `cat_`-shaped id the
@@ -63,7 +63,7 @@ fn evolve_rename_authorizes_a_saved_data_backed_member_rename() {
         write_catalog(root, &metadata);
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
 
     assert!(
         !report
@@ -125,7 +125,7 @@ fn source_member_rename_without_evolve_intent_still_fails_closed() {
         write_catalog(root, &metadata);
     });
 
-    let (report, _program) = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_with_accepted(&root);
 
     assert!(
         report
@@ -170,7 +170,7 @@ fn evolve_retire_marks_the_proposal_entry_reserved() {
         write_catalog(root, &metadata);
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let proposal = program.catalog.proposal.expect("proposal");
@@ -214,7 +214,7 @@ fn evolve_retire_of_a_still_declared_resource_member_fails_closed() {
         write_catalog(root, &metadata);
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
 
     assert!(
         report
@@ -255,7 +255,7 @@ fn evolve_retire_of_a_still_declared_saved_root_fails_closed() {
         write_catalog(root, &metadata);
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
 
     assert!(
         report
@@ -303,7 +303,7 @@ fn evolve_retire_of_a_still_declared_store_index_fails_closed() {
         write_catalog(root, &metadata);
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
 
     assert!(
         report
@@ -330,7 +330,7 @@ fn evolve_target_that_resolves_to_nothing_is_diagnosed() {
         );
     });
 
-    let (report, _program) = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_with_accepted(&root);
 
     assert!(
         report
@@ -378,7 +378,7 @@ fn evolve_binding_that_would_collide_identity_is_reported_at_check() {
         write_catalog(root, &metadata);
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
 
     assert!(
         report
@@ -423,7 +423,7 @@ fn evolve_rename_whose_source_is_still_declared_fails_closed() {
         write_catalog(root, &metadata);
     });
 
-    let (report, _program) = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_with_accepted(&root);
 
     assert!(
         report
@@ -470,7 +470,7 @@ fn evolve_rename_onto_a_live_accepted_target_fails_closed() {
         write_catalog(root, &metadata);
     });
 
-    let (report, _program) = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_with_accepted(&root);
 
     assert!(
         report
@@ -517,7 +517,7 @@ fn two_renames_onto_the_same_target_conflict() {
         write_catalog(root, &metadata);
     });
 
-    let (report, _program) = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_with_accepted(&root);
 
     assert!(
         report
@@ -547,7 +547,7 @@ fn evolve_transform_body_reports_undefined_identifiers() {
         );
     });
 
-    let (report, _program) = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_with_accepted(&root);
 
     assert!(
         report
@@ -576,7 +576,7 @@ fn evolve_transform_body_reports_unknown_calls() {
         );
     });
 
-    let (report, _program) = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_with_accepted(&root);
 
     assert!(
         report
@@ -602,7 +602,7 @@ fn evolve_default_value_type_mismatch_is_diagnosed() {
         );
     });
 
-    let (report, _program) = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_with_accepted(&root);
 
     assert!(
         report

@@ -31,7 +31,7 @@ The orchestration that sequences the passes lives in `analysis.rs`, outside this
 
 - **One resolver.** `resolve` is the only module/visibility-aware resolver; checker, runtime, and LSP all route through it. A bare name resolves in its own module first regardless of `pub`; `use` imports module names, not the names inside them. Saved roots are project-wide; source names are module-scoped — the two namespaces never collapse.
 - **Strict typing across conversion boundaries.** An `Unknown` value flowing into a concrete typed place with a conversion boundary (`expects_conversion`) is `check.untyped_value`, not silent acceptance.
-- **Catalog is the durable ABI.** `write_accepted_catalog` is the single all-or-nothing writer; `commit_pending_identity` only freezes a baseline. Later identity changes flow through evolve apply's witness, not here. Check never mutates the catalog.
+- **Catalog is the durable ABI.** Production durable identity is engine-resident: the CLI freezes a baseline into the store transactionally and reads the accepted snapshot back from it. `write_accepted_catalog` is the catalog-file writer `evolve apply` still advances. Later identity changes flow through evolve apply's witness, not here. Check never mutates durable identity.
 
 ## Code-reality notes
 

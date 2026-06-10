@@ -20,8 +20,9 @@ One staging engine serves three callers:
 
 | File | Responsibility |
 | --- | --- |
-| `evolution/mod.rs` | Module tree and public surface; re-exports `apply`/`try_auto_apply`/`verify_activation_completion`/`fence`/`rebuild_store_indexes`. |
+| `evolution/mod.rs` | Module tree and public surface; re-exports `apply`/`try_auto_apply`/`verify_activation_completion`/`fence`/`rebuild_store_indexes`/`commit_catalog_baseline`. |
 | `evolution/apply.rs` | Apply orchestrator; defines `Approval`, `ApplyOutcome`, `ActivationReceipt`, `ApplyError`, `StagedWork`, `stage_obligation`, `reconcile_counts`, `commit_apply_plan`. |
+| `evolution/baseline.rs` | `commit_catalog_baseline`: freeze a project's first proposed catalog into an empty store in one transaction (catalog rows, epoch, engine profile, commit metadata via the shared `metadata_stamp`); a no-op when the store already holds a catalog or any saved data. |
 | `evolution/validate.rs` | `validate_witness` (re-preview, byte equality, `Drift`) and `assert_commit_pin` (`StoreCommitDrift`). |
 | `evolution/window.rs` | Activation-window `fence` (engine profile, catalog epoch, schema-bearing source digest) and the `metadata_stamp` / `current_engine_profile` shared with managed writes. |
 | `evolution/admission.rs` | Gates `RepairRequired` (`NotActivatable`) and destructive retires; requires maintenance plus an exact per-id scoped `Approval`. |

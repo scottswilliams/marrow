@@ -66,7 +66,7 @@ fn an_uncaught_unique_conflict_surfaces_its_write_code() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,
@@ -184,7 +184,7 @@ fn an_absent_element_fault_is_located() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,

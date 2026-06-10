@@ -251,10 +251,11 @@ pub(crate) fn temp_project_uncommitted(name: &str, build: impl FnOnce(&Path)) ->
     project
 }
 
-/// Freeze a fixture project's pending durable identity through the one production
-/// catalog writer, so read-only commands (`data`, `serve`) and store-backed runs see
-/// a committed catalog without re-implementing the write. A project that does not
-/// check cleanly, or proposes no catalog change, is left untouched.
+/// Freeze a fixture project's pending durable identity into its engine-resident store,
+/// the way a state-establishing run does, so read-only commands (`data`, `serve`) and
+/// store-backed runs see a committed catalog without re-running the binary. A project
+/// that does not check cleanly, proposes no catalog change, or configures no durable
+/// store is left untouched.
 #[allow(dead_code)]
 pub(crate) fn commit_catalog_if_clean(root: impl AsRef<Path>) {
     let root = root.as_ref();
@@ -270,14 +271,32 @@ pub(crate) fn commit_catalog_if_clean(root: impl AsRef<Path>) {
     if report.has_errors() {
         return;
     }
-    if let Some((report, _program)) = marrow_check::commit_pending_identity(root, &config, &program)
-        .expect("commit fixture catalog")
-    {
-        assert!(
-            !report.has_errors(),
-            "committed fixture catalog must check cleanly: {:#?}",
-            report.diagnostics
-        );
+    let Some(store_path) = native_store_path(root, &config) else {
+        return;
+    };
+    fs::create_dir_all(store_path.parent().expect("store parent")).expect("create data dir");
+    let store = marrow_store::tree::TreeStore::open(&store_path).expect("open fixture store");
+    marrow_run::evolution::commit_catalog_baseline(&store, &program)
+        .expect("commit fixture catalog baseline");
+}
+
+/// The native store file path a project's config selects, or `None` for the in-memory
+/// default. Mirrors the CLI's own resolution so fixtures and the binary agree on where
+/// the store lives.
+#[allow(dead_code)]
+pub(crate) fn native_store_path(
+    root: &Path,
+    config: &marrow_project::ProjectConfig,
+) -> Option<PathBuf> {
+    match &config.store {
+        Some(marrow_project::StoreConfig {
+            backend: marrow_project::StoreBackend::Native,
+            data_dir,
+        }) => {
+            let data_dir = data_dir.as_deref().expect("native store has a dataDir");
+            Some(root.join(data_dir).join("marrow.redb"))
+        }
+        _ => None,
     }
 }
 

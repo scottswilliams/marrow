@@ -2,9 +2,10 @@ mod support;
 
 use std::collections::HashMap;
 
-use marrow_check::{CheckedProgram, check_project, commit_pending_identity};
+use marrow_check::CheckedProgram;
+use marrow_check::test_support::commit_then_check;
 
-use support::{config, temp_project, write};
+use support::{check_with_accepted, temp_project, write};
 
 /// Map each member of `enum_name` (in `module_name`) to its bound stable catalog id,
 /// keyed by the member's leaf name. Panics if a member has no bound id, so a regression
@@ -53,12 +54,7 @@ fn enum_member_catalog_ids_are_stable_across_a_source_reorder() {
         );
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-
-    let (_committed_report, committed) = commit_pending_identity(&root, &config(), &program)
-        .expect("commit baseline")
-        .expect("baseline written");
+    let committed = commit_then_check(&root);
     let before = member_catalog_ids(&committed, "m", "Status");
     assert_eq!(
         before.len(),
@@ -72,7 +68,7 @@ fn enum_member_catalog_ids_are_stable_across_a_source_reorder() {
         "src/m.mw",
         "module m\nenum Status\n    banned\n    active\n    archived\n",
     );
-    let (recheck, reordered) = check_project(&root, &config()).expect("recheck");
+    let (recheck, reordered) = check_with_accepted(&root);
     assert!(!recheck.has_errors(), "{:#?}", recheck.diagnostics);
     let after = member_catalog_ids(&reordered, "m", "Status");
 
@@ -96,14 +92,10 @@ fn enum_member_catalog_ids_survive_an_unchanged_recheck() {
         );
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let (_committed_report, committed) = commit_pending_identity(&root, &config(), &program)
-        .expect("commit baseline")
-        .expect("baseline written");
+    let committed = commit_then_check(&root);
     let before = member_catalog_ids(&committed, "m", "Status");
 
-    let (recheck, rechecked) = check_project(&root, &config()).expect("recheck");
+    let (recheck, rechecked) = check_with_accepted(&root);
     assert!(!recheck.has_errors(), "{:#?}", recheck.diagnostics);
     let after = member_catalog_ids(&rechecked, "m", "Status");
 

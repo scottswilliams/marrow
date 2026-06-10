@@ -5,7 +5,6 @@
 
 use std::fs;
 use std::path::Path;
-use std::time::SystemTime;
 
 use marrow_store::tree::TreeStore;
 
@@ -69,10 +68,10 @@ fn check_on_an_uncommitted_project_writes_no_catalog_and_no_store() {
 }
 
 #[test]
-fn run_freezes_the_catalog_and_creates_the_store() {
+fn run_freezes_the_catalog_into_the_store_and_creates_no_file() {
     // The contrast for the uncommitted case: `run` over a persistent store is a durable
-    // write path, so the same project that `check` left untouched gains a frozen catalog
-    // and a created store the first time it runs.
+    // write path, so the same project that `check` left untouched gains an engine-resident
+    // catalog and a created store the first time it runs — and never a catalog file.
     let project = temp_project_uncommitted("check-ro-run-commits", |root| {
         write(root, "marrow.json", native_config());
         write(root, "src/app.mw", COUNTER_SOURCE);
@@ -83,20 +82,28 @@ fn run_freezes_the_catalog_and_creates_the_store() {
     assert_eq!(run.status.code(), Some(0), "{run:?}");
 
     assert!(
-        catalog_path(&project).exists(),
-        "run freezes the proposed identity into the catalog file"
+        !catalog_path(&project).exists(),
+        "run freezes identity into the store, never a marrow.catalog.json file"
     );
     assert!(
         store_path(&project).exists(),
         "run creates the saved-data store and commits the seeded record"
     );
+    let store = TreeStore::open(&store_path(&project)).expect("open store after run");
+    assert!(
+        store
+            .read_catalog_snapshot()
+            .expect("read store catalog snapshot")
+            .is_some(),
+        "run publishes the accepted catalog into the store"
+    );
 }
 
 #[test]
-fn check_on_a_committed_project_modifies_neither_catalog_nor_store() {
-    // Once durable state exists, `check` still touches nothing: the catalog file's
-    // bytes and modification time and the store file's bytes are identical before and
-    // after, so a CI `check` cannot drift a committed project.
+fn check_on_a_committed_project_leaves_the_store_unchanged_and_writes_no_file() {
+    // Once durable state exists, `check` still touches nothing: the store file's bytes are
+    // identical before and after and no catalog file is ever created, so a CI `check`
+    // cannot drift a committed project.
     let project = temp_project_uncommitted("check-ro-committed", |root| {
         write(root, "marrow.json", native_config());
         write(root, "src/app.mw", COUNTER_SOURCE);
@@ -107,26 +114,15 @@ fn check_on_a_committed_project_modifies_neither_catalog_nor_store() {
         Some(0)
     );
 
-    let catalog = catalog_path(&project);
     let store = store_path(&project);
-    let catalog_before = fs::read(&catalog).expect("read catalog");
-    let catalog_mtime_before = mtime(&catalog);
     let store_before = fs::read(&store).expect("read store");
 
-    // Sleep past the filesystem mtime resolution so a rewrite would register.
-    std::thread::sleep(std::time::Duration::from_millis(20));
     let check = marrow(&["check", dir]);
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
-    assert_eq!(
-        fs::read(&catalog).expect("read catalog"),
-        catalog_before,
-        "check left the catalog file bytes unchanged"
-    );
-    assert_eq!(
-        mtime(&catalog),
-        catalog_mtime_before,
-        "check did not rewrite the catalog file"
+    assert!(
+        !catalog_path(&project).exists(),
+        "check never writes a catalog file"
     );
     assert_eq!(
         fs::read(&store).expect("read store"),
@@ -150,17 +146,17 @@ fn evolve_apply_advances_the_committed_catalog_and_store() {
     let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
     write(&root, "src/books.mw", OPTIONAL_PAGES_DEFAULT_INDEX_SOURCE);
 
-    // The seeded store holds records but carries no activation stamp yet. A plain
-    // source-only check passes and leaves it unstamped: check is not the surface that
-    // stamps a store.
+    // The seeded store sits at its baseline epoch. A plain source-only check over the
+    // changed source passes and leaves the store epoch where the baseline put it: check
+    // is not the surface that advances a store.
     assert_eq!(
         marrow(&["check", root.to_str().unwrap()]).status.code(),
         Some(0)
     );
     assert_eq!(
         store_epoch(&root),
-        None,
-        "check did not stamp the store epoch"
+        Some(baseline_epoch),
+        "check did not advance the store epoch past the baseline"
     );
 
     let apply = marrow(&["evolve", "apply", root.to_str().unwrap()]);
@@ -177,10 +173,4 @@ fn evolve_apply_advances_the_committed_catalog_and_store() {
         Some(baseline_epoch + 1),
         "apply stamped the store with the new epoch"
     );
-}
-
-fn mtime(path: &Path) -> SystemTime {
-    fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .expect("file modification time")
 }

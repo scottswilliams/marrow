@@ -143,24 +143,32 @@ pub fn test_project_config() -> ProjectConfig {
     }
 }
 
+/// Freeze a checked program's baseline durable identity into an engine-resident store
+/// and re-bind it against the accepted snapshot, the way a state-establishing run does.
+/// A program proposing no catalog is returned unchanged.
 pub fn commit_catalog(
     root: &Path,
     config: &ProjectConfig,
     program: CheckedProgram,
 ) -> CheckedProgram {
-    match marrow_check::commit_pending_identity(root, config, &program)
-        .expect("commit runtime test catalog")
+    let store = marrow_store::tree::TreeStore::memory();
+    if !marrow_run::evolution::commit_catalog_baseline(&store, &program)
+        .expect("commit runtime test catalog baseline")
     {
-        Some((report, program)) => {
-            assert!(
-                !report.has_errors(),
-                "committed runtime test catalog must check cleanly: {:#?}",
-                report.diagnostics
-            );
-            program
-        }
-        None => program,
+        return program;
     }
+    let accepted = store
+        .read_catalog_snapshot()
+        .expect("read runtime test catalog snapshot");
+    let (report, program) =
+        marrow_check::check_project_with_catalog(root, config, accepted.as_ref())
+            .expect("re-check runtime test against accepted catalog");
+    assert!(
+        !report.has_errors(),
+        "committed runtime test catalog must check cleanly: {:#?}",
+        report.diagnostics
+    );
+    program
 }
 
 pub fn write_temp_source(root: &Path, relative: &Path, source: &str) {

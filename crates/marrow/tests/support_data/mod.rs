@@ -63,7 +63,19 @@ pub(crate) fn checked_program(project: impl AsRef<Path>) -> CheckedProgram {
     support::commit_catalog_if_clean(project);
     let config_text = fs::read_to_string(project.join("marrow.json")).expect("read config");
     let config = marrow_project::parse_config(&config_text).expect("parse config");
-    let (report, program) = marrow_check::check_project(project, &config).expect("check project");
+    // Bind the program against the engine-resident accepted catalog so its saved roots
+    // carry the same catalog ids the live store keys cells under.
+    let accepted = support::native_store_path(project, &config)
+        .filter(|path| path.exists())
+        .and_then(|path| {
+            marrow_store::tree::TreeStore::open_read_only(&path)
+                .expect("open store read-only")
+                .read_catalog_snapshot()
+                .expect("read store catalog snapshot")
+        });
+    let (report, program) =
+        marrow_check::check_project_with_catalog(project, &config, accepted.as_ref())
+            .expect("check project");
     assert!(
         !report.has_errors(),
         "tree-cell fixture project must check cleanly: {report:#?}"

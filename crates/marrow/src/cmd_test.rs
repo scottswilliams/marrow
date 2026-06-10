@@ -68,6 +68,14 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
         Ok(checked) => checked,
         Err(code) => return code,
     };
+    // Tests run over throwaway in-memory stores, never the project's durable store, so a
+    // project that has not yet committed its baseline binds its proposed identity here: the
+    // saved-root catalog ids the test writes address resolve against the identity a first
+    // run would freeze, without touching any durable store.
+    let src_program = match bind_test_identity(dir, &config, src_program, format) {
+        Ok(program) => program,
+        Err(code) => return code,
+    };
     let source_module_count = src_program.modules.len();
 
     let (test_report, program) =
@@ -177,4 +185,45 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
     } else {
         ExitCode::FAILURE
     }
+}
+
+/// Bind a project's proposed durable identity for a test run. A project that has not yet
+/// committed its baseline (no accepted catalog, a non-empty proposal) is re-checked with
+/// the proposal as the accepted catalog, so its saved-root catalog ids resolve when a test
+/// writes saved data. A project past its baseline already binds its accepted identity and
+/// is returned unchanged. The store the proposal would freeze is never touched: tests run
+/// over throwaway in-memory stores.
+fn bind_test_identity(
+    dir: &str,
+    config: &marrow_project::ProjectConfig,
+    program: marrow_check::CheckedProgram,
+    format: CheckFormat,
+) -> Result<marrow_check::CheckedProgram, ExitCode> {
+    if program.catalog.accepted_epoch.is_some() {
+        return Ok(program);
+    }
+    let Some(proposal) = program.catalog.proposal.clone() else {
+        return Ok(program);
+    };
+    if proposal.entries.is_empty() {
+        return Ok(program);
+    }
+    let (report, bound) = marrow_check::check_project_with_catalog(
+        std::path::Path::new(dir),
+        config,
+        Some(&proposal),
+    )
+    .map_err(|error| {
+        report_simple_error(
+            error.code,
+            &format!("{}: {}", error.path.display(), error.message),
+            format,
+        );
+        ExitCode::FAILURE
+    })?;
+    if report.has_errors() {
+        report_project(dir, &report, format);
+        return Err(ExitCode::FAILURE);
+    }
+    Ok(bound)
 }

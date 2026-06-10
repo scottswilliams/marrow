@@ -3,10 +3,10 @@ mod support;
 use std::fs;
 
 use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
-use marrow_check::{CHECK_CATALOG_INTENT, DiagnosticPayload, check_project};
+use marrow_check::{CHECK_CATALOG_INTENT, DiagnosticPayload};
 
 use support::catalog::{catalog, catalog_path, derived_id, entry as literal_entry, write_catalog};
-use support::{config, temp_project, write};
+use support::{check_with_accepted, temp_project, write};
 
 /// A catalog entry whose stable id is minted deterministically from `label`, so a
 /// fixture refers to a member by a readable name and still gets a `cat_`-shaped id the
@@ -38,7 +38,7 @@ fn first_source_check_proposes_catalog_ids_without_writing_accepted_catalog() {
         );
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let proposal = program.catalog.proposal.expect("catalog proposal");
@@ -88,7 +88,7 @@ fn source_only_check_leaves_accepted_catalog_epoch_unchanged() {
         CatalogMetadata::from_json(&fs::read_to_string(catalog_path(&root)).expect("read before"))
             .expect("accepted catalog parses before");
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
     let after =
         CatalogMetadata::from_json(&fs::read_to_string(catalog_path(&root)).expect("read after"))
             .expect("accepted catalog parses after");
@@ -133,7 +133,7 @@ fn non_active_catalog_entries_and_aliases_do_not_bind_live_source_facts() {
         write_catalog(root, &metadata);
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
 
     assert!(
         report
@@ -176,7 +176,7 @@ fn reserved_catalog_path_blocks_source_reuse_without_intent() {
         write_catalog(root, &metadata);
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
 
     let expected_payload = DiagnosticPayload::ReservedCatalogPathReuse {
         source_kind: CatalogEntryKind::ResourceMember,
@@ -227,7 +227,7 @@ fn retire_reserves_the_path_spelling_against_future_reuse() {
         write_catalog(root, &metadata);
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let proposal = program.catalog.proposal.expect("proposal");
@@ -267,7 +267,7 @@ fn catalog_proposal_ids_do_not_collide_with_accepted_stable_ids() {
         write_catalog(root, &metadata);
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
 
     assert!(
         report
@@ -302,7 +302,7 @@ fn source_rename_without_accepted_catalog_intent_fails_closed() {
         write_catalog(root, &metadata);
     });
 
-    let (report, _program) = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_with_accepted(&root);
 
     assert!(
         report
@@ -345,7 +345,7 @@ fn accepted_catalog_alias_does_not_authorize_source_rollback() {
         write_catalog(root, &metadata);
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
 
     assert!(
         report
@@ -391,7 +391,7 @@ fn accepted_catalog_rename_preserves_stable_id() {
         write_catalog(root, &metadata);
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let module = program.facts.module_id("library").expect("module");
@@ -431,7 +431,7 @@ fn catalog_proposals_preserve_accepted_aliases_and_lifecycle() {
         write_catalog(root, &metadata);
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
 
     assert!(
         report

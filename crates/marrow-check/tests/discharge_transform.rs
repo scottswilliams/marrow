@@ -6,7 +6,7 @@ use marrow_check::evolution::{RepairReason, Verdict, preview};
 use marrow_store::tree::TreeStore;
 use marrow_store::value::Scalar;
 
-use support::{config, temp_project, write};
+use support::{check_with_accepted, config, temp_project, write};
 use support_discharge::*;
 
 /// A checked transform computing a new member from a sibling discharges to an
@@ -391,7 +391,7 @@ fn witness_composes_catalog_and_store_fingerprints() {
     // Adding `subtitle` without committing the new identity is exactly the pending
     // signal: the check reports a catalog-intent diagnostic, yet the proposal still
     // forms, so the witness must carry both the accepted and proposal fingerprints.
-    let (_report, program) = check_project(&root, &config()).expect("re-check with new member");
+    let (_report, program) = check_with_accepted(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);

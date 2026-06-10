@@ -337,37 +337,26 @@ pub(crate) fn load_config_with_format(
     })
 }
 
-/// Read the project's accepted-catalog snapshot from `marrow.catalog.json`, the
-/// input the analysis core binds durable identity against. A missing file is a first
-/// run; a read failure or invalid bytes yield a catalog-intent diagnostic the caller
-/// folds into the report. The JSON parse and its diagnostic are owned by the checker,
-/// so this routes invalid bytes through it.
-///
-/// This local file read is the intermediate provider a later lane replaces with the
-/// store-resident catalog snapshot; the checker itself no longer reads the file.
-pub(crate) fn read_accepted_catalog(
-    project_root: &Path,
+/// Read the project's accepted-catalog snapshot from its engine-resident store, the
+/// input the analysis core binds durable identity against. The store is opened
+/// read-only and never created: a project on the in-memory backend, or one whose
+/// native store file does not exist yet, has no accepted catalog (a first run). A
+/// store-open or decode error surfaces as a typed exit code rather than a silent
+/// `None`, so a corrupt store fails the check instead of being mistaken for a first
+/// run. This is the one owner of "open the store read-only and read its accepted
+/// snapshot", shared by every read path.
+pub(crate) fn read_accepted_store_catalog(
+    dir: &str,
     config: &marrow_project::ProjectConfig,
-) -> (
-    Option<marrow_catalog::CatalogMetadata>,
-    Vec<marrow_check::CheckDiagnostic>,
-) {
-    let path = project_root.join(&config.accepted_catalog);
-    let mut diagnostics = Vec::new();
-    let accepted = match std::fs::read_to_string(&path) {
-        Ok(json) => marrow_check::accepted_catalog_from_json(&json, &path, &mut diagnostics),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => {
-            diagnostics.push(marrow_check::CheckDiagnostic::error(
-                marrow_check::CHECK_CATALOG_INTENT,
-                &path,
-                marrow_syntax::SourceSpan::default(),
-                format!("could not read accepted catalog metadata: {error}"),
-            ));
-            None
-        }
+    format: CheckFormat,
+) -> Result<Option<marrow_catalog::CatalogMetadata>, ExitCode> {
+    let Some(store) = open_store_for_inspection(dir, config, format)? else {
+        return Ok(None);
     };
-    (accepted, diagnostics)
+    store.read_catalog_snapshot().map_err(|error| {
+        report_simple_error(error.code(), &error.to_string(), format);
+        ExitCode::FAILURE
+    })
 }
 
 /// Load the config and check the project. On any failure (config, unreadable
@@ -383,15 +372,17 @@ pub(crate) fn load_checked_project_with_format(
     format: CheckFormat,
 ) -> Result<(marrow_project::ProjectConfig, marrow_check::CheckedProgram), ExitCode> {
     let config = load_config_with_format(dir, format)?;
+    let accepted = read_accepted_store_catalog(dir, &config, format)?;
     let (report, program) =
-        marrow_check::check_project(Path::new(dir), &config).map_err(|error| {
-            report_simple_error(
-                error.code,
-                &format!("{}: {}", error.path.display(), error.message),
-                format,
-            );
-            ExitCode::FAILURE
-        })?;
+        marrow_check::check_project_with_catalog(Path::new(dir), &config, accepted.as_ref())
+            .map_err(|error| {
+                report_simple_error(
+                    error.code,
+                    &format!("{}: {}", error.path.display(), error.message),
+                    format,
+                );
+                ExitCode::FAILURE
+            })?;
     if report.has_errors() {
         report_project(dir, &report, format);
         return Err(ExitCode::FAILURE);
@@ -399,38 +390,83 @@ pub(crate) fn load_checked_project_with_format(
     Ok((config, program))
 }
 
-/// Freeze a project's pending durable identity through the catalog writer,
-/// returning the re-checked program. A program with no pending proposal (a clean
-/// accepted catalog, or no durable surface) is returned unchanged without touching
-/// the catalog file.
-pub(crate) fn commit_pending_identity(
+/// Freeze a project's pending durable identity into the write `store` as its baseline,
+/// then re-check the program against the now-accepted store snapshot so the caller binds
+/// the frozen identity. A store that already holds an accepted catalog, or a program
+/// proposing none, writes nothing and the program is returned unchanged — a project past
+/// its baseline never churns the catalog rows or the commit stamp. Shared by the
+/// state-establishing flows (`run` and `evolve apply`).
+pub(crate) fn establish_store_baseline(
     dir: &str,
     config: &marrow_project::ProjectConfig,
+    store: &marrow_store::tree::TreeStore,
     program: marrow_check::CheckedProgram,
     format: CheckFormat,
 ) -> Result<marrow_check::CheckedProgram, ExitCode> {
-    match marrow_check::commit_pending_identity(Path::new(dir), config, &program) {
-        Ok(None) => Ok(program),
-        Ok(Some((report, committed))) => {
-            if report.has_errors() {
-                report_project(dir, &report, format);
-                return Err(ExitCode::FAILURE);
-            }
-            Ok(committed)
-        }
-        Err(marrow_check::CommitIdentityError::Io { path, error }) => {
-            report_io_error(&path.display().to_string(), &error, format);
-            Err(ExitCode::FAILURE)
-        }
-        Err(marrow_check::CommitIdentityError::Discover(error)) => {
-            report_simple_error(
-                error.code,
-                &format!("{}: {}", error.path.display(), error.message),
-                format,
-            );
-            Err(ExitCode::FAILURE)
-        }
+    let wrote =
+        marrow_run::evolution::commit_catalog_baseline(store, &program).map_err(|error| {
+            report_simple_error(error.code(), &error.to_string(), format);
+            ExitCode::FAILURE
+        })?;
+    if !wrote {
+        return Ok(program);
     }
+    recheck_against_store_catalog(dir, config, store, format)
+}
+
+/// Re-check the project binding durable identity against the store's accepted catalog
+/// snapshot. Called after a baseline commit so the caller binds the freshly accepted
+/// epoch rather than the pending one it loaded.
+pub(crate) fn recheck_against_store_catalog(
+    dir: &str,
+    config: &marrow_project::ProjectConfig,
+    store: &marrow_store::tree::TreeStore,
+    format: CheckFormat,
+) -> Result<marrow_check::CheckedProgram, ExitCode> {
+    let accepted = store.read_catalog_snapshot().map_err(|error| {
+        report_simple_error(error.code(), &error.to_string(), format);
+        ExitCode::FAILURE
+    })?;
+    let (report, program) =
+        marrow_check::check_project_with_catalog(Path::new(dir), config, accepted.as_ref())
+            .map_err(|error| {
+                report_simple_error(
+                    error.code,
+                    &format!("{}: {}", error.path.display(), error.message),
+                    format,
+                );
+                ExitCode::FAILURE
+            })?;
+    if report.has_errors() {
+        report_project(dir, &report, format);
+        return Err(ExitCode::FAILURE);
+    }
+    Ok(program)
+}
+
+/// Publish `catalog` as the store's accepted snapshot in its own transaction, after the
+/// activation transaction has advanced the epoch stamp. The catalog rows and the epoch
+/// stamp move in two adjacent commits until the apply path folds the publish into its own
+/// transaction. Must run only after the store transaction commits.
+pub(crate) fn publish_catalog_snapshot(
+    store: &marrow_store::tree::TreeStore,
+    catalog: &marrow_catalog::CatalogMetadata,
+    format: CheckFormat,
+) -> Result<(), ExitCode> {
+    let result = (|| {
+        store.begin()?;
+        match store.replace_catalog_snapshot(catalog) {
+            Ok(()) => store.commit(),
+            Err(error) => {
+                let _ = store.rollback();
+                Err(error)
+            }
+        }
+    })();
+    result.map_err(|error| {
+        report_simple_error(error.code(), &error.to_string(), format);
+        ExitCode::FAILURE
+    })
 }
 
 /// Advance the accepted-catalog file to `catalog`. Must run only after the store

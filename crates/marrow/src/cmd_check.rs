@@ -216,20 +216,17 @@ fn check_project_dir(dir: &str, format: CheckFormat, data: bool) -> ExitCode {
         Ok(config) => config,
         Err(code) => return code,
     };
-    let (accepted, catalog_diagnostics) = crate::read_accepted_catalog(Path::new(dir), &config);
+    let accepted = match crate::read_accepted_store_catalog(dir, &config, format) {
+        Ok(accepted) => accepted,
+        Err(code) => return code,
+    };
     let report = match marrow_check::analyze_project(
         Path::new(dir),
         &config,
         &marrow_check::ProjectSources::new(),
         accepted.as_ref(),
     ) {
-        Ok(mut snapshot) => {
-            snapshot
-                .report
-                .diagnostics
-                .splice(0..0, catalog_diagnostics);
-            snapshot.report
-        }
+        Ok(snapshot) => snapshot.report,
         Err(error) => {
             report_simple_error(
                 error.code,

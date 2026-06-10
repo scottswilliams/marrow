@@ -141,7 +141,11 @@ fn a_qualified_enum_member_literal_resolves_to_the_owning_enum() {
     // `a` passes both qualified members to `b::rank`, whose match dispatch proves
     // they resolved as `b::Status` rather than an unsupported qualified name.
     let root = temp_project("run-enum-qualified-member", |root| {
-        write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+        );
         write(
             root,
             "src/b.mw",
@@ -178,7 +182,7 @@ fn a_nested_module_qualified_enum_program_checks_and_runs() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,
@@ -227,7 +231,11 @@ fn an_aliased_annotation_rejects_a_foreign_enum_argument() {
     // alias was expanded the annotation resolved to `Unknown` and the foreign
     // value passed open with exit 0.
     let root = temp_project("run-alias-annotation-foreign", |root| {
-        write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+        );
         write(
             root,
             "src/a/b.mw",
@@ -263,7 +271,7 @@ fn an_aliased_enum_literal_checks_and_runs() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         alias_module_sources(root);
         write(
@@ -295,7 +303,7 @@ fn an_aliased_enum_literal_binds_to_the_imported_module_not_a_top_level_homonym(
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         alias_module_sources(root);
         write(
@@ -327,7 +335,11 @@ fn a_cross_module_same_named_enum_mismatch_names_both_modules() {
     // an unqualified message ("expects `Status`, but found `Status`") is useless.
     // The diagnostic must qualify each side with its owning module.
     let root = temp_project("run-enum-mismatch-display", |root| {
-        write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+        );
         write(
             root,
             "src/a.mw",

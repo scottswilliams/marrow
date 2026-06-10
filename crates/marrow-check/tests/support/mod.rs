@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use marrow_check::{
     AnalysisSnapshot, CheckDiagnostic, CheckReport, ProjectSources, analyze_project, check_project,
+    check_project_with_catalog,
 };
 use marrow_project::{ProjectConfig, parse_config};
 
@@ -171,6 +172,15 @@ pub mod catalog {
         std::fs::write(catalog_path(root), metadata.to_json_pretty()).expect("write catalog");
     }
 
+    /// Read the accepted-catalog fixture file at the project root, if one was written. A
+    /// missing file is a first-run project. This is the test-fixture spelling of the
+    /// engine-resident accepted snapshot the production CLI reads from the store; suites
+    /// bind it through [`super::check_with_accepted`].
+    pub fn read_catalog(root: &Path) -> Option<CatalogMetadata> {
+        let json = std::fs::read_to_string(catalog_path(root)).ok()?;
+        Some(CatalogMetadata::from_json(&json).expect("fixture catalog parses"))
+    }
+
     /// An `Active` catalog entry with the given kind, canonical path, stable id, and
     /// aliases and no recorded structural signature. Suites add their structural fields
     /// (`accepted_struct`, `accepted_key_shape`) on top of this.
@@ -209,4 +219,13 @@ pub mod catalog {
         let second = hasher.finish();
         format!("cat_{first:016x}{second:016x}")
     }
+}
+
+/// Check the project under `root`, binding any accepted catalog the fixture wrote, the
+/// way the production CLI binds the engine-resident snapshot. This is the catalog-aware
+/// replacement for a bare `check_project` in suites that pin a hand-built accepted
+/// catalog the source has moved away from.
+pub fn check_with_accepted(root: &Path) -> (CheckReport, marrow_check::CheckedProgram) {
+    let accepted = catalog::read_catalog(root);
+    check_project_with_catalog(root, &config(), accepted.as_ref()).expect("check")
 }

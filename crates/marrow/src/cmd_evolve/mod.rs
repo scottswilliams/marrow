@@ -6,8 +6,7 @@ use marrow_check::evolution::preview;
 use marrow_run::evolution::{ApplyError, FenceError, apply, verify_activation_completion};
 
 use crate::{
-    CheckFormat, commit_pending_identity, load_checked_project_with_format, report_simple_error,
-    write_accepted_catalog,
+    CheckFormat, load_checked_project_with_format, report_simple_error, write_accepted_catalog,
 };
 
 mod args;
@@ -94,16 +93,17 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
     let Ok((config, program)) = load_checked_project_with_format(&input.dir, input.format) else {
         return ExitCode::FAILURE;
     };
-    // Apply is an authorized state-establishing flow, so pending durable identity is
-    // committed here before the witness is built; preview and apply then run against
-    // the accepted identity exactly as for an already-accepted project.
-    let program = match commit_pending_identity(&input.dir, &config, program, input.format) {
-        Ok(program) => program,
-        Err(code) => return code,
-    };
     let Ok(store) = store::apply_store(&input.dir, &config, input.format) else {
         return ExitCode::FAILURE;
     };
+    // Apply is an authorized state-establishing flow, so pending durable identity is
+    // frozen into the store as its baseline before the witness is built; preview and apply
+    // then run against the accepted identity exactly as for an already-accepted project.
+    let program =
+        match crate::establish_store_baseline(&input.dir, &config, &store, program, input.format) {
+            Ok(program) => program,
+            Err(code) => return code,
+        };
     // The store transaction (data plus epoch stamp) and the accepted-catalog file
     // advance in two steps, the file last. A crash between them leaves the store at the
     // activated epoch with the file a step behind; `resume_completion` recovers that
@@ -130,14 +130,22 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
         input.approval.as_ref(),
     ) {
         Ok(outcome) => {
-            // Advance the accepted-catalog file last, after the store transaction has
-            // committed. A `None` proposal is a pure backfill that does not touch durable
-            // identity, so the file already matches and is left untouched.
-            if let Some(proposal) = &program.catalog.proposal
-                && let Err(code) =
+            // Advance the accepted catalog after the store transaction has committed: publish
+            // the proposal into the store snapshot the run/check read paths bind against, and
+            // advance the accepted-catalog file in lockstep. A `None` proposal is a pure
+            // backfill that does not touch durable identity, so the accepted catalog already
+            // matches and is left untouched. Folding the snapshot publish into the apply
+            // transaction itself (so the epoch stamp and the rows commit atomically) is the
+            // next lane's work; here they commit in two adjacent transactions.
+            if let Some(proposal) = &program.catalog.proposal {
+                if let Err(code) = crate::publish_catalog_snapshot(&store, proposal, input.format) {
+                    return code;
+                }
+                if let Err(code) =
                     write_accepted_catalog(&input.dir, &config, proposal, input.format)
-            {
-                return code;
+                {
+                    return code;
+                }
             }
             render::apply_success(&outcome, input.format);
             ExitCode::SUCCESS

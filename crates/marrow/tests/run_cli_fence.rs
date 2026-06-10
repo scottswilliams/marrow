@@ -2,7 +2,7 @@ use std::fs;
 
 mod support;
 
-use support::{marrow_sub, temp_project, write};
+use support::{marrow_sub, temp_project, temp_project_uncommitted, write};
 
 /// A store stamped at a catalog epoch newer than the project's accepted epoch was
 /// evolved by a newer binary. `marrow run` fences itself before any execution: it
@@ -52,7 +52,7 @@ fn run_is_fenced_when_store_evolved_past_the_project_epoch() {
 
 #[test]
 fn run_rejects_populated_unstamped_accepted_store() {
-    let root = temp_project("run-fence-unstamped", |root| {
+    let root = temp_project_uncommitted("run-fence-unstamped", |root| {
         write(
             root,
             "marrow.json",
@@ -70,7 +70,19 @@ fn run_rejects_populated_unstamped_accepted_store() {
     });
     let config_text = fs::read_to_string(root.join("marrow.json")).expect("read config");
     let config = marrow_project::parse_config(&config_text).expect("parse config");
-    let (report, program) = marrow_check::check_project(root.path(), &config).expect("check");
+    // Bind the program against its own proposal so the seeded cells use the catalog ids a
+    // baseline would later accept, then write them into a store left without a catalog stamp
+    // to reproduce a populated-but-unstamped store.
+    let (_proposal_report, proposal_program) =
+        marrow_check::check_project_with_catalog(root.path(), &config, None).expect("propose");
+    let proposal = proposal_program
+        .catalog
+        .proposal
+        .clone()
+        .expect("a catalog proposal");
+    let (report, program) =
+        marrow_check::check_project_with_catalog(root.path(), &config, Some(&proposal))
+            .expect("check against proposal");
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let place = marrow_check::checked_saved_root_place(
         &program,

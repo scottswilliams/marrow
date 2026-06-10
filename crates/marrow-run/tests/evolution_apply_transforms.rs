@@ -8,7 +8,6 @@ mod evolution_apply_support;
 
 use evolution_apply_support::*;
 
-use marrow_check::check_project;
 use marrow_run::evolution::{ApplyError, Approval, apply, verify_activation_completion};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
@@ -377,8 +376,7 @@ fn transform_composes_with_default_and_retire() {
          pub fn add(price: int, currency: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let (report, program) = check_project(&root, &config()).expect("check composed source");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let program = checked(&root);
     let place = root_place(&program, "books");
 
     // The retire makes the witness non-activatable on its own; the transform and the

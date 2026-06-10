@@ -1,10 +1,10 @@
 mod support;
 
 use marrow_catalog::{CatalogEntry, CatalogEntryKind};
-use marrow_check::{ScalarType, StoreIndexKeySource, StoredValueMeaning, check_project};
+use marrow_check::{ScalarType, StoreIndexKeySource, StoredValueMeaning};
 
 use support::catalog::{catalog, derived_id, entry as literal_entry, write_catalog};
-use support::{config, temp_project, write};
+use support::{check_with_accepted, temp_project, write};
 
 /// A catalog entry whose stable id is minted deterministically from `label`, so a
 /// fixture refers to a member by a readable name and still gets a `cat_`-shaped id the
@@ -68,7 +68,7 @@ fn enum_member_facts_use_catalog_ids_independent_of_source_order() {
         write_catalog(root, &metadata);
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let module = program.facts.module_id("books").expect("module");
@@ -139,7 +139,7 @@ fn enum_field_value_meaning_uses_catalog_member_identity_after_source_reorder() 
         write_catalog(root, &metadata);
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let module = program.facts.module_id("books").expect("module");
@@ -220,7 +220,7 @@ fn enum_index_key_meaning_uses_catalog_member_identity_after_source_reorder() {
         write_catalog(root, &metadata);
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let module = program.facts.module_id("books").expect("module");
@@ -306,7 +306,7 @@ fn enum_field_value_meaning_fails_closed_for_unresolved_bare_enum_names() {
         write_catalog(root, &metadata);
     });
 
-    let (_report, program) = check_project(&root, &config()).expect("check");
+    let (_report, program) = check_with_accepted(&root);
 
     let module = program.facts.module_id("b").expect("module");
     let order = program

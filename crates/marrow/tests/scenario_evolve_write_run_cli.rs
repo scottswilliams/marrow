@@ -6,20 +6,25 @@
 //!
 //! Oracles are typed: process exit codes, parsed `data get --format json` presence and
 //! decoded value bytes, the structured `evolve preview` JSON witness, and the accepted
-//! catalog file's epoch — never a substring of human-rendered prose.
+//! catalog epoch the engine-resident store publishes — never a substring of human-rendered
+//! prose.
 
 mod support;
 
+use marrow_store::tree::TreeStore;
 use support::{TempProject, marrow, marrow_sub, write};
 
-/// The accepted catalog epoch a project has committed, read from its catalog file. A
-/// run that auto-applies an evolution advances this exactly as an explicit `evolve
-/// apply` does, so the epoch is the typed oracle for "the activation advanced".
+/// The accepted catalog epoch a project has committed, read from its engine-resident
+/// store. A run that auto-applies an evolution advances this exactly as an explicit
+/// `evolve apply` does, so the epoch is the typed oracle for "the activation advanced".
 fn accepted_epoch(root: &TempProject) -> u64 {
-    let path = root.join("marrow.catalog.json");
-    let text = std::fs::read_to_string(&path).expect("read accepted catalog");
-    let catalog: serde_json::Value = serde_json::from_str(&text).expect("catalog json");
-    catalog["epoch"].as_u64().expect("catalog epoch")
+    let path = root.join(".data").join("marrow.redb");
+    let store = TreeStore::open_read_only(&path).expect("open store read-only");
+    store
+        .read_catalog_snapshot()
+        .expect("read catalog snapshot")
+        .expect("project has an accepted catalog")
+        .epoch
 }
 
 /// A native-store project whose default entry seeds one book under the original schema.

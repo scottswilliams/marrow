@@ -23,15 +23,34 @@ fn config(root: impl AsRef<Path>) -> ProjectConfig {
     marrow_project::parse_config(&text).expect("parse config")
 }
 
+/// Freeze a project's baseline durable identity into its engine-resident store, the way
+/// a state-establishing run does, and return the program re-bound against the accepted
+/// store snapshot. The evolution-apply advance still tracks the accepted-catalog file
+/// (a later lane folds that publish into the store), so the baseline is also written to
+/// the file here, keeping the apply/resume fixtures that rewind it intact.
 #[allow(dead_code)]
 pub(crate) fn commit_catalog(root: impl AsRef<Path>) -> CheckedProgram {
     let root = root.as_ref();
     let config = config(root);
     let (report, program) = check_project(root, &config).expect("check for proposal");
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let (report, program) = marrow_check::commit_pending_identity(root, &config, &program)
-        .expect("commit catalog")
+
+    let store = open_native_store(root);
+    marrow_run::evolution::commit_catalog_baseline(&store, &program)
+        .expect("commit catalog baseline");
+    let proposal = program
+        .catalog
+        .proposal
+        .clone()
         .expect("a catalog proposal to commit");
+    marrow_check::write_accepted_catalog(root, &config, &proposal).expect("write baseline file");
+
+    let accepted = store
+        .read_catalog_snapshot()
+        .expect("read store catalog snapshot");
+    let (report, program) =
+        marrow_check::check_project_with_catalog(root, &config, accepted.as_ref())
+            .expect("re-check against accepted catalog");
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     program
 }
@@ -134,11 +153,16 @@ pub(crate) fn native_books_project(name: &str, source: &str) -> TempProject {
     })
 }
 
+/// The accepted catalog a project's engine-resident store publishes. The store is the
+/// source of truth a run or an evolution apply advances; reading it here is the typed
+/// oracle for the project's committed durable identity.
 #[allow(dead_code)]
 pub(crate) fn accepted_catalog(root: impl AsRef<Path>) -> marrow_catalog::CatalogMetadata {
-    let json = fs::read_to_string(root.as_ref().join("marrow.catalog.json"))
-        .expect("read accepted catalog");
-    marrow_catalog::CatalogMetadata::from_json(&json).expect("parse accepted catalog")
+    let store = TreeStore::open_read_only(&native_store_path(root)).expect("open store read-only");
+    store
+        .read_catalog_snapshot()
+        .expect("read store catalog snapshot")
+        .expect("project has an accepted catalog")
 }
 
 #[allow(dead_code)]

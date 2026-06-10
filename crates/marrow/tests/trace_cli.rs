@@ -23,7 +23,7 @@ fn run_trace_interleaves_steps_and_writes() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,
@@ -77,7 +77,7 @@ fn run_trace_renders_a_bool_write_as_its_typed_value() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,
@@ -136,7 +136,7 @@ fn run_trace_renders_an_int_write_as_canonical_digits() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,
@@ -228,7 +228,7 @@ fn an_untraced_run_emits_no_trace_and_matches_plain_run() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,
@@ -259,7 +259,7 @@ fn run_trace_json_emits_step_and_write_records() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,
@@ -319,7 +319,7 @@ fn run_trace_jsonl_keeps_program_output_off_the_record_stream() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,

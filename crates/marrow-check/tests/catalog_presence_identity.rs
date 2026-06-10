@@ -5,10 +5,10 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 
 use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogMetadata};
-use marrow_check::{CHECK_CATALOG_INTENT, check_project};
+use marrow_check::CHECK_CATALOG_INTENT;
 
 use support::catalog::{catalog, catalog_path, derived_id, entry as literal_entry, write_catalog};
-use support::{config, temp_project, write};
+use support::{check_with_accepted, config, temp_project, write};
 
 /// A catalog entry whose stable id is minted deterministically from `label`, so a
 /// fixture refers to a member by a readable name and still gets a `cat_`-shaped id the
@@ -59,7 +59,7 @@ fn proposed_ids_are_not_derived_from_the_member_path() {
         );
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let proposal = program.catalog.proposal.expect("proposal");
@@ -85,7 +85,7 @@ fn proposed_ids_use_128_bit_random_shape() {
         );
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let proposal = program.catalog.proposal.expect("proposal");
@@ -135,7 +135,7 @@ fn evolve_rename_reads_the_stored_id_rather_than_recomputing_it() {
         write_catalog(root, &metadata);
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
 
     assert!(
         !report
@@ -173,7 +173,7 @@ fn committed_ids_are_stable_across_rechecks() {
         );
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     marrow_check::commit_pending_identity(&root, &config(), &program)
         .expect("commit baseline")
@@ -194,7 +194,7 @@ fn committed_ids_are_stable_across_rechecks() {
             .clone()
     };
 
-    let (recheck, program) = check_project(&root, &config()).expect("recheck");
+    let (recheck, program) = check_with_accepted(&root);
     assert!(!recheck.has_errors(), "{:#?}", recheck.diagnostics);
 
     let module = program.facts.module_id("books").expect("books module");
@@ -221,7 +221,7 @@ fn committed_leaf_member_records_its_token_in_the_structural_signature_only() {
         );
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     marrow_check::commit_pending_identity(&root, &config(), &program)
         .expect("commit baseline")
@@ -268,7 +268,7 @@ fn committed_keyed_leaf_map_member_folds_its_key_shape_into_the_signature() {
         );
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     marrow_check::commit_pending_identity(&root, &config(), &program)
         .expect("commit baseline")
@@ -316,7 +316,7 @@ fn member_accepted_before_structural_signatures_were_recorded_is_not_reported_as
         write_catalog(root, &metadata);
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     assert!(
@@ -340,7 +340,7 @@ fn distinct_new_members_receive_distinct_ids() {
         );
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_with_accepted(&root);
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 
     let proposal = program.catalog.proposal.expect("proposal");

@@ -8,7 +8,6 @@ mod evolution_apply_support;
 
 use evolution_apply_support::*;
 
-use marrow_check::check_project;
 use marrow_run::evolution::{ApplyError, apply, verify_activation_completion};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
@@ -518,7 +517,7 @@ fn dropped_index_apply_deletes_index_cells() {
          pub fn add(isbn: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let (_report, program) = check_project(&root, &config()).expect("check dropping index");
+    let program = checked(&root);
 
     let w = witness(&program, &store);
     // Dropping an index leaves the accepted entry lingering rather than proposing a new

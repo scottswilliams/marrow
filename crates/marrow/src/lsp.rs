@@ -153,15 +153,19 @@ fn checked_diagnostics_notification(
             sources.insert(path, text);
         }
     }
-    let (accepted, catalog_diagnostics) =
-        crate::read_accepted_catalog(&project.root, &project.config);
-    let mut snapshot =
+    // Editor analysis is best-effort and read-only: it binds whatever accepted catalog
+    // the engine-resident store already holds, and a missing or unreadable store simply
+    // binds none rather than blocking diagnostics.
+    let accepted = project
+        .root
+        .to_str()
+        .and_then(|root| {
+            crate::read_accepted_store_catalog(root, &project.config, crate::CheckFormat::Text).ok()
+        })
+        .flatten();
+    let snapshot =
         marrow_check::analyze_project(&project.root, &project.config, &sources, accepted.as_ref())
             .ok()?;
-    snapshot
-        .report
-        .diagnostics
-        .splice(0..0, catalog_diagnostics);
     if !snapshot.files.iter().any(|file| file.path == path) {
         return None;
     }

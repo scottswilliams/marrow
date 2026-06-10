@@ -8,7 +8,6 @@ mod evolution_apply_support;
 
 use evolution_apply_support::*;
 
-use marrow_check::check_project;
 use marrow_run::evolution::{ApplyError, Approval, apply, verify_activation_completion};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
@@ -436,8 +435,7 @@ fn nested_group_retire_fails_closed() {
          pub fn add(): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let (report, program) = check_project(&root, &config()).expect("check retiring source");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let program = checked(&root);
 
     let w = witness(&program, &store);
     assert!(

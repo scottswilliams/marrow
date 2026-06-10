@@ -470,7 +470,7 @@ impl From<marrow_store::StoreError> for BackupError {
 pub(super) mod test_support {
     use std::path::PathBuf;
 
-    use marrow_check::{CheckedProgram, ProjectConfig, check_project, commit_pending_identity};
+    use marrow_check::{CheckedProgram, ProjectConfig, check_project, check_project_with_catalog};
 
     pub(super) const BOOK_SOURCE: &str =
         "module shelf\n\nresource Book at ^books(id: int)\n    required title: string\n";
@@ -503,9 +503,16 @@ pub(super) mod test_support {
         std::fs::write(&path, source).expect("write source");
         let (report, program) = check_project(&root, &config()).expect("check project");
         assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-        let (report, program) = commit_pending_identity(&root, &config(), &program)
-            .expect("commit catalog")
-            .expect("a catalog to commit");
+        // Freeze the baseline into an engine-resident store and re-bind against the
+        // accepted snapshot, the way a state-establishing run does.
+        let store = marrow_store::tree::TreeStore::memory();
+        marrow_run::evolution::commit_catalog_baseline(&store, &program)
+            .expect("commit catalog baseline");
+        let accepted = store
+            .read_catalog_snapshot()
+            .expect("read catalog snapshot");
+        let (report, program) =
+            check_project_with_catalog(&root, &config(), accepted.as_ref()).expect("re-check");
         assert!(!report.has_errors(), "{:#?}", report.diagnostics);
         (root, program)
     }

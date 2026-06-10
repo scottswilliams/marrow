@@ -19,7 +19,7 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 use marrow_check::evolution::{EvolutionWitness, preview};
-use marrow_check::{CheckedProgram, CheckedSavedPlace, check_project};
+use marrow_check::{CheckedProgram, CheckedSavedPlace};
 use marrow_run::evolution::apply;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
@@ -231,7 +231,7 @@ pub fn destructive_retire_fixture(
     // Now drop `subtitle` from source with a retire intent; the accepted catalog still
     // names it, so discharge classifies a destructive decision over the two records.
     write(&root, "src/books.mw", BOOKS_RETIRE_SUBTITLE);
-    let (_report, program) = check_project(&root, &config()).expect("check retiring source");
+    let program = checked(&root);
     let place = root_place(&program, "books");
     (root, program, place, store, subtitle_id)
 }

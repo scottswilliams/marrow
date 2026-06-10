@@ -174,8 +174,15 @@ fn the_same_required_add_against_a_populated_store_fences_and_evolve_apply_backf
     );
     let config_text = std::fs::read_to_string(root.join("marrow.json")).expect("read config");
     let config = marrow_project::parse_config(&config_text).expect("parse config");
+    // Bind the program against the store's now-advanced accepted catalog so its saved roots
+    // carry the catalog ids the post-apply store keys cells under.
+    let accepted = TreeStore::open_read_only(&native_store_path(&root))
+        .expect("open store read-only")
+        .read_catalog_snapshot()
+        .expect("read store catalog snapshot");
     let (report, program) =
-        marrow_check::check_project(root.path(), &config).expect("re-check after apply");
+        marrow_check::check_project_with_catalog(root.path(), &config, accepted.as_ref())
+            .expect("re-check after apply");
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let place = root_place(&program, "books");
     let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");

@@ -367,7 +367,7 @@ fn dry_run_keeps_the_program_output_on_stdout() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,

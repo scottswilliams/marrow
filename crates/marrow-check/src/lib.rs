@@ -51,7 +51,7 @@ pub use diagnostics::{
     DiagnosticPayload, EnumDiagnostic, IO_READ, RejectedSurface, SCHEMA_DUPLICATE_ROOT_OWNER,
 };
 pub use driver::{
-    ProjectSources, check_project, check_project_with_sources, check_tests, check_tests_program,
+    ProjectSources, check_project, check_project_with_catalog, check_tests, check_tests_program,
     check_tests_with_sources, check_tests_with_sources_program,
 };
 pub use durable_path::{

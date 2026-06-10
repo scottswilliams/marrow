@@ -38,18 +38,21 @@ fn data_stats_counts_roots_and_records() {
 }
 
 #[test]
-fn inspecting_an_unseeded_project_reports_no_data_and_creates_nothing() {
+fn inspecting_an_unseeded_project_reports_no_data_and_writes_no_records() {
+    // The project's identity is committed (its catalog lives in the engine-resident
+    // store), but no run has seeded a record. `data roots` reports an empty store and
+    // writes none of its own.
     let project = native_project("data-empty");
     let dir = project.to_str().unwrap().to_string();
     let output = marrow(&["data", "roots", &dir]);
-    // Inspection is read-only: it must not create the store file.
-    let created = project.join(".data").join("marrow.redb").exists();
+    let stats = marrow(&["data", "stats", "--format", "json", &dir]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     // Render contract: an empty store prints a human placeholder, not a bare line.
     let stdout = String::from_utf8(output.stdout).expect("utf8");
     assert_eq!(stdout, "(no saved data)\n", "{stdout}");
-    assert!(!created, "inspection must not create the store");
+    // Inspection writes no records: the store holds zero saved records.
+    assert_eq!(json(stats)["records"], serde_json::json!(0));
 }
 
 #[test]
@@ -66,17 +69,20 @@ fn data_dump_prints_each_record_as_path_and_value() {
 }
 
 #[test]
-fn data_dump_of_an_unseeded_project_prints_empty_and_creates_nothing() {
+fn data_dump_of_an_unseeded_project_prints_empty_and_writes_no_records() {
+    // A committed-but-unseeded project: its catalog is engine-resident, but no record has
+    // been saved. The dump prints the empty placeholder and writes no record of its own.
     let project = native_project("data-dump-empty");
     let dir = project.to_str().unwrap().to_string();
     let output = marrow(&["data", "dump", &dir]);
-    let created = project.join(".data").join("marrow.redb").exists();
+    let stats = marrow(&["data", "stats", "--format", "json", &dir]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     // Render contract: an empty store dump prints a human placeholder.
     let stdout = String::from_utf8(output.stdout).expect("utf8");
     assert_eq!(stdout, "(no saved data)\n", "{stdout}");
-    assert!(!created, "dump must not create the store");
+    // Inspection writes no records: the store holds zero saved records.
+    assert_eq!(json(stats)["records"], serde_json::json!(0));
 }
 
 #[test]
