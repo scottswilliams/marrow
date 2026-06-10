@@ -20,7 +20,7 @@ fn analyze_project_uses_overlay_source_instead_of_disk() {
     let path = root.join("src/m.mw");
     let sources = ProjectSources::new().with(&path, "module m\nfn f()\n    var x = 1 + true\n");
 
-    let overlaid = analyze_project(&root, &config(), &sources).expect("analyze");
+    let overlaid = analyze_project(&root, &config(), &sources, None).expect("analyze");
     let (clean, _program) = check_project(&root, &config()).expect("check");
 
     assert!(
@@ -51,7 +51,7 @@ fn analyze_project_reports_configured_test_file_parse_errors() {
     let cfg =
         parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
 
-    let snapshot = analyze_project(&root, &cfg, &ProjectSources::new()).expect("analyze");
+    let snapshot = analyze_project(&root, &cfg, &ProjectSources::new(), None).expect("analyze");
 
     assert!(
         snapshot.report.diagnostics.iter().any(|d| {
@@ -74,7 +74,7 @@ fn analyze_project_reports_unsaved_configured_test_file_parse_errors() {
     let path = root.join("tests/new_test.mw");
     let sources = ProjectSources::new().with(&path, "pub fn t()\n\tapp::noop()\n");
 
-    let snapshot = analyze_project(&root, &cfg, &sources).expect("analyze");
+    let snapshot = analyze_project(&root, &cfg, &sources, None).expect("analyze");
 
     assert!(
         snapshot
@@ -99,7 +99,7 @@ fn analyze_project_retains_configured_test_files_in_snapshot() {
         parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
     let path = root.join("tests/smoke_test.mw");
 
-    let snapshot = analyze_project(&root, &cfg, &ProjectSources::new()).expect("analyze");
+    let snapshot = analyze_project(&root, &cfg, &ProjectSources::new(), None).expect("analyze");
 
     let analyzed = snapshot
         .files
@@ -123,7 +123,7 @@ fn analyze_project_retains_unsaved_configured_test_files_in_snapshot() {
     let source = "fn smoke()\n    var x = 1\n";
     let sources = ProjectSources::new().with(&path, source);
 
-    let snapshot = analyze_project(&root, &cfg, &sources).expect("analyze");
+    let snapshot = analyze_project(&root, &cfg, &sources, None).expect("analyze");
 
     let analyzed = snapshot
         .files
@@ -146,7 +146,8 @@ fn analysis_snapshot_retains_files_with_parse_errors() {
     });
     let path = root.join("src/bad.mw");
 
-    let snapshot = analyze_project(&root, &config(), &ProjectSources::new()).expect("analyze");
+    let snapshot =
+        analyze_project(&root, &config(), &ProjectSources::new(), None).expect("analyze");
 
     let analyzed = snapshot
         .files

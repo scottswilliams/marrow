@@ -1,6 +1,6 @@
 # check/catalog — stable durable identity
 
-After type analysis builds a `CheckedProgram`, this layer gives every durable declaration (resource, store, store index, enum, enum member, resource member) an opaque stable id that survives renames and reshapes, and derives the source digests the store stamps and the activation fence enforces. It is read-only: `bind_catalog` reconciles source against the persisted accepted catalog and *proposes* an advanced catalog, but `check` never writes the catalog. A separate `rejected_surface` pass rejects v0.1-forbidden saved-traversal calls and saved `inout`.
+After type analysis builds a `CheckedProgram`, this layer gives every durable declaration (resource, store, store index, enum, enum member, resource member) an opaque stable id that survives renames and reshapes, and derives the source digests the store stamps and the activation fence enforces. The accepted catalog is a caller-supplied input: `bind_catalog` takes an `Option<&CatalogMetadata>` snapshot the analysis API threads in (the CLI reads `marrow.catalog.json` and parses it through the checker-owned `accepted_catalog_from_json`), reconciles source against it, and *proposes* an advanced catalog. It is read-only — the checker neither reads nor writes the catalog file. A separate `rejected_surface` pass rejects v0.1-forbidden saved-traversal calls and saved `inout`.
 
 ## The big idea
 

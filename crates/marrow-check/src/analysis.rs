@@ -47,14 +47,16 @@ pub struct AnalyzedFile {
 /// The IDE-grade analysis core: discover, read (from `sources` overlay or disk),
 /// parse, and check source-root files plus configured test files, returning the
 /// diagnostics and best-effort source program plus every parsed source file
-/// (error files included). Fails only when a configured source or test directory
-/// cannot be walked.
+/// (error files included). The accepted catalog is a caller-supplied input —
+/// `None` checks the source as a first run — against which durable identity binds.
+/// Fails only when a configured source or test directory cannot be walked.
 pub fn analyze_project(
     project_root: &Path,
     config: &ProjectConfig,
     sources: &ProjectSources,
+    accepted: Option<&marrow_catalog::CatalogMetadata>,
 ) -> Result<AnalysisSnapshot, DiscoverError> {
-    let mut snapshot = analyze_source_project(project_root, config, sources)?;
+    let mut snapshot = analyze_source_project(project_root, config, sources, accepted)?;
     let resolution_suppression = source_resolution_suppression(&snapshot, project_root, config);
     let tests = crate::check_tests_with_sources_analysis(
         project_root,
@@ -121,11 +123,13 @@ fn source_resolution_suppression(
 }
 
 /// Source-root-only analysis shared by [`check_project`]. Runtime entry points use
-/// this so configured test files do not block running the checked source program.
+/// this so configured test files do not block running the checked source program. The
+/// accepted catalog is the caller-supplied snapshot durable identity binds against.
 pub(crate) fn analyze_source_project(
     project_root: &Path,
     config: &ProjectConfig,
     sources: &ProjectSources,
+    accepted: Option<&marrow_catalog::CatalogMetadata>,
 ) -> Result<AnalysisSnapshot, DiscoverError> {
     let mut files = discover_modules(project_root, config)?;
     for path in sources.paths() {
@@ -359,8 +363,7 @@ pub(crate) fn analyze_source_project(
         &mut report.diagnostics,
     );
     crate::catalog::bind_catalog(
-        project_root,
-        config,
+        accepted,
         &mut program,
         &evolve_intents,
         &mut report.diagnostics,

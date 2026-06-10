@@ -153,7 +153,15 @@ fn checked_diagnostics_notification(
             sources.insert(path, text);
         }
     }
-    let snapshot = marrow_check::analyze_project(&project.root, &project.config, &sources).ok()?;
+    let (accepted, catalog_diagnostics) =
+        crate::read_accepted_catalog(&project.root, &project.config);
+    let mut snapshot =
+        marrow_check::analyze_project(&project.root, &project.config, &sources, accepted.as_ref())
+            .ok()?;
+    snapshot
+        .report
+        .diagnostics
+        .splice(0..0, catalog_diagnostics);
     if !snapshot.files.iter().any(|file| file.path == path) {
         return None;
     }

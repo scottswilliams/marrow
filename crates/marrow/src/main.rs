@@ -337,6 +337,39 @@ pub(crate) fn load_config_with_format(
     })
 }
 
+/// Read the project's accepted-catalog snapshot from `marrow.catalog.json`, the
+/// input the analysis core binds durable identity against. A missing file is a first
+/// run; a read failure or invalid bytes yield a catalog-intent diagnostic the caller
+/// folds into the report. The JSON parse and its diagnostic are owned by the checker,
+/// so this routes invalid bytes through it.
+///
+/// This local file read is the intermediate provider a later lane replaces with the
+/// store-resident catalog snapshot; the checker itself no longer reads the file.
+pub(crate) fn read_accepted_catalog(
+    project_root: &Path,
+    config: &marrow_project::ProjectConfig,
+) -> (
+    Option<marrow_catalog::CatalogMetadata>,
+    Vec<marrow_check::CheckDiagnostic>,
+) {
+    let path = project_root.join(&config.accepted_catalog);
+    let mut diagnostics = Vec::new();
+    let accepted = match std::fs::read_to_string(&path) {
+        Ok(json) => marrow_check::accepted_catalog_from_json(&json, &path, &mut diagnostics),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            diagnostics.push(marrow_check::CheckDiagnostic::error(
+                marrow_check::CHECK_CATALOG_INTENT,
+                &path,
+                marrow_syntax::SourceSpan::default(),
+                format!("could not read accepted catalog metadata: {error}"),
+            ));
+            None
+        }
+    };
+    (accepted, diagnostics)
+}
+
 /// Load the config and check the project. On any failure (config, unreadable
 /// source, or check errors) the problem is reported and an exit code returned.
 pub(crate) fn load_checked_project(

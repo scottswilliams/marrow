@@ -76,13 +76,52 @@ pub fn check_project(
 /// Like [`check_project`], but analyzing `sources` over disk: any path with an
 /// overlay entry is checked from that text instead of being re-read. An empty
 /// overlay is identical to [`check_project`].
+///
+/// The accepted catalog is read from the project's `marrow.catalog.json` here, the
+/// disk-driven provider these convenience wrappers own; the analysis core itself takes
+/// the snapshot as a caller-supplied input.
 pub fn check_project_with_sources(
     project_root: &Path,
     config: &ProjectConfig,
     sources: &ProjectSources,
 ) -> Result<(CheckReport, CheckedProgram), DiscoverError> {
-    analysis::analyze_source_project(project_root, config, sources)
-        .map(|snapshot| (snapshot.report, snapshot.program))
+    let mut catalog_diagnostics = Vec::new();
+    let accepted = read_accepted_catalog(project_root, config, &mut catalog_diagnostics);
+    analysis::analyze_source_project(project_root, config, sources, accepted.as_ref()).map(
+        |mut snapshot| {
+            snapshot
+                .report
+                .diagnostics
+                .splice(0..0, catalog_diagnostics);
+            (snapshot.report, snapshot.program)
+        },
+    )
+}
+
+/// Read the project's accepted-catalog snapshot from `marrow.catalog.json`, the
+/// disk-driven provider the convenience checker wrappers own. A missing file is a
+/// first run (no accepted catalog); a read failure or invalid bytes raise a
+/// catalog-intent diagnostic and bind no identity. The JSON parse and its diagnostic
+/// belong to the checker's catalog owner, so this routes through it.
+fn read_accepted_catalog(
+    project_root: &Path,
+    config: &ProjectConfig,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> Option<marrow_catalog::CatalogMetadata> {
+    let path = project_root.join(&config.accepted_catalog);
+    match std::fs::read_to_string(&path) {
+        Ok(json) => crate::catalog::accepted_catalog_from_json(&json, &path, diagnostics),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            diagnostics.push(CheckDiagnostic::error(
+                crate::diagnostics::CHECK_CATALOG_INTENT,
+                &path,
+                SourceSpan::default(),
+                format!("could not read accepted catalog metadata: {error}"),
+            ));
+            None
+        }
+    }
 }
 
 /// The schema of the resource stored at saved root `^root`, if any. Saved roots

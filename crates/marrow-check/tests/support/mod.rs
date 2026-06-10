@@ -145,7 +145,7 @@ pub fn analyze_overlay(name: &str, files: &[(&str, &str)]) -> (AnalysisSnapshot,
         sources.insert(&path, *source);
         paths.push(path);
     }
-    let snapshot = analyze_project(&root, &config(), &sources).expect("analyze");
+    let snapshot = analyze_project(&root, &config(), &sources, None).expect("analyze");
     (snapshot, paths)
 }
 

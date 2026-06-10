@@ -46,14 +46,12 @@ pub(crate) struct CatalogBinding {
 }
 
 pub(crate) fn bind_catalog(
-    project_root: &Path,
-    config: &marrow_project::ProjectConfig,
+    accepted: Option<&CatalogMetadata>,
     program: &mut CheckedProgram,
     evolve: &EvolveIntents,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    let accepted = read_accepted_catalog(project_root, config, diagnostics);
-    let binding = catalog_binding(program, accepted.as_ref(), evolve, diagnostics);
+    let binding = catalog_binding(program, accepted, evolve, diagnostics);
     let declared_store_key_shapes = declared_store_key_shapes(program, &binding.leaf_token_ids);
     let declared_member_structs = declared_member_structs(program, &binding.leaf_token_ids);
     program
@@ -61,7 +59,9 @@ pub(crate) fn bind_catalog(
         .bind_catalog_ids(&program.modules, &binding.ids);
     program.catalog.accepted_epoch = binding.accepted_epoch;
     program.catalog.accepted_digest = binding.accepted_digest;
-    program.catalog.accepted_entries = accepted.map(|catalog| catalog.entries).unwrap_or_default();
+    program.catalog.accepted_entries = accepted
+        .map(|catalog| catalog.entries.clone())
+        .unwrap_or_default();
     // Defaults and transforms bind through the proposal id map, not the accepted-only ids:
     // a default or transform may target a brand-new member current source adds, whose stable
     // id lives only in the proposal until it is accepted. Discharge keys that member's
@@ -152,28 +152,21 @@ fn member_struct_module(source: &SourceCatalogEntry) -> &str {
         .unwrap_or("")
 }
 
-fn read_accepted_catalog(
-    project_root: &Path,
-    config: &marrow_project::ProjectConfig,
+/// Parse an accepted-catalog snapshot from its JSON text, owning the catalog-intent
+/// diagnostic an invalid snapshot raises. The checker is the single owner of the
+/// catalog-intent classifier, so a caller that holds the bytes (the CLI provider, the
+/// disk-reading convenience wrappers) parses through here rather than re-deriving the
+/// diagnostic. `file` is the source the bytes came from, named in the diagnostic.
+pub fn accepted_catalog_from_json(
+    json: &str,
+    file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> Option<CatalogMetadata> {
-    let path = project_root.join(&config.accepted_catalog);
-    let json = match std::fs::read_to_string(&path) {
-        Ok(json) => json,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(error) => {
-            diagnostics.push(catalog_diagnostic(
-                path,
-                format!("could not read accepted catalog metadata: {error}"),
-            ));
-            return None;
-        }
-    };
-    match CatalogMetadata::from_json(&json) {
+    match CatalogMetadata::from_json(json) {
         Ok(catalog) => Some(catalog),
         Err(error) => {
             diagnostics.push(catalog_diagnostic(
-                path,
+                file.to_path_buf(),
                 format!("invalid accepted catalog metadata: {}", error.message),
             ));
             None
