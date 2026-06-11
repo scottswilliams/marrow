@@ -826,18 +826,6 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 
 ## Wave 2 — P0 foundation (REPORT Part V order)
 
-**W2.5 → Concurrency contract rendered (II.B3 items 1,3,4 + II.B4; after W2.2 —
-backend-contract.md: W2.2 writes Durability and Recovery, then W2.5 the Concurrency section).**
-Owns: docs/backend-contract.md Concurrency section plus the C25 outbox-idiom paragraph
-(gate 52), resources-and-storage.md Concurrency section (replacing Locks), error-codes.md
-`store.locked` prose — exactly the gate-7 wording: "The store file is held open by another
-process (a writer or a read-only inspection)" plus the close-and-retry remedy — new CLI tests
-(second open of a held store → typed `store.locked`, exit 1, run/data/backup variants). ADR
-amendment landed in W1.1.
-Seed: the missing CLI lock test, red. Review: spec wording matches the amended ADR exactly; no
-cross-process file-lock detail leaks into the language reference. Done: the soundness premise of
-narrowing is stated user-facing.
-
 **W2.6 → Identity constructor (II.A3, gate 2; after W2.3 — shared parse_expr.rs: the nesting
 budget lands first).** Owns: marrow-syntax expression grammar slice, marrow-check key arity/type
 checking (`check.key_type`), marrow-run identity-splice reuse,
