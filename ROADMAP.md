@@ -829,13 +829,6 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 Goal: every deletion and truth-fix with no implementation dependency lands before building.
 Mostly parallel; two wide-churn barrier lanes close the wave.
 
-**W1.5 ∥ Fence-fallback deletion.** Carries: removal "Delete the pre-digest-stamp adoption
-fallback" (window.rs, preview.rs, apply.rs unchanged), with the corrected test plan (commit==None
-path untouched; new `epoch_stamped_receipt_with_empty_digest_is_schema_drift` test). Owns:
-marrow-run evolution/window.rs, marrow-check preview.rs slice, data-evolution.md sentence. Seed:
-the new drift test failing red. Review: soundness lens probes hand-built-store shapes against the
-tightened fence. Done: comment + doc sentence gone; fence fails closed on empty digest.
-
 **W1.6 → Flagship docs repair (III.A2; after W1.3 — shared docs/error-codes.md: W1.3 owns the
 `protocol.*` section deletion; W1.6 owns the run.*/check rows plus the gate-46 `decode.*`
 reserved rows).** Carries: III.A2 (1)-(4) per gate 1(d): corrected byIsbn example, "Absent
