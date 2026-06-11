@@ -603,22 +603,90 @@ fn a_bare_maybe_present_read_pends_on_attached_data() {
 }
 
 #[test]
-fn a_required_declaration_discharges_a_saved_read() {
-    let proofs = presence_proofs(
-        "presence-declaration",
+fn a_bare_required_field_read_through_parameter_identity_requires_resolution() {
+    assert_bare_present_read(
+        "presence-required-param-id",
         "module books\n\
          resource Book\n\
          \x20   required title: string\n\
          store ^books(id: int): Book\n\
-         fn requiredTitle(id: int): string\n\
+         fn requiredTitle(id: Id(^books)): string\n\
          \x20   return ^books(id).title\n",
+    );
+}
+
+#[test]
+fn early_return_if_not_exists_narrows_the_remainder() {
+    let proofs = presence_proofs(
+        "presence-early-return-narrowing",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn subtitleOrMissing(id: Id(^books)): string\n\
+         \x20   if not exists(^books(id).subtitle)\n\
+         \x20       return \"missing\"\n\
+         \x20   return ^books(id).subtitle\n",
     );
 
     let proof = proofs
         .iter()
-        .find(|proof| proof.source == PresenceProofSource::Declaration)
-        .expect("declaration proof");
+        .find(|proof| proof.source == PresenceProofSource::Narrowing)
+        .expect("early-return narrowing proof");
     assert_eq!(proof.status, PresenceProofStatus::Discharged);
+}
+
+#[test]
+fn if_not_exists_with_a_calling_body_does_not_narrow_the_remainder() {
+    assert_bare_present_read(
+        "presence-early-return-call-falls-through",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn note()\n\
+         \x20   const value: int = 1\n\
+         fn subtitleOrMissing(id: Id(^books)): string\n\
+         \x20   if not exists(^books(id).subtitle)\n\
+         \x20       note()\n\
+         \x20   return ^books(id).subtitle\n",
+    );
+}
+
+#[test]
+fn if_not_exists_with_a_looping_body_does_not_narrow_the_remainder() {
+    assert_bare_present_read(
+        "presence-early-return-loop-falls-through",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn subtitleOrMissing(id: Id(^books)): string\n\
+         \x20   if not exists(^books(id).subtitle)\n\
+         \x20       while false\n\
+         \x20           return \"missing\"\n\
+         \x20   return ^books(id).subtitle\n",
+    );
+}
+
+#[test]
+fn if_const_binding_guard_discharges_and_binds_with_one_point_read() {
+    let proofs = presence_proofs(
+        "presence-if-const-binding-guard",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn guarded(id: Id(^books)): string\n\
+         \x20   if const subtitle = ^books(id).subtitle\n\
+         \x20       return subtitle\n\
+         \x20   return \"missing\"\n",
+    );
+
+    assert_eq!(proofs.len(), 1, "{proofs:#?}");
+    assert_eq!(proofs[0].source, PresenceProofSource::Narrowing);
+    assert_eq!(proofs[0].status, PresenceProofStatus::Discharged);
+    assert_eq!(proofs[0].read, PresenceProofRead::Direct);
 }
 
 #[test]
@@ -684,8 +752,6 @@ fn an_optional_chain_fallback_discharges_via_narrowing() {
 #[test]
 fn presence_proof_sources_are_exhaustively_covered() {
     match PresenceProofSource::AttachedData {
-        PresenceProofSource::AttachedData
-        | PresenceProofSource::Declaration
-        | PresenceProofSource::Narrowing => {}
+        PresenceProofSource::AttachedData | PresenceProofSource::Narrowing => {}
     }
 }

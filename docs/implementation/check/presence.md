@@ -1,6 +1,6 @@
 # Presence and effect analysis
 
-A post-typecheck static pass over the lowered runtime IR that proves, before runtime, that every read of maybe-present saved data is justified. It walks each function and constant body flow-sensitively, tracking *narrowings* — places proven present by an `if exists(...)` guard, a required-slot declaration, or a unique store-index lookup — emits one `PresenceProofFact` per saved read, and raises `CHECK_BARE_MAYBE_PRESENT_READ` when a maybe-present read is reached unguarded. A second body-local entry summarizes each block's saved reads/writes, host capabilities, throws, transactions, and user-function calls into `DirectEffectFacts`.
+A post-typecheck static pass over the lowered runtime IR that proves, before runtime, that every read of maybe-present saved data is justified. It walks each function and constant body flow-sensitively, tracking *narrowings* from read-site constructs such as `if exists(...)`, `if const`, early-return `if not exists(...)`, loop traversal, coalesce, and unique store-index lookup. The pass emits one `PresenceProofFact` per saved read and raises `CHECK_BARE_MAYBE_PRESENT_READ` when a maybe-present read is reached without a read-site proof. A second body-local entry summarizes each block's saved reads/writes, host capabilities, throws, transactions, and user-function calls into `DirectEffectFacts`.
 
 The pass runs near the end of `analyze_source_project` (`analysis.rs`, after lowering runtime bodies and the evolution transform-effects check). It mutates `program.facts` and pushes diagnostics; it owns no store access of its own.
 
@@ -13,7 +13,7 @@ Narrowing identity is by **span-stripped canonical key**, never by structural `C
 - **Flow driver** (`walk.rs`): threads the narrowed set and `NameScope`, classifies each read's `ReadContext`, dispatches builtins, records proofs.
 - **Narrowing algebra** (`effects.rs`): what `exists`/`&&` and loop traversals narrow, and the invalidation rules that expire narrowings.
 - **Canonical key** (`keys.rs`): the one owner of the span-free key format.
-- **Read resolution** (`target.rs`): expression to `ReadTarget`/`ReadPlace`, to a persisted `PresenceProofPlace`, and the required-slot presence test.
+- **Read resolution** (`target.rs`): expression to `ReadTarget`/`ReadPlace`, and then to a persisted `PresenceProofPlace`.
 - **Proofs** (`proofs.rs`): the only place the bare-maybe-present diagnostic is raised; maps context to proof source/status and records the fact.
 - **Direct effects** (`direct.rs`) and **saved-write reachability** (`writes.rs`, cycle-guarded across user functions).
 
@@ -26,7 +26,7 @@ Narrowing identity is by **span-stripped canonical key**, never by structural `C
 | `presence/direct.rs` | Body-local effect collector producing `DirectEffectFacts` for one block without expanding callee effects. |
 | `presence/effects.rs` | Narrowing algebra: condition/loop narrowings and the invalidation (key-binding, written-target overlap, removed-on-branch, saved-wipe) rules. |
 | `presence/keys.rs` | Sole owner of the canonical span-stripped narrowing key; extracts `SavedPathParts` from a saved path. |
-| `presence/target.rs` | Resolves an expression to a `ReadTarget`/`ReadPlace`, maps to a `PresenceProofPlace`, decides required-slot proof. |
+| `presence/target.rs` | Resolves an expression to a `ReadTarget`/`ReadPlace`, maps it to a `PresenceProofPlace`, and identifies the saved-place shape a proof covers. |
 | `presence/writes.rs` | Recursive saved-write reachability through callee bodies, reading each function's precomputed `direct_effects.saved_writes`. |
 | `presence/proofs.rs` | Builds a `ReadProof`, assigns source/status, records the fact, emits the bare-maybe-present diagnostic. |
 | `presence/calls.rs` | Typed-call helpers: std Path-argument mask, neighbor read direction, single-arg collection-view unwrap. |
@@ -51,7 +51,7 @@ Key types live mostly in `presence/target.rs` (`ReadTarget`, `ReadPlace`), `pres
 
 ## Tests
 
-`crates/marrow-check/tests` (the `catalog_presence_*` and `discharge_*` files) drive real `.mw` fixtures through `check_project` and assert `presence_proofs()` source/status/place and presence/absence of `CHECK_BARE_MAYBE_PRESENT_READ`. `catalog_presence_narrowing.rs` checks that `if exists` narrows and that a mutation expiring it re-raises the bare read; `discharge_store_key.rs` and `discharge_required_leaf_presence.rs` cover store-index and required-slot discharge.
+`crates/marrow-check/tests` (the `catalog_presence_*`, `discharge_*`, and project statement files) drive real `.mw` fixtures through `check_project` and assert `presence_proofs()` source/status/place and presence/absence of `CHECK_BARE_MAYBE_PRESENT_READ`. `catalog_presence_narrowing.rs` checks that `if exists`, `if const`, and early-return `if not exists` narrow only when their control flow is sound, and that mutations expire narrowings. The discharge tests cover store-index, traversal, coalesce, and the absence of declaration-only required-field proofs.
 
 ## Read next
 

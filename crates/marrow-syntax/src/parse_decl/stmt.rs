@@ -20,6 +20,11 @@ use crate::parse_expr::join_spans;
 use crate::token::{Keyword, Token, TokenKind};
 use crate::{NESTING_DEPTH_LIMIT, NESTING_LIMIT, PARSE_SYNTAX};
 
+enum IfHead {
+    Expr(Option<Expression>),
+    ConstBinding { name: String, value: Expression },
+}
+
 /// A block-introducing keyword that has no statement of its own and only ever
 /// appears as a clause of one (`else`, `catch`, `finally`). Standing alone it
 /// cannot be structured, so the statement parser swallows it and its nested
@@ -314,7 +319,7 @@ impl<'a> StmtParser<'a> {
 
     fn if_stmt(&mut self) -> Statement {
         let start = self.advance().span; // `if`
-        let condition = self.header_expression();
+        let head = self.if_head();
         let then_block = self.block_body();
         let mut end = then_block.span;
         let mut else_ifs = Vec::new();
@@ -337,12 +342,22 @@ impl<'a> StmtParser<'a> {
             }
         }
 
-        Statement::If {
-            condition,
-            then_block,
-            else_ifs,
-            else_block,
-            span: join_spans(start, end),
+        match head {
+            IfHead::Expr(condition) => Statement::If {
+                condition,
+                then_block,
+                else_ifs,
+                else_block,
+                span: join_spans(start, end),
+            },
+            IfHead::ConstBinding { name, value } => Statement::IfConst {
+                name,
+                value,
+                then_block,
+                else_ifs,
+                else_block,
+                span: join_spans(start, end),
+            },
         }
     }
 
@@ -462,6 +477,61 @@ impl<'a> StmtParser<'a> {
         }
         self.pos = (newline + 1).min(self.tokens.len());
         expr
+    }
+
+    fn if_head(&mut self) -> IfHead {
+        let newline = self.find_line_end();
+        let content_end = self.split_trailing_comment(newline);
+        let line = &self.tokens[self.pos..content_end];
+        let before = self.diagnostics.len();
+        let head = if matches!(
+            line.first().map(|token| token.kind),
+            Some(TokenKind::Keyword(Keyword::Const))
+        ) {
+            self.if_const_head(line)
+                .map_or(IfHead::Expr(None), |(name, value)| IfHead::ConstBinding {
+                    name,
+                    value,
+                })
+        } else {
+            IfHead::Expr(expr_of(self.source, line, &mut self.diagnostics))
+        };
+        if matches!(head, IfHead::Expr(None)) && self.diagnostics.len() == before {
+            self.error_span_reason(
+                line_span(&self.tokens[self.pos..content_end]),
+                ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
+                "expected an expression",
+            );
+        }
+        self.pos = (newline + 1).min(self.tokens.len());
+        head
+    }
+
+    fn if_const_head(&mut self, line: &[Token]) -> Option<(String, Expression)> {
+        let name_token = line.get(1)?;
+        if name_token.kind != TokenKind::Identifier {
+            if matches!(name_token.kind, TokenKind::Keyword(_)) {
+                self.diagnostics.push(Diagnostic {
+                    code: PARSE_SYNTAX,
+                    reason: DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
+                        ExpectedSyntax::ConstName,
+                    )),
+                    severity: Severity::Error,
+                    message: format!(
+                        "expected const name; `{}` is a keyword",
+                        name_token.text(self.source)
+                    ),
+                    help: Some("choose an identifier that is not reserved".to_string()),
+                    span: name_token.span,
+                });
+            }
+            return None;
+        }
+        if line.get(2).map(|token| token.kind) != Some(TokenKind::Equal) {
+            return None;
+        }
+        let value = expr_of(self.source, &line[3..], &mut self.diagnostics)?;
+        Some((name_token.text(self.source).to_string(), value))
     }
 
     /// Consume the rest of a header line up to and including its `NEWLINE`.

@@ -55,7 +55,8 @@ fn native_store_persists_writes_across_runs() {
              \x20\x20\x20\x20if not exists(^counter(1))\n\
              \x20\x20\x20\x20\x20\x20\x20\x20print(\"absent\")\n\
              \x20\x20\x20\x20\x20\x20\x20\x20return\n\
-             \x20\x20\x20\x20print($\"value={^counter(1).value}\")\n",
+             \x20\x20\x20\x20if const value = ^counter(1).value\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20print($\"value={value}\")\n",
         );
     });
     let dir = root.to_str().unwrap().to_string();
@@ -126,9 +127,11 @@ fn run_cli_executes_identity_oriented_collection_loops() {
              \x20\x20\x20\x20^books(1).title = \"Mort\"\n\
              \x20\x20\x20\x20const tag: int = append(^books(1).tags, \"fiction\")\n\
              \x20\x20\x20\x20for id in ^books\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20print(^books(id).title)\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20if const title = ^books(id).title\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20print(title)\n\
              \x20\x20\x20\x20for pos in ^books(1).tags\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20print(^books(1).tags(pos))\n",
+             \x20\x20\x20\x20\x20\x20\x20\x20if const item = ^books(1).tags(pos)\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20print(item)\n",
         );
     });
     let output = marrow_sub("run", &[root.to_str().unwrap()]);

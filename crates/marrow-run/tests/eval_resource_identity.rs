@@ -58,7 +58,7 @@ pub fn save(t: string)
 
 pub fn title(): string
     for id in ^books
-        return ^books(id).title
+        return ^books(id).title ?? \"\"
     return \"\"
 ";
 
@@ -93,7 +93,7 @@ fn allocates_and_uses_a_single_key_store_identity() {
 fn a_plain_int_identity_still_works() {
     // The bare int path remains the executable single-key store identity path.
     let program = checked_program(&format!(
-        "{BOOK_PRIMARY_SCHEMA}pub fn save()\n    ^books(1).title = \"a\"\n\npub fn read(): string\n    return ^books(1).title\n"
+        "{BOOK_PRIMARY_SCHEMA}pub fn save()\n    ^books(1).title = \"a\"\n\npub fn read(): string\n    return ^books(1).title ?? \"\"\n"
     ));
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::save")).expect("save");
@@ -228,6 +228,11 @@ pub fn setTheme(t: string)
 pub fn theme(): string
     return ^settings.theme ?? \"\"
 
+pub fn themeViaGuard(): string
+    if const settings = ^settings
+        return settings.theme
+    return \"\"
+
 pub fn snapshot(): Settings
     var fallback: Settings
     fallback.theme = \"\"
@@ -333,6 +338,26 @@ fn singleton_whole_read_and_write_round_trip() {
         .expect("theme")
         .value;
     assert_eq!(value, Some(Value::Str("solar".into())));
+}
+
+#[test]
+fn singleton_whole_read_can_be_bound_by_if_const() {
+    let program = checked_program(SETTINGS);
+    let store = TreeStore::memory();
+    run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::init",
+            Value::Str("light".into()),
+            Value::Int(3)
+        ),
+    )
+    .expect("init");
+    let value = run_entry(&store, checked_entry!(&program, "test::themeViaGuard"))
+        .expect("theme via guard")
+        .value;
+    assert_eq!(value, Some(Value::Str("light".into())));
 }
 
 // --- Unkeyed-group field read/write through a saved path ---

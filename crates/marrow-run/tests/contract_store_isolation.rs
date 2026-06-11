@@ -10,7 +10,7 @@ mod support;
 
 use support::*;
 
-use marrow_run::{RUN_ABSENT, Value};
+use marrow_run::Value;
 use marrow_store::tree::TreeStore;
 
 const COUNTER: &str = "\
@@ -22,7 +22,7 @@ pub fn write_note(id: int, body: string)
     ^notes(id).body = body
 
 pub fn body_of(id: int): string
-    return ^notes(id).body
+    return ^notes(id).body ?? \"\"
 
 pub fn note_count(): int
     return count(^notes)
@@ -30,8 +30,8 @@ pub fn note_count(): int
 
 #[test]
 fn a_fresh_in_memory_store_starts_empty() {
-    // A newly constructed store has no records: the root count is zero and reading a
-    // never-written required field faults absent rather than returning a default.
+    // A newly constructed store has no records: the root count is zero and a
+    // resolved read of a never-written field takes its explicit fallback.
     let program = checked_program(COUNTER);
     let store = TreeStore::memory();
 
@@ -42,12 +42,14 @@ fn a_fresh_in_memory_store_starts_empty() {
         Some(Value::Int(0)),
         "a fresh store has no records",
     );
-    assert_run_error(
+    assert_eq!(
         run_entry(
             &store,
             checked_entry!(&program, "test::body_of", Value::Int(1)),
-        ),
-        RUN_ABSENT,
+        )
+        .expect("read absent note with fallback")
+        .value,
+        Some(Value::Str("".into())),
     );
 }
 
@@ -89,12 +91,14 @@ fn a_write_in_one_store_is_invisible_to_a_separate_store() {
         Some(Value::Int(0)),
         "the second store is empty despite the first store's write",
     );
-    assert_run_error(
+    assert_eq!(
         run_entry(
             &second,
             checked_entry!(&program, "test::body_of", Value::Int(1)),
-        ),
-        RUN_ABSENT,
+        )
+        .expect("read absent note from second store with fallback")
+        .value,
+        Some(Value::Str("".into())),
     );
 
     // The first store still holds its write: reading the second did not disturb it.

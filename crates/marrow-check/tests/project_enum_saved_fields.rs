@@ -43,17 +43,18 @@ fn a_qualified_enum_saved_field_declaration_checks_clean() {
 
 #[test]
 fn reading_an_enum_saved_field_types_as_that_enum() {
-    // A read of `^orders(1).state` (an enum-typed saved field) must type as
-    // `Status`: comparing it against the *same* enum is clean. Before the field
-    // read was typed it was `Unknown`, so a nominal `==` against any enum reported
-    // an operator error — this same-enum comparison was wrongly rejected.
+    // A resolved read of `^orders(1).state` (an enum-typed saved field) must
+    // type as `Status`: comparing it against the *same* enum is clean. Before
+    // the field read was typed it was `Unknown`, so a nominal `==` against any
+    // enum reported an operator error — this same-enum comparison was wrongly
+    // rejected.
     let report = check_module_report(
         "enum-field-read-eq-same",
         "module m\n\
          enum Status\n    active\n    archived\n\n\
          resource Order\n    required state: Status\n\
          store ^orders(id: int): Order\n\n\
-         fn f(): bool\n    return ^orders(1).state == Status::active\n",
+         fn f(): bool\n    return (^orders(1).state ?? Status::archived) == Status::active\n",
     );
     assert_clean(&report);
 
@@ -65,7 +66,7 @@ fn reading_an_enum_saved_field_types_as_that_enum() {
          enum Color\n    red\n    green\n\n\
          resource Order\n    required state: Status\n\
          store ^orders(id: int): Order\n\n\
-         fn f(): bool\n    return ^orders(1).state == Color::red\n",
+         fn f(): bool\n    return (^orders(1).state ?? Status::archived) == Color::red\n",
         "check.operator_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -73,17 +74,17 @@ fn reading_an_enum_saved_field_types_as_that_enum() {
 
 #[test]
 fn a_match_over_an_enum_saved_field_enforces_exhaustiveness() {
-    // A match over a saved enum field `^orders(1).state` must resolve to `Status`
-    // and require every member. Missing `banned` is a check error, not a silently
-    // skipped match that faults at runtime.
+    // A match over a resolved saved enum field `^orders(1).state` must resolve
+    // to `Status` and require every member. Missing `banned` is a check error,
+    // not a silently skipped match that faults at runtime.
     let found = check_module(
         "enum-field-read-match",
         "module m\n\
          enum Status\n    active\n    archived\n    banned\n\n\
          resource Order\n    required state: Status\n\
          store ^orders(id: int): Order\n\n\
-         fn f()\n    \
-         match ^orders(1).state\n        active\n            return\n        archived\n            return\n",
+         fn f()\n    const state = ^orders(1).state ?? Status::active\n    \
+         match state\n        active\n            return\n        archived\n            return\n",
         "check.nonexhaustive_match",
     );
     assert_eq!(found.len(), 1, "{found:#?}");

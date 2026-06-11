@@ -21,10 +21,15 @@ pub fn seed()
         ^books(10).tags(1) = "fantasy"
 
 pub fn seededTitle(): string
-    return ^books(10).title
+    if const title = ^books(10).title
+        return title
+    return ""
 
 pub fn seededAuthorName(): string
-    return ^authors(^books(10).author).name
+    if const author = ^books(10).author
+        if const name = ^authors(author).name
+            return name
+    return ""
 
 pub fn printSeededAuthor()
     print(seededAuthorName())

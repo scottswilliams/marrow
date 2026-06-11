@@ -1256,7 +1256,6 @@ pub enum PresenceProofRead {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PresenceProofSource {
-    Declaration,
     Narrowing,
     AttachedData,
 }

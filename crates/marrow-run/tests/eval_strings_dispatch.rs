@@ -328,7 +328,7 @@ fn rebuild_store_indexes_reconstructs_unique_and_non_unique_lookups() {
         pub fn isbn_title(i: string): string\n    \
         var found = \"\"\n    \
         for id in ^books.byIsbn(i)\n        \
-        found = ^books(id).title\n    \
+        found = ^books(id).title ?? \"\"\n    \
         return found\n\n\
         pub fn shelf_count(s: string): int\n    \
         var c = 0\n    \

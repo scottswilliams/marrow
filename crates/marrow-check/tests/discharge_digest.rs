@@ -245,7 +245,7 @@ fn source_digest_binds_the_durable_shape() {
                 // digest binds, so changing it alongside the identity type keeps the
                 // edit single in the durable surface.
                 func: "pub fn lookup(id: string): string\n\
-                       \x20   return ^books(id).isbn",
+                       \x20   return ^books(id).isbn ?? \"\"",
                 ..DurableFixture::default()
             },
             "an identity-key scalar-type change must drift the shape digest",

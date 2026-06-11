@@ -234,7 +234,7 @@ fn a_module_less_script_self_reference_checks_clean() {
              store ^orders(id: int): Order\n\n\
              pub fn main()\n    var o: Order\n    o.state = Status::active\n    \
              ^orders(1) = o\n\n\
-             pub fn isActive(): bool\n    return ^orders(1).state == Status::active\n",
+             pub fn isActive(): bool\n    return (^orders(1).state ?? Status::archived) == Status::active\n",
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");

@@ -20,7 +20,7 @@ pub fn set_title(id: int, t: string)
     ^books(id).title = t
 
 pub fn title_of(id: int): string
-    return ^books(id).title
+    return ^books(id).title ?? \"\"
 ";
 
 #[test]
@@ -148,7 +148,7 @@ fn transaction_required_field_checks_cross_helper_calls() {
          \x20       set_shelf(id)\n\
          \x20       ^items(id).name = \"Mort\"\n\n\
          pub fn name_of(id: int): string\n\
-         \x20   return ^items(id).name\n",
+         \x20   return ^items(id).name ?? \"\"\n",
     );
     let store = TreeStore::memory();
     run_entry(
@@ -179,7 +179,7 @@ fn nested_transaction_defers_required_check_until_outer_commit() {
          \x20           ^items(id).shelf = \"fiction\"\n\
          \x20       ^items(id).name = \"Mort\"\n\n\
          pub fn name_of(id: int): string\n\
-         \x20   return ^items(id).name\n",
+         \x20   return ^items(id).name ?? \"\"\n",
     );
     let store = TreeStore::memory();
     run_entry(

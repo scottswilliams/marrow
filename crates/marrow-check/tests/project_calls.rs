@@ -570,7 +570,7 @@ fn composite_root_traversal_binds_addressable_identities() {
         "module m\n\
          resource Cell\n    required v: int\n\
          store ^cells(x: int, y: int): Cell\n\n\
-         fn f()\n    for id, cell in ^cells\n        const same: int = ^cells(id).v\n        const copy: int = cell.v\n",
+         fn f()\n    for id, cell in ^cells\n        const typed: Id(^cells) = id\n        const copy: int = cell.v\n",
     );
     assert_clean(&report);
 }

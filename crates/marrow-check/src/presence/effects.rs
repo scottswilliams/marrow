@@ -6,7 +6,7 @@ use super::util::extend_unique;
 use super::writes::expr_calls_saved_writer;
 use crate::{
     CheckedArg, CheckedArgMode, CheckedBinaryOp, CheckedBuiltinCall, CheckedCallTarget,
-    CheckedExpr, CheckedForBinding, CheckedInterpolationPart, CheckedProgram,
+    CheckedExpr, CheckedForBinding, CheckedInterpolationPart, CheckedProgram, CheckedUnaryOp,
 };
 
 pub(super) fn condition_narrowings(
@@ -16,6 +16,25 @@ pub(super) fn condition_narrowings(
 ) -> Vec<ReadTarget> {
     let mutations = mutating_bindings_in_expr(expr, scope);
     condition_effects_after_mutations(program, expr, scope, &mutations).narrowings
+}
+
+pub(super) fn negated_exists_narrowings(
+    program: &CheckedProgram,
+    expr: &CheckedExpr,
+    scope: &NameScope,
+) -> Vec<ReadTarget> {
+    let CheckedExpr::Unary {
+        op: CheckedUnaryOp::Not,
+        operand,
+        ..
+    } = expr
+    else {
+        return Vec::new();
+    };
+    let mutations = mutating_bindings_in_expr(expr, scope);
+    exists_target_after_mutations(program, operand, scope, &mutations)
+        .into_iter()
+        .collect()
 }
 
 struct ConditionEffects {
@@ -30,19 +49,11 @@ fn condition_effects_after_mutations(
     mutations: &[u32],
 ) -> ConditionEffects {
     match expr {
-        CheckedExpr::Call { target, args, .. }
+        CheckedExpr::Call { target, .. }
             if *target == CheckedCallTarget::Builtin(CheckedBuiltinCall::Exists) =>
         {
             ConditionEffects {
-                narrowings: args
-                    .first()
-                    .and_then(|arg| read_target_with_scope(program, &arg.value, scope))
-                    .filter(|target| {
-                        !target
-                            .key_bindings
-                            .iter()
-                            .any(|binding| mutations.contains(binding))
-                    })
+                narrowings: exists_target_after_mutations(program, expr, scope, mutations)
                     .into_iter()
                     .collect(),
                 writes_saved: expr_calls_saved_writer(program, expr, &mut Vec::new()),
@@ -71,6 +82,28 @@ fn condition_effects_after_mutations(
             writes_saved: expr_calls_saved_writer(program, expr, &mut Vec::new()),
         },
     }
+}
+
+fn exists_target_after_mutations(
+    program: &CheckedProgram,
+    expr: &CheckedExpr,
+    scope: &NameScope,
+    mutations: &[u32],
+) -> Option<ReadTarget> {
+    let CheckedExpr::Call { target, args, .. } = expr else {
+        return None;
+    };
+    if *target != CheckedCallTarget::Builtin(CheckedBuiltinCall::Exists) {
+        return None;
+    }
+    args.first()
+        .and_then(|arg| read_target_with_scope(program, &arg.value, scope))
+        .filter(|target| {
+            !target
+                .key_bindings
+                .iter()
+                .any(|binding| mutations.contains(binding))
+        })
 }
 
 pub(super) fn traversal_narrowing(

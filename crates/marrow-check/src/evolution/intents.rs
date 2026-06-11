@@ -683,6 +683,25 @@ fn walk_statement_expressions(statement: &Statement, visit: &mut impl FnMut(&Exp
                 walk_block_expressions(block, visit);
             }
         }
+        Statement::IfConst {
+            value,
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            walk_expression(value, visit);
+            walk_block_expressions(then_block, visit);
+            for else_if in else_ifs {
+                if let Some(condition) = &else_if.condition {
+                    walk_expression(condition, visit);
+                }
+                walk_block_expressions(&else_if.block, visit);
+            }
+            if let Some(block) = else_block {
+                walk_block_expressions(block, visit);
+            }
+        }
         Statement::While {
             condition, body, ..
         } => {

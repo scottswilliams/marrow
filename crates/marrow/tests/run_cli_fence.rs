@@ -67,7 +67,8 @@ fn run_rejects_populated_unstamped_accepted_store() {
              \x20\x20\x20\x20required value: int\n\
              store ^counter(id: int): Counter\n\
              pub fn show()\n\
-             \x20\x20\x20\x20print($\"value={^counter(1).value}\")\n",
+             \x20\x20\x20\x20if const value = ^counter(1).value\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20print($\"value={value}\")\n",
         );
     });
     let config_text = fs::read_to_string(root.join("marrow.json")).expect("read config");
@@ -153,7 +154,8 @@ fn run_rejects_composite_root_in_populated_unstamped_accepted_store() {
              \x20\x20\x20\x20required value: int\n\
              store ^pairs(left: int, right: int): Pair\n\
              pub fn show()\n\
-             \x20\x20\x20\x20print($\"value={^pairs(1, 2).value}\")\n",
+             \x20\x20\x20\x20if const value = ^pairs(1, 2).value\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20print($\"value={value}\")\n",
         );
     });
     let config_text = fs::read_to_string(root.join("marrow.json")).expect("read config");

@@ -1,5 +1,3 @@
-use marrow_schema::NodeKind;
-
 use super::calls::neighbor_read;
 use super::keys::{SavedPathParts, expression_key, saved_path_parts};
 use super::scope::NameScope;
@@ -66,20 +64,6 @@ pub(super) fn proof_place(
             store_index_place(program, root, index)?,
         )),
     }
-}
-
-pub(super) fn declaration_proves_presence(program: &CheckedProgram, target: &ReadTarget) -> bool {
-    let ReadPlace::Saved { root, members } = &target.place else {
-        return false;
-    };
-    let Some(store) = resolve_store_by_root(program, root) else {
-        return false;
-    };
-    let member_names: Vec<&str> = members.iter().map(String::as_str).collect();
-    matches!(
-        node_for_path(&store.resource.members, &member_names),
-        Some(node) if matches!(&node.kind, NodeKind::Slot { required: true, .. })
-    )
 }
 
 pub(super) fn read_file(

@@ -85,7 +85,9 @@ fn same_store_key_identity_checks_clean() {
             &format!(
                 "{TWO_BOOKISH_RESOURCES}\
                  fn f(b: Id(^books)): string\n\
-                 \x20   return ^books(b).title\n"
+                 \x20   if const title = ^books(b).title\n\
+                 \x20       return title\n\
+                 \x20   return \"\"\n"
             ),
         );
     });

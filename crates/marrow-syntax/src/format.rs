@@ -546,6 +546,22 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
             else_block.as_ref(),
             level,
         ),
+        Statement::IfConst {
+            name,
+            value,
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => format_if_const(
+            source,
+            name,
+            value,
+            then_block,
+            else_ifs,
+            else_block.as_ref(),
+            level,
+        ),
         Statement::While {
             label,
             condition,
@@ -595,6 +611,37 @@ fn format_if(
     let mut out = format!(
         "{pad}if {}\n{}",
         format_opt_expression_at(condition, level),
+        format_block(source, then_block, level + 1)
+    );
+    for else_if in else_ifs {
+        out.push_str(&format!(
+            "\n{pad}else if {}\n{}",
+            format_opt_expression_at(else_if.condition.as_ref(), level),
+            format_block(source, &else_if.block, level + 1)
+        ));
+    }
+    if let Some(else_block) = else_block {
+        out.push_str(&format!(
+            "\n{pad}else\n{}",
+            format_block(source, else_block, level + 1)
+        ));
+    }
+    out
+}
+
+fn format_if_const(
+    source: &str,
+    name: &str,
+    value: &Expression,
+    then_block: &Block,
+    else_ifs: &[ElseIf],
+    else_block: Option<&Block>,
+    level: usize,
+) -> String {
+    let pad = INDENT.repeat(level);
+    let mut out = format!(
+        "{pad}if const {name} = {}\n{}",
+        format_expression_at(value, level),
         format_block(source, then_block, level + 1)
     );
     for else_if in else_ifs {

@@ -328,6 +328,25 @@ fn collect_block_expression<'b>(
                     collect_block_expression(block, offset, best);
                 }
             }
+            Statement::IfConst {
+                value,
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            } => {
+                collect_expression(value, offset, best);
+                collect_block_expression(then_block, offset, best);
+                for else_if in else_ifs {
+                    if let Some(condition) = &else_if.condition {
+                        collect_expression(condition, offset, best);
+                    }
+                    collect_block_expression(&else_if.block, offset, best);
+                }
+                if let Some(block) = else_block {
+                    collect_block_expression(block, offset, best);
+                }
+            }
             Statement::While {
                 condition, body, ..
             } => {

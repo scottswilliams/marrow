@@ -8,7 +8,8 @@ Builtins are always available. Documentation uses their full names.
 
 ```mw
 if exists(^books(id))
-    write(^books(id).title)
+    if const title = ^books(id).title
+        write(title)
 ```
 
 The absence-default operator `??` reads a value when populated and otherwise
@@ -98,10 +99,12 @@ over `values(...)` and `entries(...)` where those apply, and over an in-memory
 
 ```mw
 for id in reversed(^books)
-    write(^books(id).title)
+    if const title = ^books(id).title
+        write(title)
 
 for pos in reversed(^books(id).tags)
-    write(^books(id).tags(pos))
+    if const tag = ^books(id).tags(pos)
+        write(tag)
 
 for word in reversed(std::text::split(line, ","))
     write(word)
@@ -122,7 +125,8 @@ there is no cursor — and both skip gaps, returning the nearest entry that is
 actually stored rather than the next key value:
 
 ```mw
-const afterTitle = ^books(next(^books(id))).title
+const after = next(^books(id)) ?? id
+const afterTitle = ^books(after).title ?? ""
 ```
 
 The result is the neighbor's **identity**, addressed like any key, so fields are

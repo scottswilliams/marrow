@@ -730,7 +730,8 @@ fn indexed_project(name: &str) -> (TempProject, PathBuf) {
              \n\
              pub fn find_isbn()\n\
              \x20\x20\x20\x20for id in ^books.byIsbn(\"978-2\")\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20print(^books(id).title)\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20if const title = ^books(id).title\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20print(title)\n\
              \n\
              pub fn count_shelf()\n\
              \x20\x20\x20\x20var c = 0\n\

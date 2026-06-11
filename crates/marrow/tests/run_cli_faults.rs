@@ -203,17 +203,20 @@ fn an_overflow_fault_is_located() {
 
 #[test]
 fn an_absent_element_fault_is_located() {
+    // `std::env::require` is a checked expression that raises a runtime absence
+    // at the source expression when the host variable is missing, unlike a bare
+    // saved field read which W2.7 rejects during checking.
     let root = temp_project("run-located-absent", |root| {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,
             "src/app.mw",
-            "module app\n\nresource Book\n    required title: string\nstore ^books(id: int): Book\n\n\
-             pub fn main(): string\n    return ^books(99).title\n",
+            "module app\n\n\
+             pub fn main(): string\n    return std::env::require(\"MARROW_TEST_DO_NOT_SET_ABSENT_ELEMENT_FIXTURE_4D0F\")\n",
         );
     });
     let output = marrow_sub("run", &[root.to_str().unwrap()]);
@@ -229,7 +232,7 @@ fn an_absent_element_fault_is_located() {
         "{:?}",
         fault.file
     );
-    assert_eq!(fault.line, Some(8));
+    assert_eq!(fault.line, Some(4));
 }
 
 #[test]

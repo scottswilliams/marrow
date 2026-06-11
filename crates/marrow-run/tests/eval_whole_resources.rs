@@ -164,7 +164,7 @@ fn resource_constructor_value_can_be_saved() {
          \x20\x20\x20\x20^books(1) = draft\n\
          \x20\x20\x20\x20return count(^books)\n\n\
          pub fn title(): string\n\
-         \x20\x20\x20\x20return ^books(1).title\n",
+         \x20\x20\x20\x20return ^books(1).title ?? \"\"\n",
     );
     let store = TreeStore::memory();
     let saved = run_entry(&store, checked_entry!(&program, "test::save")).expect("save");

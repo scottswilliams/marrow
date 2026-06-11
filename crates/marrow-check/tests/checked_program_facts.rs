@@ -109,7 +109,9 @@ fn checked_facts_record_function_effects_with_typed_places() {
              \x20   tags(pos: int): string\n\
              store ^books(id: int): Book\n\
              fn readTitle(id: Id(^books)): string\n\
-             \x20   return ^books(id).title\n\
+             \x20   if const title = ^books(id).title\n\
+             \x20       return title\n\
+             \x20   return \"\"\n\
              fn rename(id: Id(^books), title: string)\n\
              \x20   transaction\n\
              \x20       ^books(id).title = title\n\
@@ -393,7 +395,10 @@ fn checked_facts_record_saved_reads_inside_saved_path_keys() {
              \x20   required bookId: int\n\
              store ^config: Config\n\
              fn readDefault(): string\n\
-             \x20   return ^books(^config.bookId).title\n",
+             \x20   if const bookId = ^config.bookId\n\
+             \x20       if const title = ^books(bookId).title\n\
+             \x20           return title\n\
+             \x20   return \"\"\n",
         );
     });
     let (report, program) = check_project(&root, &config()).expect("check");
@@ -417,12 +422,12 @@ fn checked_facts_record_saved_reads_inside_saved_path_keys() {
         facts.function(read_default).direct_effects.saved_reads,
         vec![
             SavedPlaceEffect {
-                resource: book,
-                members: vec![title],
-            },
-            SavedPlaceEffect {
                 resource: config,
                 members: vec![book_id],
+            },
+            SavedPlaceEffect {
+                resource: book,
+                members: vec![title],
             },
         ]
     );

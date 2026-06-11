@@ -167,7 +167,9 @@ fn qualified_resource_identity_annotation_unifies_with_owner_identity() {
              \x20   ^items(id).name = name\n\
              \x20   return id\n\
              pub fn nameOf(id: Id(^items)): string\n\
-             \x20   return ^items(id).name\n",
+             \x20   if const name = ^items(id).name\n\
+             \x20       return name\n\
+             \x20   return \"\"\n",
         );
         write(
             root,

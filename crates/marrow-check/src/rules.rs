@@ -147,6 +147,12 @@ fn walk_statement(
             else_ifs,
             else_block,
             ..
+        }
+        | Statement::IfConst {
+            then_block,
+            else_ifs,
+            else_block,
+            ..
         } => {
             walk_block(file, then_block, read_only_params, local_collections, out);
             for else_if in else_ifs {
@@ -244,6 +250,16 @@ fn check_statement_inout_argument_targets(
             if let Some(condition) = condition {
                 check_expr_inout_argument_targets(file, condition, read_only_params, out);
             }
+            for else_if in else_ifs {
+                if let Some(condition) = &else_if.condition {
+                    check_expr_inout_argument_targets(file, condition, read_only_params, out);
+                }
+            }
+        }
+        Statement::IfConst {
+            value, else_ifs, ..
+        } => {
+            check_expr_inout_argument_targets(file, value, read_only_params, out);
             for else_if in else_ifs {
                 if let Some(condition) = &else_if.condition {
                     check_expr_inout_argument_targets(file, condition, read_only_params, out);
@@ -384,6 +400,7 @@ fn statement_binding_name(statement: &Statement) -> Option<&str> {
         | Statement::Continue { .. }
         | Statement::Throw { .. }
         | Statement::Expr { .. }
+        | Statement::IfConst { .. }
         | Statement::If { .. }
         | Statement::While { .. }
         | Statement::For { .. }
@@ -440,6 +457,12 @@ fn walk_finally(
                 ));
             }
             Statement::If {
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            }
+            | Statement::IfConst {
                 then_block,
                 else_ifs,
                 else_block,
@@ -545,6 +568,12 @@ fn walk_loop_control_flow(
                 else_ifs,
                 else_block,
                 ..
+            }
+            | Statement::IfConst {
+                then_block,
+                else_ifs,
+                else_block,
+                ..
             } => {
                 walk_loop_control_flow(file, then_block, loop_depth, loop_labels, out);
                 for else_if in else_ifs {
@@ -622,6 +651,12 @@ fn walk_loop_layer_mutations(
         }
         match statement {
             Statement::If {
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            }
+            | Statement::IfConst {
                 then_block,
                 else_ifs,
                 else_block,
@@ -742,6 +777,7 @@ fn mutated_layer(statement: &Statement) -> Option<String> {
         | Statement::Break { .. }
         | Statement::Continue { .. }
         | Statement::Throw { .. }
+        | Statement::IfConst { .. }
         | Statement::If { .. }
         | Statement::While { .. }
         | Statement::For { .. }

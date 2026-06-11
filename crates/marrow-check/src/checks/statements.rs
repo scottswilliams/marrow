@@ -10,7 +10,9 @@ use marrow_syntax::SourceSpan;
 
 use crate::enums::{MatchCheck, check_match, resolve_type};
 use crate::infer::{bind, infer_type, local_binding};
-use crate::{CHECK_COLLECTION_UNSUPPORTED, CheckDiagnostic, CheckedProgram, MarrowType};
+use crate::{
+    CHECK_COLLECTION_UNSUPPORTED, CHECK_CONDITION_TYPE, CheckDiagnostic, CheckedProgram, MarrowType,
+};
 
 use super::collections::{check_for_collection_support, for_frame, is_saved_index_branch_path};
 use super::operators::{check_assignment, check_condition, check_return_type, check_throw_type};
@@ -145,6 +147,14 @@ impl StatementCheck<'_> {
                 else_ifs,
                 else_block.as_ref(),
             ),
+            Statement::IfConst {
+                name,
+                value,
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            } => self.check_if_const(name, value, then_block, else_ifs, else_block.as_ref()),
             Statement::While {
                 condition, body, ..
             } => self.check_while(condition.as_ref(), body),
@@ -339,6 +349,80 @@ impl StatementCheck<'_> {
         }
     }
 
+    fn check_if_const(
+        &mut self,
+        name: &str,
+        value: &marrow_syntax::Expression,
+        then_block: &marrow_syntax::Block,
+        else_ifs: &[marrow_syntax::ElseIf],
+        else_block: Option<&marrow_syntax::Block>,
+    ) {
+        let value_type = self.infer(value);
+        check_range_value(self.file, value, self.diagnostics);
+        self.check_if_const_value(value, &value_type);
+        let mut frame = HashMap::new();
+        frame.insert(name.to_string(), value_type);
+        self.scope.push(frame);
+        self.check_block(then_block);
+        self.scope.pop();
+        for else_if in else_ifs {
+            if let Some(condition) = &else_if.condition {
+                self.check_condition_expr(condition);
+            }
+            self.check_block(&else_if.block);
+        }
+        if let Some(block) = else_block {
+            self.check_block(block);
+        }
+    }
+
+    fn check_if_const_value(&mut self, value: &marrow_syntax::Expression, value_type: &MarrowType) {
+        let Some(module_index) = self
+            .program
+            .modules
+            .iter()
+            .position(|module| module.source_file == self.file)
+        else {
+            return;
+        };
+        let context = crate::executable::CheckedExecutableContext::new(self.program, module_index);
+        let mut lower_scope = self.scope.clone();
+        let Some(value) = crate::CheckedExpr::lower(value, &context, &mut lower_scope) else {
+            return;
+        };
+        let read_target = crate::presence::read_target(self.program, &value);
+        let is_value_read = value
+            .saved_place()
+            .is_some_and(|place| match &place.terminal {
+                crate::CheckedSavedTerminal::Record => {
+                    let root_is_addressed =
+                        place.identity_keys.is_empty() || !place.identity_args.is_empty();
+                    let layers_are_addressed = place
+                        .layers
+                        .iter()
+                        .all(|layer| layer.key_params.is_empty() || !layer.args.is_empty());
+                    root_is_addressed && layers_are_addressed
+                }
+                crate::CheckedSavedTerminal::Field { .. } => true,
+                crate::CheckedSavedTerminal::Index {
+                    unique,
+                    arg_count,
+                    args,
+                    ..
+                } => *unique && args.len() == *arg_count,
+            })
+            || fixed_singleton_root(self.program, &value)
+            || (read_target.is_some() && !matches!(value_type, MarrowType::Unknown));
+        if !is_value_read || read_target.is_none() {
+            self.diagnostics.push(CheckDiagnostic::error(
+                CHECK_CONDITION_TYPE,
+                self.file,
+                value.span(),
+                "`if const` requires a saved value read such as `^root(id).field` or `^singleton`",
+            ));
+        }
+    }
+
     fn check_while(
         &mut self,
         condition: Option<&marrow_syntax::Expression>,
@@ -452,6 +536,14 @@ fn local_field_root(expr: &marrow_syntax::Expression) -> Option<&str> {
         },
         _ => None,
     }
+}
+
+fn fixed_singleton_root(program: &CheckedProgram, expr: &crate::CheckedExpr) -> bool {
+    let crate::CheckedExpr::SavedRoot { name, .. } = expr else {
+        return false;
+    };
+    crate::resolve::resolve_store_by_root(program, name)
+        .is_some_and(|store| store.store.identity_keys.is_empty())
 }
 
 fn has_invalid_assign_target(

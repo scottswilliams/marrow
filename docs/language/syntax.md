@@ -154,6 +154,23 @@ effectful and return values.
 General statement chaining and postconditionals are not part of Marrow `.mw`.
 Use normal `if` blocks.
 
+`if const name = place` is a presence-binding guard for saved value reads:
+
+```mw
+if const title = ^books(id).title
+    print(title)
+else
+    print("missing")
+```
+
+When the saved place is present, Marrow reads it once, binds the value as an
+immutable local `const`, and runs the guarded block. When it is absent, execution
+continues through `else if`, `else`, or the following statement. The right side
+must be a saved value read, such as a field, singleton root, fully addressed
+record or keyed-layer entry, or complete unique-index lookup. Address-only
+collections such as bare keyed roots, unaddressed keyed child layers, and
+non-unique index branches are not binding guards.
+
 ## Bindings
 
 `const` introduces an immutable binding; `var` introduces a mutable one. Scope
@@ -236,8 +253,8 @@ short-circuits the rest of the chain to absent rather than failing the read, so
 `^books(id)?.binding?.shelf` is absent when any step along the way is. An
 unresolved maybe-present read — including a `?.` chain not terminated by a
 resolution — is a compile error, not a runtime fault; resolve it with `??` or
-an `if exists(...)` branch. Only absence is short-circuited — schema and decoding
-errors still surface.
+an `if exists(...)` branch or an `if const name = place` binding guard. Only
+absence is short-circuited — schema and decoding errors still surface.
 
 Range endpoints must be a steppable type — `int`, `decimal`, `date`, or
 `instant` — and both endpoints share that type. The checker accepts ranges for

@@ -31,12 +31,12 @@ pub fn add(org: string, team: string, name: string)
     ^members(org, team) = m
 
 pub fn namesInOrg(org: string)
-    for id in ^members.byOrgTeam(org)
-        print(^members(id).name)
+    for id, member in ^members.byOrgTeam(org)
+        print(member.name)
 
 pub fn nameOfTeam(org: string, team: string)
-    for id in ^members.byOrgTeam(org, team)
-        print(^members(id).name)
+    for id, member in ^members.byOrgTeam(org, team)
+        print(member.name)
 
 pub fn countOrg(org: string): int
     return count(^members.byOrgTeam(org))

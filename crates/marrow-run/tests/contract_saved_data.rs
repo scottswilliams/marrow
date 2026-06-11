@@ -9,7 +9,7 @@ mod support;
 use support::*;
 
 use marrow_check::CheckedRuntimeProgram;
-use marrow_run::{RUN_ABSENT, RUN_TYPE, Value};
+use marrow_run::{RUN_ABSENT, Value};
 use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 use marrow_store::value::SavedValue;
@@ -24,17 +24,23 @@ resource Book
 store ^books(id: int): Book
 
 pub fn pages_of(id: int): int
-    return ^books(id).pages
+    if const book = ^books(id)
+        return book.pages
+    throw Error(code: \"test.missing_book\", message: \"missing book\")
 
 pub fn whole(id: int): Book
     var fallback: Book
     fallback.title = \"\"
     fallback.pages = 0
-    return ^books(id) ?? fallback
+    if const book = ^books(id)
+        return book
+    return fallback
 
 pub fn pages_or_caught(id: int): string
     try
-        return $\"{^books(id).pages}\"
+        if const book = ^books(id)
+            return $\"{book.pages}\"
+        return \"missing book\"
     catch err: Error
         return err.code
 ";
@@ -77,23 +83,21 @@ fn a_whole_resource_read_over_a_missing_required_field_faults() {
         &store,
         checked_entry!(&program, "test::whole", Value::Int(1)),
     );
-    assert_run_error(result, RUN_TYPE);
+    assert_run_error(result, RUN_ABSENT);
 }
 
 #[test]
-fn a_missing_required_field_fault_is_the_same_absent_code_a_catch_binds() {
-    // The required-field-absent fault on a direct read carries the absent-element code,
-    // so a `try`/`catch` binds it by that code — the fault is typed, not an opaque
-    // runtime abort. It still does not default: only an explicit catch observes it.
+fn a_missing_required_field_fault_during_materialization_is_not_caught() {
+    // The required-field-absent fault during whole-resource materialization carries
+    // the absent-element code, but is fatal rather than catchable. The surrounding
+    // catch must not convert corrupted saved data into an ordinary fallback path.
     let program = checked_program(REQUIRED_PAGES);
     let store = store_missing_required_pages(&program, 1);
-    let caught = run_entry(
+    let result = run_entry(
         &store,
         checked_entry!(&program, "test::pages_or_caught", Value::Int(1)),
-    )
-    .expect("the fault is caught")
-    .value;
-    assert_eq!(caught, Some(Value::Str(RUN_ABSENT.into())));
+    );
+    assert_run_error(result, RUN_ABSENT);
 }
 
 /// A keyed root with a unique index over a sparse `isbn` field. Records can be

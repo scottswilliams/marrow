@@ -801,6 +801,26 @@ impl UseWalker<'_, '_> {
                     self.walk_block(block, scope, type_scope);
                 }
             }
+            Statement::IfConst {
+                name,
+                value,
+                then_block,
+                else_ifs,
+                else_block,
+                span,
+            } => {
+                self.walk_expr(value, scope);
+                self.walk_if_const_then(*span, name, value, then_block, scope, type_scope);
+                for else_if in else_ifs {
+                    if let Some(condition) = &else_if.condition {
+                        self.walk_expr(condition, scope);
+                    }
+                    self.walk_block(&else_if.block, scope, type_scope);
+                }
+                if let Some(block) = else_block {
+                    self.walk_block(block, scope, type_scope);
+                }
+            }
             Statement::While {
                 condition, body, ..
             } => {
@@ -878,6 +898,37 @@ impl UseWalker<'_, '_> {
             type_scope,
             self.aliases,
             self.file,
+        );
+        scope.push(frame);
+        type_scope.push(type_frame);
+        for inner in &body.statements {
+            self.walk_statement(inner, scope, type_scope);
+        }
+        scope.pop();
+        type_scope.pop();
+    }
+
+    fn walk_if_const_then(
+        &mut self,
+        statement_span: SourceSpan,
+        name: &str,
+        value: &Expression,
+        body: &Block,
+        scope: &mut Vec<HashMap<String, DefId>>,
+        type_scope: &mut Vec<HashMap<String, MarrowType>>,
+    ) {
+        let mut frame = HashMap::new();
+        frame.insert(name.to_string(), self.define_local(statement_span));
+        let mut type_frame = HashMap::new();
+        type_frame.insert(
+            name.to_string(),
+            crate::infer::infer_only(
+                self.builder.program,
+                value,
+                type_scope,
+                self.aliases,
+                self.file,
+            ),
         );
         scope.push(frame);
         type_scope.push(type_frame);

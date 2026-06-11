@@ -379,7 +379,7 @@ fn a_throw_caught_inside_a_transaction_commits() {
     let program = checked_program(
         "resource Book\n    required title: string\nstore ^books(id: int): Book\n\n\
          pub fn safe(id: int)\n    transaction\n        try\n            throw Error(code: \"x.y\", message: \"b\")\n        catch err: Error\n            ^books(id).title = \"recovered\"\n\n\
-         pub fn title(id: int): string\n    return ^books(id).title\n",
+         pub fn title(id: int): string\n    return ^books(id).title ?? \"\"\n",
     );
     let store = TreeStore::memory();
     run_entry(

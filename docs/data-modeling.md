@@ -81,7 +81,8 @@ local value. It does not pull in keyed child layers — those are read through
 their saved paths or traversed directly:
 
 ```mw
-var p: Patient = ^patients(id)            ; scalars + unkeyed groups
+if const p = ^patients(id)                ; scalars + unkeyed groups
+    write("patient found")
 for visitDate in ^patients(id).visits     ; keyed layers read directly
     write(^patients(id).visits(visitDate).note ?? "")
 ```
@@ -166,7 +167,8 @@ optional chaining:
 
 ```mw
 if exists(^books(id).subtitle)
-    write(^books(id).subtitle)
+    if const subtitle = ^books(id).subtitle
+        write(subtitle)
 
 const subtitle: string = ^books(id).subtitle ?? ""
 ```
@@ -242,8 +244,10 @@ pub fn link(author: Id(^authors), title: string): Id(^books)
     return id
 
 pub fn printBook(id: Id(^books))
-    const author = ^books(id).author
-    print($"{^books(id).title} by {^authors(author).name}")
+    if const author = ^books(id).author
+        if const title = ^books(id).title
+            if const name = ^authors(author).name
+                print($"{title} by {name}")
 ```
 
 Do not store raw scalar keys just to represent an ordinary forward reference.
@@ -289,11 +293,12 @@ transaction:
 
 ```mw
 pub fn revise(id: Id(^policies), title: string, changedAt: instant)
-    transaction
-        const version: int = ^policies(id).currentVersion + 1
-        ^policies(id).currentVersion = version
-        ^policies(id).versions(version).title = title
-        ^policies(id).versions(version).changedAt = changedAt
+    if const currentVersion = ^policies(id).currentVersion
+        transaction
+            const version: int = currentVersion + 1
+            ^policies(id).currentVersion = version
+            ^policies(id).versions(version).title = title
+            ^policies(id).versions(version).changedAt = changedAt
 ```
 
 Multiple history layers can advance independently (for example `names(version)`
@@ -362,7 +367,7 @@ rebuild the generated tree when existing data should appear through it.
 By identity, when the identity is known:
 
 ```mw
-const title = ^books(id).title
+const title = ^books(id).title ?? ""
 ```
 
 By unique index, where one populated path resolves to one identity. The lookup
@@ -370,16 +375,15 @@ is maybe-present — no book may carry that isbn — so resolve it like any
 maybe-present read:
 
 ```mw
-if exists(^books.byIsbn(isbn))
-    const id: Id(^books) = ^books.byIsbn(isbn)
-    const title = ^books(id).title
+if const id = ^books.byIsbn(isbn)
+    const title = ^books(id).title ?? ""
 ```
 
 By non-unique index, iterating the identities under a branch:
 
 ```mw
-for id in ^books.byShelf("fiction")
-    print($"{id}: {^books(id).title}")
+for id, book in ^books.byShelf("fiction")
+    print($"{id}: {book.title}")
 ```
 
 Plain durable iteration streams keys or identities. On a managed root, `^books`
@@ -392,7 +396,8 @@ detail; no command or language surface exposes them.
 By traversal, following a stored typed reference:
 
 ```mw
-const author = ^authors(^books(id).author).name
+if const authorId = ^books(id).author
+    const author = ^authors(authorId).name ?? ""
 ```
 
 ## Inspecting the Saved Tree

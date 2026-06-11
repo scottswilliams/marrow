@@ -15,7 +15,8 @@ require exists(^books(id)) else
         message: $"Book {id} does not exist.",
     )
 
-write(^books(id).title)
+if const title = ^books(id).title
+    write(title)
 ```
 
 The `else` block must not fall through to the following statement. Every path

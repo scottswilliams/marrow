@@ -17,7 +17,7 @@ use crate::group_write::eval_group_entry_write;
 use crate::host::Frame;
 use crate::local_collection::eval_local_collection_write;
 use crate::loop_exec::{eval_for, eval_while};
-use crate::path::direct_root_place;
+use crate::path::{direct_root_place, saved_path_present};
 use crate::transaction::eval_transaction;
 use crate::value::Value;
 use crate::write_dispatch::{
@@ -100,6 +100,22 @@ fn eval_control_statement(statement: &ExecStmt, env: &mut Env<'_>) -> Result<Flo
             span,
         } => eval_if(
             condition.as_ref(),
+            then_block,
+            else_ifs,
+            else_block.as_ref(),
+            *span,
+            env,
+        ),
+        ExecStmt::IfConst {
+            name,
+            value,
+            then_block,
+            else_ifs,
+            else_block,
+            span,
+        } => eval_if_const(
+            name,
+            value,
             then_block,
             else_ifs,
             else_block.as_ref(),
@@ -253,6 +269,34 @@ fn eval_if(
 ) -> Result<Flow, RuntimeError> {
     if eval_condition(condition, span, env)? {
         return eval_block(then_block, env);
+    }
+    for else_if in else_ifs {
+        if eval_condition(else_if.condition.as_ref(), span, env)? {
+            return eval_block(&else_if.block, env);
+        }
+    }
+    match else_block {
+        Some(block) => eval_block(block, env),
+        None => Ok(Flow::Normal),
+    }
+}
+
+fn eval_if_const(
+    name: &str,
+    value: &ExecExpr,
+    then_block: &ExecBody,
+    else_ifs: &[CheckedElseIf],
+    else_block: Option<&ExecBody>,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Flow, RuntimeError> {
+    if saved_path_present(value, value.span(), env)? {
+        let value = eval_expr(value, env)?;
+        env.push_scope();
+        env.bind(name.to_string(), value, false);
+        let result = eval_block(then_block, env);
+        env.pop_scope();
+        return result;
     }
     for else_if in else_ifs {
         if eval_condition(else_if.condition.as_ref(), span, env)? {

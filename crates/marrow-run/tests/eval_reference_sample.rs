@@ -6,7 +6,7 @@ mod support;
 
 use support::*;
 
-use marrow_run::{Host, RUN_ABSENT, Value};
+use marrow_run::{Host, Value};
 use marrow_store::tree::TreeStore;
 
 #[test]
@@ -61,7 +61,7 @@ pub fn set_version_title(id: int, v: int, t: string)
     ^books(id).versions(v).title = t
 
 pub fn version_title(id: int, v: int): string
-    return ^books(id).versions(v).title
+    return ^books(id).versions(v).title ?? \"\"
 ";
 
 #[test]
@@ -104,10 +104,10 @@ fn reads_a_field_from_a_group_entry() {
 }
 
 #[test]
-fn reading_an_absent_group_field_is_an_error() {
+fn reading_an_absent_group_field_uses_explicit_fallback() {
     let program = checked_program(BOOK_VERSIONS);
     let store = TreeStore::memory();
-    let result = run_entry(
+    let value = run_entry(
         &store,
         checked_entry!(
             &program,
@@ -115,8 +115,10 @@ fn reading_an_absent_group_field_is_an_error() {
             Value::Int(1),
             Value::Int(2)
         ),
-    );
-    assert_run_error(result, RUN_ABSENT);
+    )
+    .expect("read with explicit fallback")
+    .value;
+    assert_eq!(value, Some(Value::Str(String::new())));
 }
 
 #[test]

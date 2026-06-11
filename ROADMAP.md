@@ -826,24 +826,6 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 
 ## Wave 2 — P0 foundation (REPORT Part V order)
 
-**W2.7 (after W2.1 and W2.5) Presence totality (II.A2 per gates 1a/1c/1d + gate 38).** Owns:
-marrow-check presence/proofs.rs + facts.rs discharge rules, the early-return guard narrowing —
-`if not exists(place)` with a diverging body installs narrowing for the remainder of the
-enclosing scope — spec statements (II.A2 e: the narrowing-invalidation contract, landing on
-docs/language/resources-and-storage.md after W2.5's Concurrency section), runtime fault-path
-change per 1(d), the gate-38 binding existence guard (C35) — `if const x = place`: parser
-production, AST variant, PresenceProofSource::Narrowing arm, runtime path — landed while the
-presence machinery is open.
-Deletes: the over-broad Declaration-source discharge through arbitrary identities. Seed: failing
-fixture — bare required-field read through a parameter identity is
-`check.bare_maybe_present_read`; the README loan example still checks via the guard form; a
-guard fixture asserting the bound name is discharged in-block with exactly one point read
-(IV.B2 oracle). Review: checker-noise validation against the whole fixture and docs corpora
-before freezing — corpus findings are resolved by adding narrowing-source rules or migrating
-fixtures, never by re-adding Declaration discharge through arbitrary identities; soundness rests
-on W2.5's rendered contract. Done: spec, checker,
-runtime, and error-codes.md agree on exactly which reads can fault.
-
 **W2.8 (after W2.1 and W2.2 — shared tree.rs, node-cell shape; store hotspot) Linear navigation
 + counting oracle (II.B2 + IV.B2).** Owns:
 marrow-store tree.rs/backend.rs (cursor-seek generalization, `scan_before` reverse scan, seek

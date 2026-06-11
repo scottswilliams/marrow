@@ -9,7 +9,7 @@ use marrow_syntax::SourceSpan;
 
 use crate::collection::{ReadPosition, absent_read};
 use crate::env::Env;
-use crate::error::{RUN_TYPE, RuntimeError, type_error, unsupported};
+use crate::error::{RUN_ABSENT, RUN_TYPE, RuntimeError, type_error, unsupported};
 use crate::path::{lower, lower_keys};
 use crate::read::eval_local_field_get;
 use crate::stdlib::read_exact_unique_index_lookup_value;
@@ -226,7 +226,7 @@ fn materialize_resource_members(
             let Some(bytes) = bytes else {
                 if required {
                     return Err(RuntimeError::fault(
-                        RUN_TYPE,
+                        RUN_ABSENT,
                         format!("required stored field `{}` is absent", member.name),
                         span,
                     ));

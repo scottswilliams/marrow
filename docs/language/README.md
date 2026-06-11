@@ -75,7 +75,8 @@ pub fn add(title: string, author: string, shelf: string): Id(^books)
 
 pub fn listShelf(shelf: string)
     for id in ^books.byShelf(shelf)
-        print($"book {id}: {^books(id).title}")
+        if const title = ^books(id).title
+            print($"book {id}: {title}")
 ```
 
 This shows the main shape:
@@ -154,9 +155,9 @@ pub fn loan(id: Id(^books), borrower: string): bool
 
 pub fn printShelf(shelf: string)
     for id in ^books.byShelf(shelf)
-        const title: string = ^books(id).title
-        const author: string = ^books(id).author
-        print($"{title} by {author}")
+        if const title = ^books(id).title
+            if const author = ^books(id).author
+                print($"{title} by {author}")
 ```
 
 ## Style

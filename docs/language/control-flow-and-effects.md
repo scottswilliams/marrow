@@ -81,10 +81,12 @@ materializing it:
 
 ```mw
 for id in ^books
-    write(^books(id).title)
+    if const title = ^books(id).title
+        write(title)
 
 for pos in ^books(id).tags
-    write(^books(id).tags(pos))
+    if const tag = ^books(id).tags(pos)
+        write(tag)
 ```
 
 A single loop variable is the durable key or identity being streamed. For a
@@ -94,7 +96,8 @@ identity stored in that lookup branch:
 
 ```mw
 for id in ^books.byShelf("fiction")
-    write($"book {id}: {^books(id).title}")
+    if const title = ^books(id).title
+        write($"book {id}: {title}")
 ```
 
 Use two loop variables, `entries(...)`, or `values(...)` when code needs values:

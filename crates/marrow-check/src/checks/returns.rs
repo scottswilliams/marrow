@@ -36,6 +36,12 @@ pub(crate) fn check_return_values(
                 else_ifs,
                 else_block,
                 ..
+            }
+            | Statement::IfConst {
+                then_block,
+                else_ifs,
+                else_block,
+                ..
             } => {
                 check_return_values(file, then_block, returns_value, diagnostics);
                 for else_if in else_ifs {
@@ -88,6 +94,12 @@ pub(crate) fn statement_returns(statement: &marrow_syntax::Statement) -> bool {
         // A call may throw or loop forever, so a function ending in one is allowed.
         Statement::Expr { value, .. } => matches!(value, Expression::Call { .. }),
         Statement::If {
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        }
+        | Statement::IfConst {
             then_block,
             else_ifs,
             else_block,

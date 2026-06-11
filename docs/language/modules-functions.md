@@ -158,8 +158,10 @@ Use `inout` when the callee reads and mutates the caller's local value:
 
 ```mw
 fn normalize(inout book: Book)
-var draft: Book = ^books(id)
-normalize(inout draft)
+var draft: Book
+if const saved = ^books(id)
+    draft = saved
+    normalize(inout draft)
 ```
 
 The `inout` marker at the call site makes caller-visible writes explicit.

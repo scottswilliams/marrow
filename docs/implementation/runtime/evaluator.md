@@ -38,7 +38,7 @@ Saved-write and read execution (`write*`, `read`, `durable_read`, `group_write`,
 ## Invariants
 
 - **One error channel.** Language throws ride `RuntimeError.throw` (a boxed Error `Value`) on the `Err` path, while runtime faults raised by `raise_fault` stay as code/message until a `catch` binds them. `catchable = false` means fatal/uncatchable. `raise_fault` keeps the dotted code if it escapes; `raise` relabels an uncaught language throw as `run.uncaught_error`.
-- **`??` (`eval_coalesce`) only swallows `RUN_ABSENT`.** Every other error propagates, so absence-default never hides a real fault; a `?.` chain short-circuits to the same absent fault.
+- **`??` (`eval_coalesce`) only swallows catchable `RUN_ABSENT`.** Every other error, including fatal materialization-time absence for corrupt required saved data, propagates, so absence-default never hides a real fault; a `?.` chain short-circuits to the same absent fault.
 - **Scopes balance on every exit, including faults**, so the `Env` is reusable after an error.
 - **Origin stamping uses only-if-none**, so the deepest frame (the real raiser) wins as a fault unwinds; `FileId` origin is the only file identity a fault carries.
 - **Identities always carry checked root provenance**, including single-key ones, so a raw scalar is never accepted as an `Id(^store)` at dynamic or host boundaries. Every key crossing into the store is guarded against its declared scalar type.

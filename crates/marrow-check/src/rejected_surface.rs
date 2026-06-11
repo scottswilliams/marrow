@@ -100,6 +100,25 @@ fn check_statement(
                 check_block(program, file, block, diagnostics);
             }
         }
+        Statement::IfConst {
+            value,
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            check_expr(program, file, value, diagnostics);
+            check_block(program, file, then_block, diagnostics);
+            for else_if in else_ifs {
+                if let Some(condition) = &else_if.condition {
+                    check_expr(program, file, condition, diagnostics);
+                }
+                check_block(program, file, &else_if.block, diagnostics);
+            }
+            if let Some(block) = else_block {
+                check_block(program, file, block, diagnostics);
+            }
+        }
         Statement::While {
             condition, body, ..
         } => {

@@ -44,8 +44,8 @@ pub fn reshelve_while_iterating_direct()
         ^books(id).shelf = \"history\"
 
 pub fn titles_on(shelf: string)
-    for id in ^books.byShelf(shelf)
-        print(^books(id).title)
+    for id, book in ^books.byShelf(shelf)
+        print(book.title)
 ";
 
 #[test]

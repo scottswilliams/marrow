@@ -483,6 +483,16 @@ pub enum Statement {
         else_block: Option<Block>,
         span: SourceSpan,
     },
+    /// `if const name = place`: a saved-read existence guard that binds `name`
+    /// only in the then block when `place` is present.
+    IfConst {
+        name: String,
+        value: Expression,
+        then_block: Block,
+        else_ifs: Vec<ElseIf>,
+        else_block: Option<Block>,
+        span: SourceSpan,
+    },
     While {
         label: Option<String>,
         condition: Option<Expression>,
@@ -572,6 +582,7 @@ impl Statement {
             | Self::Throw { span, .. }
             | Self::Expr { span, .. }
             | Self::If { span, .. }
+            | Self::IfConst { span, .. }
             | Self::While { span, .. }
             | Self::For { span, .. }
             | Self::Transaction { span, .. }

@@ -372,6 +372,43 @@ fn an_exists_condition_is_not_flagged() {
 }
 
 #[test]
+fn rejects_if_const_over_a_non_saved_read() {
+    // `if const` is a saved-read binding guard, not a general binding statement.
+    let found = check_script(
+        "if-const-scalar",
+        "fn f(): int\n    if const n = 1\n        return n\n    return 0\n",
+        "check.condition_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn accepts_if_const_over_a_singleton_saved_root() {
+    let found = check_module(
+        "if-const-singleton",
+        "module m\n\
+         resource Settings\n    title: string\n\
+         store ^settings: Settings\n\n\
+         fn f(): string\n    if const settings = ^settings\n        return settings.title\n    return \"\"\n",
+        "check.condition_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn rejects_if_const_over_an_address_only_saved_layer() {
+    let found = check_module(
+        "if-const-layer",
+        "module m\n\
+         resource Book\n    tags(pos: int): string\n\
+         store ^books(id: int): Book\n\n\
+         fn f(id: Id(^books))\n    if const tags = ^books(id).tags\n        return\n",
+        "check.condition_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
 fn rejects_a_call_with_the_wrong_argument_count() {
     // `add` takes two parameters; `add(1)` and `add(1, 2, 3)` are both arity errors.
     let found = check_module(

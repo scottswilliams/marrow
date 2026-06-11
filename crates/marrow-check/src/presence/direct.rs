@@ -80,6 +80,25 @@ fn collect_statement_effects(
                 collect_block_effects(facts, block, effects);
             }
         }
+        CheckedStmt::IfConst {
+            value,
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            collect_expr_reads(facts, value, effects);
+            collect_block_effects(facts, then_block, effects);
+            for else_if in else_ifs {
+                if let Some(condition) = &else_if.condition {
+                    collect_expr_reads(facts, condition, effects);
+                }
+                collect_block_effects(facts, &else_if.block, effects);
+            }
+            if let Some(block) = else_block {
+                collect_block_effects(facts, block, effects);
+            }
+        }
         CheckedStmt::While {
             condition, body, ..
         } => {

@@ -51,10 +51,10 @@ pub fn has_author(id: int): bool
     return exists(^authors(id))
 
 pub fn book_title(id: int): string
-    return ^books(id).title
+    return ^books(id).title ?? \"\"
 
 pub fn author_name(id: int): string
-    return ^authors(id).name
+    return ^authors(id).name ?? \"\"
 ";
 
 #[test]

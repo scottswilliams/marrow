@@ -42,8 +42,8 @@ pub fn countRoot(): int
     return count(^books)
 
 pub fn idsOnShelf(shelf: string)
-    for id in ^books.byShelf(shelf)
-        print($\"{^books(id).title}\")
+    for id, book in ^books.byShelf(shelf)
+        print($\"{book.title}\")
 ";
 
 fn populated_store(program: &marrow_check::CheckedRuntimeProgram) -> TreeStore {

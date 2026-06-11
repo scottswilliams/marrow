@@ -1,7 +1,5 @@
 use super::scope::NameScope;
-use super::target::{
-    ReadTarget, declaration_proves_presence, proof_place, read_file, read_target_with_scope,
-};
+use super::target::{ReadTarget, proof_place, read_file, read_target_with_scope};
 use crate::facts::{
     PresenceProofDraft, PresenceProofPlace, PresenceProofRead, PresenceProofSource,
     PresenceProofStatus,
@@ -35,10 +33,6 @@ pub(super) fn read_proof(
         ),
         ReadContext::Bare if narrowed.contains(&target) => (
             PresenceProofSource::Narrowing,
-            PresenceProofStatus::Discharged,
-        ),
-        ReadContext::Bare if declaration_proves_presence(program, &target) => (
-            PresenceProofSource::Declaration,
             PresenceProofStatus::Discharged,
         ),
         ReadContext::Bare => (

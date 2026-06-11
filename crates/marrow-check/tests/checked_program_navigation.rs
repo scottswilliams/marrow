@@ -191,9 +191,9 @@ fn next_and_prev_of_a_keyed_root_type_to_the_identity() {
              \x20   required title: string\n\
              store ^books(id: int): Book\n\
              pub fn afterTitle(id: int, fallback: Id(^books)): string\n\
-             \x20   return ^books(next(^books(id)) ?? fallback).title\n\
+             \x20   return ^books(next(^books(id)) ?? fallback).title ?? \"\"\n\
              pub fn beforeTitle(id: int, fallback: Id(^books)): string\n\
-             \x20   return ^books(prev(^books(id)) ?? fallback).title\n",
+             \x20   return ^books(prev(^books(id)) ?? fallback).title ?? \"\"\n",
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
@@ -377,7 +377,7 @@ fn keys_over_composite_identity_index_bind_reconstructed_identities() {
              fn total(studentId: string): int\n\
              \x20   var credits = 0\n\
              \x20   for id in keys(^enrollments.byStudent(studentId))\n\
-             \x20       credits = credits + ^enrollments(id).credits\n\
+             \x20       credits = credits + (^enrollments(id).credits ?? 0)\n\
              \x20   return credits\n",
         );
     });

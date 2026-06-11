@@ -33,7 +33,7 @@ pub fn seed(id: int)
     ^books(id).pages = 243
 
 pub fn titleOf(id: int): string
-    return ^books(id).title
+    return ^books(id).title ?? \"\"
 
 pub fn publishedOf(id: int): bool
     return ^books(id).published ?? false
@@ -332,7 +332,7 @@ fn a_resource_declared_in_one_module_is_saved_and_read_across_modules() {
         "module schema\nresource Book\n    required title: string\n\nstore ^books(id: int): Book\n",
         "module app\nuse schema\n\n\
          pub fn setTitle(id: int, t: string)\n    ^books(id).title = t\n\n\
-         pub fn titleOf(id: int): string\n    return ^books(id).title\n",
+         pub fn titleOf(id: int): string\n    return ^books(id).title ?? \"\"\n",
     ]);
     let store = empty_store();
     run_entry(

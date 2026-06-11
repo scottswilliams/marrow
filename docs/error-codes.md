@@ -131,7 +131,7 @@ over every configured source and test file.
 | `check.return_value` | A `return` carries a value in a function with no return type, or omits one in a value-returning function. |
 | `check.missing_return` | A value-returning function can reach the end of its body without returning. |
 | `check.operator_type` | An operator is applied to operands whose types it does not accept. |
-| `check.condition_type` | An `if`/`while` condition is not a `bool`. |
+| `check.condition_type` | An `if`/`while` condition is not a `bool`, or an `if const` guard is not a saved value read that can be presence-bound. |
 | `check.call_argument` | A call or constructor passes the wrong number of arguments, names a parameter or key that does not exist, omits a required key, or supplies one more than once. |
 | `check.return_type` | A `return` value's type does not match the function's declared return type. |
 | `check.assignment_type` | A value's type does not match the typed binding or assignment target it is stored into. |
@@ -144,7 +144,7 @@ over every configured source and test file.
 | `check.next_id_requires_single_int` | `nextId(^root)` names a root with no default integer allocation policy (composite identity, a non-integer key, or a keyless singleton). The static counterpart of `write.next_id_unsupported`. |
 | `check.rejected_surface` | Source uses a parsed construct outside the accepted v0.1 surface, such as saved-path `inout` call arguments or old saved traversal method shapers such as `.take(...)`, `.window(...)`, and `.resume(...)`. Reserved syntax forms such as `merge`, `lock`, `out`, and `~` are parser diagnostics instead. |
 | `check.catalog_intent` | Binding source against the accepted catalog cannot resolve durable identity soundly: a proposed catalog whose identities collide, a reserved spelling reused without an `evolve` intent, or an `evolve` intent that cannot carry identity forward — a rename without an accepted entry holding the new canonical path and old alias. A source declaration the accepted catalog does not yet record is informational, not an error: it reports that durable identity is not yet frozen, and running the program or applying an evolution records it. |
-| `check.bare_maybe_present_read` | A maybe-present saved read appears in value position without a read-site resolution form such as `??`, `exists(...)`, optional chaining, or an attached-data traversal. |
+| `check.bare_maybe_present_read` | A maybe-present saved read appears in value position without a read-site resolution form such as `??`, `exists(...)`, `if const name = place`, optional chaining, or an attached-data traversal. A `required` declaration is a validity rule for populated records; it is not a proof that arbitrary saved data is present at this read site. |
 | `check.literal_range` | A numeric literal is provably outside its type's range (an integer beyond `i64`, or a decimal outside the 34-digit / 34-place envelope). The static counterpart of the runtime numeric range faults. |
 | `check.string_escape` | A string literal or interpolation text segment carries a backslash escape outside the recognized set (`\\`, `\"`, `\n`, `\r`, `\t`), or a trailing lone backslash. |
 | `check.finally_control_flow` | A `finally` block lets control flow escape via `return`, `break`, or `continue`. |
@@ -220,7 +220,7 @@ code, except `run.uncaught_error` — see "Typed Errors In Running Programs".
 | `run.ambiguous_function` | A bare run entry name matched more than one public function. Qualify the entry as `module::function`. |
 | `run.private_function` | A qualified call or run entry reached a function that exists but is not `pub` to the caller. The runtime backstop for `check.private_function`. |
 | `run.no_value` | A call to a function that returns no value was used where a value is needed. Fatal runtime backstop for unchecked programs. |
-| `run.absent_element` | A value-position required or total read found its saved cell missing. It is catchable as an `Error`; an ordinary maybe-present read is resolved at the read site (`??` / `if exists` / `?.`) or is a compile error. Materialization-time absence after an address is fixed remains fatal. |
+| `run.absent_element` | A value-position absence in a read-site resolution form is catchable as an `Error` when the form is defined to catch it. Ordinary maybe-present reads must be resolved at the read site (`??` / `if exists` / `if const` / `?.`) or are compile errors. A missing required field discovered while materializing an already fixed saved address is fatal invalid attached data and is not hidden by `??` or `catch`. |
 | `run.store` | The store reported an error (e.g. corrupt tree-cell payload) during a read. Fatal storage/backend failure while evaluating a read. |
 | `run.unsupported` | A construct the runtime does not evaluate. Fatal runtime backstop. |
 | `run.capability` | A host capability a builtin needs (e.g. the clock for `std::clock::now`) was not provided to this run. Fatal host/tooling failure. |

@@ -43,13 +43,18 @@ pub fn add(title: string, author: string, shelf: string, changedAt: instant): Id
     return id
 
 pub fn moveToShelf(id: Id(^books), shelf: string, changedAt: instant)
-    transaction
-        const version: int = ^books(id).currentVersion + 1
-        ^books(id).shelf = shelf
-        ^books(id).currentVersion = version
-        ^books(id).versions(version).title = ^books(id).title
-        ^books(id).versions(version).shelf = shelf
-        ^books(id).versions(version).changedAt = changedAt
+    if not exists(^books(id))
+        return
+
+    if const currentVersion = ^books(id).currentVersion
+        if const title = ^books(id).title
+            transaction
+                const version: int = currentVersion + 1
+                ^books(id).shelf = shelf
+                ^books(id).currentVersion = version
+                ^books(id).versions(version).title = title
+                ^books(id).versions(version).shelf = shelf
+                ^books(id).versions(version).changedAt = changedAt
 
 pub fn addNote(id: Id(^books), noteId: string, text: string): bool
     if not exists(^books(id))
@@ -69,7 +74,8 @@ pub fn remove(id: Id(^books))
 
 pub fn printShelf(shelf: string)
     for id in ^books.byShelf(shelf)
-        print($"{id}: {^books(id).title}")
+        if const title = ^books(id).title
+            print($"{id}: {title}")
 
 pub fn main()
     const now: instant = std::clock::now()

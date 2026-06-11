@@ -68,7 +68,9 @@ pub fn record(id: int)
     ^events(id).changedAt = now
 
 pub fn changed_at_of(id: int): instant
-    return ^events(id).changedAt
+    if const changedAt = ^events(id).changedAt
+        return changedAt
+    throw Error(code: \"test.missing_event\", message: \"missing event\")
 ";
 
 #[test]
@@ -340,7 +342,7 @@ fn group_entry_field_writes_compose_in_a_transaction() {
     // The sample's `add` shape: a whole-record write plus group-entry history
     // writes, all inside one transaction.
     let program = checked_program(
-        "resource Book\n    required title: string\n    versions(version: int)\n        required title: string\n        required shelf: string\nstore ^books(id: int): Book\n\npub fn add(id: int, t: string, s: string)\n    transaction\n        ^books(id).title = t\n        ^books(id).versions(1).title = t\n        ^books(id).versions(1).shelf = s\n\npub fn title_of(id: int): string\n    return ^books(id).title\n",
+        "resource Book\n    required title: string\n    versions(version: int)\n        required title: string\n        required shelf: string\nstore ^books(id: int): Book\n\npub fn add(id: int, t: string, s: string)\n    transaction\n        ^books(id).title = t\n        ^books(id).versions(1).title = t\n        ^books(id).versions(1).shelf = s\n\npub fn title_of(id: int): string\n    return ^books(id).title ?? \"\"\n",
     );
     let store = TreeStore::memory();
     run_entry(

@@ -20,8 +20,8 @@ pub fn add(id: int, t: string)
     ^books(id).title = t
 
 pub fn titles()
-    for id in ^books
-        print(^books(id).title)
+    for id, book in ^books
+        print(book.title)
 
 pub fn directIds()
     for id in ^books

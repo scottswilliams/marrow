@@ -68,8 +68,8 @@ pub fn add(title: string, author: string, shelf: string): Id(^books)
     return id
 
 pub fn listShelf(shelf: string)
-    for id in ^books.byShelf(shelf)
-        print($"{id}: {^books(id).title} by {^books(id).author}")
+    for id, book in ^books.byShelf(shelf)
+        print($"{id}: {book.title} by {book.author}")
 
 pub fn main()
     add(title: "Small Gods", author: "Terry Pratchett", shelf: "fiction")
@@ -242,7 +242,10 @@ use shelf::books
 pub fn addThenFind()
     const id = books::add(title: "Mort", author: "Terry Pratchett", shelf: "fiction")
     std::assert::isTrue(exists(^books(id)))
-    std::assert::isTrue(^books(id).title == "Mort")
+    if const title = ^books(id).title
+        std::assert::isTrue(title == "Mort")
+    else
+        std::assert::isTrue(false)
 ```
 
 `use shelf::books` imports the module so you can call `books::add`. Write

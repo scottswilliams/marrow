@@ -108,6 +108,37 @@ fn parses_if_else_if_else_chain() {
 }
 
 #[test]
+fn parses_if_const_binding_guard() {
+    let parsed = parse_source(
+        "module app\n\
+         fn title(id: Id(^books))\n\
+         \x20   if const title = ^books(id).title\n\
+         \x20       print(title)\n\
+         \x20   else\n\
+         \x20       print(\"missing\")\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let title = parsed.file.function("title").expect("title function");
+    let Statement::IfConst {
+        name,
+        value,
+        then_block,
+        else_block,
+        ..
+    } = &title.body.statements[0]
+    else {
+        panic!("expected if statement, got {:?}", title.body.statements[0]);
+    };
+    assert_eq!(name, "title");
+    assert!(
+        matches!(value, Expression::Field { name, .. } if name == "title"),
+        "binding value: {value:?}"
+    );
+    assert_eq!(then_block.statements.len(), 1);
+    assert!(else_block.is_some(), "expected else block");
+}
+
+#[test]
 fn parses_nested_if_inside_then_block() {
     let parsed = parse_source(
         "module app\n\

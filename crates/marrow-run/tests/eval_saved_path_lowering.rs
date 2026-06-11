@@ -18,7 +18,7 @@ fn an_identity_argument_splices_in_as_the_record_key() {
     let program = checked_program(
         "resource Book\n    required title: string\nstore ^books(id: int): Book\n\n\
          pub fn save()\n    const id = nextId(^books)\n    ^books(id).title = \"a\"\n\n\
-         pub fn read(): string\n    return ^books(1).title\n",
+         pub fn read(): string\n    return ^books(1).title ?? \"\"\n",
     );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::save")).expect("save");

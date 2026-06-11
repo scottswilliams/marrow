@@ -130,7 +130,8 @@ populated; the check narrows the path inside the guarded block:
 
 ```mw
 if exists(^books(id).subtitle)
-    write(^books(id).subtitle)
+    if const subtitle = ^books(id).subtitle
+        write(subtitle)
 ```
 
 Use the absence-default `??` when absence is expected:
@@ -191,7 +192,8 @@ draft.shelf = "fiction"
 
 const id: Id(^books) = nextId(^books)
 ^books(id) = draft
-const saved: Book = ^books(id)
+if const saved = ^books(id)
+    write(saved.title)
 ```
 
 Resource constructors create local resource values:
@@ -359,7 +361,7 @@ A managed saved root is addressed by one identity value:
 
 ```mw
 const id: Id(^books) = nextId(^books)
-const title = ^books(id).title
+const title = ^books(id).title ?? ""
 ```
 
 The declaration lists the stored key components; ordinary typed code passes
@@ -399,12 +401,13 @@ IDs behind.
 
 `next(^books(id))` and `prev(^books(id))` type to that store's identity
 (`Id(^books)`), so the neighbor is addressed like any identity:
-`^books(next(^books(id))).title` is well-typed. Over a keyed child layer, `next`
-and `prev` type to the layer's key. `reversed(...)` preserves its argument's
-element type, so `for x in reversed(layer)` binds `x` exactly as `for x in layer`
-does. Stepping off the edge yields no neighbor, so the result is maybe-present and is
-resolved at the read like any maybe-present value, commonly with `??` — the
-default's type drives the result. It does not raise a runtime fault.
+`const neighbor = next(^books(id)) ?? id` can then feed
+`^books(neighbor).title ?? ""`. Over a keyed child layer, `next` and `prev` type
+to the layer's key. `reversed(...)` preserves its argument's element type, so
+`for x in reversed(layer)` binds `x` exactly as `for x in layer` does. Stepping
+off the edge yields no neighbor, so the result is maybe-present and is resolved
+at the read like any maybe-present value, commonly with `??` — the default's
+type drives the result. It does not raise a runtime fault.
 
 ## Mutability
 

@@ -34,7 +34,7 @@ pub(crate) fn eval_coalesce(
         // `??` absorbs an absent read as ordinary control flow, not an error,
         // falling back to the default. Only an absent read falls back; schema and
         // type faults still propagate.
-        Err(error) if error.code == RUN_ABSENT => eval_expr(default, env),
+        Err(error) if error.code == RUN_ABSENT && error.is_catchable() => eval_expr(default, env),
         other => other,
     }
 }

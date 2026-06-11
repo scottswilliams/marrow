@@ -23,7 +23,7 @@ fn an_unguarded_absent_element_read_is_rejected() {
 #[test]
 fn reads_inside_a_transaction_see_earlier_writes() {
     let program = checked_program(&format!(
-        "{BOOK_PRIMARY_SCHEMA}pub fn rww(id: int): string\n    transaction\n        ^books(id).title = \"fresh\"\n        return ^books(id).title\n"
+        "{BOOK_PRIMARY_SCHEMA}pub fn rww(id: int): string\n    transaction\n        ^books(id).title = \"fresh\"\n        return ^books(id).title ?? \"\"\n"
     ));
     let store = TreeStore::memory();
     let outcome =

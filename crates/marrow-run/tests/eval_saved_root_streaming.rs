@@ -31,7 +31,7 @@ fn keys_saved_root_loop_returns_ids_in_store_order() {
 #[test]
 fn direct_saved_root_loop_streams_ids_and_reads_current_values() {
     let program = checked_program(&format!(
-        "{BOOK_PRIMARY_SCHEMA}pub fn seed()\n    ^books(1).title = \"A\"\n    ^books(2).title = \"B\"\n\npub fn mutateFutureValue(): int\n    var total = 0\n    for id in ^books\n        if ^books(id).title == \"A\"\n            total = total * 10 + 1\n            ^books(2).title = \"Z\"\n        else if ^books(id).title == \"B\"\n            total = total * 10 + 2\n        else if ^books(id).title == \"Z\"\n            total = total * 10 + 9\n    return total\n"
+        "{BOOK_PRIMARY_SCHEMA}pub fn seed()\n    ^books(1).title = \"A\"\n    ^books(2).title = \"B\"\n\npub fn mutateFutureValue(): int\n    var total = 0\n    for id in ^books\n        if const title = ^books(id).title\n            if title == \"A\"\n                total = total * 10 + 1\n                ^books(2).title = \"Z\"\n            else if title == \"B\"\n                total = total * 10 + 2\n            else if title == \"Z\"\n                total = total * 10 + 9\n    return total\n"
     ));
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");

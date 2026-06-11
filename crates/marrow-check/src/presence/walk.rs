@@ -2,7 +2,7 @@ use super::calls::std_path_arg_mask;
 use super::effects::{
     condition_narrowings, invalidate_key_bindings, invalidate_removed_narrowings,
     invalidate_saved_narrowings, invalidate_written_target, mutating_arg_bindings,
-    traversal_narrowing,
+    negated_exists_narrowings, traversal_narrowing,
 };
 use super::keys::saved_path_parts;
 use super::proofs::{ReadContext, read_proof, record_read};
@@ -55,7 +55,21 @@ fn collect_block(
     scope: &mut NameScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
+    collect_block_with_bindings(program, block, &[], narrowed, scope, diagnostics);
+}
+
+fn collect_block_with_bindings(
+    program: &mut CheckedProgram,
+    block: &CheckedBody,
+    initial_bindings: &[String],
+    narrowed: &mut Vec<ReadTarget>,
+    scope: &mut NameScope,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
     scope.push_frame();
+    for binding in initial_bindings {
+        scope.bind(binding);
+    }
     for statement in block.statements() {
         collect_statement(program, statement, narrowed, scope, diagnostics);
     }
@@ -99,6 +113,26 @@ fn collect_statement(
         } => collect_if_statement(
             IfStatementParts {
                 condition: condition.as_ref(),
+                then_block,
+                else_ifs,
+                else_block: else_block.as_ref(),
+            },
+            program,
+            narrowed,
+            scope,
+            diagnostics,
+        ),
+        CheckedStmt::IfConst {
+            name,
+            value,
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => collect_if_const_statement(
+            IfConstStatementParts {
+                name,
+                value,
                 then_block,
                 else_ifs,
                 else_block: else_block.as_ref(),
@@ -269,6 +303,75 @@ fn collect_if_statement(
     if let Some(block) = parts.else_block {
         collect_block(program, block, narrowed, scope, diagnostics);
     }
+    if parts.else_ifs.is_empty()
+        && parts.else_block.is_none()
+        && block_prevents_fallthrough(parts.then_block)
+        && let Some(condition) = parts.condition
+    {
+        super::util::extend_unique(
+            narrowed,
+            negated_exists_narrowings(program, condition, scope),
+        );
+    }
+}
+
+struct IfConstStatementParts<'a> {
+    name: &'a str,
+    value: &'a CheckedExpr,
+    then_block: &'a CheckedBody,
+    else_ifs: &'a [CheckedElseIf],
+    else_block: Option<&'a CheckedBody>,
+}
+
+fn collect_if_const_statement(
+    parts: IfConstStatementParts<'_>,
+    program: &mut CheckedProgram,
+    narrowed: &mut Vec<ReadTarget>,
+    scope: &mut NameScope,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    collect_expr(
+        program,
+        parts.value,
+        ReadContext::Resolved,
+        narrowed,
+        scope,
+        diagnostics,
+    );
+    let mut branch_narrowed = narrowed.to_vec();
+    if let Some(target) = read_target_with_scope(program, parts.value, scope) {
+        super::util::extend_unique(&mut branch_narrowed, vec![target]);
+    }
+    let branch_start = branch_narrowed.clone();
+    collect_block_with_bindings(
+        program,
+        parts.then_block,
+        &[parts.name.to_string()],
+        &mut branch_narrowed,
+        scope,
+        diagnostics,
+    );
+    invalidate_removed_narrowings(narrowed, &branch_start, &branch_narrowed);
+    for else_if in parts.else_ifs {
+        collect_optional_bare_expr(
+            program,
+            else_if.condition.as_ref(),
+            narrowed,
+            scope,
+            diagnostics,
+        );
+        collect_guarded_block(
+            program,
+            else_if.condition.as_ref(),
+            &else_if.block,
+            narrowed,
+            scope,
+            diagnostics,
+        );
+    }
+    if let Some(block) = parts.else_block {
+        collect_block(program, block, narrowed, scope, diagnostics);
+    }
 }
 
 fn collect_guarded_block(
@@ -289,6 +392,66 @@ fn collect_guarded_block(
     let branch_start = branch_narrowed.clone();
     collect_block(program, block, &mut branch_narrowed, scope, diagnostics);
     invalidate_removed_narrowings(narrowed, &branch_start, &branch_narrowed);
+}
+
+fn block_prevents_fallthrough(block: &CheckedBody) -> bool {
+    block
+        .statements()
+        .last()
+        .is_some_and(statement_prevents_fallthrough)
+}
+
+fn statement_prevents_fallthrough(statement: &CheckedStmt) -> bool {
+    match statement {
+        CheckedStmt::Return { .. }
+        | CheckedStmt::Throw { .. }
+        | CheckedStmt::Break { .. }
+        | CheckedStmt::Continue { .. } => true,
+        CheckedStmt::If {
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        }
+        | CheckedStmt::IfConst {
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => else_block.as_ref().is_some_and(|else_block| {
+            block_prevents_fallthrough(then_block)
+                && else_ifs
+                    .iter()
+                    .all(|else_if| block_prevents_fallthrough(&else_if.block))
+                && block_prevents_fallthrough(else_block)
+        }),
+        CheckedStmt::Transaction { body, .. } => block_prevents_fallthrough(body),
+        CheckedStmt::Try {
+            body,
+            catch,
+            finally,
+            ..
+        } => {
+            finally.as_ref().is_some_and(block_prevents_fallthrough)
+                || (block_prevents_fallthrough(body)
+                    && catch
+                        .as_ref()
+                        .is_none_or(|clause| block_prevents_fallthrough(&clause.block)))
+        }
+        CheckedStmt::Match { arms, .. } => {
+            !arms.is_empty()
+                && arms
+                    .iter()
+                    .all(|arm| block_prevents_fallthrough(&arm.block))
+        }
+        CheckedStmt::Const { .. }
+        | CheckedStmt::Var { .. }
+        | CheckedStmt::Assign { .. }
+        | CheckedStmt::Delete { .. }
+        | CheckedStmt::Expr { .. }
+        | CheckedStmt::While { .. }
+        | CheckedStmt::For { .. } => false,
+    }
 }
 
 struct ForStatementParts<'a> {

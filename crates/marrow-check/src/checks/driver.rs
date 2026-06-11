@@ -492,6 +492,12 @@ fn check_statement_type_annotations(
             else_ifs,
             else_block,
             ..
+        }
+        | Statement::IfConst {
+            then_block,
+            else_ifs,
+            else_block,
+            ..
         } => {
             check_block_type_annotations(then_block, context, diagnostics);
             for else_if in else_ifs {

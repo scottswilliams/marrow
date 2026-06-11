@@ -62,6 +62,21 @@ impl CheckedBody {
     }
 }
 
+fn lower_scoped_with_binding(
+    block: &syntax::Block,
+    context: &CheckedExecutableContext<'_>,
+    scope: &mut Vec<HashMap<String, MarrowType>>,
+    name: String,
+    ty: MarrowType,
+) -> Option<CheckedBody> {
+    let mut frame = HashMap::new();
+    frame.insert(name, ty);
+    scope.push(frame);
+    let body = CheckedBody::lower_scoped(block, context, scope);
+    scope.pop();
+    body
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckedStmt {
     Const {
@@ -108,6 +123,14 @@ pub enum CheckedStmt {
     },
     If {
         condition: Option<CheckedExpr>,
+        then_block: CheckedBody,
+        else_ifs: Vec<CheckedElseIf>,
+        else_block: Option<CheckedBody>,
+        span: SourceSpan,
+    },
+    IfConst {
+        name: String,
+        value: CheckedExpr,
         then_block: CheckedBody,
         else_ifs: Vec<CheckedElseIf>,
         else_block: Option<CheckedBody>,
@@ -260,6 +283,42 @@ impl CheckedStmt {
                 },
                 span: *span,
             },
+            syntax::Statement::IfConst {
+                name,
+                value,
+                then_block,
+                else_ifs,
+                else_block,
+                span,
+            } => {
+                let value_type = crate::infer::infer_only(
+                    context.program,
+                    value,
+                    scope,
+                    &context.aliases,
+                    context.source_file,
+                );
+                Self::IfConst {
+                    name: name.clone(),
+                    value: CheckedExpr::lower(value, context, scope)?,
+                    then_block: lower_scoped_with_binding(
+                        then_block,
+                        context,
+                        scope,
+                        name.clone(),
+                        value_type,
+                    )?,
+                    else_ifs: else_ifs
+                        .iter()
+                        .map(|else_if| CheckedElseIf::lower(else_if, context, scope))
+                        .collect::<Option<Vec<_>>>()?,
+                    else_block: match else_block {
+                        Some(block) => Some(CheckedBody::lower_scoped(block, context, scope)?),
+                        None => None,
+                    },
+                    span: *span,
+                }
+            }
             _ => return None,
         })
     }
@@ -385,6 +444,7 @@ impl CheckedStmt {
             | Self::Throw { span, .. }
             | Self::Expr { span, .. }
             | Self::If { span, .. }
+            | Self::IfConst { span, .. }
             | Self::While { span, .. }
             | Self::For { span, .. }
             | Self::Transaction { span, .. }

@@ -245,7 +245,8 @@ distinct:
 
 ```mw
 for id in ^books.byShelf("fiction")
-    write($"book {id}: {^books(id).title}")
+    if const title = ^books(id).title
+        write($"book {id}: {title}")
 ```
 
 Indexes may be unique:
@@ -305,7 +306,7 @@ Marrow reads saved data with paths, traversal, and declared indexes.
 Use the primary saved root when identity is known:
 
 ```mw
-const title = ^books(id).title
+const title = ^books(id).title ?? ""
 ```
 
 Stores, indexes, and keyed child layers are durable iterables. Iterate one with an
@@ -314,7 +315,8 @@ Use an index when the access pattern matters:
 
 ```mw
 for id in ^books.byShelf("fiction")
-    print(^books(id).title)
+    if const title = ^books(id).title
+        print(title)
 ```
 
 Full-store traversal is explicit by iterating the store root, and streams the same
@@ -322,7 +324,8 @@ way:
 
 ```mw
 for id in ^books
-    print(^books(id).title)
+    if const title = ^books(id).title
+        print(title)
 ```
 
 Materialization stays in the tree model: `for id in ^books` streams identities,
@@ -465,16 +468,21 @@ gap-skipping, key-ordered walk is the storage guarantee the `reversed`,
 Read and write fields directly:
 
 ```mw
-const title: string = ^books(id).title
+const title: string = ^books(id).title ?? ""
 ^books(id).shelf = "fiction"
 ```
 
 Read or write whole local resources:
 
 ```mw
-var book: Book = ^books(id)
-book.shelf = "favorites"
-^books(id) = book
+if const book = ^books(id)
+    print(book.title)
+
+var replacement: Book
+replacement.title = "Small Gods"
+replacement.author = "Terry Pratchett"
+replacement.shelf = "favorites"
+^books(id) = replacement
 ```
 
 A whole-resource read materializes the resource's fields — its top-level scalars
@@ -492,10 +500,10 @@ specific fields instead of using `=`.
 The compiler checks resource fields before runtime. Runtime reads from saved
 data also validate bytes before returning typed values.
 
-If a proven saved read finds missing required data or bytes that do not decode
-as the checked leaf type, the command stops with a fatal data-attachment or
-storage-corruption fault rather than a catchable `Error`. Checked inspection
-can still report the stored bytes for repair.
+If a whole-resource materialization finds missing required data, or if a read
+finds bytes that do not decode as the checked leaf type, the command stops with
+a fatal data-attachment or storage-corruption fault rather than a catchable
+`Error`. Checked inspection can still report the stored bytes for repair.
 
 ## Sparse And Required Fields
 
@@ -511,12 +519,19 @@ Rules:
 - A maybe-present field must be resolved at the read. An unresolved read of a
   maybe-present place is a compile error at the read site;
   it never raises a runtime fault and never returns a stored null. Resolve it with
-  `place ?? fallback`, an `if exists(place)` branch, or optional chaining
-  `a?.b?.c` that ends in one of those.
+  `place ?? fallback`, an `if exists(place)` branch, an `if const name = place`
+  binding guard, or optional chaining `a?.b?.c` that ends in one of those.
 - `path ?? default` returns `default` for an unpopulated sparse path. It
   does not hide schema errors.
 - `exists(path)` checks whether a value or child exists and narrows the path
   inside the guarded block.
+- `if const name = path` checks the same presence as `exists(path)`. When the
+  path is present, it reads the value once, binds it immutably as `name`, and
+  runs the guarded block. It can bind saved value reads such as fields,
+  singleton roots, fully addressed records or keyed-layer entries, and complete
+  unique-index lookups. It does not bind address-only collections such as a
+  keyed root, a keyed child layer without its child key, or a non-unique index
+  branch.
 - `delete path` removes the value and child tree at that path. Deleting an
   already absent sparse path or store identity has no effect.
 - `required` fields must be populated for a valid resource.
@@ -524,8 +539,8 @@ Rules:
   not for every possible key.
 
 ```mw
-if exists(^books(id).subtitle)
-    write(^books(id).subtitle)
+if const subtitle = ^books(id).subtitle
+    write(subtitle)
 
 const subtitle: string = ^books(id).subtitle ?? ""
 ```
@@ -536,10 +551,17 @@ An absent store identity is ordinary absence until a checked read proves
 otherwise. Code must resolve maybe-present records and fields at the read site,
 so an unchecked absent record is a check error rather than a runtime branch.
 
-Once a read is proven present, missing required data is invalid attached data.
-A required field missing from an existing record, or a total read whose stored
-cell is absent, is a fatal data-attachment/corruption fault. It is not a
-catchable `Error`, and `??` does not hide it.
+Declaring a field `required` does not by itself prove presence for arbitrary
+saved data. A bare read of a required field through an identity, parameter, or
+constructed `Id(^store, key...)` still needs read-site resolution unless the
+checker has a concrete narrowing proof. This keeps the source contract honest
+when attached data is absent, stale, or under repair.
+
+Once a saved address has been fixed and a whole-resource materialization or
+other total read requires data, missing required data is invalid attached data.
+A required field missing from an existing record is a fatal
+data-attachment/corruption fault. It is not a catchable `Error`, and `??` does
+not hide it.
 
 ## Delete
 
@@ -649,6 +671,43 @@ changes must drive an external effect, model that as ordinary saved data: write
 an outbox record in the same transaction as the state change, commit, and let a
 separate worker send and mark the record idempotently.
 
+## Presence Narrowing And Mutation
+
+Presence facts are local control-flow facts, not durable promises. The checker
+accepts a maybe-present saved read in value position only when that exact read
+site is resolved or a still-valid narrowing proves it.
+
+Read-site resolution forms are:
+
+- `place ?? fallback`, which reads a present value or uses the fallback for
+  absence;
+- `exists(place)`, which returns `bool` and narrows the true branch;
+- `if const name = place`, which checks presence, reads once, and binds the
+  value in the true branch;
+- `?.` optional field chains that end in one of the resolution forms above;
+- attached-data traversal such as `for id, value in ^root`, `values(...)`, and
+  `entries(...)`, where the traversal supplies the value it found.
+
+An early-return guard also narrows the following statements:
+
+```mw
+if not exists(^books(id).subtitle)
+    return
+write(^books(id).subtitle)
+```
+
+That narrowing is valid only while the place and every key expression used to
+address it remain unchanged. Reassigning a key variable, mutating a field used as
+a key expression, deleting or writing the saved place, replacing a parent record,
+or calling a helper that may write saved data invalidates dependent presence
+facts. When in doubt, resolve the read at the use site with `if const` or `??`.
+
+Declaring a field `required` is not a narrowing proof. It states what valid
+populated records must contain; it does not prove that this run's attached data
+currently has the cell at an arbitrary identity. Required data missing during a
+whole-resource materialization is fatal invalid attached data, not a sparse
+absence branch.
+
 ## Managed Saved Trees
 
 When a store owns a saved root, writes under that root go through the
@@ -739,8 +798,10 @@ local resource must be explicit:
 
 ```mw
 fn normalize(inout book: Book)
-var draft: Book = ^books(id)
-normalize(inout draft)
+var draft: Book
+if const saved = ^books(id)
+    draft = saved
+    normalize(inout draft)
 ```
 
 `inout` at the call site makes hidden writes visible. First-class storable

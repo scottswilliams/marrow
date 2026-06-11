@@ -133,6 +133,24 @@ fn statement_calls_saved_writer(
                     .as_ref()
                     .is_some_and(|block| block_calls_saved_writer(program, block, visiting))
         }
+        CheckedStmt::IfConst {
+            value,
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            expr_calls_saved_writer(program, value, visiting)
+                || block_calls_saved_writer(program, then_block, visiting)
+                || else_ifs.iter().any(|else_if| {
+                    else_if.condition.as_ref().is_some_and(|condition| {
+                        expr_calls_saved_writer(program, condition, visiting)
+                    }) || block_calls_saved_writer(program, &else_if.block, visiting)
+                })
+                || else_block
+                    .as_ref()
+                    .is_some_and(|block| block_calls_saved_writer(program, block, visiting))
+        }
         CheckedStmt::While {
             condition, body, ..
         } => {

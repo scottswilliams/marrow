@@ -262,6 +262,7 @@ statement       =
     | assignment_stmt
     | delete_stmt
     | if_stmt
+    | if_const_stmt
     | match_stmt
     | while_stmt
     | for_stmt
@@ -298,6 +299,11 @@ block.
 ```ebnf
 if_stmt         =
     "if" expression NEWLINE block
+    else_if_clause*
+    else_clause? ;
+
+if_const_stmt   =
+    "if" "const" identifier "=" expression NEWLINE block
     else_if_clause*
     else_clause? ;
 
@@ -489,6 +495,10 @@ These rules are part of the grammar contract:
 - At statement start, `target = expr` is assignment; the single `=` is always
   assignment and never equality, so a `=` in expression position is a parse
   error. Equality is `==` and inequality is `!=`.
+- `if const name = place` is a presence-binding guard. The right side must be a
+  saved value read, such as a saved field, singleton root, fully addressed
+  record or keyed-layer entry, or complete unique-index lookup. It does not
+  bind address-only durable collections.
 - The absence-default `??` is non-associative and binds tighter than `==`. Its
   left operand must be a maybe-present read — a path read, a `?.` chain, or a
   maybe-present builtin result such as `next`/`prev`; an always-present left

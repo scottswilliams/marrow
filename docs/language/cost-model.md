@@ -24,7 +24,7 @@ an unbracketed single write pays one fsync, while writes grouped in a source
 Each construct maps to a fixed shape of work:
 
 - `^books(id).title` — one point read of one leaf cell.
-- `var b: Book = ^books(id)` — one point read per stored scalar leaf in the
+- `if const b = ^books(id)` — one point read per stored scalar leaf in the
   record body (its fields and unkeyed groups), bounded by the schema. Keyed
   child layers are not pulled in; read them through their own paths.
 - `exists(^books(id))` — one point read of the node cell.

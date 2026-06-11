@@ -12,7 +12,7 @@ mod support;
 
 use support::*;
 
-use marrow_run::{RUN_ABSENT, Value};
+use marrow_run::Value;
 use marrow_store::key::SavedKey;
 use marrow_store::value::{SavedValue, ScalarType};
 
@@ -33,7 +33,7 @@ pub fn total(): int
     return c
 
 pub fn titleOf(id: int): string
-    return ^books(id).title
+    return ^books(id).title ?? \"<absent>\"
 ";
 
 #[test]
@@ -99,8 +99,7 @@ fn counting_over_saved_records_tracks_zero_one_and_many() {
 #[test]
 fn reading_a_never_written_field_is_absent_not_an_error_in_the_store() {
     // A direct store read of a path that was never written returns absence rather
-    // than a stored value; the runtime read of a required field at that absence
-    // raises the typed absent-element fault instead of inventing a default.
+    // than a stored value; the runtime read site chooses its own explicit fallback.
     let program = checked_program(BOOK_LEDGER);
     let store = empty_store();
     assert_eq!(
@@ -115,12 +114,14 @@ fn reading_a_never_written_field_is_absent_not_an_error_in_the_store() {
         None,
         "the store holds no bytes at a never-written path",
     );
-    assert_run_error(
+    assert_eq!(
         run_entry(
             &store,
             checked_entry!(&program, "test::titleOf", Value::Int(7)),
-        ),
-        RUN_ABSENT,
+        )
+        .expect("fallback")
+        .value,
+        Some(Value::Str("<absent>".into())),
     );
 }
 

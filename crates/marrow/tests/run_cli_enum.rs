@@ -23,7 +23,7 @@ fn check_diagnostics(dir: &str) -> (std::process::Output, Vec<Value>) {
 fn a_same_named_enum_in_another_module_does_not_alias() {
     // Two modules each declare an enum `Status`, with members in opposite order:
     // module `b` stores its own `Status::active` to a saved `state: Status`
-    // field. Enum identity is module-qualified, so reading the field back through
+    // field. Enum identity is module-qualified, so binding the field back through
     // `b` must match `b::Status::active`, not the same-named enum in `a`.
     let root = temp_project("run-enum-same-name", |root| {
         write(
@@ -47,7 +47,8 @@ fn a_same_named_enum_in_another_module_does_not_alias() {
              var o: Order\n    o.state = Status::active\n    \
              transaction\n        ^orders(1) = o\n\n\
              pub fn show()\n    \
-             match ^orders(1).state\n        active\n            print(\"active\")\n        archived\n            print(\"archived\")\n",
+             if const state = ^orders(1).state\n        \
+             match state\n            active\n                print(\"active\")\n            archived\n                print(\"archived\")\n",
         );
     });
     let dir = root.to_str().unwrap().to_string();
@@ -62,12 +63,12 @@ fn a_same_named_enum_in_another_module_does_not_alias() {
 
 #[test]
 fn a_match_over_a_saved_enum_field_dispatches_through_the_real_pipeline() {
-    // A `match` whose scrutinee is a saved enum-field read `^orders(1).state` must
-    // type as `Status` so the checker records the scrutinee's enum on the match and
-    // the runtime dispatches through `Status`'s traversal table. Before the field read was
-    // typed it was `Unknown`: the checker recorded no enum, and the match faulted
-    // at runtime instead of dispatching. Seeding `Status::archived` then matching
-    // must take the `archived` arm and print its marker.
+    // A `match` whose scrutinee is bound from a saved enum-field read must type as
+    // `Status` so the checker records the scrutinee's enum on the match and the
+    // runtime dispatches through `Status`'s traversal table. Before the field read
+    // was typed it was `Unknown`: the checker recorded no enum, and the match
+    // faulted at runtime instead of dispatching. Seeding `Status::archived` then
+    // matching must take the `archived` arm and print its marker.
     let root = temp_project("run-enum-field-match", |root| {
         write(
             root,
@@ -85,10 +86,11 @@ fn a_match_over_a_saved_enum_field_dispatches_through_the_real_pipeline() {
              var o: Order\n    o.state = Status::archived\n    \
              transaction\n        ^orders(1) = o\n\n\
              pub fn label()\n    \
-             match ^orders(1).state\n        \
-             active\n            print(\"A\")\n        \
-             archived\n            print(\"R\")\n        \
-             banned\n            print(\"B\")\n",
+             if const state = ^orders(1).state\n        \
+             match state\n            \
+             active\n                print(\"A\")\n            \
+             archived\n                print(\"R\")\n            \
+             banned\n                print(\"B\")\n",
         );
     });
     let dir = root.to_str().unwrap().to_string();
@@ -103,10 +105,10 @@ fn a_match_over_a_saved_enum_field_dispatches_through_the_real_pipeline() {
 
 #[test]
 fn equality_on_a_saved_enum_field_dispatches_through_the_real_pipeline() {
-    // A nominal `==` whose left side is a saved enum-field read must type as
-    // `Status` so the comparison checks clean and runs. Seeding `Status::archived`
-    // then comparing the read field against `Status::archived` is true; against a
-    // different member, false.
+    // A nominal `==` whose left side is bound from a saved enum-field read must type
+    // as `Status` so the comparison checks clean and runs. Seeding
+    // `Status::archived` then comparing the read field against `Status::archived` is
+    // true; against a different member, false.
     let root = temp_project("run-enum-field-eq", |root| {
         write(
             root,
@@ -124,8 +126,9 @@ fn equality_on_a_saved_enum_field_dispatches_through_the_real_pipeline() {
              var o: Order\n    o.state = Status::archived\n    \
              transaction\n        ^orders(1) = o\n\n\
              pub fn check()\n    \
-             if ^orders(1).state == Status::archived\n        print(\"yes\")\n    \
-             if ^orders(1).state == Status::active\n        print(\"no\")\n",
+             if const state = ^orders(1).state\n        \
+             if state == Status::archived\n            print(\"yes\")\n        \
+             if state == Status::active\n            print(\"no\")\n",
         );
     });
     let dir = root.to_str().unwrap().to_string();

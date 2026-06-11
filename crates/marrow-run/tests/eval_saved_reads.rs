@@ -50,10 +50,13 @@ resource Book
 store ^books(id: int): Book
 
 pub fn title_of(id: int): string
-    return ^books(id).title
+    if const title = ^books(id).title
+        return title
+    return \"\"
 
 pub fn show(id: int)
-    print($\"title: {^books(id).title}\")
+    if const title = ^books(id).title
+        print($\"title: {title}\")
 ";
 
 fn store_with_title(program: &CheckedRuntimeProgram, id: i64, title: &str) -> TreeStore {
@@ -82,14 +85,55 @@ fn reads_a_scalar_field_from_saved_data() {
 }
 
 #[test]
-fn reading_an_absent_field_is_an_error() {
+fn a_binding_guard_skips_an_absent_field() {
     let program = checked_program(BOOK_READER);
     let store = TreeStore::memory(); // empty: the title is absent
-    let result = run_entry(
+    let outcome = run_entry(
         &store,
         checked_entry!(&program, "test::title_of", Value::Int(1)),
+    )
+    .expect("guarded read");
+    assert_eq!(outcome.value, Some(Value::Str(String::new())));
+}
+
+#[test]
+fn if_const_binding_guard_reads_present_values_and_skips_absent_values() {
+    let program = checked_program(
+        "resource Book\n\
+         \x20\x20\x20\x20subtitle: string\nstore ^books(id: int): Book\n\n\
+         pub fn write_subtitle(id: int, subtitle: string)\n\
+         \x20\x20\x20\x20^books(id).subtitle = subtitle\n\n\
+         pub fn subtitle_or_missing(id: int): string\n\
+         \x20\x20\x20\x20if const subtitle = ^books(id).subtitle\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20return subtitle\n\
+         \x20\x20\x20\x20return \"missing\"\n",
     );
-    assert_run_error(result, RUN_ABSENT);
+    let store = empty_store();
+
+    let missing = run_entry(
+        &store,
+        checked_entry!(&program, "test::subtitle_or_missing", Value::Int(1)),
+    )
+    .expect("missing branch");
+    assert_eq!(missing.value, Some(Value::Str("missing".into())));
+
+    run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::write_subtitle",
+            Value::Int(1),
+            Value::Str("Guards".into())
+        ),
+    )
+    .expect("write");
+
+    let present = run_entry(
+        &store,
+        checked_entry!(&program, "test::subtitle_or_missing", Value::Int(1)),
+    )
+    .expect("present branch");
+    assert_eq!(present.value, Some(Value::Str("Guards".into())));
 }
 
 #[test]
@@ -123,7 +167,7 @@ fn whole_resource_read_rejects_missing_required_durable_fields() {
         checked_entry!(&program, "test::read", Value::Int(1)),
     );
 
-    assert_run_error(result, RUN_TYPE);
+    assert_run_error(result, RUN_ABSENT);
 }
 
 #[test]
