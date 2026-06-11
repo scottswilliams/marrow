@@ -826,16 +826,6 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 
 ## Wave 2 — P0 foundation (REPORT Part V order)
 
-**W2.10 ∥ False corruption verdicts.** Carries: the verified data-tools and serve-path fix that
-pending/unrecorded members and in-flight evolution `catalog_intent` states are normal catalog
-states, never `store.corruption`. Owns: the data-tool inspection path and any still-live
-serve/introspection renderer that maps catalog intent into user-facing findings; docs/data-tools.md
-wording only where needed to keep the state/corruption boundary explicit. Seed: a fixture with
-pending or unrecorded members that currently reports `store.corruption`. Review: true codec,
-tree-shape, and missing-cell corruption still report as corruption; normal catalog-intent states
-produce a non-corruption finding or status. Done: absence scan proves no `catalog_intent` branch
-renders `store.corruption`.
-
 **W2.11 ∥ Typed inspection rendering.** Carries: text-rendering fixes for enum members and
 identity roots in `--trace` and `--dry-run`. Owns: crates/marrow/src/trace.rs
 `render_leaf_value`, crates/marrow-run/src/value.rs `display_debug`, and only the trace/dry-run
