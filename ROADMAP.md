@@ -826,20 +826,6 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 
 ## Wave 2 — P0 foundation (REPORT Part V order)
 
-**W2.3 ∥ Call-depth budget (IV.A1, gate 28).** Carries (G2-3): the runtime Error value
-constructed at the catch site, not the raise site — a swallowed absent read (`x ?? default`)
-allocates zero error objects; one cost-model.md sentence pins zero as the v0.1 allocation law
-for resolved absence. Owns: marrow-run env.rs/call.rs/error.rs — `CALL_DEPTH_BUDGET: usize =
-256`, provisional under the gate-28 headroom rule (2 MiB minimum execution stack; halve to the
-largest power of two giving at least 2x headroom, floor 64; never raised in v0.1) — the
-`PARSE_NESTING_BUDGET: usize = 256` bound in the marrow-syntax parser (nesting overflow reports
-the existing `parse.syntax`), the error-codes.md `run.depth` row, the docs/language budget note
-(both constants; 2 MiB pinned as the documented minimum execution stack), the cost-model.md
-allocation sentence. Seed: a recursion test that today aborts
-the process, asserted to yield `run.depth`. Review: headroom verified on the smallest supported
-thread stack incl. debug builds; expression-nesting path covered (it bypasses the activation
-counter). Done: no input in the fuzz-ish corpus aborts the process.
-
 **W2.4 ∥ Atomic backup/restore/fmt writes (III.A1, gate 29).** Carries (G3-2): store files and
 backup artifacts created owner-only (0600) at the `File::create` sites this lane already scans.
 Owns: cmd_backup.rs, backup/create.rs, cmd_restore.rs, cmd_fmt.rs. Seed: injected mid-stream
