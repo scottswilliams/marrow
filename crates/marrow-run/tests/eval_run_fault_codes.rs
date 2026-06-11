@@ -11,7 +11,7 @@ mod support;
 
 use support::*;
 
-use marrow_run::{CheckedEntryCall, Value};
+use marrow_run::{CheckedEntryCall, RuntimeError, Value};
 use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 use marrow_store::value::SavedValue;
@@ -179,7 +179,7 @@ fn a_qualified_entry_naming_a_private_function_is_rejected() {
 }
 
 /// A clean-checking but unbounded recursion. `sumTo(n)` recurses once per
-/// decrement, so a large `n` descends past the runtime recursion limit.
+/// decrement, so a large `n` descends past the runtime call-depth budget.
 const RECURSION_SOURCE: &str = "\
 fn sumTo(n: int): int
     if n <= 0
@@ -187,16 +187,16 @@ fn sumTo(n: int): int
     return n + sumTo(n - 1)
 
 pub fn deep(): int
-    return sumTo(2000)
+    return sumTo(255)
 
 pub fn shallow(): int
-    return sumTo(1000)
+    return sumTo(254)
 ";
 
 /// Run an entry of [`RECURSION_SOURCE`] on a worker thread with the generous stack
-/// the CLI runs on, so the runtime recursion limit — sized for that stack — trips
+/// the CLI runs on, so the runtime call-depth budget trips
 /// before the recursion overflows the small default test-thread stack.
-fn run_recursion_entry(entry: &'static str) -> Result<i64, &'static str> {
+fn run_recursion_entry(entry: &'static str) -> Result<i64, RuntimeError> {
     std::thread::Builder::new()
         .stack_size(256 * 1024 * 1024)
         .spawn(move || {
@@ -207,7 +207,7 @@ fn run_recursion_entry(entry: &'static str) -> Result<i64, &'static str> {
                     Some(Value::Int(total)) => Ok(total),
                     other => panic!("expected an int result, got {other:?}"),
                 },
-                Err(error) => Err(error.code),
+                Err(error) => Err(error),
             }
         })
         .expect("spawn recursion worker")
@@ -217,18 +217,25 @@ fn run_recursion_entry(entry: &'static str) -> Result<i64, &'static str> {
 
 #[test]
 fn unbounded_recursion_faults_with_the_recursion_limit() {
-    // Recursing past the 1024-frame limit raises a typed `run.recursion_limit`
-    // fault rather than overflowing the native stack.
-    assert_eq!(
-        run_recursion_entry("test::deep"),
-        Err(marrow_run::RUN_RECURSION),
+    // Recursing past the 256-frame budget raises a typed `run.recursion_limit`
+    // fault at the attempted 257th frame rather than overflowing the native stack.
+    assert_eq!(marrow_run::RECURSION_LIMIT, 256);
+    let error = run_recursion_entry("test::deep").expect_err("recursion limit");
+    assert_eq!(error.code, marrow_run::RUN_RECURSION);
+    assert!(
+        error.message.contains("budget=256"),
+        "recursion-limit payload includes the budget: {error:?}"
+    );
+    assert!(
+        error.message.contains("observed_depth=257"),
+        "recursion-limit payload includes the observed attempted depth: {error:?}"
     );
 }
 
 #[test]
 fn recursion_within_the_limit_returns_its_result() {
-    // A recursion that stays inside the limit runs to completion: 1 + 2 + … + 1000.
-    assert_eq!(run_recursion_entry("test::shallow"), Ok(500_500));
+    // A recursion that stays inside the limit runs to completion: 1 + 2 + ... + 254.
+    assert_eq!(run_recursion_entry("test::shallow"), Ok(32_385));
 }
 
 #[test]

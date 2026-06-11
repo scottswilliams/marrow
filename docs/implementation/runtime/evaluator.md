@@ -2,7 +2,7 @@
 
 The runtime is a tree-walking interpreter directly over the checked AST: there is no separate IR or bytecode. `marrow-run` takes a `CheckedRuntimeProgram` (parsed and type-checked by `marrow-check`) plus a `TreeStore` and a `Host`, then interprets a named entry function by walking the `Checked*` nodes. Because the checker has already proven types, match coverage, and identity provenance, many runtime branches are defensive-only faults rather than reachable paths.
 
-One run is a tree of activations. `run_entry` resolves the entry, builds an `Env`, and calls `invoke`, the single body-execution kernel. Each statement returns a `Flow`; each call spawns a child activation that ends in a `Completion`. Pure expressions produce a `Value`. Saved data is reached only through a `SavedPath` lowered from a checked place. Faults travel one channel: a `RuntimeError` whose `throw` field carries the catchable Error value, unifying expression-position and statement-position throws.
+One run is a tree of activations. `run_entry` resolves the entry, builds an `Env`, and calls `invoke`, the single body-execution kernel. Each statement returns a `Flow`; each call spawns a child activation that ends in a `Completion`. Pure expressions produce a `Value`. Saved data is reached only through a `SavedPath` lowered from a checked place. Faults travel one channel: a `RuntimeError` that either carries an already-materialized language throw or lazily materializes a catchable runtime fault when a `catch` binds it.
 
 ## Parts
 
@@ -27,7 +27,7 @@ One run is a tree of activations. `run_entry` resolves the entry, builds an `Env
 | `crates/marrow-run/src/loop_exec.rs` | Loops and iteration: `while`, `for` over ranges, single/two-name `for` over sequences, local trees, and streamed saved layers; `classify` maps `Flow` to `LoopStep`. |
 | `crates/marrow-run/src/value.rs` | The `Value` model and its codecs: scalar/temporal/decimal/bytes/enum/sequence/local-tree/resource/identity, `IdentityValue` (root + keys), conversions to/from `SavedValue`/`SavedKey`/leaf bytes, text rendering. |
 | `crates/marrow-run/src/env.rs` | The `Env` (scope stack, run context, output buffer, traversed layers, hook, depth), `Flow`/`Binding`/`Context`, scope/lookup/assign, loop-traversal write guards, transaction bookkeeping (`apply_plan`, savepoint depth, deferred required-field checks, commit metadata). |
-| `crates/marrow-run/src/error.rs` | Fault model: `RuntimeError` (code/message/span + boxed throw value + `FileId` origin), the `RUN_*` constants, `raise`/`raise_fault`/`reraise_fault`/type/overflow constructors, the `Located` trait mapping `StoreError`/`ValueError` into spanned faults. |
+| `crates/marrow-run/src/error.rs` | Fault model: `RuntimeError` (code/message/span + optional boxed throw value + catchable bit + `FileId` origin), the `RUN_*` constants, `raise`/`raise_fault`/`reraise_fault`/type/overflow constructors, the `Located` trait mapping `StoreError`/`ValueError` into spanned faults. |
 | `crates/marrow-run/src/host.rs` | `Host` capability bundle (clock/env/log/filesystem/maintenance) with builders; `StepHook` (`before_statement` can abort, `before_write` is observational); the read-only `Frame` view. |
 | `crates/marrow-run/src/path.rs` | Saved-path lowering: `lower` walks a checked place into a `SavedPath`; `SavedPath::read`/`write`, key lowering with identity-splice and typed-keyspace guards, `saved_path_present` for `exists`. |
 | `crates/marrow-run/src/neighbor.rs` | `next`/`prev` ordered navigation: seeks the adjacent record or data-layer child via store cursors, returns an identity or key value, or an absent fault at a layer edge. |
@@ -37,7 +37,7 @@ Saved-write and read execution (`write*`, `read`, `durable_read`, `group_write`,
 
 ## Invariants
 
-- **One error channel.** A catchable throw rides `RuntimeError.throw` (a boxed Error `Value`) on the `Err` path, so expression-position and statement-position (`Flow::Throw`) throws converge through one mechanism. `throw = None` means fatal/uncatchable. `raise_fault` keeps the dotted code if it escapes; `raise` relabels an uncaught language throw as `run.uncaught_error`.
+- **One error channel.** Language throws ride `RuntimeError.throw` (a boxed Error `Value`) on the `Err` path, while runtime faults raised by `raise_fault` stay as code/message until a `catch` binds them. `catchable = false` means fatal/uncatchable. `raise_fault` keeps the dotted code if it escapes; `raise` relabels an uncaught language throw as `run.uncaught_error`.
 - **`??` (`eval_coalesce`) only swallows `RUN_ABSENT`.** Every other error propagates, so absence-default never hides a real fault; a `?.` chain short-circuits to the same absent fault.
 - **Scopes balance on every exit, including faults**, so the `Env` is reusable after an error.
 - **Origin stamping uses only-if-none**, so the deepest frame (the real raiser) wins as a fault unwinds; `FileId` origin is the only file identity a fault carries.

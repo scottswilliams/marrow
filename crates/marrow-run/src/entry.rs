@@ -122,14 +122,14 @@ fn run_entry_impl<'p>(
         }
         (
             Completion::Faulted {
-                error,
                 code,
+                message,
                 span,
                 origin,
             },
             ..,
         ) => {
-            return Err(reraise_fault(error, code, span, origin));
+            return Err(reraise_fault(code, message, span, origin));
         }
     };
     Ok(RunOutput { value })

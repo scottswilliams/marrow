@@ -21,8 +21,8 @@ pub(crate) enum Completion {
         origin: Option<FileId>,
     },
     Faulted {
-        error: Value,
         code: &'static str,
+        message: String,
         span: SourceSpan,
         origin: Option<FileId>,
     },
@@ -194,17 +194,11 @@ fn activation_completion(
             error: *error,
             origin: origin.or(here),
         },
-        Err(RuntimeError {
-            throw: Some(error),
-            code,
-            span,
-            origin,
-            ..
-        }) => Completion::Faulted {
-            error: *error,
-            code,
-            span,
-            origin: origin.or(here),
+        Err(error) if error.is_catchable() => Completion::Faulted {
+            code: error.code,
+            message: error.message,
+            span: error.span,
+            origin: error.origin.or(here),
         },
         Err(fatal) => return Err(fatal.with_origin_from(env.program, module)),
         Ok(Flow::Break(_)) | Ok(Flow::Continue(_)) => {
@@ -230,10 +224,10 @@ pub(crate) fn complete_call(
         Completion::Returned(value) => Ok(value),
         Completion::Threw { error, origin } => Err(raise(error, span, origin)),
         Completion::Faulted {
-            error,
             code,
+            message,
             span: fault_span,
             origin,
-        } => Err(reraise_fault(error, code, fault_span, origin)),
+        } => Err(reraise_fault(code, message, fault_span, origin)),
     }
 }

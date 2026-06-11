@@ -78,7 +78,7 @@ fn dispatch(command: &str, rest: &[String]) -> ExitCode {
 }
 
 /// The stack the parse/check/run pipeline runs on. 256 MiB comfortably holds the
-/// recursion the typed limits permit — 256 nested parser frames and 1024 runtime
+/// recursion the typed limits permit — 256 nested parser frames and 256 runtime
 /// call frames — with wide margin, so a limit always trips before the stack does.
 const WORKER_STACK_BYTES: usize = 256 * 1024 * 1024;
 

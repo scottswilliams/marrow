@@ -280,20 +280,15 @@ fn eval_try(
     env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
     let outcome = eval_block(body, env);
-    let thrown = match &outcome {
-        Ok(Flow::Throw(value)) => Some(value.clone()),
-        Err(error) => error.throw.as_deref().cloned(),
-        _ => None,
-    };
-    let handled = match (thrown, catch) {
-        (Some(error), Some(clause)) => {
-            env.push_scope();
-            env.bind(clause.name.clone(), error, false);
-            let caught = eval_block(&clause.block, env);
-            env.pop_scope();
-            caught
+    let handled = match (outcome, catch) {
+        (Ok(Flow::Throw(error)), Some(clause)) => eval_catch(clause, error, env),
+        (Err(error), Some(clause)) if error.is_catchable() => {
+            let error = error
+                .into_error_value()
+                .expect("a catchable runtime fault materializes an Error value");
+            eval_catch(clause, error, env)
         }
-        (Some(_), None) | (None, _) => outcome,
+        (outcome, _) => outcome,
     };
     match finally {
         Some(block) => match eval_block(block, env) {
@@ -303,4 +298,16 @@ fn eval_try(
         },
         None => handled,
     }
+}
+
+fn eval_catch(
+    clause: &CheckedCatchClause,
+    error: Value,
+    env: &mut Env<'_>,
+) -> Result<Flow, RuntimeError> {
+    env.push_scope();
+    env.bind(clause.name.clone(), error, false);
+    let caught = eval_block(&clause.block, env);
+    env.pop_scope();
+    caught
 }

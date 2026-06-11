@@ -43,6 +43,11 @@ Each construct maps to a fixed shape of work:
 The checked model records these as traversal and write facts, so tools and the
 checker see the same operations the runtime performs.
 
+Resolving absence with `??` is ordinary control flow. If the left-hand read is
+absent and the default is evaluated, v0.1 constructs zero runtime `Error`
+resources for that resolved absence; an `Error` value is built only when a
+`catch` binds a catchable fault.
+
 ## Hidden Traversal Is A Compile Error
 
 The one access the checker rejects is a hidden scan: a lookup with no matching
@@ -85,10 +90,15 @@ process crash.
 - **Nesting limit (256).** Source may nest expressions (parentheses, operators)
   and statement blocks (`if`, `while`, `for`, …) up to 256 levels deep. Deeper
   source stops at the offending span with `check.nesting_limit`.
-- **Recursion limit (1024).** A running program may nest function calls up to
-  1024 deep. A deeper call stops at its call site with `run.recursion_limit`.
+- **Call-depth budget (256).** A running program may nest function calls up to
+  256 deep. Attempting depth 257 stops at its call site with
+  `run.recursion_limit`, whose payload reports both `budget=256` and the
+  observed attempted depth.
 
 Both ceilings are fixed in v0.1 and not configurable. The toolchain runs the
 parse, check, and run pipeline on a worker thread with a large stack, sized so a
 limit always trips before the stack can overflow — so deeply nested or unbounded
-recursion is a typed diagnostic, not an abort.
+recursion is a typed diagnostic, not an abort. The v0.1 call-depth budget was
+kept at 256 after measuring an optimized debugger-hook probe at a maximum
+adjacent user-call stack delta of 5,040 bytes, below the 8 KiB per-frame
+headroom rule for a 2 MiB minimum execution stack.

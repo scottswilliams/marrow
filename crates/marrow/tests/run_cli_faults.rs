@@ -264,10 +264,9 @@ fn an_uncaught_throw_is_located() {
 
 #[test]
 fn unbounded_recursion_surfaces_a_located_recursion_limit() {
-    // A clean-checking but unbounded recursion (`sumTo(2000)`, deeper than the
-    // 1024-frame limit) aborted the process with a native stack overflow (exit 134)
-    // before the guard. Now it fails closed with a located `run.recursion_limit`
-    // fault at the recursive call site and exit 1.
+    // A clean-checking recursion that attempts the 257th call frame fails closed
+    // with a located `run.recursion_limit` fault at the recursive call site and
+    // exit 1. The guard trips before Rust stack exhaustion can decide behavior.
     let root = temp_project("run-recursion", |root| {
         write(
             root,
@@ -283,7 +282,7 @@ fn unbounded_recursion_surfaces_a_located_recursion_limit() {
              \x20\x20\x20\x20\x20\x20\x20\x20return 0\n\
              \x20\x20\x20\x20return n + sumTo(n - 1)\n\n\
              pub fn main()\n\
-             \x20\x20\x20\x20print(sumTo(2000))\n",
+             \x20\x20\x20\x20print(sumTo(255))\n",
         );
     });
     let output = marrow_sub("run", &[root.to_str().unwrap()]);
@@ -303,7 +302,7 @@ fn unbounded_recursion_surfaces_a_located_recursion_limit() {
 
 #[test]
 fn recursion_within_the_limit_runs_normally() {
-    // A recursion that stays inside the 1024-frame limit runs to completion and
+    // A recursion that stays inside the 256-frame limit runs to completion and
     // prints its result, so the bound rejects only runaway recursion.
     let root = temp_project("run-recursion-ok", |root| {
         write(
@@ -320,14 +319,14 @@ fn recursion_within_the_limit_runs_normally() {
              \x20\x20\x20\x20\x20\x20\x20\x20return 0\n\
              \x20\x20\x20\x20return n + sumTo(n - 1)\n\n\
              pub fn main()\n\
-             \x20\x20\x20\x20print(sumTo(1000))\n",
+             \x20\x20\x20\x20print(sumTo(254))\n",
         );
     });
     let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
-    assert_eq!(stdout.trim(), "500500");
+    assert_eq!(stdout.trim(), "32385");
 }
 
 #[test]

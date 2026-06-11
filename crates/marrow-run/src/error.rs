@@ -1,5 +1,8 @@
 //! Runtime faults: `RuntimeError`, the `run.*` codes, and the fault constructors.
 
+#[cfg(test)]
+use std::cell::Cell;
+
 use marrow_check::{CheckedRuntimeModule, CheckedRuntimeProgram, FileId};
 use marrow_store::StoreError;
 use marrow_store::value::{ScalarType, ValueError};
@@ -12,25 +15,25 @@ use crate::write::WriteError;
 /// A runtime fault: a stable `run.*` code, a human-readable message, and the
 /// source span of the construct that raised it.
 ///
-/// When `throw` is `Some`, the fault is a catchable unwinding throw carrying its
-/// `Error` value: a `throw` from a called function, a deterministic evaluator
-/// fault, or a recoverable `write.*` fault that a surrounding `try`/`catch` can
-/// bind. The value rides this `Err` channel directly, so an expression-position
-/// throw (from a call or builtin) and a statement-position throw (`Flow::Throw`)
-/// agree through one mechanism with no out-of-band carrier. When `throw` is
-/// `None` the fault is fatal and uncatchable (unknown functions, store
-/// corruption, unsupported runtime constructs, host capability failures, …).
-/// `code`/`message` always describe how the fault renders if it escapes uncaught.
+/// When `catchable` is true, a surrounding `try`/`catch` can bind an `Error`
+/// value for this fault. Language throws and host-generated Error values may
+/// already carry that value in `throw`; deterministic runtime faults usually
+/// keep only `code`/`message` until a catch site actually binds them. When
+/// `catchable` is false the fault is fatal and uncatchable (unknown functions,
+/// store corruption, unsupported runtime constructs, host capability failures,
+/// ...). `code`/`message` always describe how the fault renders if it escapes
+/// uncaught.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeError {
     pub code: &'static str,
     pub message: String,
     pub span: SourceSpan,
-    /// The `Error` value a catchable fault carries so a surrounding `try`/`catch`
-    /// can bind it; `None` for a fatal fault. Boxed because it is set on only a
-    /// few faults yet would otherwise dominate this error's size on every cold
-    /// `Err` the runtime threads through its `Result`s.
+    /// An already-materialized `Error` value. Runtime faults raised by
+    /// [`raise_fault`] leave this empty until a catch site materializes it from
+    /// `code`/`message`.
     pub throw: Option<Box<Value>>,
+    /// Whether a `catch` can bind this fault as an `Error`.
+    pub catchable: bool,
     /// The file the fault was raised in, as a [`FileId`] into the running
     /// [`CheckedRuntimeProgram`]. The `span`'s byte offsets are per-file, so this
     /// supplies the file identity they lack. It is `None` until the fault leaves
@@ -47,7 +50,36 @@ impl RuntimeError {
             message,
             span,
             throw: None,
+            catchable: false,
             origin: None,
+        }
+    }
+
+    /// Whether this fault can be handled by a language `catch`.
+    pub fn is_catchable(&self) -> bool {
+        self.catchable
+    }
+
+    /// Return the `Error` value a catch would bind, materializing it lazily for
+    /// runtime faults that have not crossed a catch site yet.
+    pub fn error_value(&self) -> Option<Value> {
+        if let Some(error) = self.throw.as_deref() {
+            Some(error.clone())
+        } else if self.catchable {
+            Some(error_resource(self.code, &self.message))
+        } else {
+            None
+        }
+    }
+
+    /// Consume the fault and return the `Error` value a catch should bind.
+    pub(crate) fn into_error_value(self) -> Option<Value> {
+        if let Some(error) = self.throw {
+            Some(*error)
+        } else if self.catchable {
+            Some(error_resource(self.code, &self.message))
+        } else {
+            None
         }
     }
 
@@ -135,24 +167,28 @@ pub const RUN_UNCAUGHT_THROW: &str = "run.uncaught_error";
 /// obvious cases; this is the dynamic guard for a path the checker cannot prove.
 pub const RUN_TRAVERSAL: &str = "run.traversal";
 
-/// Function-call nesting exceeded [`RECURSION_LIMIT`]. Runaway or unbounded
+/// Function-call nesting exceeded [`CALL_DEPTH_BUDGET`]. Runaway or unbounded
 /// recursion stops here as a located fault rather than overflowing the native
 /// stack.
 pub const RUN_RECURSION: &str = "run.recursion_limit";
 
 /// The deepest call nesting a run will descend before raising [`RUN_RECURSION`].
-/// The entry function runs at depth 1, so this bounds the call chain below it. It
-/// is sized to sit far inside the worker stack the CLI runs on, so the typed fault
-/// always wins over a stack overflow. Python-like and fixed in v0.1, not
-/// configurable.
-pub const RECURSION_LIMIT: usize = 1024;
+/// The entry function runs at depth 1. Attempting depth 257 raises a typed fault
+/// instead of recursing. Fixed in v0.1, not configurable.
+pub const CALL_DEPTH_BUDGET: usize = 256;
 
-/// A `run.recursion_limit` fault raised at the call site that would have descended
-/// past [`RECURSION_LIMIT`].
-pub(crate) fn recursion_limit(span: SourceSpan) -> RuntimeError {
+/// Back-compatible name for the fixed call-depth budget.
+pub const RECURSION_LIMIT: usize = CALL_DEPTH_BUDGET;
+
+/// A `run.recursion_limit` fault raised at the call site that would have
+/// descended past [`CALL_DEPTH_BUDGET`].
+pub(crate) fn recursion_limit(observed_depth: usize, span: SourceSpan) -> RuntimeError {
     RuntimeError::fault(
         RUN_RECURSION,
-        format!("call nesting exceeded the recursion limit of {RECURSION_LIMIT}"),
+        format!(
+            "call nesting exceeded the call-depth budget \
+             (budget={CALL_DEPTH_BUDGET}, observed_depth={observed_depth})"
+        ),
         span,
     )
 }
@@ -173,6 +209,7 @@ pub(crate) fn raise(error: Value, span: SourceSpan, origin: Option<FileId>) -> R
         message: format!("uncaught error [{code}]: {message}"),
         span,
         throw: Some(Box::new(error)),
+        catchable: true,
         // The completion carries the file the throw was first raised in; this
         // caller-frame re-span keeps it rather than re-deriving a shallower one.
         origin,
@@ -183,6 +220,7 @@ pub(crate) fn raise(error: Value, span: SourceSpan, origin: Option<FileId>) -> R
 pub(crate) fn unknown_function(name: &str, span: SourceSpan) -> RuntimeError {
     RuntimeError {
         throw: None,
+        catchable: false,
         origin: None,
         code: RUN_UNKNOWN_FUNCTION,
         message: format!("the program has no function `{name}`"),
@@ -194,6 +232,7 @@ pub(crate) fn unknown_function(name: &str, span: SourceSpan) -> RuntimeError {
 pub(crate) fn ambiguous_function(name: &str, span: SourceSpan) -> RuntimeError {
     RuntimeError {
         throw: None,
+        catchable: false,
         origin: None,
         code: RUN_AMBIGUOUS_FUNCTION,
         message: format!("entry `{name}` is ambiguous; qualify it as `module::{name}`"),
@@ -205,6 +244,7 @@ pub(crate) fn ambiguous_function(name: &str, span: SourceSpan) -> RuntimeError {
 pub(crate) fn private_function(name: &str, span: SourceSpan) -> RuntimeError {
     RuntimeError {
         throw: None,
+        catchable: false,
         origin: None,
         code: RUN_PRIVATE_FUNCTION,
         message: format!("function `{name}` is private to its module"),
@@ -227,46 +267,68 @@ pub(crate) fn assign_error(name: &str, error: AssignError, span: SourceSpan) -> 
 }
 
 /// Re-raise a recoverable fault that escaped a called function so the caller's
-/// `try` can bind it: the `Error` value rides the `throw` field while the
-/// [`RuntimeError`] keeps the fault's own dotted `code`, so an uncaught one
-/// surfaces unchanged (mirrors [`raise`] for language throws).
+/// `try` can bind it. The `Error` value is still lazy: it is constructed only if
+/// a catch site actually binds it.
 pub(crate) fn reraise_fault(
-    error: Value,
     code: &'static str,
+    message: String,
     span: SourceSpan,
     origin: Option<FileId>,
 ) -> RuntimeError {
     RuntimeError {
         code,
-        message: error_field(&error, marrow_schema::error::MESSAGE).unwrap_or_default(),
+        message,
         span,
-        throw: Some(Box::new(error)),
+        throw: None,
+        catchable: true,
         // Kept from the completion so the file the fault was raised in survives
         // this caller-frame re-span.
         origin,
     }
 }
 
-/// Raise a recoverable runtime fault (a managed-write failure or an absent-element
-/// read) as a catchable Error while keeping its dotted code. Like [`raise`], the
-/// `Error` value carrying `code`/`message` rides the `throw` field so an enclosing
-/// `try`/`catch` can bind it. Unlike [`raise`], the returned [`RuntimeError`] keeps
-/// the fault's own dotted code rather than `RUN_UNCAUGHT_THROW`, so an
-/// uncaught fault surfaces with the same code it did before it became catchable.
+/// Raise a recoverable runtime fault (a managed-write failure or an
+/// absent-element read) as a catchable fault while keeping its dotted code. The
+/// `Error` value is constructed lazily at the catch site; an uncaught fault
+/// surfaces with the same code it did before it became catchable.
 pub(crate) fn raise_fault(code: &'static str, message: String, span: SourceSpan) -> RuntimeError {
-    let error = error_resource(code, &message);
     RuntimeError {
         code,
         message,
         span,
-        throw: Some(Box::new(error)),
+        throw: None,
+        catchable: true,
         origin: None,
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static ERROR_VALUE_ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Reset the diagnostic counter for runtime-constructed Error resources.
+#[cfg(test)]
+fn reset_error_value_allocation_count() {
+    ERROR_VALUE_ALLOCATIONS.with(|count| count.set(0));
+}
+
+/// The number of Error resources constructed through the runtime fault helper.
+#[cfg(test)]
+fn error_value_allocation_count() -> usize {
+    ERROR_VALUE_ALLOCATIONS.with(Cell::get)
+}
+
+#[cfg(test)]
+fn note_error_value_allocation() {
+    ERROR_VALUE_ALLOCATIONS.with(|count| count.set(count.get() + 1));
 }
 
 /// The catchable `Error` resource shape: a `code` field and a `message` field, in
 /// that order. The single owner of the runtime's Error-value layout.
 fn error_resource(code: &str, message: &str) -> Value {
+    #[cfg(test)]
+    note_error_value_allocation();
     Value::Resource(vec![
         (
             marrow_schema::error::CODE.to_string(),
@@ -320,6 +382,7 @@ pub(crate) fn key_type_fault(
 ) -> RuntimeError {
     RuntimeError {
         throw: None,
+        catchable: false,
         origin: None,
         code: RUN_TYPE,
         message: format!(
@@ -393,4 +456,101 @@ pub(crate) fn decimal_overflow(span: SourceSpan) -> RuntimeError {
 
 pub(crate) fn divide_by_zero(message: &str, span: SourceSpan) -> RuntimeError {
     raise_fault(RUN_DIVIDE_BY_ZERO, message.to_string(), span)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use marrow_store::tree::TreeStore;
+
+    use crate::entry::{CheckedEntryCall, run_entry, run_entry_with_host};
+    use crate::host::Host;
+    use crate::value::Value;
+
+    use super::{RUN_ABSENT, error_value_allocation_count, reset_error_value_allocation_count};
+
+    static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    struct TempProject {
+        root: PathBuf,
+    }
+
+    impl TempProject {
+        fn new(name: &str, source: &str) -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock after unix epoch")
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "marrow-run-unit-{name}-{}-{nanos}-{}",
+                std::process::id(),
+                TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            let src = root.join("src");
+            fs::create_dir_all(&src).expect("create unit-test project");
+            fs::write(src.join("test.mw"), source).expect("write unit-test source");
+            Self { root }
+        }
+
+        fn path(&self) -> &Path {
+            &self.root
+        }
+    }
+
+    impl Drop for TempProject {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn coalesced_absent_read_allocates_no_error_value() {
+        let project = TempProject::new(
+            "coalesced-absent",
+            "module test\n\nresource Book\n    title: string\nstore ^books(id: int): Book\n\n\
+             pub fn read(): string\n    return ^books(1).title ?? \"missing\"\n",
+        );
+        let program = marrow_check::test_support::commit_then_check(project.path()).runtime();
+        let store = TreeStore::memory();
+        let call = CheckedEntryCall::new(&program, "test::read", vec![]).expect("entry");
+        let mut output = String::new();
+
+        reset_error_value_allocation_count();
+        let value = run_entry(&store, &call, &mut output)
+            .expect("coalesced absence resolves")
+            .value;
+
+        assert_eq!(value, Some(Value::Str("missing".into())));
+        assert_eq!(error_value_allocation_count(), 0);
+    }
+
+    #[test]
+    fn caught_absent_fault_allocates_one_error_value_at_the_catch_site() {
+        let project = TempProject::new(
+            "caught-absent",
+            "module test\n\npub fn read(): string\n\
+             \x20\x20\x20\x20try\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20return std::env::require(\"MISSING\")\n\
+             \x20\x20\x20\x20catch err: Error\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20return err.code\n",
+        );
+        let program = marrow_check::test_support::commit_then_check(project.path()).runtime();
+        let store = TreeStore::memory();
+        let host = Host::new().with_environment(HashMap::new());
+        let call = CheckedEntryCall::new(&program, "test::read", vec![]).expect("entry");
+        let mut output = String::new();
+
+        reset_error_value_allocation_count();
+        let value = run_entry_with_host(&store, &host, &call, &mut output)
+            .expect("caught absence resolves")
+            .value;
+
+        assert_eq!(value, Some(Value::Str(RUN_ABSENT.into())));
+        assert_eq!(error_value_allocation_count(), 1);
+    }
 }

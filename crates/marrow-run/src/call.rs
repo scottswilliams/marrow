@@ -17,7 +17,7 @@ use crate::collection::{
 use crate::durable_read::{eval_index_lookup, eval_resource_read, eval_saved_layer_read};
 use crate::env::{Context, Env};
 use crate::error::{
-    RECURSION_LIMIT, RUN_UNKNOWN_FUNCTION, RuntimeError, recursion_limit, unsupported,
+    CALL_DEPTH_BUDGET, RUN_UNKNOWN_FUNCTION, RuntimeError, recursion_limit, unsupported,
 };
 use crate::host_effects::{eval_clock_capability, eval_env, eval_io, eval_log};
 use crate::local_collection::eval_local_collection_read;
@@ -78,8 +78,8 @@ fn eval_program_function<'p>(
 /// the nested frame and back out on return. Callers differ only in how they bind
 /// arguments and what they do with the writeback finals.
 ///
-/// The child runs at `env.depth + 1`; descending past [`RECURSION_LIMIT`] raises a
-/// located `run.recursion_limit` fault at the call `span` instead of recursing
+/// The child runs at `env.depth + 1`; descending past [`CALL_DEPTH_BUDGET`] raises
+/// a located `run.recursion_limit` fault at the call `span` instead of recursing
 /// into a stack overflow. This is the one place every program-function call
 /// descends, so guarding here bounds both the plain and inout-mode call paths.
 fn invoke_function<'p>(
@@ -90,8 +90,9 @@ fn invoke_function<'p>(
     writeback: &[&'p str],
     span: SourceSpan,
 ) -> Result<(Completion, Vec<Option<Value>>), RuntimeError> {
-    if env.depth >= RECURSION_LIMIT {
-        return Err(recursion_limit(span));
+    let child_depth = env.depth + 1;
+    if child_depth > CALL_DEPTH_BUDGET {
+        return Err(recursion_limit(child_depth, span));
     }
     let ctx = Context {
         program: env.program,
@@ -116,7 +117,7 @@ fn invoke_function<'p>(
         writeback,
         traversed_layers: &traversed_layers,
         hook: env.hook.take(),
-        depth: env.depth + 1,
+        depth: child_depth,
     })?;
     env.hook = hook;
     Ok((completion, finals))

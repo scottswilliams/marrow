@@ -54,6 +54,7 @@ impl StepHook for Recorder {
                 message: "debugger terminate".into(),
                 span,
                 throw: None,
+                catchable: false,
                 origin: None,
             });
         }

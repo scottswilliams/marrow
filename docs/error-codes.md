@@ -220,14 +220,14 @@ code, except `run.uncaught_error` — see "Typed Errors In Running Programs".
 | `run.ambiguous_function` | A bare run entry name matched more than one public function. Qualify the entry as `module::function`. |
 | `run.private_function` | A qualified call or run entry reached a function that exists but is not `pub` to the caller. The runtime backstop for `check.private_function`. |
 | `run.no_value` | A call to a function that returns no value was used where a value is needed. Fatal runtime backstop for unchecked programs. |
-| `run.absent_element` | A required or total read found its saved cell missing — a data-attachment/corruption fault, fatal and not catchable. An ordinary maybe-present read never reaches the runtime: it is resolved at the read site (`??` / `if exists` / `?.`) or is a compile error. |
+| `run.absent_element` | A value-position required or total read found its saved cell missing. It is catchable as an `Error`; an ordinary maybe-present read is resolved at the read site (`??` / `if exists` / `?.`) or is a compile error. Materialization-time absence after an address is fixed remains fatal. |
 | `run.store` | The store reported an error (e.g. corrupt tree-cell payload) during a read. Fatal storage/backend failure while evaluating a read. |
 | `run.unsupported` | A construct the runtime does not evaluate. Fatal runtime backstop. |
 | `run.capability` | A host capability a builtin needs (e.g. the clock for `std::clock::now`) was not provided to this run. Fatal host/tooling failure. |
 | `run.assertion` | A `std::assert::*` assertion did not hold. `marrow test` reports these as located test failures. |
 | `run.uncaught_error` | An `Error` raised by `throw` reached the top of a function with no `catch`. The original code travels in the message (e.g. `[io.read]`). |
 | `run.traversal` | A write, delete, or append changed the saved layer a loop was actively traversing. Fatal dynamic counterpart of `check.loop_mutates_traversed_layer`. |
-| `run.recursion_limit` | Function-call nesting exceeded the fixed recursion limit (1024). Located at the offending call site so runaway or unbounded recursion fails closed rather than overflowing the stack; see the [cost model](language/cost-model.md). |
+| `run.recursion_limit` | Function-call nesting exceeded the fixed call-depth budget (256). Located at the offending call site and reports the budget plus observed attempted depth, so runaway or unbounded recursion fails closed rather than overflowing the stack; see the [cost model](language/cost-model.md). |
 | `run.no_entry` | `marrow run` found no entry: no `--entry` was given and `marrow.json` sets no `run.defaultEntry`. |
 | `run.store_evolved` | The store was stamped at a catalog epoch newer than this program accepted, so a newer binary evolved it. Recompile or upgrade against the current accepted catalog. Fenced before any execution; the store is unchanged. |
 | `run.store_behind` | The store was stamped at a catalog epoch older than this program accepted, so its data predates the catalog. Activate the store with an evolution apply first. Fenced before any execution; the store is unchanged. |

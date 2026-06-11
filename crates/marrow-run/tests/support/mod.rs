@@ -525,13 +525,13 @@ pub fn run_expecting_error(call: CheckedEntryCall<'_>) -> marrow_run::RuntimeErr
     run(call).expect_err("expected runtime error")
 }
 
-pub fn error_throw_fields(error: &marrow_run::RuntimeError) -> (&str, &str) {
-    let Some(Value::Resource(fields)) = error.throw.as_deref() else {
+pub fn error_throw_fields(error: &marrow_run::RuntimeError) -> (String, String) {
+    let Some(Value::Resource(fields)) = error.error_value() else {
         panic!("expected Error resource throw: {error:?}");
     };
     (
-        resource_str_field(fields, "code"),
-        resource_str_field(fields, "message"),
+        resource_str_field(&fields, "code").to_string(),
+        resource_str_field(&fields, "message").to_string(),
     )
 }
 
