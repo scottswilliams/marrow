@@ -826,15 +826,6 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 
 ## Wave 2 — P0 foundation (REPORT Part V order)
 
-**W2.11 ∥ Typed inspection rendering.** Carries: text-rendering fixes for enum members and
-identity roots in `--trace` and `--dry-run`. Owns: crates/marrow/src/trace.rs
-`render_leaf_value`, crates/marrow-run/src/value.rs `display_debug`, and only the trace/dry-run
-fixtures needed to assert enum member names and `^root_name` identity rendering. Seed: a dry-run
-or trace fixture whose enum-typed field and identity-typed reference currently render as raw or
-opaque values. Review: data dump/data get byte rendering stays by-spec, no index-path support,
-no `--raw`, no composite-key path syntax, no JSON-envelope change. Done: existing trace/dry-run
-tests are byte-identical except for the intended enum and identity text.
-
 **W2.12 ∥ Diagnostic hygiene.** Carries: four additive rendering fixes: throw-site spans for
 uncaught throws, real declaration spans for `catalog_intent`, dotted source names beside hex ids
 in evolve approval messages, and a stable `ok: checked (N warnings)` text summary when checks
