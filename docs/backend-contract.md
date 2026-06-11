@@ -216,6 +216,30 @@ fails with `store.transaction`, so dropping one guard cannot unpin another.
 Backups and long inspections pin snapshots outside write transactions; source
 transactions use the write transaction's read-your-writes view.
 
+## Concurrency
+
+The native redb backend enforces one cross-process store-file lock. Read-only
+opens coexist with each other. A read-only open and a read-write open mutually
+exclude, in both directions: whichever process opens second is refused with
+`store.locked`.
+
+`store.locked` means "The store file is held open by another process (a writer
+or a read-only inspection)." Close the other process, then retry. Marrow does
+not try to identify whether the holder is a writer or a reader; redb does not
+expose that distinction through the lock error.
+
+Within one `TreeStore` handle, a pinned read snapshot and an open write
+transaction are also mutually exclusive, but that is an invalid handle state
+reported as `store.transaction`. `store.locked` is reserved for the
+cross-process file-open contract.
+
+Marrow v0.1 does not include a built-in durable outbox engine. When application
+code needs an external side effect to follow saved-data changes, write an
+ordinary saved outbox record in the same Marrow transaction as the state change,
+commit, and have a separate worker read, send, and mark that record idempotently.
+The backend makes the saved outbox record durable with the transaction; it does
+not infer messages or deliver effects.
+
 ## Durability And Recovery
 
 Native redb write transactions explicitly pin `Durability::Immediate` when the
@@ -248,8 +272,9 @@ whether the store opened, so damage beyond replay still surfaces
 
 The native store records format version `1` in a metadata table. Opening a file
 with another version is refused as `store.format_version`. A store file already
-held by another writer is refused as `store.locked`. Read-only opens never
-create a missing file and use a redb read-only handle.
+held by another process (a writer or a read-only inspection) is refused as
+`store.locked`. Read-only opens never create a missing file and use a redb
+read-only handle.
 
 Opening a damaged native store fails closed with a typed code, never a process
 crash. A truncated or torn body — including a file whose damage drives the engine

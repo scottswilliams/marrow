@@ -5,7 +5,8 @@
 pub enum StoreError {
     /// An I/O operation on a persistent backend failed.
     Io { op: &'static str, message: String },
-    /// The store file is already held open by another writer.
+    /// The store file is already held open by another process, either with write
+    /// capability or as a read-only inspection.
     Locked { data_dir: std::path::PathBuf },
     /// The store's recorded format version is not the one this build supports.
     FormatVersion { found: u32, supported: u32 },
@@ -80,7 +81,8 @@ impl std::fmt::Display for StoreError {
             Self::Io { op, message } => write!(f, "storage {op} failed: {message}"),
             Self::Locked { data_dir } => write!(
                 f,
-                "the store is already open by another process: {}",
+                "the store file is held open by another process (a writer or a read-only \
+                 inspection): {}. Close the other process, then retry",
                 data_dir.display()
             ),
             Self::FormatVersion { found, supported } => write!(

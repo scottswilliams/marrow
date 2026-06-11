@@ -117,7 +117,8 @@ fn io<E: std::fmt::Display>(op: &'static str) -> impl Fn(E) -> StoreError {
 /// collapsed into one untyped bucket. redb internals never leak as the surfaced
 /// message: Marrow authors its own prose and reports stable typed codes.
 ///
-/// - a second writer is the store lock;
+/// - a second writer, or a writer racing a read-only open in either direction, is
+///   the store lock;
 /// - a file left needing repair is recoverable, not corrupt;
 /// - reported corruption, and a torn or truncated body (an I/O `InvalidData` or
 ///   unexpected EOF as redb walks the file), are hard corruption;
@@ -484,7 +485,8 @@ macro_rules! read_view {
 
 impl RedbStore {
     /// Open the redb-backed store at `path`, creating the file if needed. A
-    /// second writer is rejected as [`StoreError::Locked`], and a file recording
+    /// concurrent read-only or read-write holder is rejected as [`StoreError::Locked`],
+    /// and a file recording
     /// a different [`FORMAT_VERSION`] as [`StoreError::FormatVersion`]. A damaged
     /// body fails closed as [`StoreError::Corruption`] rather than panicking the
     /// process; the open and its structural probe run under [`catch_open`].
@@ -834,8 +836,8 @@ mod tests {
     }
 
     /// The redb-error mapping is damage-faithful: a recoverable unclean shutdown, a
-    /// reported corruption, a torn body, a second writer, and a transient fault each
-    /// land on their own typed code instead of collapsing to `store.io`.
+    /// reported corruption, a torn body, a read/write lock conflict, and a transient
+    /// fault each land on their own typed code instead of collapsing to `store.io`.
     #[test]
     fn map_open_error_classifies_each_redb_failure() {
         let path = std::path::Path::new("/tmp/marrow-store.redb");

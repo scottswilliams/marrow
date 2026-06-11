@@ -282,7 +282,7 @@ directly.
 | Code | Meaning |
 |---|---|
 | `store.io` | An I/O operation on a persistent backend failed. |
-| `store.locked` | The store file is already held open by another writer. |
+| `store.locked` | The store file is held open by another process (a writer or a read-only inspection). Close the other process, then retry. |
 | `store.format_version` | The store's recorded format version is not the one this build supports. |
 | `store.corruption` | The store file, tree-cell metadata, tree-cell index cell, or accepted catalog table is corrupt and could not be opened or decoded — including a truncated or torn store body and a catalog snapshot whose recomputed digest does not match its stored header. |
 | `store.recovery_required` | The store was not shut down cleanly, so a read-only open is refused until a write-capable open replays the interrupted commit. Run `marrow data recover` to attempt that open. The recovery is attempted, not guaranteed: the command reports whether the store opened, and a store damaged beyond replay surfaces `store.corruption`. |

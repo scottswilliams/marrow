@@ -625,11 +625,23 @@ code to handle half-applied generated indexes.
 ID allocation is allowed to leave gaps, including gaps left by failed or
 rolled-back work. Treat IDs as opaque identifiers, not business counters.
 
-## Locks
+## Concurrency
 
 Source-level `lock` is not part of v0.1. Use transactions for saved-data
-atomicity in ordinary `.mw` code. Backend and server layers may still use their
-own writer coordination outside the source language.
+atomicity in ordinary `.mw` code; a transaction is not a process lock and does
+not coordinate external systems.
+
+The native store allows multiple read-only inspection processes at the same
+time. A process that needs write capability excludes and is excluded by every
+read-only inspection. If a process opens second while the store file is held by
+the other class of holder, the command reports `store.locked`: "The store file
+is held open by another process (a writer or a read-only inspection)." Close the
+other process, then retry.
+
+Marrow does not provide a durable outbox primitive in source. If saved-data
+changes must drive an external effect, model that as ordinary saved data: write
+an outbox record in the same transaction as the state change, commit, and let a
+separate worker send and mark the record idempotently.
 
 ## Managed Saved Trees
 

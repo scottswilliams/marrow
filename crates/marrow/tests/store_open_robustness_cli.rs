@@ -65,6 +65,32 @@ fn stderr_code(output: &std::process::Output) -> String {
     code.to_string()
 }
 
+fn assert_locked_output(command: &[&str], output: &std::process::Output) {
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "`marrow {}` must exit 1 when the store is locked: {output:?}",
+        command.join(" ")
+    );
+    assert_eq!(
+        stderr_code(output),
+        "store.locked",
+        "`marrow {}` must report store.locked: {output:?}",
+        command.join(" ")
+    );
+    let stderr = String::from_utf8(output.stderr.clone()).expect("utf8 stderr");
+    assert!(
+        stderr.contains("held open by another process"),
+        "`marrow {}` must explain the cross-process holder: {stderr}",
+        command.join(" ")
+    );
+    assert!(
+        stderr.contains("writer or a read-only inspection"),
+        "`marrow {}` must name both lock holder classes: {stderr}",
+        command.join(" ")
+    );
+}
+
 /// A store-opening command over a truncated store exits 1 with `store.corruption`,
 /// never 101 from a redb panic. Run over every store-opening verb, read and write.
 #[test]
@@ -110,6 +136,47 @@ fn store_opening_commands_report_corruption_not_a_panic() {
             "`marrow {}` must not leak a redb panic backtrace: {stderr}",
             command.join(" ")
         );
+    }
+}
+
+/// A write-capable native handle excludes read-only CLI inspections. Every read-only
+/// store-opening command must surface the typed contract, not a redb-specific string
+/// or a generic I/O failure.
+#[test]
+fn read_only_cli_commands_report_locked_while_writer_is_open() {
+    let (project, dir) = seeded_project("cli-store-writer-locks-readers");
+    let _writer = marrow_store::tree::TreeStore::open(&store_path(&project))
+        .expect("hold the native writer open");
+    let backup_target = project.join("held.mw-backup");
+    let backup_target = backup_target.to_str().expect("backup path utf8");
+    let commands: &[&[&str]] = &[
+        &["data", "dump", &dir],
+        &["data", "stats", &dir],
+        &["data", "integrity", &dir],
+        &["backup", &dir, backup_target],
+    ];
+
+    for command in commands {
+        let output = marrow(command);
+        assert_locked_output(command, &output);
+    }
+}
+
+/// A read-only native holder also excludes write-capable CLI commands. The contract
+/// is symmetric at the process boundary even though many read-only handles can coexist.
+#[test]
+fn write_cli_commands_report_locked_while_read_only_holder_lives() {
+    let (project, dir) = seeded_project("cli-store-reader-locks-writers");
+    let _reader = marrow_store::tree::TreeStore::open_read_only(&store_path(&project))
+        .expect("hold the native reader open");
+    let commands: &[&[&str]] = &[
+        &["run", "--entry", "app::seed", &dir],
+        &["data", "recover", &dir],
+    ];
+
+    for command in commands {
+        let output = marrow(command);
+        assert_locked_output(command, &output);
     }
 }
 
