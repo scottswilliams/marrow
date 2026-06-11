@@ -383,5 +383,15 @@ run.uncaught_error: uncaught error [io.read]: std::io::readText failed for `/no/
 
 `marrow data diff`/`data load`, non-empty restore modes, and cross-engine restore
 are deferred — see [future/data-tools.md](future/data-tools.md) and
-[future/cli.md](future/cli.md). No new code family appears for a deferred surface
-until that surface ships.
+[future/cli.md](future/cli.md). No active command-output code family appears for
+a deferred surface until that surface ships.
+
+The `decode.*` family is reserved for future checked decode and repair reports.
+These codes do not appear in v0.1 command output.
+
+| Code | Reserved meaning |
+|---|---|
+| `decode.shape` | A stored tree shape does not match the checked resource shape. |
+| `decode.unknown_member` | Stored data names a member the checked catalog cannot resolve. |
+| `decode.required_absent` | A required saved member is absent from stored data. |
+| `decode.value` | Stored bytes do not decode as the checked leaf type. |

@@ -245,21 +245,21 @@ for id in ^books.byShelf("fiction")
 Indexes may be unique:
 
 ```mw
+module docs::unique_index
+
 resource Book
     isbn: string
 
 store ^books(id: int): Book
     index byIsbn(isbn) unique
+
+fn findByIsbn(isbn: string, fallback: Id(^books)): Id(^books)
+    return ^books.byIsbn(isbn) ?? fallback
 ```
 
 A unique index can omit the identity key because each populated lookup path
 points to one store identity. The lookup is maybe-present — no book may carry
-that isbn — so the read resolves like any maybe-present place:
-
-```mw
-if exists(^books.byIsbn(isbn))
-    const id: Id(^books) = ^books.byIsbn(isbn)
-```
+that isbn — so the read resolves like any maybe-present place.
 
 For a composite store identity, a non-unique index includes all identity
 key names. Typed traversal reconstructs the store identity value instead
@@ -521,6 +521,17 @@ if exists(^books(id).subtitle)
 
 const subtitle: string = ^books(id).subtitle ?? ""
 ```
+
+### Absent Records
+
+An absent store identity is ordinary absence until a checked read proves
+otherwise. Code must resolve maybe-present records and fields at the read site,
+so an unchecked absent record is a check error rather than a runtime branch.
+
+Once a read is proven present, missing required data is invalid attached data.
+A required field missing from an existing record, or a total read whose stored
+cell is absent, is a fatal data-attachment/corruption fault. It is not a
+catchable `Error`, and `??` does not hide it.
 
 ## Delete
 
