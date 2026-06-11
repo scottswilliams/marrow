@@ -138,7 +138,9 @@ Format Marrow source. `marrow fmt` does not read from stdin.
 - A single `.mw` file with no flag prints the formatted source to stdout.
 - `--check` reports each file that is not already formatted and exits `1` if any
   differ; it writes nothing.
-- `--write` rewrites changed files in place.
+- `--write` rewrites changed files in place. Each changed file is written to an
+  adjacent temporary file and replaces the original only after the new content is
+  written successfully; a parse or write failure leaves the original file intact.
 - A project directory formats every `.mw` file under its source roots, and
   requires `--check` or `--write`. Printing many files to stdout is meaningless,
   so a bare `marrow fmt <dir>` is a usage error (exit `2`).
@@ -482,6 +484,12 @@ accepted IDs for source that looks equivalent.
 The store is read through one stable snapshot for the backup traversal. Backup
 opens the store read-only and never modifies it; a project with no saved data
 yet writes a valid empty backup.
+
+The output archive is written to an adjacent temporary file and then renamed over
+`<output-file>` only after the complete backup has been written successfully. A
+failed backup preserves any prior archive at that path and removes its temporary
+file. No overwrite flag is exposed: the path is replaced on success and preserved
+on failure.
 
 ```console
 $ marrow backup ./proj ./proj-backup.mwbackup

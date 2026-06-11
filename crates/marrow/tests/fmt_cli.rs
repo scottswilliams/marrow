@@ -1,6 +1,8 @@
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 
 mod support;
 
@@ -8,6 +10,34 @@ use support::temp_source;
 
 fn run_fmt(args: &[&str]) -> std::process::Output {
     support::marrow_sub("fmt", args)
+}
+
+fn run_fmt_with_env(args: &[&str], key: &str, value: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .arg("fmt")
+        .args(args)
+        .env(key, value)
+        .output()
+        .expect("run marrow fmt")
+}
+
+fn temp_artifacts_for(path: &Path) -> Vec<PathBuf> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .expect("source file name")
+        .to_string_lossy();
+    let prefix = format!(".{file_name}.");
+    fs::read_dir(parent)
+        .expect("read source parent")
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|entry| {
+            entry
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".tmp"))
+        })
+        .collect()
 }
 
 /// Human-rendered `fmt` message fragments with no typed code or JSON surface (`fmt` has
@@ -111,6 +141,60 @@ fn fmt_write_rewrites_the_file_in_place() {
     let written = fs::read_to_string(&path).expect("read back");
     fs::remove_file(&path).ok();
     assert_eq!(written, "module app\n\nconst Max: int = 5\n");
+}
+
+#[test]
+fn fmt_write_failure_preserves_original_and_removes_temp_file() {
+    let source = "module app\nconst Max:int=5\n";
+    let path = temp_source("write-atomic-failure", source);
+    let output = run_fmt_with_env(
+        &["--write", path.to_str().unwrap()],
+        "MARROW_TEST_FMT_FAIL_AFTER_BYTES",
+        "8",
+    );
+    let written = fs::read_to_string(&path).expect("read back");
+    let temps = temp_artifacts_for(&path);
+    fs::remove_file(&path).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        fmt_reports_code(&output.stderr, "io.write"),
+        "{:?}",
+        output.stderr
+    );
+    assert_eq!(
+        written, source,
+        "failed fmt --write must leave the original source byte-for-byte"
+    );
+    assert_eq!(
+        temps,
+        Vec::<PathBuf>::new(),
+        "failed fmt --write must remove its adjacent temp file"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn fmt_write_follows_a_symlinked_source_file() {
+    let dir = support::temp_dir("fmt-symlink");
+    let target = dir.join("target.mw");
+    let link = dir.join("link.mw");
+    fs::write(&target, "module app\nconst Max:int=5\n").expect("write target source");
+    std::os::unix::fs::symlink("target.mw", &link).expect("create source symlink");
+
+    let output = run_fmt(&["--write", link.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(
+        fs::symlink_metadata(&link)
+            .expect("read link metadata")
+            .file_type()
+            .is_symlink(),
+        "fmt --write must preserve the source symlink path"
+    );
+    assert_eq!(
+        fs::read_to_string(&target).expect("read formatted target"),
+        "module app\n\nconst Max: int = 5\n"
+    );
 }
 
 #[test]

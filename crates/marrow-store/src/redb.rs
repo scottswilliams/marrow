@@ -12,6 +12,8 @@
 
 use std::fs;
 use std::ops::Bound;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 
@@ -34,6 +36,8 @@ const FORMAT_VERSION: u32 = 1;
 const MARROW_REDB_DURABILITY: Durability = Durability::Immediate;
 
 const DELETE_BATCH_LIMIT: usize = 256;
+#[cfg(unix)]
+const STORE_SYMLINK_HOP_LIMIT: usize = 40;
 
 /// A key and the value it held before a change, so a rollback can restore it.
 type Undo = (Vec<u8>, Option<Vec<u8>>);
@@ -239,6 +243,76 @@ fn sync_parent_directory(_path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
+#[cfg(unix)]
+fn prepare_new_store_file(path: &Path) -> Result<Option<std::path::PathBuf>, StoreError> {
+    let Some(create_path) = missing_file_or_symlink_target(path)? else {
+        return Ok(None);
+    };
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&create_path)
+    {
+        Ok(file) => {
+            drop(file);
+            Ok(Some(create_path))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
+        Err(error) => Err(StoreError::Io {
+            op: "open",
+            message: error.to_string(),
+        }),
+    }
+}
+
+#[cfg(not(unix))]
+fn prepare_new_store_file(path: &Path) -> Result<Option<std::path::PathBuf>, StoreError> {
+    Ok((!path.exists()).then(|| path.to_path_buf()))
+}
+
+#[cfg(unix)]
+fn missing_file_or_symlink_target(path: &Path) -> Result<Option<std::path::PathBuf>, StoreError> {
+    let mut path = path.to_path_buf();
+    let mut visited = Vec::new();
+    for _ in 0..STORE_SYMLINK_HOP_LIMIT {
+        if visited.iter().any(|visited| visited == &path) {
+            return Ok(None);
+        }
+        visited.push(path.clone());
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Some(path)),
+            Err(error) => {
+                return Err(StoreError::Io {
+                    op: "open",
+                    message: error.to_string(),
+                });
+            }
+        };
+        if !metadata.file_type().is_symlink() {
+            return Ok(None);
+        }
+        let target = fs::read_link(&path).map_err(|error| StoreError::Io {
+            op: "open",
+            message: error.to_string(),
+        })?;
+        path = resolve_link_target(&path, target);
+    }
+    Ok(None)
+}
+
+#[cfg(unix)]
+fn resolve_link_target(link_path: &Path, target: std::path::PathBuf) -> std::path::PathBuf {
+    if target.is_absolute() {
+        target
+    } else {
+        link_path
+            .parent()
+            .map_or_else(|| target.clone(), |parent| parent.join(&target))
+    }
+}
+
 /// Stamp the format version on a brand-new file or verify it on an existing one,
 /// then ensure the data table exists, in one write transaction. `Database::create`
 /// opens existing files too, so a database with no tables is fresh and gets stamped;
@@ -247,8 +321,7 @@ fn sync_parent_directory(_path: &Path) -> Result<(), StoreError> {
 /// so a damaged body surfaces here (as a typed error or a caught panic) rather than
 /// on first use.
 fn stamp_or_verify_format_version(
-    path: &Path,
-    sync_parent_after_commit: bool,
+    sync_parent_after_commit: Option<&Path>,
     db: &Database,
 ) -> Result<(), StoreError> {
     let mut write = db.begin_write().map_err(open_transaction_error)?;
@@ -276,8 +349,8 @@ fn stamp_or_verify_format_version(
     // Create the data table now so later reads never meet a missing table.
     write.open_table(TABLE).map_err(open_table_error)?;
     write.commit().map_err(open_commit_error)?;
-    if sync_parent_after_commit {
-        sync_parent_directory(path)?;
+    if let Some(created_path) = sync_parent_after_commit {
+        sync_parent_directory(created_path)?;
     }
     Ok(())
 }
@@ -417,9 +490,9 @@ impl RedbStore {
     /// process; the open and its structural probe run under [`catch_open`].
     pub(crate) fn open(path: &Path) -> Result<Self, StoreError> {
         let db = catch_open(|| {
-            let sync_parent_after_commit = !path.exists();
+            let sync_parent_after_commit = prepare_new_store_file(path)?;
             let db = Database::create(path).map_err(|error| map_open_error(path, error))?;
-            stamp_or_verify_format_version(path, sync_parent_after_commit, &db)?;
+            stamp_or_verify_format_version(sync_parent_after_commit.as_deref(), &db)?;
             Ok(db)
         })?;
         Ok(Self {
@@ -734,12 +807,29 @@ mod tests {
             "redb write transactions must explicitly pin Marrow's durability policy"
         );
         assert!(
-            source.contains("sync_parent_directory(path)?"),
+            source.contains("sync_parent_directory(created_path)?"),
             "fresh native store creation must fsync the containing directory"
         );
         assert!(
             !source.contains(&two_phase),
             "W2.2 documents one-phase redb commit; do not enable two-phase commit here"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_symlink_target_detection_stops_relative_cycles() {
+        let root = TempDir::new("redb-symlink-cycle").expect("temp dir");
+        let data_dir = root.path().join(".data");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        let store_path = data_dir.join("marrow.redb");
+        std::os::unix::fs::symlink("../.data/marrow.redb", &store_path)
+            .expect("create relative symlink cycle");
+
+        assert_eq!(
+            super::missing_file_or_symlink_target(&store_path).expect("resolve symlink target"),
+            None,
+            "relative symlink cycles must not spin while preparing owner-only creation"
         );
     }
 

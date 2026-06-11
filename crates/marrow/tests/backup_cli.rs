@@ -1,6 +1,8 @@
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Output;
+use std::process::{Command, Output};
 
 use marrow_check::checked_saved_root_place;
 use marrow_store::cell::CatalogId;
@@ -17,6 +19,54 @@ fn json_code(output: &Output) -> String {
         .as_str()
         .expect("json error code")
         .to_string()
+}
+
+fn marrow_with_env(args: &[&str], key: &str, value: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .args(args)
+        .env(key, value)
+        .output()
+        .expect("run marrow")
+}
+
+#[cfg(unix)]
+fn marrow_with_umask_000(args: &[&str]) -> Output {
+    Command::new("/bin/sh")
+        .arg("-c")
+        .arg("umask 000; exec \"$0\" \"$@\"")
+        .arg(env!("CARGO_BIN_EXE_marrow"))
+        .args(args)
+        .output()
+        .expect("run marrow under permissive umask")
+}
+
+#[cfg(unix)]
+fn assert_owner_only_file(path: &Path) {
+    let mode = fs::metadata(path)
+        .expect("read file metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600, "{} mode is {mode:o}", path.display());
+}
+
+fn temp_artifacts_for(path: &Path) -> Vec<PathBuf> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .expect("artifact file name")
+        .to_string_lossy();
+    let prefix = format!(".{file_name}.");
+    fs::read_dir(parent)
+        .expect("read artifact parent")
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|entry| {
+            entry
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".tmp"))
+        })
+        .collect()
 }
 
 /// A native-store project whose `seed` entry writes one book, plus its committed
@@ -213,6 +263,104 @@ fn backup_then_restore_round_trips_saved_data() {
         Some(b"Mort".to_vec()),
         "the restored book is readable"
     );
+}
+
+#[test]
+fn backup_failure_preserves_prior_archive_and_removes_temp_file() {
+    let (root, _data_dir) = seeded_project("backup-atomic-failure");
+    let dir = root.to_str().unwrap().to_string();
+    let archive = root.join("books.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+
+    let backup = marrow(&["backup", &dir, &archive_arg]);
+    assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
+    let prior = fs::read(&archive).expect("read prior archive");
+
+    let failed = marrow_with_env(
+        &["backup", &dir, &archive_arg],
+        "MARROW_TEST_BACKUP_FAIL_AFTER_BYTES",
+        "32",
+    );
+    assert_eq!(
+        failed.status.code(),
+        Some(1),
+        "injected write failure must fail: {failed:?}"
+    );
+    assert_eq!(
+        fs::read(&archive).expect("read archive after failure"),
+        prior,
+        "a failed backup must preserve the previously published archive byte-for-byte"
+    );
+    assert_eq!(
+        temp_artifacts_for(&archive),
+        Vec::<PathBuf>::new(),
+        "a failed backup must remove its adjacent temp artifact"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn backup_archive_is_owner_only_under_permissive_umask() {
+    let (root, _data_dir) = seeded_project("backup-owner-only-archive");
+    let dir = root.to_str().unwrap().to_string();
+    let archive = root.join("books.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+
+    let backup = marrow_with_umask_000(&["backup", &dir, &archive_arg]);
+    assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
+    assert_owner_only_file(&archive);
+}
+
+#[cfg(unix)]
+#[test]
+fn native_store_file_is_owner_only_under_permissive_umask() {
+    let root = support::temp_project_uncommitted("store-owner-only", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::seed" } }"#,
+        );
+        write(root, "src/app.mw", support::counter_source());
+    });
+    let dir = root.to_str().unwrap().to_string();
+
+    let run = marrow_with_umask_000(&["run", &dir]);
+    assert_eq!(run.status.code(), Some(0), "run: {run:?}");
+    assert_owner_only_file(&root.join(".data/marrow.redb"));
+}
+
+#[cfg(unix)]
+#[test]
+fn native_store_symlink_target_is_owner_only_under_permissive_umask() {
+    let root = support::temp_project_uncommitted("store-owner-only-symlink", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::seed" } }"#,
+        );
+        write(root, "src/app.mw", support::counter_source());
+    });
+    let data_dir = root.join(".data");
+    let outside_dir = root.join("outside");
+    fs::create_dir_all(&data_dir).expect("create data dir");
+    fs::create_dir_all(&outside_dir).expect("create symlink target dir");
+    let store_path = data_dir.join("marrow.redb");
+    let symlink_target = outside_dir.join("marrow.redb");
+    std::os::unix::fs::symlink("../outside/marrow.redb", &store_path)
+        .expect("create dangling store symlink");
+    assert!(!symlink_target.exists(), "fixture target starts missing");
+
+    let dir = root.to_str().unwrap().to_string();
+    let run = marrow_with_umask_000(&["run", &dir]);
+    assert_eq!(run.status.code(), Some(0), "run: {run:?}");
+    assert!(
+        fs::symlink_metadata(&store_path)
+            .expect("store path metadata")
+            .file_type()
+            .is_symlink(),
+        "store path remains the configured symlink"
+    );
+    assert_owner_only_file(&symlink_target);
 }
 
 /// With engine-resident atomic publish there is no activation window: an `evolve apply`

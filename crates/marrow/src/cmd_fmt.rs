@@ -1,9 +1,15 @@
 //! `marrow fmt`: format a Marrow source file or every file under a project.
 
-use std::path::Path;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufWriter, Write};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use crate::{CheckFormat, report_check, report_io_error, report_simple_error};
+
+const FMT_SYMLINK_HOP_LIMIT: usize = 40;
 
 pub(crate) fn fmt(args: &[String]) -> ExitCode {
     let mut mode = None;
@@ -163,7 +169,7 @@ fn fmt_one(file: &str, source: &str, mode: FmtMode) -> Result<FmtOutcome, ()> {
         FmtMode::Write => {
             if source == formatted {
                 Ok(FmtOutcome::Unchanged)
-            } else if let Err(error) = std::fs::write(file, &formatted) {
+            } else if let Err(error) = write_formatted_source(file, &formatted) {
                 report_simple_error(
                     "io.write",
                     &format!("failed to write {file}: {error}"),
@@ -182,4 +188,184 @@ enum FmtMode {
     Print,
     Check,
     Write,
+}
+
+fn write_formatted_source(file: &str, formatted: &str) -> io::Result<()> {
+    let target = resolve_format_target(Path::new(file))?;
+    ensure_target_writable(&target)?;
+    let permissions = fs::metadata(&target)?.permissions();
+    let (temp_path, temp_file) = create_temp_source_file(&target)?;
+    let mut writer = FmtWriter::new(temp_file);
+    if let Err(error) = writer
+        .write_all(formatted.as_bytes())
+        .and_then(|()| writer.finish())
+    {
+        drop(writer);
+        cleanup_temp_source(&temp_path);
+        return Err(error);
+    }
+    drop(writer);
+    if let Err(error) = fs::set_permissions(&temp_path, permissions) {
+        cleanup_temp_source(&temp_path);
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(&temp_path, &target) {
+        cleanup_temp_source(&temp_path);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn ensure_target_writable(target: &Path) -> io::Result<()> {
+    OpenOptions::new().write(true).open(target).map(|_| ())
+}
+
+fn resolve_format_target(target: &Path) -> io::Result<PathBuf> {
+    let mut path = target.to_path_buf();
+    let mut visited = Vec::new();
+    for _ in 0..FMT_SYMLINK_HOP_LIMIT {
+        if visited.iter().any(|visited| visited == &path) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "format target symlink cycle",
+            ));
+        }
+        visited.push(path.clone());
+        let metadata = fs::symlink_metadata(&path)?;
+        if !metadata.file_type().is_symlink() {
+            return Ok(path);
+        }
+        let target = fs::read_link(&path)?;
+        path = resolve_link_target(&path, target);
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "format target symlink chain is too deep",
+    ))
+}
+
+fn resolve_link_target(link_path: &Path, target: PathBuf) -> PathBuf {
+    if target.is_absolute() {
+        target
+    } else {
+        link_path
+            .parent()
+            .map_or_else(|| target.clone(), |parent| parent.join(&target))
+    }
+}
+
+fn create_temp_source_file(target: &Path) -> io::Result<(PathBuf, File)> {
+    let parent = target
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let file_name = target.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "format target path must name a file",
+        )
+    })?;
+    let file_name = file_name.to_string_lossy();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    for attempt in 0..16 {
+        let path = parent.join(format!(
+            ".{file_name}.{}.{}.{}.tmp",
+            std::process::id(),
+            nanos,
+            attempt
+        ));
+        match create_owner_only_new_file(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate a unique format temp path",
+    ))
+}
+
+fn create_owner_only_new_file(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options.open(path)
+}
+
+fn cleanup_temp_source(path: &Path) {
+    let _ = fs::remove_file(path);
+}
+
+struct FmtWriter {
+    inner: BufWriter<File>,
+    #[cfg(debug_assertions)]
+    fail_after: Option<FailAfter>,
+}
+
+impl FmtWriter {
+    fn new(file: File) -> Self {
+        Self {
+            inner: BufWriter::new(file),
+            #[cfg(debug_assertions)]
+            fail_after: injected_write_limit("MARROW_TEST_FMT_FAIL_AFTER_BYTES"),
+        }
+    }
+
+    fn finish(&mut self) -> io::Result<()> {
+        self.inner.flush()?;
+        self.inner.get_ref().sync_all()
+    }
+}
+
+impl Write for FmtWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        #[cfg(debug_assertions)]
+        if let Some(fail_after) = &mut self.fail_after {
+            return fail_after.write(&mut self.inner, buf, "injected fmt write failure");
+        }
+        self.inner.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+#[cfg(debug_assertions)]
+fn injected_write_limit(name: &str) -> Option<FailAfter> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .map(FailAfter::new)
+}
+
+#[cfg(debug_assertions)]
+struct FailAfter {
+    remaining: usize,
+}
+
+#[cfg(debug_assertions)]
+impl FailAfter {
+    fn new(remaining: usize) -> Self {
+        Self { remaining }
+    }
+
+    fn write<W: Write>(
+        &mut self,
+        inner: &mut W,
+        buf: &[u8],
+        message: &'static str,
+    ) -> io::Result<usize> {
+        if self.remaining == 0 {
+            return Err(io::Error::other(message));
+        }
+        let allowed = self.remaining.min(buf.len());
+        let written = inner.write(&buf[..allowed])?;
+        self.remaining = self.remaining.saturating_sub(written);
+        Ok(written)
+    }
 }
