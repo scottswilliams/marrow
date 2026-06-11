@@ -829,12 +829,6 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 Goal: every deletion and truth-fix with no implementation dependency lands before building.
 Mostly parallel; two wide-churn barrier lanes close the wave.
 
-**W1.8 → tempfile removal (barrier; after W1.7).** Carries: removal "Remove the tempfile
-dev-dependency". Owns: test support in marrow-store/marrow-run (~28 sites), Cargo.toml ×2,
-Cargo.lock (reviewed intentional change: ~57 → ~21 external packages). Seed: cargo tree proving
-tempfile gone. Review: cleanup-on-panic semantics preserved in the std-only guard. Done: lock
-diff reviewed; full suite green.
-
 **W1.9 → Dump example fossil.** Carries: the docs/data-modeling.md "Inspecting the Saved Tree"
 example repair. Owns:
 docs/data-modeling.md only. Seed: docs review fixture or static check proving the example shows
