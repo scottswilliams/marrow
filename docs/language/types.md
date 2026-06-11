@@ -150,11 +150,12 @@ required author: string
 ```
 
 Writing a resource value must populate required fields. A required field that
-is missing in stored data is a fatal data-attachment error at activation, not a
-maybe-present read to resolve or a catchable branch. Assigning absence to a
-required field is an error; use `delete` only when deleting the surrounding
-keyed entry or resource, or when a tool/admin maintenance run grants that
-capability.
+is missing in stored data is invalid attached data: it is fatal when a proven
+read or whole-resource materialization requires it, and check/data-integrity
+paths may report it before execution. It is not a maybe-present read to resolve
+or a catchable branch. Assigning absence to a required field is an error; use
+`delete` only when deleting the surrounding keyed entry or resource, or when a
+tool/admin maintenance run grants that capability.
 
 A local mutable resource can be built field by field. Required fields are
 checked when the resource is saved, returned, or passed where a complete

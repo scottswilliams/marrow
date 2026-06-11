@@ -844,7 +844,7 @@ tempfile gone. Review: cleanup-on-panic semantics preserved in the std-only guar
 diff reviewed; full suite green.
 
 **W1.9 → Dump example fossil.** Carries: the docs/data-modeling.md "Inspecting the Saved Tree"
-example repair, after or coordinated with W1.6's byIsbn/byShelf terminology fix. Owns:
+example repair. Owns:
 docs/data-modeling.md only. Seed: docs review fixture or static check proving the example shows
 only real `data dump` field rows, never derived index entries. Review: the paragraph states that
 derived index trees are maintained by the runtime, are not emitted by `data dump`, and cannot be

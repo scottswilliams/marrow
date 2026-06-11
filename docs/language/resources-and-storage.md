@@ -486,8 +486,10 @@ specific fields instead of using `=`.
 The compiler checks resource fields before runtime. Runtime reads from saved
 data also validate bytes before returning typed values.
 
-If saved bytes do not match the resource schema, typed reads raise a typed
-error. Checked inspection can still show the stored bytes for repair.
+If a proven saved read finds missing required data or bytes that do not decode
+as the checked leaf type, the command stops with a fatal data-attachment or
+storage-corruption fault rather than a catchable `Error`. Checked inspection
+can still report the stored bytes for repair.
 
 ## Sparse And Required Fields
 
