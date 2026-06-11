@@ -16,6 +16,12 @@ including the explicit `CARGO_TARGET_DIR`, before storage-engine/04 is flipped.
 | Ordering/codecs | W2.2 | Saved-key codecs round-trip representative values and preserve typed byte order. Data-cell keys round-trip all cell kinds. Commit metadata round-trips all fields and rejects trailing bytes. Existing value and identity payload codec suites stay in the native store family. | `cargo test -p marrow-store --features native` |
 | Backup all-or-nothing | W2.2 | Corrupt and trailing-byte restore refusals now also assert the target store remains empty after failure. W2.4 extends this family with atomic backup/fmt writes and replace-only-on-success coverage. | `cargo test -p marrow --test backup_cli` |
 
+## Integrated Lane Evidence
+
+| Lane | Integrated Commit | Reviewer Verdicts | Broad Gates |
+|---|---|---|---|
+| W2.2 | `ea6ce9cadf0ec84cfaa5070c703329fefd9c43ce` | Boyle soundness PASS; Hume idiom/spec PASS. | `cargo build --workspace`; `cargo test --workspace`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `python3 tools/docs_lint.py`; `git diff --check` |
+
 ## Final Assembly Rules
 
 The W7.2 assembly run is green only when every fixture in the five gate-35

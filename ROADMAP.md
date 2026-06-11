@@ -826,18 +826,6 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 
 ## Wave 2 — P0 foundation (REPORT Part V order)
 
-**W2.2 ∥ Durability pin + crash/codec harness (II.B1 items 1-4 + IV.B1; one family, IV.B1's lane
-builds the harness).** Owns: marrow-store redb.rs (explicit `Durability` at `DatabaseHandle::begin_write`,
-parent-dir fsync via the commit.rs pattern), docs/backend-contract.md Durability and Recovery
-section (gate-6 posture recorded concretely — no `set_two_phase_commit` call; the section names
-the residual checksum-collision risk and two-phase commit as the named escalation, plus II.B1's
-cost-model engine-relative caveat sentence: per-write fsync of unbracketed single writes), the
-new crash harness (kill-during-commit child-process suite,
-torn-write reopen, hand-rolled property round-trips for key/value/cell/metadata codecs, backup
-all-or-nothing assertions). Seed: a kill-during-commit test failing for lack of pinned mode /
-harness. Review: both-or-invisible per storage-engine/02; flake mitigated by handshake kill
-points + bounded soak. Done: harness green in CI; freeze-gate evidence ledger started for gate 35.
-
 **W2.3 ∥ Call-depth budget (IV.A1, gate 28).** Carries (G2-3): the runtime Error value
 constructed at the catch site, not the raise site — a swallowed absent read (`x ?? default`)
 allocates zero error objects; one cost-model.md sentence pins zero as the v0.1 allocation law
