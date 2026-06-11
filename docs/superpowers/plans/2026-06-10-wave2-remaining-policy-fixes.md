@@ -23,6 +23,11 @@ repro as oracle, soundness + idiom review, full gate, then fast-forward integrat
   `store.corruption`, across data tools and serve. Resolves the B-DATA-ROOTS backlog item.
 - FEAT-1 (B71) — iterate a date/duration/instant-keyed layer (`saved_key_to_value` total).
 - DUR-5 (manifest folded into the backup archive checksum) — landed in Wave 1 Lane 6.
+- DIAG-1/2/3 (B66/B69/B72) — reject unsupported string escapes at check, reject unknown
+  ops in closed pure std modules, and enforce dotted lowercase `ErrorCode` text through
+  the shared checker/runtime grammar.
+- CLI consistency B73/B75 — `lsp` extra args and duplicate `--entry`/`--port` are usage
+  errors; duplicate single-valued flags no longer silently take the last value.
 
 ## Remaining, by cluster (decided fix in brackets)
 
@@ -59,14 +64,6 @@ repro as oracle, soundness + idiom review, full gate, then fast-forward integrat
 - **B55** — a whole-record `^record(key) ?? fallback` faults at runtime on an absent keyed
   record despite a clean check. [DIAG-6: an absent whole-record `??` yields the fallback; a
   present-but-malformed record still faults.]
-- **B66** — an unsupported string escape (`\q`) passes check then faults at run with a false
-  "runtime does not evaluate escapes" message. [DIAG-2: reject the bad escape at check and
-  delete the false message (one-line `syntax.md` edit).]
-- **B69** — a nonexistent std op in a real module passes `check`, then faults cryptically with
-  no op name or location. [DIAG-1: validate ops at check for the closed pure modules
-  (math/text/bytes/assert); host modules stay module-open. Propose-first.]
-- **B72** — `Error.code` is a plain string, not `ErrorCode`; invalid codes pass check and run.
-  [DIAG-3: enforce `ErrorCode` at both check and run via the shared `is_error_code_text`.]
 - **B65** — print/write/interpolation accept non-renderable values caught only at runtime.
   [The checker should reject a non-renderable interpolation/print argument; coordinate with
   B45 below.]
@@ -100,10 +97,6 @@ repro as oracle, soundness + idiom review, full gate, then fast-forward integrat
   project resolves saved-root ids without a prior run.]
 
 ### CLI consistency (low)
-- **B73** — `marrow lsp` with an extra positional argument exits 1 instead of the documented
-  usage error (exit 2).
-- **B75** — duplicate `--entry`/`--port` silently take the last value while duplicate
-  `--format` is a usage error (exit 2); make duplicate-flag handling uniform.
 - **B68** — interpolation accepts a lone `}` as a literal brace while a lone `{` is a hard
   error; document or unify the asymmetry.
 
