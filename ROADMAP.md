@@ -824,23 +824,6 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 
 ---
 
-## Wave 2 — P0 foundation (REPORT Part V order)
-
-**W2.12 ∥ Diagnostic hygiene.** Carries: four additive rendering fixes: throw-site spans for
-uncaught throws, real declaration spans for `catalog_intent`, dotted source names beside hex ids
-in evolve approval messages, and a stable `ok: checked (N warnings)` text summary when checks
-emit only warnings. Owns: marrow-run entry completion span plumbing, marrow-check catalog
-diagnostic span selection, cmd_evolve approval rendering, main check reporting, and the narrow
-fixtures for those renderers. Seed: one failing fixture per renderer: uncaught throw points at
-the entry declaration, catalog intent reports 0:0, approval text shows only `cat_<hex>`, and a
-warning-only check lacks an ok summary. Review: no new diagnostic codes, no stable-id or
-invisible-catalog semantics change, and the hex id remains the approval token. Done: text output
-is location-accurate and warning-only checks are unambiguous.
-
-Wave gate: full gate; W2.2 harness becomes a permanent CI member.
-
----
-
 ## Wave 3 — Store, evolution, and catalog machinery
 
 Two sequenced series, concurrent with each other, plus an independent integrity lane (W3.7) and
