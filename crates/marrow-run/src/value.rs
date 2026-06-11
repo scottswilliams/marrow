@@ -91,6 +91,7 @@ pub struct EnumValue {
     pub(crate) member_id: EnumMemberId,
     pub(crate) enum_catalog_id: String,
     pub(crate) member_catalog_id: String,
+    display_name: String,
 }
 
 impl EnumValue {
@@ -139,7 +140,7 @@ impl Value {
             Value::Date(d) => format!("date({d})"),
             Value::Duration(n) => format!("duration({n})"),
             Value::Bytes(bytes) => format!("bytes[{}]", bytes.len()),
-            Value::Enum(value) => format!("enum({}.{})", value.enum_id.0, value.member_id.0),
+            Value::Enum(value) => value.display_name.clone(),
             Value::Sequence(items) => format!("sequence[{}]", items.len()),
             Value::LocalTree(entries) => format!("tree[{}]", entries.len()),
             // Field names only, in schema order; values may be large or nested.
@@ -147,10 +148,7 @@ impl Value {
                 let names: Vec<&str> = fields.iter().map(|(name, _)| name.as_str()).collect();
                 format!("resource{{{}}}", names.join(", "))
             }
-            Value::Identity(identity) => {
-                let rendered: Vec<String> = identity.keys.iter().map(saved_key_preview).collect();
-                format!("identity({})", rendered.join(", "))
-            }
+            Value::Identity(identity) => render_debug_identity(identity),
             Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::Decimal(_) => {
                 unreachable!("scalar_text rendered every scalar before this match")
             }
@@ -190,6 +188,11 @@ pub(crate) fn saved_key_preview(key: &SavedKey) -> String {
         SavedKey::Instant(n) => format!("instant({n})"),
         SavedKey::Bytes(bytes) => format!("bytes[{}]", bytes.len()),
     }
+}
+
+fn render_debug_identity(identity: &IdentityValue) -> String {
+    let rendered: Vec<String> = identity.keys.iter().map(saved_key_preview).collect();
+    format!("^{}({})", identity.root, rendered.join(", "))
 }
 
 /// Receives an entry function's `print`/`write` output as the run produces it.
@@ -390,8 +393,11 @@ pub(crate) fn decode_leaf(
         StoreLeafKind::Scalar(ty) => decode_value(bytes, *ty).map(saved_value_to_value),
         StoreLeafKind::Enum { enum_id } => decode_enum(program, bytes, *enum_id).map(Value::Enum),
         StoreLeafKind::Identity { store_root, arity } => {
-            decode_identity_payload_arity(bytes, *arity)
-                .map(|keys| identity_value(store_root, keys))
+            let keys = decode_identity_payload_arity(bytes, *arity)?;
+            let store = program.facts().store_by_root(store_root)?;
+            store
+                .identity_keys_match(&keys)
+                .then(|| identity_value(store_root, keys))
         }
     }
 }
@@ -427,6 +433,7 @@ pub(crate) fn enum_value_from_member(
         member_id,
         enum_catalog_id: enum_fact.catalog_id.clone()?,
         member_catalog_id: member.catalog_id.clone()?,
+        display_name: facts.enum_member_catalog_path(member_id)?,
     })
 }
 

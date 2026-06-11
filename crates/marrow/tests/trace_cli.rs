@@ -147,6 +147,154 @@ fn run_trace_renders_a_bool_write_as_its_typed_value() {
 }
 
 #[test]
+fn run_trace_renders_enum_and_identity_writes_as_names() {
+    let project = temp_project("trace-enum-identity-writes", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             enum Status\n\
+             \x20\x20\x20\x20active\n\
+             \x20\x20\x20\x20archived\n\
+             resource Order\n\
+             \x20\x20\x20\x20state: Status\n\
+             store ^orders(id: int): Order\n\
+             resource Author\n\
+             \x20\x20\x20\x20name: string\n\
+             store ^authors(id: int): Author\n\
+             resource Book\n\
+             \x20\x20\x20\x20author: Id(^authors)\n\
+             store ^books(id: int): Book\n\n\
+             pub fn main()\n\
+             \x20\x20\x20\x20^orders(1).state = Status::archived\n\
+             \x20\x20\x20\x20^books(1).author = Id(^authors, 7)\n",
+        );
+    });
+    let dir = project.to_str().unwrap().to_string();
+
+    let json_run = marrow(&["run", "--trace", "--format", "jsonl", &dir]);
+    assert_eq!(json_run.status.code(), Some(0), "{json_run:?}");
+    let records = jsonl_trace_records(json_run.stderr);
+    for path in ["^orders(1).state", "^books(1).author"] {
+        let write = records
+            .iter()
+            .find(|record| record["kind"] == "write" && record["path"] == path)
+            .unwrap_or_else(|| panic!("missing write to {path}: {records:?}"));
+        assert!(write["value_b64"].is_string(), "{write}");
+    }
+
+    let text_run = marrow(&["run", "--trace", &dir]);
+    assert_eq!(text_run.status.code(), Some(0), "{text_run:?}");
+    let stderr = String::from_utf8(text_run.stderr).expect("utf8");
+    assert!(
+        stderr.contains("write ^orders(1).state = app::Status::archived"),
+        "enum write must trace as a member path: {stderr}"
+    );
+    assert!(
+        stderr.contains("write ^books(1).author = ^authors(7)"),
+        "identity write must trace as a rooted identity: {stderr}"
+    );
+    assert!(
+        !stderr.contains("cat_"),
+        "catalog ids must not leak into trace text: {stderr}"
+    );
+    assert!(
+        !stderr.contains("^books(1).author = 0x"),
+        "identity bytes must not leak into trace text: {stderr}"
+    );
+}
+
+#[test]
+fn run_trace_renders_enum_index_keys_as_member_names() {
+    let project = temp_project("trace-enum-index-key", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             enum Status\n\
+             \x20\x20\x20\x20active\n\
+             \x20\x20\x20\x20archived\n\
+             resource Order\n\
+             \x20\x20\x20\x20state: Status\n\
+             store ^orders(id: int): Order\n\
+             \x20\x20\x20\x20index byState(state, id)\n\n\
+             pub fn main()\n\
+             \x20\x20\x20\x20^orders(1).state = Status::archived\n",
+        );
+    });
+    let dir = project.to_str().unwrap().to_string();
+
+    let output = marrow(&["run", "--trace", &dir]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8");
+    assert!(
+        stderr.contains("index:^orders.byState(app::Status::archived, 1)"),
+        "enum index key must trace as a member path: {stderr}"
+    );
+    assert!(
+        !stderr.contains("cat_"),
+        "catalog ids must not leak into enum index trace text: {stderr}"
+    );
+}
+
+#[test]
+fn run_trace_renders_enum_and_identity_locals_as_names() {
+    let project = temp_project("trace-enum-identity-locals", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             enum Status\n\
+             \x20\x20\x20\x20active\n\
+             \x20\x20\x20\x20archived\n\
+             resource Author\n\
+             \x20\x20\x20\x20name: string\n\
+             store ^authors(id: int): Author\n\n\
+             pub fn main()\n\
+             \x20\x20\x20\x20const state = Status::archived\n\
+             \x20\x20\x20\x20const author: Id(^authors) = Id(^authors, 7)\n\
+             \x20\x20\x20\x20print(\"done\")\n",
+        );
+    });
+    let dir = project.to_str().unwrap().to_string();
+
+    let output = marrow(&["run", "--trace", &dir]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8");
+    assert!(
+        stderr.contains("state=app::Status::archived"),
+        "enum local must trace as a member path: {stderr}"
+    );
+    assert!(
+        stderr.contains("author=^authors(7)"),
+        "identity local must trace as a rooted identity: {stderr}"
+    );
+    assert!(
+        !stderr.contains("state=enum("),
+        "enum local must not trace as numeric enum ids: {stderr}"
+    );
+    assert!(
+        !stderr.contains("author=identity(7)"),
+        "identity local must include its root: {stderr}"
+    );
+}
+
+#[test]
 fn run_trace_renders_an_int_write_as_canonical_digits() {
     // A managed write of a non-bool scalar stores its canonical digit bytes with no
     // decode/encode round-trip: an `int` 42 is stored as the bytes `"42"`. The typed

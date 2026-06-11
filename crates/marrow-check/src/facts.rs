@@ -105,6 +105,12 @@ impl CheckedFacts {
             facts.collect_store_facts(module_id, module, parsed);
         }
         for &(module_id, module, parsed) in &bindings {
+            facts.collect_resource_member_facts_for_module(module_id, module, parsed);
+        }
+        for &(module_id, module, parsed) in &bindings {
+            facts.collect_store_index_facts_for_module(module_id, module, parsed);
+        }
+        for &(module_id, module, parsed) in &bindings {
             for (source_index, function) in module.functions.iter().enumerate() {
                 if let Some(function) =
                     facts.function_fact(module_id, module, function, source_index as u32, parsed)
@@ -177,14 +183,10 @@ impl CheckedFacts {
         self.enum_members.get(id.0 as usize)
     }
 
-    pub(crate) fn enum_member_catalog_path(
-        &self,
-        modules: &[CheckedModule],
-        id: EnumMemberId,
-    ) -> Option<String> {
+    pub fn enum_member_catalog_path(&self, id: EnumMemberId) -> Option<String> {
         let member = self.enum_member(id)?;
         let enum_fact = self.enum_(member.enum_id)?;
-        let module = modules.get(enum_fact.module.0 as usize)?;
+        let module = self.modules.get(enum_fact.module.0 as usize)?;
         let path = enum_member_name_path(&self.enum_members, id)?;
         Some(format!(
             "{}::{}",
@@ -348,13 +350,13 @@ impl CheckedFacts {
 
     fn bind_enum_member_catalog_ids(
         &mut self,
-        modules: &[CheckedModule],
+        _modules: &[CheckedModule],
         ids: &HashMap<CatalogKey, String>,
     ) {
         let enum_member_paths: Vec<Option<String>> = self
             .enum_members
             .iter()
-            .map(|member| self.enum_member_catalog_path(modules, member.id))
+            .map(|member| self.enum_member_catalog_path(member.id))
             .collect();
         for (member, path) in self.enum_members.iter_mut().zip(enum_member_paths) {
             member.catalog_id = path.and_then(|path| {
@@ -576,15 +578,6 @@ impl CheckedFacts {
                 catalog_id: None,
                 span: declaration.map_or(SourceSpan::default(), |resource| resource.span),
             });
-            let aliases = build_alias_map(&module.imports);
-            self.collect_resource_member_facts(
-                module_id,
-                resource_id,
-                None,
-                &resource.members,
-                declaration.map(|resource| resource.members.as_slice()),
-                &aliases,
-            );
         }
     }
 
@@ -632,6 +625,73 @@ impl CheckedFacts {
                 catalog_id: None,
                 span: declaration.map_or(SourceSpan::default(), |store| store.span),
             });
+        }
+    }
+
+    fn collect_resource_member_facts_for_module(
+        &mut self,
+        module_id: ModuleId,
+        module: &CheckedModule,
+        parsed: Option<&ParsedSource>,
+    ) {
+        let aliases = build_alias_map(&module.imports);
+        for resource in &module.resources {
+            let Some(resource_id) = self.resource_id(module_id, &resource.name) else {
+                continue;
+            };
+            let declaration = parsed.and_then(|parsed| {
+                parsed
+                    .file
+                    .declarations
+                    .iter()
+                    .find_map(|declaration| match declaration {
+                        marrow_syntax::Declaration::Resource(candidate)
+                            if candidate.name == resource.name =>
+                        {
+                            Some(candidate)
+                        }
+                        _ => None,
+                    })
+            });
+            self.collect_resource_member_facts(
+                module_id,
+                resource_id,
+                None,
+                &resource.members,
+                declaration.map(|resource| resource.members.as_slice()),
+                &aliases,
+            );
+        }
+    }
+
+    fn collect_store_index_facts_for_module(
+        &mut self,
+        module_id: ModuleId,
+        module: &CheckedModule,
+        parsed: Option<&ParsedSource>,
+    ) {
+        let aliases = build_alias_map(&module.imports);
+        for store in &module.stores {
+            let declaration = parsed.and_then(|parsed| {
+                parsed
+                    .file
+                    .declarations
+                    .iter()
+                    .find_map(|declaration| match declaration {
+                        marrow_syntax::Declaration::Store(candidate)
+                            if candidate.root.root == store.root =>
+                        {
+                            Some(candidate)
+                        }
+                        _ => None,
+                    })
+            });
+            let Some(store_id) = self.store_id(module_id, &store.root) else {
+                continue;
+            };
+            let Some(resource) = self.resource_id(module_id, &store.resource) else {
+                continue;
+            };
             let resource_schema = module
                 .resources
                 .iter()
@@ -1052,6 +1112,20 @@ pub struct StoreFact {
     pub next_id_shape: String,
     pub catalog_id: Option<String>,
     pub span: SourceSpan,
+}
+
+impl StoreFact {
+    pub fn identity_keys_match(&self, keys: &[SavedKey]) -> bool {
+        if self.identity_keys.len() != keys.len() {
+            return false;
+        }
+        self.identity_keys.iter().zip(keys).all(|(expected, key)| {
+            matches!(
+                expected.value_meaning,
+                Some(StoredValueMeaning::Scalar(scalar)) if scalar == key.scalar_type()
+            )
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

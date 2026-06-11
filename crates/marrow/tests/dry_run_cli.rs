@@ -223,6 +223,112 @@ fn dry_run_renders_a_bool_write_as_its_typed_value() {
 }
 
 #[test]
+fn dry_run_renders_enum_and_identity_writes_as_names() {
+    let project = temp_project("dryrun-enum-identity-writes", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             enum Status\n\
+             \x20\x20\x20\x20active\n\
+             \x20\x20\x20\x20archived\n\
+             resource Order\n\
+             \x20\x20\x20\x20state: Status\n\
+             store ^orders(id: int): Order\n\
+             resource Author\n\
+             \x20\x20\x20\x20name: string\n\
+             store ^authors(id: int): Author\n\
+             resource Book\n\
+             \x20\x20\x20\x20author: Id(^authors)\n\
+             store ^books(id: int): Book\n\n\
+             pub fn main()\n\
+             \x20\x20\x20\x20transaction\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^orders(1).state = Status::archived\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(1).author = Id(^authors, 7)\n",
+        );
+    });
+    let dir = project.to_str().unwrap().to_string();
+
+    let json_run = marrow(&["run", "--dry-run", "--format", "json", &dir]);
+    assert_eq!(json_run.status.code(), Some(0), "{json_run:?}");
+    let report: serde_json::Value =
+        serde_json::from_str(String::from_utf8(json_run.stderr).expect("utf8").trim())
+            .expect("json");
+    let planned = report["planned"].as_array().expect("planned array");
+    for path in ["^orders(1).state", "^books(1).author"] {
+        let write = planned
+            .iter()
+            .find(|step| step["op"] == "write" && step["path"] == path)
+            .unwrap_or_else(|| panic!("missing planned write to {path}: {report}"));
+        assert!(write["value_b64"].is_string(), "{write}");
+    }
+
+    let text_run = marrow(&["run", "--dry-run", &dir]);
+    assert_eq!(text_run.status.code(), Some(0), "{text_run:?}");
+    let stderr = String::from_utf8(text_run.stderr).expect("utf8");
+    assert!(
+        stderr.contains("would write ^orders(1).state\tapp::Status::archived"),
+        "enum write must dry-run as a member path: {stderr}"
+    );
+    assert!(
+        stderr.contains("would write ^books(1).author\t^authors(7)"),
+        "identity write must dry-run as a rooted identity: {stderr}"
+    );
+    assert!(
+        !stderr.contains("cat_"),
+        "catalog ids must not leak into dry-run text: {stderr}"
+    );
+    assert!(
+        !stderr.contains("^books(1).author\t0x"),
+        "identity bytes must not leak into dry-run text: {stderr}"
+    );
+}
+
+#[test]
+fn dry_run_renders_enum_index_keys_as_member_names() {
+    let project = temp_project("dryrun-enum-index-key", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             enum Status\n\
+             \x20\x20\x20\x20active\n\
+             \x20\x20\x20\x20archived\n\
+             resource Order\n\
+             \x20\x20\x20\x20state: Status\n\
+             store ^orders(id: int): Order\n\
+             \x20\x20\x20\x20index byState(state, id)\n\n\
+             pub fn main()\n\
+             \x20\x20\x20\x20transaction\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^orders(1).state = Status::archived\n",
+        );
+    });
+    let dir = project.to_str().unwrap().to_string();
+
+    let output = marrow(&["run", "--dry-run", &dir]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8");
+    assert!(
+        stderr.contains("index:^orders.byState(app::Status::archived, 1)"),
+        "enum index key must dry-run as a member path: {stderr}"
+    );
+    assert!(
+        !stderr.contains("cat_"),
+        "catalog ids must not leak into enum index dry-run text: {stderr}"
+    );
+}
+
+#[test]
 fn dry_run_reports_maintenance_whole_root_deletes() {
     let project = temp_project("dryrun-root-delete", |root| {
         write(

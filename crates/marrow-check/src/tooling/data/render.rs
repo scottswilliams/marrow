@@ -135,9 +135,7 @@ fn render_enum_value(program: &CheckedProgram, enum_id: EnumId, bytes: &[u8]) ->
     if !program.facts.enum_member_is_selectable(member.id) {
         return None;
     }
-    program
-        .facts
-        .enum_member_catalog_path(&program.modules, member.id)
+    program.facts.enum_member_catalog_path(member.id)
 }
 
 fn render_key(key: &SavedKey) -> String {

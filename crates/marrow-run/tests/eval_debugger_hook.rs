@@ -506,7 +506,7 @@ fn display_debug_renders_scalars_and_structured_previews() {
         "sequence[2]"
     );
 
-    // A resource previews its present field names; an identity previews its keys.
+    // A resource previews its present field names; an identity previews its rooted keys.
     assert_eq!(
         Value::Resource(vec![
             ("title".into(), Value::Str("v2".into())),
@@ -525,10 +525,7 @@ fn display_debug_renders_scalars_and_structured_previews() {
     let store = TreeStore::memory();
     let output =
         run_entry(&store, checked_entry!(&program, "test::nextBookId")).expect("next identity");
-    assert_eq!(
-        output.value.expect("identity").display_debug(),
-        "identity(1)"
-    );
+    assert_eq!(output.value.expect("identity").display_debug(), "^books(1)");
 }
 
 #[test]

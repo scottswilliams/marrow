@@ -88,6 +88,41 @@ fn a_stored_identity_field_reads_back_the_identity_value() {
 }
 
 #[test]
+fn a_type_wrong_identity_field_does_not_decode_as_an_identity_value() {
+    let program = checked_program(
+        "resource Author\n\
+         \x20   name: string\nstore ^authors(id: int): Author\n\
+         \n\
+         resource Book\n\
+         \x20   authorId: Id(^authors)\n\
+         store ^books(id: int): Book\n\
+         \n\
+         pub fn read(): bool\n\
+         \x20   const fallback = Id(^authors, 7)\n\
+         \x20   const stored: Id(^authors) = ^books(1).authorId ?? fallback\n\
+         \x20   return stored == fallback\n",
+    );
+    let store = TreeStore::memory();
+    let path = data_path(&program, "books", &["authorId"]);
+    store
+        .write_node(&store_catalog_id(&program, "books"), &[SavedKey::Int(1)])
+        .expect("write book node");
+    store
+        .write_data_value(
+            &store_catalog_id(&program, "books"),
+            &[SavedKey::Int(1)],
+            &path,
+            encode_identity_payload(&[SavedKey::Str("not-an-int".to_string())]),
+        )
+        .expect("write corrupt identity leaf");
+
+    assert!(
+        run_entry(&store, checked_entry!(&program, "test::read")).is_err(),
+        "type-wrong identity bytes must not construct a runtime identity"
+    );
+}
+
+#[test]
 fn an_identity_field_assigned_via_next_id_round_trips() {
     // Constructing the reference from `nextId(^authors)` (the first allocated id is
     // `1` on an empty root) round-trips through the saved identity field.
