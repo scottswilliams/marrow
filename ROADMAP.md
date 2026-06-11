@@ -826,21 +826,6 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 
 ## Wave 2 — P0 foundation (REPORT Part V order)
 
-**W2.8 (after W2.1 and W2.2 — shared tree.rs, node-cell shape; store hotspot) Linear navigation
-+ counting oracle (II.B2 + IV.B2).** Owns:
-marrow-store tree.rs/backend.rs (cursor-seek generalization, `scan_before` reverse scan, seek
-nextId; conformance suite + reverse-order laws), marrow-run loop/reversed/next-prev inheritors,
-key.rs:83 const assert (used or deleted), backend-contract one-liner, fsync-count/commit-count/
-bytes-moved counters on the same Backend decorator with laws beside the conformance suite
-(G2-1), a RunObservation::Profile placeholder arm with no user flag (C31), the oracle-spec
-extension — a named fixture operation-shape format with lowering's two permitted eliminations as
-typed deductions, plus the backend-contract sentence naming the decorator the canonical
-cost-conformance oracle surface (C04). Seed: IV.B2's counting
-decorator written first — failing op-count law: n-record iteration is O(n) pages. Review:
-escaped-key terminator and cross-type tag bands under reverse scan (byte-fingerprint goldens);
-traversal-guard semantics preserved. Done: complexity laws green at n and 2n; scale smoke fixture
-(`#[ignore]`d) passes.
-
 **W2.9 ∥ (after W2.2) Hostile-input corpus, non-codec surfaces (G3-6; v01-full).** Joins W2.2's
 CI family. Owns: adversarial fixture families for catalog JSON (duplicate keys, lying versions,
 truncation, valid-checksum-wrong-content) and marrow.json config (unknown keys, type-wrong
