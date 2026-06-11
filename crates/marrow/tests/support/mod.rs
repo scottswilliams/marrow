@@ -133,12 +133,12 @@ pub(crate) fn parse_location(location: &str) -> (String, u32, u32) {
     (file, line, column)
 }
 
-/// One CLI fault line parsed into its typed slots. `marrow run` and `marrow test`
-/// share one rendered grammar — `file:line:col: code: message` when located,
-/// `code: message` when bare — and neither has a structured envelope, so this is the
-/// single typed surface both read. A located fault carries `file` and `line`; a bare
-/// fault carries only the `code`. Domain-specific unpacking (a thrown-code bracket
-/// payload, a per-test outcome label) belongs in the calling test, not here.
+/// One text-mode CLI fault line parsed into its typed slots. `marrow run` and the
+/// text `marrow test` report share one rendered grammar — `file:line:col: code:
+/// message` when located, `code: message` when bare. A located fault carries `file`
+/// and `line`; a bare fault carries only the `code`. Domain-specific unpacking (a
+/// thrown-code bracket payload, a per-test outcome label) belongs in the calling test,
+/// not here.
 #[allow(dead_code)]
 pub(crate) struct ParsedResult {
     pub(crate) file: Option<String>,

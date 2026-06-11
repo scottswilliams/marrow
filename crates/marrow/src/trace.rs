@@ -41,16 +41,17 @@ impl TraceHook {
         }
     }
 
+    pub(crate) fn into_trace_record(self) -> serde_json::Value {
+        trace_record(&self.label, self.records)
+    }
+
     /// Emit and reset the collected JSON records. Text traces print as they happen
     /// and leave nothing to flush.
     pub(crate) fn flush(&mut self) {
         let records = std::mem::take(&mut self.records);
         match self.format {
             CheckFormat::Text => {}
-            CheckFormat::Json => crate::write_json_err(json!({
-                "trace": self.label,
-                "events": records,
-            })),
+            CheckFormat::Json => crate::write_json_err(trace_record(&self.label, records)),
             CheckFormat::Jsonl => {
                 for record in &records {
                     crate::write_json_err(record.clone());
@@ -165,6 +166,13 @@ impl StepHook for TraceHook {
             }
         }
     }
+}
+
+fn trace_record(label: &str, records: Vec<serde_json::Value>) -> serde_json::Value {
+    json!({
+        "trace": label,
+        "events": records,
+    })
 }
 
 #[derive(Clone, Default)]

@@ -1,13 +1,18 @@
 //! `marrow test`: check a project, then run its tests over fresh stores.
 
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use crate::trace::TraceHook;
-use crate::{CheckFormat, load_checked_project, report_project, report_simple_error};
+use marrow_syntax::SourceSpan;
+use serde_json::{Value, json};
 
-/// Run a project's tests: `marrow test [--trace] <projectdir>`.
+use crate::trace::TraceHook;
+use crate::{
+    CheckFormat, load_checked_project_with_format, report_project, report_simple_error, write_json,
+};
+
+/// Run a project's tests: `marrow test [--trace] [--format text|json|jsonl] <projectdir>`.
 pub(crate) fn test(args: &[String]) -> ExitCode {
     let mut dir = None;
     let mut trace = false;
@@ -34,8 +39,9 @@ Check a Marrow project, then run its tests: every `pub fn` with no parameters in
 a test file (the `tests` patterns in marrow.json). Each test runs against a fresh
 in-memory store; a `std::assert::*` failure is a located test failure.
 
-  --trace   Report each statement and managed write of every test as it runs,
-            attributed to the test by name. Takes --format for the trace output.
+  --format  Shape the test report on stdout.
+  --trace   Report each statement and managed write of every test as a separate
+            stderr trace stream, shaped by --format and attributed by test name.
 "
                 );
                 return ExitCode::SUCCESS;
@@ -64,7 +70,7 @@ in-memory store; a `std::assert::*` failure is a located test failure.
 /// fails or errors, if the project does not check, or if no tests are found. With
 /// `trace`, each test runs under an execution trace attributed to it by name.
 fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
-    let (config, src_program) = match load_checked_project(dir) {
+    let (config, src_program) = match load_checked_project_with_format(dir, format) {
         Ok(checked) => checked,
         Err(code) => return code,
     };
@@ -85,29 +91,28 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
                 report_simple_error(
                     error.code,
                     &format!("{}: {}", error.path.display(), error.message),
-                    CheckFormat::Text,
+                    format,
                 );
                 return ExitCode::FAILURE;
             }
         };
     if test_report.has_errors() {
-        report_project(dir, &test_report, CheckFormat::Text);
+        report_project(dir, &test_report, format);
         return ExitCode::FAILURE;
     }
 
     // Each test keeps its source file so a failure can be reported at its location.
-    let tests: Vec<(String, PathBuf)> = program.modules[source_module_count..]
+    let tests: Vec<TestCase> = program.modules[source_module_count..]
         .iter()
         .flat_map(|module| {
             module
                 .functions
                 .iter()
                 .filter(|function| function.public && function.params.is_empty())
-                .map(|function| {
-                    (
-                        format!("{}::{}", module.name, function.name),
-                        module.source_file.clone(),
-                    )
+                .map(|function| TestCase {
+                    name: format!("{}::{}", module.name, function.name),
+                    source_file: module.source_file.clone(),
+                    span: function.span,
                 })
         })
         .collect();
@@ -115,7 +120,7 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
         report_simple_error(
             "test.none",
             "no tests found; check the `tests` patterns in marrow.json",
-            CheckFormat::Text,
+            format,
         );
         return ExitCode::FAILURE;
     }
@@ -127,24 +132,39 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
     let mut passed = 0usize;
     let mut failed = 0usize;
     let mut errored = 0usize;
-    for (name, source_file) in &tests {
+    let mut results = Vec::new();
+    let mut json_traces = Vec::new();
+    for test in &tests {
         let store = marrow_store::tree::TreeStore::memory();
         // A traced test runs under the debugger entry with a hook labelled by the
         // test name, so its statements and writes are attributed to it; an untraced
         // test runs through the plain entry and pays nothing.
-        let result = match marrow_run::CheckedEntryCall::new(&runtime_program, name, Vec::new()) {
-            Err(error) => Err(error),
-            Ok(call) if trace => {
-                let mut hook = TraceHook::new(format, name.clone(), &runtime_program);
-                let result = marrow_run::run_entry_with_debugger(&store, &host, &mut hook, &call);
-                hook.flush();
-                result
-            }
-            Ok(call) => marrow_run::run_entry_with_host(&store, &host, &call),
-        };
+        let result =
+            match marrow_run::CheckedEntryCall::new(&runtime_program, &test.name, Vec::new()) {
+                Err(error) => Err(error),
+                Ok(call) if trace => {
+                    let mut hook = TraceHook::new(format, test.name.clone(), &runtime_program);
+                    let result =
+                        marrow_run::run_entry_with_debugger(&store, &host, &mut hook, &call);
+                    if matches!(format, CheckFormat::Json) {
+                        json_traces.push(hook.into_trace_record());
+                    } else {
+                        hook.flush();
+                    }
+                    result
+                }
+                Ok(call) => marrow_run::run_entry_with_host(&store, &host, &call),
+            };
         match result {
             Ok(_) => {
-                println!("ok    {name}");
+                if matches!(format, CheckFormat::Text) {
+                    println!("ok    {}", test.name);
+                }
+                record_test_result(
+                    format,
+                    &mut results,
+                    test_result_record(&test.name, "passed", &test.source_file, test.span, None),
+                );
                 passed += 1;
             }
             Err(error) => {
@@ -154,37 +174,128 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
                 let file = error
                     .origin
                     .and_then(|id| runtime_program.file_path(id))
-                    .unwrap_or(source_file.as_path());
+                    .unwrap_or(test.source_file.as_path());
                 // An assertion is a test FAIL; any other fault is an ERROR. The
                 // labels are column-aligned with the `ok` line.
-                let (label, counter) = if error.code == marrow_run::RUN_ASSERT {
-                    ("FAIL ", &mut failed)
+                let (label, status, counter) = if error.code == marrow_run::RUN_ASSERT {
+                    ("FAIL ", "failed", &mut failed)
                 } else {
-                    ("ERROR", &mut errored)
+                    ("ERROR", "errored", &mut errored)
                 };
-                println!("{label} {name}");
-                println!(
-                    "      {}:{}:{}: {}: {}",
-                    file.display(),
-                    error.span.line,
-                    error.span.column,
-                    error.code,
-                    error.message
+                if matches!(format, CheckFormat::Text) {
+                    println!("{label} {}", test.name);
+                    println!(
+                        "      {}:{}:{}: {}: {}",
+                        file.display(),
+                        error.span.line,
+                        error.span.column,
+                        error.code,
+                        error.message
+                    );
+                }
+                record_test_result(
+                    format,
+                    &mut results,
+                    test_result_record(
+                        &test.name,
+                        status,
+                        file,
+                        error.span,
+                        Some((error.code, error.message.as_str())),
+                    ),
                 );
                 *counter += 1;
             }
         }
     }
-    println!(
-        "\n{} test{}: {passed} passed, {failed} failed, {errored} errored",
-        tests.len(),
-        if tests.len() == 1 { "" } else { "s" }
-    );
+    if matches!(format, CheckFormat::Json) && trace {
+        crate::write_json_err(json!({ "traces": json_traces }));
+    }
+    report_test_results(dir, format, &results, passed, failed, errored);
     if failed == 0 && errored == 0 {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
     }
+}
+
+struct TestCase {
+    name: String,
+    source_file: PathBuf,
+    span: SourceSpan,
+}
+
+fn report_test_results(
+    dir: &str,
+    format: CheckFormat,
+    results: &[Value],
+    passed: usize,
+    failed: usize,
+    errored: usize,
+) {
+    match format {
+        CheckFormat::Text => println!(
+            "\n{} test{}: {passed} passed, {failed} failed, {errored} errored",
+            results.len(),
+            if results.len() == 1 { "" } else { "s" }
+        ),
+        CheckFormat::Json => write_json(json!({
+            "project": dir,
+            "tests": results,
+            "summary": test_summary(results.len(), passed, failed, errored),
+        })),
+        CheckFormat::Jsonl => write_json(json!({
+            "kind": "summary",
+            "total": results.len(),
+            "passed": passed,
+            "failed": failed,
+            "errored": errored,
+        })),
+    }
+}
+
+fn record_test_result(format: CheckFormat, results: &mut Vec<Value>, result: Value) {
+    if matches!(format, CheckFormat::Jsonl) {
+        write_json(result.clone());
+    }
+    results.push(result);
+}
+
+fn test_summary(total: usize, passed: usize, failed: usize, errored: usize) -> Value {
+    json!({
+        "total": total,
+        "passed": passed,
+        "failed": failed,
+        "errored": errored,
+    })
+}
+
+fn test_result_record(
+    name: &str,
+    status: &str,
+    file: &Path,
+    span: SourceSpan,
+    fault: Option<(&str, &str)>,
+) -> Value {
+    let mut record = serde_json::Map::from_iter([
+        ("kind".into(), json!("test")),
+        ("name".into(), json!(name)),
+        ("status".into(), json!(status)),
+        ("location".into(), location_record(file, span)),
+    ]);
+    if let Some((code, message)) = fault {
+        record.insert("code".into(), json!(code));
+        record.insert("message".into(), json!(message));
+    }
+    Value::Object(record)
+}
+
+fn location_record(file: &Path, span: SourceSpan) -> Value {
+    json!({
+        "file": file.display().to_string(),
+        "line": span.line,
+        "column": span.column,
+    })
 }
 
 /// Bind a project's proposed durable identity for a test run. A project that has not yet

@@ -13,7 +13,7 @@ Two crates: `marrow-project` owns the `marrow.json` schema, source/test discover
 - `read_accepted_store_catalog` — the one owner of "open the store read-only and read its accepted snapshot"; absent store or in-memory backend binds no catalog (a first run), a decode error surfaces a typed `store.*` code. `check`/`lsp`/`data`/`serve` read durable identity only through this, never a file.
 - `establish_store_baseline` — freeze a project's first proposed identity into a write-capable store in one transaction (catalog rows, epoch, engine profile, commit metadata via `marrow_run::evolution::commit_catalog_baseline`), then rebind the program against the now-accepted snapshot. Runs only over an empty store with a pending non-empty proposal; a project past its baseline never churns.
 
-Stream separation is load-bearing: a program's own `print`/`write` output owns stdout; every tooling report (trace, dry-run plan, test summary, run diagnostics) goes to stderr, so a stdout JSON consumer never sees interleaving. Exit codes are 0 success, 1 failure, 2 usage.
+Stream separation is load-bearing: a program's own `print`/`write` output owns stdout; run tooling reports such as trace and dry-run plans go to stderr, so a stdout JSON consumer never sees interleaving. `marrow test --format json|jsonl` owns stdout for its structured test-result report, with trace output kept on stderr. Exit codes are 0 success, 1 failure, 2 usage.
 
 ## Command families
 
@@ -21,7 +21,7 @@ Stream separation is load-bearing: a program's own `print`/`write` output owns s
 |---|---|---|
 | `check` | `cmd_check.rs` | Type-checks a single file (via a synthesized one-file scratch project, so it reaches `check.*` rules) or a project dir; `--data` delegates to evolve data-check. |
 | `run` | `cmd_run.rs` | Freezes identity, opens and fences the store (auto-applies zero-mutation schema drift), executes the entry under a plain/trace/dry-run hook. |
-| `test` | `cmd_test.rs` | Collects public zero-param fns in test modules, runs each over a fresh in-memory store; assert fault is FAIL, any other is ERROR. |
+| `test` | `cmd_test.rs` | Collects public zero-param fns in test modules, runs each over a fresh in-memory store; assert fault is FAIL, any other is ERROR, rendered as text/json/jsonl test-result reports. |
 | `fmt` | `cmd_fmt.rs` | Formats one file to stdout, or `--check`/`--write` over source roots; refuses stdin and a bare dir with no mode. |
 | `data <roots\|stats\|dump\|integrity\|get>` | `cmd_data.rs`, `cmd_data/` | Read-only inspection; pins one `ReadSnapshot` so multi-pass views describe one store version. |
 | `evolve <preview\|apply>` | `cmd_evolve/` | Read-only preview vs managed-write apply; apply gates destructive obligations and recovers half-applied evolutions. |

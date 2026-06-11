@@ -37,20 +37,22 @@ machine-readable error envelope these commands emit.
 
 ## Output Formats
 
-Commands that report diagnostics or saved data take `--format`:
+Commands that report diagnostics, saved data, or test results take `--format`:
 
 - `text` (the default) — human-readable lines. Diagnostics and findings go to
   stderr; primary results go to stdout.
-- `json` — one JSON object per tooling report on stdout, except the
-  `run --trace`, `run --dry-run`, and `test --trace` reports, which go to stderr
-  (see below).
-- `jsonl` — one JSON object per line for streaming tooling reports, ending
-  with a `{"kind": "summary", …}` line where the report has many records.
+- `json` — one JSON object for the command's structured report.
+- `jsonl` — one JSON object per line for streaming reports, ending with a
+  `{"kind": "summary", …}` line where the report has many records.
 
 Plain `run` output is the program's own `print`/`write` stream, which carries no
-envelope. `run --trace`, `run --dry-run`, and `test --trace` accept `--format`
-for their tooling reports; those reports are written to stderr, leaving stdout
-for the program's own `print`/`write` output and the test pass/fail report.
+envelope and does not accept `--format`. `run --trace` and `run --dry-run`
+accept `--format` for their tooling reports; those reports are written to
+stderr, leaving stdout for the program's own output.
+
+`marrow test --format json|jsonl` shapes the test pass/fail report on stdout.
+With `--trace`, the trace is a separate tooling report on stderr using the same
+format, while the test report stays on stdout.
 
 ---
 
@@ -267,18 +269,37 @@ file (the `tests` glob patterns in `marrow.json`). Each test runs against a fres
 in-memory store. A test's `std::log` output is discarded so it stays out of the
 report.
 
-Each result is printed as `ok`, `FAIL` (a `std::assert::*` failure, code
-`run.assertion`), or `ERROR` (any other runtime error), located at the test's
-source position, followed by a summary line.
+In text format, each result is printed as `ok`, `FAIL` (a `std::assert::*`
+failure, code `run.assertion`), or `ERROR` (any other runtime error), located at
+the test's source position, followed by a summary line.
+
+Under `--format json`, stdout is one test report envelope:
+
+```json
+{"project":"./proj","tests":[{"kind":"test","name":"tests::smoke_test::add_runs","status":"passed","location":{"file":"tests/smoke_test.mw","line":1,"column":1}}],"summary":{"total":1,"passed":1,"failed":0,"errored":0}}
+```
+
+Under `--format jsonl`, stdout is one test-result record per line followed by a
+summary record:
+
+```jsonl
+{"kind":"test","name":"tests::smoke_test::add_runs","status":"passed","location":{"file":"tests/smoke_test.mw","line":1,"column":1}}
+{"kind":"summary","total":1,"passed":1,"failed":0,"errored":0}
+```
+
+Failed and errored JSON records also carry the runtime fault `code` and
+`message`. Passing result locations point at the test function declaration;
+failed and errored result locations point at the runtime fault.
 
 Exits `0` only when every test passes. It exits `1` if any test fails or errors,
 if the project does not check, or if no test is found (`test.none`).
 
 With `--trace`, every test runs under an execution trace attributed to that test
-by name. The trace events have the same text/json/jsonl shapes as `run --trace`,
-and each event carries the test label so consumer tooling can group it. The trace
-is tooling output on stderr; the test runner's `ok`/`FAIL`/`ERROR` lines and
-summary stay on stdout, so the two streams never interleave.
+by name. The trace is tooling output on stderr; the test report stays on stdout,
+so the two streams never interleave. Text trace events stream as they run. Under
+`--format json`, stderr is one JSON envelope with a `traces` array, one entry per
+test. Under `--format jsonl`, stderr remains a newline-delimited stream of trace
+events and per-test summary records.
 
 ```console
 $ marrow test ./proj

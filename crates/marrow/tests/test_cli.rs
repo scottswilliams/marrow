@@ -2,7 +2,7 @@ use std::path::Path;
 
 mod support;
 
-use support::{find_code_segment, marrow_sub, parse_result_line, temp_project, write};
+use support::{find_code_segment, json, jsonl, marrow_sub, parse_result_line, temp_project, write};
 
 fn run_test(dir: impl AsRef<Path>) -> std::process::Output {
     run_test_args(&[dir.as_ref().to_str().expect("project path utf8")])
@@ -14,11 +14,22 @@ fn run_test_args(args: &[&str]) -> std::process::Output {
 
 const CONFIG: &str = r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#;
 
-/// The per-test outcome `marrow test` reports for one test, parsed from its result
-/// line. `marrow test` has no structured result envelope, so the outcome is read from
-/// the leading label of each result line rather than matched as a free substring; a
-/// non-`ok` outcome also carries a located `file:line:col: code: message` follow-up
-/// line whose code and line are parsed alongside.
+fn mixed_outcome_project(name: &str) -> support::TempProject {
+    temp_project(name, |root| {
+        write(root, "marrow.json", CONFIG);
+        write(root, "src/app.mw", "module app\n");
+        write(
+            root,
+            "tests/app_test.mw",
+            "pub fn passes()\n    std::assert::isTrue(true)\n\npub fn fails()\n    std::assert::isTrue(false)\n\npub fn errors()\n    var x: decimal = 1.0\n    x = x / 0.0\n",
+        );
+    })
+}
+
+/// The per-test outcome `marrow test` reports in text mode, parsed from its result
+/// line. The outcome is read from the leading label rather than matched as a free
+/// substring; a non-`ok` outcome also carries a located `file:line:col: code:
+/// message` follow-up line whose code and line are parsed alongside.
 #[derive(Debug, PartialEq, Eq)]
 enum Outcome {
     Ok,
@@ -47,20 +58,16 @@ struct Summary {
     errored: u32,
 }
 
-/// The whole parsed `marrow test` report: every test's outcome plus the summary
-/// tallies, read from stdout. The report has no JSON form, so this parse over the
-/// fixed line grammar is the structured oracle for it.
+/// The whole parsed text `marrow test` report: every test's outcome plus the summary
+/// tallies, read from stdout.
 struct TestReport {
     results: Vec<TestResult>,
     summary: Summary,
 }
 
-/// The exact rendered summary line for a single-test passing run. `marrow test` has no
-/// structured result envelope, so the summary line is genuinely human-rendered text;
-/// this small golden pins its render contract (singular `test`, the count ordering)
-/// where the parsed [`Summary`] tallies cannot. A structured `marrow test` result
-/// envelope would be the stronger long-term oracle and replace this golden; that is a
-/// backlog item, not production surface to add here.
+/// The exact rendered summary line for a single-test passing run. This small golden
+/// pins the text render contract (singular `test`, the count ordering) where the
+/// parsed [`Summary`] tallies cannot.
 const SUMMARY_GOLDEN_ONE_PASS: &str = "1 test: 1 passed, 0 failed, 0 errored";
 
 /// Parse `marrow test` stdout into typed results and a summary. Result lines lead with
@@ -182,7 +189,7 @@ fn runs_passing_tests_and_reports_a_summary() {
             errored: 0,
         }
     );
-    // The summary line is human-rendered with no structured form; pin its exact text.
+    // The summary line is human-rendered text; pin its exact form.
     let summary_line = String::from_utf8(output.stdout.clone())
         .expect("stdout utf8")
         .lines()
@@ -272,6 +279,180 @@ fn a_runtime_fault_is_reported_as_an_error() {
 }
 
 #[test]
+fn format_json_reports_test_results_and_summary() {
+    let root = mixed_outcome_project("test-json-report");
+    let output = run_test_args(&[
+        "--format",
+        "json",
+        root.to_str().expect("project path utf8"),
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let report = json(output.stdout);
+    assert_eq!(report["project"], serde_json::json!(root.to_str().unwrap()));
+    assert_eq!(
+        report["summary"],
+        serde_json::json!({
+            "total": 3,
+            "passed": 1,
+            "failed": 1,
+            "errored": 1,
+        })
+    );
+    let tests = report["tests"].as_array().expect("tests array");
+    assert_eq!(tests.len(), 3, "{report}");
+    assert_eq!(
+        tests[0]["name"],
+        serde_json::json!("tests::app_test::passes")
+    );
+    assert_eq!(tests[0]["status"], serde_json::json!("passed"));
+    assert_eq!(tests[0]["location"]["line"], serde_json::json!(1));
+    assert_eq!(tests[0]["location"]["column"], serde_json::json!(1));
+    assert_eq!(
+        tests[1]["name"],
+        serde_json::json!("tests::app_test::fails")
+    );
+    assert_eq!(tests[1]["status"], serde_json::json!("failed"));
+    assert_eq!(tests[1]["code"], serde_json::json!("run.assertion"));
+    assert_eq!(tests[1]["location"]["line"], serde_json::json!(5));
+    assert_eq!(
+        tests[2]["name"],
+        serde_json::json!("tests::app_test::errors")
+    );
+    assert_eq!(tests[2]["status"], serde_json::json!("errored"));
+    assert_eq!(tests[2]["code"], serde_json::json!("run.divide_by_zero"));
+    assert_eq!(tests[2]["location"]["line"], serde_json::json!(9));
+}
+
+#[test]
+fn format_jsonl_streams_test_results_then_summary() {
+    let root = mixed_outcome_project("test-jsonl-report");
+    let output = run_test_args(&[
+        "--format",
+        "jsonl",
+        root.to_str().expect("project path utf8"),
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let records = jsonl(output.stdout);
+    assert_eq!(records.len(), 4, "{records:#?}");
+    assert_eq!(records[0]["kind"], serde_json::json!("test"));
+    assert_eq!(
+        records[0]["name"],
+        serde_json::json!("tests::app_test::passes")
+    );
+    assert_eq!(records[0]["status"], serde_json::json!("passed"));
+    assert_eq!(records[0]["location"]["line"], serde_json::json!(1));
+    assert_eq!(records[1]["kind"], serde_json::json!("test"));
+    assert_eq!(
+        records[1]["name"],
+        serde_json::json!("tests::app_test::fails")
+    );
+    assert_eq!(records[1]["status"], serde_json::json!("failed"));
+    assert_eq!(records[1]["code"], serde_json::json!("run.assertion"));
+    assert_eq!(records[2]["kind"], serde_json::json!("test"));
+    assert_eq!(
+        records[2]["name"],
+        serde_json::json!("tests::app_test::errors")
+    );
+    assert_eq!(records[2]["status"], serde_json::json!("errored"));
+    assert_eq!(records[2]["code"], serde_json::json!("run.divide_by_zero"));
+    assert_eq!(
+        records[3],
+        serde_json::json!({
+            "kind": "summary",
+            "total": 3,
+            "passed": 1,
+            "failed": 1,
+            "errored": 1,
+        })
+    );
+}
+
+#[test]
+fn format_json_with_trace_keeps_test_report_on_stdout() {
+    let root = temp_project("test-json-trace-streams", |root| {
+        write(root, "marrow.json", CONFIG);
+        write(root, "src/app.mw", "module app\n");
+        write(
+            root,
+            "tests/app_test.mw",
+            "pub fn traced()\n    std::assert::isTrue(true)\n",
+        );
+    });
+    let output = run_test_args(&[
+        "--trace",
+        "--format",
+        "json",
+        root.to_str().expect("project path utf8"),
+    ]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let report = json(output.stdout);
+    assert_eq!(
+        report["tests"][0]["name"],
+        serde_json::json!("tests::app_test::traced")
+    );
+    assert_eq!(report["summary"]["passed"], serde_json::json!(1));
+    let trace = json(output.stderr);
+    let traces = trace["traces"].as_array().expect("traces array");
+    assert_eq!(traces.len(), 1, "{trace}");
+    assert_eq!(
+        traces[0]["trace"],
+        serde_json::json!("tests::app_test::traced")
+    );
+    assert!(
+        traces[0]["events"]
+            .as_array()
+            .is_some_and(|events| !events.is_empty())
+    );
+}
+
+#[test]
+fn format_json_with_trace_emits_one_stderr_envelope_for_multiple_tests() {
+    let root = temp_project("test-json-trace-envelope", |root| {
+        write(root, "marrow.json", CONFIG);
+        write(root, "src/app.mw", "module app\n");
+        write(
+            root,
+            "tests/app_test.mw",
+            "pub fn first()\n    std::assert::isTrue(true)\n\npub fn second()\n    std::assert::isTrue(true)\n",
+        );
+    });
+    let output = run_test_args(&[
+        "--trace",
+        "--format",
+        "json",
+        root.to_str().expect("project path utf8"),
+    ]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let report = json(output.stdout);
+    assert_eq!(report["summary"]["passed"], serde_json::json!(2));
+    let trace = json(output.stderr);
+    let traces = trace["traces"].as_array().expect("traces array");
+    assert_eq!(traces.len(), 2, "{trace}");
+    assert_eq!(
+        traces[0]["trace"],
+        serde_json::json!("tests::app_test::first")
+    );
+    assert!(
+        traces[0]["events"]
+            .as_array()
+            .is_some_and(|events| !events.is_empty())
+    );
+    assert_eq!(
+        traces[1]["trace"],
+        serde_json::json!("tests::app_test::second")
+    );
+    assert!(
+        traces[1]["events"]
+            .as_array()
+            .is_some_and(|events| !events.is_empty())
+    );
+}
+
+#[test]
 fn reports_when_no_tests_are_found() {
     let root = temp_project("test-none", |root| {
         write(root, "marrow.json", CONFIG);
@@ -281,6 +462,28 @@ fn reports_when_no_tests_are_found() {
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert_eq!(stderr_code(&output.stderr), "test.none");
+}
+
+#[test]
+fn format_json_reports_when_no_tests_are_found() {
+    let root = temp_project("test-none-json", |root| {
+        write(root, "marrow.json", CONFIG);
+        write(root, "src/app.mw", "module app\n");
+    });
+    let output = run_test_args(&[
+        "--format",
+        "json",
+        root.to_str().expect("project path utf8"),
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let record = json(output.stdout);
+    assert_eq!(record["code"], serde_json::json!("test.none"));
+    assert!(
+        output.stderr.is_empty(),
+        "unexpected stderr: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -294,6 +497,51 @@ fn refuses_to_run_tests_when_the_project_does_not_check() {
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert_eq!(stderr_code(&output.stderr), "check.module_path");
+}
+
+#[test]
+fn format_json_reports_project_check_errors_on_stdout() {
+    let root = temp_project("test-badcheck-json", |root| {
+        write(root, "marrow.json", CONFIG);
+        write(root, "src/shelf/books.mw", "module shelf::other\n");
+    });
+    let output = run_test_args(&[
+        "--format",
+        "json",
+        root.to_str().expect("project path utf8"),
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let report = json(output.stdout);
+    assert_eq!(report["status"], serde_json::json!("failed"));
+    assert_eq!(report["diagnostics"][0]["code"], "check.module_path");
+    assert!(
+        output.stderr.is_empty(),
+        "unexpected stderr: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn format_jsonl_reports_project_load_errors_on_stdout() {
+    let root = temp_project("test-badconfig-jsonl", |root| {
+        write(root, "marrow.json", r#"{ "sourceRoots": [] }"#);
+    });
+    let output = run_test_args(&[
+        "--format",
+        "jsonl",
+        root.to_str().expect("project path utf8"),
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let records = jsonl(output.stdout);
+    assert_eq!(records.len(), 1, "{records:#?}");
+    assert_eq!(records[0]["code"], "config.invalid");
+    assert!(
+        output.stderr.is_empty(),
+        "unexpected stderr: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]

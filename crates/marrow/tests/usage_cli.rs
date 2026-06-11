@@ -49,6 +49,31 @@ fn run_entry_with_no_value_is_a_usage_failure() {
 }
 
 #[test]
+fn test_help_names_stdout_report_and_stderr_trace_streams() {
+    let output = marrow(&["test", "--help"]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(
+        output.stderr.is_empty(),
+        "unexpected stderr: {:?}",
+        output.stderr
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert!(
+        stdout.contains("--format"),
+        "help should describe --format: {stdout}"
+    );
+    assert!(
+        stdout.contains("test report on stdout"),
+        "help should name stdout report stream: {stdout}"
+    );
+    assert!(
+        stdout.contains("trace") && stdout.contains("stderr"),
+        "help should name stderr trace stream: {stdout}"
+    );
+}
+
+#[test]
 fn serve_duplicate_port_is_a_usage_failure() {
     let dir = support::temp_dir("usage-serve-duplicate-port");
     let output = marrow(&["serve", "--port", "1", "--port", "2", dir.to_str().unwrap()]);
