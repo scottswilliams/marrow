@@ -829,33 +829,6 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 Goal: every deletion and truth-fix with no implementation dependency lands before building.
 Mostly parallel; two wide-churn barrier lanes close the wave.
 
-**W1.1 ∥ ADR truth lane.** Carries: gate 34 batch (edit/assert strikes incl. the three
-additional edit-verb sites storage-engine/01:42, model-ir/01:50, and language/README:10;
-Book::Id rewrite; citations, deleting any Sources line left empty by the roadmap-citation drop —
-foundations/02, engineering-style/01; the sixteen-law count; supersession metadata as one
-`Amended: YYYY-MM-DD — <what changed; owning ADR>` line under each touched ADR's Status line,
-documented once in template.md); the storage-engine/01 lock amendment plus the foundations/02
-"many snapshot readers" cross-process qualifier (gate 7) and the storage-engine/01
-open-mode-downgrade paragraph beside the lock amendment (gate 47); storage-engine/02 amendments
-(gate 6 — one sentence recording the one-phase posture and its named risk — and gate 8);
-storage-engine/03 wording (gates 4, 11 — the gate-11 amendment distinguishes typed source-level
-key bounds from iteration-state machinery) and the language/04 key-deferral scoping sentence
-(gate 4); language/06 amendments (gates 18-20); language/02+07 indexOf amendment (gate 16);
-storage-engine/05 finding list (gate 5); model-ir/02 wording (gate 25); tooling/04 wording
-(gates 31-32); the gate-52 batch's fourteen marrow-decisions amendments (C22's docs/future
-sketch fix rides W1.2; C25's outbox paragraph rides W2.5); the language/02 guard-spelling
-amendment (gate 38); the language/02 maybe-return amendment (gate 39); the language/04
-operator-table sentence (gate 40); the tooling/04 store-required sentence (gate 42); the
-language/07 consumption-contract amendment (gate 46 — the decided decode form, static
-disambiguation rule, fail-closed extras, null→absence, identity provenance, canonical numerics;
-the four `decode.*` reserved error-codes.md rows ride W1.6); the foundations/01
-developer-visible-durable-clock law clarification line, anchored by content (gate 50) — all
-Wave 0 outcomes written into the decision record in one pass. Owns: marrow-decisions repo only.
-Seed: a grep script proving each phantom spelling/stale citation exists, then is gone. Review:
-every amended sentence matches code truth or a Wave-0 decision; no decision content invented.
-Done: absence scan for `edit`-verb/assert/`Book::Id` spellings; all ADR Sources resolve; the
-absence/citation scans extend to the gate-38/39/40/42/46/47/50/52 sentences.
-
 **W1.2 ∥ Docs evacuation + dedup.** Carries: removals "Evacuate process artifacts"
 (docs/superpowers/, docs/roadmap/ — coordinated with the live refactor owners; in-repo
 references repointed), "Deduplicate the deferred-contract docs" (one canonical name per
