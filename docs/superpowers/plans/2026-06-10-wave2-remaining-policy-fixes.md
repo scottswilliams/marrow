@@ -23,6 +23,8 @@ repro as oracle, soundness + idiom review, full gate, then fast-forward integrat
   `store.corruption`, across data tools and serve. Resolves the B-DATA-ROOTS backlog item.
 - FEAT-1 (B71) — iterate a date/duration/instant-keyed layer (`saved_key_to_value` total).
 - DUR-5 (manifest folded into the backup archive checksum) — landed in Wave 1 Lane 6.
+- B59 — verified closed by DUR-5: injected `commit_id` metadata is part of the
+  folded manifest checksum and restore rejects it as `restore.corrupt_chunk`.
 - DIAG-1/2/3 (B66/B69/B72) — reject unsupported string escapes at check, reject unknown
   ops in closed pure std modules, and enforce dotted lowercase `ErrorCode` text through
   the shared checker/runtime grammar.
@@ -44,11 +46,6 @@ repro as oracle, soundness + idiom review, full gate, then fast-forward integrat
 - **B48** — a rejected `restore` leaves an orphan `marrow.redb` in a previously-pristine
   `.data`, violating rollback-to-empty. [DUR-6: validate binding before opening the target
   and track/delete the created file on a rolled-back restore.]
-- **B59** — restore silently accepts tampered commit metadata (injected `commit_id` skews
-  future numbering). [LOW: cover the full commit descriptor by the archive checksum or
-  reject a self-inconsistent manifest; the manifest is now checksum-covered (DUR-5), so
-  confirm the `commit_id` path is included.]
-
 ### Evolution
 - **B40** — a pure enum-member reorder bricks a stamped native store (check passes, run
   fences `run.schema_drift`, evolve apply cannot recover). [Reorder is identity-preserving:
