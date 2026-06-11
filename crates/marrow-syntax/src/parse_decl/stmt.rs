@@ -104,7 +104,7 @@ impl<'a> StmtParser<'a> {
                 kind if is_line_comment(kind) => self.take_own_line_comment(),
                 TokenKind::Indent => {
                     self.report_unexpected_indented_block();
-                    self.skip_block();
+                    self.skip_unexpected_indented_block();
                 }
                 _ => statements.extend(self.statement()),
             }
@@ -705,6 +705,59 @@ impl<'a> StmtParser<'a> {
                 }
                 _ => end = self.advance().span,
             }
+        }
+        end
+    }
+
+    fn skip_unexpected_indented_block(&mut self) -> SourceSpan {
+        let mut depth = 0usize;
+        let mut end = self.tokens[self.pos].span;
+        let mut line_has_content = false;
+        let mut comments = Vec::new();
+        let mut has_statement_tokens = false;
+        while let Some(kind) = self.peek() {
+            match kind {
+                TokenKind::Indent => {
+                    depth += 1;
+                    line_has_content = false;
+                    end = self.advance().span;
+                }
+                TokenKind::Dedent => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                    line_has_content = false;
+                    end = self.advance().span;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                TokenKind::Newline => {
+                    line_has_content = false;
+                    end = self.advance().span;
+                }
+                kind if is_line_comment(kind) => {
+                    let token = self.advance();
+                    end = token.span;
+                    if !line_has_content {
+                        comments.push(comment_from_token(
+                            self.source,
+                            token,
+                            CommentPlacement::OwnLine,
+                            CommentMarker::Line,
+                        ));
+                    }
+                }
+                _ => {
+                    has_statement_tokens = true;
+                    line_has_content = true;
+                    end = self.advance().span;
+                }
+            }
+        }
+        if !has_statement_tokens {
+            self.comments.extend(comments);
         }
         end
     }

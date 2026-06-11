@@ -402,11 +402,11 @@ fn format_docs(docs: &[String], level: usize) -> String {
 /// trailing newline.
 ///
 /// Block comments are re-emitted so `parse -> format` round-trips them: own-line
-/// comments preserve their source column (see `format_comment`) and appear on
-/// their own line, in source order between statements, so a comment outdented
-/// relative to the block is not re-indented; a trailing comment is appended to
-/// the line of the statement it sits on. Walking comments in step with
-/// statements relies on both being in source order.
+/// comments appear on their own line, in source order between statements.
+/// Outdented comments keep their source column; over-indented comments canonicalize
+/// to the block indent. A trailing comment is appended to the line of the
+/// statement it sits on. Walking comments in step with statements relies on both
+/// being in source order.
 ///
 /// A comment in the middle of a value that spans several lines inside open
 /// delimiters is not round-tripped: that is the one position the expression
@@ -422,7 +422,10 @@ pub(crate) fn format_block(source: &str, block: &Block, level: usize) -> String 
             if comment.placement == CommentPlacement::OwnLine
                 && comment.span.start_byte < stmt_span.start_byte
             {
-                lines.push(format_comment(comments.next().expect("peeked")));
+                lines.push(format_block_comment(
+                    comments.next().expect("peeked"),
+                    level,
+                ));
             } else {
                 break;
             }
@@ -453,16 +456,13 @@ pub(crate) fn format_block(source: &str, block: &Block, level: usize) -> String 
 
     // Comments after the last statement, or an entirely statement-less block.
     for comment in comments {
-        lines.push(format_comment(comment));
+        lines.push(format_block_comment(comment, level));
     }
 
     lines.join("\n")
 }
 
-/// Render an own-line comment, preserving its original column. Comments are
-/// indentation-exempt, so keeping the author's column round-trips an outdented
-/// comment exactly rather than re-indenting it to the block the lexer attached
-/// it to.
+/// Render an own-line comment, preserving its original column.
 fn format_comment(comment: &Comment) -> String {
     let pad = " ".repeat(comment.span.column.saturating_sub(1) as usize);
     let marker = comment_marker_str(comment.marker);
@@ -471,6 +471,13 @@ fn format_comment(comment: &Comment) -> String {
     } else {
         format!("{pad}{marker} {}", comment.text)
     }
+}
+
+fn format_block_comment(comment: &Comment, level: usize) -> String {
+    let block_column = (level * INDENT.len() + 1) as u32;
+    let mut comment = comment.clone();
+    comment.span.column = comment.span.column.min(block_column);
+    format_comment(&comment)
 }
 
 fn comment_marker_str(marker: CommentMarker) -> &'static str {

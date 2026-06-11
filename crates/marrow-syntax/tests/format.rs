@@ -500,6 +500,56 @@ fn round_trips_ordinary_line_comments_by_placement() {
 }
 
 #[test]
+fn preserves_overindented_body_comments_at_block_indent() {
+    let source = "module app\n\
+         fn run()\n\
+         \x20   print(\"before\")\n\
+         \x20       ; keep this comment\n\
+         \x20   print(\"after\")\n";
+    let expected = "module app\n\
+         \n\
+         fn run()\n\
+         \x20   print(\"before\")\n\
+         \x20   ; keep this comment\n\
+         \x20   print(\"after\")\n";
+
+    assert_eq!(format_source(source), expected);
+    let body = reparsed_run_body(&format_source(source));
+    assert_eq!(
+        comment_facts(&body.comments),
+        [(
+            "keep this comment",
+            CommentPlacement::OwnLine,
+            CommentMarker::Line,
+        )]
+    );
+}
+
+#[test]
+fn drops_overindented_comments_that_belong_to_invalid_statement_blocks() {
+    let source = "module app\n\
+         fn run()\n\
+         \x20   print(\"before\")\n\
+         \x20       ; invalid block comment\n\
+         \x20       print(\"bad\")\n\
+         \x20   print(\"after\")\n";
+    let formatted = format_source(source);
+    let expected = "module app\n\
+         \n\
+         fn run()\n\
+         \x20   print(\"before\")\n\
+         \x20   print(\"after\")\n";
+
+    assert_eq!(formatted, expected);
+    let body = reparsed_run_body(&formatted);
+    assert!(
+        body.comments.is_empty(),
+        "invalid-block comment should not survive recovery: {:#?}",
+        body.comments
+    );
+}
+
+#[test]
 fn normalizes_body_doc_comments_to_ordinary_comments() {
     // A `;;` documents the next declaration or member; inside a function body
     // there is nothing to document, so both the own-line and the trailing path

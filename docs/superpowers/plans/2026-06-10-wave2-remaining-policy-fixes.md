@@ -31,6 +31,9 @@ repro as oracle, soundness + idiom review, full gate, then fast-forward integrat
 - CLI consistency B68 — interpolation documents and tests the existing brace contract:
   a lone `}` is text, while a lone `{` starts interpolation and must be escaped as `{{`
   when meant literally.
+- OUT-3 (B62) — `fmt` preserves an over-indented own-line body comment and
+  re-emits it at the block indent instead of dropping it during indentation
+  recovery.
 
 ## Remaining, by cluster (decided fix in brackets)
 
@@ -88,9 +91,6 @@ repro as oracle, soundness + idiom review, full gate, then fast-forward integrat
   undecodable opaque hex, and an enum value as two ragged `$cat_` ids. [OUT-2: render an
   `Id(^store)` as its referent `^authors(1)` and an enum value as one member identity, in the
   OUT-1 value-rendering pass (decode reads catalog stable-id/key facts).]
-- **B62** — `fmt` silently deletes an over-indented own-line comment in a function/control-flow
-  body. [OUT-3: preserve the over-indented body comment, re-emitted at the block indent. No
-  fail-closed stopgap — Marrow is unreleased, go straight to the fix.]
 - **B49** — `marrow test --format json|jsonl` is advertised and validated but the test report
   always emits human text. [OUT-4: emit a JSON/JSONL test-result envelope (per-test
   `{name,status,location}` + summary, mirroring `data`/`integrity`).]
