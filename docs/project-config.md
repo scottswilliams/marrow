@@ -1,8 +1,9 @@
 # Project Configuration
 
 A Marrow project is described by a single file, `marrow.json`, at the project
-root. Every project command — `check`, `run`, `test`, `fmt`, `data`, and `serve`
-— reads `<projectdir>/marrow.json` first. The file
+root. Every command that takes a project directory — `check`, `run`, `test`,
+`fmt`, `data`, `evolve`, `backup`, `restore`, and `serve` — reads
+`<projectdir>/marrow.json` first. The file
 holds project choices only: source roots, a default entrypoint, the store
 backend and its data directory, and test patterns. It does not hold compiled
 schemas, the accepted catalog, index metadata, data-evolution history,
@@ -30,8 +31,9 @@ The minimal valid file is just the required field:
 
 With this minimal file there is no default entry (you must pass `--entry` to
 `run`), the store is in-memory (nothing is persisted), and no tests are
-discovered. The implicit in-memory store is a development convenience, not a
-production saved-data backend.
+discovered. The in-memory default admits a `run` only for a program with no
+durable declarations — see
+[`store.backend`](#storebackend-and-storedatadir).
 
 ## Fields
 
@@ -91,14 +93,17 @@ value does not print it.
 ### `store.backend` and `store.dataDir`
 
 The storage selection. When `store` is omitted entirely, commands use an
-in-memory store: nothing is persisted, and each `run` or `test` starts empty.
-The supported production saved-data backend is the native redb store. The
-in-memory store is for tests, development, REPLs, and short runs where losing
-all data is acceptable.
+in-memory store: nothing is persisted. `marrow test` always runs each test on
+a fresh in-memory store. `marrow run` admits the in-memory store only for a
+program with no durable declarations; a program that declares a durable
+surface (a `resource`, a saved `store`, or an `enum`) fails with
+`run.durable_store_required` and needs a native store. The supported
+production saved-data backend is the native redb store.
 
 - `memory` — an in-memory store. Creates no files. `dataDir` is ignored if
   present (and may be omitted). This backend is not a production `^` durability
-  profile.
+  profile; `run` refuses a durable program here exactly as when `store` is
+  omitted.
 
   ```json
   { "sourceRoots": ["src"], "store": { "backend": "memory" } }
@@ -193,7 +198,7 @@ $ marrow check ./proj          # dataDir: "../data"
 config.invalid: `dataDir` `../data` must not contain a `..` component
 
 $ marrow check ./proj          # no marrow.json
-io.read: failed to read proj/marrow.json: No such file or directory (os error 2)
+io.read: failed to read ./proj/marrow.json: No such file or directory (os error 2)
 ```
 
 The same `config.invalid` appears in the machine-readable envelope under

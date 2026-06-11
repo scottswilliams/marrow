@@ -330,9 +330,5 @@ What works today: the four debug read operations (`debug_data_roots`,
 with the path/key/base64 encodings and `protocol.*` / `store.*` error replies
 described above. Production preview, backup, restore, sync, and generated API
 protocols are not implemented here. See
-[tooling-surfaces.md](tooling-surfaces.md) for the surface verdicts.
-
-Designed read extensions that are not yet implemented — local IPC over Unix
-sockets or Windows named pipes, and two read-only session extensions — are
-described in [future/serve-protocol.md](future/serve-protocol.md). None would
-write managed data.
+[tooling-surfaces.md](tooling-surfaces.md) for how this surface relates to the
+other tool surfaces.

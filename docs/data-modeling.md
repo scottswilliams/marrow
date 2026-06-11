@@ -81,9 +81,9 @@ local value. It does not pull in keyed child layers — those are read through
 their saved paths or traversed directly:
 
 ```mw
-var local: Book = ^books(id)    ; scalars + unkeyed groups
-for pos, tag in ^books(id).tags ; keyed layers read directly
-    write($"tag {pos}: {tag}")
+var p: Patient = ^patients(id)            ; scalars + unkeyed groups
+for visitDate in ^patients(id).visits     ; keyed layers read directly
+    write(^patients(id).visits(visitDate).note ?? "")
 ```
 
 ## Identity Keys
@@ -118,11 +118,11 @@ store ^enrollments(studentId: string, courseId: string): Enrollment
 ```
 
 `Id(^enrollments)` is treated as a single opaque identity, not a tuple. The
-runtime lowers each key component into the saved path. With one record at
-`studentId: 1, courseId: "cs101"`, the saved tree is:
+runtime lowers each key component into the saved path; after the write above,
+the saved tree is:
 
 ```text
-^enrollments(1)("cs101").status   active
+^enrollments("student-1")("course-9").status   active
 ```
 
 Rules to model around:
@@ -159,8 +159,10 @@ subtitle: string         ; sparse: may be absent
 required title: string   ; must be populated for a valid resource
 ```
 
-Reading an unpopulated field raises `run.absent_element` unless the checker
-can prove it exists. Guard with `exists`, or read with a default:
+A bare read of a sparse field is rejected at check time
+(`check.bare_maybe_present_read`) unless the checker can prove the field is
+populated. Resolve the read with an `exists` guard, a `??` default, or
+optional chaining:
 
 ```mw
 if exists(^books(id).subtitle)
@@ -363,11 +365,14 @@ By identity, when the identity is known:
 const title = ^books(id).title
 ```
 
-By unique index, where one populated path resolves to one identity:
+By unique index, where one populated path resolves to one identity. The lookup
+is maybe-present — no book may carry that isbn — so resolve it like any
+maybe-present read:
 
 ```mw
-const id: Id(^books) = ^books.byIsbn(isbn)
-const title = ^books(id).title
+if exists(^books.byIsbn(isbn))
+    const id: Id(^books) = ^books.byIsbn(isbn)
+    const title = ^books(id).title
 ```
 
 By non-unique index, iterating the identities under a branch:
@@ -381,8 +386,8 @@ Plain durable iteration streams keys or identities. On a managed root, `^books`
 yields `Id(^books)` values. On a non-unique index branch,
 `^books.byShelf("fiction")` yields the identities in that branch. Use two loop
 variables, `entries(...)`, or `values(...)` when record values are needed. The
-marker values that back non-unique index entries are a raw-inspection detail,
-not typed data.
+marker values that back non-unique index entries are an internal storage
+detail; no command or language surface exposes them.
 
 By traversal, following a stored typed reference:
 
@@ -397,23 +402,21 @@ read-only and never modify the store:
 
 ```text
 $ marrow data dump <projectdir>
-^books(1).author          Terry Pratchett
-^books(1).shelf           fiction
-^books(1).title           Small Gods
-^books.byShelf("fiction")(1)   1
-^books.byIsbn("111")      0x028000000000000001
+^books(1).title	Small Gods
+^books(1).shelf	fiction
+^books(1).isbn	111
 ```
 
-This makes the modeling rules visible: identity keys appear in the path
-(`^books(1)`), not as fields; a non-unique index ends with the identity key and
-stores a marker value; a unique index stores the encoded identity. Quoted path
-segments such as `byShelf("fiction")` are index/string keys and never collide
-with a structural name like an index named `byShelf`.
+Dump prints declared data cells only — identities in key order, members in
+declaration order. Derived index trees and engine metadata never appear. The
+modeling rules stay visible: identity keys appear in the path (`^books(1)`),
+not as fields, and string keys render quoted (`^users("alice")`), so a quoted
+key segment never collides with a structural name.
 
 Other inspection commands: `marrow data roots` (list saved roots), `marrow data
 stats` (count roots and records), `marrow data get <projectdir> <path>` (one
 path's value), and `marrow data integrity` (verify stored values decode against
-the schema and actual stored cells are still declared - note this does not check
+the schema and actual stored cells are still declared — note this does not check
 required-field completeness).
 
 ## What Is Deferred

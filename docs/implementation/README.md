@@ -13,8 +13,11 @@ describes the code that implements them.
 
 ## The kernel
 
-Seven crates stacked in dependency order, lowest first:
+Eight crates stacked in dependency order, lowest first:
 
+- **catalog** — the accepted-catalog snapshot model: the committed record of
+  durable identity (epoch, digest, entries), its validation invariants, and
+  structural-signature decode. Both store and check read it.
 - **store** — the byte-level tree-cell contract under the language: order-preserving
   keys, canonical values, two ordered-byte engines. Knows no `.mw`.
 - **syntax** — the front end: text to AST plus typed diagnostics, and back to

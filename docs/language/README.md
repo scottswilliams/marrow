@@ -41,7 +41,7 @@ Marrow is not a SQL dialect, ORM, migration DSL, general database server, or
 hidden access-strategy layer. It has one source language and one typed tree data
 model. Saved data uses the same resource shapes as local data; indexes are
 declared lookup trees owned by stores; exact whole-resource assignment is
-ordinary assignment, not a warning-producing operation.
+ordinary assignment.
 
 ## First Look
 
@@ -83,7 +83,8 @@ This shows the main shape:
 - `resource Book` defines a typed tree shape.
 - `store ^books(id: int): Book` declares the `^books` store over that shape. Its
   canonical identity type is `Id(^books)`.
-- Documentation comments feed editor hover, docs, and inspect output.
+- Documentation comments are accepted on declarations, members, and
+  parameters and preserved by the formatter.
 - `index byShelf(shelf, id)` declares an alternate lookup tree owned by the store.
 - `var book: Book` uses the same resource shape locally.
 - `^books(id) = book` saves the local resource and creates index entries.

@@ -8,8 +8,7 @@ closed.
 
 The saved-data model these changes operate on is defined in
 [`language/resources-and-storage.md`](language/resources-and-storage.md), and
-[Data Modeling](data-modeling.md) covers how to shape it. Future project
-compilation ideas live in [future/data-evolution.md](future/data-evolution.md).
+[Data Modeling](data-modeling.md) covers how to shape it.
 
 Apply is shaped as a compiler-owned activation job created from the exact
 preview witness. V0.1 executes that job immediately in one transaction, but the
@@ -29,61 +28,39 @@ schema does not fully describe until explicit data-evolution work runs.
 | Add a sparse field | Existing records stay valid; the field reads as absent until written. It changes the durable shape, so a populated store is re-stamped, but discharging the change mutates no stored record: a `marrow run` auto-applies it (see [Run-Time Auto-Apply](#run-time-auto-apply)), and `marrow evolve apply` discharges it explicitly. |
 | Add a `required` field | `evolve default` or checked `evolve transform`, proven by `marrow evolve preview` and applied by `marrow evolve apply`. |
 | Rename a field | `evolve rename`, applied with `marrow evolve apply`; the stable identity moves with the rename, and stored cells addressed by that identity remain attached. |
-| Change a leaf's type | A populated leaf-type change fails closed: the stored bytes were written under the old type, so the new type cannot read them — even when its decoder would accept the old bytes — and `marrow evolve preview` reports it. A transform may not read the member it replaces, so an in-place reinterpret is not the resolution. Instead add a new field of the new type, populate it with an `evolve transform` computed from the old field, then retire the old field. The check is total over leaf-position members — every plain field and every `map[K, V]` value, required and sparse alike — and detects any change to a member's leaf type: scalar to scalar, scalar to an enum or a reference, or one named type to another. An empty leaf has no data to reinterpret and changes freely. |
-| Remove or unselect an enum member | While saved data still selects the member, the change fails closed: a stored value carries the member's stable identity, which the new enum no longer offers. Removing the member, marking it `category`, or giving it children all make it unselectable, and `marrow evolve preview` reports repair-required. Every leaf referencing the enum is scanned, required and sparse alike, so a stored value naming the gone member is caught regardless of the holding field's requiredness. Migrate the affected records to a current member first. Reordering members keeps every identity and mutates no stored record, so it re-stamps the durable shape with no data work: a `marrow run` auto-applies it (see [Run-Time Auto-Apply](#run-time-auto-apply)). Renaming a member is identity-preserving the same way a field rename is: declare it with `evolve rename`, and the member's stable identity moves to the new spelling so stored values addressed by that identity stay valid. A bare source rename with no `evolve rename` intent is read as the old member removed plus a new one added, so a stored value naming the old member then fails closed at preview. |
+| Change a leaf's type | A populated leaf-type change fails closed; `marrow evolve preview` reports it. Add a new field of the new type, populate it with an `evolve transform` from the old field, then retire the old field. An empty leaf changes freely. |
+| Remove or unselect an enum member | Fails closed while saved data still selects the member (removal, marking it `category`, and giving it children all unselect it); migrate affected records to a current member first. Reordering members preserves every identity, mutates nothing, and auto-applies. Rename a member with `evolve rename`; a bare source rename reads as remove-plus-add and fails closed. |
 | Add an index | `marrow evolve preview` proves the rebuild and `marrow evolve apply` publishes index entries atomically. |
-| Remove a field, resource, or store | If no stored cells exist, removal is a free source/catalog no-op. A populated destructive removal fails closed: stored cells under a field — or under a whole resource or store — the current source no longer declares would be orphaned, so `marrow check --data`, `marrow evolve preview`, `marrow evolve apply`, and a plain `marrow run` all report repair-required and refuse to activate. Resolve it with `evolve retire` plus approval, or maintenance repair that deletes or moves the data before activation. |
-| Change a store's identity key shape | Not supported over saved data. Changing the key arity or any identity key type fails closed: existing records are keyed by the old shape and the new shape cannot address them. Model a new store and migrate with maintenance code. |
-| Re-key a keyed layer | Not supported over populated entries. A keyed layer — a keyed-leaf layer (including `sequence`/`map` sugar) or an author-written keyed-group layer — keys its entries by its key shape; changing that layer's key arity or any key type fails closed — existing entries are keyed by the old shape and the new one addresses none of them. A keyed-leaf `map[K, V]` is a leaf position whose token folds in both its key shape and its value type, so a change to its key arity or key type is detected as a leaf type change exactly like a value-type change; a keyed-group layer is detected as a structural divergence. Either way `marrow evolve preview` reports it; model a new layer and migrate with maintenance code. |
-| Reshape a group to or from a keyed layer | Not supported over populated data. Turning a plain group into a keyed layer (or the reverse) changes the durable shape its data occupies, so it fails closed: the old data lives under the old shape and the new shape cannot read it. `marrow evolve preview` reports it; model a new member of the new shape and migrate with maintenance code. |
+| Remove a field, resource, or store | If no stored cells exist, removal is a free source/catalog no-op. A populated destructive removal fails closed: stored cells under a field — or under a whole resource or store — the current source no longer declares would be orphaned, so `marrow check --data`, `marrow evolve preview`, `marrow evolve apply`, and a plain `marrow run` all report repair-required and refuse to activate. Resolve it with `evolve retire` applied under `--maintenance --approve-retire`, or maintenance repair that deletes or moves the data before activation. |
+| Change a store's identity key shape | Not supported over saved data; any change to the key arity or a key type fails closed. Model a new store and migrate with maintenance code. |
+| Re-key a keyed layer | Not supported over populated entries; any change to the layer's key arity or a key type fails closed. Model a new layer and migrate with maintenance code. |
+| Reshape a group to or from a keyed layer | Not supported over populated data; the reshape fails closed. Model a new member of the new shape and migrate with maintenance code. |
 | Delete a whole root or drop a required field | Explicit maintenance/repair code under `--maintenance`, checked before and after. |
 
-The type-change check covers every leaf the same way, by the identity of the type
-its stored bytes were accepted under. A `map[K, V]` keyed-leaf layer is a leaf
-position whose accepted leaf token folds in both its key shape and its value type
-V, so a change to its value type — or to its key arity or key type — changes the
-token and is detected and fails closed exactly like a plain-field retype:
-`marrow evolve preview` reports it as repair-required and the resolution is the
-same add-new, transform, retire path. A value type Marrow cannot reduce to a
-single comparable leaf — a `sequence` value (`map[K, sequence[V]]`) or an
-`unknown` — still records a stable "untokenizable" marker rather than no token, so
-a change into, out of, or between such values reads as a different value and fails
-closed the same way; it is never silently reinterpreted. The map's key shape rides
-inside the same leaf token as a prefix on the value, so a key-arity or key-type
-change is caught as a leaf type change, not through the store/keyed-group key-shape
-path.
+The type-change check is total over leaf positions, required and sparse alike,
+and compares the identity of the type the stored bytes were accepted under, so
+every retype is caught: scalar to scalar, scalar to an enum or a reference, or
+one named type to another — even when the new type's decoder would accept the
+old bytes. A `map[K, V]` keyed-leaf layer is a leaf position whose accepted
+token folds in both its key shape and its value type, so a change to its value
+type, key arity, or key type is detected the same way. A value Marrow cannot
+reduce to a single comparable leaf — a `sequence` value or an `unknown` —
+records a stable untokenizable marker, so a change into, out of, or between
+such values also fails closed rather than being silently reinterpreted. A
+transform may not read the member it replaces, so an in-place reinterpret is
+never the resolution.
 
-Beyond these named cases the check is total by construction. Each durable member
-records the identity-aware shape its data was accepted under — its kind, its key
-shape if it is a keyed layer, and its leaf token if it is a leaf — and a
-default-deny backstop fails closed any member whose recorded shape diverges from
-current source and which still holds data, even when no named classifier handles
-that exact transition. The backstop is total over nesting depth: it reaches a member
-nested below any number of keyed layers by descending through each layer's existing
-entries, so a divergence deep under unchanged keyed ancestors is judged against the
-entries it would orphan, not skipped. So a keyed-layer re-key, a group-to-keyed-layer
-reshape, or any structural change v0.1 has no specific migration path for cannot
-silently activate over saved data, at any depth; an unpopulated member, having nothing
-to orphan, reshapes freely.
-
-Changing a store's identity key shape — its key arity or any identity key type —
-is not supported over saved data and fails closed. Existing records are addressed
-by the old key bytes, which live in the saved path itself, so a record keyed by an
-`int` cannot be found under a `string` key and a single-key record cannot be found
-under a composite key. v0.1 has no graceful key migration: `marrow evolve preview`
-reports the change as repair-required and `marrow evolve apply` refuses it. To
-re-key, model a new store and migrate with maintenance code.
-
-A keyed layer's key shape fails closed the same way over its populated entries.
-Changing a layer's key arity or any key type orphans every entry addressed by the
-old shape, so `marrow evolve preview` reports it as repair-required and the
-resolution is to model a new layer and migrate with maintenance code. The two layer
-shapes reach that verdict by different detectors: a keyed-leaf `map[K, V]` is a
-leaf, and its key shape rides inside its leaf token as a prefix on the value, so a
-key change is caught as a leaf type change; a keyed-group layer is not a leaf, so
-its key change is caught as a structural divergence. Reshaping a plain group into a
-keyed group, or the reverse, changes the durable shape its data occupies and fails
-closed as a structural divergence the same way.
+Key and group shapes fail closed the same way. A store's identity keys live in
+the saved path itself, so changing the key arity or any key type leaves every
+existing record unaddressable — v0.1 has no graceful key migration. A
+keyed-group layer's key change, and a reshape between a plain group and a keyed
+layer, are caught as structural divergences; a keyed-leaf map's key change is
+caught through its leaf token. Beyond the named cases, a default-deny backstop
+fails closed any member whose recorded identity-aware shape diverges from
+current source while it still holds data, descending through existing keyed
+entries to any nesting depth, so no structural change v0.1 lacks a migration
+path for can silently activate over saved data. An unpopulated member, having
+nothing to orphan, reshapes freely.
 
 ## Sparse And Required Fields
 
@@ -160,13 +137,15 @@ catalog table, not as a committed file, and it has no `marrow.json` input. It is
 not Marrow language data — there is no `^catalog` root, resource, query,
 standard-library, or data-CLI surface that can read, scan, or mutate it.
 
-Each entry records:
+The snapshot records its catalog epoch and digest. Each entry records:
 
 - the declaration kind;
 - the canonical catalog path and any old aliases;
 - the stable ID;
 - lifecycle state;
-- the catalog epoch and digest.
+- the accepted shape its durable data was written under: a store's
+  identity-key shape, or a resource member's identity-aware structural
+  signature.
 
 `active` entries bind current source to stable IDs. `deprecated` entries are old
 aliases kept for identity continuity. `reserved` entries remember spellings that
@@ -236,16 +215,16 @@ stored snapshot must match, not the transition that produced it, so an evolve
 block can be deleted once consumed without reading as schema drift.
 
 The source digest also uses `sha256:<64 lowercase hex>`. Its payload is the
-compiler's canonical durable-shape summary: module constants, resources,
-stores, enum trees, store identity-key shapes, and resource-member structural
-tokens after catalog IDs have bound the durable identities those shapes refer
-to. It intentionally excludes transition text such as `evolve` blocks.
+canonical formatter's rendering of every `resource`, `store`, `enum`, and
+module `const` declaration, in deterministic order, so a shape change drifts
+the digest while a whitespace reformat does not.
 
 An evolution apply stamps activation evidence in the same transaction as its
 data effects: proposal/evolution digests, changed catalog IDs, default
 backfill counts and bounded effect digests, transform counts, exact per-id
 retire counts with a bounded evidence digest, and rebuilt-index counts. Receipts
-do not store proposal catalog bodies or executable migration steps. The accepted
+are evidence that tooling, backup, and support may render or verify; they store
+no proposal catalog bodies or executable migration steps. The accepted
 catalog rows, the catalog epoch, the commit metadata, and the data and index
 cells all advance in that one store transaction, so a reader sees either the
 whole activation or none of it. There is no separate file-publish step and no
@@ -280,13 +259,15 @@ against it discharges its obligation. The same source edit therefore auto-applie
 against an empty store and fences against a populated one that needs work.
 
 A change that backfills a newly required field, rewrites records through a
-transform, or destructively drops populated data does not auto-apply. The run fences
-with an actionable diagnostic that names `marrow evolve apply` and the backfill
-count where the witness proved one. A destructive drop against populated data stays
-explicit and requires confirmation through `marrow evolve apply --maintenance`,
-because losing data must never be a silent side effect of a run; a drop whose target
-holds no cells has nothing to lose and auto-applies. An evolution that needs that
-destructive approval never auto-applies, whatever its record count.
+transform, or destructively drops populated data does not auto-apply. The run
+fences with an actionable diagnostic that names `marrow evolve apply` and the
+backfill count where the witness proved one. A destructive drop against
+populated data stays explicit and requires confirmation through
+`marrow evolve apply --maintenance --approve-retire <catalog-id>:<count>`,
+naming each retired identity at its exact populated count, because losing data
+must never be a silent side effect of a run; a drop whose target holds no cells
+has nothing to lose and auto-applies. An evolution that needs that destructive
+approval never auto-applies, whatever its record count.
 
 The obligation probe and the activation stamp run in one transaction under the store
 write lock. The witness pins the store commit id, and apply re-checks that pin inside
@@ -299,36 +280,10 @@ still on the old epoch (`run.store_evolved`), the same lockout an explicit
 
 ## Long-Term Online Activation Direction
 
-v0.1 activation is intentionally strict and local. That strictness is the
-foundation for future online activation, not the final OLTP operating model.
-
-Future server/OLTP Marrow keeps the same source-native authority but stretches
-activation over a compiler-owned job:
-
-1. preview emits an exact witness;
-2. start records a durable activation job from that witness;
-3. background chunks backfill required fields, transforms, indexes, or shadow
-   layouts through checked facts;
-4. verification proves the affected durable facts;
-5. publish advances the readable catalog epoch in a small commit;
-6. close drains old runtime generations and deletes bounded adapters.
-
-The job state and final activation receipt are evidence. They are not migration
-history and cannot decide schema meaning. Source, accepted catalog, checked
-facts, runtime, engine profile, and durable data remain the only semantic model.
-
-Future compatibility windows are explicit and finite. A server may admit an old
-compiled client only when its catalog epoch is in the declared window. Old reads
-may use a compiler-generated typed adapter. Old writes are rejected unless the
-compiler proves the adapter lowers them to latest-format write plans while
-maintaining every active and building derived fact. The normal window supports at
-most one old epoch; a wider window needs an explicit architecture decision.
-
-Large key-shape, resource-shape, layout, or engine changes do not become raw
-store rewrites. They use a shadow-decant workflow when needed: build a new
-store/layout in chunks, bridge a bounded set of writes, verify identity/count and
-checksum facts, publish a small binding change, then close the window and purge
-the old physical state.
+v0.1 activation is intentionally strict and local: one exact witness, one
+transaction. The designed online path — compiler-owned activation jobs, finite
+compatibility windows, and shadow-decant for large reshapes — is specified in
+[future/data-evolution.md](future/data-evolution.md).
 
 ## Evolve Block Lifecycle
 
@@ -365,16 +320,6 @@ marrow evolve apply ./project
 
 Apply rebuilds the index entries from the checked store facts and stamps the same
 transaction. A failed rebuild publishes no partial index data.
-
-Future online index builds use the same visibility law. A building index may be
-maintained by writes before it is readable, but production reads may not use it
-until the activation job verifies the whole derived tree and publishes the
-catalog state that makes it visible.
-
-Activation receipts record the source digest, previous and next catalog facts,
-engine profile, affected stable IDs, counts, approvals, and final commit as
-evidence. Tooling, backup, restore, and support may render or verify that
-evidence, but receipts are not executable migration history.
 
 ## Maintenance Mode
 
@@ -414,18 +359,22 @@ your own code, verified before and after with `marrow data integrity`.
 ## Backup And Restore
 
 Typed backup/restore is a separate command pair (`marrow backup` and
-`marrow restore`), not a raw engine-byte copy. A backup carries a manifest binding
-the data to the source digest, accepted catalog epoch, engine profile, and
-value-codec version it was written under, plus the canonical tree-cell data
-stream as typed cell targets; the generated indexes are derived, so the stream
-omits them and restore rebuilds them from the data. Restore validates that
-binding and the data against the schema, rejects managed cells the current
-source/catalog does not declare, and activates only after the one transaction
-verifies. Backups are deterministic and portable across conforming backends at
-the same layout and codec, but byte identity requires matching accepted catalog
-facts, engine profile, value codec, and stored data. Stable IDs are random opaque
-values that freeze when accepted, so divergent catalog histories may still
-freeze distinct accepted IDs for source that looks equivalent.
+`marrow restore`), not a raw engine-byte copy. A backup carries a manifest, the
+accepted-catalog rows, and the canonical tree-cell data stream as typed cell
+targets. The manifest binds the data to the source digest, accepted catalog
+epoch and digest (which fingerprints the carried catalog rows), engine profile,
+and value-codec version it was written under, and one integrity checksum covers
+the manifest, catalog section, and data cells. Generated indexes are derived,
+so the stream omits them and restore rebuilds them from the data. Restore
+validates that binding and the data against the schema, rejects managed cells
+the current source/catalog does not declare, and replays the catalog rows and
+data cells into an empty store in one transaction, so the restored store
+re-establishes its accepted identity and runs immediately. Backups are
+deterministic and portable across conforming backends at the same layout and
+codec, but byte identity requires matching accepted catalog facts, engine
+profile, value codec, and stored data. Stable IDs are random opaque values that
+freeze when accepted, so divergent catalog histories may still freeze distinct
+accepted IDs for source that looks equivalent.
 
 ## Also Deferred
 

@@ -105,8 +105,8 @@ diagnostics are not pushed until those documents are opened or changed.
   data rather than allocated, guarding against a corrupt `Content-Length`
   header.
 - CLI usage. `marrow lsp --help` (or `-h`) prints usage and exits `0`. Any
-  other option (anything starting with `-`) is rejected on stderr with exit
-  code `2`, the standard Marrow usage-error code.
+  other argument, option or positional, is rejected on stderr with exit code
+  `2`, the standard Marrow usage-error code.
 
 ## Not Yet Implemented
 
@@ -119,18 +119,4 @@ These are not provided today:
 - formatting through the server (use [`marrow fmt`](cli.md#marrow-fmt) on the
   command line).
 
-## Future Editor Features
-
-Editor features should keep using the same fact layers as the runtime: from
-source-only parse facts to facts derived from a checked project.
-
-- Parse diagnostics. Per-buffer syntax errors and warnings with stable spans
-  and dotted codes.
-- Checked-project diagnostics. Resolve `marrow.json` and source roots, build
-  the same checked program artifact the runtime uses, and surface diagnostics
-  for open documents.
-- Navigation and hover. Drive hover and go-to-definition from checked facts,
-  then add broader services as the fact model proves out.
-
-Each step reports what it actually does. For command-line diagnostics, use
-[`marrow check`](cli.md#marrow-check).
+For command-line diagnostics, use [`marrow check`](cli.md#marrow-check).

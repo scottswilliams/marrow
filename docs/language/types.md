@@ -436,7 +436,7 @@ const title = "Small Gods" ; string
 var loanCount = 0          ; int
 ```
 
-Public function parameters, return types, resource fields, keyed layers, and
+Function parameters, return types, resource fields, keyed layers, and
 saved roots are annotated.
 
 A simple name used as a value must resolve to a binding in scope: a parameter, a
@@ -466,8 +466,27 @@ const span: duration = duration(raw)
 or an untyped saved tree. Prefer typed resources and typed
 function signatures over passing `raw` values around.
 
-`bool(...)` accepts only canonical Marrow boolean values: `false`, `true`, `0`,
-and `1`.
+Each conversion accepts a fixed set of static source types, plus `unknown`.
+Any other statically known source type is rejected at check time
+(`check.call_argument`):
+
+| Conversion | Accepted sources |
+|---|---|
+| `bool(...)` | `bool`, `int` |
+| `int(...)` | `int`, `string`, `decimal` |
+| `decimal(...)` | `decimal`, `int`, `string` |
+| `string(...)` | `string`, `int`, `decimal`, `bool`, `bytes`, `date`, `instant`, `duration` |
+| `bytes(...)` | `bytes`, `string` |
+| `ErrorCode(...)` | `string` |
+| `date(...)` | `date`, `string` |
+| `instant(...)` | `instant`, `string` |
+| `duration(...)` | `duration`, `string` |
+
+At run time the value must actually convert: `bool(...)` accepts only the
+canonical boolean values `false`, `true`, `0`, and `1`; `int(...)` accepts a
+decimal only when it is integral; `string(...)` of `bytes` requires valid
+UTF-8; temporal and numeric text must be canonical Marrow spelling. A value
+that does not convert raises a catchable type error.
 
 ## `unknown`
 

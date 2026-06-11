@@ -35,12 +35,11 @@ One invariant organizes the whole subsystem: **durable saved data is never mater
 - **`ReadPosition` distinguishes catchable vs fatal absence.** A value-position read raises `run.absent_element` (try/catch can bind it); a materialization read after the address is fixed is a plain fatal fault.
 - **One tree-walk owner.** `walk_keyed_children` threads `query_prefix` and `identity_prefix` separately (index walks seek the full arg+identity prefix but yield only the identity suffix; record walks pass one slice for both); `count_keyed_children` reuses the same walk, folding a per-leaf count with `checked_add` and never paging. The depth-0 exact index tuple is paged at `INDEX_SCAN_PAGE_LIMIT` (128, defined in `read.rs`) in both the streaming scan (`saved_iter/index.rs`) and the counter (`read.rs` `count_exact_index_tuple`).
 - **`SavedLoopPlan::run` pushes a `TraversedLayer`** for the streamed layer; `append` and writes call `guard_traversed_layer`, so mutating a layer mid-iteration faults rather than corrupting the walk.
-- **`append` reads before it writes.** It computes `next_layer_pos` from the store tail, then plans and applies a leaf write at that 1-based position; this lives in the read area because position allocation is fundamentally a tail read.
+- **`append` reads before it writes.** It computes `next_layer_pos` from the store tail, then plans and applies a leaf write at that 1-based position through `crate::write` (`plan_layer_leaf_write`) and `Env::apply_plan`; it lives in this read area because position allocation is fundamentally a tail read.
 - **Local sequences are 1-based and dense; `LocalTree`s stay sorted on insert** so their enumeration matches saved ascending order. Composite local-tree keys enumerate only the first column.
 
 ## Discrepancies with the code
 
-- `eval_append`/`eval_next_id` live in this read area though AGENTS.md scopes write paths to the write subsystem. Intentional (position allocation is a tail read); the actual mutation delegates to `crate::write` (`plan_layer_leaf_write`) and `crate::env` (`apply_plan`).
 - Child-layer prefix address construction is duplicated: `ChildLayerScan::new` (streaming) and `read.rs` `child_layer_prefix_address` (counting) carry near-identical lower/last-layer/push-`LayerAddress` logic with no shared helper.
 - Two unique-index readers exist: `eval_index_lookup` delegates to `stdlib::read_exact_unique_index_lookup_value` for value reads, while `saved_iter/unique.rs` re-implements scan+decode for iteration. They share `decode_unique_index_identity` but not the tuple scan.
 

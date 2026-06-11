@@ -2,7 +2,7 @@
 
 The CLI is wiring and rendering, not semantics. Every command resolves a project directory to a `(config, checked program, store)` triple, then prints diagnostics, program output, or a tooling report in `text`/`json`/`jsonl`. All meaning — parse, type-check, evolution verdicts, store keys, value decoding — is decided downstream in `marrow-check`, `marrow-run`, and `marrow-store` and only consumed here.
 
-Two crates: `marrow-project` owns the `marrow.json` schema, source/test discovery, the digest helper, and the accepted-catalog snapshot type. `marrow` is the binary that dispatches argv to one `cmd_*` module.
+Two crates: `marrow-project` owns the `marrow.json` schema, source/test discovery, and the digest helper. `marrow` is the binary that dispatches argv to one `cmd_*` module.
 
 ## The shared spine
 
@@ -33,7 +33,7 @@ Stream separation is load-bearing: a program's own `print`/`write` output owns s
 
 | File | Responsibility |
 |---|---|
-| `crates/marrow-project/src/lib.rs` | `marrow.json` parse+validate, path-containment checks, module-name derivation, `.mw` source/test discovery, the `CatalogMetadata` accepted-catalog snapshot type and its validation. |
+| `crates/marrow-project/src/lib.rs` | `marrow.json` parse+validate, path-containment checks, module-name derivation, `.mw` source/test discovery. |
 | `crates/marrow-project/src/digest.rs` | `sha256_digest`: `sha256:<hex>` over bytes, used for catalog and analyzed-source integrity digests. |
 
 ### CLI core (`marrow`)
@@ -75,7 +75,7 @@ Stream separation is load-bearing: a program's own `print`/`write` output owns s
 
 ## Read next
 
-- `crates/marrow-project/src/lib.rs` — `parse_config`, `check_under_root`, `expected_module_name`, `CatalogMetadata::validate`: the config schema, path-containment guarantee, and catalog identity invariants.
+- `crates/marrow-project/src/lib.rs` — `parse_config`, `check_under_root`, `expected_module_name`: the config schema and path-containment guarantee.
 - `crates/marrow/src/main.rs` — `load_checked_project`, `resolve_store_path`, `read_accepted_store_catalog`, `establish_store_baseline`: the shared spine behind every command's first lines.
 - `crates/marrow/src/cmd_run.rs` — `open_run_store`, `auto_apply_then_reopen`, `execute`: fence, drift auto-apply, and the execution/report split.
 - `crates/marrow/src/cmd_evolve/mod.rs` — `apply_cmd`: read store identity, freeze baseline, preview, apply (which publishes the catalog atomically).

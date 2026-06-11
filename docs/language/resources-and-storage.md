@@ -8,25 +8,18 @@ the project's typed tree store. Local data has no `^` and exists only while code
 runs.
 The `^` sigil is a semantic lifetime marker, not a promise that the bytes live
 on disk. The supported production saved-data backend is the native redb backend;
-the in-memory store is for tests, development, REPLs, and short runs. Future
-backends may choose different physical residency while still satisfying the
-backend contract; source remains `^`. Marrow does not use compound root sigils
-such as `^~` or `~^` for memory-resident durable stores.
+the in-memory store backs tests and programs with no durable declarations, and
+`marrow run` refuses a durable program on it. Future backends may choose
+different physical residency while still satisfying the backend contract;
+source remains `^`.
 
-Ordinary application code declares stores for saved roots. Inspection, import,
-export, data evolution, repair, and restore tools operate through checked
-tree-cell facts rather than treating backend keys as source semantics.
+Ordinary application code declares stores for saved roots. Inspection, data
+evolution, backup, and restore tools operate through checked tree-cell facts
+rather than treating backend keys as source semantics.
 
 Saved address syntax is logical. Marrow decides how roots, keyed layers, fields,
 and indexes are stored for the selected backend. Code depends on the resource
 shape, not on physical storage details.
-
-Encoded record keys are distinct from structural names. A record key such as
-`"byShelf"` does not collide with an index named `byShelf`.
-
-Typed traversal keeps those segment kinds separate: `^books` streams book
-identities, `values(^books)` streams `Book` values, and
-`^books.byShelf(...)` streams identities from that index branch.
 
 ## Resource Trees
 
@@ -174,8 +167,8 @@ resource Book
 store ^books(id: int): Book
 ```
 
-Documentation comments feed generated docs, editor hover, inspect output, and
-LSP help. They do not change the saved address, the field name, the runtime
+Documentation comments are accepted on declarations and members and preserved
+by the formatter. They do not change the saved address, the field name, the runtime
 value, or the type of the field. In the example above, code still reads and writes
 `title`:
 
@@ -188,14 +181,15 @@ catalog is engine-resident: its accepted entries live in the store alongside the
 data they identify, not in a committed file, and there is no JSON ABI, no
 `^catalog` root, no catalog resource, query, standard-library, or data-CLI
 surface, and no stable-id annotations in source. Each resource, store, field,
-keyed layer, index, and enum member gets an opaque stable id, recorded into the
-store the first time the project runs against a durable store and advanced only
-by `evolve apply`; both write through one store transaction, and `check` reads
-the accepted snapshot back read-only without ever writing it. Because identity
-lives in the catalog, renaming a field in source does not change its durable
-identity or move stored data — the rename carries identity forward through
-`evolve rename` or an alias the accepted catalog already records (see Evolution
-below).
+keyed layer, index, enum, and enum member gets an opaque stable id, recorded into
+the store the first time the project runs against a durable store. The accepted
+catalog advances on `run` for changes that mutate no stored record, and through
+`evolve apply` for record work and data-loss decisions; every advance writes
+through one store transaction, and `check` reads the accepted snapshot back
+read-only without ever writing it. Because identity lives in the catalog,
+renaming a field in source does not change its durable identity or move stored
+data — the rename carries identity forward through `evolve rename` or an alias
+the accepted catalog already records (see Evolution below).
 
 Adding a sparse field is a source change. Adding a required field requires
 explicit data-evolution work that populates existing saved resources before code
@@ -208,8 +202,8 @@ Use an index when a value is only an alternate lookup path:
 
 ```mw
 resource Book
-    title: string
-    shelf: string
+    required title: string
+    required shelf: string
 
 store ^books(id: int): Book
     index byShelf(shelf, id)
@@ -259,10 +253,12 @@ store ^books(id: int): Book
 ```
 
 A unique index can omit the identity key because each populated lookup path
-points to one store identity.
+points to one store identity. The lookup is maybe-present — no book may carry
+that isbn — so the read resolves like any maybe-present place:
 
 ```mw
-const id: Id(^books) = ^books.byIsbn(isbn)
+if exists(^books.byIsbn(isbn))
+    const id: Id(^books) = ^books.byIsbn(isbn)
 ```
 
 For a composite store identity, a non-unique index includes all identity
@@ -285,7 +281,9 @@ the transaction can continue.
 
 Identity keys, declared fields, keyed layers, and shorthand index names share
 the source namespace. A concise resource declaration cannot use the same name
-for a field and an index, or for an identity key and a field.
+for a field and an index, or for an identity key and a field. Encoded record
+keys are distinct from structural names: a record key such as `"byShelf"` does
+not collide with an index named `byShelf`.
 
 Managed resource members use declared identifiers. Quoted field spelling is an
 ordinary managed field access; it does not create undeclared fields or bypass
@@ -325,8 +323,8 @@ Materialization stays in the tree model: `for id in ^books` streams identities,
 and holding a result means building a local tree — a `sequence` or keyed layer,
 the same shape you would save. There is no flat in-memory list and no
 in-memory-versus-saved distinction; `^` is the only difference between a local
-tree and a saved one. The concern is not large loops but hidden ones — an access
-that hides traversal with no matching index is what the checker flags.
+tree and a saved one. Every traversal is written in source; see
+[Cost Model](cost-model.md) for the hidden-traversal rule.
 
 Marrow does not add a separate storage query language. If code needs a new lookup
 path, add an index to the store and rebuild the generated tree when existing
@@ -503,7 +501,7 @@ subtitle: string
 Rules:
 
 - A maybe-present field must be resolved at the read. An unresolved read of a
-  maybe-present place is a compile error that names the place and its resolutions;
+  maybe-present place is a compile error at the read site;
   it never raises a runtime fault and never returns a stored null. Resolve it with
   `place ?? fallback`, an `if exists(place)` branch, or optional chaining
   `a?.b?.c` that ends in one of those.
@@ -570,7 +568,7 @@ members the current source/catalog does not declare are rejected as data-attache
 integrity failures; restore never treats raw saved paths as the production backup
 contract.
 
-Non-empty restore modes are explicit maintenance actions.
+Restore targets an empty store and refuses a non-empty one.
 
 ## Transactions
 
@@ -699,7 +697,9 @@ with a repair diagnostic, so a transform applies only over data that is unchange
 compatibly widened in the members it reads.
 
 The intent is checked against the source and the accepted catalog; it does not
-itself rewrite stored data. Applying the change is an explicit maintenance action.
+itself rewrite stored data. A change that backfills, transforms, or destructively
+drops stored data is applied explicitly with `evolve apply`; a change that mutates
+no stored record is applied automatically when the project next runs.
 
 ## Passing Resource Places
 

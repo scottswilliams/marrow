@@ -932,6 +932,14 @@ Cargo.lock (reviewed intentional change: ~57 → ~21 external packages). Seed: c
 tempfile gone. Review: cleanup-on-panic semantics preserved in the std-only guard. Done: lock
 diff reviewed; full suite green.
 
+**W1.9 → Dump example fossil.** Carries: the docs/data-modeling.md "Inspecting the Saved Tree"
+example repair, after or coordinated with W1.6's byIsbn/byShelf terminology fix. Owns:
+docs/data-modeling.md only. Seed: docs review fixture or static check proving the example shows
+only real `data dump` field rows, never derived index entries. Review: the paragraph states that
+derived index trees are maintained by the runtime, are not emitted by `data dump`, and cannot be
+addressed by `data get`; no new inspection surface or docs/language change sneaks in. Done: the
+quickstart and data-modeling examples no longer contradict each other on saved-tree inspection.
+
 Wave gate: full workspace gate + the two absence scans (serve/lsp, at-sugar) recorded; the W1.2
 docs lint run green.
 
@@ -1048,6 +1056,36 @@ Store/backup codec families stay owned by W2.2/IV.B1 (no second owner); the `--a
 hostile-fixture family is W6.6's. Seed: a crafted-catalog fixture that panics or half-loads
 today, red. Review: allocation bounds probed adversarially. Done: families green in CI; findings
 feed the gate-35 evidence packet.
+
+**W2.10 ∥ False corruption verdicts.** Carries: the verified data-tools and serve-path fix that
+pending/unrecorded members and in-flight evolution `catalog_intent` states are normal catalog
+states, never `store.corruption`. Owns: the data-tool inspection path and any still-live
+serve/introspection renderer that maps catalog intent into user-facing findings; docs/data-tools.md
+wording only where needed to keep the state/corruption boundary explicit. Seed: a fixture with
+pending or unrecorded members that currently reports `store.corruption`. Review: true codec,
+tree-shape, and missing-cell corruption still report as corruption; normal catalog-intent states
+produce a non-corruption finding or status. Done: absence scan proves no `catalog_intent` branch
+renders `store.corruption`.
+
+**W2.11 ∥ Typed inspection rendering.** Carries: text-rendering fixes for enum members and
+identity roots in `--trace` and `--dry-run`. Owns: crates/marrow/src/trace.rs
+`render_leaf_value`, crates/marrow-run/src/value.rs `display_debug`, and only the trace/dry-run
+fixtures needed to assert enum member names and `^root_name` identity rendering. Seed: a dry-run
+or trace fixture whose enum-typed field and identity-typed reference currently render as raw or
+opaque values. Review: data dump/data get byte rendering stays by-spec, no index-path support,
+no `--raw`, no composite-key path syntax, no JSON-envelope change. Done: existing trace/dry-run
+tests are byte-identical except for the intended enum and identity text.
+
+**W2.12 ∥ Diagnostic hygiene.** Carries: four additive rendering fixes: throw-site spans for
+uncaught throws, real declaration spans for `catalog_intent`, dotted source names beside hex ids
+in evolve approval messages, and a stable `ok: checked (N warnings)` text summary when checks
+emit only warnings. Owns: marrow-run entry completion span plumbing, marrow-check catalog
+diagnostic span selection, cmd_evolve approval rendering, main check reporting, and the narrow
+fixtures for those renderers. Seed: one failing fixture per renderer: uncaught throw points at
+the entry declaration, catalog intent reports 0:0, approval text shows only `cat_<hex>`, and a
+warning-only check lacks an ok summary. Review: no new diagnostic codes, no stable-id or
+invisible-catalog semantics change, and the hex id remains the approval token. Done: text output
+is location-accurate and warning-only checks are unambiguous.
 
 Wave gate: full gate; W2.2 harness becomes a permanent CI member.
 
@@ -1177,6 +1215,63 @@ Review: no speculative simulation code; the two crossing-point migrations land (
 W3.4's StoreUid mint site); the layering invariant holds — marrow-store and the Backend trait
 never read clock or entropy, nondeterministic values are minted above the seam and passed down.
 Done: exactly one nondeterminism crossing point in marrow-run.
+
+**W3.10 → Transform sparse reads.** Carries: presence checking for evolve transform bodies after
+W2.7, treating `old.sparse_member` as maybe-present and requiring `??`, an `if const` guard, or
+`exists()` resolution. Owns: marrow-check presence walking over lowered transform bodies,
+evolution discharge transform diagnostics, and the `evolve.transform_faulted` prose row if the
+message is improved. Seed: a transform reading `old.sparse_member` without resolution checks
+today and must fail with `check.bare_maybe_present_read`. Review: no preview-time per-record
+transform execution, no `return absent` transform surface, and no new error code. Done:
+transform-body sparse reads obey the same presence law as the rest of checked Marrow.
+
+**W3.11 → Rename-first diagnostic.** Carries: the populated-member-drop diagnostic repair and
+data-evolution.md severity fix; the richer scaffold output rides W6.11. Owns:
+marrow-check evolution/discharge/absent_source.rs and docs/data-evolution.md: the diagnostic
+adds an `evolve rename` hint when one dropped populated member and one same-resource same-type
+addition share the same leaf token, while the doc says the check-time bare-rename signal is a
+warning. Seed: a fixture where a populated drop plus same-type add currently names only retire.
+Review: no automatic source edits, no cross-resource or mismatched-type shape matching, no new
+diagnostic code, and retire remains the destructive path. Done: the first diagnostic points at
+rename when rename is the plausible repair; W6.11's scaffold criteria name the sibling
+commented `evolve rename` block.
+
+**W3.12 → Restore diagnosability.** Carries: restore.source_mismatch and
+restore.catalog_mismatch messages that print both sides of the comparison, plus the roll-forward
+recipe. Owns: cmd_restore.rs, backup/restore.rs, docs/data-evolution.md, and the
+restore.source_mismatch / restore.catalog_mismatch error-code rows. Seed: a restore fixture that
+currently reports only one digest or epoch. Review: no digest algorithm change, no first-diverging
+member diff, and no manifest fields. Done: source mismatch output includes backup and project
+source digests; catalog mismatch output includes backup epoch/digest and project epoch/digest;
+the docs describe restoring the old source plus backup, then re-stating pending evolve intents.
+
+**W3.13 → Restore replace.** Carries: `marrow restore --replace --count N` for atomically
+clearing and replaying a non-empty store when the confirmed live record count matches. Owns:
+cmd_restore.rs, backup/restore.rs empty-store guard plumbing, docs/cli.md, docs/future/cli.md
+placeholder deletion or migration, and backup_cli.rs coverage. Seed: a populated-store restore
+fixture that succeeds with the exact count and a wrong-count twin that refuses before touching
+data. Review: existing atomic replay, catalog replay, index rebuild, and verify-before-commit
+logic is reused; no merge mode, repair mode, cross-engine replace, partial replace, or backup
+format change. Done: replace-mode has an audit receipt and the old future placeholder is gone.
+
+**W3.14 → Evolve apply honesty.** Carries: four discharge/apply text and behavior fixes:
+DerivedRebuild only for indexes changed by the proposal, honest "nothing to apply" output for
+zero-work applies, a preview "nothing to discharge" qualifier plus JSON boolean, and one
+auto-apply stderr line naming the epoch transition. Owns: marrow-check evolution discharge index
+classification, cmd_evolve/render.rs preview/apply rendering, cmd_run.rs auto-apply notice, and
+their fixtures. Seed: pure rename/default/no-op evolution currently stages unnecessary rebuild
+work or prints zero-count apply output. Review: no witness-format change, no per-record listing,
+no new flags, and stdout remains clean for program output. Done: apply and preview output match
+the actual witness work.
+
+**W3.15 → Dangling-ref audit.** Carries: a report-only `marrow data integrity` pass after W3.7
+that checks stored `Id(^store)` leaves for referent existence. Owns: integrity traversal over
+identity-typed leaves, `data.dangling_ref` finding and error-code row, data-tools.md integrity
+sentence, and one conformance fixture. Seed: a store containing an identity field whose target
+record node is absent reports no finding today. Review: no constraints, cascades, write-time
+rejection, automatic repair, absent-read prose, CLI flag, or evolve/discharge change. Done:
+`data.dangling_ref` exits 1 with containing identity, field catalog id, referenced root, and key
+value, while integrity remains streaming and report-only.
 
 Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
@@ -1343,6 +1438,34 @@ loop-of-bare-writes warns; the transaction-wrapped twin does not. Review: warnin
 has_errors contract intact; nag-rate checked against the corpus. Done: the write-side sibling
 of the hidden-traversal law is enforced.
 
+**W4.15 → Local-saved unification rider.** Carries: the two verified local keyed-tree bug fixes
+as a W4.4 rider: single-name loops over local keyed trees bind keys, not values, and
+`keys(reversed(localTree))` yields keys in descending order. Owns: marrow-run loop_exec.rs and
+collection.rs plus the Loops doc/test surface already owned by W4.4. Seed: fixtures where
+`for key in localTree` and `keys(reversed(localTree))` currently yield values. Review: W4.4's
+two-name local loop and entries() restriction remain scoped; no presence/exists()/`??`
+unification for local reads, no local transaction write semantics, and no reopening of Deferred
+II.E5. Done: single-name local keyed-tree iteration matches saved keyed-tree iteration for key
+binding, and reversed key extraction is key-stable.
+
+**W4.16 ∥ Calendar helpers.** Carries: pure std::clock helpers after W4.1 and riding W4.5 or a
+strict follow-on: `addDays(date,int): date`, `daysBetween(date,date): int`, `year(date): int`,
+`month(date): int`, and `day(date): int`. Owns: the stdlib descriptor table, std_pure.rs clock
+arms, standard-library.md, and leap-day/year-boundary fixtures. Seed: failing fixtures for
+date-plus-days, signed day distance, and date decomposition. Review: no dot-field syntax,
+instant/duration overloads, month/year duration literals, timezone or locale variants, or
+addMonths/addYears design. Done: date calendar arithmetic stays inside named pure stdlib
+functions and raises `run.temporal_overflow` at the 0001-9999 boundary.
+
+**W4.17 ∥ Decimal formatting boundary.** Carries: one pure helper,
+`std::math::roundDecimal(value: decimal, scale: int): decimal`, rounding half-to-even to a fixed
+fractional scale. Owns: the stdlib descriptor table, std_pure.rs math arm, standard-library.md,
+and deterministic decimal fixtures. Seed: a money-style `roundDecimal(amount, 2)` fixture that
+cannot be expressed by W4.5's integer `round(decimal)`. Review: no `formatDecimal`,
+padStart/padEnd, locale-dependent rendering, canonical trailing-zero change, or display API.
+Done: decimal-to-decimal rounding exists without moving presentation formatting into the
+kernel.
+
 Wave gate: full gate; docs corpus + executable fixtures green over the post-subtraction language.
 
 ---
@@ -1421,6 +1544,33 @@ read-only, recomputes internally, and enters the recorded contract; no second se
 classifier introduced (the eval path reuses the production checker). Done: the analysis-API
 contract recorded at the wave gate includes all of the above; marrow-lsp builds green against
 head.
+
+**W5.7 → Checker field resolution.** Carries: static `check.unknown_field` for dotted field
+access on resolvable base types. Owns: infer.rs field/optional-field resolution, diagnostics.rs,
+docs/error-codes.md, and fixtures for local resource and saved-path unknown fields. Seed:
+`b.typoField` where `b: Book` and `^things(id).nosuchfield` currently fail later or noisily.
+Review: no did-you-mean search, no field diagnostic on Unknown bases, no runtime
+`write.unknown_field` removal, and no grammar/runtime/evolution change. Done: schema-known field
+typos are check-time diagnostics and `??`/unknown-flow secondary noise is suppressed.
+
+**W5.8 → Required-field definite assignment.** Carries: the straight-line required-field
+absence check for whole-root writes whose RHS is a var-typed local resource with never-assigned
+required fields. Owns: a narrow marrow-check pass or rule, diagnostics.rs,
+docs/error-codes.md, docs/language/types.md, and the required fixture. Seed: `var b: Book`
+sets only a sparse field, then writes `^books(id) = b` where Book has a required field. Review:
+constructor RHS and prior whole-record reads do not false-positive; branch/loop/early-return and
+cross-function paths remain inconclusive runtime checks; W4.12 keyed-layer entries stay out of
+scope. Done: the straight-line never-assigned case is caught statically and
+`write.required_absent` remains the runtime catch-all.
+
+**W5.9 → Unknown-flow diagnostic cascade suppression.** Carries: the retained half of
+partial-check-data-tools: suppress `check.unknown_type` / `check.untyped_value` cascades from
+already-diagnosed type-resolution failures. Owns: checker diagnostic emission over Unknown
+propagation in crates/marrow-check/src/checks and focused fixtures. Seed: an annotation-site
+`check.unknown_type` currently causes downstream Unknown-flow diagnostics naming no new problem.
+Review: no partial-check mode, no data-command execution on failed checks, no relaxation of the
+data-tools.md clean-check policy, and no new error code. Done: Unknown propagation behaves like
+the Invalid marker precedent: the primary diagnostic remains, secondary cascades disappear.
 
 Wave gate: full gate; analysis API contract recorded for marrow-lsp; the tooling/05 ABI-identity
 revision text drafted at this recording per gate 48's fixed definition — a pure byte-stable
@@ -1620,6 +1770,42 @@ the marrow-lsp code action are deferred. Seed: failing fixture — the no-matchi
 carries the exact declaration for a two-field lookup. Review: fires only at explicit rejection
 (law 15 intact); the synthesized declaration always compiles when pasted. Done: the language's
 defining error carries its machine-applicable fix.
+
+**W6.15 → Stdout flush on fault rider.** Carries: W6.6's Host::with_output_sink path must emit
+print output produced before a runtime fault; if W6.6 is not imminent, a minimal stopgap prints
+and flushes the accumulated buffer in the text Err arm before fault reporting. Owns: cmd_run.rs
+fault rendering and the W6.6 output-sink seam. Seed: a text-mode run that prints, then faults,
+currently loses stdout. Review: stdout/stderr separation stays intact, log remains stderr, the
+success-path buffering contract does not change, and JSON envelope handling waits for W6.6.
+Done: text-mode users see prior print output before the fault report without a new output mode.
+
+**W6.16 → Records vocabulary.** Carries: rename `records` to `cells` in `marrow data stats`
+text/JSON and `data dump` summary JSON after W6.5 retires `check --data`. Owns:
+data stats/dump renderers, data_cli_inventory.rs and data dump/paged render-contract tests,
+docs/data-tools.md, docs/cli.md, and docs/quickstart.md. Seed: pinned output fixtures still
+expect `records` for data-cell counts. Review: no per-root breakdown, no fence state or
+StoreStamp in stats output, and no rename of `evolve preview`'s entity-level `records_scanned`.
+Done: docs define one cell as one stored path/value pair and distinguish it from one entity as
+one identity tuple.
+
+**W6.17 → Value echo diagnostics.** Carries: bounded offending-value prose at three verified
+runtime sites: conversion errors in stdlib/conversion.rs, unique-index conflicts in
+index_maintenance.rs, and parseDuration/parseDate in std_pure.rs. Owns: those message
+construction sites and focused CLI/runtime fixtures. Seed: each site currently reports the
+failure without the rejected value or key. Review: prose-only message changes; no RuntimeError
+struct, envelope, data-payload, sensitive-taint, saved-read absent, or new egress-surface change.
+Done: messages include bounded scalar/key previews while structured payload work remains W6.6.
+
+**W6.18 → Test observability.** Carries: two independent test-surface improvements: (A)
+`std::assert::equal(actual: T, expected: T)` for scalar types with "expected X, got Y"
+rendering; (B) a nullable `output` field in per-test JSON/JSONL records, coordinated with or
+folded into W6.2 and reusing the W6.6 output-sink seam. Owns: assert stdlib descriptors and
+runtime assertion code for A, and cmd_test JSON/JSONL record rendering for B. Seed: a scalar
+equality failure that currently needs manual boolean assertions, and a failing JSON test record
+that lacks captured print output. Review: no equality over resources/sequences/trees, no syntax
+change, no isTrue operand recovery, no text-mode output surfacing, no passing-test output
+capture, and no trace interaction change. Done: scalar assertion failures render both values and
+machine-readable failed test records can carry output when JSON/JSONL is requested.
 
 Wave gate: full gate; CLI surface frozen for the release contract.
 

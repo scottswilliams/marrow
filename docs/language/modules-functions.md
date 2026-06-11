@@ -52,7 +52,7 @@ the current namespace. After `use shelf::books`, code may call `books::add`.
 If two imports would create the same short module name, use a fully qualified
 name instead.
 An imported short module name also cannot collide with a module-level
-function, constant, or resource in the current module.
+function, constant, enum, or resource in the current module.
 
 The first import surface has no wildcard imports, renamed imports, or path
 imports.
@@ -136,7 +136,7 @@ Tools call public functions by entry name. A qualified entry names one module
 exactly:
 
 ```text
-marrow run --entry shelf::books::main
+marrow run --entry shelf::books::main .
 ```
 
 A bare entry name is accepted only when it names one public function in the
@@ -216,9 +216,9 @@ block is an error. Shadowing from inner blocks is allowed.
 
 ## Name Resolution
 
-Module-level functions, constants, resources, and imported short module names
-share one namespace inside a module. A module cannot declare a function and a
-resource with the same name.
+Module-level functions, constants, enums, resources, and imported short module
+names share one namespace inside a module. A module cannot declare a function
+and a resource with the same name.
 
 Names resolve in this order:
 
@@ -227,9 +227,11 @@ Names resolve in this order:
 3. declarations in the current module,
 4. builtins.
 
-Module-level functions, constants, resources, and imported short module names
-cannot redefine builtin names such as `exists`, `keys`, `Error`, `write`, or
-`int`. Local variables may shadow builtin names.
+Module-level declarations — functions, constants, enums, and resources — cannot
+redefine builtin names such as `exists`, `keys`, `Error`, `write`, or `int`. An
+imported short module name binds the import even when it matches a builtin name,
+shadowing the builtin within the file. Local variables may also shadow builtin
+names.
 
 ## Host Boundaries
 

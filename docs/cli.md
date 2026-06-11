@@ -10,8 +10,8 @@ marrow fmt [--check | --write] <file.mw | projectdir>
 marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] \
   [--format text|json|jsonl] <projectdir>
 marrow test [--trace] [--format text|json|jsonl] <projectdir>
-marrow data <typed inspection subcommand> <projectdir>
-marrow data dump [--format text|json|jsonl] <projectdir>
+marrow data <roots|stats|dump|integrity> [--format text|json|jsonl] <projectdir>
+marrow data get [--format text|json|jsonl] <projectdir> <path>
 marrow backup [--format text|json|jsonl] <projectdir> <output-file>
 marrow restore [--format text|json|jsonl] <projectdir> <backup-file>
 marrow lsp
@@ -50,9 +50,7 @@ Commands that report diagnostics or saved data take `--format`:
 Plain `run` output is the program's own `print`/`write` stream, which carries no
 envelope. `run --trace`, `run --dry-run`, and `test --trace` accept `--format`
 for their tooling reports; those reports are written to stderr, leaving stdout
-for the program's own `print`/`write` output and the test pass/fail report, and
-when those reports compose more than one top-level JSON object may appear on
-stderr. `--format` is also accepted by `check` and typed `data` subcommands.
+for the program's own `print`/`write` output and the test pass/fail report.
 
 ---
 
@@ -65,8 +63,9 @@ marrow check [--data] [--format text|json|jsonl] <file.mw | projectdir>
 Parse a single `.mw` file, or check a whole project directory, and report
 diagnostics.
 
-- Given a `.mw` file, it parses and checks that file in isolation. Module-wide
-  rules that need a project are not applied.
+- Given a `.mw` file, it parses the file, then runs the full project checker
+  over a synthesized one-file project, so type and module-path rules apply to a
+  lone file. Only rules that need other project files are out of reach.
 - Given a project directory, it loads `marrow.json` and runs the project checker
   over every source root plus configured test files: parse, type, effect, and
   durable-place checks. When a durable store exists, it reads the accepted catalog
@@ -169,16 +168,27 @@ marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] \
 ```
 
 Check a project, then run an entry function over the store its `marrow.json`
-selects. The store is the configured backend — a `native` redb store on disk, or
-an in-memory store when none is configured (see
-[project-config.md](project-config.md)). A project must check cleanly before it
-runs.
+selects (see [project-config.md](project-config.md)). A project must check
+cleanly before it runs. The in-memory default admits only a program with no
+durable declarations; a program that declares a durable surface (a `resource`,
+a saved `store`, or an `enum`) needs a configured `native` store and otherwise
+fails with `run.durable_store_required`.
 
 A clean run records the project's baseline durable identity if it has none yet:
 the first run of a project with a durable surface freezes the accepted catalog
 into the store transactionally as it commits. A project already past its baseline
 proposes no change and the store's catalog rows are left untouched. There is no
 separate acceptance step. See [data-evolution.md](data-evolution.md).
+
+Opening a native store is fenced against its catalog activation stamp. A store
+that holds saved records but no activation stamp is refused
+(`run.store_unstamped`); run `marrow check --data` and `marrow evolve apply` to
+stamp it first. When the source's shape drifted from the stamped schema, a
+change that mutates no stored records (such as adding a sparse field) is
+auto-applied through the production apply path and the run proceeds against the
+advanced catalog; a change that would backfill, transform, or destructively
+drop populated data is refused with `run.schema_drift`, naming the
+`marrow evolve apply` step that discharges it.
 
 The entry is `--entry` if given, otherwise the project's `run.defaultEntry`.
 Qualified entries (`module::function`) resolve exactly. A bare entry name is
@@ -213,8 +223,10 @@ records read back afterward — not native-file byte identity, since aborting th
 store transaction can still rewrite backend metadata. Only saved data is rewound;
 host side effects such as `std::io` writes or `std::log` lines are not.
 
-`--dry-run` takes `--format`. The report is tooling output on stderr under every
-format, off the program's stdout stream. Under text, planned writes are
+`--dry-run` takes `--format`. A plain run's stdout is the program's own output
+and takes no format, so `--format` without `--trace` or `--dry-run` is a usage
+error (exit `2`). The report is tooling output on stderr under every format,
+off the program's stdout stream. Under text, planned writes are
 `would write <path>` / `would delete <path>` lines and a
 `dry run: N write(s), M delete(s) (rolled back)` summary. Under `json`/`jsonl`,
 the report is a `{"committed": false, "planned": […]}` envelope whose planned
@@ -336,7 +348,8 @@ $ marrow data stats --format json ./proj
 
 ### `data dump`
 
-Print every stored `(path, value)` in encoded order for inspection. Values
+Print every stored `(path, value)` for inspection: records in identity-key
+order, each record's fields in declaration order. Values
 render as canonical payload bytes — UTF-8 text when valid, else `0x<hex>`.
 JSON/JSONL carry the checked path plus base64 of the value bytes. This is not a
 production backup format.
@@ -400,13 +413,16 @@ marrow backup [--format text|json|jsonl] <projectdir> <output-file>
 ```
 
 Write a typed portable backup of a project's saved data. The backup is a Marrow
-artifact, not a raw engine-file copy: a small header, a typed manifest, and the
-project's canonical ordered data-cell stream. The manifest binds the data to the
-program that wrote it — its source digest, accepted catalog epoch, engine
-profile, value-codec version, and a checksum over the cell stream — so a later
-restore can refuse data it cannot faithfully reproduce. The backup carries the
-store's data cells only; the generated indexes are derived, so a restore rebuilds
-them rather than replaying them.
+artifact, not a raw engine-file copy: a small header, a typed manifest, the
+accepted-catalog section, and the project's canonical ordered data-cell stream.
+The catalog section carries the engine-resident accepted catalog rows, so a
+restored store is self-contained. The manifest binds the data to the program
+that wrote it — its source digest, accepted catalog epoch and digest, engine
+profile, value-codec version, and one integrity checksum over the manifest,
+catalog section, and data cells — so a later restore can refuse data it cannot
+faithfully reproduce. The data stream carries the store's data cells only; the
+generated indexes are derived, so a restore rebuilds them rather than replaying
+them.
 When the store has activation receipts, the manifest carries the receipt facts as
 evidence only. It records proposal/catalog digests, affected IDs, counts, and
 bounded effect digests, including retire receipt digests, never proposal catalog
@@ -437,16 +453,19 @@ error.
 marrow restore [--format text|json|jsonl] <projectdir> <backup-file>
 ```
 
-Replay a backup into the project's native store. Restore compiles the project,
-validates the backup against it (`restore.source_mismatch`,
-`restore.catalog_mismatch`, `restore.engine_recompile_required`), and refuses a
-non-empty target (`restore.not_empty`) — v0.1 restores into an empty store only.
+Replay a backup into the project's native store. Restore checks the project
+against the accepted catalog the backup carries, validates the backup against
+it (`restore.source_mismatch`, `restore.catalog_mismatch`,
+`restore.engine_recompile_required`), and refuses a non-empty target
+(`restore.not_empty`) — v0.1 restores into an empty store only. The replay
+writes the backup's catalog rows alongside its data cells, so the restored
+store carries its accepted identity and runs immediately.
 The whole replay runs in one transaction: a checksum mismatch or trailing bytes
 (`restore.corrupt_chunk`), restored data that does not decode against the schema,
 or an orphaned managed cell in the restored stream (`restore.data_invalid`) rolls
 the target back to empty, so it either gains the whole backup or is left
 unchanged. Because the replay is a single transaction, its memory use is
-proportional to the backup size - a known v0.1 bound. Restore rebuilds the
+proportional to the backup size — a known v0.1 bound. Restore rebuilds the
 generated indexes from the restored data inside the same transaction. A different
 engine, layout, or codec reports `restore.engine_recompile_required`; applying
 that recompile is future work.
@@ -506,5 +525,5 @@ protocol exposes `debug_data_roots`, `debug_data_get`, `debug_data_children`,
 and `debug_data_walk` for local inspection. See
 [serve-protocol.md](serve-protocol.md).
 
-Exits `2` on a usage error, `1` if the project config cannot be loaded, the store
-cannot be opened, or the address cannot be bound.
+Exits `2` on a usage error, `1` if the project cannot be loaded or does not
+check, the store cannot be opened, or the address cannot be bound.

@@ -31,8 +31,9 @@ Write `marrow.json`:
   pass `--entry`; qualify it as `module::function` unless the bare name is
   unique.
 - `store` selects where saved data lives. `native` is the persistent on-disk
-  store and requires a `dataDir`. Omit `store` entirely to run against a fresh
-  in-memory store each time.
+  store and requires a `dataDir`. This project declares saved data, so it needs
+  one: without a native store, `marrow run` refuses with
+  `run.durable_store_required`. (Tests always run in-memory.)
 - `tests` lists the glob patterns for test files.
 
 A module's name must match its path under the source root. Because the file
@@ -136,8 +137,9 @@ marrow run .
 4: Sourcery by Terry Pratchett
 ```
 
-(If `marrow.json` had no `store`, each run would start from an empty in-memory
-store and always print just the two books.)
+(If `marrow.json` had no `store`, the run would refuse with
+`run.durable_store_required`: a program that declares saved data requires a
+native store.)
 
 ## 4. Inspect The Saved Data
 
@@ -216,7 +218,7 @@ marrow data stats --format json .
 ```
 
 ```text
-{"project":"/path/to/shelf","records":12,"roots":1}
+{"project":".","records":12,"roots":1}
 ```
 
 `marrow data` is read-only. The `diff` and `load` subcommands are deferred —

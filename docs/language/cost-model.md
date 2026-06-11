@@ -20,9 +20,9 @@ they never change which operations a program performs.
 Each construct maps to a fixed shape of work:
 
 - `^books(id).title` — one point read of one leaf cell.
-- `var b: Book = ^books(id)` — one bounded scan of the record body (its scalar
-  leaves and unkeyed groups), not one read per field. Keyed child layers are not
-  pulled in; read them through their own paths.
+- `var b: Book = ^books(id)` — one point read per stored scalar leaf in the
+  record body (its fields and unkeyed groups), bounded by the schema. Keyed
+  child layers are not pulled in; read them through their own paths.
 - `exists(^books(id))` — one point read of the node cell.
 - `for id in ^books.byShelf(shelf)` — one range scan over that index branch,
   streaming identities lazily. A field read in the loop body, such as
@@ -31,8 +31,7 @@ Each construct maps to a fixed shape of work:
   maintained counter.
 - `^books(id).shelf = "fiction"` — one field write plus, for each index the
   field feeds, a read of the old indexed value, removal of the old entry, and
-  addition of the new entry. (The old-value read can be skipped when the value is
-  already held in the open transaction; see below.)
+  addition of the new entry.
 - `^books(id) = book` — exact replacement: it writes the record body and clears
   every omitted field, unkeyed group, and keyed child layer.
 - A bare write commits on its own; writes grouped in a `transaction` commit once.
@@ -50,12 +49,9 @@ slow path in production. Full traversal is fine when you write it
 
 ## Minimal Storage Work
 
-For the program as written, Marrow performs the minimal storage operations its
-semantics require. Checked lowering may remove a provably-redundant operation: it
-does not clear a subtree under an identity it has proven absent, and it does not
-re-read an indexed value it already holds in the open transaction. It never adds
-an operation or lets runtime statistics change which storage work the source
-requires.
+For the program as written, Marrow performs the storage operations its
+semantics require. Checked lowering never adds an operation or lets runtime
+statistics change which storage work the source requires.
 
 Because the engine stores opaque ordered bytes and knows no Marrow semantics,
 there is no access-strategy layer beneath the language. No lower level can

@@ -11,8 +11,8 @@ markers.
 - Keywords are lowercase ASCII. Built-in names such as `Error` and
   `ErrorCode` are reserved separately.
 - Semicolon starts a comment to end of line.
-- `;;` starts a documentation comment for the next declaration or resource
-  member.
+- `;;` starts a documentation comment for the next declaration, resource or
+  store member, enum member, or parameter.
 - Tabs are an error in Marrow source. Use spaces.
 
 ## Blocks
@@ -77,9 +77,8 @@ resource Patient
 store ^patients(id: string): Patient
 ```
 
-Documentation comments apply to the next resource member. Source stable-id
-annotations are not part of v0.1; durable field identity belongs in the
-catalog.
+Source stable-id annotations are not part of v0.1; durable field identity
+belongs in the catalog.
 
 Fields are sparse by default. Add `required` when a resource is invalid
 without a populated field:
@@ -365,7 +364,7 @@ Type names have one source spelling: `int`, `decimal`, `bool`, `string`,
 Marrow reserves:
 
 ```text
-module use pub fn resource at index unique
+module use pub fn resource store at index unique
 required
 enum evolve match is
 const var if else while for in break continue return delete merge
@@ -383,13 +382,6 @@ doing so is a parse error.
 `merge` and `lock` are reserved even though they are not v0.1 statements. They
 have no accepted statement form or formatter round trip in v0.1; the parser
 reports them as reserved when they are used as statement keywords.
-
-An `assert` precondition statement is a planned write-path surface that v0.1 does
-not implement: there is no keyword for it, and it is not part of the accepted
-grammar. It is noted here so its absence is intentional rather than an oversight;
-the syntax in this reference is what the current implementation accepts. A
-multi-field write needs no dedicated form — it is several field writes, grouped in
-a `transaction` when they must commit together.
 
 The `evolve` step words `rename`, `default`, `retire`, and `transform` are
 contextual: they lead a step only inside an `evolve` block, so they remain valid

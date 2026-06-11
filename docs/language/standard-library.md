@@ -25,10 +25,11 @@ host libraries or separate extensions after the language/database kernel is
 stable.
 
 The Marrow language does not require every host module. Pure helpers are
-available in normal CLI runs. Host modules such as
-`std::clock`, `std::io`, `std::env`, and `std::log` depend on the command or
-embedding host. If a host does not provide a requested module, Marrow reports a
-typed capability error.
+available in normal CLI runs. Host functions in `std::clock`, `std::io`,
+`std::env`, and `std::log` depend on the command or embedding host; a call made
+without the matching capability is a typed capability error. The capability is
+per function, not per module: within `std::clock` only `now()` and `today()`
+need the host clock, while the parse, format, and `add` helpers are pure.
 
 ## Import Style
 
@@ -71,6 +72,9 @@ A `duration` argument can be written as a
 `std::clock::add(t, 1.hour)` shifts an instant by one hour without
 `parseDuration`.
 
+The host clock is captured once at the start of a run, so every `now()` call in
+one run returns the same instant and `today()` the same date.
+
 Saved `instant` values use a canonical UTC representation. The library surface
 uses canonical text. `today()` returns the current UTC calendar date, not a
 host-local date. Local time zone presentation and localized formatting belong
@@ -91,9 +95,8 @@ std::io::writeBytes(path: string, data: bytes)
 ```
 
 IO errors raise typed `Error` values. `writeText` and `writeBytes` replace the
-whole file and are not atomic. Host policy decides which paths are available to a
-command or embedding. Marrow does not make filesystem sandboxing part of the
-language.
+whole file and are not atomic. The host grants or withholds filesystem access
+as a whole; Marrow does not sandbox paths.
 
 ## `std::env`
 

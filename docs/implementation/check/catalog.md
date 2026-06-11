@@ -8,6 +8,7 @@ Identity is path-independent. A stable id is a random 128-bit `cat_<32hex>` mint
 
 ## Parts
 
+- **Snapshot model** (`crates/marrow-catalog`): the accepted-snapshot types `bind_catalog` consumes and proposes — `CatalogMetadata`/`CatalogEntry`, epoch/digest validation, structural-signature decode.
 - **Binding** (`catalog/mod.rs`): `bind_catalog` orchestrates carry-forward, rename relocation, retire reservation, and fresh-id mint, then records store-key/member signatures, builds the proposal, and binds accepted-only ids onto facts.
 - **Source digest** (`catalog/source_digest.rs`): two sha256 digests over re-read, re-parsed, canonically-formatted durable declarations. The shape digest excludes the `evolve` block (a consumed block is deletable); the evolution digest includes it.
 - **Id allocator** (`catalog/stable_id.rs`): opaque random id minting, re-rolling against every recorded id of any lifecycle so retired ids are never reissued.
@@ -17,6 +18,7 @@ Identity is path-independent. A stable id is a random 128-bit `cat_<32hex>` mint
 
 | File | Responsibility |
 | --- | --- |
+| `crates/marrow-catalog/src/lib.rs` | The accepted-snapshot model: `CatalogMetadata`/`CatalogEntry`/`CatalogEntryKind`/`CatalogLifecycle`, catalog digest and validation, structural-signature decode. |
 | `crates/marrow-check/src/catalog/mod.rs` | Reconcile source vs accepted catalog; carry-forward, rename, retire, mint; record signatures; build and bind the proposal. |
 | `crates/marrow-check/src/catalog/source_digest.rs` | Compute shape and shape-plus-evolve sha256 digests by rendering durable declarations through the canonical formatter. |
 | `crates/marrow-check/src/catalog/stable_id.rs` | `StableIdAllocator`: random `cat_<32hex>` ids from OS entropy, collision-retried against recorded ids. |

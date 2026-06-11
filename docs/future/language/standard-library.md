@@ -5,20 +5,17 @@ Future counterpart of
 
 ## `std::clock`
 
-Temporal parse helpers are boundary parsers. They accept canonical Marrow text
-and common ISO 8601/RFC 3339 forms used by hosts and users:
+The temporal parse helpers `std::clock::parseInstant`, `parseDate`, and
+`parseDuration` exist today and accept canonical Marrow text only; see
+[the current page](../../language/standard-library.md). The designed extension
+makes them permissive boundary parsers that also accept the common ISO 8601 and
+RFC 3339 forms used by hosts and users.
 
-```mw
-std::clock::parseInstant(text: string): instant
-std::clock::parseDate(text: string): date
-std::clock::parseDuration(text: string): duration
-```
-
-`parseInstant` accepts RFC 3339 date-time text with `Z` or a numeric offset and
-normalizes the result to a UTC `instant`. `parseDate` accepts ISO 8601 calendar
-date text. `parseDuration` accepts ISO 8601 duration text that describes a fixed
-elapsed span; calendar months and years are rejected because their length
-depends on an anchor date.
+Under the extension, `parseInstant` accepts RFC 3339 date-time text with `Z` or
+a numeric offset and normalizes the result to a UTC `instant`. `parseDate`
+accepts ISO 8601 calendar date text. `parseDuration` accepts ISO 8601 duration
+text that describes a fixed elapsed span; calendar months and years are
+rejected because their length depends on an anchor date.
 
 Storage and printing remain canonical. The `std::clock::format*` helpers return
 Marrow's canonical saved text, and saved `date`, `instant`, and `duration`

@@ -25,19 +25,19 @@ whole typed store snapshot and prints every record. It is not a production
 preview API.
 
 Typed backup/restore is a tooling and backup-protocol contract, not a raw
-archive replay: it carries a typed manifest binding the data to the source
-digest, accepted catalog epoch, engine profile, and value-codec version it was
-written under, and a restore validates that binding plus full data integrity,
-including orphaned managed cells, before it activates. It is a separate command
-pair, not a `data` subcommand — see
+archive replay: the archive carries a typed manifest, the accepted-catalog
+rows, and the canonical data-cell stream, and a restore validates the manifest
+binding plus full data integrity — including orphaned managed cells — before it
+activates. It is a separate command pair, not a `data` subcommand — see
 [`marrow backup` and `marrow restore`](cli.md#marrow-backup).
 `data` itself only reads.
 
 Inspection never creates or modifies the store. It opens the configured native
 store read-only, and if no store file exists yet it reports an empty result
-rather than creating one. Running `roots`, `stats`, `dump`, `integrity`, or
-`get` against an unseeded project prints `(no saved data)` (or `(absent)` for
-`get`) and leaves the data directory untouched — no `marrow.redb` is written.
+rather than creating one: `roots` and `dump` print `(no saved data)`, `stats`
+reports zero roots and records, `integrity` reports `ok` over zero records, and
+`get` prints `(absent)`. The data directory is left untouched — no
+`marrow.redb` is written.
 
 A command that traverses the store more than once — `dump`, `stats`, and
 `integrity` each make several passes — pins one store snapshot for the whole
@@ -48,15 +48,17 @@ run under `marrow run --maintenance`.
 
 ## What needs source, what does not
 
-All `data` subcommands load and check the project first. The checked facts
+All `data` subcommands load and check the project first; the check itself opens
+the store read-only to bind the accepted-catalog snapshot. The checked facts
 provide root/member catalog IDs, key arity, and leaf types before the command
 reads the tree-cell store. If the source does not check, the command fails with
-the check diagnostic and exits non-zero before touching the store.
+the check diagnostic and exits non-zero before reading any data cells.
 
-A `data` command against a project with a missing or invalid `marrow.json`
-reports the `config.*` family and exits `1`. (Exit `2` is reserved for a
-command-line usage error — a missing directory, a bad flag, or an unparseable
-`<path>` for `get` — detected before the command body runs.)
+A `data` command against a project with a missing `marrow.json` reports
+`io.read`; an unparseable or invalid one reports `config.invalid`. Both exit
+`1`. (Exit `2` is reserved for a command-line usage error — a missing
+directory, a bad flag, or an unparseable `<path>` for `get` — detected before
+the command body runs.)
 
 ## Output formats
 
@@ -78,11 +80,12 @@ $ marrow data roots ./project
 the same single object):
 
 ```json
-{"project":"/abs/project","roots":["counter"]}
+{"project":"./project","roots":["counter"]}
 ```
 
-`roots` is the bare root name without the `^` in JSON. An empty store prints
-`(no saved data)` in text and `"roots":[]` in JSON.
+`project` echoes the directory argument as given; `roots` is the bare root name
+without the `^`. An empty store prints `(no saved data)` in text and
+`"roots":[]` in JSON.
 
 ## `marrow data stats`
 
@@ -95,17 +98,19 @@ records: 1
 ```
 
 ```json
-{"project":"/abs/project","records":1,"roots":1}
+{"project":"./project","records":1,"roots":1}
 ```
 
 The record count is a full store scan; it is exact, not an estimate.
 
 ## `marrow data dump`
 
-Prints every stored `(path, value)` in encoded order from one read-only snapshot.
-This is an explicit operator/admin dump, so it is allowed to walk the whole store;
-production preview or protocol reads must use bounded pages. Values render as
-canonical payload bytes; text uses UTF-8 when possible and `0x<hex>` otherwise.
+Prints every declared data cell `(path, value)` from one read-only snapshot —
+identities in key order, members in declaration order. Derived index cells and
+engine metadata are excluded. This is an explicit operator/admin dump, so it is
+allowed to walk the whole store; production preview or protocol reads must use
+bounded pages. Values render as canonical payload bytes; text uses UTF-8 when
+possible and `0x<hex>` otherwise.
 
 ```
 $ marrow data dump ./project
@@ -120,7 +125,7 @@ ASCII), else as `0x<hex>`.
 path plus base64 of the value bytes:
 
 ```json
-{"project":"/abs/project","records":[{"path":"^counter(1).value","value_b64":"NDI="}]}
+{"project":"./project","records":[{"path":"^counter(1).value","value_b64":"NDI="}]}
 ```
 
 `--format jsonl` streams one record object per line, then a summary line:
@@ -231,16 +236,17 @@ prints a single `ok:` line to stdout. `--format json` wraps the findings in an
 envelope; `--format jsonl` streams one envelope per finding plus a summary:
 
 ```json
-{"problems":[{"code":"data.decode","kind":"tooling","message":"stored value is not a canonical int form","source_span":{"path":"^counter(1).value"}}],"project":"/abs/project","records":1}
+{"project":"./project","records":1,"problems":[{"code":"data.decode","help":null,"kind":"tooling","message":"stored value is not a canonical int form","source_span":{"path":"^counter(1).value"}}]}
 ```
 
 ```jsonl
-{"code":"data.decode","kind":"tooling","message":"stored value is not a canonical int form","source_span":{"path":"^counter(1).value"}}
+{"code":"data.decode","help":null,"kind":"tooling","message":"stored value is not a canonical int form","source_span":{"path":"^counter(1).value"}}
 {"kind":"summary","problems":1,"records":1}
 ```
 
 These findings have no source line, so the location is a `path` field rather
-than a span. The `data.*` codes carry kind `tooling`. See
+than a span. Every finding carries a `help` key, `null` when there is no hint.
+The `data.*` codes carry kind `tooling`. See
 [error-codes.md](error-codes.md) for the full code list.
 
 When integrity reports orphaned managed cells, correct the schema, run

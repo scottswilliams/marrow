@@ -6,9 +6,8 @@ architecture.
 ## Start Here
 
 - [Quickstart](quickstart.md) — create a project, write a resource, run it,
-  inspect the saved data, and run a test in five minutes.
-- [Install](install.md) — source builds, the release package shape, and data
-  directories.
+  inspect the saved data, and run a test.
+- [Install](install.md) — source builds and data directories.
 
 ## Guides
 
@@ -36,12 +35,12 @@ point at the [language reference](language/) for the exact rules.
   its validation rules.
 - [Data Inspection And Repair Tools](data-tools.md) — the read-only `marrow
   data` subcommands in depth.
-- [Tooling Feature Surfaces](tooling-surfaces.md) — v0.1 verdicts for debug,
-  admin, production, and deferred tool surfaces.
+- [Tooling Surfaces](tooling-surfaces.md) — support levels and boundaries for
+  debug, admin, and production tool surfaces.
 - [Serve Protocol](serve-protocol.md) — the newline-delimited JSON protocol the
   `marrow serve` debug/admin loopback server speaks.
-- [Language Server](lsp.md) — the `marrow lsp` editor language server and its
-  future editor feature boundaries.
+- [Language Server](lsp.md) — the `marrow lsp` editor language server:
+  protocol, document sync, and diagnostics.
 - [Errors](error-codes.md) — CLI exit codes, the machine-readable error
   envelope, and the stable dotted error codes.
 
@@ -53,6 +52,8 @@ point at the [language reference](language/) for the exact rules.
 - [Backend Contract](backend-contract.md) — the ordered path/value operations,
   savepoints, presence states, bounded scans, the conformance suite, and
   native-store responsibilities a store backend must satisfy.
+- [Testing Architecture](testing-architecture.md) — the test tiers, allowed
+  oracles, and fixture rules the test suite follows.
 - [Future](future/) — selected future surfaces whose designed contracts are not
   implemented yet.
 

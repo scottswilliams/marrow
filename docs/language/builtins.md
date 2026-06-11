@@ -49,10 +49,11 @@ below are the expression forms of the same walk.
 | `prev(element)` | The nearest stored neighbor identity, the other way |
 
 `keys(...)` is the lightest traversal shape when code only needs identities,
-positions, map keys, or other addresses. Direct durable `for` loops already use
-that address-oriented shape, so `keys(...)` is mostly useful when an address list
-is passed around as a value. `values(...)` and `entries(...)` explicitly read
-stored values. Sequences and keyed maps are conveniences over saved tree layers,
+positions, map keys, or other addresses. Over a durable collection these
+builtins are loop-iterable forms only: materializing durable saved data as a
+value is rejected, so iterate the result directly. Over a local collection,
+`keys(...)` yields an address sequence that can be passed around as a value.
+`values(...)` and `entries(...)` explicitly read stored values. Sequences and keyed maps are conveniences over saved tree layers,
 not separate database features. Key-only collections such as non-unique index
 branches do not have separate values; their generated marker values are an
 inspection detail. Deep saved-data walks belong to inspection, export, repair,
@@ -164,11 +165,6 @@ empty sequence writes key `1`. Append does not fill holes, and deleting an
 entry does not renumber subsequent entries. Treat sequence keys as storage
 positions, not as a promise that the sequence is dense.
 
-For local trees and single-writer saved profiles, append is ordinary tree
-write work. In a shared-writer capability profile, append requires backend
-support that can reserve a unique child key. If Marrow cannot choose a key
-safely, it reports a typed capability or runtime error instead of guessing.
-
 ## Write And Print
 
 `write(...)` is a call-shaped statement that writes text to the default output
@@ -215,7 +211,9 @@ const span: duration = duration(raw)
 ```
 
 `raw` means a value whose static type is not known. Avoid keeping values raw
-after the boundary where they enter the program.
+after the boundary where they enter the program. Each conversion accepts a
+fixed set of static source types; [Types — Conversions](types.md#conversions)
+lists the matrix.
 
 Date, instant, and duration conversions validate canonical Marrow values. Use
 `std::clock` helpers for parsing or formatting text at user and host
@@ -245,10 +243,7 @@ application-provided; `nextId` is not available for those roots in ordinary
 `.mw`.
 
 IDs are opaque and may have gaps, including gaps left by failed transactions.
-Do not use them as business counters. If the selected capability profile cannot
-guarantee safe integer ID allocation, Marrow reports a typed capability error
-before running, or a typed runtime error if the missing promise is discovered
-late.
+Do not use them as business counters.
 
 After restore, `nextId` must choose an unused identity. It may skip ahead.
 

@@ -3,13 +3,6 @@
 Future counterpart of
 [`../../language/resources-and-storage.md`](../../language/resources-and-storage.md).
 
-## Catalog-Owned Stable IDs
-
-Stored entities need catalog-owned opaque stable identity. Tools may allocate or
-preserve those identities while changing source, but the project catalog is the
-authority. Because the identity is not name-shaped, a rename never desyncs it
-from the data it names.
-
 ## GUID identity allocation
 
 Saved-root identities are allocated as a single auto-incrementing `int`. A
@@ -78,10 +71,11 @@ explicit ambiguity rule before it could become part of the language.
 
 ## Collection spellings
 
-A designed extension adds `map[K, V]` and `set[K]` as spellings for two common
-keyed-tree shapes. Ordered sequences already have a spelling, `sequence[T]`, the
-1-based integer-keyed tree. None of these add a second object model; they name
-ordinary Marrow access patterns over typed trees.
+A designed surface adds the `map`/`set` collection family as one whole: local
+`map` and `set` values, `map[K, V]` as a saved-member spelling, `set[K]`, and
+the `insert(path)` populate verb. Ordered sequences already have a spelling,
+`sequence[T]`, the 1-based integer-keyed tree. None of these add a second
+object model; they name ordinary Marrow access patterns over typed trees.
 
 | Spelling | Tree shape | Use |
 |---|---|---|
@@ -141,27 +135,3 @@ reached through paths. A local or future ephemeral `map` or `set` has no
 portable saved form, so an implementation may choose memory-optimized
 structures for it; code still depends on Marrow's typed tree behavior, not on a
 particular in-memory data structure.
-
-## Local Tree Writes
-
-Local sequence and keyed-tree variables support the same path-shaped reads and
-writes as saved trees, without saved lifetime or backend capability checks:
-
-```mw
-var tags: sequence[string]
-const first = append(tags, "fiction")
-tags(first + 1) = "paperback"
-
-var scores(playerId: string): int
-scores(playerId) = (scores(playerId) ?? 0) + 1
-```
-
-A local subscript such as `scores(playerId)` is a typed path. It can be read,
-assigned, defaulted with `??`, tested with `exists(...)`, deleted, traversed,
-or merged according to the same presence and type rules as any other tree path.
-The checker rejects keys whose static type does not match the declared layer.
-
-`append(localSequence, value)` writes one greater than the highest populated
-positive integer key in that local tree and returns the key it wrote. It skips
-holes for the same reason saved sequence append skips holes: sequence positions
-are stable tree keys, not dense array indexes.

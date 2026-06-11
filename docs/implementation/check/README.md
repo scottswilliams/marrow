@@ -11,8 +11,9 @@ The semantic core of the toolchain. It consumes the parsed AST (`marrow-syntax`)
 3. **resolve + type-check** — `check_resolved_files` runs import resolution and the statement/expression type pass together: it resolves every reference to a `Def`, walks each body inferring `MarrowType` (best-effort, total; unresolvable becomes `Unknown` and defers every rule), and emits typed `CheckDiagnostic`s.
 4. **facts** — `rebuild_facts_with_sources` assembles the read-only `CheckedFacts` tables: newtyped ids over modules/functions/resources/stores/indexes/members/enums, durable-key decoding, and direct-effect summaries.
 5. **catalog bind** — `bind_catalog` reconciles every durable declaration against the persisted accepted catalog, carrying stable ids forward across renames and proposing an advanced catalog.
-6. **lower** — `lower_runtime_bodies` turns checked bodies into the syntax-free `Checked*` IR the runtime evaluates, filling each function's and transform's `runtime_body`.
-7. **presence** — `check_presence`, a flow-sensitive pass over the lowered IR, proves every read of maybe-present saved data is justified before runtime (after the evolution transform-effects check).
+6. **evolve-intent type check** — `check_evolve_types` types every `evolve` block's `default` and `transform` steps against current source; the transform purity check waits for lowering (`check_transform_effects`).
+7. **lower** — `lower_runtime_bodies` turns checked bodies into the syntax-free `Checked*` IR the runtime evaluates, filling each function's and transform's `runtime_body`.
+8. **presence** — `check_presence`, a flow-sensitive pass over the lowered IR, proves every read of maybe-present saved data is justified before runtime (after the evolution transform-effects check).
 
 Evolution discharge and the analysis/tooling surface sit beside this spine, consuming the finished `CheckedProgram` read-only.
 
@@ -26,7 +27,7 @@ Evolution discharge and the analysis/tooling surface sit beside this spine, cons
 | --- | --- |
 | [types.md](types.md) | Name resolution, the `MarrowType` lattice and its rules, the type-check driver, typed fact tables, enum `match`/`is`, durable-path classification, and the `CheckedProgram` artifact. |
 | [presence.md](presence.md) | Flow-sensitive presence proofs over the lowered IR (`check_presence`) and body-local direct-effect summaries (`direct_effects_for_block`). |
-| [catalog.md](catalog.md) | Stable opaque identity: catalog binding across renames/reshapes, the source-shape digest fence, and the rejected v0.1 source-surface pass. |
+| [catalog.md](catalog.md) | Stable opaque identity: the `marrow-catalog` accepted-snapshot model, catalog binding across renames/reshapes, the source-shape digest fence, and the rejected v0.1 source-surface pass. |
 | [lowering.md](lowering.md) | The one-way bridge from checker resolution into the `Checked*` executable IR: call targets, precomputed saved places, runtime value types. |
 | [evolution.md](evolution.md) | The check side of schema evolution: evolve intents, read-only discharge against the live store, and the `EvolutionWitness` that crosses into apply. |
 | [analysis.md](analysis.md) | The transport-free editor/CLI surface: the IDE `AnalysisSnapshot` and cursor queries, plus typed saved-data tooling facts (path queries, paged traversal, integrity, metadata). |

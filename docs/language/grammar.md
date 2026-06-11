@@ -46,6 +46,10 @@ hex_digit       = digit | "A".."F" | "a".."f" ;
 `byte_text` has the same source shape and contributes its UTF-8 bytes.
 `interp_text_char` additionally excludes unescaped `{` and `}`.
 
+A `qualified_name` segment may also be a type keyword used as a name — the
+`bytes` in `std::bytes::length` or `use std::bytes` — so standard-library
+paths spell those names directly.
+
 Type names have one canonical spelling in source.
 
 ## Source File
@@ -166,13 +170,17 @@ function_decl   =
 visibility      = "pub" ;
 
 param_list      = param_decl ("," param_decl)* ","? ;
-param_decl      = param_mode? identifier type_annotation ;
+param_decl      = doc_comment* param_mode? identifier type_annotation ;
 param_mode      = "inout" ;
 
 return_type     = ":" type ;
 
 block           = INDENT statement+ DEDENT ;
 ```
+
+In a multi-line parameter list, a line break separates parameters the same way
+a comma does, and a run of `;;` documentation comments directly above a
+parameter documents that parameter.
 
 ## Evolution
 
@@ -210,7 +218,6 @@ type            =
     | scalar_type
     | identity_type
     | sequence_type
-    | keyed_tree_type
     ;
 
 scalar_type     =
@@ -228,8 +235,11 @@ scalar_type     =
 
 sequence_type   = "sequence" "[" type "]" ;
 identity_type   = "Id" "(" saved_root ")" ;
-keyed_tree_type = "(" key_decl ("," key_decl)* ","? ")" ":" type ;
 ```
+
+Keyed tree shapes are not written as type annotations; they arise from
+`key_params` on the declaration itself — a keyed `var`, field, group, or
+store root.
 
 `qualified_name` includes normal imported types. Store identity types use the
 source form `Id(^root)`, for example `Id(^books)`. `Error` is the builtin
@@ -478,14 +488,15 @@ These rules are part of the grammar contract:
   assignment and never equality, so a `=` in expression position is a parse
   error. Equality is `==` and inequality is `!=`.
 - The absence-default `??` is non-associative and binds tighter than `==`. Its
-  left operand must be a path read or a `?.` chain; a present non-path left is
-  rejected as an operator misuse.
+  left operand must be a maybe-present read — a path read, a `?.` chain, or a
+  maybe-present builtin result such as `next`/`prev`; an always-present left
+  operand is rejected as an operator misuse.
 - The optional read `?.` is a postfix field access that short-circuits the chain
   to absent when a step is absent; only absence is short-circuited, not schema or
   decoding errors.
 - Assignment cannot be nested inside calls, conditions, returns, or subscripts.
-- Expression statements must be effectful calls or call-shaped builtins such
-  as `write(...)` and `print(...)`; useless pure expression statements are
+- An expression statement may be any expression except a bare range; a range
+  is valid only as a `for` iterable, so a range in statement position is
   rejected.
 - Conversion calls use supported scalar type keywords in expression position.
   They take one positional argument. A bare type spelling with no call, such as
@@ -511,11 +522,10 @@ These rules are part of the grammar contract:
   keys; for a non-unique index branch, that means the identities in the branch.
 - `keys`, `values`, and `entries` expose address-only, element-only, and
   address-plus-element traversal as expression forms.
-- Documentation comments attach to the next const, resource, store, function, or
-  resource/store element at the same indentation level.
+- Documentation comments attach to the next const, resource, store, enum, or
+  function declaration, or to the next resource/store element, enum member, or
+  parameter.
 
-`~` source forms are reserved for future typed ephemeral roots. v0.1 rejects
-top-level `~roots`, `cache ~...`, `ensure ~...`, and identity types such as
-`Id(~scratch)`. v0.1 also rejects compound root sigils such as `^~` and `~^`.
-Future RAM-resident durable stores remain `^` roots, while `~` is reserved for
-non-durable typed roots.
+`~` is reserved for future typed ephemeral roots. v0.1 rejects `~` everywhere
+in source: root forms such as `~scratch`, identity types such as
+`Id(~scratch)`, and compound root sigils such as `^~` and `~^`.

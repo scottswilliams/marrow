@@ -64,16 +64,16 @@ month and leap-day boundaries correctly; the date step must be a whole number of
 days. An `instant` steps by its duration in UTC.
 
 A loop never runs forever. For `int` and `decimal` the step's sign sets the
-direction: a positive step ascends, a negative one descends. A step pointing away
-from the end iterates zero times rather than looping endlessly — `10..1 by -1`
-counts down, while `1..10 by -1` and `10..1` (default `+1`) both run zero times. When
-the endpoints and step are all literals and the direction is provably empty, that
-dead loop is a check error; a wrong direction from a variable is simply an empty
+direction: a positive step ascends, a negative one descends (`10..1 by -1`
+counts down). A step pointing away from the end iterates zero times rather than
+looping endlessly. When the endpoints and step are all literals, a provably
+wrong direction — `1..10 by -1`, or `10..1` with the default `+1` — is a dead
+loop and a check error; a wrong direction from a variable is simply an empty
 loop. A zero step never progresses and is rejected.
 
-`date` and `instant` ranges ascend only: a duration is never negative, so the step
-must be a positive duration and descending temporal ranges are not yet supported. A
-negated duration step (`by -1.day`) is a check error.
+`date` and `instant` ranges ascend only: the step must be a positive duration,
+and descending temporal ranges are not yet supported. A negated duration step
+(`by -1.day`) is a check error.
 
 Collection loops walk durable iterables. A store, index, or keyed child layer
 is a durable iterable; a `for` loop over one streams lazily rather than
@@ -120,9 +120,8 @@ for pos in keys(^books(id).tags)
     write($"{pos}")
 ```
 
-Saved-layer iteration walks child keys in stored order, streaming them lazily
-rather than materializing the layer. Value and two-variable loops also read the
-values they yield; `keys(...)` reads only the addresses.
+Value and two-variable loops also read the values they yield; `keys(...)` reads
+only the addresses.
 
 `while` loops use a boolean condition:
 
@@ -180,6 +179,7 @@ finally
     write("attempt finished")
 ```
 
+A `try` statement requires a `catch` clause, a `finally` clause, or both.
 `catch err: Error` binds a typed error value. If the type annotation is
 omitted, `Error` is used. Applications can store errors in their own saved
 resources when they want persistent audit or diagnostics; those saved

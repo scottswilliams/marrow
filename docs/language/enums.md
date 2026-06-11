@@ -177,4 +177,4 @@ A set whose members are managed at runtime is not an enum — it is a saved
 resource referenced by a field. An enum is fixed in source, which is what lets a
 `match` over it be exhaustive.
 
-`enum` takes `pub` like any declaration.
+`enum` takes `pub` the same way `fn` does.
