@@ -10,7 +10,9 @@ use marrow_schema::stdlib::Capability;
 use marrow_syntax::SourceSpan;
 
 use crate::activation::{Completion, Invocation, complete_call, executable_body, invoke};
-use crate::call_args::{bind_arguments, bind_arguments_with_modes, eval_resource_constructor};
+use crate::call_args::{
+    bind_arguments, bind_arguments_with_modes, eval_identity_constructor, eval_resource_constructor,
+};
 use crate::collection::{
     Direction, eval_append, eval_entries, eval_keys, eval_next_id, eval_reversed, eval_values,
 };
@@ -40,6 +42,9 @@ pub(crate) fn eval_call(
         CheckedCallTarget::SavedIndexLookup => eval_checked_index_lookup(call, span, env).map(Some),
         CheckedCallTarget::SavedLayerRead => eval_saved_layer_read(call, span, env).map(Some),
         CheckedCallTarget::SavedResourceRead => eval_resource_read(call, span, env).map(Some),
+        CheckedCallTarget::IdentityConstructor(constructor) => {
+            eval_identity_constructor(constructor, args, span, env).map(Some)
+        }
         CheckedCallTarget::ErrorConstructor => eval_error_constructor(args, span, env).map(Some),
         CheckedCallTarget::ResourceConstructor(constructor) => {
             eval_resource_constructor(constructor, args, span, env).map(Some)

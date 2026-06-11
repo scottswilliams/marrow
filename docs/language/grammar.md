@@ -243,7 +243,8 @@ Keyed tree shapes are not written as type annotations; they arise from
 store root.
 
 `qualified_name` includes normal imported types. Store identity types use the
-source form `Id(^root)`, for example `Id(^books)`. `Error` is the builtin
+source form `Id(^root)`, for example `Id(^books)`. In expression position,
+`Id(^root, key...)` is the explicit identity constructor. `Error` is the builtin
 resource-shaped error type.
 
 The checker restricts where some parsed types are valid. A missing return type
@@ -505,8 +506,10 @@ These rules are part of the grammar contract:
 - Reserved words are not identifiers, so a reserved word cannot be used as a
   name for a binding, parameter, resource, field, function, or module segment.
 - Store identity values are typed as `Id(^root)`.
-- Calls to resource types and `Error(...)` are checked as resource
-  constructors; calls to functions are checked as calls.
+- A bare `Id(^root, key...)` call is checked as an identity constructor. It is
+  not a resource constructor and does not perform a saved read.
+- Calls to resource types and `Error(...)` are checked as resource constructors;
+  calls to functions are checked as calls.
 - `throw` requires an `Error` value.
 - `catch name` binds `name` as `Error`; if a catch annotation is present, it
   must be `Error`.

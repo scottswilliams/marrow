@@ -7,8 +7,8 @@ use crate::program::{CheckedProgram, MarrowType};
 use crate::resolve::{Def, DefItem, Resolution, ResolvableKind, resolve, resolve_store_by_root};
 
 use super::{
-    CheckedArg, CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedStdCall,
-    checked_resource_constructor, function_ref, resource_ref,
+    CheckedArg, CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedIdentityConstructor,
+    CheckedSavedKeyParam, CheckedStdCall, checked_resource_constructor, function_ref, resource_ref,
 };
 
 impl CheckedCallTarget {
@@ -27,6 +27,9 @@ impl CheckedCallTarget {
             return Some(target);
         }
         let expanded = expanded_name_call(callee, aliases)?;
+        if let Some(target) = Self::identity_constructor_call_target(&expanded, args, program) {
+            return Some(target);
+        }
         if let Some(target) = Self::constructor_call_target(&expanded, program, from_module) {
             return Some(target);
         }
@@ -69,6 +72,37 @@ impl CheckedCallTarget {
             return Some(Self::SavedResourceRead);
         }
         None
+    }
+
+    fn identity_constructor_call_target(
+        expanded: &[String],
+        args: &[CheckedArg],
+        program: &CheckedProgram,
+    ) -> Option<Self> {
+        if !matches!(expanded, [name] if name == "Id") {
+            return None;
+        }
+        let first = args.first()?;
+        let CheckedExpr::SavedRoot { name: root, .. } = &first.value else {
+            return None;
+        };
+        let store = resolve_store_by_root(program, root)?;
+        if store.store.identity_keys.is_empty() {
+            return None;
+        }
+        let keys = store
+            .store
+            .identity_keys
+            .iter()
+            .map(|key| CheckedSavedKeyParam {
+                name: key.name.clone(),
+                scalar: key.ty.scalar(),
+            })
+            .collect();
+        Some(Self::IdentityConstructor(CheckedIdentityConstructor {
+            root: root.clone(),
+            keys,
+        }))
     }
 
     fn constructor_call_target(

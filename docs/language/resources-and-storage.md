@@ -142,13 +142,19 @@ does not also declare a field or child layer named `id`.
 Ordinary typed code addresses a managed root through the store identity:
 
 ```mw
-const id: Id(^enrollments) = loadEnrollmentId("student-1", "course-9")
+const id: Id(^enrollments) = Id(^enrollments, "student-1", "course-9")
 
 ^enrollments(id).status = "active"
 ```
 
 The runtime lowers that identity into the declared key segments before it
 reaches the backend.
+
+`Id(^store, key...)` constructs an identity from the declared key components. It
+does not read the store, does not allocate a new identity, and does not prove the
+record exists. The checker rejects the wrong number of key arguments, wrong key
+scalar types, and unchecked `unknown` values; convert dynamic input before it
+reenters typed saved data.
 
 Use identity keys when changing a key means "this is a different record."
 Identity keys do not change in place. Changing identity means creating a new

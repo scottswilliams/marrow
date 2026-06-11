@@ -1,6 +1,7 @@
 use marrow_check::{
-    CheckedArg as ExecArg, CheckedArgMode as ArgMode, CheckedExpr as ExecExpr, CheckedParam,
-    CheckedParamMode as ParamMode, CheckedResourceConstructor, CheckedRuntimeValueType,
+    CheckedArg as ExecArg, CheckedArgMode as ArgMode, CheckedExpr as ExecExpr,
+    CheckedIdentityConstructor, CheckedParam, CheckedParamMode as ParamMode,
+    CheckedResourceConstructor, CheckedRuntimeValueType,
 };
 use marrow_schema::{KeyDef, Type};
 use marrow_store::Decimal;
@@ -9,9 +10,13 @@ use marrow_store::value::ScalarType;
 use marrow_syntax::SourceSpan;
 
 use crate::env::Env;
-use crate::error::{RUN_UNBOUND_NAME, RuntimeError, assign_error, type_error, unsupported};
+use crate::error::{
+    RUN_TYPE, RUN_UNBOUND_NAME, RuntimeError, assign_error, type_error, unsupported,
+};
 use crate::expr::eval_expr;
+use crate::path::lower_keys;
 use crate::read::read_local_field;
+use crate::value::identity_value;
 use crate::value::{Value, value_scalar_type};
 use crate::write_dispatch::write_local_field;
 
@@ -199,6 +204,45 @@ pub(crate) fn eval_resource_constructor(
             .filter_map(|(field, value)| value.map(|value| (field.name.clone(), value)))
             .collect(),
     ))
+}
+
+pub(crate) fn eval_identity_constructor(
+    constructor: &CheckedIdentityConstructor,
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    if args
+        .iter()
+        .any(|arg| arg.mode.is_some() || arg.name.is_some())
+    {
+        return Err(unsupported("`Id` with named or inout arguments", span));
+    }
+    let Some((root_arg, key_args)) = args.split_first() else {
+        return Err(RuntimeError::fault(
+            RUN_TYPE,
+            "`Id` takes a saved root followed by its key argument(s)".into(),
+            span,
+        ));
+    };
+    match &root_arg.value {
+        ExecExpr::SavedRoot { name, .. } if name == &constructor.root => {}
+        _ => return Err(unsupported("`Id` with this root argument", span)),
+    }
+    if key_args.len() != constructor.keys.len() {
+        return Err(RuntimeError::fault(
+            RUN_TYPE,
+            format!(
+                "`Id(^{})` expects {} key argument(s), but {} were given",
+                constructor.root,
+                constructor.keys.len(),
+                key_args.len(),
+            ),
+            span,
+        ));
+    }
+    let keys = lower_keys(key_args, span, false, None, &constructor.keys, env)?;
+    Ok(identity_value(&constructor.root, keys))
 }
 
 pub(crate) fn checked_value_accepts(expected: &CheckedRuntimeValueType, value: &Value) -> bool {

@@ -208,8 +208,9 @@ Constructors must populate required fields. Omitted sparse fields remain
 absent.
 
 For saved resources, constructors build the resource body. Identity keys live
-in the saved address and are supplied by `nextId(...)` or an explicit generated
-identity value.
+in the saved address and are supplied by `nextId(...)` or by constructing an
+identity with the root and declared key components, for example
+`Id(^books, "book-17")`.
 
 Nested fields and keyed layers are part of the type:
 
@@ -351,7 +352,8 @@ arguments to a saved path; they are not `Id(^store)` values at dynamic, host, or
 unknown boundaries.
 
 Marrow provides default `nextId` allocation for a single `int` identity key.
-Other identity shapes are application-provided.
+Other identity shapes are application-provided and wrapped explicitly with
+`Id(^store, key...)`.
 
 A managed saved root is addressed by one identity value:
 
@@ -361,13 +363,17 @@ const title = ^books(id).title
 ```
 
 The declaration lists the stored key components; ordinary typed code passes
-the store identity type, not the raw key literal. Allocation and host or
-application boundary helpers are responsible for producing checked identities:
+the store identity type, not the raw key literal. Allocation or application
+boundary code is responsible for producing checked identities:
 
 ```mw
 const allocated: Id(^books) = nextId(^books)
-const loaded: Id(^books) = loadBookId("book-17")
+const loaded: Id(^books) = Id(^books, "book-17")
 ```
+
+`Id(^books, "book-17")` performs no lookup and gives no presence proof. It only
+constructs an identity value after the supplied key arguments match the store's
+declared identity key arity and scalar types.
 
 Composite-key stores also define one identity type:
 
@@ -382,7 +388,7 @@ store ^enrollments(studentId: string, courseId: string): Enrollment
 one identity value rather than a general tuple:
 
 ```mw
-const id: Id(^enrollments) = loadEnrollmentId("student-1", "course-9")
+const id: Id(^enrollments) = Id(^enrollments, "student-1", "course-9")
 
 ^enrollments(id).status = "active"
 ```

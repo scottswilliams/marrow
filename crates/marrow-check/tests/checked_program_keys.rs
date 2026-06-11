@@ -122,6 +122,108 @@ fn unknown_key_reentry_is_rejected() {
     );
 }
 
+#[test]
+fn explicit_identity_constructor_typechecks_against_store_keys() {
+    let root = temp_project("program-id-constructor", |root| {
+        write(
+            root,
+            "src/shelf/lib.mw",
+            "module shelf::lib\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             store ^books(id: string): Book\n\
+             fn f(): Id(^books)\n\
+             \x20   return Id(^books, \"book-17\")\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert!(
+        program.facts.presence_proofs().is_empty(),
+        "{:#?}",
+        program.facts.presence_proofs()
+    );
+}
+
+#[test]
+fn explicit_identity_constructor_rejects_wrong_key_shape() {
+    let root = temp_project("program-id-constructor-shape", |root| {
+        write(
+            root,
+            "src/shelf/lib.mw",
+            "module shelf::lib\n\
+             resource Enrollment\n\
+             \x20   required grade: string\n\
+             store ^enrollments(student: string, course: string): Enrollment\n\
+             fn f(): Id(^enrollments)\n\
+             \x20   return Id(^enrollments, \"student-1\")\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.key_type"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn explicit_identity_constructor_rejects_unknown_key_arguments() {
+    let root = temp_project("program-id-constructor-unknown", |root| {
+        write(
+            root,
+            "src/shelf/lib.mw",
+            "module shelf::lib\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             store ^books(id: int): Book\n\
+             fn f(raw: unknown): Id(^books)\n\
+             \x20   return Id(^books, raw)\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.key_type"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn explicit_identity_constructor_rejects_singleton_roots() {
+    let root = temp_project("program-id-constructor-singleton", |root| {
+        write(
+            root,
+            "src/shelf/settings.mw",
+            "module shelf::settings\n\
+             resource Settings\n\
+             \x20   required theme: string\n\
+             store ^settings: Settings\n\
+             fn f(): unknown\n\
+             \x20   return Id(^settings)\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.key_type"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
 /// A cross-module *qualified* identity spliced into a keyed root defers rather
 /// than false-positives. The root's resource name is bare (`Book`), while an
 /// identity imported from another module keeps its `shelf::lib::Book`

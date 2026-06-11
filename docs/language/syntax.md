@@ -345,10 +345,12 @@ const err = Error(
 )
 ```
 
-Store identity values are produced by allocation or checked boundary helpers:
+Store identity values are produced by allocation or by wrapping checked key
+components explicitly:
 
 ```mw
 const id: Id(^books) = nextId(^books)
+const loaded: Id(^books) = Id(^books, "book-17")
 ```
 
 ## Spelling

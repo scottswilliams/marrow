@@ -247,13 +247,18 @@ Do not use them as business counters.
 
 After restore, `nextId` must choose an unused identity. It may skip ahead.
 
-If a store uses application-provided identity keys, allocate those keys in
-application or host code, then pass the checked identity value before writing the
-resource:
+If a store uses application-provided identity keys, allocate or validate those
+keys at the application boundary, then wrap them with the explicit identity
+constructor before writing the resource:
 
 ```mw
-const id: Id(^books) = loadBookId("book-17")
+const id: Id(^books) = Id(^books, "book-17")
 ```
+
+`Id(^store, key...)` performs no allocation and no lookup. It only constructs an
+identity value after the key argument count and scalar types match the store's
+declared identity keys. A constructed identity is not a presence proof; the first
+saved read still resolves absence in the ordinary way.
 
 ## Errors
 

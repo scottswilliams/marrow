@@ -23,6 +23,7 @@ fn call_target_writes_saved_data(
         CheckedCallTarget::SavedIndexLookup
         | CheckedCallTarget::SavedLayerRead
         | CheckedCallTarget::SavedResourceRead
+        | CheckedCallTarget::IdentityConstructor(_)
         | CheckedCallTarget::ErrorConstructor
         | CheckedCallTarget::Builtin(_)
         | CheckedCallTarget::Std(_)

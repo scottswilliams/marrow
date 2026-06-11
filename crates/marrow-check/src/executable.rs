@@ -84,12 +84,19 @@ pub enum CheckedCallTarget {
     SavedIndexLookup,
     SavedLayerRead,
     SavedResourceRead,
+    IdentityConstructor(CheckedIdentityConstructor),
     ErrorConstructor,
     Builtin(CheckedBuiltinCall),
     Std(CheckedStdCall),
     ResourceConstructor(CheckedResourceConstructor),
     LocalCollection { name: String },
     Function(CheckedFunctionRef),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedIdentityConstructor {
+    pub root: String,
+    pub keys: Vec<CheckedSavedKeyParam>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -59,13 +59,13 @@ pub use durable_path::{
 pub use executable::{
     CheckedArg, CheckedArgMode, CheckedBinaryOp, CheckedBody, CheckedBuiltinCall,
     CheckedCallTarget, CheckedCatchClause, CheckedElseIf, CheckedEnumMemberRef, CheckedEnumRef,
-    CheckedExpr, CheckedForBinding, CheckedFunctionRef, CheckedInterpolationPart,
-    CheckedLiteralKind, CheckedMatchArm, CheckedParamMode, CheckedResourceConstructor,
-    CheckedResourceConstructorField, CheckedResourceRef, CheckedRuntimeValueType,
-    CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedKeyParam, CheckedSavedLayer,
-    CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace, CheckedSavedTerminal,
-    CheckedStdCall, CheckedStmt, CheckedUnaryOp, checked_activation_root_places,
-    checked_saved_root_place,
+    CheckedExpr, CheckedForBinding, CheckedFunctionRef, CheckedIdentityConstructor,
+    CheckedInterpolationPart, CheckedLiteralKind, CheckedMatchArm, CheckedParamMode,
+    CheckedResourceConstructor, CheckedResourceConstructorField, CheckedResourceRef,
+    CheckedRuntimeValueType, CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedKeyParam,
+    CheckedSavedLayer, CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace,
+    CheckedSavedTerminal, CheckedStdCall, CheckedStmt, CheckedUnaryOp,
+    checked_activation_root_places, checked_saved_root_place,
 };
 pub use facts::PresenceProofRead;
 pub use facts::{

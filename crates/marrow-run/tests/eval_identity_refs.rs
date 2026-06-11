@@ -210,6 +210,77 @@ fn single_key_store_identity_behaves_like_other_identity_origins() {
 }
 
 #[test]
+fn explicit_single_key_identity_constructor_reads_and_writes_records() {
+    let program = checked_program(
+        "resource Book\n\
+         \x20   title: string\n\
+         store ^books(id: string): Book\n\
+         \n\
+         pub fn make(): Id(^books)\n\
+         \x20   return Id(^books, \"book-17\")\n\
+         \n\
+         pub fn seed()\n\
+         \x20   const id = Id(^books, \"book-17\")\n\
+         \x20   ^books(id).title = \"Mort\"\n\
+         \n\
+         pub fn read(): string\n\
+         \x20   return ^books(Id(^books, \"book-17\")).title ?? \"missing\"\n",
+    );
+    let store = TreeStore::memory();
+    assert_identity_value(
+        run_entry(&store, checked_entry!(&program, "test::make"))
+            .expect("make runs")
+            .value,
+        "books",
+        &[SavedKey::Str("book-17".to_string())],
+    );
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed runs");
+    assert_eq!(
+        run_entry(&store, checked_entry!(&program, "test::read"))
+            .expect("read runs")
+            .value,
+        Some(Value::Str("Mort".to_string()))
+    );
+}
+
+#[test]
+fn explicit_composite_identity_constructor_addresses_records() {
+    let program = checked_program(
+        "resource Enrollment\n\
+         \x20   grade: string\n\
+         store ^enrollments(student: string, course: string): Enrollment\n\
+         \n\
+         pub fn make(): Id(^enrollments)\n\
+         \x20   return Id(^enrollments, \"student-1\", \"course-9\")\n\
+         \n\
+         pub fn seed()\n\
+         \x20   const id = Id(^enrollments, \"student-1\", \"course-9\")\n\
+         \x20   ^enrollments(id).grade = \"A\"\n\
+         \n\
+         pub fn read(): string\n\
+         \x20   return ^enrollments(Id(^enrollments, \"student-1\", \"course-9\")).grade ?? \"missing\"\n",
+    );
+    let store = TreeStore::memory();
+    assert_identity_value(
+        run_entry(&store, checked_entry!(&program, "test::make"))
+            .expect("make runs")
+            .value,
+        "enrollments",
+        &[
+            SavedKey::Str("student-1".to_string()),
+            SavedKey::Str("course-9".to_string()),
+        ],
+    );
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed runs");
+    assert_eq!(
+        run_entry(&store, checked_entry!(&program, "test::read"))
+            .expect("read runs")
+            .value,
+        Some(Value::Str("A".to_string()))
+    );
+}
+
+#[test]
 fn unique_index_identity_compares_with_the_allocated_identity() {
     let program = checked_program(
         "resource Book\n\

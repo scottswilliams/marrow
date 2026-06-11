@@ -31,7 +31,8 @@ use crate::{
 use super::collections::{
     collection_loop_binding_types, is_saved_index_branch_path, saved_path_key_type,
 };
-use super::diagnostics::call_diagnostic;
+use super::diagnostics::{call_diagnostic, key_type_diagnostic};
+use super::saved_keys::check_keys_against;
 
 pub(crate) struct CallCheck<'a> {
     pub(crate) program: &'a CheckedProgram,
@@ -107,6 +108,19 @@ fn check_special_single_name_call(
         return Some(check_next_id(
             env.program,
             args,
+            env.span,
+            env.file,
+            env.diagnostics,
+        ));
+    }
+    if let [name] = segments
+        && name == "Id"
+    {
+        check_plain_call_modes(name, args, env.span, env.file, env.diagnostics);
+        return Some(check_identity_constructor(
+            env.program,
+            args,
+            arg_types,
             env.span,
             env.file,
             env.diagnostics,
@@ -971,6 +985,68 @@ pub(crate) fn check_args_against(
             check_one_arg(label, parameter, arg_type, span, file, diagnostics);
         }
     }
+}
+
+/// Type `Id(^root, key...)`, the explicit identity constructor. The first
+/// argument names the saved root; the remaining arguments fill the root's declared
+/// identity keys using the same nominal keyspace rules as saved lookups.
+fn check_identity_constructor(
+    program: &CheckedProgram,
+    args: &[marrow_syntax::Argument],
+    arg_types: &[MarrowType],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> MarrowType {
+    for arg in args {
+        if arg.name.is_some() {
+            diagnostics.push(call_diagnostic(
+                file,
+                arg.value.span(),
+                "`Id` arguments must be positional".to_string(),
+            ));
+        }
+    }
+    let Some(root_arg) = args.first() else {
+        diagnostics.push(call_diagnostic(
+            file,
+            span,
+            "`Id` expects a saved root followed by its key argument(s)".to_string(),
+        ));
+        return MarrowType::Unknown;
+    };
+    let marrow_syntax::Expression::SavedRoot { name: root, .. } = &root_arg.value else {
+        diagnostics.push(call_diagnostic(
+            file,
+            root_arg.value.span(),
+            "`Id` expects a saved root as its first argument".to_string(),
+        ));
+        return MarrowType::Unknown;
+    };
+    let Some(store) = resolve_store_by_root(program, root) else {
+        diagnostics.push(key_type_diagnostic(
+            file,
+            root_arg.value.span(),
+            format!("identity constructor root `^{root}` is not declared"),
+        ));
+        return MarrowType::Unknown;
+    };
+    if store.store.identity_keys.is_empty() {
+        diagnostics.push(key_type_diagnostic(
+            file,
+            root_arg.value.span(),
+            format!("identity constructor root `^{root}` has no identity keys"),
+        ));
+        return MarrowType::Unknown;
+    }
+    check_keys_against(
+        &store.store.identity_keys,
+        arg_types.get(1..).unwrap_or(&[]),
+        span,
+        file,
+        diagnostics,
+    );
+    identity_type_for_store(store.store)
 }
 
 /// Type `nextId(^root)` and gate it on a single-`int` saved root, which types to

@@ -443,6 +443,17 @@ fn collect_call_expr(
     scope: &mut NameScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
+    if matches!(target, CheckedCallTarget::IdentityConstructor(_)) {
+        collect_args(
+            program,
+            &args[args.len().min(1)..],
+            ReadContext::Bare,
+            narrowed,
+            scope,
+            diagnostics,
+        );
+        return;
+    }
     match builtin_of(target) {
         Some(CheckedBuiltinCall::Exists) => {
             collect_exists_args(program, args, narrowed, scope, diagnostics);
