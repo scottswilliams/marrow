@@ -113,6 +113,11 @@ pub const CHECK_BARE_MAYBE_PRESENT_READ: &str = "check.bare_maybe_present_read";
 /// beyond `i64`, or a decimal literal outside the 34-significant-digit /
 /// 34-fractional-place envelope. The runtime would reject it as `run.overflow`.
 pub const CHECK_LITERAL_RANGE: &str = "check.literal_range";
+/// A string literal or interpolation text segment carries a backslash escape
+/// outside the recognized set (`\\`, `\"`, `\n`, `\r`, `\t`), or a trailing lone
+/// backslash. The escape text is static, so the checker rejects it before the
+/// runtime would.
+pub const CHECK_STRING_ESCAPE: &str = "check.string_escape";
 /// A range-for header is malformed: its endpoints are not the same steppable type
 /// (int, decimal, date, instant), its `by` step does not match the endpoints
 /// (a number for int/decimal, a duration for date/instant), a decimal or instant

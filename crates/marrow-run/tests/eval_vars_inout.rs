@@ -85,7 +85,7 @@ fn write_back_is_skipped_when_the_callee_throws() {
     // A callee that mutates an `inout` parameter then throws must not write back:
     // the caller's local keeps its pre-call value.
     let program = checked_program(
-        "pub fn bad(inout n: int)\n    n = 99\n    throw Error(code: \"x\", message: \"boom\")\npub fn main(): int\n    var n: int = 1\n    try\n        bad(inout n)\n    catch err: Error\n        write(\"caught\")\n    return n\n",
+        "pub fn bad(inout n: int)\n    n = 99\n    throw Error(code: \"test.error\", message: \"boom\")\npub fn main(): int\n    var n: int = 1\n    try\n        bad(inout n)\n    catch err: Error\n        write(\"caught\")\n    return n\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::main")),

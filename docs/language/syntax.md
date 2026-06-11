@@ -260,7 +260,7 @@ const title = "Small Gods"
 ```
 
 String literals decode `\\`, `\"`, `\n`, `\r`, and `\t`. Other backslash
-escapes are rejected at runtime.
+escapes are rejected at check.
 
 Interpolation is explicit with `$"..."`:
 

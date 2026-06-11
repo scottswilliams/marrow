@@ -17,8 +17,8 @@ use crate::call::eval_call;
 use crate::durable_read::{eval_optional_field, eval_saved_field, read_resource};
 use crate::env::Env;
 use crate::error::{
-    RUN_ABSENT, RUN_DECIMAL_OVERFLOW, RUN_NO_VALUE, RUN_OVERFLOW, RUN_UNBOUND_NAME, RuntimeError,
-    decimal_overflow, divide_by_zero, overflow, raise_fault, type_error, unsupported,
+    RUN_ABSENT, RUN_DECIMAL_OVERFLOW, RUN_NO_VALUE, RUN_OVERFLOW, RUN_TYPE, RUN_UNBOUND_NAME,
+    RuntimeError, decimal_overflow, divide_by_zero, overflow, raise_fault, type_error, unsupported,
 };
 use crate::path::direct_root_place;
 use crate::read::eval_local_field_get;
@@ -237,11 +237,18 @@ pub(crate) fn eval_string_literal(text: &str, span: SourceSpan) -> Result<Value,
         .map_err(|error| string_literal_fault(error, span))
 }
 
+/// A string literal that fails to decode at run time. The checker rejects an
+/// unsupported escape before a run, so reaching this is a checker/runtime
+/// disagreement; the fault names the real cause rather than claiming the runtime
+/// does not evaluate escapes at all.
 fn string_literal_fault(error: StringLiteralError, span: SourceSpan) -> RuntimeError {
-    match error {
-        StringLiteralError::Unquoted => unsupported("this string literal", span),
-        StringLiteralError::BadEscape => unsupported("string escape sequences", span),
-    }
+    let cause = match error {
+        StringLiteralError::Unquoted => "an unquoted string literal",
+        StringLiteralError::BadEscape => {
+            "an unsupported string escape; only `\\\\`, `\\\"`, `\\n`, `\\r`, and `\\t` are recognized"
+        }
+    };
+    raise_fault(RUN_TYPE, format!("invalid string literal: {cause}"), span)
 }
 
 /// Decode a bytes literal `b"..."`: ordinary text contributes its UTF-8 bytes,

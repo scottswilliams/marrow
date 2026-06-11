@@ -232,7 +232,7 @@ pub fn careful(m: string)
     std::log::warn(m)
 
 pub fn boom()
-    std::log::error(Error(code: \"E_BOOM\", message: \"kaboom\"))
+    std::log::error(Error(code: \"log.boom\", message: \"kaboom\"))
 ";
 
 #[test]
@@ -256,7 +256,7 @@ fn log_writes_each_level_to_the_host_sink() {
     run_entry_with_host(&store, &host, checked_entry!(&program, "test::boom")).expect("error");
     assert_eq!(
         sink.borrow().as_str(),
-        "INFO hello\nWARN watch out\nERROR [E_BOOM] kaboom\n"
+        "INFO hello\nWARN watch out\nERROR [log.boom] kaboom\n"
     );
 }
 

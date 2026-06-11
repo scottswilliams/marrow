@@ -18,7 +18,7 @@ const POSITIONAL_AFTER_NAMED: &[(&str, &str)] = &[
     // Resource constructor: `Error(...)` is parsed as a resource literal.
     (
         "resource constructor (Error)",
-        "const Made = Error(code: \"e\", \"oops\")\n",
+        "const Made = Error(code: \"parse.error\", \"oops\")\n",
     ),
     // Resource constructor with a user resource name.
     (

@@ -382,7 +382,7 @@ pub fn risky(id: int)
     transaction
         ^accounts(id).name = \"changed\"
         ^accounts(id).note = \"audit\"
-        throw Error(code: \"boom\", message: \"forced fault\")
+        throw Error(code: \"test.boom\", message: \"forced fault\")
 
 pub fn good(id: int)
     transaction

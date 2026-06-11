@@ -146,21 +146,29 @@ pub(crate) fn infer_type(
     match expr {
         Expression::Literal { kind, text, span } => {
             check_literal_range(*kind, text, *span, file, diagnostics);
+            if matches!(kind, marrow_syntax::LiteralKind::String) {
+                check_string_escapes(text, *span, file, diagnostics);
+            }
             literal_type(*kind)
         }
         Expression::Interpolation { parts, .. } => {
             for part in parts {
-                if let marrow_syntax::InterpolationPart::Expr(expr) = part {
-                    let ty = infer_type(program, expr, scope, aliases, file, diagnostics);
-                    if matches!(
-                        ty,
-                        MarrowType::Primitive(ScalarType::Bytes) | MarrowType::Enum { .. }
-                    ) {
-                        diagnostics.push(interpolation_unsupported_source_diagnostic(
-                            file,
-                            expr.span(),
+                match part {
+                    marrow_syntax::InterpolationPart::Text { text, span } => {
+                        check_interpolation_text_escapes(text, *span, file, diagnostics);
+                    }
+                    marrow_syntax::InterpolationPart::Expr(expr) => {
+                        let ty = infer_type(program, expr, scope, aliases, file, diagnostics);
+                        if matches!(
                             ty,
-                        ));
+                            MarrowType::Primitive(ScalarType::Bytes) | MarrowType::Enum { .. }
+                        ) {
+                            diagnostics.push(interpolation_unsupported_source_diagnostic(
+                                file,
+                                expr.span(),
+                                ty,
+                            ));
+                        }
                     }
                 }
             }
@@ -295,6 +303,43 @@ fn interpolation_unsupported_source_diagnostic(
     );
     CheckDiagnostic::error(CHECK_OPERATOR_TYPE, file, span, message)
         .with_payload(DiagnosticPayload::InterpolationUnsupportedSource { source })
+}
+
+/// Reject a string literal whose escape decoding fails — an escape outside the
+/// recognized set or a trailing lone backslash. The escape set is owned by
+/// `marrow_syntax`; decoding here through the same function keeps the checker and
+/// runtime in lockstep, catching at check what the runtime would otherwise fault on.
+fn check_string_escapes(
+    text: &str,
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if marrow_syntax::decode_string_literal(text).is_err() {
+        diagnostics.push(string_escape_diagnostic(file, span));
+    }
+}
+
+/// Like [`check_string_escapes`] but for an interpolation literal text segment,
+/// which carries no surrounding quotes.
+fn check_interpolation_text_escapes(
+    text: &str,
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if marrow_syntax::decode_string_escapes(text).is_err() {
+        diagnostics.push(string_escape_diagnostic(file, span));
+    }
+}
+
+fn string_escape_diagnostic(file: &Path, span: SourceSpan) -> CheckDiagnostic {
+    CheckDiagnostic::error(
+        crate::CHECK_STRING_ESCAPE,
+        file,
+        span,
+        "unsupported string escape; only `\\\\`, `\\\"`, `\\n`, `\\r`, and `\\t` are recognized",
+    )
 }
 
 /// The declared type of a call-shaped saved read, tried after a function call

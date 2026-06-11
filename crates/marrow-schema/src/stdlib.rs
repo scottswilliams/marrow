@@ -80,10 +80,9 @@ const fn scalar(scalar: ScalarType) -> ReturnType {
     ReturnType::Scalar(scalar)
 }
 
-/// The descriptor table. Every enumerated std helper has exactly one row; an op
-/// absent here is unrecognized (its arguments stay the runtime's job, its type
-/// stays `Unknown`), matching how the checker and runtime treated unknown ops
-/// before this table existed.
+/// The descriptor table. Every enumerated std helper has exactly one row.
+/// Pure modules whose operation sets are closed by the checker reject operations
+/// absent from this table; host modules remain outside that closed-module rule.
 #[rustfmt::skip]
 const TABLE: &[StdOp] = &[
     row("text", "length", &[Scalar(Str)], scalar(Int), Pure),
@@ -128,6 +127,27 @@ pub fn lookup(module: &str, op: &str) -> Option<&'static StdOp> {
     TABLE
         .iter()
         .find(|entry| entry.module == module && entry.op == op)
+}
+
+impl Capability {
+    const fn is_host(self) -> bool {
+        matches!(self, Self::Clock | Self::Env | Self::Io | Self::Log)
+    }
+}
+
+/// Whether the checker owns the module's full op set.
+pub fn module_is_closed(module: &str) -> bool {
+    let mut declares_module = false;
+    for entry in TABLE {
+        if entry.module != module {
+            continue;
+        }
+        declares_module = true;
+        if entry.capability.is_host() {
+            return false;
+        }
+    }
+    declares_module
 }
 
 /// Every descriptor in declaration order. Editor tooling enumerates the table to

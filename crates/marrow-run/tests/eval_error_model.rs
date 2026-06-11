@@ -40,7 +40,7 @@ fn error_constructor_rejects_an_unknown_field() {
     // A field outside the descriptor's set is a constructor error the checker
     // catches before run.
     checker_rejects(
-        "pub fn bad()\n    throw Error(code: \"x\", message: \"m\", oops: \"!\")\n",
+        "pub fn bad()\n    throw Error(code: \"test.error\", message: \"m\", oops: \"!\")\n",
         "check.call_argument",
     );
 }
@@ -51,8 +51,8 @@ fn error_constructor_rejects_non_string_builtin_fields() {
     // type is a constructor error the checker rejects.
     for source in [
         "pub fn bad()\n    throw Error(code: true, message: \"m\")\n",
-        "pub fn bad()\n    throw Error(code: \"x\", message: true)\n",
-        "pub fn bad()\n    throw Error(code: \"x\", message: \"m\", help: true)\n",
+        "pub fn bad()\n    throw Error(code: \"test.error\", message: true)\n",
+        "pub fn bad()\n    throw Error(code: \"test.error\", message: \"m\", help: true)\n",
     ] {
         checker_rejects(source, "check.call_argument");
     }
@@ -263,7 +263,7 @@ fn a_callee_throw_rolls_back_the_enclosing_transaction() {
     // A transaction writes, then a called function throws. The throw escapes the
     // transaction, so it rolls back and the write never lands.
     let program = checked_program(
-        "resource Account at ^accts(id: int)\n    balance: int\n\npub fn fail()\n    throw Error(code: \"x\", message: \"boom\")\n\npub fn run_it()\n    transaction\n        ^accts(1).balance = 5\n        fail()\n\npub fn read(): int\n    return ^accts(1).balance ?? -1\n",
+        "resource Account at ^accts(id: int)\n    balance: int\n\npub fn fail()\n    throw Error(code: \"test.fail\", message: \"boom\")\n\npub fn run_it()\n    transaction\n        ^accts(1).balance = 5\n        fail()\n\npub fn read(): int\n    return ^accts(1).balance ?? -1\n",
     );
     let store = TreeStore::memory();
     let result = run_entry(&store, checked_entry!(&program, "test::run_it"));
@@ -279,7 +279,7 @@ fn a_caught_callee_throw_does_not_leak_into_a_later_fault() {
     // After a caller catches a callee's throw, the pending throw is cleared, so a
     // later fault is caught with its own Error value rather than the stale throw.
     let program = checked_program(
-        "pub fn callee()\n    throw Error(code: \"e1\", message: \"boom\")\npub fn check(): int\n    try\n        callee()\n    catch err: Error\n        write(\"caught\")\n    try\n        const boom = 1 / 0\n    catch err: Error\n        return 99\n    return 0\n",
+        "pub fn callee()\n    throw Error(code: \"test.e1\", message: \"boom\")\npub fn check(): int\n    try\n        callee()\n    catch err: Error\n        write(\"caught\")\n    try\n        const boom = 1 / 0\n    catch err: Error\n        return 99\n    return 0\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::check")),
@@ -293,7 +293,7 @@ fn a_throwing_finally_does_not_leak_a_pending_throw() {
     // stashed: after an outer `catch` swallows the finally throw, a later fault is
     // caught with its own Error value rather than the stale throw.
     let program = checked_program(
-        "pub fn callee()\n    throw Error(code: \"e1\", message: \"from call\")\npub fn leak(): int\n    try\n        try\n            callee()\n        finally\n            throw Error(code: \"e2\", message: \"from finally\")\n    catch err: Error\n        write(\"swallowed\")\n    try\n        const boom = 1 / 0\n    catch err: Error\n        return 99\n    return 0\n",
+        "pub fn callee()\n    throw Error(code: \"test.e1\", message: \"from call\")\npub fn leak(): int\n    try\n        try\n            callee()\n        finally\n            throw Error(code: \"test.e2\", message: \"from finally\")\n    catch err: Error\n        write(\"swallowed\")\n    try\n        const boom = 1 / 0\n    catch err: Error\n        return 99\n    return 0\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::leak")),
@@ -306,11 +306,11 @@ fn a_throw_from_a_call_in_finally_propagates() {
     // A `finally` whose own called function throws: that throw replaces the
     // outcome and is caught by an outer handler.
     let program = checked_program(
-        "pub fn boom()\n    throw Error(code: \"deep\", message: \"x\")\npub fn run_it(): string\n    try\n        try\n            write(\"body\")\n        finally\n            boom()\n    catch err: Error\n        return err.code\n    return \"none\"\n",
+        "pub fn boom()\n    throw Error(code: \"deep.fail\", message: \"x\")\npub fn run_it(): string\n    try\n        try\n            write(\"body\")\n        finally\n            boom()\n    catch err: Error\n        return err.code\n    return \"none\"\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::run_it")),
-        Ok(Some(Value::Str("deep".into())))
+        Ok(Some(Value::Str("deep.fail".into())))
     );
 }
 
@@ -319,10 +319,10 @@ fn a_clean_finally_preserves_a_propagated_call_throw() {
     // A clean `finally` (no throw of its own) over a call-propagated throw must
     // restore the pending throw so an outer `catch` still sees it.
     let program = checked_program(
-        "pub fn boom()\n    throw Error(code: \"deep\", message: \"x\")\npub fn run_it(): string\n    try\n        try\n            boom()\n        finally\n            write(\"cleanup\")\n    catch err: Error\n        return err.code\n    return \"none\"\n",
+        "pub fn boom()\n    throw Error(code: \"deep.fail\", message: \"x\")\npub fn run_it(): string\n    try\n        try\n            boom()\n        finally\n            write(\"cleanup\")\n    catch err: Error\n        return err.code\n    return \"none\"\n",
     );
     let outcome = run_full(checked_entry!(&program, "test::run_it")).expect("caught");
-    assert_eq!(outcome.value, Some(Value::Str("deep".into())));
+    assert_eq!(outcome.value, Some(Value::Str("deep.fail".into())));
     assert_eq!(outcome.output, "cleanup");
 }
 

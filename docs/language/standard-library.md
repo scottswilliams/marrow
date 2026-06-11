@@ -31,6 +31,13 @@ without the matching capability is a typed capability error. The capability is
 per function, not per module: within `std::clock` only `now()` and `today()`
 need the host clock, while the parse, format, and `add` helpers are pure.
 
+The pure modules (`std::math`, `std::text`, `std::bytes`, `std::assert`) are
+closed: their full operation set is fixed, so a call to an operation they do not
+define is a check error. Host modules (`std::clock`, `std::io`, `std::env`,
+`std::log`) are not closed by this checker rule. Only recognized host helpers
+are lowered to runtime capabilities; the language does not promise that an
+unrecognized host operation reaches a host boundary.
+
 ## Import Style
 
 ```mw

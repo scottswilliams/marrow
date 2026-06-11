@@ -167,7 +167,17 @@ fn check_builtin_call(
         check_error_constructor_args(args, arg_types, env.span, env.file, env.diagnostics);
         return MarrowType::Error;
     }
-    check_builtin_call_args(segments, arg_types, env.span, env.file, env.diagnostics);
+    if let Some(ty) = check_closed_module_op(env, segments, &label) {
+        return ty;
+    }
+    check_builtin_call_args(
+        segments,
+        args,
+        arg_types,
+        env.span,
+        env.file,
+        env.diagnostics,
+    );
     if let Some(params) = std_call_params(segments) {
         check_args_against(
             &label,
@@ -182,6 +192,32 @@ fn check_builtin_call(
         .or_else(|| conversion_return_type(segments))
         .or_else(|| builtin_return_type(segments))
         .unwrap_or(MarrowType::Unknown)
+}
+
+fn check_closed_module_op(
+    env: &mut CallEnv<'_>,
+    segments: &[String],
+    label: &str,
+) -> Option<MarrowType> {
+    let [first, module, op] = segments else {
+        return None;
+    };
+    if first != "std"
+        || !marrow_schema::stdlib::module_is_closed(module)
+        || marrow_schema::stdlib::lookup(module, op).is_some()
+    {
+        return None;
+    }
+    env.diagnostics.push(
+        CheckDiagnostic::error(
+            CHECK_UNRESOLVED_CALL,
+            env.file,
+            env.span,
+            format!("`{label}` is not a standard-library operation"),
+        )
+        .with_payload(DiagnosticPayload::UnresolvedCall(label.to_string())),
+    );
+    Some(MarrowType::Unknown)
 }
 
 fn check_resource_constructor_call(
@@ -360,6 +396,7 @@ fn check_user_function_call(
 
 fn check_builtin_call_args(
     segments: &[String],
+    args: &[marrow_syntax::Argument],
     arg_types: &[MarrowType],
     span: SourceSpan,
     file: &Path,
@@ -367,7 +404,11 @@ fn check_builtin_call_args(
 ) {
     let [name] = segments else { return };
     if let Some(target) = ConversionTarget::from_name(name) {
+        check_conversion_call_shape(target, args, span, file, diagnostics);
         check_conversion_arg(target, arg_types, span, file, diagnostics);
+        if target == ConversionTarget::ErrorCode {
+            check_error_code_conversion_literal(args, file, diagnostics);
+        }
     }
 }
 
@@ -481,6 +522,74 @@ fn check_error_constructor_args(
         },
         |field| field.required,
     );
+    check_error_constructor_code_literal(args, file, diagnostics);
+}
+
+fn check_error_constructor_code_literal(
+    args: &[marrow_syntax::Argument],
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    for arg in args {
+        if arg.name.as_deref() == Some(marrow_schema::error::CODE) {
+            check_error_code_literal(&arg.value, "`Error.code`", file, diagnostics);
+        }
+    }
+}
+
+fn check_error_code_conversion_literal(
+    args: &[marrow_syntax::Argument],
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let [arg] = args else { return };
+    check_error_code_literal(&arg.value, "`ErrorCode(...)`", file, diagnostics);
+}
+
+fn check_error_code_literal(
+    expr: &marrow_syntax::Expression,
+    label: &str,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let marrow_syntax::Expression::Literal {
+        kind: marrow_syntax::LiteralKind::String,
+        text,
+        span,
+    } = expr
+    else {
+        return;
+    };
+    let Ok(text) = marrow_syntax::decode_string_literal(text) else {
+        return;
+    };
+    if !marrow_schema::error::is_error_code_text(&text) {
+        diagnostics.push(call_diagnostic(
+            file,
+            *span,
+            format!("{label} expects a dotted lowercase error code"),
+        ));
+    }
+}
+
+fn check_conversion_call_shape(
+    target: ConversionTarget,
+    args: &[marrow_syntax::Argument],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let label = target.spelling();
+    check_arity(label, 1, args, span, file, diagnostics);
+    if let [arg] = args
+        && let Some(name) = &arg.name
+    {
+        diagnostics.push(call_diagnostic(
+            file,
+            span,
+            format!("argument to `{label}` cannot be named `{name}`"),
+        ));
+    }
 }
 
 fn check_value_materialization_args(

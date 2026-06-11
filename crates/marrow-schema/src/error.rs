@@ -64,3 +64,53 @@ pub fn fields() -> &'static [ErrorField] {
 pub fn field(name: &str) -> Option<&'static ErrorField> {
     FIELDS.iter().find(|field| field.name == name)
 }
+
+/// Whether `text` is a valid error code: lowercase letters, digits, and
+/// underscores grouped into dot-separated non-empty segments, with at least one
+/// dot. The checker and runtime both validate ErrorCode text through this.
+pub fn is_error_code_text(text: &str) -> bool {
+    let mut saw_dot = false;
+    let mut segment_has_char = false;
+    for byte in text.bytes() {
+        match byte {
+            b'.' => {
+                if !segment_has_char {
+                    return false;
+                }
+                saw_dot = true;
+                segment_has_char = false;
+            }
+            b'a'..=b'z' | b'0'..=b'9' | b'_' => segment_has_char = true,
+            _ => return false,
+        }
+    }
+    saw_dot && segment_has_char
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_error_code_text;
+
+    #[test]
+    fn accepts_dotted_lowercase_codes() {
+        for code in ["book.absent", "app.bad_input", "a.b.c", "x9.y0"] {
+            assert!(is_error_code_text(code), "{code} should be valid");
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_codes() {
+        for code in [
+            "",
+            "boom",
+            "Not A Valid Code!!!",
+            ".leading",
+            "trailing.",
+            "double..dot",
+            "Upper.case",
+            "has space.x",
+        ] {
+            assert!(!is_error_code_text(code), "{code} should be invalid");
+        }
+    }
+}

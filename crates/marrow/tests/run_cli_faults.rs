@@ -58,6 +58,28 @@ fn an_uncaught_throw_surfaces_the_thrown_code() {
 }
 
 #[test]
+fn a_dynamically_built_invalid_error_code_faults_typed_at_run() {
+    let root = temp_project("run-bad-dynamic-code", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main()\n    throw Error(code: \"Not \" _ \"Valid!\", message: \"boom\")\n",
+        );
+    });
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let fault = parse_fault(&output.stderr);
+    assert_eq!(fault.code, "run.type");
+    assert_eq!(fault.line, Some(4));
+}
+
+#[test]
 fn an_uncaught_unique_conflict_surfaces_its_write_code() {
     // A managed-write fault that escapes the entry is fatal: it exits non-zero and its
     // `write.unique_conflict` code surfaces, even though the fault is also catchable

@@ -33,6 +33,14 @@ pub(crate) fn eval_error_constructor(
                 span,
             ));
         }
+        if name == marrow_schema::error::CODE
+            && !matches!(&value, Value::Str(text) if marrow_schema::error::is_error_code_text(text))
+        {
+            return Err(type_error(
+                "`Error.code` expects a dotted lowercase error code",
+                span,
+            ));
+        }
         fields.push((name.clone(), value));
     }
     for required in marrow_schema::error::fields()

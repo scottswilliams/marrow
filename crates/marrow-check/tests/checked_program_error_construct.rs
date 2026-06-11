@@ -6,11 +6,11 @@ use support::{config, temp_project, write};
 
 // --- `Error(...)` constructor field typing ------------------------------------
 //
-// `Error(...)` is checked as a resource constructor against the one `Error` field
-// contract (`code: string` required, `message: string` required, `help: string`
-// optional, `data: unknown` optional). A wrong field type, an unknown field, a
+// `Error(...)` is checked as a resource constructor against the one `Error`
+// field contract (`code` required with ErrorCode grammar, `message` required,
+// `help` optional, `data` optional). A wrong field type, an unknown field, a
 // missing required field, or a duplicate field is a compile error at the call
-// site, not a runtime fault. The field set and types are owned by
+// site, not a runtime fault. The field set and code grammar are owned by
 // `marrow_schema::error`; the checker must not invent its own.
 
 /// Build a one-module project whose single function constructs `Error(args)` and
@@ -142,4 +142,31 @@ fn positional_argument_is_a_call_argument_error() {
         codes.iter().any(|code| code == "check.call_argument"),
         "{codes:#?}"
     );
+}
+
+#[test]
+fn an_invalid_literal_code_is_a_call_argument_error() {
+    let codes = error_construct_codes(
+        "invalid-code",
+        "code: \"Not A Valid Code!!!\", message: \"boom\"",
+    );
+    assert!(
+        codes.iter().any(|code| code == "check.call_argument"),
+        "{codes:#?}"
+    );
+}
+
+#[test]
+fn a_dotless_literal_code_is_a_call_argument_error() {
+    let codes = error_construct_codes("dotless-code", "code: \"boom\", message: \"boom\"");
+    assert!(
+        codes.iter().any(|code| code == "check.call_argument"),
+        "{codes:#?}"
+    );
+}
+
+#[test]
+fn a_valid_literal_code_checks_clean() {
+    let codes = error_construct_codes("valid-code", "code: \"app.bad_input\", message: \"boom\"");
+    assert!(codes.is_empty(), "{codes:#?}");
 }

@@ -610,3 +610,33 @@ fn std_log_error_of_an_error_constructor_checks_clean() {
         "log::error(Error(...)) is the spec-canonical call"
     );
 }
+
+#[test]
+fn an_unsupported_string_escape_is_flagged_at_check_time() {
+    let found = check_script(
+        "string-escape-unsupported",
+        "fn f()\n    const s: string = \"x\\q\"\n",
+        "check.string_escape",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn supported_string_escapes_check_clean() {
+    let found = check_script(
+        "string-escape-supported",
+        "fn f()\n    const s: string = \"a\\\\b\\\"c\\nd\\re\\tf\"\n",
+        "check.string_escape",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_unsupported_escape_in_an_interpolation_text_segment_is_flagged() {
+    let found = check_script(
+        "string-escape-interpolation",
+        "fn f()\n    print($\"bad\\q here\")\n",
+        "check.string_escape",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}

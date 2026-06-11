@@ -146,30 +146,9 @@ fn convert_to_string(value: Value, span: SourceSpan) -> Result<Value, RuntimeErr
 
 fn convert_to_error_code(value: Value, span: SourceSpan) -> Result<Value, RuntimeError> {
     match value {
-        Value::Str(text) if is_error_code_text(&text) => Ok(Value::Str(text)),
+        Value::Str(text) if marrow_schema::error::is_error_code_text(&text) => Ok(Value::Str(text)),
         _ => Err(conversion_error("ErrorCode", span)),
     }
-}
-
-fn is_error_code_text(text: &str) -> bool {
-    let mut saw_dot = false;
-    let mut segment_has_char = false;
-    for byte in text.bytes() {
-        match byte {
-            b'.' => {
-                if !segment_has_char {
-                    return false;
-                }
-                saw_dot = true;
-                segment_has_char = false;
-            }
-            b'a'..=b'z' | b'0'..=b'9' | b'_' => {
-                segment_has_char = true;
-            }
-            _ => return false,
-        }
-    }
-    saw_dot && segment_has_char
 }
 
 fn convert_to_canonical_scalar(

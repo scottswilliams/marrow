@@ -268,6 +268,46 @@ fn conversion_calls_reject_known_unsupported_sources() {
 }
 
 #[test]
+fn conversion_calls_reject_extra_arguments() {
+    let found = check_module(
+        "conv-extra-args",
+        "module m\n\
+         fn f()\n\
+         \x20   const asBool = bool(1, 1)\n\
+         \x20   const asInt = int(\"1\", \"2\")\n\
+         \x20   const asString = string(1, 2)\n\
+         \x20   const asCode = ErrorCode(\"app.ok\", \"app.ok\")\n\
+         \x20   const asBytes = bytes(\"a\", \"b\")\n\
+         \x20   const asDate = date(\"2026-01-01\", \"2026-01-02\")\n\
+         \x20   const asInstant = instant(\"2026-01-01T00:00:00Z\", \"2026-01-02T00:00:00Z\")\n\
+         \x20   const asDuration = duration(\"PT1S\", \"PT2S\")\n\
+         \x20   const asDecimal = decimal(\"1.0\", \"2.0\")\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 9, "{found:#?}");
+}
+
+#[test]
+fn conversion_calls_reject_named_arguments() {
+    let found = check_module(
+        "conv-named-args",
+        "module m\n\
+         fn f()\n\
+         \x20   const asBool = bool(value: 1)\n\
+         \x20   const asInt = int(value: \"1\")\n\
+         \x20   const asString = string(value: 1)\n\
+         \x20   const asCode = ErrorCode(value: \"app.ok\")\n\
+         \x20   const asBytes = bytes(value: \"a\")\n\
+         \x20   const asDate = date(value: \"2026-01-01\")\n\
+         \x20   const asInstant = instant(value: \"2026-01-01T00:00:00Z\")\n\
+         \x20   const asDuration = duration(value: \"PT1S\")\n\
+         \x20   const asDecimal = decimal(value: \"1.0\")\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 9, "{found:#?}");
+}
+
+#[test]
 fn interpolation_rejects_enum_values() {
     let found = check_module(
         "interp-enum",
@@ -290,15 +330,35 @@ fn interpolation_rejects_enum_values() {
 
 #[test]
 fn an_error_code_conversion_into_an_error_code_place_is_not_flagged() {
-    // `ErrorCode(raw)` is `ErrorCode`, matching the declared `ErrorCode` place —
-    // the documented `const code: ErrorCode = ErrorCode(raw)` conversion checks
-    // clean (no false `check.untyped_value`).
     let found = check_module(
         "conv-error-code",
         "module m\nfn f(raw: unknown)\n    const code: ErrorCode = ErrorCode(raw)\n",
         "check.untyped_value",
     );
     assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_invalid_literal_error_code_conversion_is_a_call_argument_error() {
+    let found = check_module(
+        "conv-error-code-invalid",
+        "module m\nfn f(): ErrorCode\n    return ErrorCode(\"Not A Valid Code!!!\")\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn invalid_error_code_literals_with_bad_conversion_shape_are_diagnosed() {
+    let report = check_module_report(
+        "conv-error-code-invalid-shape",
+        "module m\n\
+         fn f()\n\
+         \x20   const extra = ErrorCode(\"Not A Valid Code!!!\", \"app.ok\")\n\
+         \x20   const named = ErrorCode(code: \"Not A Valid Code!!!\", other: \"app.ok\")\n",
+    );
+    let found = with_code(&report, "check.call_argument");
+    assert!(found.len() >= 2, "{:#?}", report.diagnostics);
 }
 
 #[test]
@@ -335,4 +395,48 @@ fn type_surface_caught_error_fields_have_declared_types() {
          \x20       const message: string = err.message\n",
     );
     assert_clean(&report);
+}
+
+#[test]
+fn an_unknown_op_in_a_closed_pure_module_is_flagged_at_check() {
+    let found = check_module(
+        "std-closed-unknown-op",
+        "module m\nfn f()\n    std::math::bogus(1)\n",
+        "check.unresolved_call",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(
+        found[0].message.contains("std::math::bogus"),
+        "the diagnostic must name the unknown op: {found:#?}"
+    );
+}
+
+#[test]
+fn an_unknown_op_in_std_assert_is_flagged_at_check() {
+    let found = check_module(
+        "std-assert-unknown-op",
+        "module m\nfn f()\n    std::assert::equal(1, 1)\n",
+        "check.unresolved_call",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_known_op_in_a_closed_pure_module_checks_clean() {
+    let found = check_module(
+        "std-closed-known-op",
+        "module m\nfn f(): int\n    return std::math::absInt(-1)\n",
+        "check.unresolved_call",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_unknown_op_in_a_host_module_stays_module_open_at_check() {
+    let found = check_module(
+        "std-host-open-op",
+        "module m\nfn f()\n    std::io::frobnicate(\"p\")\n",
+        "check.unresolved_call",
+    );
+    assert!(found.is_empty(), "{found:#?}");
 }

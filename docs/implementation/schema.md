@@ -31,8 +31,8 @@ Every `compile_*` entry returns the schema **and** a `Vec<SchemaError>` together
 
 Two single-source tables live here so checker and runtime never grow parallel copies:
 
-- **`stdlib.rs`** — one `StdOp` row per `std::<module>::<op>`: param types, return type, and the runtime `Capability` family (`Pure`/`Clock`/`Env`/`Log`/`Io`/`Assert`). `lookup` types calls in the checker; the runtime dispatches off the same rows. An op absent from the table is unrecognized: its type stays `Unknown` and arg checking stays the runtime's job.
-- **`error.rs`** — the one descriptor of the builtin `Error` shape (`code`/`message` required, `help`/`data` optional). `fields` / `field` serve both checker field-typing and runtime construction validation.
+- **`stdlib.rs`** — one `StdOp` row per `std::<module>::<op>`: param types, return type, and the runtime `Capability` family (`Pure`/`Clock`/`Env`/`Log`/`Io`/`Assert`). `lookup` types calls in the checker; the runtime dispatches off the same rows. `module_is_closed` lets the checker reject unknown ops in closed pure modules; host modules are outside that closed-module rule, and only recognized host helpers lower to runtime capabilities.
+- **`error.rs`** — the one descriptor of the builtin `Error` shape (`code`/`message` required, `help`/`data` optional) plus the shared error-code grammar. `fields` / `field` serve checker field-typing and runtime construction validation; `is_error_code_text` serves `ErrorCode` conversion and `Error.code`.
 
 ## Module map
 
@@ -44,8 +44,8 @@ Two single-source tables live here so checker and runtime never grow parallel co
 | `crates/marrow-schema/src/errors.rs` | The `SchemaError` vocabulary: `SchemaErrorKind`, the typed target enums, the `schema.*` codes, and the message constructors |
 | `crates/marrow-schema/src/compile.rs` | The `compile_*` entries, member→`Node` lowering with sequence/map desugaring (`MapLeaf`), enum flattening, and `map`/`sequence` type-spelling parsing |
 | `crates/marrow-schema/src/validate.rs` | Single-declaration validation: duplicate-name tracking, the orderable-scalar key allowlist, store identity-key/index checks, and the saved-member rules |
-| `crates/marrow-schema/src/stdlib.rs` | The `std::<module>::<op>` descriptor table (`StdOp`, `Capability`) with `lookup` and `all` |
-| `crates/marrow-schema/src/error.rs` | The builtin `Error` shape (`ErrorField`, `FIELDS`) with `fields` and `field` |
+| `crates/marrow-schema/src/stdlib.rs` | The `std::<module>::<op>` descriptor table (`StdOp`, `Capability`) with `lookup`, `module_is_closed`, and `all` |
+| `crates/marrow-schema/src/error.rs` | The builtin `Error` shape (`ErrorField`, `FIELDS`) with `fields`, `field`, and `is_error_code_text` |
 
 ## Type resolution
 

@@ -6,7 +6,7 @@ mod support;
 
 use support::*;
 
-use marrow_run::{RUN_TYPE, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, Value};
+use marrow_run::{RUN_TYPE, RUN_UNKNOWN_FUNCTION, Value};
 use marrow_store::tree::TreeStore;
 
 #[test]
@@ -69,9 +69,11 @@ fn string_escapes_are_decoded() {
 }
 
 #[test]
-fn unknown_string_escapes_are_rejected() {
-    let result = eval_source("pub fn f(): string\n    return \"\\q\"\n", "f", Vec::new());
-    assert_run_error(result, RUN_UNSUPPORTED);
+fn unknown_string_escapes_are_rejected_at_check() {
+    checker_rejects(
+        "pub fn f(): string\n    return \"\\q\"\n",
+        "check.string_escape",
+    );
 }
 
 #[test]
@@ -131,19 +133,20 @@ fn interpolation_text_decodes_string_escapes() {
 }
 
 #[test]
-fn unknown_interpolation_escapes_are_rejected() {
-    let result = eval_source("pub fn f(): string\n    return $\"\\q\"\n", "f", Vec::new());
-    assert_run_error(result, RUN_UNSUPPORTED);
+fn unknown_interpolation_escapes_are_rejected_at_check() {
+    checker_rejects(
+        "pub fn f(): string\n    return $\"\\q\"\n",
+        "check.string_escape",
+    );
 }
 
 #[test]
-fn interpolation_rejects_later_bad_escapes_before_evaluating_holes() {
-    let program = checked_program(
+fn an_interpolation_bad_escape_beside_a_hole_is_rejected_at_check() {
+    checker_rejects(
         "pub fn boom(): decimal\n    return 1.0 / 0.0\n\n\
          pub fn f(): string\n    return $\"{boom()}\\q\"\n",
+        "check.string_escape",
     );
-    let result = run(checked_entry!(&program, "test::f"));
-    assert_run_error(result, RUN_UNSUPPORTED);
 }
 
 #[test]

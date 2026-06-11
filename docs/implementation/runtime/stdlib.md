@@ -18,9 +18,9 @@ Dispatch enters from `eval_std_call` and `eval_builtin_call` in `crates/marrow-r
 | `crates/marrow-run/src/host_effects.rs` | Capability handlers `eval_clock_capability`/`eval_env`/`eval_log`/`eval_io`; capability gating and rollback-sensitive write guarding. |
 | `crates/marrow-run/src/stdlib/args.rs` | Typed arg evaluators: `eval_typed_arg` plus `eval_bytes`/`decimal`/`instant`/`date`/`duration`/`text_arg` coerce one `ExecArg` to a concrete `Value`. |
 | `crates/marrow-run/src/stdlib/assertions.rs` | `std::assert`: `isTrue`/`isFalse`/`absent`/`fail`; raises `run.assert` on failure, returns `None` on success. |
-| `crates/marrow-run/src/stdlib/conversion.rs` | Scalar/ErrorCode/bytes conversions driven by `ConversionKind`; parses via store `decode_value`/`Decimal`, splitting decimal overflow from malformed text. |
+| `crates/marrow-run/src/stdlib/conversion.rs` | Scalar/ErrorCode/bytes conversions driven by `ConversionKind`; parses via store `decode_value`/`Decimal`, splitting decimal overflow from malformed text and validating ErrorCode text through `marrow_schema::error`. |
 | `crates/marrow-run/src/stdlib/count.rs` | `count`/`exists` over saved paths and local collections; routes through specialized counters before falling back to a store child-count. |
-| `crates/marrow-run/src/stdlib/error_constructor.rs` | `Error(...)`: validates named args against the `marrow_schema::error` field table, builds a `Value::Resource` of `(name, value)` fields. |
+| `crates/marrow-run/src/stdlib/error_constructor.rs` | `Error(...)`: validates named args and `code` text against `marrow_schema::error`, then builds a `Value::Resource` of `(name, value)` fields. |
 | `crates/marrow-run/src/stdlib/index_lookup.rs` | Unique-index lookup: resolves a checked `Index` terminal to an `IndexAddress`, scans, decodes the payload to an identity, answers presence/count. |
 | `crates/marrow-run/src/stdlib/math.rs` | Integer `int_remainder` (shared with the `%` remainder operator lowering) and `int_modulo` (backs `std::math::modulo` only); divide-by-zero/overflow faults, sign from divisor. |
 | `crates/marrow-run/src/stdlib/output.rs` | `print`/`write`: `OutputKind` selects trailing newline, guards the write, appends to `env.output` (not the host log sink). |
