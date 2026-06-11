@@ -329,6 +329,107 @@ fn interpolation_rejects_enum_values() {
 }
 
 #[test]
+fn interpolation_rejects_temporal_values() {
+    let found = check_module(
+        "interp-temporals",
+        "module m\n\
+         fn f(): string\n\
+         \x20   const d = std::clock::parseDate(\"2026-01-01\")\n\
+         \x20   const i = std::clock::parseInstant(\"2026-01-01T00:00:00Z\")\n\
+         \x20   const span = 1.hour\n\
+         \x20   return $\"{d} {i} {span}\"\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 3, "{found:#?}");
+    for source in [
+        MarrowType::Primitive(ScalarType::Date),
+        MarrowType::Primitive(ScalarType::Instant),
+        MarrowType::Primitive(ScalarType::Duration),
+    ] {
+        assert!(
+            found.iter().any(|diagnostic| diagnostic.payload
+                == DiagnosticPayload::InterpolationUnsupportedSource {
+                    source: source.clone(),
+                }),
+            "{source:?}: {found:#?}"
+        );
+    }
+}
+
+#[test]
+fn print_and_write_reject_non_renderable_values() {
+    let found = check_module(
+        "output-non-renderable",
+        "module m\n\
+         enum Color\n    red\n    green\n\n\
+         resource Book at ^books(id: int)\n    required title: string\n\n\
+         fn f(c: Color, items: sequence[string], book: Book)\n\
+         \x20   const d = std::clock::parseDate(\"2026-01-01\")\n\
+         \x20   const i = std::clock::parseInstant(\"2026-01-01T00:00:00Z\")\n\
+         \x20   const span = 1.hour\n\
+         \x20   const b = b\"hi\"\n\
+         \x20   print(d)\n\
+         \x20   write(i)\n\
+         \x20   print(span)\n\
+         \x20   write(b)\n\
+         \x20   print(c)\n\
+         \x20   write(items)\n\
+         \x20   print(book)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 7, "{found:#?}");
+}
+
+#[test]
+fn exists_rejects_neighbor_values() {
+    for neighbor in ["next", "prev"] {
+        let found = check_module(
+            &format!("exists-{neighbor}"),
+            &format!(
+                "module m\n\
+                 resource Book at ^books(id: int)\n    required title: string\n\n\
+                 fn f(): bool\n    return exists({neighbor}(^books(1)))\n",
+            ),
+            "check.call_argument",
+        );
+        assert_eq!(found.len(), 1, "{neighbor}: {found:#?}");
+    }
+}
+
+#[test]
+fn exists_rejects_coalesced_neighbor_values() {
+    for neighbor in ["next", "prev"] {
+        let found = check_module(
+            &format!("exists-coalesced-{neighbor}"),
+            &format!(
+                "module m\n\
+                 resource Book at ^books(id: int)\n    required title: string\n\n\
+                 fn f(fallback: Id(^books)): bool\n\
+                 \x20   return exists({neighbor}(^books(1)) ?? fallback)\n",
+            ),
+            "check.call_argument",
+        );
+        assert_eq!(found.len(), 1, "{neighbor}: {found:#?}");
+    }
+}
+
+#[test]
+fn exists_rejects_plain_values() {
+    for expression in ["id", "1"] {
+        let found = check_module(
+            &format!("exists-value-{expression}"),
+            &format!(
+                "module m\n\
+                 resource Book at ^books(id: int)\n    required title: string\n\n\
+                 fn f(id: int): bool\n    return exists({expression})\n",
+            ),
+            "check.call_argument",
+        );
+        assert_eq!(found.len(), 1, "{expression}: {found:#?}");
+    }
+}
+
+#[test]
 fn an_error_code_conversion_into_an_error_code_place_is_not_flagged() {
     let found = check_module(
         "conv-error-code",

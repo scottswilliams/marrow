@@ -10,10 +10,13 @@ use marrow_schema::{ResourceSchema, Type};
 use marrow_store::value::ScalarType;
 use marrow_syntax::SourceSpan;
 
-use crate::infer::{layer_key_type, record_identity_type, saved_group_chain};
+use crate::infer::{
+    is_saved_path_expression, layer_key_type, record_identity_type, saved_group_chain,
+};
 use crate::resolve::resolve_store_by_root;
 use crate::typerules::{
     as_primitive, expects_conversion, marrow_type_name, mismatch_display, type_compatible,
+    type_renderable_at_runtime,
 };
 use crate::{
     AppendTargetDiagnostic, CHECK_AMBIGUOUS_CALL, CHECK_CALL_ARGUMENT,
@@ -171,6 +174,7 @@ fn check_builtin_call(
         return ty;
     }
     check_builtin_call_args(
+        env.program,
         segments,
         args,
         arg_types,
@@ -395,6 +399,7 @@ fn check_user_function_call(
 }
 
 fn check_builtin_call_args(
+    program: &CheckedProgram,
     segments: &[String],
     args: &[marrow_syntax::Argument],
     arg_types: &[MarrowType],
@@ -403,12 +408,61 @@ fn check_builtin_call_args(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let [name] = segments else { return };
+    match name.as_str() {
+        "print" | "write" => {
+            check_output_args(name, arg_types, span, file, diagnostics);
+            return;
+        }
+        "exists" => {
+            check_exists_args(program, args, span, file, diagnostics);
+            return;
+        }
+        _ => {}
+    }
     if let Some(target) = ConversionTarget::from_name(name) {
         check_conversion_call_shape(target, args, span, file, diagnostics);
         check_conversion_arg(target, arg_types, span, file, diagnostics);
         if target == ConversionTarget::ErrorCode {
             check_error_code_conversion_literal(args, file, diagnostics);
         }
+    }
+}
+
+fn check_output_args(
+    label: &str,
+    arg_types: &[MarrowType],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    for arg_type in arg_types {
+        if type_renderable_at_runtime(arg_type) == Some(false) {
+            diagnostics.push(call_diagnostic(
+                file,
+                span,
+                format!(
+                    "argument to `{label}` cannot render `{}`; convert it explicitly",
+                    marrow_type_name(arg_type),
+                ),
+            ));
+        }
+    }
+}
+
+fn check_exists_args(
+    program: &CheckedProgram,
+    args: &[marrow_syntax::Argument],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let [arg] = args else { return };
+    if !is_saved_path_expression(program, &arg.value) {
+        diagnostics.push(call_diagnostic(
+            file,
+            span,
+            "`exists` expects a saved path".to_string(),
+        ));
     }
 }
 

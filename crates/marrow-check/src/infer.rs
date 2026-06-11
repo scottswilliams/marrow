@@ -16,7 +16,9 @@ use crate::enums::{
 };
 use crate::program::TypeNames;
 use crate::resolve::resolve_store_by_root;
-use crate::typerules::{check_literal_range, marrow_type_name, type_compatible};
+use crate::typerules::{
+    check_literal_range, marrow_type_name, type_compatible, type_renderable_at_runtime,
+};
 use crate::{
     CHECK_AMBIGUOUS_MEMBER, CHECK_CATEGORY_NOT_SELECTABLE, CHECK_COLLECTION_UNSUPPORTED,
     CHECK_OPERATOR_TYPE, CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_ENUM_MEMBER, CHECK_UNRESOLVED_NAME,
@@ -159,10 +161,7 @@ pub(crate) fn infer_type(
                     }
                     marrow_syntax::InterpolationPart::Expr(expr) => {
                         let ty = infer_type(program, expr, scope, aliases, file, diagnostics);
-                        if matches!(
-                            ty,
-                            MarrowType::Primitive(ScalarType::Bytes) | MarrowType::Enum { .. }
-                        ) {
+                        if type_renderable_at_runtime(&ty) == Some(false) {
                             diagnostics.push(interpolation_unsupported_source_diagnostic(
                                 file,
                                 expr.span(),
@@ -939,7 +938,10 @@ fn count_builtin_type(
     }
 }
 
-fn is_saved_path_expression(program: &CheckedProgram, expr: &marrow_syntax::Expression) -> bool {
+pub(crate) fn is_saved_path_expression(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+) -> bool {
     use marrow_syntax::Expression;
     match expr {
         Expression::SavedRoot { name, .. } => resolve_store_by_root(program, name).is_some(),
