@@ -409,9 +409,13 @@ pub fn write_data_value(
     path: &[DataPathSegment],
     value: SavedValue,
 ) {
+    let store_id = store_catalog_id(program, root);
+    store
+        .write_node(&store_id, identity)
+        .expect("typed record node write succeeds");
     store
         .write_data_value(
-            &store_catalog_id(program, root),
+            &store_id,
             identity,
             path,
             encode_value(&value).expect("test value encodes"),

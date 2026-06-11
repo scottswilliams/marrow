@@ -14,7 +14,7 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 - **Public facade** — `TreeStore` wraps a boxed `Backend` and exposes every typed write/read/navigation/transaction/snapshot/backup call other crates use.
 - **Durable receipts** — `metadata` (`CommitMetadata`, `EngineProfile`, the source digest the activation fence binds).
 - **Catalog table** — `catalog` persists the accepted `marrow_catalog::CatalogMetadata` as a header row plus one row per entry in its own physical family (`FAMILY_CATALOG`), written in the caller's transaction and invisible to data/index/meta access; a read verifies the stored header against the decoded rows, accepts the canonical order-insensitive digest or the legacy order-sensitive row-order digest, and returns a snapshot normalized to the canonical digest.
-- **Backup** — `backup` streams the data family only; index and meta cells are restamped on restore, never archived.
+- **Backup** — `backup` streams data-family node and value cells; index and meta cells are restamped on restore, never archived.
 
 ## Modules
 
@@ -27,7 +27,7 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 | `crates/marrow-store/src/decimal.rs` | Exact canonical base-10 `Decimal`: parse, `to_text`, checked add/sub/mul, long-division `checked_div`, floor/abs/compare. |
 | `crates/marrow-store/src/cell.rs` | The v0 physical key grammar: `CatalogId` validation, `CellKey` constructors per family, `DataPathSegment`, `MetaCell` tags, key decoders, `CellRange`. |
 | `crates/marrow-store/src/codec.rs` | Shared bounds-checked reader for private length-prefixed store codecs. |
-| `crates/marrow-store/src/tree.rs` | `TreeStore` facade over a boxed `Backend`: metadata, the catalog-table read/replace surface, typed writes/reads, child/record/index navigation, paged index scans, backup streaming, snapshots. |
+| `crates/marrow-store/src/tree.rs` | `TreeStore` facade over a boxed `Backend`: metadata, the catalog-table read/replace surface, typed writes/reads, node-backed record navigation, child/index navigation, paged index scans, backup streaming, snapshots. |
 | `crates/marrow-store/src/metadata.rs` | `EngineProfile`, `CommitMetadata`, and their length-prefixed binary codec with bounded-count guards. |
 | `crates/marrow-store/src/catalog.rs` | The accepted-catalog table codec: header/entry rows under `FAMILY_CATALOG`, bounded paged scan, ordinal-contiguity, canonical digest normalization, legacy order-sensitive digest compatibility, and read/replace through `TreeStore`. |
 | `crates/marrow-store/src/mem.rs` | `MemStore`: in-memory `Backend` with full-map clone savepoints and a frozen pinned-read snapshot. |

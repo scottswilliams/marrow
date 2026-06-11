@@ -7,6 +7,7 @@ use crate::{CheckedProgram, CheckedSavedMember, CheckedSavedMemberKind, checked_
 
 use super::query::data_query_under_prefix;
 use super::query_error::QueryError;
+use super::record_nav;
 use super::render::render_query_segments;
 use super::shape::{
     cursor_names_value_path, path_can_match, query_segment_for_member, tooling_catalog_id,
@@ -326,13 +327,25 @@ fn first_identity_under(
     if prefix.len() == query.storage.identity_arity {
         return Ok(Some(prefix.to_vec()));
     }
-    let Some(child) = store.record_first_child(&query.storage.store, prefix)? else {
+    let Some(child) = record_nav::first_record_child(
+        store,
+        &query.storage.store,
+        prefix,
+        query.storage.identity_arity,
+    )?
+    else {
         return Ok(None);
     };
     let mut identity = prefix.to_vec();
     identity.push(child);
     while identity.len() < query.storage.identity_arity {
-        let Some(child) = store.record_first_child(&query.storage.store, &identity)? else {
+        let Some(child) = record_nav::first_record_child(
+            store,
+            &query.storage.store,
+            &identity,
+            query.storage.identity_arity,
+        )?
+        else {
             return Ok(None);
         };
         identity.push(child);
@@ -348,7 +361,13 @@ fn next_identity_after(
     for level in (query.storage.identity.len()..identity.len()).rev() {
         let prefix = &identity[..level];
         let anchor = &identity[level];
-        if let Some(next) = store.record_next_child(&query.storage.store, prefix, anchor)? {
+        if let Some(next) = record_nav::next_record_child(
+            store,
+            &query.storage.store,
+            prefix,
+            query.storage.identity_arity,
+            anchor,
+        )? {
             let mut candidate = prefix.to_vec();
             candidate.push(next);
             return first_identity_under(store, query, &candidate);

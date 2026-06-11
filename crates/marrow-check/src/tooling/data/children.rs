@@ -6,6 +6,7 @@ use crate::{CheckedProgram, CheckedSavedMember, checked_saved_root_place};
 
 use super::query::resolve_data_query;
 use super::query_error::QueryError;
+use super::record_nav;
 use super::shape::{declared_members_below_path, tooling_catalog_id};
 use super::traversal::data_roots_in_store;
 use super::{DataChild, DataChildrenPage, DataQuery, DataQuerySegment};
@@ -115,15 +116,29 @@ fn record_children(
     resume: Option<&SavedKey>,
 ) -> Result<DataChildrenPage, ToolingError> {
     let first = match resume {
-        Some(anchor) => {
-            store.record_next_child(&query.storage.store, &query.storage.identity, anchor)?
-        }
-        None => store.record_first_child(&query.storage.store, &query.storage.identity)?,
+        Some(anchor) => record_nav::next_record_child(
+            store,
+            &query.storage.store,
+            &query.storage.identity,
+            query.storage.identity_arity,
+            anchor,
+        )?,
+        None => record_nav::first_record_child(
+            store,
+            &query.storage.store,
+            &query.storage.identity,
+            query.storage.identity_arity,
+        )?,
     };
     page_key_children(first, limit, |anchor| {
-        store
-            .record_next_child(&query.storage.store, &query.storage.identity, anchor)
-            .map_err(ToolingError::Store)
+        record_nav::next_record_child(
+            store,
+            &query.storage.store,
+            &query.storage.identity,
+            query.storage.identity_arity,
+            anchor,
+        )
+        .map_err(ToolingError::Store)
     })
 }
 

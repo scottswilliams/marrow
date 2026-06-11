@@ -224,16 +224,6 @@ pub(crate) fn decode_data_child_key(bytes: &[u8]) -> Result<Option<SavedKey>, Ma
     Ok(Some(key))
 }
 
-/// Decodes the first record-identity key after a record prefix; `Ok(None)` for an
-/// empty tail or a leading `NODE_END`, which both sit past the identity run.
-pub(crate) fn decode_record_child_key(bytes: &[u8]) -> Result<Option<SavedKey>, MalformedKey> {
-    if bytes.first().copied().is_none_or(|tag| tag == NODE_END) {
-        return Ok(None);
-    }
-    let (key, _) = decode_key_value(bytes).ok_or(MalformedKey)?;
-    Ok(Some(key))
-}
-
 /// Decodes the next index-family child key after an index-key prefix: the next index
 /// key, or the first identity key past the `INDEX_IDENTITY` separator.
 pub(crate) fn decode_index_child_key(bytes: &[u8]) -> Result<Option<SavedKey>, MalformedKey> {
@@ -516,7 +506,7 @@ mod tests {
     use super::{
         CatalogId, CellKey, DataCellKind, DataPathSegment, FAMILY_DATA, SequencePosition,
         decode_data_cell_key, decode_index_child_key, decode_index_entry_key,
-        decode_index_identity, decode_record_child_key, encode_id, family,
+        decode_index_identity, encode_id, family,
     };
     use crate::key::SavedKey;
 
@@ -659,27 +649,12 @@ mod tests {
     }
 
     #[test]
-    fn record_child_decode_reads_the_first_identity_key() {
-        let store = store_id("");
-        let identity = [SavedKey::Int(5)];
-        let node = CellKey::node(&store, &identity);
-        let prefix = CellKey::record_prefix(&store, &[]);
-        assert_eq!(
-            decode_record_child_key(after_prefix(&prefix, &node)),
-            Ok(Some(identity[0].clone())),
-        );
-    }
-
-    #[test]
     fn child_decoders_stop_cleanly_past_their_run_and_reject_malformed_bytes() {
-        // A node terminator and an empty tail sit past the record/index child run.
-        assert_eq!(decode_record_child_key(&[0x00]), Ok(None));
-        assert_eq!(decode_record_child_key(&[]), Ok(None));
+        // A separator and an empty tail sit past the index child run.
         assert_eq!(decode_index_child_key(&[0x00]), Ok(None));
         assert_eq!(decode_index_child_key(&[]), Ok(None));
 
         // A child tag with an unparseable key body is malformed, not end-of-run.
-        assert!(decode_record_child_key(&[0xff]).is_err());
         assert!(decode_index_child_key(&[0xff]).is_err());
     }
 

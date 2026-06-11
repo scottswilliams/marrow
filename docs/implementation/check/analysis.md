@@ -20,7 +20,7 @@ Two halves live in `crates/marrow-check/src`:
 
 Path resolution is the single chokepoint: `resolve_query_steps` validates source-text or wire segments against a checked place's identity keys and member tree into a `StorageDataQuery` (physical store `CatalogId`, identity keys, data path), emitting typed `QueryError` on malformity. `ToolingError` keeps request-malformity (`Query`) distinct from store faults (`Store`); a missing or malformed checked catalog id stays `StoreError::Corruption` on purpose. Callers match variants, never prose.
 
-`shape.rs::classify_data_path` is the one member-tree shape owner, so the walk cursor's value-position test and integrity orphan detection share a single definition of "declared value path." Every walk and child listing pages with explicit limits, resume cursors, and truncated flags; counts use `checked_add` into `StoreError::LimitExceeded`. Integrity separates declared records (decode, key-type, enum-membership against schema and catalog) from orphan cells (data under a root/shape/member the schema no longer declares), each a typed `IntegrityProblem` with a stable code.
+`shape.rs::classify_data_path` is the one member-tree shape owner, so the walk cursor's value-position test and integrity orphan detection share a single definition of "declared value path." Every walk and child listing pages with explicit limits, resume cursors, and truncated flags; counts use `checked_add` into `StoreError::LimitExceeded`. Integrity separates declared records (decode, key-type, enum-membership against schema and catalog) from orphan cells (data under a root/shape/member the schema no longer declares, or under a record identity with no node cell), each a typed `IntegrityProblem` with a stable code.
 
 ## Modules
 
@@ -33,6 +33,7 @@ Path resolution is the single chokepoint: `resolve_query_steps` validates source
 | `crates/marrow-check/src/tooling/data/query.rs` | Path resolution: walk wire/source segments into a `StorageDataQuery` with typed `QueryError`; `data_query_under_prefix` containment. |
 | `crates/marrow-check/src/tooling/data/query_error.rs` | The `QueryError` enum (client-facing request errors) and `MemberFlavor`, with render-only `Display`. |
 | `crates/marrow-check/src/tooling/data/shape.rs` | The single member-tree shape classifier `classify_data_path` and its consumers (walk-cursor value test, integrity orphan detection). |
+| `crates/marrow-check/src/tooling/data/record_nav.rs` | Arity-aware record-child navigation for tooling scans, so partial identity prefixes only surface when an exact declared-arity record exists below them. |
 | `crates/marrow-check/src/tooling/data/read.rs` | `read_data_query`: resolve one query to its payload and `DataPresence` (Absent/ValueOnly/ChildrenOnly). |
 | `crates/marrow-check/src/tooling/data/children.rs` | Child listing: classify a path into roots/record-children/members/key-children/leaf; page keyed scans with a resume cursor. |
 | `crates/marrow-check/src/tooling/data/walk.rs` | `walk_data`: paged, filter-prefixed, cursor-resumable depth-first walk of leaf values; emits `DataWalkPage` with a next cursor. |

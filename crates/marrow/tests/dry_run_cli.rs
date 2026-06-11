@@ -107,9 +107,9 @@ fn dry_run_leaves_saved_data_unchanged() {
 
 #[test]
 fn dry_run_plan_matches_a_real_run() {
-    // The dry run's planned writes are exactly the records a real run commits. Run
-    // the entry for real, dump the store, and assert each expected path appears in
-    // the real store's dump.
+    // The dry run's planned value writes are exactly the leaf records a real run
+    // commits. Run the entry for real, dump the store, and assert each expected
+    // value path appears in the real store's dump.
     let dry_project = native_project("dryrun-plan-dry");
     let real_project = native_project("dryrun-plan-real");
     let dry_dir = dry_project.to_str().unwrap().to_string();
@@ -125,6 +125,7 @@ fn dry_run_plan_matches_a_real_run() {
         .as_array()
         .expect("planned array")
         .iter()
+        .filter(|step| step["value_b64"].is_string())
         .filter_map(|step| step["path"].as_str().map(str::to_string))
         .collect();
 
@@ -149,7 +150,7 @@ fn dry_run_plan_matches_a_real_run() {
         .filter_map(|record| record["path"].as_str())
         .collect();
 
-    // Every planned field write the dry run reported is a committed record in the real store.
+    // Every planned field value the dry run reported is a committed leaf record in the real store.
     for path in &planned_paths {
         assert!(
             real_paths.contains(&path.as_str()),
@@ -476,7 +477,7 @@ fn dry_run_json_flushes_the_plan_when_the_run_faults() {
         panic!("expected one dry-run JSON report before the fault: {records:?}");
     };
     assert_eq!(report["committed"], false, "{report}");
-    assert_eq!(report["writes"], 1, "{report}");
+    assert_eq!(report["writes"], 2, "{report}");
     assert_eq!(report["deletes"], 0, "{report}");
     assert!(
         report["planned"]
@@ -511,7 +512,7 @@ fn dry_run_jsonl_flushes_the_plan_when_the_run_faults() {
         panic!("expected one dry-run JSONL report before the fault: {records:?}");
     };
     assert_eq!(report["committed"], false, "{report}");
-    assert_eq!(report["writes"], 1, "{report}");
+    assert_eq!(report["writes"], 2, "{report}");
     assert!(
         report["planned"]
             .as_array()

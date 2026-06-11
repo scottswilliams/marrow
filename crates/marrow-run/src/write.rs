@@ -103,6 +103,7 @@ pub(crate) fn plan_resource_write(
     let mut steps = vec![PlanStep::DeleteData {
         address: data_address(place, identity, &[], &[], span)?,
     }];
+    steps.push(record_node_step(place, identity, span)?);
     for (path, bytes) in to_write {
         steps.push(PlanStep::WriteData {
             address: data_address(place, identity, &[], &path, span)?,
@@ -185,10 +186,13 @@ pub(crate) fn plan_field_write(
     })?;
     check_type(field, leaf, value)?;
     reject_field_unique_conflicts(place, identity, field, value, store, span)?;
-    let mut steps = vec![PlanStep::WriteData {
-        address: data_address(place, identity, &[], &[field.to_string()], span)?,
-        value: value.bytes()?,
-    }];
+    let mut steps = vec![
+        record_node_step(place, identity, span)?,
+        PlanStep::WriteData {
+            address: data_address(place, identity, &[], &[field.to_string()], span)?,
+            value: value.bytes()?,
+        },
+    ];
     stage_field_index_rewrites(&mut steps, place, identity, field, value, store, span)?;
     Ok(WritePlan { steps })
 }
@@ -207,10 +211,13 @@ pub(crate) fn plan_identity_field_write(
         message: format!("resource `{}` has no field `{field}`", place.resource_name),
     })?;
     Ok(WritePlan {
-        steps: vec![PlanStep::WriteData {
-            address: data_address(place, identity, &[], &[field.to_string()], span)?,
-            value: staged_identity_value(field, leaf, keys, referenced_arity)?,
-        }],
+        steps: vec![
+            record_node_step(place, identity, span)?,
+            PlanStep::WriteData {
+                address: data_address(place, identity, &[], &[field.to_string()], span)?,
+                value: staged_identity_value(field, leaf, keys, referenced_arity)?,
+            },
+        ],
     })
 }
 
@@ -332,11 +339,14 @@ pub(crate) fn plan_layer_leaf_write(
     };
     check_type(&layer.name, leaf, value)?;
     Ok(WritePlan {
-        steps: vec![PlanStep::WriteData {
-            address: DataAddress::layer_prefix(place, identity, layers, span)
-                .map_err(store_error)?,
-            value: value.bytes()?,
-        }],
+        steps: vec![
+            record_node_step(place, identity, span)?,
+            PlanStep::WriteData {
+                address: DataAddress::layer_prefix(place, identity, layers, span)
+                    .map_err(store_error)?,
+                value: value.bytes()?,
+            },
+        ],
     })
 }
 
@@ -356,11 +366,14 @@ pub(crate) fn plan_layer_identity_leaf_write(
         });
     };
     Ok(WritePlan {
-        steps: vec![PlanStep::WriteData {
-            address: DataAddress::layer_prefix(place, identity, layers, span)
-                .map_err(store_error)?,
-            value: staged_identity_value(&layer.name, leaf, keys, referenced_arity)?,
-        }],
+        steps: vec![
+            record_node_step(place, identity, span)?,
+            PlanStep::WriteData {
+                address: DataAddress::layer_prefix(place, identity, layers, span)
+                    .map_err(store_error)?,
+                value: staged_identity_value(&layer.name, leaf, keys, referenced_arity)?,
+            },
+        ],
     })
 }
 
@@ -379,10 +392,13 @@ pub(crate) fn plan_nested_field_write(
     })?;
     check_type(field, leaf, value)?;
     Ok(WritePlan {
-        steps: vec![PlanStep::WriteData {
-            address: data_address(place, identity, layers, &[field.to_string()], span)?,
-            value: value.bytes()?,
-        }],
+        steps: vec![
+            record_node_step(place, identity, span)?,
+            PlanStep::WriteData {
+                address: data_address(place, identity, layers, &[field.to_string()], span)?,
+                value: value.bytes()?,
+            },
+        ],
     })
 }
 
@@ -401,10 +417,13 @@ pub(crate) fn plan_nested_identity_field_write(
         message: format!("group layer has no field `{field}`"),
     })?;
     Ok(WritePlan {
-        steps: vec![PlanStep::WriteData {
-            address: data_address(place, identity, layers, &[field.to_string()], span)?,
-            value: staged_identity_value(field, leaf, keys, referenced_arity)?,
-        }],
+        steps: vec![
+            record_node_step(place, identity, span)?,
+            PlanStep::WriteData {
+                address: data_address(place, identity, layers, &[field.to_string()], span)?,
+                value: staged_identity_value(field, leaf, keys, referenced_arity)?,
+            },
+        ],
     })
 }
 
@@ -433,6 +452,7 @@ pub(crate) fn plan_layer_group_write(
     let mut steps = vec![PlanStep::DeleteData {
         address: DataAddress::layer_prefix(place, identity, layers, span).map_err(store_error)?,
     }];
+    steps.push(record_node_step(place, identity, span)?);
     for (path, bytes) in to_write {
         steps.push(PlanStep::WriteData {
             address: data_address(place, identity, layers, &path, span)?,
@@ -501,6 +521,16 @@ fn next_after(highest: i64) -> Result<i64, WriteError> {
     highest.checked_add(1).ok_or_else(|| WriteError {
         code: WRITE_ID_OVERFLOW,
         message: "the integer key space is exhausted; the highest key is i64::MAX".into(),
+    })
+}
+
+fn record_node_step(
+    place: &CheckedSavedPlace,
+    identity: &[SavedKey],
+    span: SourceSpan,
+) -> Result<PlanStep, WriteError> {
+    Ok(PlanStep::WriteNode {
+        address: DataAddress::record(place, identity, span).map_err(store_error)?,
     })
 }
 

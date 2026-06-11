@@ -14,6 +14,7 @@ use support::write;
 use support_data::{
     checked_place, checked_program, encode_identity_keys, field_path, integrity_problem, json,
     keyed_field_path, marrow, native_project, seeded_project, write_orphan_cell, write_tree_value,
+    write_tree_value_without_node,
 };
 
 const NATIVE_STORE_CONFIG: &str =
@@ -146,6 +147,30 @@ fn data_integrity_reports_an_undeclared_member_cell_as_data_orphan() {
     assert!(
         !text.contains("cafef00d") && !text.contains("cat_"),
         "{value}"
+    );
+}
+
+#[test]
+fn data_integrity_reports_a_leaf_without_its_record_node_as_data_orphan() {
+    let project = native_project("data-integrity-leaf-without-node");
+    let dir = project.to_str().unwrap().to_string();
+    let place = checked_place(&project, "counter");
+    write_tree_value_without_node(
+        &project,
+        "counter",
+        &[SavedKey::Int(1)],
+        &field_path(&place, "value"),
+        b"leaf without node".to_vec(),
+    );
+
+    let output = marrow(&["data", "integrity", "--format", "json", &dir]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let value = json(output);
+    let problem = integrity_problem(&value, "data.orphan");
+    assert_eq!(
+        problem["source_span"]["path"],
+        serde_json::json!("^counter(1).value")
     );
 }
 

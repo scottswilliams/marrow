@@ -8,7 +8,8 @@ mod support;
 mod support_data;
 
 use support_data::{
-    checked_place, field_path, json, marrow, native_project, seeded_project, write_tree_value,
+    checked_place, field_path, json, marrow, native_project, seeded_project, write_record_node,
+    write_tree_value,
 };
 
 #[test]
@@ -35,6 +36,62 @@ fn data_stats_counts_roots_and_records() {
     let stdout = String::from_utf8(output.stdout).expect("utf8");
     // Render contract: the two count lines, pinned exactly.
     assert_eq!(stdout, "roots: 1\nrecords: 1\n", "{stdout}");
+}
+
+#[test]
+fn data_inventory_does_not_treat_an_overlong_node_as_a_shorter_record() {
+    let project = native_project("data-overlong-node");
+    let dir = project.to_str().unwrap().to_string();
+    write_record_node(&project, "counter", &[SavedKey::Int(1), SavedKey::Int(2)]);
+
+    let stats = marrow(&["data", "stats", "--format", "json", &dir]);
+    let get = marrow(&["data", "get", "--format", "json", &dir, "^counter(1)"]);
+
+    assert_eq!(stats.status.code(), Some(0), "{stats:?}");
+    let stats_json = json(stats);
+    assert_eq!(stats_json["roots"], serde_json::json!(0));
+    assert_eq!(stats_json["records"], serde_json::json!(0));
+
+    assert_eq!(get.status.code(), Some(0), "{get:?}");
+    let get_json = json(get);
+    assert_eq!(get_json["presence"], serde_json::json!("absent"));
+}
+
+#[test]
+fn data_inventory_ignores_overlong_nodes_under_composite_roots() {
+    let project = support::temp_project_uncommitted("data-composite-overlong-node", |root| {
+        support::write(root, "marrow.json", support::native_config());
+        support::write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             \n\
+             resource Pair\n\
+             \x20\x20\x20\x20value: int\n\
+             store ^pairs(left: int, right: int): Pair\n",
+        );
+    });
+    let dir = project.to_str().unwrap().to_string();
+    write_record_node(
+        &project,
+        "pairs",
+        &[SavedKey::Int(1), SavedKey::Int(2), SavedKey::Int(3)],
+    );
+
+    let roots = marrow(&["data", "roots", "--format", "json", &dir]);
+    let stats = marrow(&["data", "stats", "--format", "json", &dir]);
+    let get = marrow(&["data", "get", "--format", "json", &dir, "^pairs"]);
+
+    assert_eq!(roots.status.code(), Some(0), "{roots:?}");
+    assert_eq!(json(roots)["roots"], serde_json::json!([]));
+
+    assert_eq!(stats.status.code(), Some(0), "{stats:?}");
+    let stats_json = json(stats);
+    assert_eq!(stats_json["roots"], serde_json::json!(0));
+    assert_eq!(stats_json["records"], serde_json::json!(0));
+
+    assert_eq!(get.status.code(), Some(0), "{get:?}");
+    assert_eq!(json(get)["presence"], serde_json::json!("absent"));
 }
 
 #[test]

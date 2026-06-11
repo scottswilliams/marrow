@@ -7,7 +7,7 @@ One invariant organizes the whole subsystem: **durable saved data is never mater
 ## Parts
 
 - **Point reads** (`durable_read.rs`): one scalar/optional field, one layer entry, one exact unique lookup, or whole-resource materialization of members.
-- **Address resolution** (`read.rs`): classify an iterable path into Root / Index branch / ChildLayer; build record/index/data child cursors; count and probe presence without materializing.
+- **Address resolution** (`read.rs`): classify an iterable path into Root / Index branch / ChildLayer; build node-backed record cursors plus index/data child cursors; count and probe presence without materializing.
 - **Loop driver** (`saved_iter.rs` + four scan modules): the `ChildCursor` trait, the depth-bounded `walk_keyed_children`/`count_keyed_children` tree walk, the `LoopShape` row contract, and `SavedLoopSpec`/`SavedLoopPlan` that pick one of four scans (Root / Index / UniqueIndex / ChildLayer).
 - **Builtins** (`collection.rs` + `collection/`): `keys`/`values`/`entries`/`reversed` dispatch, `Direction`/`ReadPosition`, local materialization, and `append`/`nextId`.
 - **Local collections** (`local_collection.rs`): in-memory `Sequence`/`LocalTree` that mirror the saved iteration contract.

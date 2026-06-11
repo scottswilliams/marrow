@@ -247,9 +247,10 @@ impl StepHook for WriteRecorder {
 #[test]
 fn hook_observes_each_managed_write_in_commit_order() {
     // A field write, then a whole-record delete: the field write stages one
-    // `Write` (the field). `delete ^books(1)` clears the record's subtree with one
-    // `Delete` of the identity path. The hook sees each `PlanStep` as a
-    // `before_write` event, in commit order, at the statement's activation depth.
+    // The field write materializes the record node before the field cell. `delete
+    // ^books(1)` clears the record's subtree with one `Delete` of the identity path.
+    // The hook sees each `PlanStep` as a `before_write` event, in commit order, at
+    // the statement's activation depth.
     let program = checked_program(
         "resource Book\n\
          \x20\x20\x20\x20title: string\nstore ^books(id: int): Book\n\
@@ -272,6 +273,16 @@ fn hook_observes_each_managed_write_in_commit_order() {
     assert_eq!(
         hook.writes,
         vec![
+            (
+                marrow_run::WriteOp::Write,
+                WriteTarget::Data {
+                    store: store_catalog_id(&program, "books").as_str().to_string(),
+                    identity: vec![SavedKey::Int(1)],
+                    path: Vec::new(),
+                },
+                false,
+                1
+            ),
             (
                 marrow_run::WriteOp::Write,
                 WriteTarget::Data {

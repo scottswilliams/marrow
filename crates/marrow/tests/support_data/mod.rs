@@ -129,6 +129,36 @@ pub(crate) fn write_tree_value(
     let store_dir = project.join(".data");
     fs::create_dir_all(&store_dir).expect("create store dir");
     let store = TreeStore::open(&store_dir.join("marrow.redb")).expect("open native store");
+    let store_id = checked_catalog_id(&place.store_catalog_id);
+    store
+        .write_node(&store_id, identity)
+        .expect("write tree-cell node");
+    store
+        .write_data_value(&store_id, identity, path, value)
+        .expect("write tree-cell value");
+}
+
+pub(crate) fn write_record_node(project: &Path, root: &str, identity: &[SavedKey]) {
+    let place = checked_place(project, root);
+    let store_dir = project.join(".data");
+    fs::create_dir_all(&store_dir).expect("create store dir");
+    let store = TreeStore::open(&store_dir.join("marrow.redb")).expect("open native store");
+    store
+        .write_node(&checked_catalog_id(&place.store_catalog_id), identity)
+        .expect("write tree-cell node");
+}
+
+pub(crate) fn write_tree_value_without_node(
+    project: &Path,
+    root: &str,
+    identity: &[SavedKey],
+    path: &[DataPathSegment],
+    value: Vec<u8>,
+) {
+    let place = checked_place(project, root);
+    let store_dir = project.join(".data");
+    fs::create_dir_all(&store_dir).expect("create store dir");
+    let store = TreeStore::open(&store_dir.join("marrow.redb")).expect("open native store");
     store
         .write_data_value(
             &checked_catalog_id(&place.store_catalog_id),

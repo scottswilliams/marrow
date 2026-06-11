@@ -407,6 +407,168 @@ fn record_and_index_child_navigation_use_catalog_roots() {
 }
 
 #[test]
+fn record_navigation_requires_node_cells() {
+    let books = catalog_id("1111111111111111");
+    let title = catalog_id("2222222222222222");
+    let store = TreeStore::memory();
+
+    store
+        .write_data_value(
+            &books,
+            &[SavedKey::Int(1)],
+            &[DataPathSegment::Member(title)],
+            b"leaf without node".to_vec(),
+        )
+        .expect("write orphan leaf debris");
+    store
+        .write_node(&books, &[SavedKey::Int(2)])
+        .expect("write record node");
+
+    assert!(
+        !store
+            .data_subtree_exists(&books, &[SavedKey::Int(1)], &[])
+            .expect("record presence"),
+        "a leaf without its record node is not record presence"
+    );
+    assert_eq!(
+        store.record_child_count(&books, &[]).expect("record count"),
+        1
+    );
+    assert_eq!(record_children(&store, &books, &[]), vec![SavedKey::Int(2)]);
+
+    let mut visited = Vec::new();
+    store
+        .for_each_record(&books, 1, &mut |identity| {
+            visited.push(identity.to_vec());
+            Ok(())
+        })
+        .expect("visit records");
+    assert_eq!(visited, vec![vec![SavedKey::Int(2)]]);
+}
+
+#[test]
+fn record_navigation_cursors_do_not_require_existing_anchor_nodes() {
+    let books = catalog_id("1111111111111111");
+    let store = TreeStore::memory();
+
+    store
+        .write_node(&books, &[SavedKey::Int(1)])
+        .expect("write first record node");
+    store
+        .write_node(&books, &[SavedKey::Int(3)])
+        .expect("write second record node");
+
+    assert_eq!(
+        store
+            .record_next_child(&books, &[], &SavedKey::Int(2))
+            .expect("next child after gap"),
+        Some(SavedKey::Int(3))
+    );
+    assert_eq!(
+        store
+            .record_prev_child(&books, &[], &SavedKey::Int(2))
+            .expect("previous child before gap"),
+        Some(SavedKey::Int(1))
+    );
+}
+
+#[test]
+fn descendant_record_node_does_not_fabricate_a_shorter_record_identity() {
+    let books = catalog_id("1111111111111111");
+    let store = TreeStore::memory();
+
+    store
+        .write_node(&books, &[SavedKey::Int(1), SavedKey::Int(2)])
+        .expect("write composite record node");
+
+    assert!(
+        !store
+            .data_subtree_exists(&books, &[SavedKey::Int(1)], &[])
+            .expect("short identity presence"),
+        "a descendant node is not the shorter identity's record node"
+    );
+    assert_eq!(
+        store
+            .record_child_count(&books, &[])
+            .expect("single-key record count"),
+        0,
+        "final-level count requires exact child nodes"
+    );
+
+    let mut one_key_records = Vec::new();
+    store
+        .for_each_record(&books, 1, &mut |identity| {
+            one_key_records.push(identity.to_vec());
+            Ok(())
+        })
+        .expect("visit one-key records");
+    assert!(one_key_records.is_empty());
+
+    let mut two_key_records = Vec::new();
+    store
+        .for_each_record(&books, 2, &mut |identity| {
+            two_key_records.push(identity.to_vec());
+            Ok(())
+        })
+        .expect("visit two-key records");
+    assert_eq!(
+        two_key_records,
+        vec![vec![SavedKey::Int(1), SavedKey::Int(2)]]
+    );
+}
+
+#[test]
+fn backup_round_trips_sparse_record_nodes() {
+    let books = catalog_id("1111111111111111");
+    let store = TreeStore::memory();
+    store
+        .write_node(&books, &[SavedKey::Int(1)])
+        .expect("write sparse record node");
+
+    let mut cells = Vec::new();
+    let mut backup_bytes = Vec::new();
+    store
+        .visit_backup_cells(|cell| {
+            cell.write_framed(&mut backup_bytes)
+                .expect("write backup frame");
+            cells.push((cell.data_key().clone(), cell.value().to_vec()));
+            Ok(())
+        })
+        .expect("collect backup");
+    assert_eq!(cells.len(), 1);
+    assert!(matches!(cells[0].0.kind, DataCellKind::Node));
+
+    let restored = TreeStore::memory();
+    restored
+        .write_node(&cells[0].0.store, &cells[0].0.identity)
+        .expect("restore node");
+    let mut restored_cells = Vec::new();
+    let mut restored_backup_bytes = Vec::new();
+    restored
+        .visit_backup_cells(|cell| {
+            cell.write_framed(&mut restored_backup_bytes)
+                .expect("write restored backup frame");
+            restored_cells.push((cell.data_key().clone(), cell.value().to_vec()));
+            Ok(())
+        })
+        .expect("collect restored backup");
+
+    assert_eq!(restored_cells, cells);
+    assert_eq!(restored_backup_bytes, backup_bytes);
+    assert!(
+        restored
+            .data_subtree_exists(&books, &[SavedKey::Int(1)], &[])
+            .expect("restored presence")
+    );
+    assert_eq!(
+        restored
+            .record_child_count(&books, &[])
+            .expect("restored count"),
+        1
+    );
+}
+
+#[test]
 fn exact_index_tuple_delete_removes_only_the_exact_identity() {
     let by_shelf = catalog_id("4444444444444444");
     let identity = [SavedKey::Int(7)];

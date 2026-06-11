@@ -8,6 +8,9 @@ use crate::store::{DataAddress, IndexAddress};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PlanStep {
+    WriteNode {
+        address: DataAddress,
+    },
     WriteData {
         address: DataAddress,
         value: Vec<u8>,
@@ -99,6 +102,7 @@ impl WritePlan {
 
     pub fn steps(&self) -> impl Iterator<Item = (WriteOp, WriteTarget, Option<&[u8]>)> {
         self.steps.iter().map(|step| match step {
+            PlanStep::WriteNode { address } => (WriteOp::Write, data_target(address), None),
             PlanStep::WriteData { address, value } => {
                 (WriteOp::Write, data_target(address), Some(value.as_slice()))
             }
@@ -134,6 +138,9 @@ impl WritePlan {
 fn apply_steps(steps: Vec<PlanStep>, store: &TreeStore) -> Result<(), StoreError> {
     for step in steps {
         match step {
+            PlanStep::WriteNode { address } => {
+                store.write_node(&address.store, &address.identity)?
+            }
             PlanStep::WriteData { address, value } => {
                 store.write_data_value(&address.store, &address.identity, &address.path, value)?
             }

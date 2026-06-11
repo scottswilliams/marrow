@@ -2,6 +2,7 @@ mod children;
 mod query;
 mod query_error;
 mod read;
+mod record_nav;
 mod render;
 mod shape;
 mod traversal;

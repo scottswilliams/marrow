@@ -9,6 +9,7 @@ use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::tree::{ActivationDefaultRecordCount, TreeStore};
 
+use crate::store::DataAddress;
 use crate::write_plan::{PlanStep, WritePlan};
 
 use super::admission::{catalog_id_order, expected_retire_counts, gate_obligations};
@@ -568,7 +569,14 @@ fn stage_obligation(
         }
         Verdict::Transform { reads } => {
             let mut count = 0usize;
-            let mut stage = |address, value| {
+            let mut stage = |address: DataAddress, value| {
+                steps.push(PlanStep::WriteNode {
+                    address: DataAddress::from_resolved_parts(
+                        address.store.clone(),
+                        address.identity.clone(),
+                        Vec::new(),
+                    ),
+                });
                 steps.push(PlanStep::WriteData { address, value });
                 count += 1;
                 Ok(())

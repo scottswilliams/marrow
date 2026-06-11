@@ -198,7 +198,7 @@ fn count_record_identities(
             .record_child_count(store, &[])
             .map_err(|error| error.located(span));
     }
-    let cursor = RecordCursor::new(store, Direction::Ascending, span);
+    let cursor = RecordCursor::new(store, arity, Direction::Ascending, span);
     count_keyed_children(&cursor, arity - 1, &[], env, span, |prefix, env| {
         env.store
             .record_child_count(store, prefix)
@@ -302,11 +302,12 @@ pub(crate) fn first_record_child(
     store_id: &CatalogId,
     prefix: &[SavedKey],
     dir: Direction,
+    arity: usize,
     span: SourceSpan,
 ) -> Result<Option<SavedKey>, RuntimeError> {
     match dir {
-        Direction::Ascending => store.record_first_child(store_id, prefix),
-        Direction::Descending => store.record_last_child(store_id, prefix),
+        Direction::Ascending => store.record_first_child_at_arity(store_id, prefix, arity),
+        Direction::Descending => store.record_last_child_at_arity(store_id, prefix, arity),
     }
     .map_err(|error| error.located(span))
 }
@@ -317,11 +318,12 @@ pub(crate) fn next_record_child(
     prefix: &[SavedKey],
     anchor: &SavedKey,
     dir: Direction,
+    arity: usize,
     span: SourceSpan,
 ) -> Result<Option<SavedKey>, RuntimeError> {
     match dir {
-        Direction::Ascending => store.record_next_child(store_id, prefix, anchor),
-        Direction::Descending => store.record_prev_child(store_id, prefix, anchor),
+        Direction::Ascending => store.record_next_child_at_arity(store_id, prefix, arity, anchor),
+        Direction::Descending => store.record_prev_child_at_arity(store_id, prefix, arity, anchor),
     }
     .map_err(|error| error.located(span))
 }

@@ -126,8 +126,18 @@ fn seek_neighbor(
         NeighborTarget::Record { place, anchor } => {
             let store = catalog_id(&place.store_catalog_id, "store", span)?;
             match anchor {
-                None => first_record_child(env.store, &store, &[], dir, span),
-                Some(key) => next_record_child(env.store, &store, &[], &key, dir, span),
+                None => {
+                    first_record_child(env.store, &store, &[], dir, place.identity_keys.len(), span)
+                }
+                Some(key) => next_record_child(
+                    env.store,
+                    &store,
+                    &[],
+                    &key,
+                    dir,
+                    place.identity_keys.len(),
+                    span,
+                ),
             }
         }
         NeighborTarget::Data { parent, anchor } => match anchor {

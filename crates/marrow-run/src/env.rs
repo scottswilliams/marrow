@@ -539,6 +539,7 @@ impl<'p> Env<'p> {
     fn guard_plan_traversal(&self, plan: &WritePlan, span: SourceSpan) -> Result<(), RuntimeError> {
         for step in &plan.steps {
             match step {
+                PlanStep::WriteNode { address } => self.guard_record_node_write(address, span)?,
                 PlanStep::WriteData { address, .. } => self.guard_data_write(address, span)?,
                 PlanStep::DeleteData { address } => self.guard_data_delete(address, span)?,
                 PlanStep::DeleteRecordSubtree { address } => {
@@ -566,7 +567,8 @@ impl<'p> Env<'p> {
                 PlanStep::DeleteIndexSubtree { address } => {
                     self.guard_index_subtree_delete(address, span)?
                 }
-                PlanStep::WriteData { .. }
+                PlanStep::WriteNode { .. }
+                | PlanStep::WriteData { .. }
                 | PlanStep::DeleteData { .. }
                 | PlanStep::DeleteRecordSubtree { .. }
                 | PlanStep::StampMetadata { .. } => {}
@@ -586,6 +588,37 @@ impl<'p> Env<'p> {
                     if store == &address.store
                         && !address.identity.is_empty()
                         && (address.path.is_empty() || !self.record_exists(address, span)?) =>
+                {
+                    return Err(traversal_fault(span));
+                }
+                TraversedLayer::Data {
+                    store,
+                    identity,
+                    path,
+                } if store == &address.store
+                    && identity == &address.identity
+                    && data_child_under(path, &address.path).is_some()
+                    && !self.data_child_exists(address, path, span)? =>
+                {
+                    return Err(traversal_fault(span));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn guard_record_node_write(
+        &self,
+        address: &DataAddress,
+        span: SourceSpan,
+    ) -> Result<(), RuntimeError> {
+        for layer in &self.traversed_layers {
+            match layer {
+                TraversedLayer::Record { store }
+                    if store == &address.store
+                        && !address.identity.is_empty()
+                        && !self.record_exists(address, span)? =>
                 {
                     return Err(traversal_fault(span));
                 }
@@ -820,7 +853,8 @@ fn changed_catalog_ids(steps: &[PlanStep]) -> (Vec<CatalogId>, Vec<CatalogId>) {
     let mut indexes = BTreeSet::new();
     for step in steps {
         match step {
-            PlanStep::WriteData { address, .. }
+            PlanStep::WriteNode { address }
+            | PlanStep::WriteData { address, .. }
             | PlanStep::DeleteData { address }
             | PlanStep::DeleteRecordSubtree { address } => {
                 roots.insert(address.store.clone());

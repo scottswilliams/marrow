@@ -444,7 +444,7 @@ fn saved_root_holds_records(
     let Ok(store_id) = marrow_store::cell::CatalogId::new(raw_store_id) else {
         return Ok(false);
     };
-    Ok(store.record_child_count(&store_id, &[])? > 0)
+    store.record_identity_exists_under(&store_id, &[], place.identity_keys.len())
 }
 
 /// The host capabilities a run and a test share: the real system clock, environment,

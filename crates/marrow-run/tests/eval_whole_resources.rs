@@ -174,6 +174,96 @@ fn resource_constructor_value_can_be_saved() {
 }
 
 #[test]
+fn sparse_whole_resource_assignment_creates_record_presence() {
+    let program = checked_program(
+        "resource Note\n\
+         \x20\x20\x20\x20body: string\nstore ^notes(id: int): Note\n\n\
+         pub fn save(id: int)\n\
+         \x20\x20\x20\x20var note: Note\n\
+         \x20\x20\x20\x20^notes(id) = note\n\n\
+         pub fn hasNote(id: int): bool\n\
+         \x20\x20\x20\x20return exists(^notes(id))\n\n\
+         pub fn hasBody(id: int): bool\n\
+         \x20\x20\x20\x20return exists(^notes(id).body)\n\n\
+         pub fn noteCount(): int\n\
+         \x20\x20\x20\x20return count(^notes)\n\n\
+         pub fn iterCount(): int\n\
+         \x20\x20\x20\x20var n = 0\n\
+         \x20\x20\x20\x20for id in keys(^notes)\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20n = n + 1\n\
+         \x20\x20\x20\x20return n\n",
+    );
+    let store = TreeStore::memory();
+
+    run_entry(
+        &store,
+        checked_entry!(&program, "test::save", Value::Int(1)),
+    )
+    .expect("save");
+
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::hasNote", Value::Int(1))
+        )
+        .expect("record presence")
+        .value,
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        run_entry(&store, checked_entry!(&program, "test::noteCount"))
+            .expect("root count")
+            .value,
+        Some(Value::Int(1))
+    );
+    assert_eq!(
+        run_entry(&store, checked_entry!(&program, "test::iterCount"))
+            .expect("root iteration")
+            .value,
+        Some(Value::Int(1))
+    );
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::hasBody", Value::Int(1))
+        )
+        .expect("field absence")
+        .value,
+        Some(Value::Bool(false))
+    );
+}
+
+#[test]
+fn overlong_record_node_does_not_create_root_presence() {
+    let program = checked_program(
+        "resource Counter\n\
+         \x20\x20\x20\x20value: int\nstore ^counter(id: int): Counter\n\n\
+         pub fn hasRoot(): bool\n\
+         \x20\x20\x20\x20return exists(^counter)\n\n\
+         pub fn rootCount(): int\n\
+         \x20\x20\x20\x20return count(^counter)\n",
+    );
+    let store = TreeStore::memory();
+    let counter = store_catalog_id(&program, "counter");
+    store
+        .write_node(&counter, &[SavedKey::Int(1), SavedKey::Int(2)])
+        .expect("write overlong node");
+
+    assert_eq!(
+        run_entry(&store, checked_entry!(&program, "test::hasRoot"))
+            .expect("root presence")
+            .value,
+        Some(Value::Bool(false))
+    );
+    assert_eq!(
+        run_entry(&store, checked_entry!(&program, "test::rootCount"))
+            .expect("root count")
+            .value,
+        Some(Value::Int(0))
+    );
+}
+
+#[test]
 fn resource_constructor_optional_coalesce_is_checker_rejected() {
     checker_rejects(
         "resource Profile\n\

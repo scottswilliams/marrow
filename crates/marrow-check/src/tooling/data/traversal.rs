@@ -8,6 +8,7 @@ use crate::{
     checked_saved_root_place,
 };
 
+use super::record_nav;
 use super::render::{push_key, push_member};
 use super::shape::{key_mismatch, tooling_catalog_id};
 use super::{DataRecord, DebugDataPayload, KeyMismatch};
@@ -74,8 +75,7 @@ fn place_has_data(place: &CheckedSavedPlace, store: &TreeStore) -> Result<bool, 
     if place.identity_keys.is_empty() {
         return store.data_subtree_exists(&store_id, &[], &[]);
     }
-    store
-        .record_first_child(&store_id, &[])
+    record_nav::first_record_child(store, &store_id, &[], place.identity_keys.len())
         .map(|key| key.is_some())
 }
 
@@ -128,7 +128,8 @@ fn visit_identity_records(
 
     let key_index = identity.len();
     let mut records = 0usize;
-    let mut child = store.record_first_child(store_id, identity)?;
+    let mut child =
+        record_nav::first_record_child(store, store_id, identity, place.identity_keys.len())?;
     while let Some(key) = child {
         let next_after = key.clone();
         let prior_len = push_key(path, &key);
@@ -151,7 +152,13 @@ fn visit_identity_records(
             })?;
         identity.pop();
         path.truncate(prior_len);
-        child = store.record_next_child(store_id, identity, &next_after)?;
+        child = record_nav::next_record_child(
+            store,
+            store_id,
+            identity,
+            place.identity_keys.len(),
+            &next_after,
+        )?;
     }
     Ok(records)
 }

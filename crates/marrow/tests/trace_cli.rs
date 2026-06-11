@@ -29,11 +29,11 @@ fn faulting_print_project(name: &str) -> support::TempProject {
 #[test]
 fn run_trace_interleaves_steps_and_writes() {
     // An entry that writes a field then prints. With `--trace`, the trace stream
-    // reports the writing statement, the write it produced, and the print — a step,
-    // then a write, then a step — in that execution order, and the program's own
-    // output still lands on stdout. The JSONL records preserve emission order, so the
-    // step/write/step interleaving is asserted as the typed record sequence rather
-    // than by string offsets into the rendered text.
+    // reports the writing statement, the node write and field write it produced, and
+    // the print — a step, then two writes, then a step — in that execution order, and
+    // the program's own output still lands on stdout. The JSONL records preserve
+    // emission order, so the interleaving is asserted as the typed record sequence
+    // rather than by string offsets into the rendered text.
     let project = temp_project("trace-run", |root| {
         write(
             root,
@@ -60,11 +60,11 @@ fn run_trace_interleaves_steps_and_writes() {
     let stdout = String::from_utf8(output.stdout).expect("utf8");
     assert_eq!(stdout, "done\n", "stdout: {stdout}");
     let records = jsonl_trace_records(output.stderr);
-    let [writing_step, write, print_step, summary] = records.as_slice() else {
-        panic!("expected writing-step, write, print-step, summary: {records:?}");
+    let [writing_step, node_write, write, print_step, summary] = records.as_slice() else {
+        panic!("expected writing-step, node-write, write, print-step, summary: {records:?}");
     };
     // The writing statement (the `^books(1).title = ...` line, line 8) is reported,
-    // then the write it produced, then the `print("done")` step (line 9).
+    // then the node and field writes it produced, then the `print("done")` step (line 9).
     assert_eq!(writing_step["kind"], json!("step"));
     assert_eq!(writing_step["line"], json!(8));
     assert!(
@@ -73,6 +73,10 @@ fn run_trace_interleaves_steps_and_writes() {
             .is_some_and(|file| file.ends_with("app.mw")),
         "{writing_step}"
     );
+    assert_eq!(node_write["kind"], json!("write"));
+    assert_eq!(node_write["op"], json!("write"));
+    assert_eq!(node_write["path"], json!("^books(1)"));
+    assert_eq!(node_write["value_b64"], Value::Null);
     assert_eq!(write["kind"], json!("write"));
     assert_eq!(write["op"], json!("write"));
     assert_eq!(write["path"], json!("^books(1).title"));
@@ -115,8 +119,8 @@ fn run_trace_renders_a_bool_write_as_its_typed_value() {
     let records = jsonl_trace_records(json_run.stderr);
     let write = records
         .iter()
-        .find(|record| record["kind"] == "write")
-        .expect("a write record");
+        .find(|record| record["kind"] == "write" && record["path"] == "^flags(1).on")
+        .expect("a field write record");
     assert_eq!(write["op"], json!("write"));
     assert_eq!(write["target"]["store"], json!("flags"));
     assert_eq!(write["target"]["identity"], json!(["1"]));
@@ -173,8 +177,8 @@ fn run_trace_renders_an_int_write_as_canonical_digits() {
     let records = jsonl_trace_records(output.stderr);
     let write = records
         .iter()
-        .find(|record| record["kind"] == "write")
-        .expect("a write record");
+        .find(|record| record["kind"] == "write" && record["path"] == "^counters(1).total")
+        .expect("a field write record");
     assert_eq!(write["op"], json!("write"));
     assert_eq!(write["target"]["store"], json!("counters"));
     assert_eq!(write["target"]["path"], json!([{ "member": "total" }]));
@@ -298,8 +302,8 @@ fn run_trace_json_emits_step_and_write_records() {
     // Trace records are tooling output on stderr; the program's stdout stays its own.
     assert!(output.stdout.is_empty(), "stdout: {:?}", output.stdout);
     let records = jsonl(output.stderr);
-    let [step, write, summary] = records.as_slice() else {
-        panic!("expected step, write, and summary records: {records:?}");
+    let [step, node_write, write, summary] = records.as_slice() else {
+        panic!("expected step, node write, field write, and summary records: {records:?}");
     };
 
     assert_eq!(step["kind"], json!("step"));
@@ -314,6 +318,17 @@ fn run_trace_json_emits_step_and_write_records() {
         "{step}"
     );
 
+    assert_eq!(node_write["kind"], json!("write"));
+    assert_eq!(node_write["trace"], json!(""));
+    assert_eq!(node_write["op"], json!("write"));
+    assert_eq!(node_write["path"], json!("^books(1)"));
+    assert_eq!(node_write["value_b64"], Value::Null);
+    assert_eq!(node_write["depth"], json!(1));
+    assert_eq!(node_write["target"]["kind"], json!("data"));
+    assert_eq!(node_write["target"]["store"], json!("books"));
+    assert_eq!(node_write["target"]["identity"], json!(["1"]));
+    assert_eq!(node_write["target"]["path"], json!([]));
+
     assert_eq!(write["kind"], json!("write"));
     assert_eq!(write["trace"], json!(""));
     assert_eq!(write["op"], json!("write"));
@@ -327,7 +342,7 @@ fn run_trace_json_emits_step_and_write_records() {
 
     assert_eq!(summary["kind"], json!("summary"));
     assert_eq!(summary["trace"], json!(""));
-    assert_eq!(summary["events"], json!(2));
+    assert_eq!(summary["events"], json!(3));
 }
 
 #[test]

@@ -57,7 +57,7 @@ impl RootScan {
         env: &mut Env<'_>,
         visit: &mut impl FnMut(SavedLoopRow, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
     ) -> Result<Flow, RuntimeError> {
-        let cursor = RecordCursor::new(&self.store, self.dir, self.span);
+        let cursor = RecordCursor::new(&self.store, self.arity, self.dir, self.span);
         let mut visit_identity =
             |identity: Vec<SavedKey>, env: &mut Env<'_>| self.visit_identity(identity, env, visit);
         walk_keyed_children(&cursor, self.arity, &[], &[], env, &mut visit_identity)
@@ -79,6 +79,7 @@ impl RootScan {
 
 pub(crate) struct RecordCursor<'a> {
     store: &'a marrow_store::cell::CatalogId,
+    arity: usize,
     dir: Direction,
     span: SourceSpan,
 }
@@ -86,10 +87,16 @@ pub(crate) struct RecordCursor<'a> {
 impl<'a> RecordCursor<'a> {
     pub(crate) fn new(
         store: &'a marrow_store::cell::CatalogId,
+        arity: usize,
         dir: Direction,
         span: SourceSpan,
     ) -> Self {
-        Self { store, dir, span }
+        Self {
+            store,
+            arity,
+            dir,
+            span,
+        }
     }
 }
 
@@ -99,7 +106,9 @@ impl ChildCursor for RecordCursor<'_> {
         env: &mut Env<'_>,
         prefix: &[SavedKey],
     ) -> Result<Option<SavedKey>, RuntimeError> {
-        first_record_child(env.store, self.store, prefix, self.dir, self.span)
+        first_record_child(
+            env.store, self.store, prefix, self.dir, self.arity, self.span,
+        )
     }
 
     fn next(
@@ -108,6 +117,8 @@ impl ChildCursor for RecordCursor<'_> {
         prefix: &[SavedKey],
         anchor: &SavedKey,
     ) -> Result<Option<SavedKey>, RuntimeError> {
-        next_record_child(env.store, self.store, prefix, anchor, self.dir, self.span)
+        next_record_child(
+            env.store, self.store, prefix, anchor, self.dir, self.arity, self.span,
+        )
     }
 }

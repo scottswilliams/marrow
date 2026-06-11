@@ -219,8 +219,7 @@ pub(crate) fn saved_path_present(
         let store = catalog_id(&place.store_catalog_id, "store", span)?;
         return env
             .store
-            .record_first_child(&store, &[])
-            .map(|key| key.is_some())
+            .record_identity_exists_under(&store, &[], place.identity_keys.len())
             .map_err(|error| error.located(span));
     }
     if let Some(value) = exact_unique_index_lookup_value(expr, span, env)? {

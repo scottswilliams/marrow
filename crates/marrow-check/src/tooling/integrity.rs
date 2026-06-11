@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use marrow_store::StoreError;
-use marrow_store::cell::DataCellKey;
+use marrow_store::cell::{DataCellKey, DataCellKind};
 use marrow_store::key::{SavedKey, decode_identity_payload_arity};
 use marrow_store::tree::{DataPathSegment, TreeStore, decode_tree_enum_member};
 use marrow_store::value::decode_value;
@@ -207,7 +207,7 @@ fn visit_orphans_in_places(
 ) -> Result<(), StoreError> {
     let schema = DeclaredSchema::from_places(places);
     store.visit_backup_cells(|cell| {
-        if let Some(problem) = schema.classify(cell.data_key().clone()) {
+        if let Some(problem) = schema.classify(store, cell.data_key().clone())? {
             report(problem)?;
         }
         Ok(())
@@ -240,31 +240,48 @@ impl DeclaredSchema {
         Self { roots }
     }
 
-    fn classify(&self, key: DataCellKey) -> Option<IntegrityProblem> {
+    fn classify(
+        &self,
+        store: &TreeStore,
+        key: DataCellKey,
+    ) -> Result<Option<IntegrityProblem>, StoreError> {
         let path = key.path();
         let DataCellKey {
-            store,
+            store: data_store,
             identity,
-            kind: _,
+            kind,
         } = key;
-        let store_id = store.as_str();
+        let store_id = data_store.as_str();
         let Some(root) = self.roots.get(store_id) else {
-            return Some(orphan_problem(
+            return Ok(Some(orphan_problem(
                 render_unknown_path(),
                 "a saved root the schema no longer declares",
-            ));
+            )));
         };
         if identity.len() != root.identity_arity {
-            return Some(root.orphan(
+            return Ok(Some(root.orphan(
                 &identity,
                 &path,
                 "a saved root identity shape the schema does not declare",
-            ));
+            )));
+        }
+        if matches!(kind, DataCellKind::Node) {
+            return Ok(None);
         }
         if let Err(reason) = validate_member_value_path(&root.members, &path) {
-            return Some(root.orphan(&identity, &path, reason));
+            return Ok(Some(root.orphan(&identity, &path, reason)));
         }
-        None
+        if store
+            .read_data_value(&data_store, &identity, &[])?
+            .is_none()
+        {
+            return Ok(Some(root.orphan(
+                &identity,
+                &path,
+                "a saved record identity node the store does not hold",
+            )));
+        }
+        Ok(None)
     }
 }
 

@@ -107,6 +107,13 @@ pub(super) fn stage_default_backfill(
                 })?;
                 fold_default_cell(digest, sid, identity, path, &current);
             } else {
+                steps.push(PlanStep::WriteNode {
+                    address: DataAddress::from_resolved_parts(
+                        sid.clone(),
+                        identity.to_vec(),
+                        Vec::new(),
+                    ),
+                });
                 steps.push(PlanStep::WriteData {
                     address: DataAddress::from_resolved_parts(
                         sid.clone(),

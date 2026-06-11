@@ -4,8 +4,8 @@ use std::cell::RefCell;
 
 use crate::backend::{Backend, ScanPage, StoreError};
 use crate::cell::{
-    CatalogId, CellKey, MetaCell, NODE_MARKER, SequencePosition, decode_data_child_key,
-    decode_index_child_key, decode_index_entry_key, decode_index_identity, decode_record_child_key,
+    CatalogId, CellKey, MetaCell, NODE_MARKER, SequencePosition, decode_data_cell_key,
+    decode_data_child_key, decode_index_child_key, decode_index_entry_key, decode_index_identity,
 };
 use crate::codec::BoundedReader;
 use crate::key::SavedKey;
@@ -70,6 +70,20 @@ impl TreeEnumMember {
 /// An owning tree-cell store handle for runtime and tooling callers.
 pub struct TreeStore {
     backend: RefCell<Box<dyn Backend>>,
+}
+
+#[derive(Clone, Copy)]
+enum RecordChildScan {
+    DescendantNode,
+    ExactNode,
+}
+
+fn record_child_scan_for_arity(identity_prefix: &[SavedKey], arity: usize) -> RecordChildScan {
+    if identity_prefix.len() + 1 == arity {
+        RecordChildScan::ExactNode
+    } else {
+        RecordChildScan::DescendantNode
+    }
 }
 
 impl TreeStore {
@@ -255,6 +269,11 @@ impl TreeStore {
         identity: &[SavedKey],
         path: &[DataPathSegment],
     ) -> Result<bool, StoreError> {
+        if path.is_empty() {
+            return self
+                .read_cell(CellKey::node(store, identity).as_bytes())
+                .map(|node| node.is_some());
+        }
         if self.read_data_value(store, identity, path)?.is_some() {
             return Ok(true);
         }
@@ -337,8 +356,17 @@ impl TreeStore {
         store: &CatalogId,
         identity_prefix: &[SavedKey],
     ) -> Result<usize, StoreError> {
-        let prefix = CellKey::record_prefix(store, identity_prefix);
-        self.child_count(prefix.as_bytes(), decode_record_child)
+        let mut count = 0;
+        self.scan_record_children_until(
+            store,
+            identity_prefix,
+            RecordChildScan::ExactNode,
+            |_| {
+                count += 1;
+                std::ops::ControlFlow::Continue(())
+            },
+        )?;
+        Ok(count)
     }
 
     pub fn delete_record_subtree(
@@ -355,8 +383,39 @@ impl TreeStore {
         identity_prefix: &[SavedKey],
         after: &SavedKey,
     ) -> Result<Option<SavedKey>, StoreError> {
-        let prefix = CellKey::record_prefix(store, identity_prefix);
-        self.next_child_after(prefix.as_bytes(), after, decode_record_child)
+        self.record_next_child_with(
+            store,
+            identity_prefix,
+            after,
+            RecordChildScan::DescendantNode,
+        )
+    }
+
+    pub fn record_exact_next_child(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+        after: &SavedKey,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        self.record_next_child_with(store, identity_prefix, after, RecordChildScan::ExactNode)
+    }
+
+    fn record_next_child_with(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+        after: &SavedKey,
+        scan: RecordChildScan,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        let mut result = None;
+        self.scan_record_children_until(store, identity_prefix, scan, |child| {
+            if child.cmp(after).is_gt() {
+                result = Some(child);
+                return std::ops::ControlFlow::Break(());
+            }
+            std::ops::ControlFlow::Continue(())
+        })?;
+        Ok(result)
     }
 
     pub fn record_first_child(
@@ -364,8 +423,29 @@ impl TreeStore {
         store: &CatalogId,
         identity_prefix: &[SavedKey],
     ) -> Result<Option<SavedKey>, StoreError> {
-        let prefix = CellKey::record_prefix(store, identity_prefix);
-        self.first_child(prefix.as_bytes(), decode_record_child)
+        self.record_first_child_with(store, identity_prefix, RecordChildScan::DescendantNode)
+    }
+
+    pub fn record_exact_first_child(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+    ) -> Result<Option<SavedKey>, StoreError> {
+        self.record_first_child_with(store, identity_prefix, RecordChildScan::ExactNode)
+    }
+
+    fn record_first_child_with(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+        scan: RecordChildScan,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        let mut result = None;
+        self.scan_record_children_until(store, identity_prefix, scan, |child| {
+            result = Some(child);
+            std::ops::ControlFlow::Break(())
+        })?;
+        Ok(result)
     }
 
     pub fn record_last_child(
@@ -373,8 +453,29 @@ impl TreeStore {
         store: &CatalogId,
         identity_prefix: &[SavedKey],
     ) -> Result<Option<SavedKey>, StoreError> {
-        let prefix = CellKey::record_prefix(store, identity_prefix);
-        self.last_child(prefix.as_bytes(), decode_record_child)
+        self.record_last_child_with(store, identity_prefix, RecordChildScan::DescendantNode)
+    }
+
+    pub fn record_exact_last_child(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+    ) -> Result<Option<SavedKey>, StoreError> {
+        self.record_last_child_with(store, identity_prefix, RecordChildScan::ExactNode)
+    }
+
+    fn record_last_child_with(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+        scan: RecordChildScan,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        let mut result = None;
+        self.scan_record_children_until(store, identity_prefix, scan, |child| {
+            result = Some(child);
+            std::ops::ControlFlow::Continue(())
+        })?;
+        Ok(result)
     }
 
     pub fn record_prev_child(
@@ -383,8 +484,39 @@ impl TreeStore {
         identity_prefix: &[SavedKey],
         before: &SavedKey,
     ) -> Result<Option<SavedKey>, StoreError> {
-        let prefix = CellKey::record_prefix(store, identity_prefix);
-        self.prev_child_before(prefix.as_bytes(), before, decode_record_child)
+        self.record_prev_child_with(
+            store,
+            identity_prefix,
+            before,
+            RecordChildScan::DescendantNode,
+        )
+    }
+
+    pub fn record_exact_prev_child(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+        before: &SavedKey,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        self.record_prev_child_with(store, identity_prefix, before, RecordChildScan::ExactNode)
+    }
+
+    fn record_prev_child_with(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+        before: &SavedKey,
+        scan: RecordChildScan,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        let mut previous = None;
+        self.scan_record_children_until(store, identity_prefix, scan, |child| {
+            if child.cmp(before).is_ge() {
+                return std::ops::ControlFlow::Break(());
+            }
+            previous = Some(child);
+            std::ops::ControlFlow::Continue(())
+        })?;
+        Ok(previous)
     }
 
     pub fn max_int_record_child(
@@ -392,8 +524,125 @@ impl TreeStore {
         store: &CatalogId,
         identity_prefix: &[SavedKey],
     ) -> Result<Option<i64>, StoreError> {
-        let prefix = CellKey::record_prefix(store, identity_prefix);
-        self.max_int_child(prefix.as_bytes(), decode_record_child)
+        let mut max = None;
+        self.scan_record_children_until(
+            store,
+            identity_prefix,
+            RecordChildScan::ExactNode,
+            |child| {
+                if let SavedKey::Int(value) = child {
+                    max = Some(max.map_or(value, |current: i64| current.max(value)));
+                }
+                std::ops::ControlFlow::Continue(())
+            },
+        )?;
+        Ok(max)
+    }
+
+    pub fn record_identity_exists_under(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+        arity: usize,
+    ) -> Result<bool, StoreError> {
+        if identity_prefix.len() == arity {
+            return self.data_subtree_exists(store, identity_prefix, &[]);
+        }
+        if identity_prefix.len() > arity {
+            return Ok(false);
+        }
+        self.record_first_child_at_arity(store, identity_prefix, arity)
+            .map(|child| child.is_some())
+    }
+
+    pub fn record_first_child_at_arity(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+        arity: usize,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        if identity_prefix.len() >= arity {
+            return Ok(None);
+        }
+        let scan = record_child_scan_for_arity(identity_prefix, arity);
+        let mut child = self.record_first_child_with(store, identity_prefix, scan)?;
+        while let Some(candidate) = child {
+            let mut next_prefix = identity_prefix.to_vec();
+            next_prefix.push(candidate.clone());
+            if self.record_identity_exists_under(store, &next_prefix, arity)? {
+                return Ok(Some(candidate));
+            }
+            child = self.record_next_child_with(store, identity_prefix, &candidate, scan)?;
+        }
+        Ok(None)
+    }
+
+    pub fn record_next_child_at_arity(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+        arity: usize,
+        after: &SavedKey,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        if identity_prefix.len() >= arity {
+            return Ok(None);
+        }
+        let scan = record_child_scan_for_arity(identity_prefix, arity);
+        let mut child = self.record_next_child_with(store, identity_prefix, after, scan)?;
+        while let Some(candidate) = child {
+            let mut next_prefix = identity_prefix.to_vec();
+            next_prefix.push(candidate.clone());
+            if self.record_identity_exists_under(store, &next_prefix, arity)? {
+                return Ok(Some(candidate));
+            }
+            child = self.record_next_child_with(store, identity_prefix, &candidate, scan)?;
+        }
+        Ok(None)
+    }
+
+    pub fn record_last_child_at_arity(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+        arity: usize,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        if identity_prefix.len() >= arity {
+            return Ok(None);
+        }
+        let scan = record_child_scan_for_arity(identity_prefix, arity);
+        let mut child = self.record_last_child_with(store, identity_prefix, scan)?;
+        while let Some(candidate) = child {
+            let mut next_prefix = identity_prefix.to_vec();
+            next_prefix.push(candidate.clone());
+            if self.record_identity_exists_under(store, &next_prefix, arity)? {
+                return Ok(Some(candidate));
+            }
+            child = self.record_prev_child_with(store, identity_prefix, &candidate, scan)?;
+        }
+        Ok(None)
+    }
+
+    pub fn record_prev_child_at_arity(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+        arity: usize,
+        before: &SavedKey,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        if identity_prefix.len() >= arity {
+            return Ok(None);
+        }
+        let scan = record_child_scan_for_arity(identity_prefix, arity);
+        let mut child = self.record_prev_child_with(store, identity_prefix, before, scan)?;
+        while let Some(candidate) = child {
+            let mut next_prefix = identity_prefix.to_vec();
+            next_prefix.push(candidate.clone());
+            if self.record_identity_exists_under(store, &next_prefix, arity)? {
+                return Ok(Some(candidate));
+            }
+            child = self.record_prev_child_with(store, identity_prefix, &candidate, scan)?;
+        }
+        Ok(None)
     }
 
     /// Visit every record identity under `store_id`, descending `arity` key levels and
@@ -417,7 +666,11 @@ impl TreeStore {
         identity: &mut Vec<SavedKey>,
         visit: &mut dyn FnMut(&[SavedKey]) -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
-        let mut next = self.record_first_child(store_id, identity)?;
+        let mut next = if remaining == 1 {
+            self.record_exact_first_child(store_id, identity)?
+        } else {
+            self.record_first_child(store_id, identity)?
+        };
         while let Some(key) = next {
             identity.push(key.clone());
             if remaining == 1 {
@@ -426,7 +679,11 @@ impl TreeStore {
                 self.descend_records(store_id, remaining - 1, identity, visit)?;
             }
             identity.pop();
-            next = self.record_next_child(store_id, identity, &key)?;
+            next = if remaining == 1 {
+                self.record_exact_next_child(store_id, identity, &key)?
+            } else {
+                self.record_next_child(store_id, identity, &key)?
+            };
         }
         Ok(())
     }
@@ -780,6 +1037,46 @@ impl TreeStore {
         })
     }
 
+    fn scan_record_children_until(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+        scan: RecordChildScan,
+        mut visit: impl FnMut(SavedKey) -> std::ops::ControlFlow<()>,
+    ) -> Result<(), StoreError> {
+        let prefix = CellKey::record_prefix(store, identity_prefix);
+        let mut last_child: Option<SavedKey> = None;
+        self.for_each_page_entry(prefix.as_bytes(), |key, value| {
+            let decoded = decode_data_cell_key(key).ok_or_else(|| corrupt_cell(key))?;
+            if decoded.store != *store
+                || !matches!(decoded.kind, crate::cell::DataCellKind::Node)
+                || !decoded.identity.starts_with(identity_prefix)
+                || value != NODE_MARKER
+            {
+                return Ok(std::ops::ControlFlow::Continue(()));
+            }
+            match scan {
+                RecordChildScan::DescendantNode
+                    if decoded.identity.len() <= identity_prefix.len() =>
+                {
+                    return Ok(std::ops::ControlFlow::Continue(()));
+                }
+                RecordChildScan::ExactNode
+                    if decoded.identity.len() != identity_prefix.len() + 1 =>
+                {
+                    return Ok(std::ops::ControlFlow::Continue(()));
+                }
+                _ => {}
+            }
+            let child = decoded.identity[identity_prefix.len()].clone();
+            if last_child.as_ref() == Some(&child) {
+                return Ok(std::ops::ControlFlow::Continue(()));
+            }
+            last_child = Some(child.clone());
+            Ok(visit(child))
+        })
+    }
+
     fn next_child_after(
         &self,
         prefix: &[u8],
@@ -901,10 +1198,6 @@ impl TreeStore {
         )?;
         Ok(result)
     }
-}
-
-fn decode_record_child(bytes: &[u8]) -> Result<Option<SavedKey>, StoreError> {
-    decode_record_child_key(bytes).map_err(|_| corrupt_cell(bytes))
 }
 
 fn decode_data_child(bytes: &[u8]) -> Result<Option<SavedKey>, StoreError> {
