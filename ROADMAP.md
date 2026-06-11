@@ -829,19 +829,6 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 Goal: every deletion and truth-fix with no implementation dependency lands before building.
 Mostly parallel; two wide-churn barrier lanes close the wave.
 
-**W1.6 → Flagship docs repair (III.A2; after W1.3 — shared docs/error-codes.md: W1.3 owns the
-`protocol.*` section deletion; W1.6 owns the run.*/check rows plus the gate-46 `decode.*`
-reserved rows).** Carries: III.A2 (1)-(4) per gate 1(d): corrected byIsbn example, "Absent
-records" subsection documenting the (d)(i) target contract — fatal data-attachment at proven
-reads, absent-record statically excluded, missing-cell is corruption — not the current catchable
-runtime behavior; error-codes.md:229 fix, full bare-read sweep, checker-level fixtures for
-corrected snippets; the four gate-46 `decode.*` rows (decode.shape, decode.unknown_member,
-decode.required_absent, decode.value) reserved under error-codes.md's Deferred Surfaces. Owns:
-docs/language pages + docs/error-codes.md (minus the protocol.* section) + new check-level doc
-fixtures. Seed: a check-level docs fixture failing on the current line-261 example. Review:
-subsection matches the gate-1(d) decision exactly; no prose-matching tests. Done: every
-docs/language example passes `marrow check` at the checker level, not just parse.
-
 **W1.7 → `at`-sugar removal (barrier; runs alone at wave tail).** Carries: removal #3 + gate 17.
 Owns: marrow-syntax parse_decl/head.rs + grammar, marrow-schema compile_resource_sugar.rs,
 formatter, ~23 fixtures + ~757 test occurrences in ~130 files, two spec passages,
