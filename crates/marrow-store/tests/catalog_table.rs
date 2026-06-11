@@ -74,7 +74,7 @@ fn memory_store_round_trips_a_catalog_snapshot() {
 #[cfg(feature = "native")]
 #[test]
 fn redb_persists_catalog_rows_across_close_and_reopen() {
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = common::TempDir::new("marrow-store-test").expect("temp dir");
     let path = dir.path().join("catalog.redb");
     let snapshot = sample_snapshot();
     {
@@ -228,7 +228,7 @@ fn data_apis_cannot_read_write_or_delete_a_catalog_row() {
 #[cfg(feature = "native")]
 #[test]
 fn redb_round_trips_a_catalog_digest_used_for_comparison() {
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = common::TempDir::new("marrow-store-test").expect("temp dir");
     let path = dir.path().join("digest.redb");
     let snapshot = CatalogMetadata::new(
         3,

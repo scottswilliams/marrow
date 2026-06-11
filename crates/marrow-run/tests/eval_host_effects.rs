@@ -38,7 +38,7 @@ fn io_round_trips_text_through_a_file() {
     let program = checked_program(IO_SAMPLE);
     let store = TreeStore::memory();
     let host = Host::new().with_filesystem();
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = TempDir::new("marrow-run-test").expect("temp dir");
     let path = dir.path().join("note.txt").to_string_lossy().into_owned();
     run_entry_with_host(
         &store,
@@ -63,7 +63,7 @@ fn io_round_trips_text_through_a_file() {
 
 #[test]
 fn irreversible_host_effects_inside_a_transaction_are_rejected_before_the_effect() {
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = TempDir::new("marrow-run-test").expect("temp dir");
     let path = dir.path().join("effect.txt");
     let program = checked_program(
         "pub fn write_in_txn(path: string)\n    transaction\n        std::io::writeText(path, \"leaked\")\n",
@@ -119,7 +119,7 @@ fn io_round_trips_bytes_through_a_file() {
     let program = checked_program(IO_SAMPLE);
     let store = TreeStore::memory();
     let host = Host::new().with_filesystem();
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = TempDir::new("marrow-run-test").expect("temp dir");
     let path = dir.path().join("blob.bin").to_string_lossy().into_owned();
     let data = Value::Bytes(vec![0, 1, 2, 255, 128]);
     run_entry_with_host(
@@ -161,7 +161,7 @@ fn an_io_error_raises_a_catchable_error() {
     let program = checked_program(IO_SAMPLE);
     let store = TreeStore::memory();
     let host = Host::new().with_filesystem();
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = TempDir::new("marrow-run-test").expect("temp dir");
     let missing = dir.path().join("absent.txt").to_string_lossy().into_owned();
     let code = run_entry_with_host(
         &store,

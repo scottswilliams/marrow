@@ -33,7 +33,7 @@ fn the_reference_sample_runs_on_native_storage() {
     // The reference sample must run unchanged on the native redb backend, with
     // output identical to the in-memory run.
     let program = checked_program(&sample_source());
-    let dir = tempfile::tempdir().expect("create a temp dir");
+    let dir = TempDir::new("marrow-run-test").expect("create a temp dir");
     let store = TreeStore::open(&dir.path().join("sample.redb")).expect("open redb");
     let host = Host::new().with_clock(1_700_000_000_000_000_000);
     let outcome = run_entry_with_host(

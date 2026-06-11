@@ -17,8 +17,5 @@ redb = { version = "4", optional = true }
 # and encoding stay dependency-light; the CLI enables it.
 native = ["dep:redb"]
 
-[dev-dependencies]
-tempfile = "3"
-
 [lints]
 workspace = true

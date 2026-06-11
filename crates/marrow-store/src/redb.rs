@@ -596,6 +596,10 @@ impl Backend for RedbStore {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use redb::{Database, ReadableDatabase, TableDefinition};
 
     use super::{
@@ -604,6 +608,47 @@ mod tests {
     };
     use crate::backend::{Backend, StoreError};
     use crate::conformance;
+
+    static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[derive(Debug)]
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new(prefix: &str) -> std::io::Result<Self> {
+            let base = std::env::temp_dir();
+            let process = std::process::id();
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            for attempt in 0..128u64 {
+                let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+                let path = base.join(format!("{prefix}-{process}-{nonce}-{counter}-{attempt}"));
+                match std::fs::create_dir(&path) {
+                    Ok(()) => return Ok(Self { path }),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "could not allocate a unique temp dir",
+            ))
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
 
     /// A redb panic during open or repair must not abort the process: the backstop
     /// converts it into typed corruption. Proven by injecting a panicking open so the
@@ -673,7 +718,7 @@ mod tests {
     /// in-memory store — one contract, two backends.
     #[test]
     fn redb_store_passes_the_conformance_suite() {
-        let dir = tempfile::tempdir().expect("create a temp dir");
+        let dir = TempDir::new("marrow-store-redb-test").expect("create a temp dir");
         let mut counter = 0;
         conformance::run_all(|| {
             // Each law gets a fresh redb file in the shared temp dir; the dir (and
@@ -686,7 +731,7 @@ mod tests {
 
     #[test]
     fn delete_removes_more_than_one_bounded_batch() {
-        let dir = tempfile::tempdir().expect("create a temp dir");
+        let dir = TempDir::new("marrow-store-redb-test").expect("create a temp dir");
         let path = dir.path().join("bulk-delete.redb");
         let mut store = RedbStore::open(&path).expect("open a fresh redb store");
         let prefix = b"bulk/";
@@ -716,7 +761,7 @@ mod tests {
 
     #[test]
     fn rollback_restores_delete_across_more_than_one_bounded_batch() {
-        let dir = tempfile::tempdir().expect("create a temp dir");
+        let dir = TempDir::new("marrow-store-redb-test").expect("create a temp dir");
         let path = dir.path().join("bulk-delete-rollback.redb");
         let mut store = RedbStore::open(&path).expect("open a fresh redb store");
         let prefix = b"bulk/";
@@ -752,7 +797,7 @@ mod tests {
 
     #[test]
     fn redb_read_transactions_are_stable_snapshots() {
-        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = TempDir::new("marrow-store-redb-test").expect("temp dir");
         let path = dir.path().join("snapshot.redb");
         let key: &[u8] = b"k";
         let old: &[u8] = b"old";
@@ -809,7 +854,7 @@ mod tests {
 
     #[test]
     fn redb_aborted_write_transaction_does_not_publish_raw_byte_changes() {
-        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = TempDir::new("marrow-store-redb-test").expect("temp dir");
         let path = dir.path().join("aborted-write.redb");
 
         let store = RedbStore::open(&path).expect("open");
@@ -872,7 +917,7 @@ mod tests {
 
     #[test]
     fn redb_table_orders_raw_byte_keys_lexicographically() {
-        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = TempDir::new("marrow-store-redb-test").expect("temp dir");
         let path = dir.path().join("ordered-bytes.redb");
 
         let store = RedbStore::open(&path).expect("open");
@@ -929,7 +974,7 @@ mod tests {
     /// a brand-new database from an existing one by whether it has any tables.)
     #[test]
     fn open_rejects_an_existing_file_missing_meta() {
-        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = TempDir::new("marrow-store-redb-test").expect("temp dir");
         let path = dir.path().join("foreign.redb");
 
         // Build a non-empty redb file with some other table and no `marrow.meta`.
@@ -950,7 +995,7 @@ mod tests {
 
     #[test]
     fn open_rejects_unsupported_format_version_with_typed_error() {
-        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = TempDir::new("marrow-store-redb-test").expect("temp dir");
         let path = dir.path().join("future-format.redb");
         let unsupported = FORMAT_VERSION + 1;
 
@@ -988,7 +1033,7 @@ mod tests {
     /// succeeds — the new-vs-existing distinction does not break the normal path.
     #[test]
     fn open_creates_and_reopens_a_fresh_store() {
-        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = TempDir::new("marrow-store-redb-test").expect("temp dir");
         let path = dir.path().join("fresh.redb");
         {
             let mut store = RedbStore::open(&path).expect("create fresh");

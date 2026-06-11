@@ -14,7 +14,7 @@ fn title_path(title: &CatalogId) -> [DataPathSegment; 1] {
 
 #[test]
 fn native_tree_cells_survive_reopen() {
-    let dir = tempfile::tempdir().expect("create temp dir");
+    let dir = common::TempDir::new("marrow-store-test").expect("create temp dir");
     let path = dir.path().join("store.redb");
     let books = catalog_id("1111111111111111");
     let title = catalog_id("2222222222222222");
@@ -41,7 +41,7 @@ fn native_tree_cells_survive_reopen() {
 
 #[test]
 fn native_tree_store_rejects_a_second_writer() {
-    let dir = tempfile::tempdir().expect("create temp dir");
+    let dir = common::TempDir::new("marrow-store-test").expect("create temp dir");
     let path = dir.path().join("store.redb");
     let _first = TreeStore::open(&path).expect("open the first writer");
 
@@ -54,7 +54,7 @@ fn native_tree_store_rejects_a_second_writer() {
 
 #[test]
 fn native_read_only_open_requires_an_existing_store() {
-    let dir = tempfile::tempdir().expect("create temp dir");
+    let dir = common::TempDir::new("marrow-store-test").expect("create temp dir");
     let path = dir.path().join("missing.redb");
 
     assert!(TreeStore::open_read_only(&path).is_err());
@@ -62,7 +62,7 @@ fn native_read_only_open_requires_an_existing_store() {
 
 #[test]
 fn native_read_only_can_read_existing_cells() {
-    let dir = tempfile::tempdir().expect("create temp dir");
+    let dir = common::TempDir::new("marrow-store-test").expect("create temp dir");
     let path = dir.path().join("store.redb");
     let books = catalog_id("1111111111111111");
     let title = catalog_id("2222222222222222");
@@ -89,7 +89,7 @@ fn native_read_only_can_read_existing_cells() {
 
 #[test]
 fn multiple_native_read_only_handles_can_coexist() {
-    let dir = tempfile::tempdir().expect("create temp dir");
+    let dir = common::TempDir::new("marrow-store-test").expect("create temp dir");
     let path = dir.path().join("store.redb");
     {
         TreeStore::open(&path).expect("create");
@@ -101,7 +101,7 @@ fn multiple_native_read_only_handles_can_coexist() {
 
 #[test]
 fn native_writer_is_locked_out_while_read_only_handle_lives() {
-    let dir = tempfile::tempdir().expect("create temp dir");
+    let dir = common::TempDir::new("marrow-store-test").expect("create temp dir");
     let path = dir.path().join("store.redb");
     {
         TreeStore::open(&path).expect("create");
@@ -120,7 +120,7 @@ fn native_writer_is_locked_out_while_read_only_handle_lives() {
 
 #[test]
 fn native_read_only_rejects_write_capability_operations() {
-    let dir = tempfile::tempdir().expect("create temp dir");
+    let dir = common::TempDir::new("marrow-store-test").expect("create temp dir");
     let path = dir.path().join("store.redb");
     let books = catalog_id("1111111111111111");
     let title = catalog_id("2222222222222222");

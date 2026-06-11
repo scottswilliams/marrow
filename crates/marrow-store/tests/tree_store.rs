@@ -627,7 +627,7 @@ fn facade_transactions_roll_back_data_index_and_metadata_atomically() {
 #[cfg(feature = "native")]
 #[test]
 fn metadata_survives_native_redb_reopen() {
-    let dir = tempfile::tempdir().expect("create temp dir");
+    let dir = common::TempDir::new("marrow-store-test").expect("create temp dir");
     let path = dir.path().join("tree-store.redb");
     let profile = EngineProfile::new(3);
     let root = catalog_id("aaaaaaaaaaaaaaaa");

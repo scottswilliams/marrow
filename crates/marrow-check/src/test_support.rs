@@ -8,8 +8,8 @@
 //! report carries a diagnostic code. Every concept they name is a marrow-check type,
 //! so sharing them needs no new dependency. Helpers that put data on disk through a
 //! temporary directory stay in each crate's own test support, since they belong to
-//! that crate's pipeline and would drag in a tempfile dependency this crate does not
-//! carry.
+//! that crate's pipeline and would drag filesystem setup into this fact-lookup
+//! helper.
 
 use std::path::Path;
 

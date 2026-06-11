@@ -46,7 +46,7 @@ fn books() -> CatalogId {
 /// and a read-only open.
 #[test]
 fn truncated_store_body_opens_as_corruption_not_a_panic() {
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = common::TempDir::new("marrow-store-test").expect("temp dir");
     let path = dir.path().join("truncated.redb");
     seed_store(&path);
 
@@ -79,7 +79,7 @@ fn truncated_store_body_opens_as_corruption_not_a_panic() {
 /// `store.corruption` rather than aborting the process.
 #[test]
 fn clobbered_store_body_opens_as_corruption_not_a_panic() {
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = common::TempDir::new("marrow-store-test").expect("temp dir");
     let path = dir.path().join("clobbered.redb");
     seed_store(&path);
 
@@ -105,7 +105,7 @@ fn clobbered_store_body_opens_as_corruption_not_a_panic() {
 /// intact afterward.
 #[test]
 fn store_needing_repair_reports_recovery_required_read_only() {
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = common::TempDir::new("marrow-store-test").expect("temp dir");
     let path = dir.path().join("unclean.redb");
     seed_store(&path);
 
@@ -149,7 +149,7 @@ fn store_needing_repair_reports_recovery_required_read_only() {
 /// surfaces `store.corruption` because the pages were destroyed beyond replay.
 #[test]
 fn a_damaged_store_flagged_for_recovery_does_not_promise_intact_data() {
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = common::TempDir::new("marrow-store-test").expect("temp dir");
     let path = dir.path().join("damaged-unclean.redb");
     seed_store(&path);
 
@@ -184,7 +184,7 @@ fn a_damaged_store_flagged_for_recovery_does_not_promise_intact_data() {
 /// mapping add no regression for the healthy case.
 #[test]
 fn clean_store_still_opens_on_both_paths() {
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = common::TempDir::new("marrow-store-test").expect("temp dir");
     let path = dir.path().join("clean.redb");
     seed_store(&path);
 
@@ -196,7 +196,7 @@ fn clean_store_still_opens_on_both_paths() {
 /// creates), and a write open creates a fresh store.
 #[test]
 fn missing_store_file_is_absent_not_corrupt() {
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = common::TempDir::new("marrow-store-test").expect("temp dir");
     let path = dir.path().join("missing.redb");
 
     let read_only = TreeStore::open_read_only(&path)
@@ -215,7 +215,7 @@ fn missing_store_file_is_absent_not_corrupt() {
 /// empty file is non-store data and must fail closed without initializing redb.
 #[test]
 fn open_existing_rejects_an_empty_file_as_corruption() {
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = common::TempDir::new("marrow-store-test").expect("temp dir");
     let path = dir.path().join("empty.redb");
     std::fs::File::create(&path).expect("create empty file");
     assert_eq!(std::fs::metadata(&path).expect("metadata").len(), 0);
@@ -236,7 +236,7 @@ fn open_existing_rejects_an_empty_file_as_corruption() {
 /// fails on the next read-only command.
 #[test]
 fn open_existing_rejects_a_meta_only_file_as_corruption() {
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = common::TempDir::new("marrow-store-test").expect("temp dir");
     let path = dir.path().join("meta-only.redb");
 
     {

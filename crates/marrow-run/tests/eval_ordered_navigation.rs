@@ -492,7 +492,7 @@ fn neighbor_at_an_indexed_root_edge_skips_the_index_on_both_backends() {
     // is a catchable absent-element (so `??` recovers), and `prev(^books)` lands on
     // the last record, not the index name. Both must hold in memory and redb.
     let program = checked_program(BOOK_SHELF_NEIGHBOR);
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = TempDir::new("marrow-run-test").expect("temp dir");
     let mem = TreeStore::memory();
     let redb = TreeStore::open(&dir.path().join("nav.redb")).expect("open redb");
     let stores: [&TreeStore; 2] = [&mem, &redb];
