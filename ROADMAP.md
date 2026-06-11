@@ -829,14 +829,6 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 Goal: every deletion and truth-fix with no implementation dependency lands before building.
 Mostly parallel; two wide-churn barrier lanes close the wave.
 
-**W1.7 → `at`-sugar removal (barrier; runs alone at wave tail).** Carries: removal #3 + gate 17.
-Owns: marrow-syntax parse_decl/head.rs + grammar, marrow-schema member-sugar tests,
-formatter, ~23 fixtures + ~757 test occurrences in ~130 files, two spec passages,
-catalog-identity/01 note (via W1.1). Seed: parser test — `at` form is a parse error with a
-split-form pointer. Review: byte-identical catalogs/stores for migrated fixtures (sugar desugared
-pre-catalog); no test silently weakened by rewrite. Done: zero old concise saved-resource literals across
-repo; full suite green.
-
 **W1.8 → tempfile removal (barrier; after W1.7).** Carries: removal "Remove the tempfile
 dev-dependency". Owns: test support in marrow-store/marrow-run (~28 sites), Cargo.toml ×2,
 Cargo.lock (reviewed intentional change: ~57 → ~21 external packages). Seed: cargo tree proving
