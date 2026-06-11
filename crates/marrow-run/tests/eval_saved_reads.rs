@@ -125,6 +125,59 @@ fn whole_resource_read_rejects_missing_required_durable_fields() {
     assert_run_error(result, RUN_TYPE);
 }
 
+#[test]
+fn whole_resource_coalesce_returns_default_for_an_absent_record() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    required shelf: string\n\npub fn read(id: int): Book\n    var fallback: Book\n    fallback.title = \"missing\"\n    fallback.shelf = \"none\"\n    return ^books(id) ?? fallback\n",
+    );
+    let store = empty_store();
+    let outcome = run_entry(
+        &store,
+        checked_entry!(&program, "test::read", Value::Int(1)),
+    )
+    .expect("read");
+
+    assert_eq!(
+        outcome.value,
+        Some(Value::Resource(vec![
+            ("title".into(), Value::Str("missing".into())),
+            ("shelf".into(), Value::Str("none".into())),
+        ]))
+    );
+}
+
+#[test]
+fn whole_resource_coalesce_rejects_a_present_malformed_record() {
+    let program = checked_program(
+        "resource Book at ^books(id: int)\n    required title: string\n    required shelf: string\n\npub fn read(id: int): Book\n    var fallback: Book\n    fallback.title = \"missing\"\n    fallback.shelf = \"none\"\n    return ^books(id) ?? fallback\n",
+    );
+    let store = empty_store();
+    store
+        .write_data_value(
+            &store_catalog_id(&program, "books"),
+            &[SavedKey::Int(1)],
+            &data_path(&program, "books", &["title"]),
+            vec![0xff],
+        )
+        .expect("raw corrupt data write succeeds");
+    write_data_value(
+        &program,
+        &store,
+        "books",
+        &[SavedKey::Int(1)],
+        &data_path(&program, "books", &["shelf"]),
+        SavedValue::Str("fiction".into()),
+    );
+
+    assert_run_error(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::read", Value::Int(1)),
+        ),
+        RUN_TYPE,
+    );
+}
+
 /// A program that queries saved `Book` data with `exists` and the `??`
 /// absence-default.
 const BOOK_QUERY: &str = "\

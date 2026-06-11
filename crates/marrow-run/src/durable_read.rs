@@ -13,7 +13,7 @@ use crate::error::{RUN_TYPE, RuntimeError, type_error, unsupported};
 use crate::path::{lower, lower_keys};
 use crate::read::eval_local_field_get;
 use crate::stdlib::read_exact_unique_index_lookup_value;
-use crate::store::{DataAddress, LayerAddress, read_data};
+use crate::store::{DataAddress, LayerAddress, data_exists, read_data};
 use crate::value::{Value, decode_leaf};
 
 pub(crate) fn eval_saved_field(expr: &ExecExpr, env: &mut Env<'_>) -> Result<Value, RuntimeError> {
@@ -119,6 +119,13 @@ pub(crate) fn read_layer_entry_at(
 ) -> Result<Value, RuntimeError> {
     let entry = DataAddress::layer_prefix(address.place, address.identity, address.layers, span)?;
     let Some(leaf) = &address.layer_facts.leaf else {
+        if !data_exists(env.store, &entry, span)? {
+            return Err(absent_read(
+                position,
+                format!("`{}` entry is absent", address.layer_facts.name),
+                span,
+            ));
+        }
         let fields = materialize_resource_members(
             env.program,
             address.place,
@@ -186,6 +193,14 @@ pub(crate) fn read_resource(
                 place.root,
                 identity.len()
             ),
+            span,
+        ));
+    }
+    let address = DataAddress::record(place, identity, span)?;
+    if !data_exists(env.store, &address, span)? {
+        return Err(absent_read(
+            ReadPosition::Value,
+            format!("`^{}` record is absent", place.root),
             span,
         ));
     }
