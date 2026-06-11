@@ -829,26 +829,6 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 Goal: every deletion and truth-fix with no implementation dependency lands before building.
 Mostly parallel; two wide-churn barrier lanes close the wave.
 
-**W1.2 ∥ Docs evacuation + dedup.** Carries: removals "Evacuate process artifacts"
-(docs/superpowers/, docs/roadmap/ — coordinated with the live refactor owners; in-repo
-references repointed), "Deduplicate the deferred-contract docs" (one canonical name per
-outcome family, derived during dedup from the docs being merged; stub folds; seven link
-updates), "install.md false flag claim + Release Package Shape", "Evacuate the shipped
-parameter-doc-comment contract", map-sugar Change A written against the gate-22 outcome (the
-future Collection-spellings section scopes the whole map/set family — local map/set values,
-insert(path), set[K], and the map[K, V] saved-member spelling — as unbuilt future surface; it
-never describes the saved-member sugar as shipped), the native-feature doc note, C13's
-one-sentence reframe of docs/future/data-tools.md from store-vs-typed-source to state-vs-state
-diff (equal-epoch baseline named; cross-epoch the growth direction), the C22 docs/future sketch
-fix (gate 52), and the docs/future/language/control-flow-and-effects.md:30 reword dropping the
-"finally rules" reference from the require...else sketch (gate 18). Owns: its named pages only —
-docs/ and docs/future/ minus the pages owned by W1.3/W1.5/W1.6. Deletes: 987+ lines of
-process/duplicate sediment. Seed: docs lint (the engineering-style/02-mandated naming lint over
-docs/ + docs/future/) failing on non-canonical outcome names — built in this lane, run at the
-wave gate, kept as a tidy check. Review: no durable rule lost; AGENTS.md / ADRs confirmed as
-owners of evacuated rules. Done: docs/future contains only real unbuilt contracts; lint green at
-the wave gate.
-
 **W1.3 ∥ serve + lsp deletion (gate 23).** Carries: removals #12 + #13;
 docs/future/serve-protocol.md is deleted outright with no replacement stub, Deferred ADR
 tooling/02 the sole owner of any future app-server/local-API contract. Owns: crates/marrow/src/
