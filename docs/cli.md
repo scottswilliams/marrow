@@ -10,7 +10,7 @@ marrow fmt [--check | --write] <file.mw | projectdir>
 marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] \
   [--format text|json|jsonl] <projectdir>
 marrow test [--trace] [--format text|json|jsonl] <projectdir>
-marrow data <roots|stats|dump|integrity> [--format text|json|jsonl] <projectdir>
+marrow data <roots|stats|dump|integrity|recover> [--format text|json|jsonl] <projectdir>
 marrow data get [--format text|json|jsonl] <projectdir> <path>
 marrow backup [--format text|json|jsonl] <projectdir> <output-file>
 marrow restore [--format text|json|jsonl] <projectdir> <backup-file>
@@ -328,22 +328,24 @@ facts are internal compiler/tooling facts surfaced through diagnostics,
 accepted tooling surfaces. They are not exposed as query-plan, optimizer, or
 standalone explanation output.
 
-Read-only diagnostic/admin/operator inspection of a project's saved data. The
-v0.1 decision is to keep `get` and `dump` as `marrow data` subcommands, not
-production app APIs. They never create or modify the store; a project with no
-saved data on disk reports as empty. `get` is exact-path and point-bounded.
-`dump` is snapshot-bound and must stream or page rather than materializing
-unbounded data. See
-[data-tools.md](data-tools.md) for full output shapes and the path syntax. These
-commands are not production app APIs and not a production backup/restore format.
+Diagnostic/admin/operator access to a project's saved data. The v0.1 decision is
+to keep `get` and `dump` as `marrow data` subcommands, not production app APIs.
+The inspection subcommands never create or modify the store; a project with no
+saved data on disk reports as empty. `recover` is the only write-capable `data`
+subcommand: it opens an existing native store so the backend can replay an
+interrupted commit. `get` is exact-path and point-bounded. `dump` is
+snapshot-bound and must stream or page rather than materializing unbounded data.
+See [data-tools.md](data-tools.md) for full output shapes and the path syntax.
+These commands are not production app APIs and not a production backup/restore
+format.
 
 `data diff` and `data load` are deferred — see
 [future/data-tools.md](future/data-tools.md).
 
 All `data` commands exit `2` on a usage error (missing directory, bad flag, an
 unparseable `<path>` for `get`), and `1` on a config or store error. `roots`,
-`stats`, `dump`, and `get` exit `0` otherwise; `integrity` exits `1` when it
-finds a problem.
+`stats`, `dump`, `recover`, and `get` exit `0` otherwise; `integrity` exits `1`
+when it finds a problem.
 
 ### `data roots`
 
@@ -404,6 +406,21 @@ on the write path and by data evolution.
 ```console
 $ marrow data integrity ./proj
 ok: ./proj integrity verified (2 records)
+```
+
+### `data recover`
+
+Open the configured native store write-capably so the backend can replay an
+interrupted commit after a read-only command reported `store.recovery_required`.
+It reads only `marrow.json` to find the store path; it does not check source
+files first. A missing native store is treated as nothing to recover and is not
+created. An existing file that is not a Marrow store, including an empty file,
+is `store.corruption`. If replay/open finds damage beyond recovery, the command
+reports the store error such as `store.corruption`.
+
+```console
+$ marrow data recover ./proj
+store open/repair completed: ./proj/.data/marrow.redb
 ```
 
 ### `data get`

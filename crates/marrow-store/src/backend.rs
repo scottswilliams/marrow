@@ -12,8 +12,8 @@ pub enum StoreError {
     /// The persistent store or a tree-cell payload is corrupt.
     Corruption { message: String },
     /// The store was not shut down cleanly, so a read-only open is refused until a
-    /// write-capable run replays the interrupted commit. The replay is attempted, not
-    /// guaranteed: it reports whether the data survived, and a store damaged beyond
+    /// write-capable open replays the interrupted commit. The replay is attempted, not
+    /// guaranteed: it reports whether the store opened, and a store damaged beyond
     /// replay surfaces [`Corruption`](Self::Corruption) instead.
     RecoveryRequired,
     /// A store-owned framing field could not hold a key, value, or metadata length.
@@ -91,9 +91,9 @@ impl std::fmt::Display for StoreError {
             Self::RecoveryRequired => write!(
                 f,
                 "the store was not shut down cleanly and needs a write-capable recovery before \
-                 a read-only open. Run `marrow run` so a write open can replay the interrupted \
-                 commit; it reports whether the data survived, and a store damaged beyond replay \
-                 surfaces store.corruption"
+                 a read-only open. Run `marrow data recover` so a write open can replay the \
+                 interrupted commit; it reports whether the store opened, and a store damaged \
+                 beyond replay surfaces store.corruption"
             ),
             Self::LimitExceeded { limit } => write!(f, "a storage limit was exceeded: {limit}"),
             Self::InvalidCursor { message } => write!(f, "storage cursor is invalid: {message}"),

@@ -208,7 +208,7 @@ into a panic during its open-and-repair path — is rejected as `store.corruptio
 a foreign redb file with no Marrow metadata is `store.corruption`; a transient
 I/O fault is `store.io`. A store left needing repair by an unclean shutdown is
 reported on a read-only open as `store.recovery_required`: a write-capable open
-attempts to replay the interrupted commit and reports whether the data survived,
+attempts to replay the interrupted commit and reports whether the store opened,
 so a store damaged beyond replay still surfaces `store.corruption`.
 
 ## Conformance

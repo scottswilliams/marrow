@@ -397,8 +397,8 @@ const author = ^authors(^books(id).author).name
 
 ## Inspecting the Saved Tree
 
-Tools read the same saved tree that code does. The `marrow data` commands are
-read-only and never modify the store:
+Tools read the same saved tree that code does. The `marrow data` inspection
+commands are read-only and never modify the store:
 
 ```text
 $ marrow data dump <projectdir>

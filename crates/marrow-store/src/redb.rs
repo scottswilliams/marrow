@@ -215,11 +215,11 @@ fn stamp_or_verify_format_version(db: &Database) -> Result<(), StoreError> {
     write.commit().map_err(open_commit_error)
 }
 
-/// Verify the recorded format version on a read-only open. A file with no meta
-/// table is not a Marrow store; read-only never creates, so it cannot be a fresh
-/// one. This probe walks the file structure for the same fail-fast reason as the
-/// writable open.
-fn verify_read_only_format_version(db: &ReadOnlyDatabase) -> Result<(), StoreError> {
+/// Verify the recorded format version and data table on an existing-store open.
+/// A file with no meta table or no data table is not a complete Marrow store;
+/// this path never creates, so it cannot be a fresh one. This probe walks the
+/// file structure for the same fail-fast reason as the creating writable open.
+fn verify_existing_store_shape(db: &impl ReadableDatabase) -> Result<(), StoreError> {
     let read = db.begin_read().map_err(open_transaction_error)?;
     let recorded = match read.open_table(META) {
         Ok(meta) => meta
@@ -229,7 +229,14 @@ fn verify_read_only_format_version(db: &ReadOnlyDatabase) -> Result<(), StoreErr
         Err(redb::TableError::TableDoesNotExist(_)) => None,
         Err(other) => return Err(open_table_error(other)),
     };
-    check_format_version(recorded)
+    check_format_version(recorded)?;
+    match read.open_table(TABLE) {
+        Ok(_) => Ok(()),
+        Err(redb::TableError::TableDoesNotExist(_)) => Err(StoreError::Corruption {
+            message: "store is missing its data table".into(),
+        }),
+        Err(other) => Err(open_table_error(other)),
+    }
 }
 
 fn open_transaction_error(error: redb::TransactionError) -> StoreError {
@@ -380,18 +387,35 @@ impl RedbStore {
         })
     }
 
+    /// Open an existing redb-backed store with write capability, without creating
+    /// or adopting missing/non-store data. This is the repair path for a file that
+    /// already carries Marrow metadata.
+    pub(crate) fn open_existing(path: &Path) -> Result<Self, StoreError> {
+        let db = catch_open(|| {
+            let db = Database::open(path).map_err(|error| map_open_error(path, error))?;
+            verify_existing_store_shape(&db)?;
+            Ok(db)
+        })?;
+        Ok(Self {
+            db: DatabaseHandle::ReadWrite(db),
+            txn: None,
+            journals: Vec::new(),
+            read_view: None,
+        })
+    }
+
     /// Open an existing store read-only. Unlike [`open`](Self::open) it never
     /// creates the file and only verifies the recorded [`FORMAT_VERSION`] rather
     /// than stamping it; write-capability operations fail before any write
     /// transaction begins. A store left needing repair by an unclean shutdown is
     /// reported as [`StoreError::RecoveryRequired`]: a write-capable open attempts
-    /// the replay and reports whether the data survived, so a store damaged beyond
+    /// the replay and reports whether the store opened, so a store damaged beyond
     /// replay still surfaces corruption. The open and its probe run under
     /// [`catch_open`].
     pub(crate) fn open_read_only(path: &Path) -> Result<Self, StoreError> {
         let db = catch_open(|| {
             let db = ReadOnlyDatabase::open(path).map_err(|error| map_open_error(path, error))?;
-            verify_read_only_format_version(&db)?;
+            verify_existing_store_shape(&db)?;
             Ok(db)
         })?;
         Ok(Self {

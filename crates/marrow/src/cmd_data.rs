@@ -1,4 +1,4 @@
-//! `marrow data`: read-only inspection of checked tree-cell project data.
+//! `marrow data`: inspection and recovery of tree-cell project data.
 
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -10,7 +10,8 @@ use marrow_store::tree::TreeStore;
 use serde_json::json;
 
 use crate::{
-    CheckFormat, load_checked_project, open_store_for_inspection, report_simple_error, write_json,
+    CheckFormat, load_checked_project, load_config_with_format, native_store_path,
+    open_store_for_inspection, report_simple_error, write_json,
 };
 
 #[path = "cmd_data/get.rs"]
@@ -78,7 +79,7 @@ pub(super) fn pin_snapshot(
 pub(crate) fn data(args: &[String]) -> ExitCode {
     let Some((subcommand, rest)) = args.split_first() else {
         eprintln!(
-            "missing data subcommand; expected `roots`, `stats`, `dump`, `integrity`, or `get`"
+            "missing data subcommand; expected `roots`, `stats`, `dump`, `integrity`, `recover`, or `get`"
         );
         eprintln!("run `marrow data --help` for usage");
         return ExitCode::from(2);
@@ -92,10 +93,11 @@ Usage:
   marrow data stats [--format text|json|jsonl] <projectdir> count roots and records
   marrow data dump [--format text|json|jsonl] <projectdir> dump every (path, value)
   marrow data integrity [--format text|json|jsonl] <dir>   verify checked saved values decode
+  marrow data recover [--format text|json|jsonl] <dir>     repair an unclean native store open
   marrow data get [--format text|json|jsonl] <projectdir> <path> read one path's value
 
-Read-only inspection of a project's saved data; it never creates or modifies the
-store.
+Inspection of a project's saved data. `recover` is the only write-capable data
+command; the other subcommands never create or modify the store.
 "
             );
             ExitCode::SUCCESS
@@ -104,13 +106,73 @@ store.
         "stats" => data_stats(rest),
         "dump" => data_dump(rest),
         "integrity" => integrity::data_integrity(rest),
+        "recover" => data_recover(rest),
         "get" => get::data_get(rest),
         other => {
             eprintln!("unknown data subcommand: {other}");
-            eprintln!("expected `roots`, `stats`, `dump`, `integrity`, or `get`");
+            eprintln!("expected `roots`, `stats`, `dump`, `integrity`, `recover`, or `get`");
             ExitCode::from(2)
         }
     }
+}
+
+fn data_recover(args: &[String]) -> ExitCode {
+    let (dir, format) = match one_positional_with_format("data recover", args) {
+        Ok(parsed) => parsed,
+        Err(code) => return code,
+    };
+    let config = match load_config_with_format(&dir, format) {
+        Ok(config) => config,
+        Err(code) => return code,
+    };
+    let Some(path) = (match native_store_path(&dir, &config) {
+        Ok(path) => path,
+        Err(code) => return code,
+    }) else {
+        return report_no_store_to_recover(&dir, None, format);
+    };
+    if !path.exists() {
+        return report_no_store_to_recover(&dir, Some(&path), format);
+    }
+    match TreeStore::open_existing(&path) {
+        Ok(_store) => report_recovered_store(&dir, &path, format),
+        Err(error) => report_store_error(error, format),
+    }
+}
+
+fn report_no_store_to_recover(
+    dir: &str,
+    path: Option<&std::path::Path>,
+    format: CheckFormat,
+) -> ExitCode {
+    match format {
+        CheckFormat::Text => match path {
+            Some(path) => println!("no store file at {}; nothing to recover", path.display()),
+            None => println!("no native store configured for {dir}; nothing to recover"),
+        },
+        CheckFormat::Json | CheckFormat::Jsonl => {
+            write_json(json!({
+                "project": dir,
+                "status": "absent",
+                "store": path.map(|path| path.display().to_string()),
+            }));
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+fn report_recovered_store(dir: &str, path: &std::path::Path, format: CheckFormat) -> ExitCode {
+    match format {
+        CheckFormat::Text => println!("store open/repair completed: {}", path.display()),
+        CheckFormat::Json | CheckFormat::Jsonl => {
+            write_json(json!({
+                "project": dir,
+                "status": "opened",
+                "store": path.display().to_string(),
+            }));
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 fn data_roots(args: &[String]) -> ExitCode {

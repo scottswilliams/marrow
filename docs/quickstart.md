@@ -221,8 +221,9 @@ marrow data stats --format json .
 {"project":".","records":12,"roots":1}
 ```
 
-`marrow data` is read-only. The `diff` and `load` subcommands are deferred —
-see [future/data-tools.md](future/data-tools.md).
+`marrow data` inspection commands are read-only; `marrow data recover` is the
+explicit store-open repair command. The `diff` and `load` subcommands are
+deferred — see [future/data-tools.md](future/data-tools.md).
 
 ## 5. Write And Run A Test
 

@@ -27,7 +27,7 @@ Usage:
   marrow fmt [--check | --write] <file.mw | projectdir>
   marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] [--format text|json|jsonl] <projectdir>
   marrow test [--trace] [--format text|json|jsonl] <projectdir>
-  marrow data <roots|stats|dump|integrity> <projectdir>
+  marrow data <roots|stats|dump|integrity|recover> <projectdir>
   marrow data get <projectdir> <path>
   marrow backup [--format text|json|jsonl] <projectdir> <output-file>
   marrow restore [--format text|json|jsonl] <projectdir> <backup-file>
@@ -286,7 +286,7 @@ pub(crate) fn dir_and_path_args(
 
 /// The native backend's redb file path, or `Ok(None)` for the in-memory default.
 /// No filesystem side effects.
-fn native_store_path(
+pub(crate) fn native_store_path(
     dir: &str,
     config: &marrow_project::ProjectConfig,
 ) -> Result<Option<PathBuf>, ExitCode> {

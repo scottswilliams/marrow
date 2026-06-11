@@ -33,8 +33,8 @@ point at the [language reference](language/) for the exact rules.
   exit behavior, and examples.
 - [Project Configuration](project-config.md) — every `marrow.json` field and
   its validation rules.
-- [Data Inspection And Repair Tools](data-tools.md) — the read-only `marrow
-  data` subcommands in depth.
+- [Data Inspection And Repair Tools](data-tools.md) — `marrow data` inspection
+  commands and the explicit recover command in depth.
 - [Tooling Surfaces](tooling-surfaces.md) — support levels and boundaries for
   debug, admin, and production tool surfaces.
 - [Serve Protocol](serve-protocol.md) — the newline-delimited JSON protocol the

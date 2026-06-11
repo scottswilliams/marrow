@@ -30,29 +30,36 @@ rows, and the canonical data-cell stream, and a restore validates the manifest
 binding plus full data integrity — including orphaned managed cells — before it
 activates. It is a separate command pair, not a `data` subcommand — see
 [`marrow backup` and `marrow restore`](cli.md#marrow-backup).
-`data` itself only reads.
+Within `data`, `recover` is the explicit write-capable native-store repair/open
+verb. The other subcommands only read.
 
-Inspection never creates or modifies the store. It opens the configured native
-store read-only, and if no store file exists yet it reports an empty result
-rather than creating one: `roots` and `dump` print `(no saved data)`, `stats`
-reports zero roots and records, `integrity` reports `ok` over zero records, and
-`get` prints `(absent)`. The data directory is left untouched — no
-`marrow.redb` is written.
+Inspection subcommands never create or modify the store. They open the
+configured native store read-only, and if no store file exists yet they report
+an empty result rather than creating one: `roots` and `dump` print
+`(no saved data)`, `stats` reports zero roots and records, `integrity` reports
+`ok` over zero records, and `get` prints `(absent)`. The data directory is left
+untouched — no `marrow.redb` is written.
 
 A command that traverses the store more than once — `dump`, `stats`, and
 `integrity` each make several passes — pins one store snapshot for the whole
 command, so its output describes a single coherent version of the data.
 
-There is no in-place repair command: repair is operator-authored maintenance code
+`marrow data recover` is an in-place native-store repair/open command. It opens
+an existing store write-capably so the backend can replay an interrupted commit.
+It does not repair modeled data; that remains operator-authored maintenance code
 run under `marrow run --maintenance`.
 
 ## What needs source, what does not
 
-All `data` subcommands load and check the project first; the check itself opens
+Inspection subcommands load and check the project first; the check itself opens
 the store read-only to bind the accepted-catalog snapshot. The checked facts
 provide root/member catalog IDs, key arity, and leaf types before the command
 reads the tree-cell store. If the source does not check, the command fails with
 the check diagnostic and exits non-zero before reading any data cells.
+
+`recover` is different: it reads only `marrow.json` and the configured native
+store binding, then opens the existing store write-capably. It does not load or
+check source before opening the store.
 
 A `data` command against a project with a missing `marrow.json` reports
 `io.read`; an unparseable or invalid one reports `config.invalid`. Both exit
@@ -252,7 +259,30 @@ The `data.*` codes carry kind `tooling`. See
 When integrity reports orphaned managed cells, correct the schema, run
 source-native `evolve preview`/`evolve apply`, or repair modeled data through
 explicit maintenance code, then run `marrow data integrity` again. There is no
-in-place fix.
+`data` command for modeled-data fixes.
+
+## `marrow data recover`
+
+Opens the configured native store write-capably so the backend can replay an
+interrupted commit after a read-only command reported `store.recovery_required`.
+It reads only `marrow.json` to find the store binding; it does not load or check
+source files first.
+
+A missing native store is treated as nothing to recover and is not created. An
+existing file that is not a Marrow store, including an empty file, is
+`store.corruption`. If replay/open finds damage beyond recovery, the command
+reports the store error such as `store.corruption`.
+
+```
+$ marrow data recover ./project
+store open/repair completed: ./project/.data/marrow.redb
+```
+
+`--format json` and `jsonl` emit the same single status object:
+
+```json
+{"project":"./project","status":"opened","store":"./project/.data/marrow.redb"}
+```
 
 ## Deferred: `diff` and `load`
 

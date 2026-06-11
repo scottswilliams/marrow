@@ -31,6 +31,25 @@ fn truncate_store_body(project: &Path) {
     file.set_len(4096).expect("truncate store body");
 }
 
+fn flip_recovery_flag(project: &Path) {
+    let path = store_path(project);
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .expect("open store header");
+    file.seek(SeekFrom::Start(9))
+        .expect("seek to recovery flag");
+    let mut byte = [0u8; 1];
+    {
+        use std::io::Read;
+        file.read_exact(&mut byte).expect("read recovery flag");
+    }
+    file.seek(SeekFrom::Start(9)).expect("seek back");
+    file.write_all(&[byte[0] ^ 0x01])
+        .expect("flip recovery flag");
+}
+
 /// The dotted code a `marrow` command printed on stderr, located the same way the
 /// CLI's own fault grammar reports it. The fault is the last non-empty stderr line,
 /// so any preamble cannot displace the located code.
@@ -57,6 +76,7 @@ fn store_opening_commands_report_corruption_not_a_panic() {
     let backup_target = backup_target.to_str().expect("backup path utf8");
     let commands: &[&[&str]] = &[
         &["data", "dump", &dir],
+        &["data", "recover", &dir],
         &["data", "integrity", &dir],
         &["data", "stats", &dir],
         &["run", "--entry", "app::seed", &dir],
@@ -102,23 +122,7 @@ fn read_only_command_reports_recovery_required_for_an_unclean_store() {
 
     // redb records "recovery required" in the file header; flipping that flag bit
     // reproduces an unclean shutdown without touching tree data.
-    let path = store_path(&project);
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&path)
-        .expect("open store header");
-    file.seek(SeekFrom::Start(9))
-        .expect("seek to recovery flag");
-    let mut byte = [0u8; 1];
-    {
-        use std::io::Read;
-        file.read_exact(&mut byte).expect("read recovery flag");
-    }
-    file.seek(SeekFrom::Start(9)).expect("seek back");
-    file.write_all(&[byte[0] ^ 0x01])
-        .expect("flip recovery flag");
-    drop(file);
+    flip_recovery_flag(&project);
 
     let output = marrow(&["data", "dump", &dir]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -132,6 +136,22 @@ fn read_only_command_reports_recovery_required_for_an_unclean_store() {
         !stderr.to_lowercase().contains("repair aborted"),
         "recovery message must be Marrow-authored, not a raw redb string: {stderr}"
     );
+}
+
+/// `marrow data recover` is the explicit write-capable repair path for a store
+/// that read-only commands report as `store.recovery_required`. It must not check
+/// project source before repair: damaged source text must not block the store open.
+#[test]
+fn data_recover_repairs_an_unclean_store_without_checking_source_first() {
+    let (project, dir) = seeded_project("cli-store-recover");
+    flip_recovery_flag(&project);
+    write(&project, "src/app.mw", "module app\npub fn main(\n");
+
+    let output = marrow(&["data", "recover", &dir]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+
+    marrow_store::tree::TreeStore::open_read_only(&store_path(&project))
+        .expect("recover should leave the store readable");
 }
 
 /// A healthy seeded store still serves a read-only command, so the backstop and the
@@ -160,4 +180,41 @@ fn a_missing_store_file_is_a_first_run_not_corruption() {
     );
     // A sanity check that the fixture really configures a native store path.
     write(&project, ".keep", "");
+}
+
+/// Recovery is a repair operation over an existing store, not a first-run creator:
+/// with no native file on disk it exits successfully and leaves the store absent.
+#[test]
+fn data_recover_on_a_missing_store_does_not_create_one() {
+    let project = native_project("cli-store-recover-missing");
+    let dir = project.to_str().expect("dir utf8").to_string();
+    assert!(!store_path(&project).exists());
+
+    let output = marrow(&["data", "recover", &dir]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(
+        !store_path(&project).exists(),
+        "recover must not create a missing store"
+    );
+}
+
+/// An existing empty native file is not an absent first-run store. Recovery must
+/// reject it as non-store data instead of initializing a fresh redb database.
+#[test]
+fn data_recover_rejects_an_empty_native_store_file() {
+    let project = native_project("cli-store-recover-empty");
+    let dir = project.to_str().expect("dir utf8").to_string();
+    let path = store_path(&project);
+    std::fs::create_dir_all(path.parent().expect("store parent")).expect("create store dir");
+    std::fs::File::create(&path).expect("create empty store file");
+    assert_eq!(std::fs::metadata(&path).expect("store metadata").len(), 0);
+
+    let output = marrow(&["data", "recover", &dir]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(stderr_code(&output), "store.corruption", "{output:?}");
+    assert_eq!(
+        std::fs::metadata(&path).expect("store metadata").len(),
+        0,
+        "recover must not initialize an empty native file"
+    );
 }

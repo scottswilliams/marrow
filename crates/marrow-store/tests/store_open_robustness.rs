@@ -13,6 +13,7 @@ use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
+use redb::{Database, TableDefinition};
 
 mod common;
 use common::catalog_id;
@@ -122,7 +123,7 @@ fn store_needing_repair_reports_recovery_required_read_only() {
         "recovery message must be Marrow-authored, not a raw redb string: {message}"
     );
     assert!(
-        message.contains("marrow run") || message.contains("recover"),
+        message.contains("marrow data recover"),
         "recovery message should guide the operator to a recovery run: {message}"
     );
 
@@ -208,6 +209,52 @@ fn missing_store_file_is_absent_not_corrupt() {
     );
 
     TreeStore::open(&path).expect("write open creates a missing store");
+}
+
+/// A write-capable open-existing path is for repair, not first-run creation: an
+/// empty file is non-store data and must fail closed without initializing redb.
+#[test]
+fn open_existing_rejects_an_empty_file_as_corruption() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("empty.redb");
+    std::fs::File::create(&path).expect("create empty file");
+    assert_eq!(std::fs::metadata(&path).expect("metadata").len(), 0);
+
+    let error = TreeStore::open_existing(&path)
+        .err()
+        .expect("an empty file must not open as an existing Marrow store");
+    assert_eq!(error.code(), "store.corruption", "{error:?}");
+    assert_eq!(
+        std::fs::metadata(&path).expect("metadata").len(),
+        0,
+        "open_existing must not initialize an empty file"
+    );
+}
+
+/// A redb file with Marrow metadata but no Marrow data table is not a complete
+/// store. Recovery must reject it instead of reporting a successful open that
+/// fails on the next read-only command.
+#[test]
+fn open_existing_rejects_a_meta_only_file_as_corruption() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("meta-only.redb");
+
+    {
+        let db = Database::create(&path).expect("create redb file");
+        let write = db.begin_write().expect("begin");
+        {
+            const META: TableDefinition<&str, u32> = TableDefinition::new("marrow.meta");
+            let mut meta = write.open_table(META).expect("open meta table");
+            meta.insert("format_version", 1)
+                .expect("write accepted format version");
+        }
+        write.commit().expect("commit meta-only file");
+    }
+
+    let error = TreeStore::open_existing(&path)
+        .err()
+        .expect("a meta-only redb file must not open as a complete Marrow store");
+    assert_eq!(error.code(), "store.corruption", "{error:?}");
 }
 
 /// Flip the redb header's recovery-required flag so a read-only open is forced down

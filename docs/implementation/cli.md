@@ -9,7 +9,7 @@ Two crates: `marrow-project` owns the `marrow.json` schema, source/test discover
 `main::main` installs a broken-pipe panic hook (a `Broken pipe` payload exits 0, every other panic defers to the default hook), then dispatches `argv[1]` to one command on a worker thread with a large stack (`run_on_worker_stack`). The parser and runtime recurse over untrusted source on that stack, sized so their fixed depth limits (`check.nesting_limit`, `run.recursion_limit`) always trip before it overflows. Each command's first lines call the shared loaders in `main.rs`:
 
 - `load_config` / `load_checked_project` — dir to `ProjectConfig`, then to a `CheckedProgram` bound against the accepted catalog the store publishes.
-- `resolve_store_path` / `open_store_for_inspection` — locate and open the configured store; inspection always uses `open_read_only`.
+- `native_store_path` / `resolve_store_path` / `open_store_for_inspection` — locate and open the configured store; inspection uses `open_read_only`, while write-capable commands opt into the write-open path.
 - `read_accepted_store_catalog` — the one owner of "open the store read-only and read its accepted snapshot"; absent store or in-memory backend binds no catalog (a first run), a decode error surfaces a typed `store.*` code. `check`/`lsp`/`data`/`serve` read durable identity only through this, never a file.
 - `establish_store_baseline` — freeze a project's first proposed identity into a write-capable store in one transaction (catalog rows, epoch, engine profile, commit metadata via `marrow_run::evolution::commit_catalog_baseline`), then rebind the program against the now-accepted snapshot. Runs only over an empty store with a pending non-empty proposal; a project past its baseline never churns.
 
@@ -23,7 +23,7 @@ Stream separation is load-bearing: a program's own `print`/`write` output owns s
 | `run` | `cmd_run.rs` | Freezes identity, opens and fences the store (auto-applies zero-mutation schema drift), executes the entry under a plain/trace/dry-run hook. |
 | `test` | `cmd_test.rs` | Collects public zero-param fns in test modules, runs each over a fresh in-memory store; assert fault is FAIL, any other is ERROR, rendered as text/json/jsonl test-result reports. |
 | `fmt` | `cmd_fmt.rs` | Formats one file to stdout, or `--check`/`--write` over source roots; refuses stdin and a bare dir with no mode. |
-| `data <roots\|stats\|dump\|integrity\|get>` | `cmd_data.rs`, `cmd_data/` | Read-only inspection; pins one `ReadSnapshot` so multi-pass views describe one store version. |
+| `data <roots\|stats\|dump\|integrity\|recover\|get>` | `cmd_data.rs`, `cmd_data/` | Store inspection plus explicit recovery; read-only views pin one `ReadSnapshot` so multi-pass output describes one store version, while `recover` performs only a write-capable store open. |
 | `evolve <preview\|apply>` | `cmd_evolve/` | Read-only preview vs managed-write apply; apply gates destructive obligations and recovers half-applied evolutions. |
 | `backup` / `restore` | `cmd_backup.rs`, `cmd_restore.rs`, `backup/` | Read-only archive write over a pinned snapshot, carrying the accepted-catalog rows in a typed section; transactional all-or-nothing replay of catalog rows and data into an empty native store, which then runs with no resume step. |
 
