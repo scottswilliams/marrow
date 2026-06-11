@@ -244,6 +244,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) fn run(args: &[String]) -> ExitCode {
     let mut port: u16 = 0;
+    let mut saw_port = false;
     let mut dir: Option<String> = None;
     let mut index = 0;
     while index < args.len() {
@@ -258,6 +259,11 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
                     eprintln!("--port requires a value");
                     return ExitCode::from(2);
                 };
+                if saw_port {
+                    eprintln!("duplicate --port");
+                    return ExitCode::from(2);
+                }
+                saw_port = true;
                 match value.parse() {
                     Ok(value) => port = value,
                     Err(_) => {

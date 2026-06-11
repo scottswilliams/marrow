@@ -49,6 +49,21 @@ fn run_entry_with_no_value_is_a_usage_failure() {
 }
 
 #[test]
+fn serve_duplicate_port_is_a_usage_failure() {
+    let dir = support::temp_dir("usage-serve-duplicate-port");
+    let output = marrow(&["serve", "--port", "1", "--port", "2", dir.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(
+        output.stdout.is_empty(),
+        "unexpected stdout: {:?}",
+        output.stdout
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("duplicate --port"), "{stderr}");
+}
+
+#[test]
 fn an_unknown_data_subcommand_is_a_usage_failure_that_opens_no_store() {
     // A native-store project: if the body ran, `data` would open/create the
     // store. The unknown subcommand must be rejected before any store access.
