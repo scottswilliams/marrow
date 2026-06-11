@@ -829,14 +829,6 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 Goal: every deletion and truth-fix with no implementation dependency lands before building.
 Mostly parallel; two wide-churn barrier lanes close the wave.
 
-**W1.9 → Dump example fossil.** Carries: the docs/data-modeling.md "Inspecting the Saved Tree"
-example repair. Owns:
-docs/data-modeling.md only. Seed: docs review fixture or static check proving the example shows
-only real `data dump` field rows, never derived index entries. Review: the paragraph states that
-derived index trees are maintained by the runtime, are not emitted by `data dump`, and cannot be
-addressed by `data get`; no new inspection surface or docs/language change sneaks in. Done: the
-quickstart and data-modeling examples no longer contradict each other on saved-tree inspection.
-
 Wave gate: full workspace gate + the two absence scans (serve/lsp, at-sugar) recorded; the W1.2
 docs lint run green.
 
