@@ -1,8 +1,8 @@
 //! Activation-window fencing for write-capable store opens.
 //!
 //! A write-capable open fails closed unless the store's stamped catalog epoch, schema
-//! source digest, and engine profile all match what this binary writes; a fresh or
-//! pre-stamp store has no stamp and is adopted on the first commit. The stamp this
+//! source digest, and engine profile all match what this binary writes; a fresh
+//! store has no stamp and is adopted on the first commit. The stamp this
 //! module builds and the fence it enforces read the same facts, so a store this binary
 //! just wrote always passes its own fence.
 
@@ -145,8 +145,8 @@ impl FenceError {
 /// physical layout this binary writes), the catalog epoch (the accepted schema version),
 /// and the source digest (the schema shape itself). The catalog epoch is a coarse
 /// version number; two structurally different schemas can share an epoch, so the source
-/// digest is the schema-bearing fence that distinguishes them. A fresh or pre-stamp
-/// store has no recorded digest and is adopted on the first commit.
+/// digest is the schema-bearing fence that distinguishes them. A fresh store has
+/// no stamp and is adopted on the first commit.
 pub fn fence(
     accepted_epoch: Option<u64>,
     expected_source_digest: &str,
@@ -180,10 +180,8 @@ pub fn fence(
     }
 
     // At the same epoch the catalog epoch cannot distinguish a structurally different
-    // schema, so the recorded source digest is the schema-bearing fence. A store with no
-    // recorded digest predates digest stamping and is adopted by the epoch match alone.
+    // schema, so the recorded source digest is the schema-bearing fence.
     if let Some(commit) = store.read_commit_metadata()?
-        && !commit.source_digest.is_empty()
         && commit.source_digest != expected_source_digest
     {
         return Err(FenceError::SchemaDrift);
@@ -279,11 +277,21 @@ mod tests {
     }
 
     #[test]
-    fn epoch_match_without_recorded_digest_is_adopted() {
+    fn epoch_match_without_commit_metadata_is_adopted() {
         let store = TreeStore::memory();
         stamp(&store, 7);
         fence(Some(7), DIGEST, &current_engine_profile(), &store)
-            .expect("a store with no recorded digest is adopted on the epoch match");
+            .expect("a store with no commit metadata is adopted on the epoch match");
+    }
+
+    #[test]
+    fn epoch_stamped_receipt_with_empty_digest_is_schema_drift() {
+        let store = TreeStore::memory();
+        stamp_with_digest(&store, 7, "");
+        let error = fence(Some(7), DIGEST, &current_engine_profile(), &store)
+            .expect_err("an empty stamped digest is a schema drift receipt");
+        assert_eq!(error, FenceError::SchemaDrift);
+        assert_eq!(error.code(), "run.schema_drift");
     }
 
     #[test]

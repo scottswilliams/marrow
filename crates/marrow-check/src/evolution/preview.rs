@@ -24,12 +24,7 @@ pub fn preview(
     let discharge = discharge(program, store)?;
 
     let commit = store.read_commit_metadata()?;
-    // An empty stamped digest predates digest stamping; treat it as unstamped so the
-    // apply fence adopts the store rather than comparing against a blank.
-    let store_source_digest = commit
-        .as_ref()
-        .map(|commit| commit.source_digest.clone())
-        .filter(|digest| !digest.is_empty());
+    let store_source_digest = commit.as_ref().map(|commit| commit.source_digest.clone());
     let (source_digest, evolution_digest) = crate::catalog::source_and_evolution_digests(program);
     let witness =
         EvolutionWitness {
@@ -56,4 +51,42 @@ pub fn preview(
         };
 
     Ok((witness, discharge.diagnostics))
+}
+
+#[cfg(test)]
+mod tests {
+    use marrow_store::tree::{CommitMetadata, TreeStore};
+
+    use super::*;
+
+    #[test]
+    fn preview_keeps_an_empty_stamped_source_digest() {
+        let store = TreeStore::memory();
+        store
+            .write_commit_metadata(&CommitMetadata {
+                commit_id: 1,
+                catalog_epoch: 7,
+                layout_epoch: 0,
+                source_digest: String::new(),
+                engine_profile_digest: [0; 8],
+                changed_root_catalog_ids: Vec::new(),
+                changed_index_catalog_ids: Vec::new(),
+                activation_evolution_digest: String::new(),
+                activation_proposal_catalog_digest: None,
+                activation_proposal_new_catalog_ids: Vec::new(),
+                activation_records_backfilled: 0,
+                activation_default_records_by_id: Vec::new(),
+                activation_indexes_rebuilt: 0,
+                activation_records_retired: 0,
+                activation_retire_evidence_digest: String::new(),
+                activation_records_retired_by_id: Vec::new(),
+                activation_records_transformed: 0,
+            })
+            .expect("write commit metadata");
+
+        let (witness, diagnostics) = preview(&CheckedProgram::default(), &store).expect("preview");
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_eq!(witness.store_source_digest, Some(String::new()));
+        assert_eq!(witness.store_commit_id, Some(1));
+    }
 }

@@ -212,8 +212,7 @@ against a different one.
 
 The catalog epoch is a coarse version number; two structurally different schemas
 can share an epoch, so the source digest is the schema-bearing fence that tells
-them apart. A store stamped before digest fencing carries no recorded digest and
-is adopted by the epoch match alone.
+them apart.
 
 The source digest binds the durable shape — every `resource`, `store`, `enum`,
 and module constant — and not the `evolve` block. The fence governs the shape a
