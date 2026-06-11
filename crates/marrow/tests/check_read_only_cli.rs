@@ -101,6 +101,31 @@ fn run_freezes_the_catalog_into_the_store_and_creates_no_file() {
 }
 
 #[test]
+fn hostile_config_rejection_creates_no_native_store() {
+    let project = temp_project_uncommitted("hostile-config-no-store", |root| {
+        write(
+            root,
+            "marrow.json",
+            "{ \"sourceRoots\": [\"src\\u0000evil\"], \"store\": { \"backend\": \"native\", \"dataDir\": \".data\" }, \"run\": { \"defaultEntry\": \"app::seed\" } }",
+        );
+        write(root, "src/app.mw", COUNTER_SOURCE);
+    });
+    let dir = project.to_str().unwrap();
+
+    let run = marrow(&["run", dir]);
+    assert_eq!(run.status.code(), Some(1), "{run:?}");
+
+    assert!(
+        !catalog_path(&project).exists(),
+        "a hostile config must not create a catalog file"
+    );
+    assert!(
+        !store_path(&project).exists(),
+        "a hostile config must fail before creating the native store"
+    );
+}
+
+#[test]
 fn check_on_a_committed_project_leaves_the_store_unchanged_and_writes_no_file() {
     // Once durable state exists, `check` still touches nothing: the store file's bytes are
     // identical before and after and no catalog file is ever created, so a CI `check`

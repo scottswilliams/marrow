@@ -155,6 +155,13 @@ pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
             "`sourceRoots` must list at least one source directory",
         ));
     }
+    if let Some(default_entry) = raw
+        .run
+        .as_ref()
+        .and_then(|run| run.default_entry.as_deref())
+    {
+        check_no_nul("run.defaultEntry", default_entry)?;
+    }
     for source_root in &raw.source_roots {
         check_under_root(ConfigPathField::SourceRootsEntry, source_root)?;
     }
@@ -164,6 +171,7 @@ pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
 
     let store = match raw.store {
         Some(store) => {
+            check_no_nul("store.backend", &store.backend)?;
             let backend = StoreBackend::parse(&store.backend).ok_or_else(|| {
                 ConfigError::new(
                     ConfigErrorKind::UnknownStoreBackend {
@@ -222,6 +230,7 @@ fn check_under_root(field: ConfigPathField, value: &str) -> Result<(), ConfigErr
             ConfigPathViolation::Empty,
         ));
     }
+    check_no_nul(field.label(), value)?;
     let path = Path::new(value);
     if path.is_absolute() {
         return Err(invalid_config_path(
@@ -238,6 +247,16 @@ fn check_under_root(field: ConfigPathField, value: &str) -> Result<(), ConfigErr
             field,
             value,
             ConfigPathViolation::ParentDir,
+        ));
+    }
+    Ok(())
+}
+
+fn check_no_nul(label: &str, value: &str) -> Result<(), ConfigError> {
+    if value.contains('\0') {
+        return Err(ConfigError::new(
+            ConfigErrorKind::InvalidJson,
+            format!("`{label}` must not contain a NUL byte"),
         ));
     }
     Ok(())

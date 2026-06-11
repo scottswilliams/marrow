@@ -170,3 +170,42 @@ fn rejects_malformed_json() {
     assert_eq!(error.code, "config.invalid");
     assert_eq!(error.kind, ConfigErrorKind::InvalidJson);
 }
+
+#[test]
+fn rejects_hostile_config_json_families() {
+    for (label, json) in [
+        (
+            "duplicate top-level key",
+            r#"{ "sourceRoots": ["src"], "sourceRoots": ["other"] }"#,
+        ),
+        ("type-wrong source root list", r#"{ "sourceRoots": [1] }"#),
+        (
+            "type-wrong store backend",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": 7 } }"#,
+        ),
+        (
+            "null byte default entry",
+            "{ \"sourceRoots\": [\"src\"], \"run\": { \"defaultEntry\": \"app::main\\u0000\" } }",
+        ),
+        (
+            "null byte source root",
+            "{ \"sourceRoots\": [\"src\\u0000evil\"] }",
+        ),
+        (
+            "null byte store backend",
+            "{ \"sourceRoots\": [\"src\"], \"store\": { \"backend\": \"native\\u0000\", \"dataDir\": \"data\" } }",
+        ),
+        (
+            "null byte test pattern",
+            "{ \"sourceRoots\": [\"src\"], \"tests\": [\"tests\\u0000/*.mw\"] }",
+        ),
+        (
+            "null byte native data dir",
+            "{ \"sourceRoots\": [\"src\"], \"store\": { \"backend\": \"native\", \"dataDir\": \"data\\u0000dir\" } }",
+        ),
+    ] {
+        let error = parse_config(json).expect_err(label);
+        assert_eq!(error.code, "config.invalid", "{label}");
+        assert_eq!(error.kind, ConfigErrorKind::InvalidJson, "{label}");
+    }
+}

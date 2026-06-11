@@ -77,6 +77,7 @@ impl CatalogMetadata {
             if entry.path.is_empty() {
                 return Err(CatalogError::new("catalog entry path must not be empty"));
             }
+            reject_nul("entry path", &entry.path)?;
             if !is_catalog_stable_id(&entry.stable_id) {
                 return Err(CatalogError::new(
                     "catalog stable ID must match cat_<32 lowercase hex>",
@@ -93,12 +94,19 @@ impl CatalogMetadata {
                 if alias.is_empty() {
                     return Err(CatalogError::new("catalog alias must not be empty"));
                 }
+                reject_nul("alias", alias)?;
                 if alias == &entry.path {
                     return Err(CatalogError::new(format!(
                         "catalog alias `{alias}` repeats its canonical path"
                     )));
                 }
                 insert_catalog_path(&mut paths, entry.kind, alias, index)?;
+            }
+            if let Some(shape) = &entry.accepted_key_shape {
+                reject_nul("accepted key shape", shape)?;
+            }
+            if let Some(signature) = &entry.accepted_struct {
+                reject_nul("accepted structural signature", signature)?;
             }
         }
         Ok(())
@@ -512,6 +520,15 @@ fn is_catalog_stable_id(id: &str) -> bool {
         && hex
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn reject_nul(label: &str, value: &str) -> Result<(), CatalogError> {
+    if value.contains('\0') {
+        return Err(CatalogError::new(format!(
+            "catalog {label} must not contain a NUL byte"
+        )));
+    }
+    Ok(())
 }
 
 fn insert_catalog_path<'a>(

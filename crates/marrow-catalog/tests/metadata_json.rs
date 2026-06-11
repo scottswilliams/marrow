@@ -227,3 +227,82 @@ fn parallel_additions_merge_without_regenerating_ids() {
     assert_eq!(parsed.entries[1].stable_id, branch_b_id);
     assert!(parsed.digest.starts_with("sha256:"));
 }
+
+#[test]
+fn rejects_hostile_catalog_json_families() {
+    let metadata = catalog(vec![entry(
+        CatalogEntryKind::Resource,
+        "books::Book",
+        "res-book",
+        &[],
+    )]);
+    let json = metadata.to_json_pretty();
+
+    let duplicate_digest = json.replacen(
+        "\"entries\": [",
+        &format!("\"digest\": \"{}\",\n  \"entries\": [", metadata.digest),
+        1,
+    );
+    let lying_version = json.replacen("{", "{\n  \"version\": 999,", 1);
+    let truncated = json
+        .strip_suffix("}")
+        .expect("pretty catalog ends in a JSON object")
+        .to_string();
+    let valid_sha_wrong_content = json.replacen("books::Book", "books::Magazine", 1);
+
+    for (label, hostile) in [
+        ("duplicate digest key", duplicate_digest),
+        ("lying version", lying_version),
+        ("truncated JSON", truncated),
+        (
+            "valid checksum shape with wrong content",
+            valid_sha_wrong_content,
+        ),
+    ] {
+        let error = CatalogMetadata::from_json(&hostile).expect_err(label);
+        assert_eq!(error.code, CATALOG_INVALID, "{label}");
+    }
+
+    let null_path = catalog(vec![literal_entry(
+        CatalogEntryKind::Resource,
+        "books::Book\0Shadow",
+        "cat_33333333333333333333333333333333",
+        &[],
+    )]);
+    let error = CatalogMetadata::from_json(&null_path.to_json_pretty())
+        .expect_err("null byte path must fail closed");
+    assert_eq!(error.code, CATALOG_INVALID);
+
+    let null_alias = catalog(vec![literal_entry(
+        CatalogEntryKind::Resource,
+        "books::Book",
+        "cat_44444444444444444444444444444444",
+        &["books::Book\0Alias"],
+    )]);
+    let error = CatalogMetadata::from_json(&null_alias.to_json_pretty())
+        .expect_err("null byte alias must fail closed");
+    assert_eq!(error.code, CATALOG_INVALID);
+
+    let mut store_with_null_shape = literal_entry(
+        CatalogEntryKind::Store,
+        "books::^books",
+        "cat_55555555555555555555555555555555",
+        &[],
+    );
+    store_with_null_shape.accepted_key_shape = Some("int\0str".to_string());
+    let error = CatalogMetadata::from_json(&catalog(vec![store_with_null_shape]).to_json_pretty())
+        .expect_err("null byte accepted key shape must fail closed");
+    assert_eq!(error.code, CATALOG_INVALID);
+
+    let mut member_with_null_struct = literal_entry(
+        CatalogEntryKind::ResourceMember,
+        "books::Book::title",
+        "cat_66666666666666666666666666666666",
+        &[],
+    );
+    member_with_null_struct.accepted_struct = Some("leaf:str\0".to_string());
+    let error =
+        CatalogMetadata::from_json(&catalog(vec![member_with_null_struct]).to_json_pretty())
+            .expect_err("null byte accepted structural signature must fail closed");
+    assert_eq!(error.code, CATALOG_INVALID);
+}
