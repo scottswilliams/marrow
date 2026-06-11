@@ -12,7 +12,7 @@ Requirements:
 ```sh
 git clone https://github.com/scottswilliams/marrow
 cd marrow
-cargo install --path crates/marrow
+cargo install --locked --path crates/marrow
 marrow --version
 ```
 
@@ -24,8 +24,6 @@ The installed command is `marrow`.
 cargo build --release -p marrow
 ./target/release/marrow --version
 ```
-
-On Windows, the binary is `target\release\marrow.exe`.
 
 ## Data Directories
 

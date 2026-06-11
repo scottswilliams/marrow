@@ -71,11 +71,12 @@ explicit ambiguity rule before it could become part of the language.
 
 ## Collection spellings
 
-A designed surface adds the `map`/`set` collection family as one whole: local
-`map` and `set` values, `map[K, V]` as a saved-member spelling, `set[K]`, and
-the `insert(path)` populate verb. Ordered sequences already have a spelling,
-`sequence[T]`, the 1-based integer-keyed tree. None of these add a second
-object model; they name ordinary Marrow access patterns over typed trees.
+A designed surface adds the `map`/`set` collection family as one whole
+unbuilt future surface: local map/set values, `map[K, V]` saved-member
+spelling, `set[K]`, and the `insert(path)` populate verb. Ordered sequences
+already have a spelling, `sequence[T]`, the 1-based integer-keyed tree. None
+of these add a second object model; they name ordinary Marrow access patterns
+over typed trees.
 
 | Spelling | Tree shape | Use |
 |---|---|---|
@@ -124,11 +125,12 @@ for word in seen
 delete seen(word)
 ```
 
-Like `sequence[T]`, `map[K, V]` and `set[K]` are built-in spellings, not
-user-instantiable generic types. A collection element accepts no undeclared
-children: if an element needs child fields, model it as a named resource or an
-explicit keyed group, and if set membership must carry metadata, it is no longer
-a set — use `map[K, V]`, for example `map[string, Flag]`.
+If this surface is built, `map[K, V]` and `set[K]` would be built-in spellings
+like `sequence[T]`, not user-instantiable generic types. A collection element
+accepts no undeclared children: if an element needs child fields, model it as a
+named resource or an explicit keyed group, and if set membership must carry
+metadata, it is no longer a set — use `map[K, V]`, for example
+`map[string, Flag]`.
 
 Saved collection data is typed tree data: ordered, inspectable, portable, and
 reached through paths. A local or future ephemeral `map` or `set` has no
