@@ -826,15 +826,6 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 
 ## Wave 2 — P0 foundation (REPORT Part V order)
 
-**W2.1 ∥ Record node cells (II.A1).** Owns: marrow-run write.rs/path.rs, marrow-store tree.rs
-presence readers, integrity orphan rule, discharge presence probing/counting, backup fixtures,
-two doc lines. Deletes: leaf-only store-shape fixtures (clean break, no compatibility path).
-Seed: failing test — all-sparse whole-record assignment leaves `exists()` true and visible to
-iteration/count. Review: soundness lens probes every presence reader (`saved_path_present`,
-`for_each_record`, count, integrity, discharge) + restore symmetry; this is an identity/write-path
-magnet — re-review until genuinely clean. Done: organic vs backup-restore-backup stores produce
-identical backup bytes; `data.orphan` fires on leaf-without-node; family audit ledger.
-
 **W2.2 ∥ Durability pin + crash/codec harness (II.B1 items 1-4 + IV.B1; one family, IV.B1's lane
 builds the harness).** Owns: marrow-store redb.rs (explicit `Durability` at `DatabaseHandle::begin_write`,
 parent-dir fsync via the commit.rs pattern), docs/backend-contract.md Durability and Recovery
