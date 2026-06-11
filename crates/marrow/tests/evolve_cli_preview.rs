@@ -130,9 +130,18 @@ fn evolve_preview_reports_destructive_approval_requirement() {
     let text = marrow(&["evolve", "preview", root.to_str().unwrap()]);
     assert_eq!(text.status.code(), Some(1), "{text:?}");
     let stderr = String::from_utf8(text.stderr).expect("stderr");
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
     // A blocked text-format preview renders the typed code on the blocking-obligation
     // stream (stderr); the preview body itself stays on stdout.
     assert!(stderr.contains("evolve.approval_required"), "{stderr}");
+    assert!(
+        stderr.contains(&format!("catalog id {subtitle_id} (books.Book.subtitle)")),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("--approve-retire {subtitle_id}:1")),
+        "{stderr}"
+    );
     assert!(
         !String::from_utf8(text.stdout)
             .expect("stdout")
@@ -157,9 +166,12 @@ fn evolve_preview_reports_destructive_approval_requirement() {
         .iter()
         .find(|report| report["code"] == serde_json::json!("evolve.approval_required"))
         .unwrap_or_else(|| panic!("{value:#?}"));
-    assert_eq!(
-        report["data"]["catalog_id"],
-        serde_json::json!(member_catalog_id(&accepted_place, "subtitle"))
+    assert_eq!(report["data"]["catalog_id"], serde_json::json!(subtitle_id));
+    assert!(
+        report["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("(books.Book.subtitle)")),
+        "{report:#?}"
     );
     assert_eq!(report["data"]["populated"], serde_json::json!(1));
 }

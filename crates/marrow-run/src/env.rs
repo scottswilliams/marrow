@@ -32,7 +32,7 @@ pub(crate) enum Flow {
     Continue(Option<String>),
     /// A `throw`, carrying the thrown `Error` value, unwinding until a `catch`
     /// handles it or it leaves the function as an uncaught-error fault.
-    Throw(Value),
+    Throw { value: Value, span: SourceSpan },
 }
 
 /// A name binding: its value and whether it may be reassigned (`var` vs `let`).

@@ -18,6 +18,7 @@ pub(crate) enum Completion {
     Returned(Option<Value>),
     Threw {
         error: Value,
+        span: SourceSpan,
         origin: Option<FileId>,
     },
     Faulted {
@@ -181,17 +182,20 @@ fn activation_completion(
     Ok(match outcome {
         Ok(Flow::Return(value)) => Completion::Returned(value),
         Ok(Flow::Normal) => Completion::Returned(None),
-        Ok(Flow::Throw(value)) => Completion::Threw {
+        Ok(Flow::Throw { value, span }) => Completion::Threw {
             error: value,
+            span,
             origin: here,
         },
         Err(RuntimeError {
             throw: Some(error),
             code: RUN_UNCAUGHT_THROW,
+            span,
             origin,
             ..
         }) => Completion::Threw {
             error: *error,
+            span,
             origin: origin.or(here),
         },
         Err(error) if error.is_catchable() => Completion::Faulted {
@@ -216,13 +220,14 @@ fn activation_origin(module: Option<&CheckedRuntimeModule>, env: &Env<'_>) -> Op
     module.and_then(|module| env.program.file_id_of(module))
 }
 
-pub(crate) fn complete_call(
-    completion: Completion,
-    span: SourceSpan,
-) -> Result<Option<Value>, RuntimeError> {
+pub(crate) fn complete_call(completion: Completion) -> Result<Option<Value>, RuntimeError> {
     match completion {
         Completion::Returned(value) => Ok(value),
-        Completion::Threw { error, origin } => Err(raise(error, span, origin)),
+        Completion::Threw {
+            error,
+            span: throw_span,
+            origin,
+        } => Err(raise(error, throw_span, origin)),
         Completion::Faulted {
             code,
             message,

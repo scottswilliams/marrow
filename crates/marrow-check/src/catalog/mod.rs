@@ -819,12 +819,17 @@ pub(crate) struct SourceCatalogEntry {
 impl SourceCatalogEntry {
     /// A non-leaf source entry (resource, store, store index, enum, or enum member): one that
     /// holds no value cell and declares no key params.
-    fn group(kind: CatalogEntryKind, path: String, module: &crate::CheckedModule) -> Self {
+    fn group(
+        kind: CatalogEntryKind,
+        path: String,
+        module: &crate::CheckedModule,
+        span: SourceSpan,
+    ) -> Self {
         Self {
             kind,
             path,
             file: module.source_file.clone(),
-            span: SourceSpan::default(),
+            span,
             leaf: None,
             key_params: Vec::new(),
         }
@@ -833,40 +838,63 @@ impl SourceCatalogEntry {
 
 pub(crate) fn source_catalog_entries(program: &CheckedProgram) -> Vec<SourceCatalogEntry> {
     let mut entries = Vec::new();
+    let spans = source_catalog_spans(program);
     for module in &program.modules {
         for resource in &module.resources {
+            let path = resource_path(&module.name, &resource.name);
+            let span = span_for(&spans, CatalogEntryKind::Resource, &path);
             entries.push(SourceCatalogEntry::group(
                 CatalogEntryKind::Resource,
-                resource_path(&module.name, &resource.name),
+                path,
                 module,
+                span,
             ));
-            collect_resource_members(&mut entries, module, &resource.name, &[], &resource.members);
+            collect_resource_members(
+                &mut entries,
+                module,
+                &resource.name,
+                &[],
+                &resource.members,
+                &spans,
+            );
         }
         for store in &module.stores {
+            let path = store_path(&module.name, &store.root);
+            let span = span_for(&spans, CatalogEntryKind::Store, &path);
             entries.push(SourceCatalogEntry::group(
                 CatalogEntryKind::Store,
-                store_path(&module.name, &store.root),
+                path,
                 module,
+                span,
             ));
             for index in &store.indexes {
+                let path = store_index_path(&module.name, &store.root, &index.name);
+                let span = span_for(&spans, CatalogEntryKind::StoreIndex, &path);
                 entries.push(SourceCatalogEntry::group(
                     CatalogEntryKind::StoreIndex,
-                    store_index_path(&module.name, &store.root, &index.name),
+                    path,
                     module,
+                    span,
                 ));
             }
         }
         for enum_schema in &module.enums {
+            let path = enum_path(&module.name, &enum_schema.name);
+            let span = span_for(&spans, CatalogEntryKind::Enum, &path);
             entries.push(SourceCatalogEntry::group(
                 CatalogEntryKind::Enum,
-                enum_path(&module.name, &enum_schema.name),
+                path,
                 module,
+                span,
             ));
             for index in 0..enum_schema.members.len() {
+                let path = enum_member_path(&module.name, &enum_schema.name, index, enum_schema);
+                let span = span_for(&spans, CatalogEntryKind::EnumMember, &path);
                 entries.push(SourceCatalogEntry::group(
                     CatalogEntryKind::EnumMember,
-                    enum_member_path(&module.name, &enum_schema.name, index, enum_schema),
+                    path,
                     module,
+                    span,
                 ));
             }
         }
@@ -880,20 +908,95 @@ fn collect_resource_members(
     resource: &str,
     parent_path: &[String],
     nodes: &[marrow_schema::Node],
+    spans: &HashMap<CatalogKey, SourceSpan>,
 ) {
     for node in nodes {
         let mut path = parent_path.to_vec();
         path.push(node.name.clone());
+        let catalog_path = resource_member_path(&module.name, resource, &path);
         entries.push(SourceCatalogEntry {
             kind: CatalogEntryKind::ResourceMember,
-            path: resource_member_path(&module.name, resource, &path),
+            span: span_for(spans, CatalogEntryKind::ResourceMember, &catalog_path),
+            path: catalog_path,
             file: module.source_file.clone(),
-            span: SourceSpan::default(),
             leaf: member_leaf(module, node),
             key_params: node.key_params.clone(),
         });
-        collect_resource_members(entries, module, resource, &path, &node.members);
+        collect_resource_members(entries, module, resource, &path, &node.members, spans);
     }
+}
+
+fn source_catalog_spans(program: &CheckedProgram) -> HashMap<CatalogKey, SourceSpan> {
+    let mut spans = HashMap::new();
+    for resource in program.facts.resources() {
+        let module = &program.modules[resource.module.0 as usize];
+        spans.insert(
+            CatalogKey::new(
+                CatalogEntryKind::Resource,
+                resource_path(&module.name, &resource.name),
+            ),
+            resource.span,
+        );
+    }
+    for store in program.facts.stores() {
+        let module = &program.modules[store.module.0 as usize];
+        spans.insert(
+            CatalogKey::new(
+                CatalogEntryKind::Store,
+                store_path(&module.name, &store.root),
+            ),
+            store.span,
+        );
+    }
+    for index in program.facts.store_indexes() {
+        let store = program.facts.store(index.store);
+        let module = &program.modules[store.module.0 as usize];
+        spans.insert(
+            CatalogKey::new(
+                CatalogEntryKind::StoreIndex,
+                store_index_path(&module.name, &store.root, &index.name),
+            ),
+            index.span,
+        );
+    }
+    for member in program.facts.resource_members() {
+        if let Some(path) = program.facts.resource_member_catalog_path(member.id) {
+            spans.insert(
+                CatalogKey::new(CatalogEntryKind::ResourceMember, path),
+                member.span,
+            );
+        }
+    }
+    for enum_fact in program.facts.enums() {
+        let module = &program.modules[enum_fact.module.0 as usize];
+        spans.insert(
+            CatalogKey::new(
+                CatalogEntryKind::Enum,
+                enum_path(&module.name, &enum_fact.name),
+            ),
+            enum_fact.span,
+        );
+    }
+    for member in program.facts.enum_members() {
+        if let Some(path) = program.facts.enum_member_catalog_path(member.id) {
+            spans.insert(
+                CatalogKey::new(CatalogEntryKind::EnumMember, path),
+                member.span,
+            );
+        }
+    }
+    spans
+}
+
+fn span_for(
+    spans: &HashMap<CatalogKey, SourceSpan>,
+    kind: CatalogEntryKind,
+    path: &str,
+) -> SourceSpan {
+    spans
+        .get(&CatalogKey::new(kind, path.to_string()))
+        .copied()
+        .unwrap_or_default()
 }
 
 /// The declaring module and value type a resource member stores its durable bytes as, or `None`

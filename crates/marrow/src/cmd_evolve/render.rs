@@ -5,6 +5,34 @@ use marrow_run::evolution::{ApplyError, ApplyOutcome};
 
 use crate::{CheckFormat, report_simple_error, write_json};
 
+pub(super) struct SourceLabels {
+    by_catalog_id: HashMap<String, String>,
+}
+
+impl SourceLabels {
+    pub(super) fn from_program(program: &marrow_check::CheckedProgram) -> Self {
+        Self {
+            by_catalog_id: program
+                .catalog
+                .accepted_entries
+                .iter()
+                .map(|entry| (entry.stable_id.clone(), source_label(&entry.path)))
+                .collect(),
+        }
+    }
+
+    fn catalog_id(&self, catalog_id: &str) -> String {
+        self.by_catalog_id.get(catalog_id).map_or_else(
+            || catalog_id.to_string(),
+            |label| format!("{catalog_id} ({label})"),
+        )
+    }
+}
+
+fn source_label(path: &str) -> String {
+    path.replace("::", ".")
+}
+
 pub(super) fn data_check_ok(dir: &str, witness: &EvolutionWitness, format: CheckFormat) {
     match format {
         CheckFormat::Text => {
@@ -22,6 +50,7 @@ pub(super) fn data_check_ok(dir: &str, witness: &EvolutionWitness, format: Check
 pub(super) fn preview(
     witness: &EvolutionWitness,
     diagnostics: &[RepairDiagnostic],
+    labels: &SourceLabels,
     format: CheckFormat,
 ) {
     match format {
@@ -50,7 +79,7 @@ pub(super) fn preview(
                 witness.counts.records_to_transform
             );
             if !witness.is_activatable() {
-                render_blocking_text(witness, diagnostics);
+                render_blocking_text(witness, diagnostics, labels);
             }
         }
         CheckFormat::Json | CheckFormat::Jsonl => write_json(serde_json::json!({
@@ -63,7 +92,7 @@ pub(super) fn preview(
             "records_to_backfill": witness.counts.records_to_backfill,
             "records_to_transform": witness.counts.records_to_transform,
             "diagnostics": diagnostics.iter().map(|diagnostic| &diagnostic.message).collect::<Vec<_>>(),
-            "blocking": blocking_json(witness, diagnostics),
+            "blocking": blocking_json(witness, diagnostics, labels),
         })),
     }
 }
@@ -71,16 +100,18 @@ pub(super) fn preview(
 pub(super) fn blocked(
     witness: &EvolutionWitness,
     diagnostics: &[RepairDiagnostic],
+    labels: &SourceLabels,
     format: CheckFormat,
 ) {
     match format {
         CheckFormat::Text => {
-            render_blocking_text(witness, diagnostics);
+            render_blocking_text(witness, diagnostics, labels);
         }
         CheckFormat::Json | CheckFormat::Jsonl => {
             write_json(report_envelope(&first_blocking_report(
                 witness,
                 diagnostics,
+                labels,
             )));
         }
     }
@@ -101,8 +132,12 @@ fn report_envelope(report: &BlockingReport) -> serde_json::Value {
     })
 }
 
-fn render_blocking_text(witness: &EvolutionWitness, diagnostics: &[RepairDiagnostic]) {
-    for report in blocking_reports(witness, diagnostics) {
+fn render_blocking_text(
+    witness: &EvolutionWitness,
+    diagnostics: &[RepairDiagnostic],
+    labels: &SourceLabels,
+) {
+    for report in blocking_reports(witness, diagnostics, labels) {
         eprintln!("{}: {}", report.code, report.message);
     }
 }
@@ -118,8 +153,9 @@ struct BlockingReport {
 fn first_blocking_report(
     witness: &EvolutionWitness,
     diagnostics: &[RepairDiagnostic],
+    labels: &SourceLabels,
 ) -> BlockingReport {
-    blocking_reports(witness, diagnostics)
+    blocking_reports(witness, diagnostics, labels)
         .into_iter()
         .next()
         .unwrap_or_else(generic_blocking_report)
@@ -128,8 +164,9 @@ fn first_blocking_report(
 fn blocking_json(
     witness: &EvolutionWitness,
     diagnostics: &[RepairDiagnostic],
+    labels: &SourceLabels,
 ) -> Vec<serde_json::Value> {
-    blocking_reports(witness, diagnostics)
+    blocking_reports(witness, diagnostics, labels)
         .iter()
         .map(report_envelope)
         .collect()
@@ -138,6 +175,7 @@ fn blocking_json(
 fn blocking_reports(
     witness: &EvolutionWitness,
     diagnostics: &[RepairDiagnostic],
+    labels: &SourceLabels,
 ) -> Vec<BlockingReport> {
     let messages: HashMap<&str, &str> = diagnostics
         .iter()
@@ -159,10 +197,11 @@ fn blocking_reports(
                 });
             }
             Verdict::DestructiveDecisionRequired { populated } => {
+                let catalog_id = obligation.catalog_id.as_str();
                 reports.push(BlockingReport {
                     code: "evolve.approval_required",
-                    message: approval_required_message(obligation.catalog_id.as_str(), *populated),
-                    catalog_id: Some(obligation.catalog_id.as_str().to_string()),
+                    message: approval_required_message(catalog_id, *populated, labels),
+                    catalog_id: Some(catalog_id.to_string()),
                     populated: Some(*populated),
                 });
             }
@@ -186,9 +225,10 @@ fn generic_blocking_report() -> BlockingReport {
 
 /// The `evolve.approval_required` prose, shared by the preview's blocking report and the
 /// apply error so both name the same retire-approval invocation for a destructive evolution.
-fn approval_required_message(catalog_id: &str, populated: usize) -> String {
+fn approval_required_message(catalog_id: &str, populated: usize, labels: &SourceLabels) -> String {
+    let display_id = labels.catalog_id(catalog_id);
     format!(
-        "catalog id {catalog_id} retires {populated} populated record(s); rerun with --maintenance --approve-retire {catalog_id}:{populated}"
+        "catalog id {display_id} retires {populated} populated record(s); rerun with --maintenance --approve-retire {catalog_id}:{populated}"
     )
 }
 
@@ -221,7 +261,7 @@ pub(super) fn apply_success(outcome: &ApplyOutcome, format: CheckFormat) {
     }
 }
 
-pub(super) fn apply_error(error: ApplyError, format: CheckFormat) {
+pub(super) fn apply_error(error: ApplyError, labels: &SourceLabels, format: CheckFormat) {
     match error {
         ApplyError::NoAcceptedCatalog => report_simple_error(
             "evolve.no_accepted_catalog",
@@ -255,7 +295,7 @@ pub(super) fn apply_error(error: ApplyError, format: CheckFormat) {
             populated,
         } => report_simple_error(
             "evolve.approval_required",
-            &approval_required_message(catalog_id.as_str(), populated),
+            &approval_required_message(catalog_id.as_str(), populated, labels),
             format,
         ),
         ApplyError::ApprovalMismatch => report_simple_error(

@@ -76,7 +76,7 @@ fn eval_program_function<'p>(
 ) -> Result<Option<Value>, RuntimeError> {
     let values = bind_arguments(&function.params, args, span, env)?;
     let (completion, _) = invoke_function(env, module, function, &values, &[], span)?;
-    complete_call(completion, span)
+    complete_call(completion)
 }
 
 /// Runs `function` as a child activation of `env`, moving the debugger hook into
@@ -228,5 +228,5 @@ pub(crate) fn eval_call_with_modes<'p>(
             place.write(value, span, env)?;
         }
     }
-    complete_call(completion, span)
+    complete_call(completion)
 }

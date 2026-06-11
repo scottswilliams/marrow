@@ -117,8 +117,15 @@ fn run_entry_impl<'p>(
         depth: 1,
     })? {
         (Completion::Returned(value), ..) => value,
-        (Completion::Threw { error, origin }, ..) => {
-            return Err(raise(error, function.span, origin));
+        (
+            Completion::Threw {
+                error,
+                span,
+                origin,
+            },
+            ..,
+        ) => {
+            return Err(raise(error, span, origin));
         }
         (
             Completion::Faulted {

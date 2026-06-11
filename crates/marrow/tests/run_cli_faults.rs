@@ -262,7 +262,7 @@ fn an_uncaught_throw_is_located() {
         "{:?}",
         fault.file
     );
-    assert_eq!(fault.line, Some(3));
+    assert_eq!(fault.line, Some(4));
 }
 
 #[test]

@@ -314,7 +314,10 @@ fn eval_throw(value: &ExecExpr, span: SourceSpan, env: &mut Env<'_>) -> Result<F
     if !matches!(thrown, Value::Resource(_)) {
         return Err(type_error("`throw` requires an `Error` value", span));
     }
-    Ok(Flow::Throw(thrown))
+    Ok(Flow::Throw {
+        value: thrown,
+        span,
+    })
 }
 
 fn eval_try(
@@ -325,7 +328,7 @@ fn eval_try(
 ) -> Result<Flow, RuntimeError> {
     let outcome = eval_block(body, env);
     let handled = match (outcome, catch) {
-        (Ok(Flow::Throw(error)), Some(clause)) => eval_catch(clause, error, env),
+        (Ok(Flow::Throw { value, .. }), Some(clause)) => eval_catch(clause, value, env),
         (Err(error), Some(clause)) if error.is_catchable() => {
             let error = error
                 .into_error_value()
@@ -336,7 +339,7 @@ fn eval_try(
     };
     match finally {
         Some(block) => match eval_block(block, env) {
-            Ok(Flow::Throw(error)) => Ok(Flow::Throw(error)),
+            Ok(Flow::Throw { value, span }) => Ok(Flow::Throw { value, span }),
             Err(error) => Err(error),
             Ok(_) => handled,
         },

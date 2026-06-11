@@ -145,6 +145,15 @@ pub(crate) fn report_project(
                         diagnostic.message
                     );
                 }
+                if !report.has_errors() {
+                    let warnings = report
+                        .diagnostics
+                        .iter()
+                        .filter(|diagnostic| diagnostic.severity.as_str() == "warning")
+                        .count();
+                    let suffix = if warnings == 1 { "warning" } else { "warnings" };
+                    println!("ok: checked ({warnings} {suffix})");
+                }
             }
         }
         CheckFormat::Json | CheckFormat::Jsonl => report_diagnostic_records(

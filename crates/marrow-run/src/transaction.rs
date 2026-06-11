@@ -17,7 +17,10 @@ pub(crate) fn eval_transaction(
     env.leave_transaction();
 
     match result {
-        Ok(Flow::Throw(value)) => rollback_throw(value, depth, span, env),
+        Ok(Flow::Throw {
+            value,
+            span: throw_span,
+        }) => rollback_throw(value, throw_span, depth, span, env),
         Ok(flow) => commit_flow(flow, depth, span, env),
         Err(error) => rollback_error(error, depth, span, env),
     }
@@ -39,12 +42,16 @@ fn rollback_and_discard(
 
 fn rollback_throw(
     value: crate::value::Value,
+    throw_span: SourceSpan,
     depth: usize,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
     rollback_and_discard(depth, span, env)?;
-    Ok(Flow::Throw(value))
+    Ok(Flow::Throw {
+        value,
+        span: throw_span,
+    })
 }
 
 fn rollback_error(

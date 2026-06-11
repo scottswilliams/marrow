@@ -38,13 +38,14 @@ pub(crate) fn check_data(dir: &str, format: CheckFormat) -> ExitCode {
     let Ok(store) = store::preview_store(dir, &config, format) else {
         return ExitCode::FAILURE;
     };
+    let labels = render::SourceLabels::from_program(&program);
     match preview(&program, &store) {
         Ok((witness, _diagnostics)) if witness.is_activatable() => {
             render::data_check_ok(dir, &witness, format);
             ExitCode::SUCCESS
         }
         Ok((witness, diagnostics)) => {
-            render::blocked(&witness, &diagnostics, format);
+            render::blocked(&witness, &diagnostics, &labels, format);
             ExitCode::FAILURE
         }
         Err(error) => {
@@ -66,9 +67,10 @@ fn preview_cmd(raw_args: &[String]) -> ExitCode {
     let Ok(store) = store::preview_store(&input.dir, &config, input.format) else {
         return ExitCode::FAILURE;
     };
+    let labels = render::SourceLabels::from_program(&program);
     match preview(&program, &store) {
         Ok((witness, diagnostics)) => {
-            render::preview(&witness, &diagnostics, input.format);
+            render::preview(&witness, &diagnostics, &labels, input.format);
             if witness.is_activatable() {
                 ExitCode::SUCCESS
             } else {
@@ -102,6 +104,7 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
             Ok(program) => program,
             Err(code) => return code,
         };
+    let labels = render::SourceLabels::from_program(&program);
     let (witness, diagnostics) = match preview(&program, &store) {
         Ok(result) => result,
         Err(error) => {
@@ -121,11 +124,11 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(ApplyError::NotActivatable) => {
-            render::blocked(&witness, &diagnostics, input.format);
+            render::blocked(&witness, &diagnostics, &labels, input.format);
             ExitCode::FAILURE
         }
         Err(error) => {
-            render::apply_error(error, input.format);
+            render::apply_error(error, &labels, input.format);
             ExitCode::FAILURE
         }
     }

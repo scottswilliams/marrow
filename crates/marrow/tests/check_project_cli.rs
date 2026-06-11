@@ -69,6 +69,77 @@ fn reports_project_check_as_jsonl() {
 }
 
 #[test]
+fn pending_catalog_intent_reports_declaration_spans() {
+    let root = support::temp_project("proj-catalog-intent-spans", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+        );
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             store ^books(id: int): Book\n",
+        );
+    });
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   subtitle: string\n\
+             store ^books(id: int): Book\n",
+    );
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let records = support::jsonl(output.stdout);
+    let lines: Vec<i64> = records
+        .iter()
+        .filter(|record| record["code"] == "check.catalog_intent")
+        .map(|record| record["source_span"]["line"].as_i64().expect("line"))
+        .collect();
+    assert_eq!(lines, vec![5], "{records:#?}");
+}
+
+#[test]
+fn warning_only_project_check_prints_stable_summary() {
+    let root = support::temp_project("proj-warning-summary", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+        );
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             store ^books(id: int): Book\n",
+        );
+    });
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   subtitle: string\n\
+             store ^books(id: int): Book\n",
+    );
+    let output = run_check(&[root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert_eq!(stdout, "ok: checked (1 warning)\n");
+}
+
+#[test]
 fn rejects_duplicate_format_flag() {
     let output = run_check(&["--format", "json", "--format", "text", "missing.mw"]);
 

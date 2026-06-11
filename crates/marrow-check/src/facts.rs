@@ -195,6 +195,14 @@ impl CheckedFacts {
         ))
     }
 
+    pub fn resource_member_catalog_path(&self, id: ResourceMemberId) -> Option<String> {
+        let member = self.resource_members.get(id.0 as usize)?;
+        let resource = self.resources.get(member.resource.0 as usize)?;
+        let module = self.modules.get(resource.module.0 as usize)?;
+        let path = resource_member_name_path(&self.resource_members, id)?;
+        Some(resource_member_path(&module.name, &resource.name, &path))
+    }
+
     pub(crate) fn enum_member_by_source_order(
         &self,
         enum_id: EnumId,
@@ -246,7 +254,7 @@ impl CheckedFacts {
         self.bind_resource_catalog_ids(modules, ids);
         self.bind_store_catalog_ids(modules, ids);
         self.bind_store_index_catalog_ids(modules, ids);
-        self.bind_resource_member_catalog_ids(modules, ids);
+        self.bind_resource_member_catalog_ids(ids);
         self.bind_enum_catalog_ids(modules, ids);
         self.bind_enum_member_catalog_ids(modules, ids);
     }
@@ -306,27 +314,16 @@ impl CheckedFacts {
         }
     }
 
-    fn bind_resource_member_catalog_ids(
-        &mut self,
-        modules: &[CheckedModule],
-        ids: &HashMap<CatalogKey, String>,
-    ) {
-        let resource_member_paths: Vec<String> = self
+    fn bind_resource_member_catalog_ids(&mut self, ids: &HashMap<CatalogKey, String>) {
+        let resource_member_paths: Vec<Option<String>> = self
             .resource_members
             .iter()
-            .map(|member| {
-                let resource = &self.resources[member.resource.0 as usize];
-                let module = &modules[resource.module.0 as usize];
-                resource_member_path(
-                    &module.name,
-                    &resource.name,
-                    &resource_member_name_path(&self.resource_members, member.id),
-                )
-            })
+            .map(|member| self.resource_member_catalog_path(member.id))
             .collect();
         for (member, path) in self.resource_members.iter_mut().zip(resource_member_paths) {
-            member.catalog_id =
-                catalog_id(ids, marrow_catalog::CatalogEntryKind::ResourceMember, path);
+            member.catalog_id = path.and_then(|path| {
+                catalog_id(ids, marrow_catalog::CatalogEntryKind::ResourceMember, path)
+            });
         }
     }
 
@@ -1361,14 +1358,17 @@ fn catalog_id(
     ids.get(&CatalogKey::new(kind, path)).cloned()
 }
 
-fn resource_member_name_path(members: &[ResourceMemberFact], id: ResourceMemberId) -> Vec<String> {
-    let member = &members[id.0 as usize];
+fn resource_member_name_path(
+    members: &[ResourceMemberFact],
+    id: ResourceMemberId,
+) -> Option<Vec<String>> {
+    let member = members.get(id.0 as usize)?;
     let mut path = match member.parent {
-        Some(parent) => resource_member_name_path(members, parent),
+        Some(parent) => resource_member_name_path(members, parent)?,
         None => Vec::new(),
     };
     path.push(member.name.clone());
-    path
+    Some(path)
 }
 
 fn enum_member_name_path(members: &[EnumMemberFact], id: EnumMemberId) -> Option<Vec<String>> {
