@@ -94,23 +94,6 @@ fn formats_split_store_declaration() {
 }
 
 #[test]
-fn formats_concise_resource_at_as_split_resource_and_store() {
-    let source = "module app\n\
-         resource Book at ^books(id: int)\n\
-         \x20   required title: string\n\
-         \x20   index byTitle(title, id)\n";
-
-    assert_eq!(
-        format_source(source),
-        "module app\n\n\
-         resource Book\n\
-         \x20   required title: string\n\n\
-         store ^books(id: int): Book\n\
-         \x20   index byTitle(title, id)\n"
-    );
-}
-
-#[test]
 fn formats_expressions_to_canonical_source() {
     // Each input is already canonical, so formatting must reproduce it exactly.
     let canonical = [
@@ -328,12 +311,13 @@ fn formats_empty_doc_comment_lines_without_trailing_whitespace() {
 #[test]
 fn formats_resource_declaration_with_members() {
     let source = "module app\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   ;; Display title.\n\
          \x20   required title: string\n\
          \x20   tags(pos: int): string\n\
          \x20   notes(noteId: string)\n\
          \x20       text: string\n\
+         store ^books(id: int): Book\n\
          \x20   index byShelf(shelf, id) unique\n";
     let expected = "module app\n\n\
          resource Book\n\
@@ -366,8 +350,9 @@ fn formats_whole_file_with_blank_line_policy() {
          use std::clock\n\
          use shelf::books\n\
          const MaxLoans: int = 5\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
+         store ^books(id: int): Book\n\
          pub fn add(title: string): int\n\
          \x20   return 1\n";
     // Module, the use block, and each declaration are separated by one blank line.

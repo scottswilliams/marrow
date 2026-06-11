@@ -69,8 +69,9 @@ fn type_at_a_saved_field_read_is_the_declared_leaf_type() {
     // `^books(id).title` reads a `string` field of the `Book` resource. Typing
     // it requires both the saved-data machinery and the `id` parameter in scope.
     let source = "module m\n\
-        resource Book at ^books(id: int)\n    \
+        resource Book\n    \
         required title: string\n\
+        store ^books(id: int): Book\n\
         fn peek(id: int): string\n    \
         return ^books(id).title\n";
     let (program, parsed, path) = analyze("type-at-saved-field", source);
@@ -182,9 +183,10 @@ fn scope_at_includes_a_loop_binding_typed_to_the_element() {
 #[test]
 fn scope_at_includes_a_saved_group_loop_binding_typed_to_the_entry() {
     let source = "module m\n\
-        resource Book at ^books(id: int)\n    \
+        resource Book\n    \
         versions(version: int)\n        \
         required title: string\n\
+        store ^books(id: int): Book\n\
         fn f(id: Id(^books))\n    \
         for n, version in ^books(id).versions\n        \
         print(version.title)\n";

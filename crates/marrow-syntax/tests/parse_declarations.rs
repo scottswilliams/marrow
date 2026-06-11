@@ -138,9 +138,10 @@ fn attaches_doc_comments_to_resource_members() {
     let parsed = parse_source(
         r#"module shelf::books
 
-resource Book at ^books(id: int)
+resource Book
     ;; Display title.
     required title: string
+store ^books(id: int): Book
 "#,
     );
 
@@ -158,10 +159,11 @@ fn parses_trailing_comments_on_declaration_lines() {
         "module app ; module comment\n\
          use std::math ; use comment\n\
          const Max: int = 5 ; const comment\n\
-         resource Book at ^books(id: int) ; resource comment\n\
+         resource Book ; resource comment\n\
          \x20   title: string ; field comment\n\
          \x20   notes(noteId: string) ; group comment\n\
          \x20       text: string ; nested field comment\n\
+         store ^books(id: int): Book ; store comment\n\
          \x20   index byTitle(title) ; index comment\n\
          enum Status ; enum comment\n\
          \x20   active ; member comment\n\
@@ -222,7 +224,8 @@ fn rejects_internal_and_private_visibility() {
 fn requires_indented_resource_and_function_bodies() {
     let parsed = parse_source(
         r#"module app
-resource Book at ^books(id: int)
+resource Book
+store ^books(id: int): Book
 pub fn main()
 "#,
     );

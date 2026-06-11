@@ -48,8 +48,9 @@ fn multiple_stores_over_one_resource_keep_runtime_roots_separate() {
 /// and writes. The identity carries the lowered key so `^books(id)` reads the
 /// same record `^books(1)` does.
 const BOOK_IDENTITY: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
+store ^books(id: int): Book
 
 pub fn save(t: string)
     const id = nextId(^books)
@@ -105,8 +106,9 @@ fn a_plain_int_identity_still_works() {
 /// A composite-key resource can still be addressed directly by its declared store
 /// key order. Composite identity values come from traversal and indexes.
 const ENROLLMENT_IDENTITY: &str = "\
-resource Enrollment at ^enrollments(studentId: string, courseId: string)
+resource Enrollment
     status: string
+store ^enrollments(studentId: string, courseId: string): Enrollment
 
 pub fn enroll(s: string, c: string, st: string)
     ^enrollments(s, c).status = st
@@ -162,7 +164,7 @@ fn constructs_and_uses_a_composite_identity_round_trips() {
 #[test]
 fn composite_root_keys_write_in_declaration_order() {
     let program = checked_program(
-        "resource Enrollment at ^enrollments(studentId: string, courseId: string)\n    status: string\n\npub fn enroll()\n    ^enrollments(\"s\", \"c\").status = \"active\"\n",
+        "resource Enrollment\n    status: string\nstore ^enrollments(studentId: string, courseId: string): Enrollment\n\npub fn enroll()\n    ^enrollments(\"s\", \"c\").status = \"active\"\n",
     );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::enroll")).expect("enroll");
@@ -184,7 +186,7 @@ fn whole_resource_read_through_an_identity() {
     // The primary-root iterator yields a composite identity that can be used for
     // a whole-resource read.
     let program = checked_program(
-        "resource Enrollment at ^enrollments(studentId: string, courseId: string)\n    status: string\n\npub fn statusOf(): string\n    for id in ^enrollments\n        var e: Enrollment = ^enrollments(id)\n        return e.status\n    return \"\"\n",
+        "resource Enrollment\n    status: string\nstore ^enrollments(studentId: string, courseId: string): Enrollment\n\npub fn statusOf(): string\n    for id in ^enrollments\n        var e: Enrollment = ^enrollments(id)\n        return e.status\n    return \"\"\n",
     );
     let store = TreeStore::memory();
     write_data_value(
@@ -207,9 +209,10 @@ fn whole_resource_read_through_an_identity() {
 /// read/write address the root directly, and whole read/write materialize and
 /// replace the root as a resource value.
 const SETTINGS: &str = "\
-resource Settings at ^settings
+resource Settings
     required theme: string
     required maxLoans: int
+store ^settings: Settings
 
 pub fn init(t: string, n: int)
     transaction
@@ -341,8 +344,9 @@ fn singleton_whole_read_and_write_round_trip() {
 fn a_whole_read_of_a_keyed_root_without_an_identity_is_rejected() {
     checker_rejects(
         "module test\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
+         store ^books(id: int): Book\n\
          pub fn read()\n\
          \x20   var b: Book = ^books\n",
         "check.untyped_value",
@@ -353,8 +357,9 @@ fn a_whole_read_of_a_keyed_root_without_an_identity_is_rejected() {
 fn a_field_read_off_a_keyed_root_without_an_identity_is_rejected() {
     checker_rejects(
         "module test\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
+         store ^books(id: int): Book\n\
          pub fn read(): string\n\
          \x20   return ^books.title\n",
         "check.untyped_value",
@@ -362,11 +367,12 @@ fn a_field_read_off_a_keyed_root_without_an_identity_is_rejected() {
 }
 
 const PATIENT_UNKEYED_GROUP: &str = "\
-resource Patient at ^patients(id: int)
+resource Patient
     mrn: string
     name
         first: string
         last: string
+store ^patients(id: int): Patient
 
 pub fn setName(id: int, f: string, l: string)
     ^patients(id).name.first = f

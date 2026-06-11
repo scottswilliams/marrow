@@ -62,11 +62,13 @@ fn data_integrity_accepts_singleton_fields_and_keyed_tree_members() {
         "src/app.mw",
         "module app\n\n\
          use std::clock\n\n\
-         resource Settings at ^settings\n\
+         resource Settings\n\
          \x20\x20\x20\x20maxLoans: int\n\
-         \x20\x20\x20\x20theme: string\n\n\
-         resource Hits at ^hits\n\
-         \x20\x20\x20\x20when(moment: instant): int\n\n\
+         \x20\x20\x20\x20theme: string\n\
+         store ^settings: Settings\n\n\
+         resource Hits\n\
+         \x20\x20\x20\x20when(moment: instant): int\n\
+         store ^hits: Hits\n\n\
          pub fn seed()\n\
          \x20\x20\x20\x20^settings.maxLoans = 5\n\
          \x20\x20\x20\x20^settings.theme = \"dark\"\n\
@@ -180,8 +182,9 @@ fn data_integrity_reports_a_keyed_member_value_without_its_key_as_data_orphan() 
         &project,
         "src/app.mw",
         "module app\n\n\
-         resource Hits at ^hits\n\
-         \x20\x20\x20\x20when(moment: instant): int\n",
+         resource Hits\n\
+         \x20\x20\x20\x20when(moment: instant): int\n\
+         store ^hits: Hits\n",
     );
     let dir = project.to_str().unwrap().to_string();
     let place = checked_place(&project, "hits");
@@ -270,11 +273,13 @@ fn data_integrity_reports_a_corrupt_identity_leaf_as_data_decode() {
         &project,
         "src/app.mw",
         "module app\n\n\
-         resource Author at ^authors(id: int)\n\
-         \x20\x20\x20\x20required name: string\n\n\
-         resource Book at ^books(id: int)\n\
+         resource Author\n\
+         \x20\x20\x20\x20required name: string\n\
+         store ^authors(id: int): Author\n\n\
+         resource Book\n\
          \x20\x20\x20\x20required title: string\n\
-         \x20\x20\x20\x20authorId: Id(^authors)\n",
+         \x20\x20\x20\x20authorId: Id(^authors)\n\
+         store ^books(id: int): Book\n",
     );
     let dir = project.to_str().unwrap().to_string();
     let place = checked_place(&project, "books");
@@ -307,11 +312,13 @@ fn data_integrity_reports_a_wrong_typed_identity_leaf_as_data_key_type() {
         &project,
         "src/app.mw",
         "module app\n\n\
-         resource Author at ^authors(id: int)\n\
-         \x20\x20\x20\x20required name: string\n\n\
-         resource Book at ^books(id: int)\n\
+         resource Author\n\
+         \x20\x20\x20\x20required name: string\n\
+         store ^authors(id: int): Author\n\n\
+         resource Book\n\
          \x20\x20\x20\x20required title: string\n\
-         \x20\x20\x20\x20authorId: Id(^authors)\n",
+         \x20\x20\x20\x20authorId: Id(^authors)\n\
+         store ^books(id: int): Book\n",
     );
     let dir = project.to_str().unwrap().to_string();
     let place = checked_place(&project, "books");
@@ -343,8 +350,9 @@ fn data_integrity_reports_a_wrong_typed_keyed_member_key_as_data_key_type() {
         &project,
         "src/app.mw",
         "module app\n\n\
-         resource Hits at ^hits\n\
-         \x20\x20\x20\x20when(moment: instant): int\n",
+         resource Hits\n\
+         \x20\x20\x20\x20when(moment: instant): int\n\
+         store ^hits: Hits\n",
     );
     let dir = project.to_str().unwrap().to_string();
     let place = checked_place(&project, "hits");

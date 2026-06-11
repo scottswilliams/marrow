@@ -197,7 +197,7 @@ fn a_module_less_script_string_into_an_int_field_is_a_check_error() {
     // `int` field `count` is a type mismatch, not a silently-accepted write.
     let found = check_script(
         "script-string-into-int",
-        "resource Order at ^orders(id: int)\n    required count: int\n\n\
+        "resource Order\n    required count: int\nstore ^orders(id: int): Order\n\n\
          pub fn main()\n    var o: Order\n    o.count = \"alsobad\"\n    ^orders(1) = o\n",
         "check.assignment_type",
     );
@@ -212,7 +212,8 @@ fn a_module_less_script_string_into_an_enum_field_is_a_check_error() {
     let found = check_script(
         "script-string-into-enum",
         "enum Status\n    active\n    archived\n\n\
-         resource Order at ^orders(id: int)\n    required state: Status\n\n\
+         resource Order\n    required state: Status\n\
+         store ^orders(id: int): Order\n\n\
          pub fn main()\n    var o: Order\n    o.state = \"notamember\"\n    ^orders(1) = o\n",
         "check.assignment_type",
     );
@@ -229,7 +230,8 @@ fn a_module_less_script_self_reference_checks_clean() {
             root,
             "src/app.mw",
             "enum Status\n    active\n    archived\n\n\
-             resource Order at ^orders(id: int)\n    required state: Status\n\n\
+             resource Order\n    required state: Status\n\
+             store ^orders(id: int): Order\n\n\
              pub fn main()\n    var o: Order\n    o.state = Status::active\n    \
              ^orders(1) = o\n\n\
              pub fn isActive(): bool\n    return ^orders(1).state == Status::active\n",
@@ -253,7 +255,7 @@ fn another_module_cannot_use_a_module_less_script() {
         write(
             root,
             "src/app.mw",
-            "resource Order at ^orders(id: int)\n    required count: int\n\n\
+            "resource Order\n    required count: int\nstore ^orders(id: int): Order\n\n\
              pub fn main()\n    print(\"hi\")\n",
         );
         write(
@@ -283,7 +285,7 @@ fn a_module_less_script_joins_the_program_under_the_empty_name() {
         write(
             root,
             "src/app.mw",
-            "resource Order at ^orders(id: int)\n    required count: int\n\n\
+            "resource Order\n    required count: int\nstore ^orders(id: int): Order\n\n\
              pub fn main()\n    print(\"hi\")\n",
         );
     });
@@ -311,13 +313,13 @@ fn two_module_less_scripts_are_a_check_error() {
         write(
             root,
             "src/one.mw",
-            "resource Order at ^orders(id: int)\n    required count: int\n\n\
+            "resource Order\n    required count: int\nstore ^orders(id: int): Order\n\n\
              pub fn main()\n    print(\"one\")\n",
         );
         write(
             root,
             "src/two.mw",
-            "resource Ticket at ^tickets(id: int)\n    required note: string\n\n\
+            "resource Ticket\n    required note: string\nstore ^tickets(id: int): Ticket\n\n\
              pub fn other()\n    print(\"two\")\n",
         );
     });
@@ -344,13 +346,13 @@ fn two_scripts_with_clashing_resources_never_silently_bind_to_the_wrong_shape() 
         write(
             root,
             "src/one.mw",
-            "resource Order at ^orders_a(id: int)\n    required count: int\n\n\
+            "resource Order\n    required count: int\nstore ^orders_a(id: int): Order\n\n\
              pub fn main()\n    var o: Order\n    o.count = 1\n    ^orders_a(1) = o\n",
         );
         write(
             root,
             "src/two.mw",
-            "resource Order at ^orders_b(id: int)\n    required priority: int\n\n\
+            "resource Order\n    required priority: int\nstore ^orders_b(id: int): Order\n\n\
              pub fn other()\n    var o: Order\n    o.priority = 9\n    ^orders_b(1) = o\n",
         );
     });

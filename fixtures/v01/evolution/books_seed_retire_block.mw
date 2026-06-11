@@ -1,6 +1,7 @@
 module books
-resource Book at ^books(id: int)
+resource Book
     required title: string
+store ^books(id: int): Book
 evolve
     retire Book.subtitle
 pub fn seed()

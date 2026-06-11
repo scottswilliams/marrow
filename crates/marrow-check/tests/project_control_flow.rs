@@ -52,7 +52,8 @@ fn check_tests_catches_a_nextid_misuse_on_a_composite_root() {
     let report = check_tests_report(
         "check-tests-nextid",
         "module app\n\
-         resource Order at ^orders(region: string, id: int)\n    required total: int\n",
+         resource Order\n    required total: int\n\
+         store ^orders(region: string, id: int): Order\n",
         "pub fn t()\n    var id = nextId(^orders)\n",
     );
     assert_eq!(
@@ -332,7 +333,8 @@ fn bare_keyed_root_field_assignment_paths_are_rejected() {
     let found = check_module(
         "assign-bare-keyed-root-field",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    ^books.title = \"x\"\n",
         "check.key_type",
     );
@@ -344,7 +346,8 @@ fn generated_index_branches_are_not_assignment_targets() {
     let found = check_module(
         "assign-generated-index-branches",
         "module m\n\
-         resource Book at ^books(id: int)\n    shelf: string\n    index byShelf(shelf, id)\n\n\
+         resource Book\n    shelf: string\n\
+         store ^books(id: int): Book\n    index byShelf(shelf, id)\n\n\
          fn f()\n    ^books.byShelf = \"x\"\n    ^books.byShelf(\"fiction\") = \"x\"\n",
         "check.invalid_assign_target",
     );
@@ -356,7 +359,8 @@ fn bare_keyed_root_field_paths_are_rejected_across_expression_contexts() {
     let found = check_module(
         "bare-keyed-root-field-path-contexts",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    const title = ^books.title\n    if exists(^books.title)\n        print(\"hit\")\n    delete ^books.title\n    for title in ^books.title\n        print(title)\n",
         "check.key_type",
     );
@@ -368,7 +372,8 @@ fn generated_index_branches_are_not_delete_targets() {
     let found = check_module(
         "delete-generated-index-branches",
         "module m\n\
-         resource Book at ^books(id: int)\n    shelf: string\n    index byShelf(shelf, id)\n\n\
+         resource Book\n    shelf: string\n\
+         store ^books(id: int): Book\n    index byShelf(shelf, id)\n\n\
          fn f()\n    delete ^books.byShelf\n    delete ^books.byShelf(\"fiction\")\n",
         "check.collection_unsupported",
     );
@@ -380,7 +385,8 @@ fn generated_index_branch_member_paths_are_rejected() {
     let found = check_module(
         "generated-index-branch-member-paths",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n    index byShelf(shelf, id)\n\n\
+         resource Book\n    required title: string\n    shelf: string\n\
+         store ^books(id: int): Book\n    index byShelf(shelf, id)\n\n\
          fn f()\n    const a = ^books.byShelf.title\n    const b = ^books.byShelf(\"fiction\").title\n    if exists(^books.byShelf.title)\n        print(\"hit\")\n",
         "check.collection_unsupported",
     );
@@ -392,7 +398,8 @@ fn generated_index_branch_call_chains_are_rejected() {
     let found = check_module(
         "generated-index-branch-call-chains",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n    author: string\n    shelf: string\n    index byShelf(shelf, id)\n    index byAuthorShelf(author, shelf, id)\n\n\
+         resource Book\n    required title: string\n    author: string\n    shelf: string\n\
+         store ^books(id: int): Book\n    index byShelf(shelf, id)\n    index byAuthorShelf(author, shelf, id)\n\n\
          fn f()\n    const bad = ^books.byShelf(\"fiction\")(1).title\n    if exists(^books.byShelf(\"fiction\")(1).title)\n        print(\"hit\")\n    ^books.byShelf(\"fiction\")(1).title = \"x\"\n    delete ^books.byShelf(\"fiction\")(1).title\n    for id in ^books.byAuthorShelf(\"ann\")(\"fiction\")\n        print($\"{id}\")\n",
         "check.collection_unsupported",
     );
@@ -404,7 +411,8 @@ fn optional_generated_index_branch_syntax_is_rejected() {
     let found = check_module(
         "optional-generated-index-branch",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n    index byShelf(shelf, id)\n\n\
+         resource Book\n    required title: string\n    shelf: string\n\
+         store ^books(id: int): Book\n    index byShelf(shelf, id)\n\n\
          fn f()\n    const n = count(^books?.byShelf(\"fiction\"))\n    if exists(^books?.byShelf(\"fiction\"))\n        print(\"hit\")\n    const title = ^books?.byShelf(\"fiction\").title\n    ^books?.byShelf(\"fiction\") = \"x\"\n    delete ^books?.byShelf(\"fiction\")\n    for id in ^books?.byShelf(\"fiction\")\n        print($\"{id}\")\n",
         "check.collection_unsupported",
     );
@@ -462,7 +470,8 @@ fn nested_saved_field_assignment_targets_are_allowed() {
     let found = check_module(
         "assign-nested-saved-field",
         "module m\n\
-         resource Book at ^books(id: int)\n    title: string\n    meta\n        subtitle: string\n\n\
+         resource Book\n    title: string\n    meta\n        subtitle: string\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    ^books(1).meta.subtitle = \"x\"\n",
         "check.invalid_assign_target",
     );
@@ -474,7 +483,8 @@ fn nested_saved_keyed_layer_field_assignment_targets_are_allowed() {
     let found = check_module(
         "assign-nested-saved-keyed-layer-field",
         "module m\n\
-         resource Book at ^books(id: int)\n    title: string\n    versions(version: int)\n        title: string\n\n\
+         resource Book\n    title: string\n    versions(version: int)\n        title: string\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    ^books(1).versions(1).title = \"x\"\n",
         "check.invalid_assign_target",
     );
@@ -556,12 +566,13 @@ fn deleting_the_root_a_loop_traverses_is_rejected() {
     let found = check_module(
         "loop-delete-root",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    for id in keys(^books)\n        delete ^books(id)\n",
         "check.loop_mutates_traversed_layer",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
-    assert_eq!(found[0].span.line, 7, "{:#?}", found[0]);
+    assert_eq!(found[0].span.line, 8, "{:#?}", found[0]);
 }
 
 #[test]
@@ -569,7 +580,8 @@ fn deleting_a_reversed_key_loop_traverses_is_rejected() {
     let found = check_module(
         "loop-reversed-delete-root",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    for id in reversed(keys(^books))\n        delete ^books(id)\n",
         "check.loop_mutates_traversed_layer",
     );
@@ -583,7 +595,8 @@ fn appending_to_the_sequence_a_loop_traverses_is_rejected() {
     let found = check_module(
         "loop-append-seq",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\n\
+         resource Book\n    required title: string\n    tags(pos: int): string\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    for tag in ^books(1).tags\n        append(^books(1).tags, \"x\")\n",
         "check.loop_mutates_traversed_layer",
     );
@@ -595,7 +608,8 @@ fn appending_to_a_string_keyed_layer_is_rejected() {
     let found = check_module(
         "append-string-keyed",
         "module m\n\
-         resource Doc at ^docs(id: int)\n    required title: string\n    scores(who: string): int\n\n\
+         resource Doc\n    required title: string\n    scores(who: string): int\n\
+         store ^docs(id: int): Doc\n\n\
          fn f()\n    append(^docs(1).scores, 7)\n",
         "check.call_argument",
     );
@@ -614,7 +628,8 @@ fn writing_a_keyed_leaf_the_loop_traverses_is_rejected() {
     let found = check_module(
         "loop-write-leaf",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\n\
+         resource Book\n    required title: string\n    tags(pos: int): string\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    for pos in keys(^books(1).tags)\n        ^books(1).tags(pos) = \"x\"\n",
         "check.loop_mutates_traversed_layer",
     );
@@ -626,7 +641,8 @@ fn reversed_loop_mutating_the_traversed_layer_is_rejected() {
     let found = check_module(
         "loop-reversed-append-seq",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\n\
+         resource Book\n    required title: string\n    tags(pos: int): string\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    for tag in reversed(^books(1).tags)\n        append(^books(1).tags, \"x\")\n",
         "check.loop_mutates_traversed_layer",
     );
@@ -640,7 +656,8 @@ fn collecting_keys_first_then_mutating_is_allowed() {
     let found = check_module(
         "loop-collect-first",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    const ids = keys(^books)\n    for id in ids\n        delete ^books(id)\n",
         "check.loop_mutates_traversed_layer",
     );
@@ -654,7 +671,8 @@ fn mutating_a_different_record_in_a_layer_loop_is_allowed() {
     let found = check_module(
         "loop-other-record",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\n\
+         resource Book\n    required title: string\n    tags(pos: int): string\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    for tag in ^books(1).tags\n        append(^books(2).tags, \"x\")\n",
         "check.loop_mutates_traversed_layer",
     );
@@ -668,7 +686,8 @@ fn writing_a_field_in_a_record_loop_is_allowed() {
     let found = check_module(
         "loop-field-write",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    for id, book in ^books\n        ^books(id).title = \"x\"\n",
         "check.loop_mutates_traversed_layer",
     );
@@ -680,7 +699,8 @@ fn lock_is_rejected_by_the_parser() {
     let report = check_module_report(
         "lock-reserved",
         "module m\n\
-         resource Cell at ^cells(id: int)\n    required v: int\n\
+         resource Cell\n    required v: int\n\
+         store ^cells(id: int): Cell\n\
          fn f(id: int)\n    lock ^cells(id)\n        ^cells(id).v = 2\n",
     );
     assert_eq!(

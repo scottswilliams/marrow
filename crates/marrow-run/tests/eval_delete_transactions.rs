@@ -56,7 +56,7 @@ fn delete_removes_a_record() {
 fn delete_removes_a_sparse_field_and_leaves_a_sibling() {
     // `delete ^books(id).subtitle` removes that field; a sibling field survives.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    subtitle: string\n\npub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).subtitle = \"A Discworld Novel\"\n\npub fn drop_subtitle(id: int)\n    delete ^books(id).subtitle\n\npub fn has_subtitle(id: int): bool\n    return exists(^books(id).subtitle)\n\npub fn title_of(id: int): string\n    return ^books(id).title\n",
+        "resource Book\n    required title: string\n    subtitle: string\nstore ^books(id: int): Book\n\npub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).subtitle = \"A Discworld Novel\"\n\npub fn drop_subtitle(id: int)\n    delete ^books(id).subtitle\n\npub fn has_subtitle(id: int): bool\n    return exists(^books(id).subtitle)\n\npub fn title_of(id: int): string\n    return ^books(id).title\n",
     );
     let store = TreeStore::memory();
     run_entry(
@@ -169,9 +169,9 @@ fn deleting_a_layer_entry_leaves_other_entries() {
     // `delete ^books(id).versions(v)` removes one group-entry subtree; siblings
     // survive. Read each entry's `.title` to prove it: the deleted entry's title
     // falls back to the `??` default, the survivor's stays intact.
-    let program = checked_program(&format!(
-        "{BOOK_PRIMARY_SCHEMA}    versions(version: int)\n        required title: string\n\npub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).versions(1).title = \"first\"\n    ^books(id).versions(2).title = \"second\"\n\npub fn drop_version(id: int, v: int)\n    delete ^books(id).versions(v)\n\npub fn version_title(id: int, v: int): string\n    return ^books(id).versions(v).title ?? \"<gone>\"\n"
-    ));
+    let program = checked_program(
+        "resource Book\n    required title: string\n    versions(version: int)\n        required title: string\nstore ^books(id: int): Book\n\npub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).versions(1).title = \"first\"\n    ^books(id).versions(2).title = \"second\"\n\npub fn drop_version(id: int, v: int)\n    delete ^books(id).versions(v)\n\npub fn version_title(id: int, v: int): string\n    return ^books(id).versions(v).title ?? \"<gone>\"\n",
+    );
     let store = TreeStore::memory();
     run_entry(
         &store,
@@ -315,9 +315,10 @@ fn a_transaction_rolls_back_on_an_escaping_error() {
 /// a conflicting write under `try`/`catch`, and read a field back. Used by the
 /// recoverable-write-fault tests.
 const UNIQUE_RECOVERY: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
     isbn: string
+store ^books(id: int): Book
 
     index byIsbn(isbn) unique
 

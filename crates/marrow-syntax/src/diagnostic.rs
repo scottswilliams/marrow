@@ -97,7 +97,6 @@ pub enum ExpectedSyntax {
     ResourceMemberName,
     ResourceMemberSyntax,
     ResourceName,
-    SavedRootBeginning,
     SavedRootName,
     Statement,
     StoreRoot,

@@ -490,7 +490,7 @@ pub(super) mod test_support {
     use marrow_check::{CheckedProgram, ProjectConfig, check_project, check_project_with_catalog};
 
     pub(super) const BOOK_SOURCE: &str =
-        "module shelf\n\nresource Book at ^books(id: int)\n    required title: string\n";
+        "module shelf\n\nresource Book\n    required title: string\nstore ^books(id: int): Book\n";
 
     pub(super) fn temp_dir(name: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()

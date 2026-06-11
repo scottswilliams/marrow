@@ -14,9 +14,10 @@ use marrow_store::value::SavedValue;
 
 /// A program that reads, copies, and reads back whole `Book` resources.
 const BOOK_COPY: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
     required shelf: string
+store ^books(id: int): Book
 
 pub fn read(id: int): Book
     var fallback: Book
@@ -78,9 +79,9 @@ fn reads_a_whole_resource() {
 #[test]
 fn constructs_a_resource_value() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n\
+        "resource Book\n\
          \x20\x20\x20\x20required title: string\n\
-         \x20\x20\x20\x20shelf: string\n\n\
+         \x20\x20\x20\x20shelf: string\nstore ^books(id: int): Book\n\n\
          pub fn draft(): Book\n\
          \x20\x20\x20\x20return Book(title: \"Mort\", shelf: \"fiction\")\n",
     );
@@ -155,9 +156,9 @@ fn constructor_field_with_qualified_resource_type_rejects_scalar() {
 #[test]
 fn resource_constructor_value_can_be_saved() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n\
+        "resource Book\n\
          \x20\x20\x20\x20required title: string\n\
-         \x20\x20\x20\x20author: string\n\n\
+         \x20\x20\x20\x20author: string\nstore ^books(id: int): Book\n\n\
          pub fn save(): int\n\
          \x20\x20\x20\x20const draft = Book(title: \"Small Gods\", author: \"Pratchett\")\n\
          \x20\x20\x20\x20^books(1) = draft\n\
@@ -206,11 +207,12 @@ fn copies_a_whole_resource() {
 /// A resource declaring an unkeyed nested group (`name`). Whole-resource reads
 /// and writes materialize the structural group as a nested resource value.
 const PATIENT_WITH_GROUP: &str = "\
-resource Patient at ^patients(id: int)
+resource Patient
     mrn: string
     name
         required first: string
         last: string
+store ^patients(id: int): Patient
 
 pub fn read(id: int): Patient
     var fallback: Patient
@@ -274,11 +276,11 @@ fn whole_resource_write_copies_unkeyed_group_fields() {
 #[test]
 fn whole_resource_write_from_local_value_accepts_resources_with_unkeyed_groups() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n\
+        "resource Book\n\
          \x20   required title: string\n\
          \x20   binding\n\
          \x20       cover: string\n\
-         \x20       spine: string\n\n\
+         \x20       spine: string\nstore ^books(id: int): Book\n\n\
          pub fn save(id: int)\n\
          \x20   var book: Book\n\
          \x20   book.title = \"Small Gods\"\n\

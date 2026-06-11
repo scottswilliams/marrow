@@ -18,9 +18,10 @@ fn composite_index_project(name: &str) -> TempProject {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required a: string\n\
              \x20   required b: string\n\
+             store ^books(id: int): Book\n\
              \x20   index byPair(a, b) unique\n\
              pub fn add(a: string, b: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
@@ -38,8 +39,9 @@ fn retire_of_populated_member_requires_scoped_approval() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   retire Book.subtitle\n\
              pub fn add(title: string): Id(^books)\n\
@@ -99,8 +101,9 @@ fn new_unique_index_over_clean_data_rebuilds() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required isbn: string\n\
+             store ^books(id: int): Book\n\
              \x20   index byIsbn(isbn) unique\n\
              pub fn add(isbn: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
@@ -137,8 +140,9 @@ fn new_unique_index_over_colliding_data_fails() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required isbn: string\n\
+             store ^books(id: int): Book\n\
              \x20   index byIsbn(isbn) unique\n\
              pub fn add(isbn: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
@@ -180,8 +184,9 @@ fn dropped_sparse_field_is_no_op_not_error() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -236,8 +241,9 @@ fn dropped_field_with_populated_data_fails_closed() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -295,8 +301,9 @@ fn dropped_populated_store_fails_closed() {
             root,
             "src/library.mw",
             "module library\n\
-             resource Author at ^authors(id: int)\n\
+             resource Author\n\
              \x20   required name: string\n\
+             store ^authors(id: int): Author\n\
              pub fn add(name: string): Id(^authors)\n\
              \x20   return nextId(^authors)\n",
         );
@@ -381,8 +388,9 @@ fn dropped_empty_store_is_a_free_no_op() {
             root,
             "src/library.mw",
             "module library\n\
-             resource Author at ^authors(id: int)\n\
+             resource Author\n\
              \x20   required name: string\n\
+             store ^authors(id: int): Author\n\
              pub fn add(name: string): Id(^authors)\n\
              \x20   return nextId(^authors)\n",
         );
@@ -439,9 +447,10 @@ fn dropped_field_an_index_needs_requires_retire() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   required isbn: string\n\
+             store ^books(id: int): Book\n\
              \x20   index byIsbn(isbn) unique\n\
              pub fn add(title: string, isbn: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
@@ -479,8 +488,9 @@ fn dropped_field_an_index_needs_requires_retire() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
+         store ^books(id: int): Book\n\
          \x20   index byIsbn(isbn) unique\n\
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
@@ -515,12 +525,14 @@ fn dropped_field_ignores_same_named_index_on_another_resource() {
             root,
             "src/media.mw",
             "module media\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   subtitle: string\n\
-             resource Movie at ^movies(id: int)\n\
+             store ^books(id: int): Book\n\
+             resource Movie\n\
              \x20   required title: string\n\
              \x20   subtitle: string\n\
+             store ^movies(id: int): Movie\n\
              \x20   index bySubtitle(subtitle) unique\n",
         );
         let accepted = accepted_catalog(
@@ -565,11 +577,13 @@ fn dropped_field_ignores_same_named_index_on_another_resource() {
         &root,
         "src/media.mw",
         "module media\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
-         resource Movie at ^movies(id: int)\n\
+         store ^books(id: int): Book\n\
+         resource Movie\n\
          \x20   required title: string\n\
          \x20   subtitle: string\n\
+         store ^movies(id: int): Movie\n\
          \x20   index bySubtitle(subtitle) unique\n",
     );
     let (_report, program) = check_with_accepted(&root);
@@ -603,9 +617,10 @@ fn dropped_index_is_index_dropped() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   required isbn: string\n\
+             store ^books(id: int): Book\n\
              \x20   index byIsbn(isbn) unique\n\
              pub fn add(title: string, isbn: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
@@ -642,9 +657,10 @@ fn dropped_index_is_index_dropped() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
          \x20   required isbn: string\n\
+         store ^books(id: int): Book\n\
          pub fn add(title: string, isbn: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
@@ -756,8 +772,9 @@ fn new_unique_index_no_cells_clean_rebuilds() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required isbn: string\n\
+             store ^books(id: int): Book\n\
              \x20   index byIsbn(isbn) unique\n\
              pub fn add(isbn: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
@@ -795,8 +812,9 @@ fn new_unique_index_no_cells_duplicate_collides() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required isbn: string\n\
+             store ^books(id: int): Book\n\
              \x20   index byIsbn(isbn) unique\n\
              pub fn add(isbn: string): Id(^books)\n\
              \x20   return nextId(^books)\n",

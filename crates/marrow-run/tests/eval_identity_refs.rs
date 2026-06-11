@@ -16,11 +16,12 @@ use marrow_store::tree::TreeStore;
 /// reference to `Author`. `seed` writes a reference; `read` reads it back.
 fn typed_ref_program() -> CheckedRuntimeProgram {
     checked_program(
-        "resource Author at ^authors(id: int)\n\
-         \x20   name: string\n\
+        "resource Author\n\
+         \x20   name: string\nstore ^authors(id: int): Author\n\
          \n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   authorId: Id(^authors)\n\
+         store ^books(id: int): Book\n\
          \n\
          pub fn seed()\n\
          \x20   const author = nextId(^authors)\n\
@@ -55,11 +56,12 @@ fn a_stored_identity_field_reads_back_the_identity_value() {
     // The stored leaf carries the referenced identity's key segments, not a plain
     // scalar field encoding.
     let program = checked_program(
-        "resource Author at ^authors(id: int)\n\
-         \x20   name: string\n\
+        "resource Author\n\
+         \x20   name: string\nstore ^authors(id: int): Author\n\
          \n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   authorId: Id(^authors)\n\
+         store ^books(id: int): Book\n\
          \n\
          pub fn seed()\n\
          \x20   const author = nextId(^authors)\n\
@@ -90,11 +92,12 @@ fn an_identity_field_assigned_via_next_id_round_trips() {
     // Constructing the reference from `nextId(^authors)` (the first allocated id is
     // `1` on an empty root) round-trips through the saved identity field.
     let program = checked_program(
-        "resource Author at ^authors(id: int)\n\
-         \x20   name: string\n\
+        "resource Author\n\
+         \x20   name: string\nstore ^authors(id: int): Author\n\
          \n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   authorId: Id(^authors)\n\
+         store ^books(id: int): Book\n\
          \n\
          pub fn seed()\n\
          \x20   const a = nextId(^authors)\n\
@@ -122,8 +125,8 @@ fn a_self_referencing_identity_field_round_trips() {
     // A field of the same resource (`managerId: Id(^people)` on `Person`) is a valid
     // self-reference that stores and reads back like any other typed reference.
     let program = checked_program(
-        "resource Person at ^people(id: int)\n\
-         \x20   managerId: Id(^people)\n\
+        "resource Person\n\
+         \x20   managerId: Id(^people)\nstore ^people(id: int): Person\n\
          \n\
          pub fn seed(): bool\n\
          \x20   const person = nextId(^people)\n\
@@ -150,8 +153,8 @@ fn equality_on_two_identities_of_the_same_store_evaluates() {
     // `==` on two identities of the same store is value equality of their keys:
     // equal keys are `true`, differing keys are `false`.
     let program = checked_program(
-        "resource Author at ^authors(id: int)\n\
-         \x20   name: string\n\
+        "resource Author\n\
+         \x20   name: string\nstore ^authors(id: int): Author\n\
          \n\
          pub fn same(): bool\n\
          \x20   const author = nextId(^authors)\n\
@@ -178,8 +181,8 @@ fn equality_on_two_identities_of_the_same_store_evaluates() {
 #[test]
 fn single_key_store_identity_behaves_like_other_identity_origins() {
     let program = checked_program(
-        "resource Doc at ^docs(id: int)\n\
-         \x20   title: string\n\
+        "resource Doc\n\
+         \x20   title: string\nstore ^docs(id: int): Doc\n\
          \n\
          pub fn idValue(): Id(^docs)\n\
          \x20   const id = nextId(^docs)\n\
@@ -209,9 +212,9 @@ fn single_key_store_identity_behaves_like_other_identity_origins() {
 #[test]
 fn unique_index_identity_compares_with_the_allocated_identity() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n\
+        "resource Book\n\
          \x20   required title: string\n\
-         \x20   required isbn: string\n\
+         \x20   required isbn: string\nstore ^books(id: int): Book\n\
          \x20   index byIsbn(isbn) unique\n\
          \n\
          pub fn seed(): bool\n\
@@ -234,12 +237,13 @@ fn a_whole_resource_write_with_an_identity_field_round_trips() {
     // A whole-record write `^books(1) = b` carrying an identity-typed field stores
     // the reference, and a whole-record read reads it back.
     let program = checked_program(
-        "resource Author at ^authors(id: int)\n\
-         \x20   name: string\n\
+        "resource Author\n\
+         \x20   name: string\nstore ^authors(id: int): Author\n\
          \n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
          \x20   authorId: Id(^authors)\n\
+         store ^books(id: int): Book\n\
          \n\
          pub fn seed()\n\
          \x20   const author = nextId(^authors)\n\

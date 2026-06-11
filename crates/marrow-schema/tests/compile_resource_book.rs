@@ -107,7 +107,7 @@ fn top_level_fields(schema: &ResourceSchema) -> impl Iterator<Item = &Node> {
 
 /// The canonical `Book` resource.
 const BOOK: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
     required author: string
     required shelf: string
@@ -123,8 +123,9 @@ resource Book at ^books(id: int)
         required shelf: string
         required changedAt: instant
 
+store ^books(id: int): Book
     index byShelf(shelf, id)
-";
+    ";
 
 #[test]
 fn book_saved_root_has_one_identity_key() {
@@ -301,9 +302,10 @@ fn one_shape_compiles_as_both_local_and_saved() {
     // is attached to a store or used as a local value.
     let saved = compile_ok(
         "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
     tags(pos: int): string
+store ^books(id: int): Book
 ",
     );
     let local = compile_ok(

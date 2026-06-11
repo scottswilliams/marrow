@@ -14,8 +14,9 @@ use marrow_run::{RUN_ABSENT, Value};
 use marrow_store::tree::TreeStore;
 
 const COUNTER: &str = "\
-resource Note at ^notes(id: int)
+resource Note
     required body: string
+store ^notes(id: int): Note
 
 pub fn write_note(id: int, body: string)
     ^notes(id).body = body

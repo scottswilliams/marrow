@@ -18,9 +18,10 @@ use marrow_store::value::SavedValue;
 /// `pages`, modeling saved data missing a required field — the exact shape a
 /// botched write or an un-applied required-field evolution would leave behind.
 const REQUIRED_PAGES: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
     required pages: int
+store ^books(id: int): Book
 
 pub fn pages_of(id: int): int
     return ^books(id).pages
@@ -99,9 +100,10 @@ fn a_missing_required_field_fault_is_the_same_absent_code_a_catch_binds() {
 /// seeded with or without `isbn`; lookups read records back through the root and
 /// the unique index so absence and presence are both observable.
 const UNIQUE_ISBN: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
     isbn: string
+store ^books(id: int): Book
 
     index byIsbn(isbn) unique
 

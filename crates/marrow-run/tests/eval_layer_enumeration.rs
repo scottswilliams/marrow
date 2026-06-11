@@ -12,8 +12,9 @@ use marrow_store::tree::TreeStore;
 use marrow_store::value::SavedValue;
 
 const BOOK_PRIMARY: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
+store ^books(id: int): Book
 
 pub fn add(id: int, t: string)
     ^books(id).title = t
@@ -207,7 +208,7 @@ fn iterating_a_singleton_root_is_a_type_error() {
     // A keyless singleton has no identities to enumerate; iterating it is a
     // type error, not a silent empty loop.
     let program = checked_program(
-        "resource Settings at ^settings\n    theme: string\n\npub fn each()\n    for s in ^settings\n        print(\"x\")\n",
+        "resource Settings\n    theme: string\nstore ^settings: Settings\n\npub fn each()\n    for s in ^settings\n        print(\"x\")\n",
     );
     let store = TreeStore::memory();
     assert_run_error(
@@ -218,8 +219,9 @@ fn iterating_a_singleton_root_is_a_type_error() {
 
 /// Iterating a composite primary root yields materialized records in identity order.
 const ENROLLMENT_PRIMARY: &str = "\
-resource Enrollment at ^enrollments(studentId: string, courseId: string)
+resource Enrollment
     status: string
+store ^enrollments(studentId: string, courseId: string): Enrollment
 
 pub fn enroll(s: string, c: string, st: string)
     ^enrollments(s, c).status = st
@@ -289,9 +291,10 @@ fn reversed_over_a_composite_root_is_a_true_reverse() {
 /// Iterating a sequence/keyed child layer yields positions. Two-name loops pair
 /// each position with its value.
 const BOOK_TAGS: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
     tags: sequence[string]
+store ^books(id: int): Book
 
 pub fn seed()
     ^books(1).title = \"Mort\"
@@ -389,8 +392,9 @@ fn reversed_sequence_child_layer_keys_loop_yields_positions_descending() {
 /// A keyed (non-sequence) child tree iterates keys; two-name loops pair keys
 /// with values. Seeded through the store directly to keep the focus on order.
 const PLAYER_SCORES: &str = "\
-resource Game at ^games(id: int)
+resource Game
     scores(playerId: string): int
+store ^games(id: int): Game
 
 pub fn players()
     for p in keys(^games(1).scores)
@@ -435,11 +439,12 @@ fn iterates_a_keyed_child_tree() {
 /// A keyed group layer iterates keys, with two-name loops preserving the group
 /// address alongside the entry value.
 const BOOK_VERSION_LOOPS: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
 
     versions(v: int)
         required title: string
+store ^books(id: int): Book
 
 pub fn seed()
     ^books(1).title = \"Mort\"

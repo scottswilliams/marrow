@@ -59,8 +59,9 @@ fn reads_a_local_resource_field() {
 /// and reads it back, exercising `std::clock::now()` through `const` and a managed
 /// write.
 const CLOCK_SAMPLE: &str = "\
-resource Event at ^events(id: int)
+resource Event
     required changedAt: instant
+store ^events(id: int): Event
 
 pub fn record(id: int)
     const now: instant = std::clock::now()
@@ -281,9 +282,9 @@ fn log_error_requires_an_error_value() {
 
 #[test]
 fn a_group_entry_field_write_lands_in_saved_data() {
-    let program = checked_program(&format!(
-        "{BOOK_PRIMARY_SCHEMA}    notes(noteId: string)\n        text: string\n\npub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n\npub fn add_note(id: int, note: string, t: string)\n    ^books(id).notes(note).text = t\n"
-    ));
+    let program = checked_program(
+        "resource Book\n    required title: string\n    notes(noteId: string)\n        text: string\nstore ^books(id: int): Book\n\npub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n\npub fn add_note(id: int, note: string, t: string)\n    ^books(id).notes(note).text = t\n",
+    );
     let store = TreeStore::memory();
     run_entry(
         &store,
@@ -338,9 +339,9 @@ fn book_group_field(
 fn group_entry_field_writes_compose_in_a_transaction() {
     // The sample's `add` shape: a whole-record write plus group-entry history
     // writes, all inside one transaction.
-    let program = checked_program(&format!(
-        "{BOOK_PRIMARY_SCHEMA}    versions(version: int)\n        required title: string\n        required shelf: string\n\npub fn add(id: int, t: string, s: string)\n    transaction\n        ^books(id).title = t\n        ^books(id).versions(1).title = t\n        ^books(id).versions(1).shelf = s\n\npub fn title_of(id: int): string\n    return ^books(id).title\n"
-    ));
+    let program = checked_program(
+        "resource Book\n    required title: string\n    versions(version: int)\n        required title: string\n        required shelf: string\nstore ^books(id: int): Book\n\npub fn add(id: int, t: string, s: string)\n    transaction\n        ^books(id).title = t\n        ^books(id).versions(1).title = t\n        ^books(id).versions(1).shelf = s\n\npub fn title_of(id: int): string\n    return ^books(id).title\n",
+    );
     let store = TreeStore::memory();
     run_entry(
         &store,

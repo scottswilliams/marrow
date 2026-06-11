@@ -97,8 +97,10 @@ fn passing_a_resource_to_a_mismatched_resource_parameter_is_flagged() {
     let found = check_module(
         "resource-arg",
         "module m\n\
-         resource Book at ^books(id: int)\n    title: string\n\n\
-         resource Shelf at ^shelves(id: int)\n    name: string\n\n\
+         resource Book\n    title: string\n\
+         store ^books(id: int): Book\n\n\
+         resource Shelf\n    name: string\n\
+         store ^shelves(id: int): Shelf\n\n\
          fn useShelf(s: Shelf): bool\n    return true\n\n\
          fn f()\n    var book: Book\n    var ok = useShelf(book)\n",
         "check.call_argument",
@@ -113,7 +115,8 @@ fn passing_a_resource_to_a_matching_resource_parameter_is_not_flagged() {
     let found = check_module(
         "resource-arg-ok",
         "module m\n\
-         resource Book at ^books(id: int)\n    title: string\n\n\
+         resource Book\n    title: string\n\
+         store ^books(id: int): Book\n\n\
          fn useBook(b: Book): bool\n    return true\n\n\
          fn f()\n    var book: Book\n    var ok = useBook(book)\n",
         "check.call_argument",

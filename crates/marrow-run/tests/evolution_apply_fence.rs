@@ -23,9 +23,10 @@ fn applied_store_passes_same_binary_fence_and_locks_out_older() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   required pages: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   default Book.pages = 0\n\
              pub fn add(title: string): Id(^books)\n\
@@ -84,9 +85,10 @@ fn apply_is_fenced_when_store_evolved_past_the_binary() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   required pages: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   default Book.pages = 0\n\
              pub fn add(title: string): Id(^books)\n\
@@ -183,8 +185,9 @@ fn apply_without_accepted_catalog_refuses_and_leaves_store_unchanged() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -222,8 +225,9 @@ fn schema_drift_at_the_same_epoch_is_fenced_before_execution() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -254,8 +258,9 @@ fn schema_drift_at_the_same_epoch_is_fenced_before_execution() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: int\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: int): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );

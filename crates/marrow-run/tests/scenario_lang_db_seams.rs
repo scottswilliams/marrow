@@ -20,11 +20,12 @@ use marrow_store::value::{SavedValue, ScalarType};
 /// A book whose `published` flag and `pages` count exercise non-string scalar
 /// read-back, plus a sparse `subtitle` that is never written by `seed`.
 const TYPED_BOOK: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
     published: bool
     pages: int
     subtitle: string
+store ^books(id: int): Book
 
 pub fn seed(id: int)
     ^books(id).title = \"Mort\"
@@ -155,7 +156,7 @@ fn presence_narrows_true_after_a_write_and_false_before_and_after_delete() {
     // The checker's `exists(...)` proof tracks what the runtime actually reads from
     // the store across the field's whole lifecycle: absent, then present, then gone.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    title: string\n\n\
+        "resource Book\n    title: string\nstore ^books(id: int): Book\n\n\
          pub fn put(id: int, t: string)\n    ^books(id).title = t\n\n\
          pub fn drop(id: int)\n    delete ^books(id).title\n\n\
          pub fn present(id: int): bool\n    return exists(^books(id).title)\n",
@@ -215,7 +216,7 @@ fn quoted_field_spelling_addresses_the_same_physical_key_as_the_bare_name() {
     // `^books(id).title` resolve to the same content-independent stored key, so a
     // bare write is visible through a quoted read and vice versa.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    title: string\n\n\
+        "resource Book\n    title: string\nstore ^books(id: int): Book\n\n\
          pub fn setBare(id: int, t: string)\n    ^books(id).title = t\n\n\
          pub fn setQuoted(id: int, t: string)\n    ^books(id).\"title\" = t\n\n\
          pub fn getBare(id: int): string\n    return ^books(id).title ?? \"<absent>\"\n\n\
@@ -285,7 +286,7 @@ fn a_keyword_spelled_field_round_trips_through_its_quoted_access_form() {
     // through its quoted access form, yet it is an ordinary managed field: the
     // value round-trips and the store holds it at that member's key.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    type: string\n\n\
+        "resource Book\n    type: string\nstore ^books(id: int): Book\n\n\
          pub fn setType(id: int, t: string)\n    ^books(id).\"type\" = t\n\n\
          pub fn typeOf(id: int): string\n    return ^books(id).\"type\" ?? \"<absent>\"\n",
     );
@@ -371,9 +372,10 @@ fn a_resource_declared_in_one_module_is_saved_and_read_across_modules() {
 /// An account with a current `name` plus a fresh `note`, used to prove that a
 /// transaction either persists every write or none of them.
 const ACCOUNT_TXN: &str = "\
-resource Account at ^accounts(id: int)
+resource Account
     name: string
     note: string
+store ^accounts(id: int): Account
 
 pub fn seed(id: int)
     ^accounts(id).name = \"start\"

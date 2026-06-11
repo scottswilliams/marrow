@@ -5,9 +5,10 @@ Marrow is a small typed language with built-in saved data.
 ```mw
 module app::tasks
 
-resource Task at ^tasks(id: int)
+resource Task
     required title: string
     status: string
+store ^tasks(id: int): Task
 
 pub fn complete(id: Id(^tasks)): bool
     if not exists(^tasks(id))

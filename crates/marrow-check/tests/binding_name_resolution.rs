@@ -93,8 +93,9 @@ fn references_of_a_function_span_modules_through_aliases() {
     // and through a `use shelf::books` short-form alias (`books::add`). Both call
     // sites are references of the one function definition.
     let books = "module shelf::books\n\
-        resource Book at ^books(id: int)\n    \
+        resource Book\n    \
         required title: string\n\
+        store ^books(id: int): Book\n\
         pub fn add(title: string): Id(^books)\n    \
         return nextId(^books)\n";
     let app = "module app\n\
@@ -135,8 +136,9 @@ fn definition_from_an_aliased_call_site_resolves_to_the_function() {
     // Going the other way: a cursor on the aliased call `books::add(...)` resolves
     // back to the `add` function in `shelf::books`.
     let books = "module shelf::books\n\
-        resource Book at ^books(id: int)\n    \
+        resource Book\n    \
         required title: string\n\
+        store ^books(id: int): Book\n\
         pub fn add(title: string): Id(^books)\n    \
         return nextId(^books)\n";
     let app = "module app\n\

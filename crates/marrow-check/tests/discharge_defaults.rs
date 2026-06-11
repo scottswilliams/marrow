@@ -17,9 +17,10 @@ fn optional_sparse_add_needs_no_rewrite() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -56,9 +57,10 @@ fn required_with_default_backfills_old_records() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   required pages: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   default Book.pages = 0\n\
              pub fn add(title: string): Id(^books)\n\
@@ -105,11 +107,12 @@ fn constant_temporal_and_bytes_defaults_discharge_as_default() {
             root,
             "src/events.mw",
             "module events\n\
-             resource Event at ^events(id: int)\n\
+             resource Event\n\
              \x20   required title: string\n\
              \x20   required day: date\n\
              \x20   required span: duration\n\
              \x20   required payload: bytes\n\
+             store ^events(id: int): Event\n\
              evolve\n\
              \x20   default Event.day = date(\"2020-01-01\")\n\
              \x20   default Event.span = duration(\"PT3600S\")\n\
@@ -159,9 +162,10 @@ fn bytes_default_accepts_any_string_as_raw_utf8() {
             root,
             "src/events.mw",
             "module events\n\
-             resource Event at ^events(id: int)\n\
+             resource Event\n\
              \x20   required title: string\n\
              \x20   required payload: bytes\n\
+             store ^events(id: int): Event\n\
              evolve\n\
              \x20   default Event.payload = bytes(\"a\\\\x00b\")\n\
              pub fn add(title: string): Id(^events)\n\
@@ -202,9 +206,10 @@ fn non_canonical_temporal_default_fails_closed() {
             root,
             "src/events.mw",
             "module events\n\
-             resource Event at ^events(id: int)\n\
+             resource Event\n\
              \x20   required title: string\n\
              \x20   required day: date\n\
+             store ^events(id: int): Event\n\
              evolve\n\
              \x20   default Event.day = date(\"2020-2-30\")\n\
              pub fn add(title: string): Id(^events)\n\
@@ -254,9 +259,10 @@ fn non_constant_default_fails_closed_with_transform_hint() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   required pages: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   default Book.pages = 1 + 1\n\
              pub fn add(title: string): Id(^books)\n\
@@ -304,9 +310,10 @@ fn required_without_default_fails_naming_records() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   required pages: int\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -346,8 +353,9 @@ fn required_present_member_with_incompatible_bytes_repairs() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: int\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: int): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );

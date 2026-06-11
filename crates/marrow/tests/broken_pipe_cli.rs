@@ -21,8 +21,9 @@ use support_data::marrow;
 const SEED_SOURCE: &str = "\
 module app
 
-resource Item at ^items(id: int)
+resource Item
     required value: int
+store ^items(id: int): Item
 
 pub fn seed()
     transaction

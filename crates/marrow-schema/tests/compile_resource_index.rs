@@ -53,8 +53,9 @@ fn identity_key_name_colliding_with_index_is_an_error() {
     // Identity keys and index names share the store namespace, so a key may not
     // reuse an index name.
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
+store ^books(id: int): Book
     index id(title, id)
 ";
     let errors = compile_store_errors(source);
@@ -73,9 +74,10 @@ resource Book at ^books(id: int)
 #[test]
 fn duplicate_index_name_is_an_error() {
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
     shelf: string
+store ^books(id: int): Book
     index byShelf(shelf, id)
     index byShelf(title, id)
 ";
@@ -96,8 +98,9 @@ fn index_arg_naming_no_member_is_an_error() {
     // Index arguments must resolve to an identity key or top-level field.
     // `shelf` names nothing here.
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
+store ^books(id: int): Book
     index byShelf(shelf, id)
 ";
     let errors = compile_store_errors(source);
@@ -115,8 +118,9 @@ resource Book at ^books(id: int)
 fn index_arg_naming_field_and_key_is_allowed() {
     // A top-level field and an identity key both resolve as index arguments.
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
+store ^books(id: int): Book
     index byTitle(title, id)
 ";
     let errors = compile_store_errors(source);
@@ -130,8 +134,9 @@ resource Book at ^books(id: int)
 fn index_arg_naming_keyed_leaf_is_an_error() {
     // Index arguments do not walk keyed child layers; `tags` is a keyed leaf.
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     tags(pos: int): string
+store ^books(id: int): Book
     index byTag(tags, id)
 ";
     let errors = compile_store_errors(source);
@@ -148,8 +153,9 @@ resource Book at ^books(id: int)
 #[test]
 fn index_arg_naming_map_member_is_an_error() {
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     scores: map[string, int]
+store ^books(id: int): Book
     index byScore(scores, id)
 ";
     let errors = compile_store_errors(source);
@@ -168,8 +174,9 @@ fn a_sequence_index_argument_is_an_error() {
     // An index argument keys on its field's stored scalar. A `sequence` has no
     // single scalar projection, so it cannot be an index key.
     let source = "\
-resource Order at ^orders(id: int)
+resource Order
     tags: sequence[string]
+store ^orders(id: int): Order
     index byTags(tags, id)
 ";
     let errors = compile_store_errors(source);
@@ -189,8 +196,9 @@ fn an_enum_field_index_argument_is_clean() {
     // checking attaches the catalog-member key meaning once the enum identity is
     // known.
     let source = "\
-resource Order at ^orders(id: int)
+resource Order
     state: Status
+store ^orders(id: int): Order
     index byState(state, id)
 ";
     let errors = compile_store_errors(source);
@@ -206,8 +214,9 @@ fn non_unique_index_omitting_the_identity_key_is_an_error() {
     // distinct. `byShelf(shelf)` collapses two books on the same shelf onto one
     // entry.
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     shelf: string
+store ^books(id: int): Book
     index byShelf(shelf)
 ";
     let errors = compile_store_errors(source);
@@ -223,8 +232,9 @@ resource Book at ^books(id: int)
 #[test]
 fn non_unique_index_ending_with_identity_key_is_allowed() {
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     shelf: string
+store ^books(id: int): Book
     index byShelf(shelf, id)
 ";
     let errors = compile_store_errors(source);
@@ -238,8 +248,9 @@ resource Book at ^books(id: int)
 fn non_unique_index_with_identity_key_not_last_is_an_error() {
     // The identity keys must be the trailing arguments, in declaration order.
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     shelf: string
+store ^books(id: int): Book
     index byShelf(id, shelf)
 ";
     let errors = compile_store_errors(source);
@@ -251,16 +262,18 @@ fn non_unique_index_on_composite_identity_requires_all_keys_in_order() {
     // For a composite identity, a non-unique index must end with every identity
     // key in declaration order.
     let reversed = "\
-resource Enrollment at ^enrollments(studentId: string, courseId: string)
+resource Enrollment
     status: string
+store ^enrollments(studentId: string, courseId: string): Enrollment
     index byStatus(status, courseId, studentId)
 ";
     let errors = compile_store_errors(reversed);
     assert_eq!(codes(&errors), [SCHEMA_INDEX_MISSING_IDENTITY_KEYS]);
 
     let in_order = "\
-resource Enrollment at ^enrollments(studentId: string, courseId: string)
+resource Enrollment
     status: string
+store ^enrollments(studentId: string, courseId: string): Enrollment
     index byStatus(status, studentId, courseId)
 ";
     let errors = compile_store_errors(in_order);
@@ -274,8 +287,9 @@ resource Enrollment at ^enrollments(studentId: string, courseId: string)
 fn unique_index_may_omit_the_identity_key() {
     // A unique index points to one identity, so it may omit the identity keys.
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     isbn: string
+store ^books(id: int): Book
     index byIsbn(isbn) unique
 ";
     let errors = compile_store_errors(source);
@@ -290,8 +304,9 @@ fn index_on_a_singleton_store_is_an_error() {
     // A singleton store has no generated identity for an index entry to
     // point to, so an index is rejected.
     let source = "\
-resource Settings at ^settings
+resource Settings
     theme: string
+store ^settings: Settings
     index byTheme(theme)
 ";
     let errors = compile_store_errors(source);
@@ -307,9 +322,10 @@ resource Settings at ^settings
 #[test]
 fn index_over_a_nested_field_is_an_error() {
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     pricing
         amount: int
+store ^books(id: int): Book
     index byAmount(pricing.amount, id)
 ";
     let errors = compile_store_errors(source);
@@ -326,9 +342,10 @@ resource Book at ^books(id: int)
 #[test]
 fn index_arg_naming_nested_leaf_is_an_error() {
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     location
         shelf: string
+store ^books(id: int): Book
     index byShelf(shelf, id)
 ";
     let errors = compile_store_errors(source);

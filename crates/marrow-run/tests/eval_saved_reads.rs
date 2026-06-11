@@ -45,8 +45,9 @@ fn print_takes_one_argument() {
 
 /// A program with a saved `Book` resource and functions that read a title.
 const BOOK_READER: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
+store ^books(id: int): Book
 
 pub fn title_of(id: int): string
     return ^books(id).title
@@ -106,7 +107,7 @@ fn a_saved_read_interpolates_and_prints() {
 #[test]
 fn whole_resource_read_rejects_missing_required_durable_fields() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    required shelf: string\n\npub fn read(id: int): Book\n    var fallback: Book\n    fallback.title = \"\"\n    fallback.shelf = \"\"\n    return ^books(id) ?? fallback\n",
+        "resource Book\n    required title: string\n    required shelf: string\nstore ^books(id: int): Book\n\npub fn read(id: int): Book\n    var fallback: Book\n    fallback.title = \"\"\n    fallback.shelf = \"\"\n    return ^books(id) ?? fallback\n",
     );
     let store = empty_store();
     write_data_value(
@@ -128,7 +129,7 @@ fn whole_resource_read_rejects_missing_required_durable_fields() {
 #[test]
 fn whole_resource_coalesce_returns_default_for_an_absent_record() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    required shelf: string\n\npub fn read(id: int): Book\n    var fallback: Book\n    fallback.title = \"missing\"\n    fallback.shelf = \"none\"\n    return ^books(id) ?? fallback\n",
+        "resource Book\n    required title: string\n    required shelf: string\nstore ^books(id: int): Book\n\npub fn read(id: int): Book\n    var fallback: Book\n    fallback.title = \"missing\"\n    fallback.shelf = \"none\"\n    return ^books(id) ?? fallback\n",
     );
     let store = empty_store();
     let outcome = run_entry(
@@ -149,7 +150,7 @@ fn whole_resource_coalesce_returns_default_for_an_absent_record() {
 #[test]
 fn whole_resource_coalesce_rejects_a_present_malformed_record() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    required shelf: string\n\npub fn read(id: int): Book\n    var fallback: Book\n    fallback.title = \"missing\"\n    fallback.shelf = \"none\"\n    return ^books(id) ?? fallback\n",
+        "resource Book\n    required title: string\n    required shelf: string\nstore ^books(id: int): Book\n\npub fn read(id: int): Book\n    var fallback: Book\n    fallback.title = \"missing\"\n    fallback.shelf = \"none\"\n    return ^books(id) ?? fallback\n",
     );
     let store = empty_store();
     store
@@ -181,9 +182,10 @@ fn whole_resource_coalesce_rejects_a_present_malformed_record() {
 /// A program that queries saved `Book` data with `exists` and the `??`
 /// absence-default.
 const BOOK_QUERY: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
     subtitle: string
+store ^books(id: int): Book
 
 pub fn has_book(id: int): bool
     return exists(^books(id))

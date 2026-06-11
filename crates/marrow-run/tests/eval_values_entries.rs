@@ -10,11 +10,12 @@ use marrow_run::{RUN_UNSUPPORTED, Value};
 use marrow_store::tree::TreeStore;
 
 const NESTED_KEYED_LAYERS: &str = "\
-resource Table at ^tables(name: string)
+resource Table
     rows(row: int)
         fields(col: int): string
         cells(col: int)
             required value: string
+store ^tables(name: string): Table
 
 pub fn setField(table: string, row: int, col: int, value: string)
     ^tables(table).rows(row).fields(col) = value
@@ -137,7 +138,7 @@ fn nested_keyed_group_layers_iterate_and_materialize_entries() {
 #[test]
 fn writing_a_nested_keyed_leaf_while_traversing_it_is_a_traversal_fault() {
     checker_rejects(
-        "resource Table at ^tables(name: string)\n    rows(row: int)\n        fields(col: int): string\n\npub fn mutateNestedLeafDuringTraversal()\n    for col in keys(^tables(\"t\").rows(1).fields)\n        ^tables(\"t\").rows(1).fields(3) = \"c\"\n",
+        "resource Table\n    rows(row: int)\n        fields(col: int): string\nstore ^tables(name: string): Table\n\npub fn mutateNestedLeafDuringTraversal()\n    for col in keys(^tables(\"t\").rows(1).fields)\n        ^tables(\"t\").rows(1).fields(3) = \"c\"\n",
         "check.loop_mutates_traversed_layer",
     );
 }
@@ -146,9 +147,10 @@ fn writing_a_nested_keyed_leaf_while_traversing_it_is_a_traversal_fault() {
 /// keyed/sequence layer they materialize each entry's value. `entries` feeds the
 /// two-name `for id, x in entries(...)` binding.
 const BOOK_VALUES: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
     tags: sequence[string]
+store ^books(id: int): Book
 
 pub fn add(id: int, t: string)
     ^books(id).title = t

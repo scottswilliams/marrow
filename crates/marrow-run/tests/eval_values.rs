@@ -115,8 +115,8 @@ fn compares_decimal_values() {
 fn decimal_round_trips_through_saved_data() {
     // A decimal field saves and loads unchanged.
     let program = checked_program(
-        "resource Account at ^accts(id: int)\n\
-         \x20   balance: decimal\n\
+        "resource Account\n\
+         \x20   balance: decimal\nstore ^accts(id: int): Account\n\
          \n\
          pub fn seed()\n\
          \x20   ^accts(1).balance = 9.99\n\
@@ -195,8 +195,8 @@ fn compares_bytes_by_byte_order() {
 #[test]
 fn bytes_round_trip_through_saved_data() {
     let program = checked_program(
-        "resource Blob at ^blobs(id: int)\n\
-         \x20   data: bytes\n\
+        "resource Blob\n\
+         \x20   data: bytes\nstore ^blobs(id: int): Blob\n\
          \n\
          pub fn seed()\n\
          \x20   ^blobs(1).data = b\"xy\"\n\

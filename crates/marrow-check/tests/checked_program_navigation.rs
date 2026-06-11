@@ -16,8 +16,9 @@ fn next_id_types_to_the_resource_identity() {
             root,
             "src/shelf/books.mw",
             "module shelf::books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              pub fn fresh(): Id(^books)\n\
              \x20   const id: Id(^books) = nextId(^books)\n\
              \x20   return id\n",
@@ -37,8 +38,9 @@ fn next_id_over_a_composite_root_is_flagged() {
             root,
             "src/shelf/enroll.mw",
             "module shelf::enroll\n\
-             resource Enrollment at ^enrollments(studentId: string, courseId: string)\n\
+             resource Enrollment\n\
              \x20   required grade: string\n\
+             store ^enrollments(studentId: string, courseId: string): Enrollment\n\
              fn fresh()\n\
              \x20   const id = nextId(^enrollments)\n",
         );
@@ -63,8 +65,9 @@ fn next_id_over_a_string_keyed_root_is_flagged() {
             root,
             "src/shelf/tags.mw",
             "module shelf::tags\n\
-             resource Tag at ^tags(slug: string)\n\
+             resource Tag\n\
              \x20   required name: string\n\
+             store ^tags(slug: string): Tag\n\
              fn fresh()\n\
              \x20   const id = nextId(^tags)\n",
         );
@@ -90,8 +93,9 @@ fn next_id_over_a_singleton_root_is_flagged() {
             root,
             "src/shelf/settings.mw",
             "module shelf::settings\n\
-             resource Settings at ^settings\n\
+             resource Settings\n\
              \x20   required theme: string\n\
+             store ^settings: Settings\n\
              fn fresh()\n\
              \x20   const id = nextId(^settings)\n",
         );
@@ -183,8 +187,9 @@ fn next_and_prev_of_a_keyed_root_type_to_the_identity() {
             root,
             "src/shelf/books.mw",
             "module shelf::books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              pub fn afterTitle(id: int, fallback: Id(^books)): string\n\
              \x20   return ^books(next(^books(id)) ?? fallback).title\n\
              pub fn beforeTitle(id: int, fallback: Id(^books)): string\n\
@@ -205,8 +210,9 @@ fn next_with_wrong_arity_is_flagged() {
             root,
             "src/shelf/books.mw",
             "module shelf::books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              fn bad(id: int)\n\
              \x20   const x = next(^books(id), ^books(id))\n",
         );
@@ -233,9 +239,10 @@ fn next_of_a_layer_position_coalesces_to_the_key_type() {
             root,
             "src/shelf/books.mw",
             "module shelf::books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   tags(pos: int): string\n\
+             store ^books(id: int): Book\n\
              pub fn nextPos(id: int, p: int): int\n\
              \x20   return next(^books(id).tags(p)) ?? -1\n",
         );
@@ -255,8 +262,9 @@ fn next_over_a_composite_identity_record_is_flagged() {
             root,
             "src/shelf/enroll.mw",
             "module shelf::enroll\n\
-             resource Enrollment at ^enrollments(studentId: string, courseId: string)\n\
+             resource Enrollment\n\
              \x20   required grade: string\n\
+             store ^enrollments(studentId: string, courseId: string): Enrollment\n\
              fn step(s: string, c: string)\n\
              \x20   const n = next(^enrollments(s, c))\n",
         );
@@ -280,8 +288,9 @@ fn next_over_a_bare_composite_identity_root_is_flagged() {
             root,
             "src/shelf/enroll.mw",
             "module shelf::enroll\n\
-             resource Enrollment at ^enrollments(studentId: string, courseId: string)\n\
+             resource Enrollment\n\
              \x20   required grade: string\n\
+             store ^enrollments(studentId: string, courseId: string): Enrollment\n\
              fn step()\n\
              \x20   const n = next(^enrollments)\n",
         );
@@ -305,8 +314,9 @@ fn next_over_a_bare_identity_value_is_flagged() {
             root,
             "src/shelf/books.mw",
             "module shelf::books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              fn step(id: Id(^books))\n\
              \x20   const n = next(id)\n",
         );
@@ -332,9 +342,10 @@ fn next_over_an_index_branch_is_flagged() {
             root,
             "src/shelf/books.mw",
             "module shelf::books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   shelf: string\n\
+             store ^books(id: int): Book\n\
              \x20   index byShelf(shelf, id)\n\
              fn step(s: string)\n\
              \x20   const n = next(^books.byShelf(s))\n",
@@ -359,8 +370,9 @@ fn keys_over_composite_identity_index_bind_reconstructed_identities() {
             root,
             "src/school/registrar.mw",
             "module school::registrar\n\
-             resource Enrollment at ^enrollments(studentId: string, courseId: string)\n\
+             resource Enrollment\n\
              \x20   required credits: int\n\
+             store ^enrollments(studentId: string, courseId: string): Enrollment\n\
              \x20   index byStudent(studentId, courseId)\n\
              fn total(studentId: string): int\n\
              \x20   var credits = 0\n\

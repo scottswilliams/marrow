@@ -22,8 +22,9 @@ fn store_identity_key_type_change_fails_closed() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: string)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: string): Book\n\
              pub fn add(id: string, title: string)\n\
              \x20   ^books(id).title = title\n",
         );
@@ -80,8 +81,9 @@ fn store_identity_key_arity_change_fails_closed() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(shelf: int, id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(shelf: int, id: int): Book\n\
              pub fn add(shelf: int, id: int, title: string)\n\
              \x20   ^books(shelf, id).title = title\n",
         );
@@ -129,8 +131,9 @@ fn store_identity_key_shape_unchanged_is_no_store_repair() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -178,8 +181,9 @@ fn store_rename_behind_identity_leaf_is_not_a_retype() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^library(id: int)\n\
+             resource Book\n\
              \x20   required parent: Id(^library)\n\
+             store ^library(id: int): Book\n\
              evolve\n\
              \x20   rename ^books -> ^library\n\
              pub fn add(parent: Id(^library)): Id(^library)\n\

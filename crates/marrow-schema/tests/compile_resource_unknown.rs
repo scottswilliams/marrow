@@ -56,9 +56,10 @@ fn unknown(target: SchemaSavedUnknownTarget, name: &str) -> SchemaErrorKind {
 #[test]
 fn saved_field_typed_unknown_is_an_error() {
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
     note: unknown
+store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
@@ -68,8 +69,9 @@ resource Book at ^books(id: int)
 #[test]
 fn saved_identity_key_typed_unknown_is_an_error() {
     let source = "\
-resource Book at ^books(id: unknown)
+resource Book
     required title: string
+store ^books(id: unknown): Book
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
@@ -82,8 +84,9 @@ resource Book at ^books(id: unknown)
 #[test]
 fn saved_keyed_leaf_typed_unknown_is_an_error() {
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     tags(pos: int): unknown
+store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
@@ -96,9 +99,10 @@ resource Book at ^books(id: int)
 #[test]
 fn saved_nested_field_typed_unknown_is_an_error() {
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     notes(noteId: string)
         body: unknown
+store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
@@ -110,8 +114,9 @@ fn saved_field_typed_sequence_of_unknown_is_an_error() {
     // `unknown` is rejected anywhere inside a saved type, including as the
     // element of a `sequence[...]`.
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     tags: sequence[unknown]
+store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
@@ -121,8 +126,9 @@ resource Book at ^books(id: int)
 #[test]
 fn saved_map_member_value_typed_unknown_is_an_error() {
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     scores: map[string, unknown]
+store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
@@ -137,8 +143,9 @@ fn saved_field_typed_sequence_of_concrete_type_is_allowed() {
     // A sequence of a concrete type is an ordinary saved field; the check does
     // not over-trigger on the `sequence[...]` wrapper.
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     tags: sequence[string]
+store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
     assert!(
@@ -152,8 +159,9 @@ fn keyed_leaf_key_param_typed_unknown_is_an_error() {
     // `unknown` is rejected in saved keys, including a keyed layer's own key
     // parameters, not only identity keys and value types.
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     tags(pos: unknown): string
+store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
@@ -164,10 +172,11 @@ resource Book at ^books(id: int)
 fn nested_group_key_param_typed_unknown_is_an_error() {
     // The check recurses into nested groups' key parameters.
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     notes(noteId: string)
         revisions(rev: unknown)
             body: string
+store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);

@@ -21,9 +21,10 @@ fn transform_undecodable_read_is_refused() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required price: int\n\
              \x20   required priceCents: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   transform Book.priceCents\n\
              \x20       return old.price * 100\n\
@@ -68,9 +69,10 @@ fn transform_body_fault_aborts_byte_identical() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required price: int\n\
              \x20   required priceCents: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   transform Book.priceCents\n\
              \x20       return old.price * 1000000000000\n\
@@ -127,9 +129,10 @@ fn transform_body_fault_midscan_discards_earlier_staged_write() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required price: int\n\
              \x20   required priceCents: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   transform Book.priceCents\n\
              \x20       return old.price * 1000000000000\n\
@@ -192,9 +195,10 @@ fn transform_constant_drift_aborts_before_apply() {
             "src/books.mw",
             "module books\n\
              const Scale = 100\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required price: int\n\
              \x20   required priceCents: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   transform Book.priceCents\n\
              \x20       return old.price * Scale\n\
@@ -219,9 +223,10 @@ fn transform_constant_drift_aborts_before_apply() {
         "src/books.mw",
         "module books\n\
          const Scale = 200\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required price: int\n\
          \x20   required priceCents: int\n\
+         store ^books(id: int): Book\n\
          evolve\n\
          \x20   transform Book.priceCents\n\
          \x20       return old.price * Scale\n\
@@ -258,9 +263,10 @@ fn transform_body_drift_aborts_before_apply() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required price: int\n\
              \x20   required priceCents: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   transform Book.priceCents\n\
              \x20       return old.price * 100\n\
@@ -292,9 +298,10 @@ fn transform_body_drift_aborts_before_apply() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required price: int\n\
          \x20   required priceCents: int\n\
+         store ^books(id: int): Book\n\
          evolve\n\
          \x20   transform Book.priceCents\n\
          \x20       return old.price * 200\n\

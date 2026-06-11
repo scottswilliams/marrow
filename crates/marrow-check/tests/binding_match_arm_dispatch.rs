@@ -216,8 +216,9 @@ fn a_match_arm_resolves_through_a_saved_enum_layer_values_loop_binding() {
         enum Status\n    \
         active\n    \
         archived\n\
-        resource Book at ^books(id: int)\n    \
+        resource Book\n    \
         states(pos: int): Status\n\
+        store ^books(id: int): Book\n\
         fn classify(id: Id(^books)): int\n    \
         for s in values(^books(id).states)\n        \
         match s\n            \
@@ -247,8 +248,9 @@ fn a_match_arm_resolves_through_a_two_name_saved_enum_layer_loop_binding() {
         enum Status\n    \
         active\n    \
         archived\n\
-        resource Book at ^books(id: int)\n    \
+        resource Book\n    \
         states(pos: int): Status\n\
+        store ^books(id: int): Book\n\
         fn classify(id: Id(^books)): int\n    \
         for pos, s in ^books(id).states\n        \
         match s\n            \
@@ -278,8 +280,9 @@ fn a_saved_enum_layer_loop_match_records_its_scrutinee_enum() {
         enum Status\n    \
         active\n    \
         archived\n\
-        resource Book at ^books(id: int)\n    \
+        resource Book\n    \
         states(pos: int): Status\n\
+        store ^books(id: int): Book\n\
         fn classify(id: Id(^books)): int\n    \
         for s in values(^books(id).states)\n        \
         match s\n            \

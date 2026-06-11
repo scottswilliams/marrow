@@ -43,8 +43,9 @@ fn books_project(name: &str) -> TempProject {
 
 /// The original schema: a `Book` with only `title`. `seed` writes one record.
 const BASELINE_SOURCE: &str = "module books\n\
-     resource Book at ^books(id: int)\n\
+     resource Book\n\
      \x20   required title: string\n\
+     store ^books(id: int): Book\n\
      pub fn seed()\n\
      \x20   transaction\n\
      \x20       ^books(1).title = \"Mort\"\n";
@@ -53,9 +54,10 @@ const BASELINE_SOURCE: &str = "module books\n\
 /// (the old records' shape), and `annotate` writes the new field on a fresh record so
 /// the test can prove new writes carry it.
 const EVOLVED_SOURCE: &str = "module books\n\
-     resource Book at ^books(id: int)\n\
+     resource Book\n\
      \x20   required title: string\n\
      \x20   subtitle: string\n\
+     store ^books(id: int): Book\n\
      pub fn seed()\n\
      \x20   transaction\n\
      \x20       ^books(1).title = \"Mort\"\n\
@@ -164,21 +166,25 @@ fn reference_project(name: &str) -> TempProject {
 }
 
 const REFERENCE_BASELINE: &str = "module lib\n\
-     resource Author at ^authors(id: int)\n\
+     resource Author\n\
      \x20   name: string\n\
-     resource Book at ^books(id: int)\n\
+     store ^authors(id: int): Author\n\
+     resource Book\n\
      \x20   required title: string\n\
+     store ^books(id: int): Book\n\
      pub fn seed()\n\
      \x20   transaction\n\
      \x20       ^books(1).title = \"Mort\"\n\
      \x20       ^authors(1).name = \"Ada\"\n";
 
 const REFERENCE_EVOLVED: &str = "module lib\n\
-     resource Author at ^authors(id: int)\n\
+     resource Author\n\
      \x20   name: string\n\
-     resource Book at ^books(id: int)\n\
+     store ^authors(id: int): Author\n\
+     resource Book\n\
      \x20   required title: string\n\
      \x20   authorId: Id(^authors)\n\
+     store ^books(id: int): Book\n\
      pub fn seed()\n\
      \x20   print(\"noop\")\n\
      pub fn link()\n\

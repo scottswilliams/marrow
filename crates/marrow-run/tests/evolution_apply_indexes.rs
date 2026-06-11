@@ -21,8 +21,9 @@ fn proposal_index_rebuild_writes_entries_before_catalog_acceptance() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required isbn: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(isbn: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -43,8 +44,9 @@ fn proposal_index_rebuild_writes_entries_before_catalog_acceptance() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required isbn: string\n\
+         store ^books(id: int): Book\n\
          \x20   index byIsbn(isbn) unique\n\
          pub fn add(isbn: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
@@ -73,8 +75,9 @@ fn completion_rejects_stale_index_row_with_old_key_arity() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required isbn: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(isbn: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -94,8 +97,9 @@ fn completion_rejects_stale_index_row_with_old_key_arity() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required isbn: string\n\
+         store ^books(id: int): Book\n\
          \x20   index byIsbn(isbn, id) unique\n\
          pub fn add(isbn: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
@@ -130,8 +134,9 @@ fn completion_uses_witness_rebuilds_not_per_commit_changed_index_ids() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required isbn: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(isbn: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -149,8 +154,9 @@ fn completion_uses_witness_rebuilds_not_per_commit_changed_index_ids() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required isbn: string\n\
+         store ^books(id: int): Book\n\
          \x20   index byIsbn(isbn) unique\n\
          pub fn add(isbn: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
@@ -179,8 +185,9 @@ fn proposal_index_rebuild_reads_defaulted_member_before_catalog_acceptance() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -201,9 +208,10 @@ fn proposal_index_rebuild_reads_defaulted_member_before_catalog_acceptance() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
          \x20   required pages: int\n\
+         store ^books(id: int): Book\n\
          \x20   index byPages(pages, id)\n\
          evolve\n\
          \x20   default Book.pages = 0\n\
@@ -235,8 +243,9 @@ fn unique_index_over_defaulted_member_collision_fails_closed() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -257,9 +266,10 @@ fn unique_index_over_defaulted_member_collision_fails_closed() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
          \x20   required pages: int\n\
+         store ^books(id: int): Book\n\
          \x20   index byPages(pages) unique\n\
          evolve\n\
          \x20   default Book.pages = 0\n\
@@ -281,8 +291,9 @@ fn proposal_index_rebuild_reads_transform_target_before_catalog_acceptance() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required price: int\n\
+             store ^books(id: int): Book\n\
              pub fn add(price: int): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -303,9 +314,10 @@ fn proposal_index_rebuild_reads_transform_target_before_catalog_acceptance() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required price: int\n\
          \x20   required priceCents: int\n\
+         store ^books(id: int): Book\n\
          \x20   index byCents(priceCents, id)\n\
          evolve\n\
          \x20   transform Book.priceCents\n\
@@ -338,8 +350,9 @@ fn unique_index_over_transform_target_fails_closed() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required price: int\n\
+             store ^books(id: int): Book\n\
              pub fn add(price: int): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -360,9 +373,10 @@ fn unique_index_over_transform_target_fails_closed() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required price: int\n\
          \x20   required priceCents: int\n\
+         store ^books(id: int): Book\n\
          \x20   index byCents(priceCents) unique\n\
          evolve\n\
          \x20   transform Book.priceCents\n\
@@ -385,8 +399,9 @@ fn new_index_rebuild_writes_entries_and_stamps() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required isbn: string\n\
+             store ^books(id: int): Book\n\
              \x20   index byIsbn(isbn) unique\n\
              pub fn add(isbn: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
@@ -449,8 +464,9 @@ fn new_non_unique_index_rebuild_writes_entries() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required genre: string\n\
+             store ^books(id: int): Book\n\
              \x20   index byGenre(genre, id)\n\
              pub fn add(genre: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
@@ -511,8 +527,9 @@ fn dropped_index_apply_deletes_index_cells() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required isbn: string\n\
+             store ^books(id: int): Book\n\
              \x20   index byIsbn(isbn) unique\n\
              pub fn add(isbn: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
@@ -554,8 +571,9 @@ fn dropped_index_apply_deletes_index_cells() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required isbn: string\n\
+         store ^books(id: int): Book\n\
          pub fn add(isbn: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
@@ -620,8 +638,9 @@ fn dropped_index_id_stamped_as_index_not_root() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required isbn: string\n\
+             store ^books(id: int): Book\n\
              \x20   index byIsbn(isbn) unique\n\
              pub fn add(isbn: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
@@ -646,8 +665,9 @@ fn dropped_index_id_stamped_as_index_not_root() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required isbn: string\n\
+         store ^books(id: int): Book\n\
          pub fn add(isbn: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );

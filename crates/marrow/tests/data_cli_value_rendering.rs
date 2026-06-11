@@ -44,11 +44,13 @@ fn data_text_does_not_render_type_wrong_identity_payload_as_a_path() {
     let (project, dir) = seeded_project(
         "data-value-render-identity-key-type",
         "module app\n\
-         resource Author at ^authors(id: int)\n\
+         resource Author\n\
          \x20   required name: string\n\
-         resource Book at ^books(id: int)\n\
+         store ^authors(id: int): Author\n\
+         resource Book\n\
          \x20   required title: string\n\
          \x20   author: Id(^authors)\n\
+         store ^books(id: int): Book\n\
          pub fn seed()\n\
          \x20   transaction\n\
          \x20       ^books(1).title = \"Mort\"\n",
@@ -84,9 +86,10 @@ fn data_text_quotes_strings_and_hexes_bytes() {
     let (_project, dir) = seeded_project(
         "data-value-render-strings",
         "module app\n\
-         resource Item at ^items(id: int)\n\
+         resource Item\n\
          \x20   required label: string\n\
          \x20   payload: bytes\n\
+         store ^items(id: int): Item\n\
          pub fn seed()\n\
          \x20   transaction\n\
          \x20       ^items(1).label = \"first\\tline\\n^forged(9).value\"\n\
@@ -115,11 +118,13 @@ fn data_text_renders_identity_references_as_saved_paths() {
     let (_project, dir) = seeded_project(
         "data-value-render-identity",
         "module app\n\
-         resource Author at ^authors(id: int)\n\
+         resource Author\n\
          \x20   required name: string\n\
-         resource Book at ^books(id: int)\n\
+         store ^authors(id: int): Author\n\
+         resource Book\n\
          \x20   required title: string\n\
          \x20   author: Id(^authors)\n\
+         store ^books(id: int): Book\n\
          pub fn seed()\n\
          \x20   const author: Id(^authors) = nextId(^authors)\n\
          \x20   transaction\n\
@@ -143,8 +148,9 @@ fn data_text_renders_enum_values_as_member_identities() {
          enum Status\n\
          \x20   active\n\
          \x20   archived\n\
-         resource Order at ^orders(id: int)\n\
+         resource Order\n\
          \x20   required state: Status\n\
+         store ^orders(id: int): Order\n\
          pub fn seed()\n\
          \x20   transaction\n\
          \x20       ^orders(1).state = Status::archived\n",

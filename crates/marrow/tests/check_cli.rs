@@ -182,7 +182,7 @@ fn check_reports_schema_diagnostics_for_a_project_directory() {
     fs::write(dir.join("marrow.json"), r#"{ "sourceRoots": ["src"] }"#).expect("write config");
     fs::write(
         dir.join("src/shelf.mw"),
-        "module shelf\nresource Book at ^books(id: int)\n    note: unknown\n",
+        "module shelf\nresource Book\n    note: unknown\nstore ^books(id: int): Book\n",
     )
     .expect("write source");
 
@@ -200,7 +200,8 @@ fn check_reports_reserved_merge_and_lock_as_parse_errors() {
     fs::write(
         dir.join("src/shelf.mw"),
          "module shelf\n\
-         resource Book at ^books(id: int)\n    required title: string\n\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
          fn f(id: int)\n    lock ^books(id)\n        print(\"locked\")\n    merge ^books(id) = ^books(id)\n",
     )
     .expect("write source");
@@ -211,8 +212,8 @@ fn check_reports_reserved_merge_and_lock_as_parse_errors() {
     let records = diagnostic_records(output);
     // `lock` and `merge` are parse-rejected, not checker-rejected: the reserved
     // surface never reaches `check.rejected_surface`. Each reserved statement is
-    // rejected exactly at its own line (the `lock` on line 6 and the `merge` on line
-    // 8), asserted by code and span rather than by the rendered reserved-word prose.
+    // rejected exactly at its own line (the `lock` on line 7 and the `merge` on line
+    // 9), asserted by code and span rather than by the rendered reserved-word prose.
     assert!(
         !has_code(&records, "check.rejected_surface"),
         "{records:#?}"
@@ -222,8 +223,8 @@ fn check_reports_reserved_merge_and_lock_as_parse_errors() {
         .filter(|record| record["code"] == "parse.syntax")
         .filter_map(|record| record["source_span"]["line"].as_i64())
         .collect();
-    assert!(reserved_lines.contains(&6), "{records:#?}");
-    assert!(reserved_lines.contains(&8), "{records:#?}");
+    assert!(reserved_lines.contains(&7), "{records:#?}");
+    assert!(reserved_lines.contains(&9), "{records:#?}");
 }
 
 #[test]
@@ -233,7 +234,8 @@ fn check_rejects_saved_inout_for_a_project_directory() {
     fs::write(
         dir.join("src/shelf.mw"),
         "module shelf\n\
-         resource Book at ^books(id: int)\n    required title: string\n\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
          fn normalize(inout book: Book)\n    return\n\n\
          fn f(id: int)\n    normalize(inout ^books(id))\n",
     )
@@ -361,7 +363,7 @@ fn check_single_module_less_script_string_into_an_int_field_errors() {
     // into the `int` field `count` is a type mismatch, exit 1.
     let path = temp_source(
         "single-script-string-into-int",
-        "resource Order at ^orders(id: int)\n    required count: int\n\npub fn main()\n    var o: Order\n    o.count = \"alsobad\"\n    ^orders(1) = o\n",
+        "resource Order\n    required count: int\nstore ^orders(id: int): Order\n\npub fn main()\n    var o: Order\n    o.count = \"alsobad\"\n    ^orders(1) = o\n",
     );
 
     let output = check_json(&path);

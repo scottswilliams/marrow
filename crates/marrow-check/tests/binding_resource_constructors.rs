@@ -14,12 +14,14 @@ use support_binding::checked_index;
 #[test]
 fn qualified_resource_constructor_uses_qualified_module_resource() {
     let state = "module shelf::state\n\
-        resource Book at ^state_books(id: int)\n    \
-        required title: string\n";
+        resource Book\n    \
+        required title: string\n\
+        store ^state_books(id: int): Book\n";
     let app = "module shelf::app\n\
         use shelf::state\n\
-        resource Book at ^app_books(code: string)\n    \
+        resource Book\n    \
         required subtitle: string\n\
+        store ^app_books(code: string): Book\n\
         fn make()\n    \
         const b = state::Book(title: \"x\")\n";
     let (index, paths) = checked_index(
@@ -40,12 +42,14 @@ fn qualified_resource_constructor_uses_qualified_module_resource() {
 #[test]
 fn bare_resource_constructor_prefers_current_module_resource() {
     let state = "module shelf::state\n\
-        resource Book at ^state_books(id: int)\n    \
-        required title: string\n";
+        resource Book\n    \
+        required title: string\n\
+        store ^state_books(id: int): Book\n";
     let app = "module shelf::app\n\
         use shelf::state\n\
-        resource Book at ^app_books(code: string)\n    \
+        resource Book\n    \
         required subtitle: string\n\
+        store ^app_books(code: string): Book\n\
         fn make()\n    \
         const b = Book(subtitle: \"b\")\n";
     let (index, paths) = checked_index(
@@ -68,8 +72,9 @@ fn alias_qualified_id_call_resolves_to_imported_function_named_id() {
         pub fn Id(): int\n    \
         return 1\n";
     let trap = "module traps\n\
-        resource book at ^local_books(id: int)\n    \
-        required title: string\n";
+        resource book\n    \
+        required title: string\n\
+        store ^local_books(id: int): book\n";
     let app = "module app\n\
         use shelf::book\n\
         fn run(): int\n    \
@@ -96,11 +101,13 @@ fn alias_qualified_id_call_resolves_to_imported_function_named_id() {
 #[test]
 fn alias_qualified_id_call_resolves_to_imported_resource_named_id() {
     let imported = "module shelf::book\n\
-        resource Id at ^imported_ids(id: int)\n    \
-        required title: string\n";
+        resource Id\n    \
+        required title: string\n\
+        store ^imported_ids(id: int): Id\n";
     let trap = "module traps\n\
-        resource book at ^local_books(id: int)\n    \
-        required title: string\n";
+        resource book\n    \
+        required title: string\n\
+        store ^local_books(id: int): book\n";
     let app = "module app\n\
         use shelf::book\n\
         fn make()\n    \
@@ -127,11 +134,13 @@ fn alias_qualified_id_call_resolves_to_imported_resource_named_id() {
 #[test]
 fn alias_qualified_id_type_ref_expands_alias_to_imported_resource() {
     let trap = "module traps\n\
-        resource book at ^trap_books(id: int)\n    \
-        required title: string\n";
+        resource book\n    \
+        required title: string\n\
+        store ^trap_books(id: int): book\n";
     let imported_module = "module shelf::book\n\
-        resource Id at ^imported_ids(id: int)\n    \
-        required title: string\n";
+        resource Id\n    \
+        required title: string\n\
+        store ^imported_ids(id: int): Id\n";
     let app = "module app\n\
         use shelf::book\n\
         fn load(value: book::Id)\n    \

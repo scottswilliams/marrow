@@ -104,8 +104,9 @@ fn index_over_a_decimal_field_is_an_error() {
     // never maintain an index entry for it. Reject it at compile time rather than
     // silently committing the data with no index.
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     price: decimal
+store ^books(id: int): Book
     index byPrice(price, id)
 ";
     let errors = compile_store_errors(source);
@@ -123,8 +124,9 @@ resource Book at ^books(id: int)
 fn keyed_leaf_with_a_decimal_key_param_is_an_error() {
     // A keyed-layer key must be an ordered key type; `decimal` is not.
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     samples(ts: decimal): int
+store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNORDERABLE_KEY]);
@@ -140,8 +142,9 @@ resource Book at ^books(id: int)
 #[test]
 fn map_member_with_a_decimal_key_type_is_an_error() {
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     scores: map[decimal, int]
+store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNORDERABLE_KEY]);
@@ -157,8 +160,9 @@ resource Book at ^books(id: int)
 #[test]
 fn identity_key_typed_decimal_is_an_error() {
     let source = "\
-resource Reading at ^readings(ts: decimal)
+resource Reading
     required value: int
+store ^readings(ts: decimal): Reading
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNORDERABLE_KEY]);
@@ -178,8 +182,9 @@ fn identity_key_typed_as_a_bare_name_is_an_error() {
     // corrupt the keyspace. The rule is structural — it needs no knowledge of what
     // the name refers to — so an enum, a resource, or a typo is caught the same way.
     let source = "\
-resource Order at ^orders(state: Status)
+resource Order
     required note: string
+store ^orders(state: Status): Order
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
@@ -195,8 +200,9 @@ resource Order at ^orders(state: Status)
 #[test]
 fn keyed_layer_key_param_typed_as_a_bare_name_is_an_error() {
     let source = "\
-resource Order at ^orders(id: int)
+resource Order
     byState(state: Status): string
+store ^orders(id: int): Order
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
@@ -215,8 +221,9 @@ fn an_undeclared_or_typo_named_identity_key_is_an_error() {
     // exactly like a declared one. A typo'd key would otherwise accept any value,
     // letting an int and a string coexist in one identity keyspace.
     let source = "\
-resource Order at ^orders(state: Stutus)
+resource Order
     required note: string
+store ^orders(state: Stutus): Order
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
@@ -236,8 +243,9 @@ fn a_resource_typed_identity_key_is_an_error() {
     let source = "\
 resource Person
     required name: string
-resource Order at ^orders(owner: Person)
+resource Order
     required note: string
+store ^orders(owner: Person): Order
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
@@ -254,8 +262,9 @@ resource Order at ^orders(owner: Person)
 fn a_sequence_typed_key_is_an_error() {
     // A sequence is not a scalar at all, so it cannot project to an orderable key.
     let source = "\
-resource Order at ^orders(tags: sequence[string])
+resource Order
     required note: string
+store ^orders(tags: sequence[string]): Order
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
@@ -271,8 +280,9 @@ resource Order at ^orders(tags: sequence[string])
 #[test]
 fn an_identity_field_index_argument_is_an_error() {
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     authorId: Id(^authors)
+store ^books(id: int): Book
     index byAuthor(authorId, id)
 ";
     let errors = compile_store_errors(source);
@@ -291,9 +301,10 @@ fn an_orderable_scalar_identity_key_is_clean() {
     // The allowlist does not over-reject: an orderable scalar key at the identity,
     // a layer key param, and an index argument all compile clean.
     let source = "\
-resource Order at ^orders(id: int)
+resource Order
     byTag(tag: string): string
     rank: int
+store ^orders(id: int): Order
     index byRank(rank, id)
 ";
     let errors = compile_store_errors(source);
@@ -305,8 +316,9 @@ fn an_identity_typed_key_is_an_error() {
     // A saved key must be an orderable scalar. An identity value has no supported
     // saved-key encoding yet, so reject it statically instead of deferring it.
     let source = "\
-resource Edge at ^edges(from: Id(^nodes))
+resource Edge
     required note: string
+store ^edges(from: Id(^nodes)): Edge
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
@@ -322,8 +334,9 @@ resource Edge at ^edges(from: Id(^nodes))
 #[test]
 fn a_keyed_layer_key_param_typed_as_an_identity_is_an_error() {
     let source = "\
-resource Edge at ^edges(id: int)
+resource Edge
     byNode(from: Id(^nodes)): string
+store ^edges(id: int): Edge
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);

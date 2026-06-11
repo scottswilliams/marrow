@@ -40,17 +40,19 @@ fn recheck_against_snapshot(root: &Path, store: &TreeStore) -> CheckedProgram {
 }
 
 const PROPOSAL_DEFAULT: &str = "module books\n\
-     resource Book at ^books(id: int)\n\
+     resource Book\n\
      \x20   required title: string\n\
      \x20   required pages: int\n\
+     store ^books(id: int): Book\n\
      evolve\n\
      \x20   default Book.pages = 0\n\
      pub fn add(title: string): Id(^books)\n\
      \x20   return nextId(^books)\n";
 
 const BASELINE: &str = "module books\n\
-     resource Book at ^books(id: int)\n\
+     resource Book\n\
      \x20   required title: string\n\
+     store ^books(id: int): Book\n\
      pub fn add(title: string): Id(^books)\n\
      \x20   return nextId(^books)\n";
 
@@ -58,9 +60,10 @@ const BASELINE: &str = "module books\n\
 // backfilling transform overflows the 64-bit range, so the apply would publish the
 // activated catalog but faults mid-transaction first.
 const TRANSFORM_OVERFLOW: &str = "module books\n\
-     resource Book at ^books(id: int)\n\
+     resource Book\n\
      \x20   required price: int\n\
      \x20   required priceCents: int\n\
+     store ^books(id: int): Book\n\
      evolve\n\
      \x20   transform Book.priceCents\n\
      \x20       return old.price * 1000000000000\n\
@@ -68,8 +71,9 @@ const TRANSFORM_OVERFLOW: &str = "module books\n\
      \x20   return nextId(^books)\n";
 
 const TRANSFORM_BASELINE: &str = "module books\n\
-     resource Book at ^books(id: int)\n\
+     resource Book\n\
      \x20   required price: int\n\
+     store ^books(id: int): Book\n\
      pub fn add(price: int): Id(^books)\n\
      \x20   return nextId(^books)\n";
 

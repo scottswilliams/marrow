@@ -47,11 +47,12 @@ fn the_reference_sample_runs_on_native_storage() {
 }
 
 const BOOK_VERSIONS: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
 
     versions(version: int)
         required title: string
+store ^books(id: int): Book
 
 pub fn seed(id: int, t: string)
     ^books(id).title = t

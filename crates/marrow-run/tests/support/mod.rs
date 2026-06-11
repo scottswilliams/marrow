@@ -536,7 +536,7 @@ pub const ENROLLMENT_STATUS: &str =
 
 /// Iterating a primary keyed root yields identities. Two-name loops pair the
 /// identity with the materialized record value. The trailing blank line lets a
-/// test append its own entries after the resource block.
+/// test append function declarations after the split resource/store block.
 pub const BOOK_PRIMARY_SCHEMA: &str =
     include_str!("../../../../fixtures/v01/runtime/books_primary_schema.mw");
 

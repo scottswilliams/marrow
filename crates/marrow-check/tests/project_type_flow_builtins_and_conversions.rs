@@ -15,7 +15,9 @@ fn exists_and_append_builtin_return_types_feed_checks() {
     let found = check_module(
         "builtin-returns",
         "module m\n\
-         resource Book at ^books(id: int)\n    title: string\n\n    tags(pos: int): string\n\n\
+         resource Book\n    title: string\n\
+         \x20   tags(pos: int): string\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    var a = exists(^books(1)) + 1\n    var b = append(^books(1).tags, \"t\") and true\n",
         "check.operator_type",
     );
@@ -27,7 +29,8 @@ fn append_to_a_group_layer_is_a_check_error() {
     let found = check_module(
         "append-group-layer",
         "module m\n\
-         resource Log at ^log(name: string)\n    items(pos: int)\n        required n: int\n\n\
+         resource Log\n    items(pos: int)\n        required n: int\n\
+         store ^log(name: string): Log\n\n\
          fn add(name: string): int\n    return append(^log(name).items, 1)\n",
         "check.call_argument",
     );
@@ -44,7 +47,8 @@ fn append_to_a_keyed_leaf_layer_still_checks_clean() {
     let report = check_module_report(
         "append-leaf-layer",
         "module m\n\
-         resource Log at ^log(name: string)\n    items(pos: int): int\n\n\
+         resource Log\n    items(pos: int): int\n\
+         store ^log(name: string): Log\n\n\
          fn add(name: string): int\n    return append(^log(name).items, 1)\n",
     );
     assert!(
@@ -61,7 +65,8 @@ fn coalesce_yields_the_default_type() {
     let found = check_module(
         "coalesce-return",
         "module m\n\
-         resource Book at ^books(id: int)\n    title: string\n\n\
+         resource Book\n    title: string\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    var x = (^books(1).title ?? \"none\") + 1\n",
         "check.operator_type",
     );
@@ -87,7 +92,8 @@ fn coalesce_rejects_a_mismatched_default_type() {
     let found = check_module(
         "coalesce-mismatch",
         "module m\n\
-         resource Book at ^books(id: int)\n    pages: int\n\n\
+         resource Book\n    pages: int\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    var x = ^books(1).pages ?? \"none\"\n",
         "check.operator_type",
     );
@@ -362,7 +368,8 @@ fn print_and_write_reject_non_renderable_values() {
         "output-non-renderable",
         "module m\n\
          enum Color\n    red\n    green\n\n\
-         resource Book at ^books(id: int)\n    required title: string\n\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
          fn f(c: Color, items: sequence[string], book: Book)\n\
          \x20   const d = std::clock::parseDate(\"2026-01-01\")\n\
          \x20   const i = std::clock::parseInstant(\"2026-01-01T00:00:00Z\")\n\
@@ -387,7 +394,8 @@ fn exists_rejects_neighbor_values() {
             &format!("exists-{neighbor}"),
             &format!(
                 "module m\n\
-                 resource Book at ^books(id: int)\n    required title: string\n\n\
+                 resource Book\n    required title: string\n\
+                 store ^books(id: int): Book\n\n\
                  fn f(): bool\n    return exists({neighbor}(^books(1)))\n",
             ),
             "check.call_argument",
@@ -403,7 +411,8 @@ fn exists_rejects_coalesced_neighbor_values() {
             &format!("exists-coalesced-{neighbor}"),
             &format!(
                 "module m\n\
-                 resource Book at ^books(id: int)\n    required title: string\n\n\
+                 resource Book\n    required title: string\n\
+                 store ^books(id: int): Book\n\n\
                  fn f(fallback: Id(^books)): bool\n\
                  \x20   return exists({neighbor}(^books(1)) ?? fallback)\n",
             ),
@@ -420,7 +429,8 @@ fn exists_rejects_plain_values() {
             &format!("exists-value-{expression}"),
             &format!(
                 "module m\n\
-                 resource Book at ^books(id: int)\n    required title: string\n\n\
+                 resource Book\n    required title: string\n\
+                 store ^books(id: int): Book\n\n\
                  fn f(id: int): bool\n    return exists({expression})\n",
             ),
             "check.call_argument",
@@ -467,7 +477,8 @@ fn type_surface_count_builtin_result_is_an_int() {
     let report = check_module_report(
         "count-result-int",
         "module m\n\
-         resource Book at ^books(id: int)\n    tags(pos: int): string\n\n\
+         resource Book\n    tags(pos: int): string\n\
+         store ^books(id: int): Book\n\n\
          fn countBooks(): int\n    return count(^books)\n\n\
          fn countTags(id: Id(^books)): int\n    return count(^books(id).tags)\n",
     );

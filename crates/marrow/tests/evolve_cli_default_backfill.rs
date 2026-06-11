@@ -161,8 +161,9 @@ fn evolve_apply_does_not_rerun_an_already_applied_transform() {
     let root = native_books_project(
         "evolve-apply-transform-stamped-noop",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required price: int\n\
+         store ^books(id: int): Book\n\
          pub fn add(price: int): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
@@ -180,9 +181,10 @@ fn evolve_apply_does_not_rerun_an_already_applied_transform() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required price: int\n\
          \x20   required priceCents: int\n\
+         store ^books(id: int): Book\n\
          evolve\n\
          \x20   transform Book.priceCents\n\
          \x20       return old.price * 100\n\

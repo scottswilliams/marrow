@@ -30,8 +30,9 @@ fn if_exists_narrows_reads_inside_the_then_block() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
              fn guarded(id: int): string\n\
              \x20   if exists(^books(id).subtitle)\n\
              \x20       return ^books(id).subtitle\n\
@@ -65,8 +66,9 @@ fn if_exists_narrowing_is_key_sensitive() {
     assert_bare_present_read(
         "presence-if-exists-keyed",
         "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
              fn guarded(a: int, b: int): string\n\
              \x20   if exists(^books(a).subtitle)\n\
              \x20       return ^books(b).subtitle\n\
@@ -79,8 +81,9 @@ fn if_exists_narrowing_is_binding_sensitive() {
     assert_bare_present_read(
         "presence-if-exists-shadowed-key",
         "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
              fn guarded(id: int): string\n\
              \x20   if exists(^books(id).subtitle)\n\
              \x20       const id: int = 2\n\
@@ -94,8 +97,9 @@ fn if_exists_narrowing_expires_when_a_key_binding_is_assigned() {
     assert_bare_present_read(
         "presence-if-exists-mutated-key",
         "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
              fn guarded(id: int): string\n\
              \x20   var k: int = id\n\
              \x20   if exists(^books(k).subtitle)\n\
@@ -110,8 +114,9 @@ fn if_exists_narrowing_expires_when_a_key_binding_is_passed_inout() {
     assert_bare_present_read(
         "presence-if-exists-inout-key",
         "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
              fn setTo(inout value: int)\n\
              \x20   value = 2\n\
              fn guarded(id: int): string\n\
@@ -130,8 +135,9 @@ fn if_exists_narrowing_expires_when_a_key_field_is_assigned() {
         "module books\n\
              resource Holder\n\
              \x20   required id: int\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
              fn guarded(id: int): string\n\
              \x20   var holder = Holder(id: id)\n\
              \x20   if exists(^books(holder.id).subtitle)\n\
@@ -148,8 +154,9 @@ fn if_exists_narrowing_expires_when_a_key_field_is_passed_inout() {
         "module books\n\
              resource Holder\n\
              \x20   required id: int\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
              fn setTo(inout value: int)\n\
              \x20   value = 2\n\
              fn guarded(id: int): string\n\
@@ -166,8 +173,9 @@ fn if_exists_narrowing_expires_when_nested_condition_mutates_key() {
     assert_bare_present_read(
         "presence-if-exists-nested-condition-mutates-key",
         "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
              fn setTo(inout value: int): bool\n\
              \x20   value = 2\n\
              \x20   return true\n\
@@ -185,8 +193,9 @@ fn if_exists_narrowing_ignores_condition_proofs_after_key_mutation() {
     assert_bare_present_read(
         "presence-if-exists-condition-mutates-key",
         "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
              fn setTo(inout value: int): bool\n\
              \x20   value = 2\n\
              \x20   return true\n\
@@ -203,8 +212,9 @@ fn if_exists_narrowing_expires_when_saved_field_is_deleted() {
     assert_bare_present_read(
         "presence-if-exists-delete-field",
         "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
              fn stale(id: int): string\n\
              \x20   if exists(^books(id).subtitle)\n\
              \x20       delete ^books(id).subtitle\n\
@@ -218,9 +228,10 @@ fn if_exists_narrowing_expires_when_saved_root_is_replaced() {
     assert_bare_present_read(
         "presence-if-exists-replace-root",
         "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
              fn stale(id: int): string\n\
              \x20   if exists(^books(id).subtitle)\n\
              \x20       ^books(id) = Book(title: \"new\")\n\
@@ -234,8 +245,9 @@ fn if_exists_narrowing_expires_when_called_function_writes_saved_data() {
     assert_bare_present_read(
         "presence-if-exists-call-writes-saved",
         "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
              fn dropSubtitle(id: int)\n\
              \x20   delete ^books(id).subtitle\n\
              fn stale(id: int): string\n\
@@ -251,8 +263,9 @@ fn if_exists_narrowing_expires_when_called_function_transitively_writes_saved_da
     assert_bare_present_read(
         "presence-if-exists-call-transitive-writes-saved",
         "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
              fn dropSubtitle(id: int)\n\
              \x20   delete ^books(id).subtitle\n\
              fn relay(id: int)\n\
@@ -272,8 +285,9 @@ fn if_exists_narrowing_expires_when_only_child_of_parent_is_deleted() {
             root,
             "src/items.mw",
             "module items\n\
-             resource Item at ^items(id: int)\n\
+             resource Item\n\
              \x20   note: string\n\
+             store ^items(id: int): Item\n\
              fn stale(id: int): Item\n\
              \x20   if exists(^items(id))\n\
              \x20       delete ^items(id).note\n\
@@ -301,8 +315,9 @@ fn unique_index_coalesce_records_presence_proof() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required isbn: string\n\
+             store ^books(id: int): Book\n\
              \n\
              \x20   index byIsbn(isbn) unique\n\
              \n\
@@ -343,9 +358,10 @@ fn next_coalesce_records_read_site_resolution() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   tags(pos: int): string\n\
+             store ^books(id: int): Book\n\
              fn nextPos(id: int, pos: int): int\n\
              \x20   return next(^books(id).tags(pos)) ?? -1\n",
         );
@@ -385,8 +401,9 @@ fn for_loop_over_saved_layer_narrows_iterated_entry_reads() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   tags(pos: int): string\n\
+             store ^books(id: int): Book\n\
              fn f()\n\
              \x20   for pos in ^books(1).tags\n\
              \x20   \x20   write(^books(1).tags(pos))\n",
@@ -414,8 +431,9 @@ fn unknown_cannot_reenter_a_saved_identity_keyspace() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              fn save(raw: unknown)\n\
              \x20   ^books(raw).title = \"bad\"\n",
         );
@@ -438,8 +456,9 @@ fn values_loop_does_not_narrow_value_as_an_entry_key() {
     assert_bare_present_read(
         "presence-values-loop-not-key",
         "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   scores(pos: int): int\n\
+             store ^books(id: int): Book\n\
              fn f()\n\
              \x20   for score in values(^books(1).scores)\n\
              \x20   \x20   write(^books(1).scores(score))\n",
@@ -451,8 +470,9 @@ fn single_binding_entries_loop_does_not_narrow_entry_as_a_key() {
     assert_bare_present_read(
         "presence-single-entry-loop-not-key",
         "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   scores(pos: int): int\n\
+             store ^books(id: int): Book\n\
              fn f()\n\
              \x20   for entry in entries(^books(1).scores)\n\
              \x20   \x20   write(^books(1).scores(entry))\n",
@@ -464,8 +484,9 @@ fn two_binding_keys_loop_does_not_narrow_ordinal_as_a_key() {
     assert_bare_present_read(
         "presence-two-binding-keys-loop-not-key",
         "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   scores(pos: int): int\n\
+             store ^books(id: int): Book\n\
              fn f()\n\
              \x20   for ordinal, pos in keys(^books(1).scores)\n\
              \x20   \x20   write(^books(1).scores(ordinal))\n",
@@ -477,8 +498,9 @@ fn two_binding_reversed_keys_loop_does_not_narrow_ordinal_as_a_key() {
     assert_bare_present_read(
         "presence-two-binding-reversed-keys-loop-not-key",
         "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   scores(pos: int): int\n\
+             store ^books(id: int): Book\n\
              fn f()\n\
              \x20   for ordinal, pos in reversed(keys(^books(1).scores))\n\
              \x20   \x20   write(^books(1).scores(ordinal))\n",
@@ -492,8 +514,9 @@ fn two_binding_saved_path_loop_narrows_the_key_binding() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   scores(pos: int): int\n\
+             store ^books(id: int): Book\n\
              fn f()\n\
              \x20   for pos, score in ^books(1).scores\n\
              \x20   \x20   write(^books(1).scores(pos))\n",
@@ -510,8 +533,9 @@ fn duplicate_entries_loop_bindings_do_not_narrow_the_visible_value_as_a_key() {
     assert_bare_present_read(
         "presence-duplicate-entries-loop-bindings-not-key",
         "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   scores(pos: int): int\n\
+             store ^books(id: int): Book\n\
              fn f()\n\
              \x20   for x, x in entries(^books(1).scores)\n\
              \x20   \x20   write(^books(1).scores(x))\n",
@@ -523,8 +547,9 @@ fn if_exists_narrowing_expires_when_same_condition_calls_saved_writer() {
     assert_bare_present_read(
         "presence-if-exists-condition-call-writes-saved",
         "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
              fn dropSubtitle(id: int): bool\n\
              \x20   delete ^books(id).subtitle\n\
              \x20   return true\n\
@@ -550,8 +575,9 @@ fn a_bare_maybe_present_read_pends_on_attached_data() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
              fn bare(id: int): string\n\
              \x20   return ^books(id).subtitle\n",
         );
@@ -581,8 +607,9 @@ fn a_required_declaration_discharges_a_saved_read() {
     let proofs = presence_proofs(
         "presence-declaration",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
+         store ^books(id: int): Book\n\
          fn requiredTitle(id: int): string\n\
          \x20   return ^books(id).title\n",
     );
@@ -599,8 +626,9 @@ fn a_coalesce_fallback_discharges_via_narrowing() {
     let proofs = presence_proofs(
         "presence-coalesce-narrowing",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
          fn fallback(id: int): string\n\
          \x20   return ^books(id).subtitle ?? \"untitled\"\n",
     );
@@ -617,8 +645,9 @@ fn an_exists_guard_discharges_via_narrowing() {
     let proofs = presence_proofs(
         "presence-exists-narrowing",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
          fn found(id: int): bool\n\
          \x20   return exists(^books(id).subtitle)\n",
     );
@@ -635,8 +664,9 @@ fn an_optional_chain_fallback_discharges_via_narrowing() {
     let proofs = presence_proofs(
         "presence-optional-narrowing",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
          fn optional(id: int): string\n\
          \x20   return ^books(id)?.subtitle ?? \"untitled\"\n",
     );

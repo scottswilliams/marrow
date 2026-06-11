@@ -263,7 +263,7 @@ fn a_callee_throw_rolls_back_the_enclosing_transaction() {
     // A transaction writes, then a called function throws. The throw escapes the
     // transaction, so it rolls back and the write never lands.
     let program = checked_program(
-        "resource Account at ^accts(id: int)\n    balance: int\n\npub fn fail()\n    throw Error(code: \"test.fail\", message: \"boom\")\n\npub fn run_it()\n    transaction\n        ^accts(1).balance = 5\n        fail()\n\npub fn read(): int\n    return ^accts(1).balance ?? -1\n",
+        "resource Account\n    balance: int\nstore ^accts(id: int): Account\n\npub fn fail()\n    throw Error(code: \"test.fail\", message: \"boom\")\n\npub fn run_it()\n    transaction\n        ^accts(1).balance = 5\n        fail()\n\npub fn read(): int\n    return ^accts(1).balance ?? -1\n",
     );
     let store = TreeStore::memory();
     let result = run_entry(&store, checked_entry!(&program, "test::run_it"));
@@ -377,7 +377,7 @@ fn a_throw_caught_inside_a_transaction_commits() {
     // The throw is handled within the transaction, so the body completes normally
     // and the catch's write commits.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\n\
+        "resource Book\n    required title: string\nstore ^books(id: int): Book\n\n\
          pub fn safe(id: int)\n    transaction\n        try\n            throw Error(code: \"x.y\", message: \"b\")\n        catch err: Error\n            ^books(id).title = \"recovered\"\n\n\
          pub fn title(id: int): string\n    return ^books(id).title\n",
     );
@@ -402,7 +402,7 @@ fn a_throw_caught_inside_a_transaction_commits() {
 fn throw_inside_a_transaction_rolls_back() {
     // An escaping throw rolls the transaction back, like any other escape.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\n\
+        "resource Book\n    required title: string\nstore ^books(id: int): Book\n\n\
          pub fn risky(id: int)\n    transaction\n        ^books(id).title = \"staged\"\n        throw Error(code: \"x.y\", message: \"boom\")\n\n\
          pub fn has_book(id: int): bool\n    return exists(^books(id))\n",
     );

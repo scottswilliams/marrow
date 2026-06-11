@@ -27,8 +27,9 @@ use support_evolve::{
 /// from source — no `evolve retire` intent, no index reads it. The accepted catalog
 /// still records `subtitle`, but current source no longer declares it.
 const SUBTITLE_DROPPED_SOURCE: &str = "module books\n\
-resource Book at ^books(id: int)\n\
+resource Book\n\
 \x20   required title: string\n\
+store ^books(id: int): Book\n\
 pub fn add(title: string): Id(^books)\n\
 \x20   return nextId(^books)\n";
 
@@ -69,10 +70,12 @@ fn project_with_empty_subtitle_drop(name: &str) -> support::TempProject {
 /// A two-resource baseline: `Author` is kept across the drop, `Book` is the root a later
 /// source revision deletes whole. Both have a `title` member the seed helpers write through.
 const TWO_RESOURCE_BASELINE_SOURCE: &str = "module books\n\
-resource Author at ^authors(id: int)\n\
+resource Author\n\
 \x20   required title: string\n\
-resource Book at ^bookstore(id: int)\n\
+store ^authors(id: int): Author\n\
+resource Book\n\
 \x20   required title: string\n\
+store ^bookstore(id: int): Book\n\
 pub fn add(title: string): Id(^authors)\n\
 \x20   return nextId(^authors)\n";
 
@@ -81,8 +84,9 @@ pub fn add(title: string): Id(^authors)\n\
 /// `show` entry lets a plain `marrow run` trigger the auto-apply window so the fence is
 /// exercised on the run surface.
 const BOOK_RESOURCE_DROPPED_SOURCE: &str = "module books\n\
-resource Author at ^authors(id: int)\n\
+resource Author\n\
 \x20   required title: string\n\
+store ^authors(id: int): Author\n\
 pub fn add(title: string): Id(^authors)\n\
 \x20   return nextId(^authors)\n\
 pub fn show(): string\n\

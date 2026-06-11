@@ -19,9 +19,10 @@ use marrow_store::tree::TreeStore;
 /// branch so an exclusion (a deleted id still resolving) is observable, not just a
 /// count that could coincidentally match.
 const SHELVED_BOOKS: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
     required shelf: string
+store ^books(id: int): Book
 
     index byShelf(shelf, id)
 

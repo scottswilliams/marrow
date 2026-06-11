@@ -19,8 +19,9 @@ use marrow_store::value::{SavedValue, ScalarType};
 /// A keyed `Book` store with a counting entry that streams the whole root, used to
 /// characterize aggregation at the 0/1/many boundaries.
 const BOOK_LEDGER: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
+store ^books(id: int): Book
 
 pub fn add(id: int, t: string)
     ^books(id).title = t
@@ -184,7 +185,7 @@ fn a_deeply_nested_group_reads_back_through_its_full_path() {
     // A group nested inside a group (`address.geo.lat`) stores its leaf at the full
     // path and reads back both through the runtime and through a direct store read.
     let program = checked_program(
-        "resource Org at ^orgs(id: int)\n    address\n        geo\n            lat: string\n            lon: string\n\n\
+        "resource Org\n    address\n        geo\n            lat: string\n            lon: string\nstore ^orgs(id: int): Org\n\n\
          pub fn setGeo(id: int, lat: string, lon: string)\n    ^orgs(id).address.geo.lat = lat\n    ^orgs(id).address.geo.lon = lon\n\n\
          pub fn latOf(id: int): string\n    return ^orgs(id).address.geo.lat ?? \"<absent>\"\n",
     );
@@ -236,8 +237,9 @@ fn a_deeply_nested_group_reads_back_through_its_full_path() {
 /// A shelf whose `books` keyed leaf layer holds positional string entries, used to
 /// exercise first/last/missing reads and per-entry delete.
 const SHELF_LAYER: &str = "\
-resource Shelf at ^shelves(id: int)
+resource Shelf
     books(pos: int): string
+store ^shelves(id: int): Shelf
 
 pub fn put(id: int, pos: int, t: string)
     ^shelves(id).books(pos) = t
@@ -374,9 +376,10 @@ fn deleting_one_keyed_layer_entry_leaves_its_siblings() {
 /// A book with two scalar fields, used to separate whole-root delete from
 /// single-field delete.
 const BOOK_FIELDS: &str = "\
-resource Book at ^books(id: int)
+resource Book
     title: string
     shelf: string
+store ^books(id: int): Book
 
 pub fn put(id: int)
     ^books(id).title = \"Mort\"
@@ -501,9 +504,10 @@ fn deleting_a_single_field_leaves_the_rest_of_the_record() {
 /// A book with a unique `isbn` index plus an owner lookup, used to characterize
 /// fail-closed behavior on a duplicate unique key.
 const UNIQUE_ISBN: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
     isbn: string
+store ^books(id: int): Book
 
     index byIsbn(isbn) unique
 

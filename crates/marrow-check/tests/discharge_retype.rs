@@ -33,8 +33,9 @@ fn retype_preview(
             "src/books.mw",
             &format!(
                 "module books\n\
-                 resource Book at ^books(id: int)\n\
+                 resource Book\n\
                  \x20   required value: {new_type}\n\
+                 store ^books(id: int): Book\n\
                  pub fn add(value: {new_type}): Id(^books)\n\
                  \x20   return nextId(^books)\n"
             ),
@@ -70,8 +71,9 @@ fn rename_with_intent_is_catalog_only() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required heading: string\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   rename Book.title -> Book.heading\n\
              pub fn add(heading: string): Id(^books)\n\
@@ -120,8 +122,9 @@ fn rename_and_retype_requires_transform() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required count: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   rename Book.title -> Book.count\n\
              pub fn add(count: int): Id(^books)\n\
@@ -216,8 +219,9 @@ fn retype_optional_member_with_data_is_transform_required() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   value: bool\n\
+             store ^books(id: int): Book\n\
              pub fn add(): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -253,9 +257,10 @@ fn retype_optional_member_without_data_is_no_op() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   value: bool\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -303,8 +308,9 @@ fn unchanged_type_still_proves_data() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required value: int\n\
+             store ^books(id: int): Book\n\
              pub fn add(value: int): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -346,9 +352,10 @@ fn brand_new_member_is_not_a_retype() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   rank: int\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -387,8 +394,9 @@ fn retype_scalar_to_enum_is_transform_required() {
              enum Status\n\
              \x20   draft\n\
              \x20   shipped\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required value: Status\n\
+             store ^books(id: int): Book\n\
              pub fn add(value: Status): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -426,8 +434,9 @@ fn retype_scalar_to_identity_is_transform_required() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required value: Id(^books)\n\
+             store ^books(id: int): Book\n\
              pub fn add(value: Id(^books)): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -468,8 +477,9 @@ fn retype_enum_to_identity_is_transform_required() {
              enum Status\n\
              \x20   draft\n\
              \x20   shipped\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required value: Id(^books)\n\
+             store ^books(id: int): Book\n\
              pub fn add(value: Id(^books)): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -529,8 +539,9 @@ fn populated_member_with_unknown_accepted_leaf_fails_closed() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required value: bool\n\
+             store ^books(id: int): Book\n\
              pub fn add(value: bool): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -578,8 +589,9 @@ fn retype_scalar_to_sequence_over_populated_data_fails_closed() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required value: sequence[string]\n\
+             store ^books(id: int): Book\n\
              pub fn add(): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );

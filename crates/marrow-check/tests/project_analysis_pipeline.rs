@@ -36,10 +36,11 @@ fn surfaces_resource_body_index_errors() {
             root,
             "src/shelf.mw",
             "module shelf\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   title: string\n\
              \x20   notes(noteId: string)\n\
-             \x20       index bad(noteId)\n",
+             \x20       index bad(noteId)\n\
+             store ^books(id: int): Book\n",
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");

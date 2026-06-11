@@ -15,8 +15,9 @@ fn a_saved_field_name_is_saved_data_backed_and_unsafe() {
     // `title` is a stored field of the saved `Book` resource; its on-disk path is
     // `^books(id).title`, so renaming the source name orphans saved data.
     let source = "module m\n\
-        resource Book at ^books(id: int)\n    \
+        resource Book\n    \
         required title: string\n\
+        store ^books(id: int): Book\n\
         fn peek(id: int): string\n    \
         return ^books(id).title\n";
     let (index, paths) = analyze("safety-saved-field", &[("src/m.mw", source)]);

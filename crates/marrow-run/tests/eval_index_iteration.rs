@@ -11,9 +11,10 @@ use marrow_store::tree::TreeStore;
 
 /// A program that indexes books by shelf and traverses the index with `keys`.
 const BOOK_SHELF: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
     shelf: string
+store ^books(id: int): Book
 
     index byShelf(shelf, id)
 

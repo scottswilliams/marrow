@@ -12,8 +12,9 @@ fn builds_a_module_for_a_clean_library_file() {
             root,
             "src/shelf/books.mw",
             "module shelf::books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );

@@ -551,7 +551,7 @@ fn each_test_runs_against_a_fresh_store() {
         write(
             root,
             "src/app.mw",
-            "module app\n\nresource Box at ^box(id: int)\n    required value: int\n",
+            "module app\n\nresource Box\n    required value: int\nstore ^box(id: int): Box\n",
         );
         // The first test writes the box; the second asserts it is absent. Both pass
         // only if each test gets its own fresh store.

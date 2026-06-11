@@ -71,13 +71,14 @@ fn durable_fixture(f: DurableFixture) -> String {
     let index_unique = if f.index_unique { " unique" } else { "" };
     format!(
         "module books\n\
-         resource Book at ^books(id: {identity})\n\
+         resource Book\n\
          \x20   {count_required}count: {count_type}\n\
          \x20   pages: int\n\
          \x20   required isbn: string\n\
          \x20   tags({tags}): string\n\
          \x20   versions({versions})\n\
          \x20       required body: string\n\
+         store ^books(id: {identity}): Book\n\
          \x20   index byIsbn({columns}){unique}\n\
          evolve\n\
          \x20   default Book.pages = {default}\n\
@@ -104,9 +105,10 @@ fn durable_fixture(f: DurableFixture) -> String {
 #[test]
 fn shape_digest_binds_shape_and_not_the_evolve_block() {
     let base = "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
          \x20   pages: int\n\
+         store ^books(id: int): Book\n\
          evolve\n\
          \x20   default Book.pages = 0\n\
          \x20   transform Book.title\n\
@@ -114,9 +116,10 @@ fn shape_digest_binds_shape_and_not_the_evolve_block() {
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n";
     let changed_default = "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
          \x20   pages: int\n\
+         store ^books(id: int): Book\n\
          evolve\n\
          \x20   default Book.pages = 1\n\
          \x20   transform Book.title\n\
@@ -124,9 +127,10 @@ fn shape_digest_binds_shape_and_not_the_evolve_block() {
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n";
     let changed_transform = "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
          \x20   pages: int\n\
+         store ^books(id: int): Book\n\
          evolve\n\
          \x20   default Book.pages = 0\n\
          \x20   transform Book.title\n\
@@ -134,9 +138,10 @@ fn shape_digest_binds_shape_and_not_the_evolve_block() {
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n";
     let required_pages = "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
          \x20   required pages: int\n\
+         store ^books(id: int): Book\n\
          evolve\n\
          \x20   default Book.pages = 0\n\
          \x20   transform Book.title\n\
@@ -157,9 +162,10 @@ fn shape_digest_binds_shape_and_not_the_evolve_block() {
     );
     let const_transform = "module books\n\
          const Scale = 1\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
          \x20   required pages: int\n\
+         store ^books(id: int): Book\n\
          evolve\n\
          \x20   transform Book.pages\n\
          \x20       return Scale\n\
@@ -167,9 +173,10 @@ fn shape_digest_binds_shape_and_not_the_evolve_block() {
          \x20   return nextId(^books)\n";
     let changed_const = "module books\n\
          const Scale = 2\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
          \x20   required pages: int\n\
+         store ^books(id: int): Book\n\
          evolve\n\
          \x20   transform Book.pages\n\
          \x20       return Scale\n\
@@ -358,9 +365,10 @@ fn source_digest_binds_the_durable_shape() {
 #[test]
 fn formatter_internal_layout_change_does_not_move_shape_digest() {
     let canonical = "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
          \x20   pages: int\n\
+         store ^books(id: int): Book\n\
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n";
     // Extra blank lines between and inside declarations, plus eight-space indentation,
@@ -368,12 +376,13 @@ fn formatter_internal_layout_change_does_not_move_shape_digest() {
     let messy = "module books\n\
          \n\
          \n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \n\
          \x20       required title: string\n\
          \n\
          \x20       pages: int\n\
          \n\
+         store ^books(id: int): Book\n\
          \n\
          pub fn add(title: string): Id(^books)\n\
          \x20       return nextId(^books)\n";
@@ -459,9 +468,10 @@ fn shape_digest_is_a_frozen_golden() {
          enum Status\n\
          \x20   active\n\
          \x20   archived\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
          \x20   pages: int\n\
+         store ^books(id: int): Book\n\
          fn s(): bool\n\
          \x20   return true\n";
     assert_eq!(

@@ -205,8 +205,9 @@ fn suppresses_configured_test_resolution_noise_when_source_parse_fails() {
             root,
             "src/app.mw",
             "module app\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   title: string\n\
+             store ^books(id: int): Book\n\
              fn f()\n\
              \x20   return\n\
              \tconst BAD = 1\n",
@@ -532,8 +533,9 @@ fn keeps_configured_test_local_type_syntax_diagnostics_when_hidden_type_names_ma
             root,
             "src/app.mw",
             "module app\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   title: string\n\
+             store ^books(id: int): Book\n\
              \tconst BAD = 1\n",
         );
         write(

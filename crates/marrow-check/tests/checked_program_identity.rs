@@ -10,10 +10,12 @@ use support::{config, temp_project, with_code, write};
 /// `Id(^magazines)` are both single-`int`) but nominally distinct. Used by the
 /// nominal-identity tests below.
 const TWO_BOOKISH_RESOURCES: &str = "module shelf::lib\n\
-     resource Book at ^books(id: int)\n\
+     resource Book\n\
      \x20   required title: string\n\
-     resource Magazine at ^magazines(id: int)\n\
-     \x20   required title: string\n";
+     store ^books(id: int): Book\n\
+     resource Magazine\n\
+     \x20   required title: string\n\
+     store ^magazines(id: int): Magazine\n";
 
 /// Passing a `Id(^magazines)` where a function parameter expects `Id(^books)` is a
 /// nominal mismatch: the identities share a key shape but name different
@@ -157,8 +159,9 @@ fn qualified_resource_identity_annotation_unifies_with_owner_identity() {
             root,
             "src/inventory.mw",
             "module inventory\n\
-             resource Item at ^items(id: int)\n\
+             resource Item\n\
              \x20   required name: string\n\
+             store ^items(id: int): Item\n\
              pub fn add(name: string): Id(^items)\n\
              \x20   const id: Id(^items) = nextId(^items)\n\
              \x20   ^items(id).name = name\n\
@@ -188,8 +191,9 @@ fn aliased_resource_and_identity_annotations_resolve_to_the_owner() {
             root,
             "src/audit/log.mw",
             "module audit::log\n\
-             resource Event at ^events(id: int)\n\
-             \x20   required actor: string\n",
+             resource Event\n\
+             \x20   required actor: string\n\
+             store ^events(id: int): Event\n",
         );
         write(
             root,

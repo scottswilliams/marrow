@@ -23,8 +23,9 @@ fn renamed_keyed_layer_with_unchanged_shape_does_not_overfire() {
             root,
             "src/policies.mw",
             "module policies\n\
-             resource Policy at ^policies(id: int)\n\
+             resource Policy\n\
              \x20   labels(pos: int): string\n\
+             store ^policies(id: int): Policy\n\
              evolve\n\
              \x20   rename Policy.tags -> Policy.labels\n\
              pub fn add(): Id(^policies)\n\
@@ -83,10 +84,11 @@ fn reordered_keyed_layer_members_do_not_overfire() {
             root,
             "src/policies.mw",
             "module policies\n\
-             resource Policy at ^policies(id: int)\n\
+             resource Policy\n\
              \x20   versions(version: int)\n\
              \x20       required body: string\n\
              \x20       required note: string\n\
+             store ^policies(id: int): Policy\n\
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
@@ -154,10 +156,11 @@ fn optional_add_beside_unchanged_keyed_layer_does_not_overfire() {
             root,
             "src/policies.mw",
             "module policies\n\
-             resource Policy at ^policies(id: int)\n\
+             resource Policy\n\
              \x20   tag: string\n\
              \x20   versions(version: int)\n\
              \x20       required body: string\n\
+             store ^policies(id: int): Policy\n\
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
@@ -223,10 +226,11 @@ fn nested_keyed_layer_rekey_below_keyed_ancestor_fails_closed() {
             root,
             "src/policies.mw",
             "module policies\n\
-             resource Policy at ^policies(id: int)\n\
+             resource Policy\n\
              \x20   versions(version: int)\n\
              \x20       revisions(rev: string)\n\
              \x20           required body: string\n\
+             store ^policies(id: int): Policy\n\
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
@@ -324,10 +328,11 @@ fn nested_keyed_layer_arity_change_two_levels_deep_fails_closed() {
             root,
             "src/policies.mw",
             "module policies\n\
-             resource Policy at ^policies(id: int)\n\
+             resource Policy\n\
              \x20   versions(version: int)\n\
              \x20       revisions(rev: int, draft: int)\n\
              \x20           required body: string\n\
+             store ^policies(id: int): Policy\n\
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
@@ -409,11 +414,12 @@ fn deep_interior_member_structural_divergence_fails_closed() {
             root,
             "src/policies.mw",
             "module policies\n\
-             resource Policy at ^policies(id: int)\n\
+             resource Policy\n\
              \x20   versions(version: int)\n\
              \x20       revisions(rev: int)\n\
              \x20           meta(tag: int)\n\
              \x20               required body: string\n\
+             store ^policies(id: int): Policy\n\
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
@@ -499,10 +505,11 @@ fn unchanged_nested_keyed_layer_does_not_overfire() {
             root,
             "src/policies.mw",
             "module policies\n\
-             resource Policy at ^policies(id: int)\n\
+             resource Policy\n\
              \x20   versions(version: int)\n\
              \x20       revisions(rev: int)\n\
              \x20           required body: string\n\
+             store ^policies(id: int): Policy\n\
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );

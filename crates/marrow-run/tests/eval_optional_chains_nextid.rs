@@ -17,10 +17,11 @@ use marrow_store::value::SavedValue;
 /// whole record, the `name` group, and the field are all populated, and is absent
 /// (caught by `??`) when any step along the way is missing.
 const PATIENT_CHAIN: &str = "\
-resource Patient at ^patients(id: int)
+resource Patient
     name
         first: string
         last: string
+store ^patients(id: int): Patient
 
 pub fn first_name_or(id: int, fallback: string): string
     return ^patients(id)?.name?.first ?? fallback
@@ -108,7 +109,7 @@ fn optional_chain_defaults_when_an_intermediate_field_is_absent() {
 #[test]
 fn an_unguarded_optional_chain_that_ends_absent_is_rejected() {
     checker_rejects(
-        "resource Patient at ^patients(id: int)\n    name\n        first: string\n        last: string\n\npub fn first_name(id: int): string\n    return ^patients(id)?.name?.first\n",
+        "resource Patient\n    name\n        first: string\n        last: string\nstore ^patients(id: int): Patient\n\npub fn first_name(id: int): string\n    return ^patients(id)?.name?.first\n",
         "check.bare_maybe_present_read",
     );
 }
@@ -178,7 +179,7 @@ fn next_id_skips_ahead_after_restore() {
 #[test]
 fn next_id_over_a_composite_root_faults() {
     checker_rejects(
-        "resource Enrollment at ^enrollments(studentId: int, courseId: int)\n    required grade: string\n\npub fn fresh(): int\n    return nextId(^enrollments)\n",
+        "resource Enrollment\n    required grade: string\nstore ^enrollments(studentId: int, courseId: int): Enrollment\n\npub fn fresh(): int\n    return nextId(^enrollments)\n",
         "check.next_id_requires_single_int",
     );
 }
@@ -188,7 +189,7 @@ fn next_id_over_a_composite_root_faults() {
 #[test]
 fn next_id_over_a_singleton_root_faults() {
     checker_rejects(
-        "resource Settings at ^settings\n    required theme: string\n\npub fn fresh(): int\n    return nextId(^settings)\n",
+        "resource Settings\n    required theme: string\nstore ^settings: Settings\n\npub fn fresh(): int\n    return nextId(^settings)\n",
         "check.next_id_requires_single_int",
     );
 }
@@ -198,7 +199,7 @@ fn next_id_over_a_singleton_root_faults() {
 #[test]
 fn next_id_over_a_string_keyed_root_faults() {
     checker_rejects(
-        "resource Tag at ^tags(slug: string)\n    required name: string\n\npub fn fresh(): int\n    return nextId(^tags)\n",
+        "resource Tag\n    required name: string\nstore ^tags(slug: string): Tag\n\npub fn fresh(): int\n    return nextId(^tags)\n",
         "check.next_id_requires_single_int",
     );
 }

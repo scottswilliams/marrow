@@ -108,12 +108,8 @@ pub(super) fn arm_member_path(source: &str, tokens: &[Token]) -> Option<Vec<Stri
     Some(segments)
 }
 
-/// Parse a resource header's tokens after the `resource` keyword:
-/// `Name [at ^root [(key: type, ...)]]`.
-pub(super) fn parse_resource_head(
-    source: &str,
-    tokens: &[Token],
-) -> ParseResult<(String, Option<SavedRoot>)> {
+/// Parse a resource header's tokens after the `resource` keyword: `Name`.
+pub(super) fn parse_resource_head(source: &str, tokens: &[Token]) -> ParseResult<String> {
     let name = match tokens.first() {
         Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
         _ => {
@@ -125,40 +121,39 @@ pub(super) fn parse_resource_head(
     };
     let rest = &tokens[1..];
     if rest.is_empty() {
-        return Ok((name, None));
+        return Ok(name);
     }
-    if !matches!(
+    if matches!(
         rest.first().map(|token| token.kind),
         Some(TokenKind::Keyword(Keyword::At))
     ) {
-        return Err(ParseError::new(
-            ParseDiagnosticReason::Expected(ExpectedSyntax::SavedRootBeginning),
-            "expected `at ^root` after resource name",
-        ));
-    }
-    let rest = &rest[1..];
-    if !matches!(rest.first().map(|token| token.kind), Some(TokenKind::Caret)) {
-        return Err(ParseError::new(
-            ParseDiagnosticReason::Expected(ExpectedSyntax::SavedRootBeginning),
-            "expected saved root beginning with `^`",
-        ));
-    }
-    let root = match rest.get(1) {
-        Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
-        _ => {
-            return Err(ParseError::new(
-                ParseDiagnosticReason::Expected(ExpectedSyntax::SavedRootName),
-                "expected saved root name",
-            ));
-        }
-    };
-    let rest = &rest[2..];
-    let keys = if rest.is_empty() {
-        Vec::new()
+        let has_complete_saved_root =
+            matches!(rest.get(1).map(|token| token.kind), Some(TokenKind::Caret))
+                && matches!(
+                    rest.get(2).map(|token| token.kind),
+                    Some(TokenKind::Identifier)
+                )
+                && (rest.len() == 3 || parse_paren_key_params(source, &rest[3..]).is_ok());
+        let saved_root = if has_complete_saved_root {
+            source[rest[1].span.start_byte..rest.last().unwrap().span.end_byte]
+                .trim()
+                .to_string()
+        } else {
+            "^root".to_string()
+        };
+        Err(ParseError::new(
+            ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceName),
+            format!(
+                "`resource {name} at ...` is not valid; use split declarations: \
+                 `resource {name}` and `store {saved_root}: {name}`"
+            ),
+        ))
     } else {
-        parse_paren_key_params(source, rest)?
-    };
-    Ok((name, Some(SavedRoot { root, keys })))
+        Err(ParseError::new(
+            ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceName),
+            "a resource header is just `resource Name`",
+        ))
+    }
 }
 
 /// Parse a store header's tokens after the `store` keyword:

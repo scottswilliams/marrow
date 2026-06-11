@@ -209,9 +209,9 @@ store ^books(id: int): Book
     index byShelf(shelf, id)
 ```
 
-Indexes are owned by stores. The concise `resource ... at ^books(...)` source
-form is accepted as declaration sugar and desugars to the split resource plus
-store form above.
+Indexes are owned by stores. Declare the resource shape first, then declare the
+saved root with `store ^books(...): Book` and place index declarations inside
+the store body.
 
 Changing `shelf` moves the same book to a different lookup path. It does not
 create a different book. The index remains inspectable saved data, and user
@@ -280,10 +280,10 @@ catches the error inside the transaction, the failed write has no effect and
 the transaction can continue.
 
 Identity keys, declared fields, keyed layers, and shorthand index names share
-the source namespace. A concise resource declaration cannot use the same name
-for a field and an index, or for an identity key and a field. Encoded record
-keys are distinct from structural names: a record key such as `"byShelf"` does
-not collide with an index named `byShelf`.
+the source namespace. A store cannot use the same name for a field and an index,
+or for an identity key and a field. Encoded record keys are distinct from
+structural names: a record key such as `"byShelf"` does not collide with an
+index named `byShelf`.
 
 Managed resource members use declared identifiers. Quoted field spelling is an
 ordinary managed field access; it does not create undeclared fields or bypass

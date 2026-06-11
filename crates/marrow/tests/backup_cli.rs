@@ -34,8 +34,9 @@ fn seeded_project(name: &str) -> (TempProject, PathBuf) {
             "src/shelf.mw",
             "module shelf\n\
              \n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20\x20\x20\x20required title: string\n\
+             store ^books(id: int): Book\n\
              \n\
              pub fn seed()\n\
              \x20\x20\x20\x20var b: Book\n\
@@ -103,8 +104,9 @@ fn evolution_default_project(name: &str) -> (TempProject, PathBuf) {
             "src/shelf.mw",
             "module shelf\n\
              \n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20\x20\x20\x20required title: string\n\
+             store ^books(id: int): Book\n\
              \n\
              pub fn seed()\n\
              \x20\x20\x20\x20transaction\n\
@@ -123,9 +125,10 @@ fn add_pages_default_evolution(root: impl AsRef<Path>) {
         "src/shelf.mw",
         "module shelf\n\
          \n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20\x20\x20\x20required title: string\n\
          \x20\x20\x20\x20required pages: int\n\
+         store ^books(id: int): Book\n\
          \n\
          evolve\n\
          \x20\x20\x20\x20default Book.pages = 0\n\
@@ -478,8 +481,9 @@ fn restore_refuses_a_catalog_only_target() {
             "src/shelf.mw",
             "module shelf\n\
              \n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20\x20\x20\x20required title: string\n\
+             store ^books(id: int): Book\n\
              \n\
              pub fn seed()\n\
              \x20\x20\x20\x20var b: Book\n\
@@ -554,10 +558,11 @@ fn indexed_project(name: &str) -> (TempProject, PathBuf) {
             "src/shelf.mw",
             "module shelf\n\
              \n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20\x20\x20\x20required title: string\n\
              \x20\x20\x20\x20shelf: string\n\
              \x20\x20\x20\x20isbn: string\n\
+             store ^books(id: int): Book\n\
              \n\
              \x20\x20\x20\x20index byShelf(shelf, id)\n\
              \x20\x20\x20\x20index byIsbn(isbn) unique\n\
@@ -790,8 +795,9 @@ fn restore_continues_next_id_from_the_restored_data() {
             "src/shelf.mw",
             "module shelf\n\
              \n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20\x20\x20\x20required title: string\n\
+             store ^books(id: int): Book\n\
              \n\
              pub fn seed()\n\
              \x20\x20\x20\x20transaction\n\
@@ -851,7 +857,7 @@ fn backup_of_an_unseeded_project_restores_empty() {
         write(
             root,
             "src/shelf.mw",
-            "module shelf\n\nresource Book at ^books(id: int)\n\x20\x20\x20\x20required title: string\n",
+            "module shelf\n\nresource Book\n\x20\x20\x20\x20required title: string\nstore ^books(id: int): Book\n",
         );
     });
     let dir = root.to_str().unwrap().to_string();

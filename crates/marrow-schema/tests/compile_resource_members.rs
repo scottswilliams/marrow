@@ -124,7 +124,7 @@ fn compile_saved_resource_errors(source: &str) -> Vec<SchemaError> {
 /// A resource nesting a keyed-leaf layer and a field inside a group, exercising
 /// the field and leaf resolvers on chains deeper than a single top-level name.
 const NESTED: &str = "\
-resource Catalog at ^catalog(id: int)
+resource Catalog
     required title: string
     tags(pos: int): string
 
@@ -134,7 +134,8 @@ resource Catalog at ^catalog(id: int)
 
         comments(commentId: string)
             required body: string
-";
+store ^catalog(id: int): Catalog
+    ";
 
 #[test]
 fn field_type_resolves_top_level_and_nested_fields() {
@@ -212,8 +213,9 @@ fn a_bare_named_saved_field_must_be_a_declared_enum() {
 enum Status
     active
     archived
-resource Order at ^orders(id: int)
+resource Order
     required state: Status
+store ^orders(id: int): Order
 ",
         )
         .is_empty(),
@@ -221,8 +223,9 @@ resource Order at ^orders(id: int)
     );
     let errors = compile_saved_resource_errors(
         "\
-resource Order at ^orders(id: int)
+resource Order
     required state: Status
+store ^orders(id: int): Order
 ",
     );
     assert_eq!(codes(&errors), [SCHEMA_NON_ENUM_NAMED_FIELD]);
@@ -243,8 +246,9 @@ fn a_bare_named_map_value_must_be_a_declared_enum() {
 enum Status
     active
     archived
-resource Order at ^orders(id: int)
+resource Order
     scores: map[string, Status]
+store ^orders(id: int): Order
 ",
         )
         .is_empty(),
@@ -252,8 +256,9 @@ resource Order at ^orders(id: int)
     );
     let errors = compile_saved_resource_errors(
         "\
-resource Order at ^orders(id: int)
+resource Order
     scores: map[string, Status]
+store ^orders(id: int): Order
 ",
     );
     assert_eq!(codes(&errors), [SCHEMA_NON_ENUM_NAMED_FIELD]);
@@ -270,8 +275,9 @@ resource Order at ^orders(id: int)
 fn unsupported_map_value_is_not_checked_as_bare_named_saved_field() {
     let decl = resource(
         "\
-resource Order at ^orders(id: int)
+resource Order
     scores: map[string, map[string, int]]
+store ^orders(id: int): Order
 ",
     );
     let errors = check_saved_named_member_fields(&decl.members, &[]);
@@ -282,8 +288,9 @@ resource Order at ^orders(id: int)
 fn unsupported_map_key_does_not_check_map_value_as_bare_named_saved_field() {
     let decl = resource(
         "\
-resource Order at ^orders(id: int)
+resource Order
     scores: map[map[string, int], Missing]
+store ^orders(id: int): Order
 ",
     );
     let errors = check_saved_named_member_fields(&decl.members, &[]);
@@ -294,8 +301,9 @@ resource Order at ^orders(id: int)
 fn required_map_member_does_not_check_value_as_bare_named_saved_field() {
     let decl = resource(
         "\
-resource Order at ^orders(id: int)
+resource Order
     required scores: map[string, Missing]
+store ^orders(id: int): Order
 ",
     );
     let errors = check_saved_named_member_fields(&decl.members, &[]);
@@ -308,8 +316,9 @@ fn a_qualified_named_saved_field_is_not_a_schema_local_error() {
         "\
 module a
 use pkg::kinds
-resource Saved at ^saved(id: int)
+resource Saved
     required k: kinds::Color
+store ^saved(id: int): Saved
 ",
     );
     let short_errors = check_saved_named_member_fields(&short_alias.members, &[]);
@@ -321,8 +330,9 @@ resource Saved at ^saved(id: int)
     let full_path = resource(
         "\
 module a
-resource Saved at ^saved(id: int)
+resource Saved
     required k: pkg::kinds::Color
+store ^saved(id: int): Saved
 ",
     );
     let full_errors = check_saved_named_member_fields(&full_path.members, &[]);

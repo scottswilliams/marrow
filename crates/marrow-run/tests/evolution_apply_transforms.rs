@@ -21,8 +21,9 @@ fn proposal_transform_writes_target_before_catalog_acceptance() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required price: int\n\
+             store ^books(id: int): Book\n\
              pub fn add(price: int): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -43,9 +44,10 @@ fn proposal_transform_writes_target_before_catalog_acceptance() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required price: int\n\
          \x20   required priceCents: int\n\
+         store ^books(id: int): Book\n\
          evolve\n\
          \x20   transform Book.priceCents\n\
          \x20       return old.price * 100\n\
@@ -79,8 +81,9 @@ fn completion_rejects_missing_transform_cell() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required price: int\n\
+             store ^books(id: int): Book\n\
              pub fn add(price: int): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -98,9 +101,10 @@ fn completion_rejects_missing_transform_cell() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required price: int\n\
          \x20   required priceCents: int\n\
+         store ^books(id: int): Book\n\
          evolve\n\
          \x20   transform Book.priceCents\n\
          \x20       return old.price * 100\n\
@@ -137,8 +141,9 @@ fn completion_rejects_transform_target_changed_after_activation() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required price: int\n\
+             store ^books(id: int): Book\n\
              pub fn add(price: int): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -156,9 +161,10 @@ fn completion_rejects_transform_target_changed_after_activation() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required price: int\n\
          \x20   required priceCents: int\n\
+         store ^books(id: int): Book\n\
          evolve\n\
          \x20   transform Book.priceCents\n\
          \x20       return old.price * 100\n\
@@ -269,9 +275,10 @@ fn transform_computes_new_member_per_record_and_stamps() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required price: int\n\
              \x20   required priceCents: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   transform Book.priceCents\n\
              \x20       return old.price * 100\n\
@@ -338,9 +345,10 @@ fn activatable_transform_with_total_body_applies() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required price: int\n\
              \x20   required priceCents: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   transform Book.priceCents\n\
              \x20       return old.price * 100\n\
@@ -383,11 +391,12 @@ fn transform_composes_with_default_and_retire() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required price: int\n\
              \x20   required priceCents: int\n\
              \x20   required currency: string\n\
              \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(price: int, currency: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -417,10 +426,11 @@ fn transform_composes_with_default_and_retire() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required price: int\n\
          \x20   required priceCents: int\n\
          \x20   required currency: string\n\
+         store ^books(id: int): Book\n\
          evolve\n\
          \x20   default Book.currency = \"USD\"\n\
          \x20   retire Book.subtitle\n\

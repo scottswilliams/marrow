@@ -210,7 +210,7 @@ fn run_entry_rejects_host_values_for_moded_parameters() {
 #[test]
 fn run_entry_rejects_host_values_for_identity_parameters() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\n\
+        "resource Book\n    required title: string\nstore ^books(id: int): Book\n\n\
          pub fn load(id: Id(^books))\n    print(\"ran\")\n",
     );
     let error = rejected_entry_call(&program, "test::load", vec![Value::Int(1)]);
@@ -224,7 +224,7 @@ fn run_entry_rejects_host_values_for_identity_parameters() {
 #[test]
 fn run_entry_rejects_host_values_for_resource_parameters() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\n\
+        "resource Book\n    required title: string\nstore ^books(id: int): Book\n\n\
          pub fn show(book: Book)\n    print(\"ran\")\n",
     );
     let error = rejected_entry_call(&program, "test::show", vec![Value::Resource(vec![])]);
@@ -315,10 +315,10 @@ fn a_unique_index_lookup_loop_skips_an_absent_entry() {
 /// reference index, so this proves the rebuild matches what the runtime maintains.
 #[test]
 fn rebuild_store_indexes_reconstructs_unique_and_non_unique_lookups() {
-    let source = "resource Book at ^books(id: int)\n    \
+    let source = "resource Book\n    \
         required title: string\n    \
         shelf: string\n    \
-        isbn: string\n\n    \
+        isbn: string\nstore ^books(id: int): Book\n\n    \
         index byShelf(shelf, id)\n    \
         index byIsbn(isbn) unique\n\n\
         pub fn add(id: int, t: string, s: string, i: string)\n    \

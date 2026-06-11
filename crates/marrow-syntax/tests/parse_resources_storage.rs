@@ -1,5 +1,5 @@
-//! Resource and store declarations: split and concise forms, saved roots,
-//! index members, and the key/member-name grammar rules they share.
+//! Resource and store declarations: split forms, saved roots, index members,
+//! and the key/member-name grammar rules they share.
 
 use marrow_syntax::{ExpectedSyntax, ParseDiagnosticReason, parse_source};
 
@@ -27,23 +27,71 @@ fn parses_split_store_declaration() {
 }
 
 #[test]
-fn concise_resource_at_desugars_to_resource_and_store() {
-    let parsed = parse_source(
-        "module app\n\
-         resource Book at ^books(id: int)\n\
-         \x20   required title: string\n\
-         \x20   shelf: string\n\
-         \x20   index byShelf(shelf, id)\n",
-    );
+fn removed_resource_at_points_to_split_resource_and_store() {
+    let parsed = parse_source(concat!(
+        "module app\n",
+        "resource Book ",
+        "at ^books(id: int)\n",
+        "    required title: string\n",
+        "    shelf: string\n",
+        "    index byShelf(shelf, id)\n",
+    ));
 
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
-    assert_eq!(parsed.file.declarations.len(), 2);
-    let resource = parsed.file.resource("Book").expect("Book resource");
-    assert_eq!(resource.members.len(), 2);
-    let store = parsed.file.store("books").expect("books store");
-    assert_eq!(store.resource, "Book");
-    assert_eq!(store.indexes.len(), 1);
-    assert_eq!(store.indexes[0].name, "byShelf");
+    assert!(
+        parsed.has_errors(),
+        "expected removed saved-resource sugar to be rejected"
+    );
+    let diagnostic = parsed
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Expected(
+                    ExpectedSyntax::ResourceName,
+                ))
+        })
+        .expect("resource-at diagnostic");
+    assert!(
+        diagnostic.message.contains("store ^books(id: int): Book"),
+        "{diagnostic:?}"
+    );
+}
+
+#[test]
+fn malformed_removed_resource_at_keeps_a_valid_split_store_hint() {
+    for source in [
+        "module app\nresource Book at books\n    title: string\n",
+        concat!("module app\nresource Book ", "at ^\n    title: string\n",),
+        concat!(
+            "module app\nresource Book ",
+            "at ^books()\n    title: string\n",
+        ),
+        concat!(
+            "module app\nresource Book ",
+            "at ^books(id:)\n    title: string\n",
+        ),
+        concat!(
+            "module app\nresource Book ",
+            "at ^books extra\n    title: string\n",
+        ),
+    ] {
+        let parsed = parse_source(source);
+        let diagnostic = parsed
+            .diagnostics
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.reason
+                    == parse_reason(ParseDiagnosticReason::Expected(
+                        ExpectedSyntax::ResourceName,
+                    ))
+            })
+            .expect("resource-at diagnostic");
+
+        assert!(
+            diagnostic.message.contains("store ^root: Book"),
+            "{diagnostic:?}"
+        );
+    }
 }
 
 #[test]
@@ -111,8 +159,9 @@ resource Book
 fn rejects_empty_saved_root_key_lists() {
     let parsed = parse_source(
         r#"module app
-resource Book at ^books()
+resource Book
     title: string
+store ^books(): Book
 "#,
     );
 
@@ -132,8 +181,9 @@ resource Book at ^books()
 fn rejects_empty_index_argument_lists() {
     let parsed = parse_source(
         r#"module app
-resource Book at ^books(id: int)
+resource Book
     title: string
+store ^books(id: int): Book
     index empty()
 "#,
     );
@@ -161,15 +211,18 @@ fn header_helper_errors_report_specific_expected_parts() {
         ),
         (
             "module app\nresource Book where ^books\n    title: string\n",
-            ExpectedSyntax::SavedRootBeginning,
+            ExpectedSyntax::ResourceName,
         ),
         (
-            "module app\nresource Book at books\n    title: string\n",
-            ExpectedSyntax::SavedRootBeginning,
+            concat!(
+                "module app\nresource Book ",
+                "at books\n    title: string\n",
+            ),
+            ExpectedSyntax::ResourceName,
         ),
         (
-            "module app\nresource Book at ^\n    title: string\n",
-            ExpectedSyntax::SavedRootName,
+            concat!("module app\nresource Book ", "at ^\n    title: string\n",),
+            ExpectedSyntax::ResourceName,
         ),
         ("module app\nstore books: Book\n", ExpectedSyntax::StoreRoot),
         ("module app\nstore ^: Book\n", ExpectedSyntax::SavedRootName),
@@ -203,9 +256,9 @@ fn header_helper_errors_report_specific_expected_parts() {
 #[test]
 fn rejects_malformed_index_field_paths() {
     for source in [
-        "module app\nresource Book at ^books(id: int)\n    title: string\n    index bad(title.)\n",
-        "module app\nresource Book at ^books(id: int)\n    title: string\n    index bad(.title)\n",
-        "module app\nresource Book at ^books(id: int)\n    title: string\n    index bad(title.*)\n",
+        "module app\nresource Book\n    title: string\nstore ^books(id: int): Book\n    index bad(title.)\n",
+        "module app\nresource Book\n    title: string\nstore ^books(id: int): Book\n    index bad(.title)\n",
+        "module app\nresource Book\n    title: string\nstore ^books(id: int): Book\n    index bad(title.*)\n",
     ] {
         let parsed = parse_source(source);
 
@@ -223,7 +276,7 @@ fn rejects_malformed_index_field_paths() {
 
 #[test]
 fn reserved_word_as_resource_member_name_is_rejected() {
-    let parsed = parse_source("resource R at ^r\n    at: int\n");
+    let parsed = parse_source("resource R\n    at: int\n");
     assert_eq!(parsed.diagnostics.len(), 1, "{:#?}", parsed.diagnostics);
     assert!(
         parsed.diagnostics[0].reason
@@ -237,7 +290,7 @@ fn reserved_word_as_resource_member_name_is_rejected() {
 
 #[test]
 fn reserved_word_as_key_parameter_name_is_rejected() {
-    let parsed = parse_source("resource R at ^r\n    e(at: string): int\n");
+    let parsed = parse_source("resource R\n    e(at: string): int\n");
     assert!(
         has_reason(
             &parsed.diagnostics,

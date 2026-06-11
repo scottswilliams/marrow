@@ -318,10 +318,10 @@ signature reviewed against the no-overloading law (hence the Int/Decimal name pa
 
 ### Group C′ — Language surface: subtractions (pre-release-only window)
 
-**17. Cut `resource X at ^root(...)` declaration sugar (removal #3).** Decided: cut the `at`
+**17. Cut concise saved-resource declaration sugar (removal #3).** Decided: cut the `at`
 declaration form entirely; the split `resource` + `store ^root(keys): R` form (indexes declared
 under the store) is the only declaration spelling. Delete the Keyword::At resource production,
-parse_decl/head.rs path, compile_resource_sugar path, formatter support, the grammar.md:502-504
+parse_decl/head.rs path, schema tests for the removed resource/store sugar, formatter support, the grammar.md:502-504
 in-resource-index ambiguity rule, the resources-and-storage.md namespace caveat (282-284) and
 'is accepted as declaration sugar' passage (214-216); rewrite all ~757 test occurrences in ~130
 files plus the fixtures/v01 corpus mechanically to the split form. The catalog-identity/01
@@ -830,11 +830,11 @@ Goal: every deletion and truth-fix with no implementation dependency lands befor
 Mostly parallel; two wide-churn barrier lanes close the wave.
 
 **W1.7 → `at`-sugar removal (barrier; runs alone at wave tail).** Carries: removal #3 + gate 17.
-Owns: marrow-syntax parse_decl/head.rs + grammar, marrow-schema compile_resource_sugar.rs,
+Owns: marrow-syntax parse_decl/head.rs + grammar, marrow-schema member-sugar tests,
 formatter, ~23 fixtures + ~757 test occurrences in ~130 files, two spec passages,
 catalog-identity/01 note (via W1.1). Seed: parser test — `at` form is a parse error with a
 split-form pointer. Review: byte-identical catalogs/stores for migrated fixtures (sugar desugared
-pre-catalog); no test silently weakened by rewrite. Done: grep-zero `resource .* at ^` across
+pre-catalog); no test silently weakened by rewrite. Done: zero old concise saved-resource literals across
 repo; full suite green.
 
 **W1.8 → tempfile removal (barrier; after W1.7).** Carries: removal "Remove the tempfile

@@ -1,6 +1,7 @@
-resource Book at ^books(id: int)
+resource Book
     required title: string
     shelf: string
+store ^books(id: int): Book
 
 pub fn add(title: string, shelf: string): Id(^books)
     const id = nextId(^books)

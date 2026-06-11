@@ -70,9 +70,10 @@ fn top_level_fields(schema: &ResourceSchema) -> impl Iterator<Item = &Node> {
 #[test]
 fn duplicate_member_name_is_an_error() {
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
     title: string
+store ^books(id: int): Book
 ";
     let (schema, errors) = compile_source(source);
     assert_eq!(errors.len(), 1);
@@ -87,9 +88,10 @@ resource Book at ^books(id: int)
 #[test]
 fn identity_key_name_colliding_with_field_is_an_error() {
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     required id: int
     required title: string
+store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_KEY_MEMBER_COLLISION]);
@@ -106,9 +108,10 @@ resource Book at ^books(id: int)
 #[test]
 fn identity_key_name_colliding_with_layer_is_an_error() {
     let source = "\
-resource Book at ^books(notes: int)
+resource Book
     notes(noteId: string)
         text: string
+store ^books(notes: int): Book
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_KEY_MEMBER_COLLISION]);
@@ -127,8 +130,9 @@ fn duplicate_identity_key_name_is_an_error() {
     // Identity keys must have distinct names; two `studentId` keys are
     // unaddressable.
     let source = "\
-resource Enrollment at ^enrollments(studentId: string, studentId: string)
+resource Enrollment
     status: string
+store ^enrollments(studentId: string, studentId: string): Enrollment
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_DUPLICATE_MEMBER]);
@@ -145,8 +149,9 @@ resource Enrollment at ^enrollments(studentId: string, studentId: string)
 fn duplicate_keyed_leaf_key_param_name_is_an_error() {
     // A keyed layer's key parameters must have distinct names.
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     tags(pos: int, pos: int): string
+store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_DUPLICATE_MEMBER]);
@@ -162,9 +167,10 @@ resource Book at ^books(id: int)
 #[test]
 fn duplicate_group_key_param_name_is_an_error() {
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     revisions(rev: int, rev: int)
         body: string
+store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_DUPLICATE_MEMBER]);
@@ -182,10 +188,11 @@ fn required_field_inside_an_unkeyed_group_is_allowed() {
     // Unkeyed groups are structural. A required field inside one is required for
     // the containing resource, and remains marked on the nested schema node.
     let source = "\
-resource Patient at ^patients(id: string)
+resource Patient
     name
         required first: string
         last: string
+store ^patients(id: string): Patient
 ";
     let schema = compile_ok(source);
     let name = layer(&schema, "name");
@@ -203,9 +210,10 @@ fn required_field_inside_a_keyed_group_is_allowed() {
     // planner does maintain) may hold required fields, as in the Book
     // `versions(version) { required title }` shape.
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     versions(version: int)
         required title: string
+store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
     assert!(

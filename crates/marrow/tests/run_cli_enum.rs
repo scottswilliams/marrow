@@ -41,7 +41,8 @@ fn a_same_named_enum_in_another_module_does_not_alias() {
             "src/b.mw",
             "module b\n\
              enum Status\n    archived\n    active\n\n\
-             resource Order at ^orders(id: int)\n    required state: Status\n\n\
+             resource Order\n    required state: Status\n\
+             store ^orders(id: int): Order\n\n\
              pub fn seed()\n    \
              var o: Order\n    o.state = Status::active\n    \
              transaction\n        ^orders(1) = o\n\n\
@@ -78,7 +79,8 @@ fn a_match_over_a_saved_enum_field_dispatches_through_the_real_pipeline() {
             "src/app.mw",
             "module app\n\
              enum Status\n    active\n    archived\n    banned\n\n\
-             resource Order at ^orders(id: int)\n    required state: Status\n\n\
+             resource Order\n    required state: Status\n\
+             store ^orders(id: int): Order\n\n\
              pub fn seed()\n    \
              var o: Order\n    o.state = Status::archived\n    \
              transaction\n        ^orders(1) = o\n\n\
@@ -116,7 +118,8 @@ fn equality_on_a_saved_enum_field_dispatches_through_the_real_pipeline() {
             "src/app.mw",
             "module app\n\
              enum Status\n    active\n    archived\n    banned\n\n\
-             resource Order at ^orders(id: int)\n    required state: Status\n\n\
+             resource Order\n    required state: Status\n\
+             store ^orders(id: int): Order\n\n\
              pub fn seed()\n    \
              var o: Order\n    o.state = Status::archived\n    \
              transaction\n        ^orders(1) = o\n\n\

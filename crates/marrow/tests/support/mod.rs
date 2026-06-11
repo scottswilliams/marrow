@@ -195,8 +195,9 @@ pub(crate) const fn native_config() -> &'static str {
 pub(crate) const fn counter_source() -> &'static str {
     "module app\n\
      \n\
-     resource Counter at ^counter(id: int)\n\
+     resource Counter\n\
      \x20\x20\x20\x20required value: int\n\
+     store ^counter(id: int): Counter\n\
      \n\
      pub fn seed()\n\
      \x20\x20\x20\x20var c: Counter\n\

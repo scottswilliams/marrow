@@ -110,7 +110,7 @@ fn rejects_malformed_type_annotations() {
             ExpectedSyntax::ParameterType,
         ),
         (
-            "module app\nresource Book at ^books(id:)\n    title: string\n",
+            "module app\nresource Book\n    title: string\nstore ^books(id:): Book\n",
             ExpectedSyntax::KeyType,
         ),
         (

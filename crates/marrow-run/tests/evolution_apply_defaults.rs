@@ -28,8 +28,9 @@ fn proposal_required_default_backfills_before_catalog_acceptance() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -50,9 +51,10 @@ fn proposal_required_default_backfills_before_catalog_acceptance() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
          \x20   required pages: int\n\
+         store ^books(id: int): Book\n\
          evolve\n\
          \x20   default Book.pages = 0\n\
          pub fn add(title: string): Id(^books)\n\
@@ -246,8 +248,9 @@ fn proposal_required_default_rejects_preexisting_target_data() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -268,9 +271,10 @@ fn proposal_required_default_rejects_preexisting_target_data() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
          \x20   required pages: int\n\
+         store ^books(id: int): Book\n\
          evolve\n\
          \x20   default Book.pages = 0\n\
          pub fn add(title: string): Id(^books)\n\
@@ -382,9 +386,10 @@ fn required_with_default_backfills_exactly_k_and_stamps_epoch() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   required pages: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   default Book.pages = 0\n\
              pub fn add(title: string): Id(^books)\n\

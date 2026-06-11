@@ -16,8 +16,9 @@ fn checked_facts_assign_typed_ids_to_same_named_declarations() {
             root,
             "src/a.mw",
             "module a\n\
-             resource Book at ^books_a(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books_a(id: int): Book\n\
              enum Status\n\
              \x20   active\n\
              pub fn fresh(): Id(^books_a)\n\
@@ -27,8 +28,9 @@ fn checked_facts_assign_typed_ids_to_same_named_declarations() {
             root,
             "src/b.mw",
             "module b\n\
-             resource Book at ^books_b(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books_b(id: int): Book\n\
              enum Status\n\
              \x20   active\n\
              pub fn fresh(): Id(^books_b)\n\
@@ -102,9 +104,10 @@ fn checked_facts_record_function_effects_with_typed_places() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   tags(pos: int): string\n\
+             store ^books(id: int): Book\n\
              fn readTitle(id: Id(^books)): string\n\
              \x20   return ^books(id).title\n\
              fn rename(id: Id(^books), title: string)\n\
@@ -145,7 +148,7 @@ fn checked_facts_record_function_effects_with_typed_places() {
     };
 
     let read = facts.function_id(module, "readTitle").expect("readTitle");
-    assert_eq!(facts.function(read).span.line, 5);
+    assert_eq!(facts.function(read).span.line, 6);
     assert_eq!(
         facts.function(read).direct_effects.saved_reads,
         vec![title_place.clone()]
@@ -196,8 +199,9 @@ fn duplicate_named_functions_keep_their_own_direct_effects() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              fn dup(id: Id(^books)): string\n\
              \x20   return ^books(id).title\n\
              fn dup(id: Id(^books), title: string)\n\
@@ -249,8 +253,9 @@ fn checked_facts_resolve_qualified_resource_annotations_to_the_owner() {
             root,
             "src/a.mw",
             "module a\n\
-             resource Book at ^a_books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^a_books(id: int): Book\n\
              fn borrowed(id: Id(^b_books)): Id(^b_books)\n\
              \x20   return id\n",
         );
@@ -258,8 +263,9 @@ fn checked_facts_resolve_qualified_resource_annotations_to_the_owner() {
             root,
             "src/b.mw",
             "module b\n\
-             resource Book at ^b_books(id: int)\n\
-             \x20   required title: string\n",
+             resource Book\n\
+             \x20   required title: string\n\
+             store ^b_books(id: int): Book\n",
         );
     });
     let (report, program) = check_project(&root, &config()).expect("check");
@@ -285,8 +291,9 @@ fn checked_test_program_preserves_source_facts_and_resolves_test_facts() {
             root,
             "src/a.mw",
             "module a\n\
-             resource Book at ^a_books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^a_books(id: int): Book\n\
              pub fn borrowed(id: Id(^b_books)): Id(^b_books)\n\
              \x20   return id\n",
         );
@@ -294,8 +301,9 @@ fn checked_test_program_preserves_source_facts_and_resolves_test_facts() {
             root,
             "src/b.mw",
             "module b\n\
-             resource Book at ^b_books(id: int)\n\
-             \x20   required title: string\n",
+             resource Book\n\
+             \x20   required title: string\n\
+             store ^b_books(id: int): Book\n",
         );
         write(
             root,
@@ -342,10 +350,11 @@ fn checked_facts_fail_closed_for_invalid_saved_places_and_signatures() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   notes(pos: int)\n\
              \x20       text: string\n\
+             store ^books(id: int): Book\n\
              fn badPath()\n\
              \x20   ^books(1).notes(1).missing\n\
              fn badSignature(id: Missing): int\n\
@@ -377,10 +386,12 @@ fn checked_facts_record_saved_reads_inside_saved_path_keys() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
-             resource Config at ^config\n\
+             store ^books(id: int): Book\n\
+             resource Config\n\
              \x20   required bookId: int\n\
+             store ^config: Config\n\
              fn readDefault(): string\n\
              \x20   return ^books(^config.bookId).title\n",
         );

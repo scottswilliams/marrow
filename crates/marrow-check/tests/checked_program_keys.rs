@@ -10,10 +10,12 @@ use support::{config, temp_project, write};
 /// `Id(^magazines)` are both single-`int`) but nominally distinct. Used by the
 /// cross-resource key-typing tests below.
 const TWO_BOOKISH_RESOURCES: &str = "module shelf::lib\n\
-     resource Book at ^books(id: int)\n\
+     resource Book\n\
      \x20   required title: string\n\
-     resource Magazine at ^magazines(id: int)\n\
-     \x20   required title: string\n";
+     store ^books(id: int): Book\n\
+     resource Magazine\n\
+     \x20   required title: string\n\
+     store ^magazines(id: int): Magazine\n";
 
 /// A string passed into an `int` keyspace — `^books("oops")` where `books` is
 /// keyed by `id: int` — is rejected as `check.key_type`.
@@ -24,8 +26,9 @@ fn string_key_into_int_keyspace_is_flagged() {
             root,
             "src/shelf/lib.mw",
             "module shelf::lib\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              fn f(): string\n\
              \x20   return ^books(\"oops\").title\n",
         );
@@ -100,8 +103,9 @@ fn unknown_key_reentry_is_rejected() {
             root,
             "src/shelf/lib.mw",
             "module shelf::lib\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              fn f(k: unknown): string\n\
              \x20   return ^books(k).title\n",
         );
@@ -131,8 +135,9 @@ fn cross_module_qualified_identity_splice_defers() {
             root,
             "src/shelf/lib.mw",
             "module shelf::lib\n\
-             resource Book at ^books(id: int)\n\
-             \x20   required title: string\n",
+             resource Book\n\
+             \x20   required title: string\n\
+             store ^books(id: int): Book\n",
         );
         write(
             root,

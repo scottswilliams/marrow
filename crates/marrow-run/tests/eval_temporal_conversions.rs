@@ -130,7 +130,7 @@ fn clock_today_without_a_clock_capability_is_a_capability_error() {
 fn a_date_round_trips_through_saved_data() {
     // A `date` value saves and loads through a managed field write and read.
     let program = checked_program(
-        "resource Event at ^events(id: int)\n    on: date\n\npub fn record(id: int, text: string)\n    ^events(id).on = std::clock::parseDate(text)\n\npub fn dateOf(id: int): string\n    return std::clock::formatDate(^events(id).on ?? std::clock::parseDate(\"1970-01-01\"))\n",
+        "resource Event\n    on: date\nstore ^events(id: int): Event\n\npub fn record(id: int, text: string)\n    ^events(id).on = std::clock::parseDate(text)\n\npub fn dateOf(id: int): string\n    return std::clock::formatDate(^events(id).on ?? std::clock::parseDate(\"1970-01-01\"))\n",
     );
     let store = TreeStore::memory();
     run_entry(

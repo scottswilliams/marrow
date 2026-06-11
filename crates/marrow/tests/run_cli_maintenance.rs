@@ -18,8 +18,9 @@ fn maintenance_flag_gates_a_whole_root_drop() {
             root,
             "src/app.mw",
             "module app\n\n\
-             resource Book at ^books(id: int)\n\
-             \x20\x20\x20\x20required title: string\n\n\
+             resource Book\n\
+             \x20\x20\x20\x20required title: string\n\
+             store ^books(id: int): Book\n\n\
              pub fn seed()\n\
              \x20\x20\x20\x20^books(1).title = \"Mort\"\n\n\
              pub fn drop_root()\n\

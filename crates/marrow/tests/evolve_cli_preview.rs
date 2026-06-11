@@ -88,9 +88,10 @@ fn evolve_preview_reports_destructive_approval_requirement() {
     let root = native_books_project(
         "evolve-preview-retire",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
          \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
@@ -111,8 +112,9 @@ fn evolve_preview_reports_destructive_approval_requirement() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
+         store ^books(id: int): Book\n\
          evolve\n\
          \x20   retire Book.subtitle\n\
          pub fn add(title: string): Id(^books)\n\

@@ -51,8 +51,9 @@ fn analyze_project_suppresses_test_resolution_noise_when_source_modules_are_inco
             root,
             "src/app.mw",
             "module app\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   title: string\n\
+             store ^books(id: int): Book\n\
              fn f()\n\
              \x20   return\n\
              \tconst BAD = 1\n",
@@ -529,8 +530,9 @@ fn analyze_project_keeps_test_local_type_syntax_diagnostics_when_hidden_type_nam
                 root,
                 "src/app.mw",
                 "module app\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   title: string\n\
+             store ^books(id: int): Book\n\
              \tconst BAD = 1\n",
             );
         },

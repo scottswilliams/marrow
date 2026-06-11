@@ -1,7 +1,8 @@
-resource Book at ^books(id: int)
+resource Book
     required title: string
     subtitle: string
     tags: sequence[string]
+store ^books(id: int): Book
 
 pub fn seed()
     ^books(1).title = "Mort"

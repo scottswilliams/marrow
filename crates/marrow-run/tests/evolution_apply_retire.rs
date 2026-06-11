@@ -27,8 +27,9 @@ fn explicit_index_retire_deletes_index_cells() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required isbn: string\n\
+             store ^books(id: int): Book\n\
              \x20   index byIsbn(isbn) unique\n\
              pub fn add(isbn: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
@@ -68,8 +69,9 @@ fn explicit_index_retire_deletes_index_cells() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required isbn: string\n\
+         store ^books(id: int): Book\n\
          evolve\n\
          \x20   retire ^books.byIsbn\n\
          pub fn add(isbn: string): Id(^books)\n\
@@ -163,10 +165,11 @@ fn completion_rejects_retire_receipt_count_moved_between_ids() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   subtitle: string\n\
              \x20   notes: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -191,8 +194,9 @@ fn completion_rejects_retire_receipt_count_moved_between_ids() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
+         store ^books(id: int): Book\n\
          evolve\n\
          \x20   retire Book.subtitle\n\
          \x20   retire Book.notes\n\
@@ -245,10 +249,11 @@ fn destructive_multi_retire_approval_is_matched_per_id() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   subtitle: string\n\
              \x20   notes: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -277,8 +282,9 @@ fn destructive_multi_retire_approval_is_matched_per_id() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
+         store ^books(id: int): Book\n\
          evolve\n\
          \x20   retire Book.subtitle\n\
          \x20   retire Book.notes\n\
@@ -388,10 +394,11 @@ fn nested_group_retire_fails_closed() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   meta\n\
              \x20       required note: string\n\
              \x20       keep: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -427,9 +434,10 @@ fn nested_group_retire_fails_closed() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   meta\n\
          \x20       keep: string\n\
+         store ^books(id: int): Book\n\
          evolve\n\
          \x20   retire Book.meta.note\n\
          pub fn add(): Id(^books)\n\

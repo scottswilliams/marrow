@@ -23,8 +23,9 @@ fn a_sparse_add_over_a_populated_store_auto_applies_and_advances_the_epoch() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -43,9 +44,10 @@ fn a_sparse_add_over_a_populated_store_auto_applies_and_advances_the_epoch() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
          \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
@@ -82,8 +84,9 @@ fn a_required_add_over_a_populated_store_must_fence() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -102,9 +105,10 @@ fn a_required_add_over_a_populated_store_must_fence() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
          \x20   required pages: int\n\
+         store ^books(id: int): Book\n\
          evolve\n\
          \x20   default Book.pages = 0\n\
          pub fn add(title: string): Id(^books)\n\
@@ -224,8 +228,9 @@ fn a_stale_commit_pin_fails_the_auto_apply_closed() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -244,9 +249,10 @@ fn a_stale_commit_pin_fails_the_auto_apply_closed() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
          \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );

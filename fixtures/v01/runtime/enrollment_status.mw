@@ -1,7 +1,8 @@
-resource Enrollment at ^enrollments(studentId: string, courseId: string)
+resource Enrollment
     required status: string
     required student: string
     required course: string
+store ^enrollments(studentId: string, courseId: string): Enrollment
 
     index byStatus(status, studentId, courseId)
 

@@ -28,8 +28,9 @@ fn enum_rename_is_not_a_retype() {
              enum State\n\
              \x20   draft\n\
              \x20   shipped\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required value: State\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   rename Status -> State\n\
              pub fn add(value: State): Id(^books)\n\
@@ -108,8 +109,9 @@ fn enum_member_removed_fails_closed() {
             "module books\n\
              enum Status\n\
              \x20   draft\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required value: Status\n\
+             store ^books(id: int): Book\n\
              pub fn add(value: Status): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -182,9 +184,10 @@ fn required_enum_leaf_missing_fails_closed() {
              enum Status\n\
              \x20   draft\n\
              \x20   shipped\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   required state: Status\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string, state: Status): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -225,11 +228,13 @@ fn required_identity_leaf_missing_fails_closed() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Author at ^authors(id: int)\n\
+             resource Author\n\
              \x20   required name: string\n\
-             resource Book at ^books(id: int)\n\
+             store ^authors(id: int): Author\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   required author: Id(^authors)\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string, author: Id(^authors)): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -272,8 +277,9 @@ fn required_enum_leaf_present_proves_data() {
              enum Status\n\
              \x20   draft\n\
              \x20   shipped\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required state: Status\n\
+             store ^books(id: int): Book\n\
              pub fn add(state: Status): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -316,8 +322,9 @@ fn retype_enum_a_to_enum_b_is_transform_required() {
              enum Kind\n\
              \x20   alpha\n\
              \x20   beta\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required value: Kind\n\
+             store ^books(id: int): Book\n\
              pub fn add(value: Kind): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -375,8 +382,9 @@ fn stored_enum_value_naming_now_category_member_fails_closed() {
              \x20       bengal\n\
              \x20       siberian\n\
              \x20   housecat\n\
-             resource Pet at ^pets(id: int)\n\
+             resource Pet\n\
              \x20   required kind: Cat\n\
+             store ^pets(id: int): Pet\n\
              pub fn add(): Id(^pets)\n\
              \x20   return nextId(^pets)\n",
         );
@@ -439,8 +447,9 @@ fn optional_enum_leaf_with_dropped_member_fails_closed() {
             "module books\n\
              enum Status\n\
              \x20   draft\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   state: Status\n\
+             store ^books(id: int): Book\n\
              pub fn add(): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -517,8 +526,9 @@ fn optional_enum_leaf_with_unchanged_enum_proves() {
              enum Status\n\
              \x20   draft\n\
              \x20   shipped\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   state: Status\n\
+             store ^books(id: int): Book\n\
              pub fn add(): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );

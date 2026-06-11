@@ -104,8 +104,7 @@ fn blank_lines_and_comments_do_not_close_blocks() {
 
 #[test]
 fn preserves_doc_comments_as_tokens() {
-    let source =
-        ";; Books saved by id.\nresource Book at ^books(id: int)\n    required title: string\n";
+    let source = ";; Books saved by id.\nresource Book\n    required title: string\nstore ^books(id: int): Book\n";
 
     assert_eq!(
         kinds(source),
@@ -114,14 +113,6 @@ fn preserves_doc_comments_as_tokens() {
             TokenKind::Newline,
             TokenKind::Keyword(Keyword::Resource),
             TokenKind::Identifier,
-            TokenKind::Keyword(Keyword::At),
-            TokenKind::Caret,
-            TokenKind::Identifier,
-            TokenKind::LeftParen,
-            TokenKind::Identifier,
-            TokenKind::Colon,
-            TokenKind::Keyword(Keyword::Int),
-            TokenKind::RightParen,
             TokenKind::Newline,
             TokenKind::Indent,
             TokenKind::Keyword(Keyword::Required),
@@ -130,21 +121,7 @@ fn preserves_doc_comments_as_tokens() {
             TokenKind::Keyword(Keyword::String),
             TokenKind::Newline,
             TokenKind::Dedent,
-            TokenKind::Eof,
-        ]
-    );
-}
-
-#[test]
-fn indented_doc_comments_follow_block_layout() {
-    let source = "resource Book at ^books(id: int)\n    ;; Display title.\n    title: string\n";
-
-    assert_eq!(
-        kinds(source),
-        vec![
-            TokenKind::Keyword(Keyword::Resource),
-            TokenKind::Identifier,
-            TokenKind::Keyword(Keyword::At),
+            TokenKind::Keyword(Keyword::Store),
             TokenKind::Caret,
             TokenKind::Identifier,
             TokenKind::LeftParen,
@@ -152,6 +129,24 @@ fn indented_doc_comments_follow_block_layout() {
             TokenKind::Colon,
             TokenKind::Keyword(Keyword::Int),
             TokenKind::RightParen,
+            TokenKind::Colon,
+            TokenKind::Identifier,
+            TokenKind::Newline,
+            TokenKind::Eof,
+        ]
+    );
+}
+
+#[test]
+fn indented_doc_comments_follow_block_layout() {
+    let source =
+        "resource Book\n    ;; Display title.\n    title: string\nstore ^books(id: int): Book\n";
+
+    assert_eq!(
+        kinds(source),
+        vec![
+            TokenKind::Keyword(Keyword::Resource),
+            TokenKind::Identifier,
             TokenKind::Newline,
             TokenKind::Indent,
             TokenKind::DocComment,
@@ -161,6 +156,17 @@ fn indented_doc_comments_follow_block_layout() {
             TokenKind::Keyword(Keyword::String),
             TokenKind::Newline,
             TokenKind::Dedent,
+            TokenKind::Keyword(Keyword::Store),
+            TokenKind::Caret,
+            TokenKind::Identifier,
+            TokenKind::LeftParen,
+            TokenKind::Identifier,
+            TokenKind::Colon,
+            TokenKind::Keyword(Keyword::Int),
+            TokenKind::RightParen,
+            TokenKind::Colon,
+            TokenKind::Identifier,
+            TokenKind::Newline,
             TokenKind::Eof,
         ]
     );

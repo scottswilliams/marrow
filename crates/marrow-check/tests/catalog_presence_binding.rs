@@ -28,9 +28,10 @@ fn first_source_check_proposes_catalog_ids_without_writing_accepted_catalog() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   tags(pos: int): string\n\
+             store ^books(id: int): Book\n\
              \x20   index byTitle(title) unique\n\
              enum Status\n\
              \x20   active\n\
@@ -70,7 +71,7 @@ fn source_only_check_leaves_accepted_catalog_epoch_unchanged() {
         write(
             root,
             "src/books.mw",
-            "module books\nresource Book at ^books(id: int)\n    title: string\n",
+            "module books\nresource Book\n    title: string\nstore ^books(id: int): Book\n",
         );
         let metadata = catalog(vec![
             entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
@@ -105,7 +106,7 @@ fn non_active_catalog_entries_and_aliases_do_not_bind_live_source_facts() {
         write(
             root,
             "src/library.mw",
-            "module library\nresource Book at ^books(id: int)\n    title: string\n",
+            "module library\nresource Book\n    title: string\nstore ^books(id: int): Book\n",
         );
         let metadata = catalog(vec![
             CatalogEntry {
@@ -157,8 +158,9 @@ fn reserved_catalog_path_blocks_source_reuse_without_intent() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
-             \x20   title: string\n",
+             resource Book\n\
+             \x20   title: string\n\
+             store ^books(id: int): Book\n",
         );
         let metadata = catalog(vec![
             entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
@@ -209,8 +211,9 @@ fn retire_reserves_the_path_spelling_against_future_reuse() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   retire Book.title\n",
         );
@@ -250,9 +253,10 @@ fn catalog_proposal_ids_do_not_collide_with_accepted_stable_ids() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   title: string\n\
-             \x20   subtitle: string\n",
+             \x20   subtitle: string\n\
+             store ^books(id: int): Book\n",
         );
         let metadata = catalog(vec![
             entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
@@ -287,7 +291,7 @@ fn source_rename_without_accepted_catalog_intent_fails_closed() {
         write(
             root,
             "src/library.mw",
-            "module library\nresource Book at ^books(id: int)\n    title: string\n",
+            "module library\nresource Book\n    title: string\nstore ^books(id: int): Book\n",
         );
         let metadata = catalog(vec![
             entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
@@ -320,7 +324,7 @@ fn accepted_catalog_alias_does_not_authorize_source_rollback() {
         write(
             root,
             "src/books.mw",
-            "module books\nresource Book at ^books(id: int)\n    title: string\n",
+            "module books\nresource Book\n    title: string\nstore ^books(id: int): Book\n",
         );
         let metadata = catalog(vec![
             entry(
@@ -366,7 +370,7 @@ fn accepted_catalog_rename_preserves_stable_id() {
         write(
             root,
             "src/library.mw",
-            "module library\nresource Book at ^books(id: int)\n    title: string\n",
+            "module library\nresource Book\n    title: string\nstore ^books(id: int): Book\n",
         );
         let metadata = catalog(vec![
             entry(
@@ -409,9 +413,10 @@ fn catalog_proposals_preserve_accepted_aliases_and_lifecycle() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   title: string\n\
-             \x20   subtitle: string\n",
+             \x20   subtitle: string\n\
+             store ^books(id: int): Book\n",
         );
         let metadata = catalog(vec![
             entry(

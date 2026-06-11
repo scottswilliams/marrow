@@ -17,10 +17,9 @@ use crate::errors::{
 };
 use crate::{Node, NodeKind, ResourceSchema, ScalarType, Type};
 
-/// Report saved-data member rules for a resource attached by a split store
-/// declaration. Concise `resource at ^root` runs these through
-/// [`compile_resource`]; split stores call this from the store declaration so a
-/// plain resource AST stays store-independent.
+/// Report saved-data member rules for a resource attached by a store
+/// declaration. The check runs from the store declaration so a plain resource
+/// AST stays store-independent.
 ///
 /// [`compile_resource`]: crate::compile_resource
 pub fn check_saved_member_rules(members: &[ResourceMember]) -> Vec<SchemaError> {

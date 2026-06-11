@@ -54,10 +54,12 @@ fn commit_stamp(root: &TempProject) -> marrow_store::tree::CommitMetadata {
 /// the store file is stamped. `seedBook` writes one `Book` so a test can populate the
 /// affected store; the default `seed` never touches `^books`.
 const BASELINE: &str = "module app\n\
-     resource Log at ^log(id: int)\n\
+     resource Log\n\
      \x20   note: string\n\
-     resource Book at ^books(id: int)\n\
+     store ^log(id: int): Log\n\
+     resource Book\n\
      \x20   required title: string\n\
+     store ^books(id: int): Book\n\
      pub fn seed()\n\
      \x20   transaction\n\
      \x20       ^log(1).note = \"ran\"\n\
@@ -69,11 +71,13 @@ const BASELINE: &str = "module app\n\
 /// empty `^books` it backfills nothing; over a populated `^books` it backfills each
 /// record.
 const REQUIRED_ADD: &str = "module app\n\
-     resource Log at ^log(id: int)\n\
+     resource Log\n\
      \x20   note: string\n\
-     resource Book at ^books(id: int)\n\
+     store ^log(id: int): Log\n\
+     resource Book\n\
      \x20   required title: string\n\
      \x20   required pages: int\n\
+     store ^books(id: int): Book\n\
      evolve\n\
      \x20   default Book.pages = 0\n\
      pub fn seed()\n\
@@ -88,10 +92,12 @@ const REQUIRED_ADD: &str = "module app\n\
 /// subtitle-free) `^books` the retire drops nothing; over records that carry a subtitle
 /// it is a destructive drop.
 const RETIRE_SUBTITLE: &str = "module app\n\
-     resource Log at ^log(id: int)\n\
+     resource Log\n\
      \x20   note: string\n\
-     resource Book at ^books(id: int)\n\
+     store ^log(id: int): Log\n\
+     resource Book\n\
      \x20   required title: string\n\
+     store ^books(id: int): Book\n\
      evolve\n\
      \x20   retire Book.subtitle\n\
      pub fn seed()\n\
@@ -104,11 +110,13 @@ const RETIRE_SUBTITLE: &str = "module app\n\
 /// The baseline carrying a `subtitle` the retire above consumes, plus a `seedBook` that
 /// writes a populated subtitle so the drop has data to lose.
 const RETIRE_BASELINE: &str = "module app\n\
-     resource Log at ^log(id: int)\n\
+     resource Log\n\
      \x20   note: string\n\
-     resource Book at ^books(id: int)\n\
+     store ^log(id: int): Log\n\
+     resource Book\n\
      \x20   required title: string\n\
      \x20   subtitle: string\n\
+     store ^books(id: int): Book\n\
      pub fn seed()\n\
      \x20   transaction\n\
      \x20       ^log(1).note = \"ran\"\n\
@@ -286,26 +294,32 @@ fn an_auto_applied_binary_passes_its_own_fence_on_a_re_run() {
 /// whole carries a backfill obligation and must not auto-apply even though one store's
 /// share of it is zero.
 const MULTI_BASELINE: &str = "module app\n\
-     resource Log at ^log(id: int)\n\
+     resource Log\n\
      \x20   note: string\n\
-     resource Book at ^books(id: int)\n\
+     store ^log(id: int): Log\n\
+     resource Book\n\
      \x20   required title: string\n\
-     resource Shelf at ^shelf(id: int)\n\
+     store ^books(id: int): Book\n\
+     resource Shelf\n\
      \x20   required name: string\n\
+     store ^shelf(id: int): Shelf\n\
      pub fn seed()\n\
      \x20   transaction\n\
      \x20       ^log(1).note = \"ran\"\n\
      \x20       ^shelf(1).name = \"fiction\"\n";
 
 const MULTI_REQUIRED_ADD: &str = "module app\n\
-     resource Log at ^log(id: int)\n\
+     resource Log\n\
      \x20   note: string\n\
-     resource Book at ^books(id: int)\n\
+     store ^log(id: int): Log\n\
+     resource Book\n\
      \x20   required title: string\n\
      \x20   required pages: int\n\
-     resource Shelf at ^shelf(id: int)\n\
+     store ^books(id: int): Book\n\
+     resource Shelf\n\
      \x20   required name: string\n\
      \x20   required capacity: int\n\
+     store ^shelf(id: int): Shelf\n\
      evolve\n\
      \x20   default Book.pages = 0\n\
      \x20   default Shelf.capacity = 0\n\
@@ -348,8 +362,9 @@ const ENUM_REORDER_BASELINE: &str = "module app\n\
      enum Status\n\
      \x20   active\n\
      \x20   archived\n\
-     resource Log at ^log(id: int)\n\
+     resource Log\n\
      \x20   required state: Status\n\
+     store ^log(id: int): Log\n\
      pub fn seed()\n\
      \x20   var log: Log\n\
      \x20   log.state = Status::active\n\
@@ -360,8 +375,9 @@ const ENUM_REORDERED: &str = "module app\n\
      enum Status\n\
      \x20   archived\n\
      \x20   active\n\
-     resource Log at ^log(id: int)\n\
+     resource Log\n\
      \x20   required state: Status\n\
+     store ^log(id: int): Log\n\
      pub fn seed()\n\
      \x20   var log: Log\n\
      \x20   log.state = Status::active\n\

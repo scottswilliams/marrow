@@ -23,8 +23,9 @@ use support_evolve::{
 /// runtime corpus because this suite needs a `module`-bearing source file.
 const COUNTER_SOURCE: &str = "module app\n\
      \n\
-     resource Counter at ^counter(id: int)\n\
+     resource Counter\n\
      \x20\x20\x20\x20required value: int\n\
+     store ^counter(id: int): Counter\n\
      \n\
      pub fn seed()\n\
      \x20\x20\x20\x20var c: Counter\n\

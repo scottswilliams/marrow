@@ -40,7 +40,8 @@ fn an_enum_typed_resource_field_is_accepted() {
         "enum-field-ok",
         "module m\n\
          enum Status\n    active\n    archived\n\n\
-         resource Order at ^orders(id: int)\n    required state: Status\n",
+         resource Order\n    required state: Status\n\
+         store ^orders(id: int): Order\n",
     );
     assert_clean(&report);
 }

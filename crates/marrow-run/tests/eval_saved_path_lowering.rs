@@ -16,7 +16,7 @@ use marrow_store::value::{SavedValue, ScalarType};
 #[test]
 fn an_identity_argument_splices_in_as_the_record_key() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\n\
+        "resource Book\n    required title: string\nstore ^books(id: int): Book\n\n\
          pub fn save()\n    const id = nextId(^books)\n    ^books(id).title = \"a\"\n\n\
          pub fn read(): string\n    return ^books(1).title\n",
     );
@@ -33,7 +33,7 @@ fn an_identity_argument_splices_in_as_the_record_key() {
 #[test]
 fn a_wrong_typed_key_faults_at_lowering_and_does_not_write() {
     checker_rejects(
-        "resource Book at ^books(id: int)\n    required title: string\n\n\
+        "resource Book\n    required title: string\nstore ^books(id: int): Book\n\n\
          pub fn save(bad: string)\n    ^books(bad).title = \"a\"\n",
         "check.key_type",
     );
@@ -44,8 +44,9 @@ fn a_wrong_typed_key_faults_at_lowering_and_does_not_write() {
 #[test]
 fn a_wrong_scalar_spliced_identity_faults_and_does_not_write() {
     checker_rejects(
-        "resource Book at ^books(id: int)\n    required title: string\n\n\
-         resource Magazine at ^magazines(issn: string)\n    required title: string\n\n\
+        "resource Book\n    required title: string\nstore ^books(id: int): Book\n\n\
+         resource Magazine\n    required title: string\n\
+         store ^magazines(issn: string): Magazine\n\n\
          pub fn seed()\n    ^magazines(\"issn\").title = \"m\"\n\n\
          pub fn save()\n    for id in ^magazines\n        ^books(id).title = \"a\"\n",
         "check.key_type",
@@ -57,7 +58,7 @@ fn a_wrong_scalar_spliced_identity_faults_and_does_not_write() {
 #[test]
 fn a_single_key_store_identity_splice_still_writes() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n\n\
+        "resource Book\n    required title: string\nstore ^books(id: int): Book\n\n\
          pub fn seed()\n    ^books(7).title = \"seed\"\n\n\
          pub fn save()\n    for id in ^books\n        ^books(id).title = \"a\"\n",
     );
@@ -83,7 +84,7 @@ fn a_single_key_store_identity_splice_still_writes() {
 #[test]
 fn an_identity_mixed_with_a_raw_key_is_rejected() {
     checker_rejects(
-        "resource Pair at ^pairs(a: int, b: int)\n    required title: string\n\n\
+        "resource Pair\n    required title: string\nstore ^pairs(a: int, b: int): Pair\n\n\
          pub fn seed()\n    ^pairs(7, 8).title = \"seed\"\n\n\
          pub fn save()\n    for id in ^pairs\n        ^pairs(id, 5).title = \"a\"\n",
         "check.key_type",
@@ -95,7 +96,7 @@ fn an_identity_mixed_with_a_raw_key_is_rejected() {
 #[test]
 fn a_keyed_root_without_an_identity_is_a_type_error() {
     checker_rejects(
-        "resource Book at ^books(id: int)\n    required title: string\n\n\
+        "resource Book\n    required title: string\nstore ^books(id: int): Book\n\n\
          pub fn read(): string\n    return ^books.title\n",
         "check.untyped_value",
     );
@@ -106,7 +107,7 @@ fn a_keyed_root_without_an_identity_is_a_type_error() {
 #[test]
 fn an_unkeyed_group_hop_lowers_to_a_child_layer() {
     let program = checked_program(
-        "resource Patient at ^patients(id: int)\n    mrn: string\n    name\n        first: string\n\n\
+        "resource Patient\n    mrn: string\n    name\n        first: string\nstore ^patients(id: int): Patient\n\n\
          pub fn save()\n    ^patients(1).name.first = \"Sam\"\n\n\
          pub fn read(): string\n    return ^patients(1)?.name?.first ?? \"\"\n",
     );
@@ -136,7 +137,7 @@ fn an_unkeyed_group_hop_lowers_to_a_child_layer() {
 #[test]
 fn an_index_branch_is_not_an_assignable_place() {
     checker_rejects(
-        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n    index byShelf(shelf, id)\n\n\
+        "resource Book\n    required title: string\n    shelf: string\nstore ^books(id: int): Book\n\n    index byShelf(shelf, id)\n\n\
          pub fn give(inout s: string)\n    s = \"x\"\n\n\
          pub fn run_it()\n    give(inout ^books.byShelf(\"a\"))\n",
         "check.untyped_value",

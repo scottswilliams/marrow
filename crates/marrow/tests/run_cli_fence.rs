@@ -21,8 +21,9 @@ fn run_is_fenced_when_store_evolved_past_the_project_epoch() {
             "src/shelf.mw",
             "module shelf\n\
              \n\
-             resource Counter at ^counter(id: int)\n\
+             resource Counter\n\
              \x20\x20\x20\x20required value: int\n\
+             store ^counter(id: int): Counter\n\
              \n\
              pub fn show()\n\
              \x20\x20\x20\x20print(\"ran the entry\")\n",
@@ -62,8 +63,9 @@ fn run_rejects_populated_unstamped_accepted_store() {
             root,
             "src/shelf.mw",
             "module shelf\n\
-             resource Counter at ^counter(id: int)\n\
+             resource Counter\n\
              \x20\x20\x20\x20required value: int\n\
+             store ^counter(id: int): Counter\n\
              pub fn show()\n\
              \x20\x20\x20\x20print($\"value={^counter(1).value}\")\n",
         );

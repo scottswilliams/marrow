@@ -65,9 +65,10 @@ fn proposed_ids_are_not_derived_from_the_member_path() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   title: string\n\
-             \x20   subtitle: string\n",
+             \x20   subtitle: string\n\
+             store ^books(id: int): Book\n",
         );
     });
 
@@ -92,8 +93,9 @@ fn proposed_ids_use_128_bit_random_shape() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
-             \x20   title: string\n",
+             resource Book\n\
+             \x20   title: string\n\
+             store ^books(id: int): Book\n",
         );
     });
 
@@ -129,8 +131,9 @@ fn evolve_rename_reads_the_stored_id_rather_than_recomputing_it() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   rename Book.title -> Book.subtitle\n",
         );
@@ -179,9 +182,10 @@ fn committed_ids_are_stable_across_rechecks() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   title: string\n\
-             \x20   subtitle: string\n",
+             \x20   subtitle: string\n\
+             store ^books(id: int): Book\n",
         );
     });
 
@@ -221,7 +225,7 @@ fn committed_leaf_member_records_its_token_in_the_structural_signature_only() {
         write(
             root,
             "src/books.mw",
-            "module books\nresource Book at ^books(id: int)\n    title: string\n",
+            "module books\nresource Book\n    title: string\nstore ^books(id: int): Book\n",
         );
     });
 
@@ -262,7 +266,7 @@ fn committed_keyed_leaf_map_member_folds_its_key_shape_into_the_signature() {
         write(
             root,
             "src/books.mw",
-            "module books\nresource Book at ^books(id: int)\n    tags(pos: int): string\n",
+            "module books\nresource Book\n    tags(pos: int): string\nstore ^books(id: int): Book\n",
         );
     });
 
@@ -291,7 +295,7 @@ fn member_accepted_before_structural_signatures_were_recorded_is_not_reported_as
         write(
             root,
             "src/books.mw",
-            "module books\nresource Book at ^books(id: int)\n    title: string\n",
+            "module books\nresource Book\n    title: string\nstore ^books(id: int): Book\n",
         );
         let metadata = catalog(vec![
             entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
@@ -324,9 +328,10 @@ fn distinct_new_members_receive_distinct_ids() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   title: string\n\
-             \x20   subtitle: string\n",
+             \x20   subtitle: string\n\
+             store ^books(id: int): Book\n",
         );
     });
 

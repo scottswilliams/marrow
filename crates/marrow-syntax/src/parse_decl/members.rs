@@ -69,7 +69,11 @@ impl<'a> DeclParser<'a> {
                     )
                 }) {
                     let err = self.content_span();
-                    self.error_span(err, stray_indent.reason.clone(), stray_indent.message);
+                    self.error_span(
+                        err,
+                        stray_indent.reason.clone(),
+                        stray_indent.message.clone(),
+                    );
                 }
                 self.skip_to_block_end();
                 MemberBlockFrame::Trivia

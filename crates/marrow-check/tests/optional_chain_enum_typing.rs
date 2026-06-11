@@ -27,8 +27,9 @@ fn an_optional_chain_to_a_qualified_enum_field_types_as_that_enum() {
             root,
             "src/m.mw",
             "module m\nuse kinds\n\
-             resource Book at ^books(id: int)\n\
-             \x20   binding\n        state: kinds::Status\n\n\
+             resource Book\n\
+             \x20   binding\n        state: kinds::Status\n\
+             store ^books(id: int): Book\n\n\
              fn f(id: Id(^books))\n    \
              const n: int = (^books(id)?.binding?.state ?? kinds::Status::active)\n",
         );
@@ -67,8 +68,9 @@ fn an_optional_chain_to_a_qualified_enum_field_compares_clean_against_its_own_en
             root,
             "src/m.mw",
             "module m\nuse kinds\n\
-             resource Book at ^books(id: int)\n\
-             \x20   binding\n        state: kinds::Status\n\n\
+             resource Book\n\
+             \x20   binding\n        state: kinds::Status\n\
+             store ^books(id: int): Book\n\n\
              fn f(id: Id(^books)): bool\n    \
              return (^books(id)?.binding?.state ?? kinds::Status::active) == kinds::Status::active\n",
         );
@@ -99,8 +101,9 @@ fn an_optional_chain_enum_read_rejects_a_cross_enum_comparison() {
             root,
             "src/m.mw",
             "module m\nuse kinds\n\
-             resource Book at ^books(id: int)\n\
-             \x20   binding\n        state: kinds::Status\n\n\
+             resource Book\n\
+             \x20   binding\n        state: kinds::Status\n\
+             store ^books(id: int): Book\n\n\
              fn f(id: Id(^books)): bool\n    \
              return (^books(id)?.binding?.state ?? kinds::Status::active) == kinds::Color::red\n",
         );

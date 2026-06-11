@@ -6,9 +6,10 @@ use support::{json_records_in_stderr, marrow, temp_project, write};
 /// plus a reader that dumps the store and a second writer for the dry-vs-real
 /// comparison.
 const SRC: &str = "module app\n\n\
-                   resource Book at ^books(id: int)\n\
+                   resource Book\n\
                    \x20\x20\x20\x20required title: string\n\
-                   \x20\x20\x20\x20pages: int\n\n\
+                   \x20\x20\x20\x20pages: int\n\
+                   store ^books(id: int): Book\n\n\
                    pub fn add()\n\
                    \x20\x20\x20\x20transaction\n\
                    \x20\x20\x20\x20\x20\x20\x20\x20^books(1).title = \"Mort\"\n\
@@ -49,8 +50,9 @@ fn faulting_dry_run_project(name: &str) -> support::TempProject {
             root,
             "src/app.mw",
             "module app\n\n\
-             resource Book at ^books(id: int)\n\
-             \x20\x20\x20\x20title: string\n\n\
+             resource Book\n\
+             \x20\x20\x20\x20title: string\n\
+             store ^books(id: int): Book\n\n\
              pub fn main()\n\
              \x20\x20\x20\x20^books(1).title = \"Mort\"\n\
              \x20\x20\x20\x20const boom = 1 / 0\n",
@@ -175,8 +177,9 @@ fn dry_run_renders_a_bool_write_as_its_typed_value() {
             root,
             "src/app.mw",
             "module app\n\n\
-             resource Flag at ^flags(id: int)\n\
-             \x20\x20\x20\x20on: bool\n\n\
+             resource Flag\n\
+             \x20\x20\x20\x20on: bool\n\
+             store ^flags(id: int): Flag\n\n\
              pub fn main()\n\
              \x20\x20\x20\x20transaction\n\
              \x20\x20\x20\x20\x20\x20\x20\x20^flags(1).on = true\n",
@@ -230,9 +233,10 @@ fn dry_run_reports_maintenance_whole_root_deletes() {
             root,
             "src/app.mw",
             "module app\n\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20\x20\x20\x20title: string\n\
-             \x20\x20\x20\x20shelf: string\n\n\
+             \x20\x20\x20\x20shelf: string\n\
+             store ^books(id: int): Book\n\n\
              \x20\x20\x20\x20index byShelf(shelf, id)\n\n\
              pub fn seed()\n\
              \x20\x20\x20\x20^books(1).title = \"Mort\"\n\
@@ -317,9 +321,10 @@ fn dry_run_reports_non_root_deletes() {
             root,
             "src/app.mw",
             "module app\n\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20\x20\x20\x20details\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20note: string\n\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20note: string\n\
+             store ^books(id: int): Book\n\n\
              pub fn seed()\n\
              \x20\x20\x20\x20^books(1).details.note = \"kept\"\n\n\
              pub fn dropDetails()\n\
@@ -393,8 +398,9 @@ fn dry_run_keeps_the_program_output_on_stdout() {
             root,
             "src/app.mw",
             "module app\n\n\
-             resource Book at ^books(id: int)\n\
-             \x20\x20\x20\x20title: string\n\n\
+             resource Book\n\
+             \x20\x20\x20\x20title: string\n\
+             store ^books(id: int): Book\n\n\
              pub fn main()\n\
              \x20\x20\x20\x20^books(1).title = \"Mort\"\n\
              \x20\x20\x20\x20print(\"ran\")\n",
@@ -427,8 +433,9 @@ fn dry_run_jsonl_keeps_program_output_off_the_record_stream() {
             root,
             "src/app.mw",
             "module app\n\n\
-             resource Book at ^books(id: int)\n\
-             \x20\x20\x20\x20title: string\n\n\
+             resource Book\n\
+             \x20\x20\x20\x20title: string\n\
+             store ^books(id: int): Book\n\n\
              pub fn main()\n\
              \x20\x20\x20\x20transaction\n\
              \x20\x20\x20\x20\x20\x20\x20\x20^books(1).title = \"Mort\"\n\

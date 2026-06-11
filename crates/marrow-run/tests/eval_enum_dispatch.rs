@@ -18,7 +18,8 @@ use marrow_store::value::{ScalarType, decode_value};
 fn an_enum_field_round_trips_through_saved_data() {
     let program = checked_program(
         "enum Status\n    active\n    archived\n    banned\n\n\
-         resource Order at ^orders(id: int)\n    required state: Status\n\n\
+         resource Order\n    required state: Status\n\
+         store ^orders(id: int): Order\n\n\
          pub fn seed(id: int)\n    ^orders(id).state = Status::archived\n\n\
          pub fn matches_archived(id: int): bool\n    return (^orders(id).state ?? Status::active) == Status::archived\n",
     );
@@ -61,7 +62,8 @@ fn an_enum_field_round_trips_through_saved_data() {
 fn an_entry_enum_argument_uses_checked_catalog_identity() {
     let program = checked_program(
         "enum Status\n    active\n    archived\n\n\
-         resource Order at ^orders(id: int)\n    required state: Status\n\n\
+         resource Order\n    required state: Status\n\
+         store ^orders(id: int): Order\n\n\
          pub fn give(): Status\n    return Status::active\n\n\
          pub fn save(state: Status)\n    ^orders(1).state = state\n\n\
          pub fn read(): bool\n    return (^orders(1).state ?? Status::archived) == Status::active\n",
@@ -85,7 +87,8 @@ fn an_entry_enum_argument_uses_checked_catalog_identity() {
 fn an_enum_index_uses_catalog_member_keys() {
     let program = checked_program(
         "enum Status\n    active\n    archived\n    banned\n\n\
-         resource Order at ^orders(id: int)\n    required state: Status\n    index byState(state, id)\n\n\
+         resource Order\n    required state: Status\n\
+         store ^orders(id: int): Order\n    index byState(state, id)\n\n\
          pub fn seed()\n    ^orders(1).state = Status::archived\n    ^orders(2).state = Status::active\n    ^orders(3).state = Status::archived\n\n\
          pub fn countArchived(): int\n    var count = 0\n    for id in ^orders.byState(Status::archived)\n        count = count + 1\n    return count\n\n\
          pub fn countActive(): int\n    var count = 0\n    for id in ^orders.byState(Status::active)\n        count = count + 1\n    return count\n",
@@ -110,7 +113,8 @@ fn an_enum_index_uses_catalog_member_keys() {
 fn a_singleton_keyed_enum_leaf_can_be_matched_after_read() {
     let program = checked_program(
         "enum Kind\n    number\n    plus\n\n\
-         resource Session at ^session\n    required cursor: int\n    kinds(pos: int): Kind\n\n\
+         resource Session\n    required cursor: int\n    kinds(pos: int): Kind\n\
+         store ^session: Session\n\n\
          pub fn readBack(): int\n    \
          ^session.cursor = 1\n    \
          ^session.kinds(1) = Kind::plus\n    \

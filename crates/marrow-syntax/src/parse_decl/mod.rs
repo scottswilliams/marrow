@@ -59,12 +59,15 @@ pub(super) enum MemberBlockFrame {
 #[derive(Debug, Clone)]
 pub(super) struct ParseError {
     reason: ParseDiagnosticReason,
-    message: &'static str,
+    message: String,
 }
 
 impl ParseError {
-    pub(super) const fn new(reason: ParseDiagnosticReason, message: &'static str) -> Self {
-        Self { reason, message }
+    pub(super) fn new(reason: ParseDiagnosticReason, message: impl Into<String>) -> Self {
+        Self {
+            reason,
+            message: message.into(),
+        }
     }
 }
 

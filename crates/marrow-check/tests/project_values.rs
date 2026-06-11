@@ -105,7 +105,8 @@ fn rejects_a_saved_field_write_of_the_wrong_type() {
     let found = check_module(
         "assign-saved",
         "module m\n\
-         resource Book at ^books(id: int)\n    currentVersion: int\n\n\
+         resource Book\n    currentVersion: int\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    ^books(1).currentVersion = \"hi\"\n",
         "check.assignment_type",
     );
@@ -162,7 +163,8 @@ fn an_unknown_value_into_an_identity_place_is_not_flagged() {
     let found = check_module(
         "untyped-identity",
         "module m\n\
-         resource Book at ^books(id: int)\n    title: string\n\n\
+         resource Book\n    title: string\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    const id: Id(^books) = nextId(^books)\n",
         "check.untyped_value",
     );
@@ -176,8 +178,10 @@ fn an_identity_typed_field_accepts_an_identity_of_that_store() {
     let found = check_module(
         "ref-field-ok",
         "module m\n\
-         resource Author at ^authors(id: int)\n    name: string\n\n\
-         resource Book at ^books(id: int)\n    authorId: Id(^authors)\n\n\
+         resource Author\n    name: string\n\
+         store ^authors(id: int): Author\n\n\
+         resource Book\n    authorId: Id(^authors)\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    ^books(1).authorId = nextId(^authors)\n",
         "check.assignment_type",
     );
@@ -191,8 +195,10 @@ fn an_identity_typed_field_rejects_a_wrong_store_identity() {
     let found = check_module(
         "ref-field-wrong-store",
         "module m\n\
-         resource Author at ^authors(id: int)\n    name: string\n\n\
-         resource Book at ^books(id: int)\n    authorId: Id(^authors)\n\n\
+         resource Author\n    name: string\n\
+         store ^authors(id: int): Author\n\n\
+         resource Book\n    authorId: Id(^authors)\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    ^books(1).authorId = nextId(^books)\n",
         "check.assignment_type",
     );
@@ -206,8 +212,10 @@ fn an_identity_typed_field_rejects_a_raw_scalar() {
     let found = check_module(
         "ref-field-raw-scalar",
         "module m\n\
-         resource Author at ^authors(id: int)\n    name: string\n\n\
-         resource Book at ^books(id: int)\n    authorId: Id(^authors)\n\n\
+         resource Author\n    name: string\n\
+         store ^authors(id: int): Author\n\n\
+         resource Book\n    authorId: Id(^authors)\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    ^books(1).authorId = 7\n",
         "check.assignment_type",
     );
@@ -223,8 +231,10 @@ fn an_unknown_value_into_an_identity_field_is_an_untyped_value() {
     let found = check_module(
         "ref-field-untyped",
         "module m\n\
-         resource Author at ^authors(id: int)\n    name: string\n\n\
-         resource Book at ^books(id: int)\n    authorId: Id(^authors)\n\n\
+         resource Author\n    name: string\n\
+         store ^authors(id: int): Author\n\n\
+         resource Book\n    authorId: Id(^authors)\n\
+         store ^books(id: int): Book\n\n\
          fn put(x: unknown)\n    ^books(1).authorId = x\n",
         "check.untyped_value",
     );
@@ -238,8 +248,10 @@ fn nextid_into_an_identity_field_is_not_an_untyped_value() {
     let found = check_module(
         "ref-field-nextid-ok",
         "module m\n\
-         resource Author at ^authors(id: int)\n    name: string\n\n\
-         resource Book at ^books(id: int)\n    authorId: Id(^authors)\n\n\
+         resource Author\n    name: string\n\
+         store ^authors(id: int): Author\n\n\
+         resource Book\n    authorId: Id(^authors)\n\
+         store ^books(id: int): Book\n\n\
          fn put()\n    ^books(1).authorId = nextId(^authors)\n",
         "check.untyped_value",
     );
@@ -323,8 +335,10 @@ fn resource_id_constructor_in_an_identity_assignment_is_unresolved() {
     let found = check_module(
         "id-ctor-assignment-unresolved",
         "module m\n\
-         resource Author at ^authors(id: int)\n    name: string\n\n\
-         resource Book at ^books(id: int)\n    authorId: Id(^authors)\n\n\
+         resource Author\n    name: string\n\
+         store ^authors(id: int): Author\n\n\
+         resource Book\n    authorId: Id(^authors)\n\
+         store ^books(id: int): Book\n\n\
          fn put(x: unknown)\n    ^books(1).authorId = Author::Id(int(x))\n",
         "check.unresolved_call",
     );
@@ -336,7 +350,8 @@ fn resource_id_constructor_call_is_unresolved() {
     let found = check_module(
         "id-ctor-call-unresolved",
         "module m\n\
-         resource Author at ^authors(id: int)\n    name: string\n\n\
+         resource Author\n    name: string\n\
+         store ^authors(id: int): Author\n\n\
          fn f()\n    const author = Author::Id(7)\n",
         "check.unresolved_call",
     );
@@ -353,7 +368,8 @@ fn an_unknown_value_into_a_whole_resource_is_an_untyped_value() {
     let found = check_module(
         "whole-resource-untyped",
         "module m\n\
-         resource Book at ^books(id: int)\n    authorId: int\n\n\
+         resource Book\n    authorId: int\n\
+         store ^books(id: int): Book\n\n\
          fn put(x: unknown)\n    ^books(1) = x\n",
         "check.untyped_value",
     );
@@ -369,10 +385,11 @@ fn an_unknown_value_into_a_whole_group_entry_is_an_untyped_value() {
     let found = check_module(
         "whole-group-entry-untyped",
         "module m\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20\x20\x20\x20title: string\n\
          \x20\x20\x20\x20chapters(pos: int)\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20title: string\n\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20title: string\n\
+         store ^books(id: int): Book\n\n\
          fn put(x: unknown)\n    ^books(1).chapters(0) = x\n",
         "check.untyped_value",
     );
@@ -387,7 +404,8 @@ fn a_typed_whole_resource_write_is_not_an_untyped_value() {
     let found = check_module(
         "whole-resource-typed-ok",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
          fn copy()\n    ^books(1) = ^books(2)\n\n\
          fn construct()\n    ^books(1) = Book(title: \"hi\")\n\n\
          fn local()\n    var b: Book\n    b.title = \"hi\"\n    ^books(1) = b\n",
@@ -401,10 +419,11 @@ fn a_whole_group_entry_copy_read_requires_read_site_resolution() {
     let report = check_module_report(
         "whole-group-entry-typed-ok",
         "module m\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20\x20\x20\x20required title: string\n\
          \x20\x20\x20\x20chapters(pos: int)\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20required title: string\n\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20required title: string\n\
+         store ^books(id: int): Book\n\n\
          fn local()\n    var b: Book\n    b.title = \"v1\"\n    ^books(1).chapters(0) = b\n\n\
          fn copy()\n    ^books(1).chapters(1) = ^books(1).chapters(0)\n",
     );
@@ -415,10 +434,11 @@ fn a_whole_group_entry_copy_read_requires_read_site_resolution() {
 #[test]
 fn a_group_entry_does_not_flow_as_a_whole_resource() {
     let source = "module m\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20\x20\x20\x20required title: string\n\
          \x20\x20\x20\x20versions(version: int)\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20required title: string\n\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20required title: string\n\
+         store ^books(id: int): Book\n\n\
          fn takesBook(book: Book)\n    print(book.title)\n\n\
          fn returnsBook(id: Id(^books)): Book\n    for versionKey, version in ^books(id).versions\n        return version\n    return ^books(id)\n\n\
          fn pass(id: Id(^books))\n    for versionKey, version in ^books(id).versions\n        takesBook(version)\n\n\
@@ -449,11 +469,12 @@ fn a_whole_group_entry_write_rejects_a_different_group_layer() {
     let found = check_module(
         "whole-group-entry-different-layer",
         "module m\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20\x20\x20\x20chapters(pos: int)\n\
          \x20\x20\x20\x20\x20\x20\x20\x20required title: string\n\
          \x20\x20\x20\x20versions(version: int)\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20required title: string\n\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20required title: string\n\
+         store ^books(id: int): Book\n\n\
          fn copy()\n    ^books(1).chapters(1) = ^books(1).versions(1)\n",
         "check.assignment_type",
     );
@@ -467,7 +488,8 @@ fn equality_on_two_identities_of_the_same_store_types_bool() {
     let found = check_module(
         "ref-eq-same-store",
         "module m\n\
-         resource Author at ^authors(id: int)\n    name: string\n\n\
+         resource Author\n    name: string\n\
+         store ^authors(id: int): Author\n\n\
          fn f(): bool\n    return nextId(^authors) == nextId(^authors)\n",
         "check.operator_type",
     );
@@ -480,8 +502,10 @@ fn equality_across_resource_identities_is_an_operator_error() {
     let found = check_module(
         "ref-eq-cross-resource",
         "module m\n\
-         resource Author at ^authors(id: int)\n    name: string\n\n\
-         resource Book at ^books(id: int)\n    title: string\n\n\
+         resource Author\n    name: string\n\
+         store ^authors(id: int): Author\n\n\
+         resource Book\n    title: string\n\
+         store ^books(id: int): Book\n\n\
          fn f(): bool\n    return nextId(^authors) == nextId(^books)\n",
         "check.operator_type",
     );
@@ -494,7 +518,8 @@ fn a_self_referencing_identity_field_accepts_its_own_identity() {
     let found = check_module(
         "ref-self",
         "module m\n\
-         resource Person at ^people(id: int)\n    managerId: Id(^people)\n\n\
+         resource Person\n    managerId: Id(^people)\n\
+         store ^people(id: int): Person\n\n\
          fn f()\n    ^people(1).managerId = nextId(^people)\n",
         "check.assignment_type",
     );
@@ -571,7 +596,8 @@ fn a_return_of_an_unresolved_value_into_an_identity_return_is_not_flagged() {
     let found = check_module(
         "ret-identity",
         "module m\n\
-         resource Book at ^books(id: int)\n    title: string\n\n\
+         resource Book\n    title: string\n\
+         store ^books(id: int): Book\n\n\
          fn f(): Id(^books)\n    return nextId(^books)\n",
         "check.untyped_value",
     );
@@ -587,7 +613,8 @@ fn a_unique_index_lookup_types_as_the_resource_identity() {
     let found = check_module(
         "unique-index-identity",
         "module m\n\
-         resource Book at ^books(id: int)\n    title: string\n    isbn: string\n\n    index byIsbn(isbn) unique\n\n\
+         resource Book\n    title: string\n    isbn: string\n\
+         store ^books(id: int): Book\n\n    index byIsbn(isbn) unique\n\n\
          fn f(isbn: string): int\n    return ^books.byIsbn(isbn)\n",
         "check.untyped_value",
     );

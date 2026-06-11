@@ -15,9 +15,10 @@ use marrow_store::tree::TreeStore;
 /// `titleByIsbn` reads the identity back from the unique-index lookup path and
 /// uses it to address the record.
 const BOOK_ISBN: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
     isbn: string
+store ^books(id: int): Book
 
     index byIsbn(isbn) unique
 
@@ -251,26 +252,27 @@ fn keys_over_a_unique_index_lookup_is_not_a_collection() {
 #[test]
 fn unique_index_prefix_branch_presence_count_and_iteration_agree() {
     checker_rejects(
-        "resource Item at ^items(id: int)\n    required title: string\n    series: string\n    code: string\n\n    index bySeriesCode(series, code) unique\n\npub fn countSeries(series: string): int\n    return count(^items.bySeriesCode(series))\n",
+        "resource Item\n    required title: string\n    series: string\n    code: string\nstore ^items(id: int): Item\n\n    index bySeriesCode(series, code) unique\n\npub fn countSeries(series: string): int\n    return count(^items.bySeriesCode(series))\n",
         "check.key_type",
     );
 }
 
 #[test]
 fn unique_index_prefix_branch_loops_are_rejected_by_the_checker() {
-    let source = "resource Item at ^items(id: int)\n    required title: string\n    series: string\n    code: string\n\n    index bySeriesCode(series, code) unique\n\npub fn titlesInSeries(series: string)\n    for id in ^items.bySeriesCode(series)\n        print(^items(id).title ?? \"\")\n";
+    let source = "resource Item\n    required title: string\n    series: string\n    code: string\nstore ^items(id: int): Item\n\n    index bySeriesCode(series, code) unique\n\npub fn titlesInSeries(series: string)\n    for id in ^items.bySeriesCode(series)\n        print(^items(id).title ?? \"\")\n";
     checker_rejects(source, "check.key_type");
 
-    let source = "resource Item at ^items(id: int)\n    required title: string\n    series: string\n    code: string\n\n    index bySeriesCode(series, code) unique\n\npub fn titlesInAnySeries()\n    for id in ^items.bySeriesCode\n        print(^items(id).title ?? \"\")\n";
+    let source = "resource Item\n    required title: string\n    series: string\n    code: string\nstore ^items(id: int): Item\n\n    index bySeriesCode(series, code) unique\n\npub fn titlesInAnySeries()\n    for id in ^items.bySeriesCode\n        print(^items(id).title ?? \"\")\n";
     checker_rejects(source, "check.key_type");
 }
 
 /// A non-unique index in value position has no single identity to yield; the
 /// runtime rejects it and points the reader at `keys(...)`.
 const BOOK_SHELF_VALUE: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
     shelf: string
+store ^books(id: int): Book
 
     index byShelf(shelf, id)
 
@@ -388,7 +390,7 @@ fn traverses_a_composite_identity_index() {
 #[test]
 fn helper_mutating_a_traversed_composite_index_faults_at_runtime() {
     let program = checked_program(
-        "resource Enrollment at ^enrollments(studentId: string, courseId: string)\n    required status: string\n    required student: string\n    required course: string\n\n    index byStatus(status, studentId, courseId)\n\npub fn enroll(s: string, c: string, st: string)\n    var enrollment: Enrollment\n    enrollment.status = st\n    enrollment.student = s\n    enrollment.course = c\n    ^enrollments(s, c) = enrollment\n\npub fn markInactive(id: Id(^enrollments))\n    ^enrollments(id).status = \"inactive\"\n\npub fn deactivateExact(student: string, course: string)\n    for id in ^enrollments.byStatus(\"active\", student, course)\n        markInactive(id)\n",
+        "resource Enrollment\n    required status: string\n    required student: string\n    required course: string\nstore ^enrollments(studentId: string, courseId: string): Enrollment\n\n    index byStatus(status, studentId, courseId)\n\npub fn enroll(s: string, c: string, st: string)\n    var enrollment: Enrollment\n    enrollment.status = st\n    enrollment.student = s\n    enrollment.course = c\n    ^enrollments(s, c) = enrollment\n\npub fn markInactive(id: Id(^enrollments))\n    ^enrollments(id).status = \"inactive\"\n\npub fn deactivateExact(student: string, course: string)\n    for id in ^enrollments.byStatus(\"active\", student, course)\n        markInactive(id)\n",
     );
     let store = TreeStore::memory();
     run_entry(

@@ -26,8 +26,9 @@ fn assert_leaf_reshape_fails_closed(name: &str, value_decl: &str, expected_reaso
             "src/books.mw",
             &format!(
                 "module books\n\
-                 resource Book at ^books(id: int)\n\
+                 resource Book\n\
                  {value_decl}\
+                 store ^books(id: int): Book\n\
                  pub fn add(): Id(^books)\n\
                  \x20   return nextId(^books)\n"
             ),
@@ -75,8 +76,9 @@ fn keyed_leaf_map_value_retype_over_populated_map_fails_closed() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   tags(pos: int): int\n\
+             store ^books(id: int): Book\n\
              pub fn add(): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -143,8 +145,9 @@ fn keyed_leaf_map_value_unchanged_proves() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   tags(pos: int): string\n\
+             store ^books(id: int): Book\n\
              pub fn add(): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -210,9 +213,10 @@ fn retype_of_leaf_nested_in_populated_keyed_group_fails_closed() {
             root,
             "src/policies.mw",
             "module policies\n\
-             resource Policy at ^policies(id: int)\n\
+             resource Policy\n\
              \x20   versions(version: int)\n\
              \x20       required body: int\n\
+             store ^policies(id: int): Policy\n\
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
@@ -289,9 +293,10 @@ fn retype_of_keyed_nested_leaf_with_overlapping_byte_fails_closed() {
             root,
             "src/policies.mw",
             "module policies\n\
-             resource Policy at ^policies(id: int)\n\
+             resource Policy\n\
              \x20   versions(version: int)\n\
              \x20       required body: bool\n\
+             store ^policies(id: int): Policy\n\
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
@@ -355,9 +360,10 @@ fn unchanged_leaf_nested_in_populated_keyed_group_proves() {
             root,
             "src/policies.mw",
             "module policies\n\
-             resource Policy at ^policies(id: int)\n\
+             resource Policy\n\
              \x20   versions(version: int)\n\
              \x20       required body: string\n\
+             store ^policies(id: int): Policy\n\
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
@@ -416,10 +422,11 @@ fn leaf_to_group_adding_required_submember_over_empty_cell_fails_closed() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   marker: string\n\
              \x20   value\n\
              \x20       required first: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );

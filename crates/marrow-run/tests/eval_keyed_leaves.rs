@@ -15,7 +15,7 @@ use marrow_store::value::{SavedValue, ScalarType};
 #[test]
 fn an_unguarded_absent_element_read_is_rejected() {
     checker_rejects(
-        "resource Book at ^books(id: int)\n    title: string\n\npub fn titleOrCode(id: int): string\n    try\n        return ^books(id).title\n    catch err: Error\n        return err.code\n",
+        "resource Book\n    title: string\nstore ^books(id: int): Book\n\npub fn titleOrCode(id: int): string\n    try\n        return ^books(id).title\n    catch err: Error\n        return err.code\n",
         "check.bare_maybe_present_read",
     );
 }
@@ -117,7 +117,7 @@ fn explicit_keyed_leaf_write_then_reads_back() {
     // `^books(id).tags(pos) = value` writes one keyed-leaf entry directly, and a
     // string-keyed leaf `scores(key) = value` writes through the same path.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n    scores(key: string): int\n\npub fn set_tag(id: int, pos: int, t: string)\n    ^books(id).tags(pos) = t\n\npub fn set_score(id: int, key: string, n: int)\n    ^books(id).scores(key) = n\n\npub fn tag_at(id: int, pos: int): string\n    return ^books(id).tags(pos) ?? \"\"\n\npub fn score_at(id: int, key: string): int\n    return ^books(id).scores(key) ?? 0\n",
+        "resource Book\n    required title: string\n    tags(pos: int): string\n    scores(key: string): int\nstore ^books(id: int): Book\n\npub fn set_tag(id: int, pos: int, t: string)\n    ^books(id).tags(pos) = t\n\npub fn set_score(id: int, key: string, n: int)\n    ^books(id).scores(key) = n\n\npub fn tag_at(id: int, pos: int): string\n    return ^books(id).tags(pos) ?? \"\"\n\npub fn score_at(id: int, key: string): int\n    return ^books(id).scores(key) ?? 0\n",
     );
     let store = TreeStore::memory();
     run_entry(

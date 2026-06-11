@@ -44,8 +44,9 @@ fn run_trace_interleaves_steps_and_writes() {
             root,
             "src/app.mw",
             "module app\n\n\
-             resource Book at ^books(id: int)\n\
-             \x20\x20\x20\x20title: string\n\n\
+             resource Book\n\
+             \x20\x20\x20\x20title: string\n\
+             store ^books(id: int): Book\n\n\
              pub fn main()\n\
              \x20\x20\x20\x20^books(1).title = \"Mort\"\n\
              \x20\x20\x20\x20print(\"done\")\n",
@@ -62,10 +63,10 @@ fn run_trace_interleaves_steps_and_writes() {
     let [writing_step, write, print_step, summary] = records.as_slice() else {
         panic!("expected writing-step, write, print-step, summary: {records:?}");
     };
-    // The writing statement (the `^books(1).title = ...` line, line 7) is reported,
-    // then the write it produced, then the `print("done")` step (line 8).
+    // The writing statement (the `^books(1).title = ...` line, line 8) is reported,
+    // then the write it produced, then the `print("done")` step (line 9).
     assert_eq!(writing_step["kind"], json!("step"));
-    assert_eq!(writing_step["line"], json!(7));
+    assert_eq!(writing_step["line"], json!(8));
     assert!(
         writing_step["file"]
             .as_str()
@@ -77,7 +78,7 @@ fn run_trace_interleaves_steps_and_writes() {
     assert_eq!(write["path"], json!("^books(1).title"));
     assert_eq!(write["target"]["store"], json!("books"));
     assert_eq!(print_step["kind"], json!("step"));
-    assert_eq!(print_step["line"], json!(8));
+    assert_eq!(print_step["line"], json!(9));
     assert_eq!(summary["kind"], json!("summary"));
 }
 
@@ -98,8 +99,9 @@ fn run_trace_renders_a_bool_write_as_its_typed_value() {
             root,
             "src/app.mw",
             "module app\n\n\
-             resource Flag at ^flags(id: int)\n\
-             \x20\x20\x20\x20on: bool\n\n\
+             resource Flag\n\
+             \x20\x20\x20\x20on: bool\n\
+             store ^flags(id: int): Flag\n\n\
              pub fn main()\n\
              \x20\x20\x20\x20^flags(1).on = true\n",
         );
@@ -157,8 +159,9 @@ fn run_trace_renders_an_int_write_as_canonical_digits() {
             root,
             "src/app.mw",
             "module app\n\n\
-             resource Counter at ^counters(id: int)\n\
-             \x20\x20\x20\x20total: int\n\n\
+             resource Counter\n\
+             \x20\x20\x20\x20total: int\n\
+             store ^counters(id: int): Counter\n\n\
              pub fn main()\n\
              \x20\x20\x20\x20^counters(1).total = 42\n",
         );
@@ -195,9 +198,10 @@ fn run_trace_reports_non_root_deletes() {
             root,
             "src/app.mw",
             "module app\n\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20\x20\x20\x20details\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20note: string\n\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20note: string\n\
+             store ^books(id: int): Book\n\n\
              pub fn seed()\n\
              \x20\x20\x20\x20^books(1).details.note = \"gone\"\n\n\
              pub fn dropDetails()\n\
@@ -280,8 +284,9 @@ fn run_trace_json_emits_step_and_write_records() {
             root,
             "src/app.mw",
             "module app\n\n\
-             resource Book at ^books(id: int)\n\
-             \x20\x20\x20\x20title: string\n\n\
+             resource Book\n\
+             \x20\x20\x20\x20title: string\n\
+             store ^books(id: int): Book\n\n\
              pub fn main()\n\
              \x20\x20\x20\x20^books(1).title = \"Mort\"\n",
         );
@@ -299,7 +304,7 @@ fn run_trace_json_emits_step_and_write_records() {
 
     assert_eq!(step["kind"], json!("step"));
     assert_eq!(step["trace"], json!(""));
-    assert_eq!(step["line"], json!(7));
+    assert_eq!(step["line"], json!(8));
     assert_eq!(step["depth"], json!(1));
     assert!(
         step["file"]
@@ -340,8 +345,9 @@ fn run_trace_jsonl_keeps_program_output_off_the_record_stream() {
             root,
             "src/app.mw",
             "module app\n\n\
-             resource Book at ^books(id: int)\n\
-             \x20\x20\x20\x20title: string\n\n\
+             resource Book\n\
+             \x20\x20\x20\x20title: string\n\
+             store ^books(id: int): Book\n\n\
              pub fn main()\n\
              \x20\x20\x20\x20^books(1).title = \"Mort\"\n\
              \x20\x20\x20\x20print(\"done\")\n",

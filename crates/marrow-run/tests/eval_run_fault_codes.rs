@@ -20,8 +20,9 @@ use marrow_store::value::SavedValue;
 /// sequence layer whose `append` allocates a position. Both allocate one past the
 /// highest existing key, so seeding the key space at `i64::MAX` exhausts it.
 const OVERFLOW_SCHEMA: &str = "\
-resource Lib at ^libs(id: int)
+resource Lib
     tags(pos: int): string
+store ^libs(id: int): Lib
 
 pub fn fresh(): Id(^libs)
     return nextId(^libs)

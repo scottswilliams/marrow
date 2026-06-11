@@ -410,8 +410,8 @@ mod tests {
         // A different schema: an added field changes the source digest.
         let (root_b, program_b) = committed_program(
             "restore-source-b",
-            "module shelf\n\nresource Book at ^books(id: int)\n    \
-             required title: string\n    pages: int\n",
+            "module shelf\n\nresource Book\n    \
+             required title: string\n    pages: int\nstore ^books(id: int): Book\n",
         );
         let error =
             restore_into_empty(&program_b, &archive).expect_err("a foreign schema is rejected");

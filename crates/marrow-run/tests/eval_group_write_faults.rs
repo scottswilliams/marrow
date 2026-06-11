@@ -13,8 +13,9 @@ use marrow_store::tree::TreeStore;
 
 const BOOK_ISBN_SAVE: &str = "\
 module test
-resource Book at ^books(id: int)
+resource Book
     isbn: string
+store ^books(id: int): Book
     index byIsbn(isbn) unique
 fn save(i: int, code: string)
     ^books(i).isbn = code
@@ -60,27 +61,30 @@ fn an_uncaught_cross_boundary_write_fault_keeps_its_dotted_code() {
 
 const PATIENT_SPARSE_GROUP: &str = "\
 module test
-resource Patient at ^patients(id: string)
+resource Patient
     name
         first: string
         last: string
+store ^patients(id: string): Patient
 ";
 
 const PATIENT_REQUIRED_GROUP: &str = "\
 module test
-resource Patient at ^patients(id: string)
+resource Patient
     name
         required first: string
         last: string
+store ^patients(id: string): Patient
 ";
 
 const PATIENT_REQUIRED_GROUP_UNDER_KEYED_GROUP: &str = "\
 module test
-resource Patient at ^patients(id: string)
+resource Patient
     visits(pos: int)
         name
             required first: string
             last: string
+store ^patients(id: string): Patient
 
 pub fn seed()
     ^patients(\"p1\").visits(1).name.first = \"Sam\"

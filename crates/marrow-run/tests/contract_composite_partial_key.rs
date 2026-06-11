@@ -19,8 +19,9 @@ use marrow_store::tree::TreeStore;
 /// shape: the prefix selects a branch, and the unpinned identity keys distinguish
 /// the records inside it.
 const MEMBERSHIP_INDEX: &str = "\
-resource Member at ^members(org: string, team: string)
+resource Member
     required name: string
+store ^members(org: string, team: string): Member
 
     index byOrgTeam(org, team)
 

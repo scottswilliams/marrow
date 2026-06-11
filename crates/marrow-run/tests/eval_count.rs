@@ -45,10 +45,11 @@ fn count_reports_scalar_presence_and_child_counts() {
 /// branch, exactly as `keys(...)` over the same branch would yield. The branch is
 /// a non-unique index so several entries share one query key.
 const BOOK_COUNT_INDEX: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
     shelf: string
     tags: sequence[string]
+store ^books(id: int): Book
 
     index byShelf(shelf, id)
 
@@ -199,7 +200,7 @@ fn count_over_an_index_branch_matches_branch_entry_count() {
 #[test]
 fn count_over_an_indexed_root_ignores_populated_index_branches() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n    isbn: string\n\n    index byShelf(shelf, id)\n    index byIsbn(isbn) unique\n\npub fn add(id: int, t: string, s: string)\n    ^books(id).title = t\n    ^books(id).shelf = s\n\npub fn addIsbn(id: int, isbn: string)\n    ^books(id).isbn = isbn\n\npub fn countRoot(): int\n    return count(^books)\n\npub fn iterRoot(): int\n    var n = 0\n    for book in ^books\n        n = n + 1\n    return n\n",
+        "resource Book\n    required title: string\n    shelf: string\n    isbn: string\nstore ^books(id: int): Book\n\n    index byShelf(shelf, id)\n    index byIsbn(isbn) unique\n\npub fn add(id: int, t: string, s: string)\n    ^books(id).title = t\n    ^books(id).shelf = s\n\npub fn addIsbn(id: int, isbn: string)\n    ^books(id).isbn = isbn\n\npub fn countRoot(): int\n    return count(^books)\n\npub fn iterRoot(): int\n    var n = 0\n    for book in ^books\n        n = n + 1\n    return n\n",
     );
     let store = TreeStore::memory();
     let call = |entry: CheckedEntryCall| run_entry(&store, entry).expect("run").value;
@@ -265,7 +266,7 @@ fn count_over_a_saved_root_matches_direct_iteration() {
     );
 
     let composite = checked_program(
-        "resource Cell at ^cells(x: int, y: int)\n    required value: int\n\npub fn put(x: int, y: int, value: int)\n    ^cells(x, y).value = value\n\npub fn countRoot(): int\n    return count(^cells)\n\npub fn iterRoot(): int\n    var n = 0\n    for cell in ^cells\n        n = n + 1\n    return n\n",
+        "resource Cell\n    required value: int\nstore ^cells(x: int, y: int): Cell\n\npub fn put(x: int, y: int, value: int)\n    ^cells(x, y).value = value\n\npub fn countRoot(): int\n    return count(^cells)\n\npub fn iterRoot(): int\n    var n = 0\n    for cell in ^cells\n        n = n + 1\n    return n\n",
     );
     let composite_store = TreeStore::memory();
     for (x, y, value) in [(1, 1, 11), (1, 2, 12), (2, 1, 21)] {
@@ -352,11 +353,12 @@ pub fn iterActiveForStudent(student: string): int\n    var n = 0\n    for id in 
 /// `exists`, `count`, and `std::assert::absent` agree with the actual stored path
 /// for a keyed layer entry — the paths a record/field read or write lowers to.
 const BOOK_KEYED_PRESENCE: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
     tags(pos: int): string
     versions(version: int)
         required note: string
+store ^books(id: int): Book
 
 pub fn seed()
     ^books(1).title = \"Mort\"

@@ -69,7 +69,7 @@ fn direct_saved_root_loop_returns_before_later_records() {
 #[test]
 fn direct_values_loop_returns_before_reading_later_records() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    note: string\n\npub fn seed()\n    ^books(1).title = \"Mort\"\n\npub fn firstTitle(): string\n    for book in values(^books)\n        return book.title\n    return \"\"\n",
+        "resource Book\n    required title: string\n    note: string\nstore ^books(id: int): Book\n\npub fn seed()\n    ^books(1).title = \"Mort\"\n\npub fn firstTitle(): string\n    for book in values(^books)\n        return book.title\n    return \"\"\n",
     );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
@@ -93,7 +93,7 @@ fn direct_values_loop_returns_before_reading_later_records() {
 #[test]
 fn direct_entries_loop_returns_before_reading_later_records() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    required title: string\n    note: string\n\npub fn seed()\n    ^books(1).title = \"Mort\"\n\npub fn firstTitle(): string\n    for id, book in ^books\n        return $\"{id}: {book.title}\"\n    return \"\"\n",
+        "resource Book\n    required title: string\n    note: string\nstore ^books(id: int): Book\n\npub fn seed()\n    ^books(1).title = \"Mort\"\n\npub fn firstTitle(): string\n    for id, book in ^books\n        return $\"{id}: {book.title}\"\n    return \"\"\n",
     );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");

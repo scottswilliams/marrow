@@ -19,10 +19,11 @@ use marrow_store::tree::TreeStore;
 /// caller retries with a free isbn. The entry returns the first attempt's error
 /// code so the conflict is observable as a typed code, not just a final state.
 const REGISTER_RETRY: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
     shelf: string
     isbn: string
+store ^books(id: int): Book
 
     index byIsbn(isbn) unique
 

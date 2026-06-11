@@ -45,8 +45,9 @@ fn evolve_rename_authorizes_a_saved_data_backed_member_rename() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   rename Book.title -> Book.subtitle\n",
         );
@@ -109,8 +110,9 @@ fn source_member_rename_without_evolve_intent_still_fails_closed() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
-             \x20   subtitle: string\n",
+             resource Book\n\
+             \x20   subtitle: string\n\
+             store ^books(id: int): Book\n",
         );
         let metadata = catalog(vec![
             entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
@@ -146,8 +148,9 @@ fn evolve_retire_marks_the_proposal_entry_reserved() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   title: string\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   retire Book.subtitle\n",
         );
@@ -196,8 +199,9 @@ fn evolve_retire_of_a_still_declared_resource_member_fails_closed() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   title: string\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   retire Book.title\n",
         );
@@ -237,8 +241,9 @@ fn evolve_retire_of_a_still_declared_saved_root_fails_closed() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   title: string\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   retire ^books\n",
         );
@@ -278,8 +283,9 @@ fn evolve_retire_of_a_still_declared_store_index_fails_closed() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              \x20   index byTitle(title) unique\n\
              evolve\n\
              \x20   retire ^books.byTitle\n",
@@ -323,8 +329,9 @@ fn evolve_target_that_resolves_to_nothing_is_diagnosed() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   title: string\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   retire Book.missing\n",
         );
@@ -354,8 +361,9 @@ fn evolve_binding_that_would_collide_identity_is_reported_at_check() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   c: string\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   rename Book.a -> Book.c\n",
         );
@@ -404,9 +412,10 @@ fn evolve_rename_whose_source_is_still_declared_fails_closed() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   a: string\n\
              \x20   c: string\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   rename Book.a -> Book.c\n",
         );
@@ -445,9 +454,10 @@ fn evolve_rename_onto_a_live_accepted_target_fails_closed() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   a: string\n\
              \x20   b: string\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   rename Book.a -> Book.b\n",
         );
@@ -492,8 +502,9 @@ fn two_renames_onto_the_same_target_conflict() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   c: string\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   rename Book.a -> Book.c\n\
              \x20   rename Book.b -> Book.c\n",
@@ -539,8 +550,9 @@ fn evolve_transform_body_reports_undefined_identifiers() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   title: string\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   transform Book.title\n\
              \x20   \x20   const x: string = totallyUndefinedVar\n",
@@ -568,8 +580,9 @@ fn evolve_transform_body_reports_unknown_calls() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   title: string\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   transform Book.title\n\
              \x20   \x20   const y: string = nonexistentFn()\n",
@@ -595,8 +608,9 @@ fn evolve_default_value_type_mismatch_is_diagnosed() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required count: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   default Book.count = \"not a number\"\n",
         );

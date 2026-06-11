@@ -26,7 +26,7 @@ fn books_source(root: &std::path::Path) {
     write(
         root,
         "src/books.mw",
-        "module books\nresource Book at ^books(id: int)\n    title: string\n",
+        "module books\nresource Book\n    title: string\nstore ^books(id: int): Book\n",
     );
 }
 
@@ -126,9 +126,10 @@ fn proposal_only_member_binds_activation_default_not_ordinary_facts() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   title: string\n\
          \x20   required pages: int\n\
+         store ^books(id: int): Book\n\
          evolve\n\
          \x20   default Book.pages = 0\n",
     );

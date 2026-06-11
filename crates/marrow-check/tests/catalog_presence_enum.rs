@@ -105,8 +105,9 @@ fn enum_field_value_meaning_uses_catalog_member_identity_after_source_reorder() 
              enum Status\n\
              \x20   archived\n\
              \x20   active\n\
-             resource Order at ^orders(id: int)\n\
-             \x20   state: Status\n",
+             resource Order\n\
+             \x20   state: Status\n\
+             store ^orders(id: int): Order\n",
         );
         let metadata = catalog(vec![
             entry(CatalogEntryKind::Enum, "books::Status", "enum-status", &[]),
@@ -179,8 +180,9 @@ fn enum_index_key_meaning_uses_catalog_member_identity_after_source_reorder() {
              enum Status\n\
              \x20   archived\n\
              \x20   active\n\
-             resource Order at ^orders(id: int)\n\
+             resource Order\n\
              \x20   state: Status\n\
+             store ^orders(id: int): Order\n\
              \x20   index byState(state, id)\n",
         );
         let metadata = catalog(vec![
@@ -276,9 +278,10 @@ fn enum_field_value_meaning_fails_closed_for_unresolved_bare_enum_names() {
             root,
             "src/b.mw",
             "module b\n\
-             resource Order at ^orders(id: int)\n\
+             resource Order\n\
              \x20   label: string\n\
-             \x20   state: Status\n",
+             \x20   state: Status\n\
+             store ^orders(id: int): Order\n",
         );
         let metadata = catalog(vec![
             entry(CatalogEntryKind::Enum, "a::Status", "enum-status", &[]),

@@ -15,7 +15,8 @@ fn writing_a_different_enum_into_an_enum_saved_field_is_a_check_error() {
         "module m\n\
          enum Status\n    active\n    archived\n\n\
          enum Color\n    red\n    green\n\n\
-         resource Order at ^orders(id: int)\n    required state: Status\n\n\
+         resource Order\n    required state: Status\n\
+         store ^orders(id: int): Order\n\n\
          fn f()\n    ^orders(1).state = Color::red\n",
         "check.assignment_type",
     );
@@ -33,7 +34,7 @@ fn a_qualified_enum_saved_field_declaration_checks_clean() {
         write(
             root,
             "src/a.mw",
-            "module a\n\nuse pkg::kinds\n\nresource Saved at ^saved(id: int)\n    required k: kinds::Color\n",
+            "module a\n\nuse pkg::kinds\n\nresource Saved\n    required k: kinds::Color\nstore ^saved(id: int): Saved\n",
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
@@ -50,7 +51,8 @@ fn reading_an_enum_saved_field_types_as_that_enum() {
         "enum-field-read-eq-same",
         "module m\n\
          enum Status\n    active\n    archived\n\n\
-         resource Order at ^orders(id: int)\n    required state: Status\n\n\
+         resource Order\n    required state: Status\n\
+         store ^orders(id: int): Order\n\n\
          fn f(): bool\n    return ^orders(1).state == Status::active\n",
     );
     assert_clean(&report);
@@ -61,7 +63,8 @@ fn reading_an_enum_saved_field_types_as_that_enum() {
         "module m\n\
          enum Status\n    active\n    archived\n\n\
          enum Color\n    red\n    green\n\n\
-         resource Order at ^orders(id: int)\n    required state: Status\n\n\
+         resource Order\n    required state: Status\n\
+         store ^orders(id: int): Order\n\n\
          fn f(): bool\n    return ^orders(1).state == Color::red\n",
         "check.operator_type",
     );
@@ -77,7 +80,8 @@ fn a_match_over_an_enum_saved_field_enforces_exhaustiveness() {
         "enum-field-read-match",
         "module m\n\
          enum Status\n    active\n    archived\n    banned\n\n\
-         resource Order at ^orders(id: int)\n    required state: Status\n\n\
+         resource Order\n    required state: Status\n\
+         store ^orders(id: int): Order\n\n\
          fn f()\n    \
          match ^orders(1).state\n        active\n            return\n        archived\n            return\n",
         "check.nonexhaustive_match",
@@ -97,7 +101,8 @@ fn non_unique_index_branch_arguments_are_checked() {
     let found = check_module(
         "non-unique-index-args",
         "module m\n\
-         resource Book at ^books(id: int)\n    shelf: string\n\n    index byShelf(shelf, id)\n\n\
+         resource Book\n    shelf: string\n\
+         store ^books(id: int): Book\n\n    index byShelf(shelf, id)\n\n\
          fn f()\n    \
          for id in ^books.byShelf(123)\n        var typed: Id(^books) = id\n    \
          for id in ^books.byShelf(\"fiction\", 1, 2)\n        var typed: Id(^books) = id\n",
@@ -112,7 +117,8 @@ fn a_singleton_keyed_enum_leaf_read_types_as_that_enum() {
         "enum-singleton-keyed-leaf-read",
         "module m\n\
          enum Kind\n    number\n    plus\n\n\
-         resource Session at ^session\n    required cursor: int\n    kinds(pos: int): Kind\n\n\
+         resource Session\n    required cursor: int\n    kinds(pos: int): Kind\n\
+         store ^session: Session\n\n\
          fn readBack(): int\n    \
          var k: Kind = ^session.kinds(1) ?? Kind::number\n    \
          match k\n        number\n            return 0\n        plus\n            return 1\n",

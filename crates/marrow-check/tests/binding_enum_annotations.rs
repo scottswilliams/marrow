@@ -94,8 +94,9 @@ fn enum_type_annotation_on_resource_field_references_the_enum() {
         enum Status\n    \
         active\n    \
         archived\n\
-        resource Order at ^orders(id: int)\n    \
-        required state: Status\n";
+        resource Order\n    \
+        required state: Status\n\
+        store ^orders(id: int): Order\n";
     let (index, paths) = analyze("enum-annotation-resource-field", &[("src/m.mw", source)]);
     let file = &paths[0];
 
@@ -167,9 +168,10 @@ fn map_sugar_produces_a_saved_field_distinct_from_an_enum_annotation() {
         enum Status\n    \
         active\n    \
         archived\n\
-        resource Order at ^orders(id: int)\n    \
+        resource Order\n    \
         required state: Status\n    \
-        scores: map[string, Status]\n";
+        scores: map[string, Status]\n\
+        store ^orders(id: int): Order\n";
     let (index, paths) = analyze("enum-annotation-map-vs-field", &[("src/m.mw", source)]);
     let file = &paths[0];
 

@@ -26,9 +26,10 @@ fn keyed_layer_key_type_change_over_populated_entries_fails_closed() {
             root,
             "src/policies.mw",
             "module policies\n\
-             resource Policy at ^policies(id: int)\n\
+             resource Policy\n\
              \x20   versions(version: string)\n\
              \x20       required body: string\n\
+             store ^policies(id: int): Policy\n\
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
@@ -103,9 +104,10 @@ fn plain_group_reshaped_to_keyed_layer_over_populated_data_fails_closed() {
             root,
             "src/policies.mw",
             "module policies\n\
-             resource Policy at ^policies(id: int)\n\
+             resource Policy\n\
              \x20   versions(version: int)\n\
              \x20       required body: string\n\
+             store ^policies(id: int): Policy\n\
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
@@ -152,9 +154,10 @@ fn keyed_layer_reshaped_to_plain_group_over_populated_data_fails_closed() {
             root,
             "src/policies.mw",
             "module policies\n\
-             resource Policy at ^policies(id: int)\n\
+             resource Policy\n\
              \x20   versions\n\
              \x20       required body: string\n\
+             store ^policies(id: int): Policy\n\
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
@@ -209,9 +212,10 @@ fn keyed_layer_arity_change_fails_closed_via_backstop() {
             root,
             "src/policies.mw",
             "module policies\n\
-             resource Policy at ^policies(id: int)\n\
+             resource Policy\n\
              \x20   versions(version: int, lang: string)\n\
              \x20       required body: string\n\
+             store ^policies(id: int): Policy\n\
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );

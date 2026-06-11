@@ -41,8 +41,9 @@ fn native_store_persists_writes_across_runs() {
             "src/shelf.mw",
             "module shelf\n\
              \n\
-             resource Counter at ^counter(id: int)\n\
+             resource Counter\n\
              \x20\x20\x20\x20required value: int\n\
+             store ^counter(id: int): Counter\n\
              \n\
              pub fn bump()\n\
              \x20\x20\x20\x20var c: Counter\n\
@@ -116,9 +117,10 @@ fn run_cli_executes_identity_oriented_collection_loops() {
             root,
             "src/app.mw",
             "module app\n\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20\x20\x20\x20required title: string\n\
-             \x20\x20\x20\x20tags: sequence[string]\n\n\
+             \x20\x20\x20\x20tags: sequence[string]\n\
+             store ^books(id: int): Book\n\n\
              pub fn main()\n\
              \x20\x20\x20\x20^books(2).title = \"Sourcery\"\n\
              \x20\x20\x20\x20^books(1).title = \"Mort\"\n\

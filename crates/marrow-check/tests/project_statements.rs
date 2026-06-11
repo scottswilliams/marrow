@@ -61,7 +61,7 @@ fn known_types_are_not_flagged_as_unknown() {
         write(
             root,
             "src/m.mw",
-            "module m\nresource Book at ^books(id: int)\n    required title: string\n\nfn f(a: int, b: sequence[string], c: Id(^books), d: Book, e: unknown, g: shelf::Thing): bool\n    return true\n",
+            "module m\nresource Book\n    required title: string\nstore ^books(id: int): Book\n\nfn f(a: int, b: sequence[string], c: Id(^books), d: Book, e: unknown, g: shelf::Thing): bool\n    return true\n",
         );
         write(
             root,
@@ -363,7 +363,8 @@ fn an_exists_condition_is_not_flagged() {
     let found = check_module(
         "cond-exists",
         "module m\n\
-         resource Book at ^books(id: int)\n    title: string\n\n\
+         resource Book\n    title: string\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    if exists(^books(1))\n        return\n",
         "check.untyped_value",
     );

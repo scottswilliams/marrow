@@ -144,7 +144,8 @@ fn a_resource_constructor_is_not_an_unresolved_call() {
     let found = check_module(
         "ctor-resource",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
          fn caller()\n    var b = Book(title: \"a\")\n",
         "check.unresolved_call",
     );
@@ -156,7 +157,8 @@ fn a_resource_constructor_checks_field_arguments() {
     let found = check_module(
         "ctor-field-type",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n\
+         resource Book\n    required title: string\n    shelf: string\n\
+         store ^books(id: int): Book\n\n\
          fn caller()\n    var b = Book(title: 1, shelf: \"fiction\")\n",
         "check.call_argument",
     );
@@ -229,7 +231,8 @@ fn a_resource_constructor_rejects_unknown_fields() {
     let found = check_module(
         "ctor-unknown-field",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
          fn caller()\n    var b = Book(title: \"a\", pages: 3)\n",
         "check.call_argument",
     );
@@ -241,7 +244,8 @@ fn a_resource_constructor_rejects_duplicate_fields() {
     let found = check_module(
         "ctor-duplicate-field",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n\
+         resource Book\n    required title: string\n    shelf: string\n\
+         store ^books(id: int): Book\n\n\
          fn caller()\n    var b = Book(title: \"a\", title: \"b\", shelf: \"fiction\")\n",
         "check.call_argument",
     );
@@ -257,7 +261,8 @@ fn a_resource_constructor_requires_required_fields() {
     let found = check_module(
         "ctor-required-field",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n    shelf: string\n\n\
+         resource Book\n    required title: string\n    shelf: string\n\
+         store ^books(id: int): Book\n\n\
          fn caller()\n    var b = Book(shelf: \"fiction\")\n",
         "check.call_argument",
     );
@@ -297,7 +302,7 @@ fn qualified_id_call_uses_the_resource_constructor_without_identity_precedence()
         write(
             root,
             "src/app.mw",
-            "module app\nuse catalog\nresource Book at ^books(id: int)\n    title: string\nfn caller()\n    var id = catalog::Id(1)\n",
+            "module app\nuse catalog\nresource Book\n    title: string\nstore ^books(id: int): Book\nfn caller()\n    var id = catalog::Id(1)\n",
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
@@ -326,7 +331,8 @@ fn a_primary_root_loop_binds_identities() {
     let report = check_module_report(
         "root-loop-identities",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
          fn titles()\n    for id in ^books\n        var typed: Id(^books) = id\n",
     );
     assert_clean(&report);
@@ -337,7 +343,8 @@ fn a_two_name_primary_root_loop_binds_identity_and_resource() {
     let report = check_module_report(
         "root-loop-entries",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
          fn titles()\n    for id, book in ^books\n        var typed: Id(^books) = id\n        var title: string = book.title\n",
     );
     assert_clean(&report);
@@ -348,7 +355,8 @@ fn a_sequence_layer_loop_binds_keys() {
     let report = check_module_report(
         "layer-loop-keys",
         "module m\n\
-         resource Book at ^books(id: int)\n    tags: sequence[string]\n\n\
+         resource Book\n    tags: sequence[string]\n\
+         store ^books(id: int): Book\n\n\
          fn tags(id: Id(^books))\n    for pos in ^books(id).tags\n        var typed: int = pos\n",
     );
     assert_clean(&report);
@@ -359,7 +367,8 @@ fn a_keyed_group_layer_loop_binds_group_entry_values() {
     let report = check_module_report(
         "group-layer-loop-elements",
         "module m\n\
-         resource Book at ^books(id: int)\n    versions(version: int)\n        required title: string\n\n\
+         resource Book\n    versions(version: int)\n        required title: string\n\
+         store ^books(id: int): Book\n\n\
          fn titles(id: Id(^books))\n    for version in ^books(id).versions\n        var typed: int = version\n    for n, version in ^books(id).versions\n        var typed: int = n\n        var title: string = version.title\n",
     );
     assert_clean(&report);
@@ -370,7 +379,8 @@ fn a_single_name_entries_loop_does_not_bind_the_key_type() {
     let found = check_module(
         "single-name-entries",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    for entry in entries(^books)\n        var n = entry + 1\n",
         "check.operator_type",
     );
@@ -384,7 +394,8 @@ fn two_name_keys_and_values_loops_do_not_bind_pair_types() {
             &format!("two-name-{wrapper}"),
             &format!(
                 "module m\n\
-                 resource Book at ^books(id: int)\n    required title: string\n\n\
+                 resource Book\n    required title: string\n\
+                 store ^books(id: int): Book\n\n\
                  fn f()\n    for first, second in {wrapper}(^books)\n        var n = first + 1\n",
             ),
             "check.operator_type",
@@ -398,7 +409,8 @@ fn a_unique_index_lookup_loop_binds_the_identity() {
     let report = check_module_report(
         "unique-index-loop",
         "module m\n\
-         resource Book at ^books(id: int)\n    isbn: string\n\n    index byIsbn(isbn) unique\n\n\
+         resource Book\n    isbn: string\n\
+         store ^books(id: int): Book\n\n    index byIsbn(isbn) unique\n\n\
          fn f(isbn: string)\n    for id in ^books.byIsbn(isbn)\n        var typed: Id(^books) = id\n",
     );
     assert_clean(&report);
@@ -409,7 +421,8 @@ fn unique_index_lookup_arguments_are_checked() {
     let found = check_module(
         "unique-index-args",
         "module m\n\
-         resource Book at ^books(id: int)\n    isbn: string\n\n    index byIsbn(isbn) unique\n\n\
+         resource Book\n    isbn: string\n\
+         store ^books(id: int): Book\n\n    index byIsbn(isbn) unique\n\n\
          fn f()\n    \
          const missing = ^books.byIsbn()\n    \
          const extra = ^books.byIsbn(\"978\", 1)\n    \
@@ -424,7 +437,8 @@ fn named_saved_root_key_arguments_are_rejected() {
     let found = check_module(
         "named-saved-root-key-args",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    var book = Book(title: \"x\")\n    ^books(id: 1) = book\n    const title = ^books(id: 1).title\n",
         "check.call_argument",
     );
@@ -436,7 +450,8 @@ fn inout_saved_root_key_arguments_are_rejected() {
     let found = check_module(
         "inout-saved-root-key-args",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    var id = 1\n    const title = ^books(inout id).title\n",
         "check.call_argument",
     );
@@ -448,7 +463,8 @@ fn named_saved_layer_key_arguments_are_rejected() {
     let found = check_module(
         "named-saved-layer-key-args",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n\n\
+         resource Book\n    required title: string\n    tags(pos: int): string\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    ^books(1).tags(pos: 1) = \"x\"\n",
         "check.call_argument",
     );
@@ -460,7 +476,8 @@ fn named_saved_index_key_arguments_are_rejected() {
     let found = check_module(
         "named-saved-index-key-args",
         "module m\n\
-         resource Book at ^books(id: int)\n    isbn: string\n\n    index byIsbn(isbn) unique\n\n\
+         resource Book\n    isbn: string\n\
+         store ^books(id: int): Book\n\n    index byIsbn(isbn) unique\n\n\
          fn f()\n    const found = exists(^books.byIsbn(isbn: \"x\"))\n",
         "check.call_argument",
     );
@@ -472,7 +489,8 @@ fn partial_non_unique_index_branches_bind_the_next_index_key_until_identity_suff
     let report = check_module_report(
         "partial-index-loop",
         "module m\n\
-         resource Book at ^books(id: int)\n    author: string\n    shelf: string\n\n    index byAuthorShelf(author, shelf, id)\n\n\
+         resource Book\n    author: string\n    shelf: string\n\
+         store ^books(id: int): Book\n\n    index byAuthorShelf(author, shelf, id)\n\n\
          fn f()\n    \
          for author in ^books.byAuthorShelf\n        var typed_author: string = author\n    \
          for shelf in ^books.byAuthorShelf(\"ann\")\n        var typed_shelf: string = shelf\n    \
@@ -486,7 +504,8 @@ fn identity_yielding_index_branches_bind_identity_and_resource_pairs() {
     let report = check_module_report(
         "index-pair-loop",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n    author: string\n    shelf: string\n\n    index byAuthorShelf(author, shelf, id)\n\n\
+         resource Book\n    required title: string\n    author: string\n    shelf: string\n\
+         store ^books(id: int): Book\n\n    index byAuthorShelf(author, shelf, id)\n\n\
          fn f()\n    \
          for id, book in ^books.byAuthorShelf(\"ann\", \"fiction\")\n        var typed_id: Id(^books) = id\n        var typed_title: string = book.title\n    \
          for exact_id, exact_book in ^books.byAuthorShelf(\"ann\", \"fiction\", 1)\n        var exact_typed: Id(^books) = exact_id\n        var exact_title: string = exact_book.title\n",
@@ -499,7 +518,8 @@ fn non_identity_index_branches_reject_two_name_loops() {
     let found = check_module(
         "non-identity-index-pair-loop",
         "module m\n\
-         resource Book at ^books(id: int)\n    author: string\n    shelf: string\n\n    index byAuthorShelf(author, shelf, id)\n\n\
+         resource Book\n    author: string\n    shelf: string\n\
+         store ^books(id: int): Book\n\n    index byAuthorShelf(author, shelf, id)\n\n\
          fn f()\n    for shelf, book in ^books.byAuthorShelf(\"ann\")\n        write($\"{shelf}\")\n",
         "check.collection_unsupported",
     );
@@ -511,7 +531,8 @@ fn singleton_root_keys_do_not_bind_generated_identities() {
     let found = check_module(
         "singleton-root-keys",
         "module m\n\
-         resource Settings at ^settings\n    value: int\n\n\
+         resource Settings\n    value: int\n\
+         store ^settings: Settings\n\n\
          fn f()\n    for id in keys(^settings)\n        var n = id + 1\n",
         "check.operator_type",
     );
@@ -523,7 +544,8 @@ fn supported_collection_wrappers_bind_their_documented_shapes() {
     let report = check_module_report(
         "collection-wrapper-shapes",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
          fn f()\n    for id in keys(^books)\n        var typed: Id(^books) = id\n    for book in values(^books)\n        var title: string = book.title\n    for id, book in entries(^books)\n        var typed: Id(^books) = id\n        var title: string = book.title\n    for book in reversed(values(^books))\n        var title: string = book.title\n",
     );
     assert_clean(&report);
@@ -534,7 +556,8 @@ fn layer_key_traversal_binds_declared_key_types() {
     let report = check_module_report(
         "layer-key-traversal-types",
         "module m\n\
-         resource Run at ^runs(id: int)\n    terms: sequence[string]\n    amounts(pos: int): decimal\n\n\
+         resource Run\n    terms: sequence[string]\n    amounts(pos: int): decimal\n\
+         store ^runs(id: int): Run\n\n\
          fn f(id: Id(^runs))\n    for pos in keys(^runs(id).terms)\n        const first: bool = pos == 1\n    for pos, amount in entries(^runs(id).amounts)\n        const numbered: bool = pos == 1\n        const total: decimal = amount + 1.0\n",
     );
     assert_clean(&report);
@@ -545,7 +568,8 @@ fn composite_root_traversal_binds_addressable_identities() {
     let report = check_module_report(
         "composite-root-traversal-id",
         "module m\n\
-         resource Cell at ^cells(x: int, y: int)\n    required v: int\n\n\
+         resource Cell\n    required v: int\n\
+         store ^cells(x: int, y: int): Cell\n\n\
          fn f()\n    for id, cell in ^cells\n        const same: int = ^cells(id).v\n        const copy: int = cell.v\n",
     );
     assert_clean(&report);
@@ -558,7 +582,8 @@ fn index_branches_reject_value_materialization_wrappers() {
             &format!("index-{wrapper}-unsupported"),
             &format!(
                 "module m\n\
-                 resource Book at ^books(id: int)\n    shelf: string\n\n    index byShelf(shelf, id)\n\n\
+                 resource Book\n    shelf: string\n\
+                 store ^books(id: int): Book\n\n    index byShelf(shelf, id)\n\n\
                  fn f()\n    for item in {wrapper}(^books.byShelf(\"fiction\"))\n        write($\"{{item}}\")\n",
             ),
             "check.collection_unsupported",
@@ -572,7 +597,8 @@ fn reversed_saved_collection_expressions_type_element_sequences() {
     let found = check_module(
         "reversed-saved-expressions",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n    tags: sequence[string]\n\n\
+         resource Book\n    required title: string\n    tags: sequence[string]\n\
+         store ^books(id: int): Book\n\n\
          fn f(id: Id(^books))\n    const ids = reversed(^books)\n    for bookId in ids\n        var typed: Id(^books) = bookId\n    const positions = reversed(^books(id).tags)\n    for pos in positions\n        var numbered: int = pos\n    const books = reversed(values(^books))\n    for book in books\n        var bad = book.title + 1\n    const tags = reversed(values(^books(id).tags))\n    for tag in tags\n        var also_bad = tag + 1\n",
         "check.operator_type",
     );

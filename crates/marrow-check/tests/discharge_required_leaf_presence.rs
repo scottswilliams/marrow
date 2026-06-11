@@ -22,10 +22,11 @@ fn required_nested_group_leaf_missing_fails_closed() {
             root,
             "src/people.mw",
             "module people\n\
-             resource Person at ^people(id: int)\n\
+             resource Person\n\
              \x20   name\n\
              \x20       required first: string\n\
              \x20       required last: string\n\
+             store ^people(id: int): Person\n\
              pub fn add(): Id(^people)\n\
              \x20   return nextId(^people)\n",
         );
@@ -70,11 +71,12 @@ fn required_keyed_layer_leaf_missing_fails_closed() {
             root,
             "src/policies.mw",
             "module policies\n\
-             resource Policy at ^policies(id: int)\n\
+             resource Policy\n\
              \x20   status: string\n\
              \x20   versions(version: int)\n\
              \x20       note: string\n\
              \x20       required body: string\n\
+             store ^policies(id: int): Policy\n\
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
@@ -127,10 +129,11 @@ fn keyed_layer_leaf_present_in_every_entry_proves() {
             root,
             "src/policies.mw",
             "module policies\n\
-             resource Policy at ^policies(id: int)\n\
+             resource Policy\n\
              \x20   status: string\n\
              \x20   versions(version: int)\n\
              \x20       required body: string\n\
+             store ^policies(id: int): Policy\n\
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
@@ -187,9 +190,10 @@ fn brand_new_required_member_over_populated_store_fails_closed() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   required pages: int\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -250,9 +254,10 @@ fn brand_new_required_member_with_default_backfills() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   required pages: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   default Book.pages = 0\n\
              pub fn add(title: string): Id(^books)\n\
@@ -301,9 +306,10 @@ fn brand_new_required_member_over_empty_store_activates() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   required pages: int\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -342,10 +348,11 @@ fn brand_new_required_keyed_leaf_over_populated_layer_fails_closed() {
             root,
             "src/policies.mw",
             "module policies\n\
-             resource Policy at ^policies(id: int)\n\
+             resource Policy\n\
              \x20   versions(version: int)\n\
              \x20       note: string\n\
              \x20       required body: string\n\
+             store ^policies(id: int): Policy\n\
              pub fn add(): Id(^policies)\n\
              \x20   return nextId(^policies)\n",
         );
@@ -417,10 +424,11 @@ fn brand_new_required_keyed_leaf_with_default_backfills() {
             root,
             "src/policies.mw",
             "module policies\n\
-             resource Policy at ^policies(id: int)\n\
+             resource Policy\n\
              \x20   versions(version: int)\n\
              \x20       note: string\n\
              \x20       required body: string\n\
+             store ^policies(id: int): Policy\n\
              evolve\n\
              \x20   default Policy.versions.body = \"\"\n\
              pub fn add(): Id(^policies)\n\

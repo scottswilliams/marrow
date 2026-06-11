@@ -12,8 +12,9 @@ use marrow_store::tree::TreeStore;
 
 /// A program that writes and reads a `Book` title.
 const BOOK_WRITER: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
+store ^books(id: int): Book
 
 pub fn set_title(id: int, t: string)
     ^books(id).title = t
@@ -48,9 +49,9 @@ fn a_field_write_updates_saved_data() {
 #[test]
 fn out_of_transaction_field_write_rejects_partial_required_record() {
     let program = checked_program(
-        "resource Item at ^items(id: int)\n\
+        "resource Item\n\
          \x20   required name: string\n\
-         \x20   shelf: string\n\n\
+         \x20   shelf: string\nstore ^items(id: int): Item\n\n\
          pub fn set_shelf(id: int)\n\
          \x20   ^items(id).shelf = \"fiction\"\n\n\
          pub fn has_item(id: int): bool\n\
@@ -77,10 +78,10 @@ fn out_of_transaction_field_write_rejects_partial_required_record() {
 #[test]
 fn out_of_transaction_group_field_write_rejects_partial_required_record() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n\
+        "resource Book\n\
          \x20   required title: string\n\
          \x20   binding\n\
-         \x20       cover: string\n\n\
+         \x20       cover: string\nstore ^books(id: int): Book\n\n\
          pub fn set_cover(id: int)\n\
          \x20   ^books(id).binding.cover = \"hard\"\n\n\
          pub fn has_book(id: int): bool\n\
@@ -107,9 +108,9 @@ fn out_of_transaction_group_field_write_rejects_partial_required_record() {
 #[test]
 fn transaction_commit_rejects_partial_required_record() {
     let program = checked_program(
-        "resource Item at ^items(id: int)\n\
+        "resource Item\n\
          \x20   required name: string\n\
-         \x20   shelf: string\n\n\
+         \x20   shelf: string\nstore ^items(id: int): Item\n\n\
          pub fn set_shelf(id: int)\n\
          \x20   transaction\n\
          \x20       ^items(id).shelf = \"fiction\"\n\n\
@@ -137,9 +138,9 @@ fn transaction_commit_rejects_partial_required_record() {
 #[test]
 fn transaction_required_field_checks_cross_helper_calls() {
     let program = checked_program(
-        "resource Item at ^items(id: int)\n\
+        "resource Item\n\
          \x20   required name: string\n\
-         \x20   shelf: string\n\n\
+         \x20   shelf: string\nstore ^items(id: int): Item\n\n\
          pub fn set_shelf(id: int)\n\
          \x20   ^items(id).shelf = \"fiction\"\n\n\
          pub fn create(id: int)\n\
@@ -169,9 +170,9 @@ fn transaction_required_field_checks_cross_helper_calls() {
 #[test]
 fn nested_transaction_defers_required_check_until_outer_commit() {
     let program = checked_program(
-        "resource Item at ^items(id: int)\n\
+        "resource Item\n\
          \x20   required name: string\n\
-         \x20   shelf: string\n\n\
+         \x20   shelf: string\nstore ^items(id: int): Item\n\n\
          pub fn create(id: int)\n\
          \x20   transaction\n\
          \x20       transaction\n\
@@ -200,12 +201,13 @@ fn nested_transaction_defers_required_check_until_outer_commit() {
 #[test]
 fn transaction_commit_metadata_reports_every_touched_root_and_index() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n\
+        "resource Book\n\
          \x20   required title: string\n\
-         \x20   shelf: string\n\
+         \x20   shelf: string\nstore ^books(id: int): Book\n\
          \x20   index byShelf(shelf, id)\n\n\
-         resource Audit at ^audits(id: int)\n\
-         \x20   required message: string\n\n\
+         resource Audit\n\
+         \x20   required message: string\n\
+         store ^audits(id: int): Audit\n\n\
          pub fn save()\n\
          \x20   transaction\n\
          \x20       ^books(1).title = \"Mort\"\n\
@@ -244,12 +246,13 @@ fn transaction_commit_metadata_reports_every_touched_root_and_index() {
 #[test]
 fn nested_transaction_commit_metadata_reports_the_outer_durable_commit() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n\
+        "resource Book\n\
          \x20   required title: string\n\
-         \x20   shelf: string\n\
+         \x20   shelf: string\nstore ^books(id: int): Book\n\
          \x20   index byShelf(shelf, id)\n\n\
-         resource Audit at ^audits(id: int)\n\
-         \x20   required message: string\n\n\
+         resource Audit\n\
+         \x20   required message: string\n\
+         store ^audits(id: int): Audit\n\n\
          pub fn save()\n\
          \x20   transaction\n\
          \x20       ^books(1).title = \"Mort\"\n\
@@ -289,12 +292,13 @@ fn nested_transaction_commit_metadata_reports_the_outer_durable_commit() {
 #[test]
 fn nested_transaction_rollback_does_not_stamp_attempted_inner_writes() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n\
+        "resource Book\n\
          \x20   required title: string\n\
-         \x20   shelf: string\n\
+         \x20   shelf: string\nstore ^books(id: int): Book\n\
          \x20   index byShelf(shelf, id)\n\n\
-         resource Audit at ^audits(id: int)\n\
-         \x20   required message: string\n\n\
+         resource Audit\n\
+         \x20   required message: string\n\
+         store ^audits(id: int): Audit\n\n\
          pub fn seed()\n\
          \x20   ^books(1).title = \"Mort\"\n\n\
          pub fn fail()\n\

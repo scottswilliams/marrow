@@ -12,9 +12,10 @@ use marrow_store::tree::TreeStore;
 /// A primary keyed root with a keyed child layer, used to exercise reverse
 /// iteration and stored-neighbor seeks over both record identities and layer keys.
 const NAV_BOOKS: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
     tags(pos: int): string
+store ^books(id: int): Book
 
 pub fn add(id: int, t: string)
     ^books(id).title = t
@@ -398,9 +399,10 @@ fn reversed_respects_the_traversed_layer_write_guard() {
 /// A non-unique index branch, iterated forward and reversed: the entries enumerate
 /// in identity-key order, and `reversed(...)` walks the same branch backward.
 const BOOK_SHELF_NAV: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
     shelf: string
+store ^books(id: int): Book
 
     index byShelf(shelf, id)
 
@@ -452,9 +454,10 @@ fn reversed_over_an_index_branch_descends() {
 /// `run.absent_element`, never an uncatchable `run.unsupported`, and `prev(^books)`
 /// returns the last *record*, not the index.
 const BOOK_SHELF_NEIGHBOR: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
     shelf: string
+store ^books(id: int): Book
 
     index byShelf(shelf, id)
 

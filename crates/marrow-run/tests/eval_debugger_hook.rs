@@ -131,8 +131,8 @@ fn hook_store_handle_sees_prior_writes() {
     // `Frame::store()` is the live handle, so a write made by an earlier statement
     // is visible to the hook when it inspects a later one (read-your-writes).
     let program = checked_program(
-        "resource Account at ^accts(id: int)\n\
-         \x20\x20\x20\x20balance: int\n\
+        "resource Account\n\
+         \x20\x20\x20\x20balance: int\nstore ^accts(id: int): Account\n\
          \n\
          pub fn seed(): int\n\
          \x20\x20\x20\x20^accts(1).balance = 7\n\
@@ -147,7 +147,7 @@ fn hook_store_handle_sees_prior_writes() {
     // The synthesized `module test` header shifts the source body down, so the
     // `return 0` statement lands on this line of the checked module. By the time the
     // hook sees it the balance write has run, so the live store must reflect it.
-    const RETURN_LINE: u32 = 8;
+    const RETURN_LINE: u32 = 9;
     impl StepHook for StorePeeker<'_> {
         fn before_statement(
             &mut self,
@@ -251,8 +251,8 @@ fn hook_observes_each_managed_write_in_commit_order() {
     // `Delete` of the identity path. The hook sees each `PlanStep` as a
     // `before_write` event, in commit order, at the statement's activation depth.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n\
-         \x20\x20\x20\x20title: string\n\
+        "resource Book\n\
+         \x20\x20\x20\x20title: string\nstore ^books(id: int): Book\n\
          \n\
          pub fn seed(): int\n\
          \x20\x20\x20\x20^books(1).title = \"Mort\"\n\
@@ -299,7 +299,7 @@ fn hook_observes_each_managed_write_in_commit_order() {
 #[test]
 fn hook_observes_each_managed_delete_shape() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n\
+        "resource Book\n\
          \x20\x20\x20\x20title: string\n\
          \n\
          \x20\x20\x20\x20details\n\
@@ -309,6 +309,7 @@ fn hook_observes_each_managed_delete_shape() {
          \n\
          \x20\x20\x20\x20versions(version: int)\n\
          \x20\x20\x20\x20\x20\x20\x20\x20note: string\n\
+         store ^books(id: int): Book\n\
          \n\
          pub fn seed()\n\
          \x20\x20\x20\x20^books(1).details.note = \"top\"\n\
@@ -394,9 +395,9 @@ fn hook_observes_each_managed_delete_shape() {
 #[test]
 fn hook_observes_maintenance_whole_root_deletes() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n\
+        "resource Book\n\
          \x20\x20\x20\x20title: string\n\
-         \x20\x20\x20\x20shelf: string\n\
+         \x20\x20\x20\x20shelf: string\nstore ^books(id: int): Book\n\
          \n\
          \x20\x20\x20\x20index byShelf(shelf, id)\n\
          \n\
@@ -454,8 +455,8 @@ fn no_hook_run_pays_no_write_observation() {
     // entry exactly as before. The default `before_write` is never reached, so the
     // managed write still lands and the run completes.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n\
-         \x20\x20\x20\x20title: string\n\
+        "resource Book\n\
+         \x20\x20\x20\x20title: string\nstore ^books(id: int): Book\n\
          \n\
          pub fn seed(): int\n\
          \x20\x20\x20\x20^books(1).title = \"Mort\"\n\
@@ -503,8 +504,8 @@ fn display_debug_renders_scalars_and_structured_previews() {
         "resource{title, pages}"
     );
     let program = checked_program(
-        "resource Book at ^books(id: int)\n\
-         \x20\x20\x20\x20title: string\n\
+        "resource Book\n\
+         \x20\x20\x20\x20title: string\nstore ^books(id: int): Book\n\
          \n\
          pub fn nextBookId(): Id(^books)\n\
          \x20\x20\x20\x20return nextId(^books)\n",

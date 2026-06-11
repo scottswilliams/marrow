@@ -111,11 +111,8 @@ impl<'a> DeclParser<'a> {
             }
             Some(TokenKind::Keyword(Keyword::Resource)) if self.keyword_introduces_decl() => {
                 let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
-                let (resource, store) = self.parse_resource(decl_docs);
+                let resource = self.parse_resource(decl_docs);
                 file.declarations.push(Declaration::Resource(resource));
-                if let Some(store) = store {
-                    file.declarations.push(Declaration::Store(store));
-                }
             }
             Some(TokenKind::Keyword(Keyword::Store)) if self.keyword_introduces_decl() => {
                 let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
@@ -329,18 +326,18 @@ impl<'a> DeclParser<'a> {
         (name, ty)
     }
 
-    fn parse_resource(&mut self, docs: Vec<String>) -> (ResourceDecl, Option<StoreDecl>) {
+    fn parse_resource(&mut self, docs: Vec<String>) -> ResourceDecl {
         let span = self.header_span();
         let header = self.take_header_line();
-        let (name, store) = match parse_resource_head(self.source, &header[1..]) {
+        let name = match parse_resource_head(self.source, &header[1..]) {
             Ok(parsed) => parsed,
             Err(error) => {
                 self.error_span(span, error.reason, error.message);
-                (String::new(), None)
+                String::new()
             }
         };
         let (members, indexes, comments) = if matches!(self.peek(), Some(TokenKind::Indent)) {
-            self.parse_resource_members(store.is_some())
+            self.parse_resource_members(false)
         } else {
             self.error_span(
                 span,
@@ -349,22 +346,14 @@ impl<'a> DeclParser<'a> {
             );
             (Vec::new(), Vec::new(), Vec::new())
         };
-        let store_decl = store.clone().map(|root| StoreDecl {
-            docs: Vec::new(),
-            root,
-            resource: name.clone(),
-            indexes,
-            comments: Vec::new(),
-            span,
-        });
-        let resource = ResourceDecl {
+        debug_assert!(indexes.is_empty());
+        ResourceDecl {
             docs,
             name,
             members,
             comments,
             span,
-        };
-        (resource, store_decl)
+        }
     }
 
     fn parse_store(&mut self, docs: Vec<String>) -> StoreDecl {

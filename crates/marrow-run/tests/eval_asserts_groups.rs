@@ -55,7 +55,7 @@ fn std_assert_fail_raises_with_its_message() {
 #[test]
 fn std_assert_absent_passes_when_nothing_is_saved() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    title: string\n\
+        "resource Book\n    title: string\nstore ^books(id: int): Book\n\
          \n\
          pub fn ok()\n    std::assert::absent(^books(1))\n",
     );
@@ -65,7 +65,7 @@ fn std_assert_absent_passes_when_nothing_is_saved() {
 #[test]
 fn std_assert_absent_fails_when_a_value_is_present() {
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    title: string\n\
+        "resource Book\n    title: string\nstore ^books(id: int): Book\n\
          \n\
          pub fn bad()\n    std::assert::absent(^books(1))\n",
     );
@@ -112,11 +112,11 @@ fn a_whole_group_entry_write_creates_the_entry() {
     // `^books(1).versions(2) = b` writes the whole group entry from a resource
     // value; the runtime matches its fields against the group's members by name.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n\
+        "resource Book\n\
          \x20\x20\x20\x20required title: string\n\
          \x20\x20\x20\x20versions(version: int)\n\
          \x20\x20\x20\x20\x20\x20\x20\x20required title: string\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20note: string\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20note: string\nstore ^books(id: int): Book\n\
          \n\
          pub fn seed()\n\
          \x20\x20\x20\x20var b: Book\n\
@@ -142,12 +142,12 @@ fn a_nested_group_field_round_trips() {
     // reading `^books(1).versions(2).comments(3).text` exercises a saved-tree path
     // deeper than one keyed layer.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n\
+        "resource Book\n\
          \x20\x20\x20\x20required title: string\n\
          \x20\x20\x20\x20versions(version: int)\n\
          \x20\x20\x20\x20\x20\x20\x20\x20required title: string\n\
          \x20\x20\x20\x20\x20\x20\x20\x20comments(pos: int)\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20required text: string\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20required text: string\nstore ^books(id: int): Book\n\
          \n\
          pub fn seed()\n\
          \x20\x20\x20\x20^books(1).title = \"root\"\n\
@@ -172,11 +172,11 @@ fn a_whole_group_entry_can_be_read_and_copied() {
     // `^books(1).versions(2) = ^books(1).versions(1)` reads the whole entry as a
     // value (RHS) and writes it to another key (LHS).
     let program = checked_program(
-        "resource Book at ^books(id: int)\n\
+        "resource Book\n\
          \x20\x20\x20\x20required title: string\n\
          \x20\x20\x20\x20versions(version: int)\n\
          \x20\x20\x20\x20\x20\x20\x20\x20required title: string\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20note: string\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20note: string\nstore ^books(id: int): Book\n\
          \n\
          pub fn seed()\n\
          \x20\x20\x20\x20var b: Book\n\
@@ -203,7 +203,7 @@ fn coalesce_absorbs_only_an_absent_left_read() {
     // `^path ?? default` falls back only on an absent element. A populated read
     // yields its own value; the default is never reached when the element exists.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    title: string\n\n\
+        "resource Book\n    title: string\nstore ^books(id: int): Book\n\n\
          pub fn read(id: int): string\n    return ^books(id).title ?? \"none\"\n",
     );
     let store = empty_store();
@@ -242,7 +242,7 @@ fn coalesce_propagates_a_non_absent_fault_on_its_left() {
     // silently swallowed into the default: a hidden decode failure would mask
     // saved-data corruption behind a plausible fallback value.
     let program = checked_program(
-        "resource Counter at ^counters(id: int)\n    n: int\n\n\
+        "resource Counter\n    n: int\nstore ^counters(id: int): Counter\n\n\
          pub fn read(id: int): int\n    return ^counters(id).n ?? -1\n",
     );
     let store = empty_store();

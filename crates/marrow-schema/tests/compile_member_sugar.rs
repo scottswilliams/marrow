@@ -79,8 +79,9 @@ fn sequence_member_desugars_to_a_pos_int_keyed_leaf() {
     // `tags: sequence[string]` is sugar for `tags(pos: int): string`, so it
     // compiles to the same keyed leaf the canonical spelling produces.
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     tags: sequence[string]
+store ^books(id: int): Book
 ";
     let schema = compile_ok(source);
     // It is a keyed leaf, not a plain top-level field.
@@ -99,12 +100,12 @@ resource Book at ^books(id: int)
 fn sequence_member_matches_the_canonical_keyed_leaf() {
     // The desugared layer is identical to the canonical `tags(pos: int): string`.
     let sugar = layer(
-        &compile_ok("resource Book at ^books(id: int)\n    tags: sequence[string]\n"),
+        &compile_ok("resource Book\n    tags: sequence[string]\nstore ^books(id: int): Book\n"),
         "tags",
     )
     .clone();
     let canonical = layer(
-        &compile_ok("resource Book at ^books(id: int)\n    tags(pos: int): string\n"),
+        &compile_ok("resource Book\n    tags(pos: int): string\nstore ^books(id: int): Book\n"),
         "tags",
     )
     .clone();
@@ -115,12 +116,12 @@ fn sequence_member_matches_the_canonical_keyed_leaf() {
 fn map_member_matches_the_canonical_keyed_leaf() {
     // `scores: map[string, int]` is sugar for `scores(key: string): int`.
     let sugar = layer(
-        &compile_ok("resource Book at ^books(id: int)\n    scores: map[string, int]\n"),
+        &compile_ok("resource Book\n    scores: map[string, int]\nstore ^books(id: int): Book\n"),
         "scores",
     )
     .clone();
     let canonical = layer(
-        &compile_ok("resource Book at ^books(id: int)\n    scores(key: string): int\n"),
+        &compile_ok("resource Book\n    scores(key: string): int\nstore ^books(id: int): Book\n"),
         "scores",
     )
     .clone();
@@ -131,9 +132,10 @@ fn map_member_matches_the_canonical_keyed_leaf() {
 fn nested_sequence_member_desugars_inside_a_group() {
     // A sequence nested inside a group desugars the same way.
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     versions(version: int)
         notes: sequence[string]
+store ^books(id: int): Book
 ";
     let schema = compile_ok(source);
     let versions = layer(&schema, "versions");
@@ -151,9 +153,10 @@ resource Book at ^books(id: int)
 #[test]
 fn nested_map_member_desugars_inside_a_group() {
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     versions(version: int)
         scores: map[string, int]
+store ^books(id: int): Book
 ";
     let schema = compile_ok(source);
     let versions = layer(&schema, "versions");
@@ -185,8 +188,9 @@ resource Draft
 #[test]
 fn map_type_nested_inside_sequence_is_rejected() {
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     scores: sequence[map[string, int]]
+store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNSUPPORTED_TYPE]);
@@ -199,8 +203,9 @@ resource Book at ^books(id: int)
 #[test]
 fn map_type_in_identity_key_is_rejected() {
     let source = "\
-resource Book at ^books(id: map[string, int])
+resource Book
     title: string
+store ^books(id: map[string, int]): Book
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNSUPPORTED_TYPE]);
@@ -227,8 +232,9 @@ resource Draft
 #[test]
 fn map_type_as_map_key_is_rejected_once() {
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     scores: map[map[string, int], int]
+store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNSUPPORTED_TYPE]);
@@ -241,8 +247,9 @@ resource Book at ^books(id: int)
 #[test]
 fn required_map_member_sugar_is_rejected() {
     let source = "\
-resource Book at ^books(id: int)
+resource Book
     required scores: map[string, int]
+store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNSUPPORTED_TYPE]);

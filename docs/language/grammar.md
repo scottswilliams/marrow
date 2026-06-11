@@ -83,14 +83,13 @@ the source-root-relative file path.
 
 ```ebnf
 resource_decl   =
-    "resource" identifier resource_store? NEWLINE
+    "resource" identifier NEWLINE
     INDENT resource_member+ DEDENT ;
 
 store_decl      =
     "store" saved_root key_params? ":" identifier NEWLINE
     (INDENT store_member+ DEDENT)? ;
 
-resource_store  = "at" saved_root key_params? ;
 saved_root      = "^" identifier ;
 
 resource_member =
@@ -512,9 +511,7 @@ These rules are part of the grammar contract:
 - `catch name` binds `name` as `Error`; if a catch annotation is present, it
   must be `Error`.
 - `finally` blocks reject `return`, `break`, and `continue`.
-- `index` declarations are checked as direct members of keyed stores. In the
-  concise `resource ... at ^root(...)` declaration sugar, index declarations in
-  the resource block desugar onto the generated store.
+- `index` declarations are checked as direct members of keyed stores.
 - Parenthesized suffixes are calls on callable values and key lookups on tree
   values; the checker resolves the value kind.
 - Local `inout` arguments must be assignable places. Saved paths are not valid

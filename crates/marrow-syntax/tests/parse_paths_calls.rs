@@ -173,7 +173,7 @@ fn unterminated_quoted_field_segment_does_not_panic() {
 
 #[test]
 fn keyword_field_name_reports_a_parse_error() {
-    // `at` is a reserved word (`resource X at ^root`). Used as a bare field
+    // `at` remains a reserved word. Used as a bare field
     // name it violates `field_name = identifier | string_lit`, so the parser
     // must report it rather than silently dropping the statement.
     let source = "fn touch(id: int)\n    ^events(id).at = now\n";

@@ -22,8 +22,9 @@ fn pending_native_project(name: &str) -> TempProject {
             root,
             "src/app.mw",
             "module app\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              pub fn main()\n\
              \x20   print(\"ran\")\n",
         );
@@ -123,8 +124,9 @@ fn a_memory_backed_durable_baseline_fails_with_a_typed_error() {
             root,
             "src/app.mw",
             "module app\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              pub fn main()\n\
              \x20   print(\"ran\")\n",
         );

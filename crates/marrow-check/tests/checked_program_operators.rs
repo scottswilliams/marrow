@@ -11,10 +11,12 @@ use support::{config, temp_project, write};
 /// shape, so an identity of one is byte-identical to an identity of the other yet
 /// must not compare equal.
 const OPERATOR_OPERANDS: &str = "module shelf::ops\n\
-     resource Book at ^books(id: int)\n\
+     resource Book\n\
      \x20   required title: string\n\
-     resource Magazine at ^magazines(id: int)\n\
-     \x20   required title: string\n";
+     store ^books(id: int): Book\n\
+     resource Magazine\n\
+     \x20   required title: string\n\
+     store ^magazines(id: int): Magazine\n";
 
 /// Compare two whole records of different resources with `==`. Equality is not
 /// defined over whole records, so this is `check.operator_type`, not a silent
@@ -170,11 +172,13 @@ fn cross_resource_identity_coalesce_is_flagged() {
             root,
             "src/shelf/ops.mw",
             "module shelf::ops\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              \x20   index byTitle(title) unique\n\
-             resource Magazine at ^magazines(id: int)\n\
+             resource Magazine\n\
              \x20   required title: string\n\
+             store ^magazines(id: int): Magazine\n\
              fn f(m: Id(^magazines)): Id(^magazines)\n\
              \x20   return ^books.byTitle(\"a\") ?? m\n",
         );
@@ -497,8 +501,9 @@ fn string_leaf_coalesced_with_identity_is_flagged() {
             root,
             "src/shelf/ops.mw",
             "module shelf::ops\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              fn f(id: Id(^books)): string\n\
              \x20   return ^books(1).title ?? id\n",
         );
@@ -523,8 +528,9 @@ fn whole_record_coalesced_with_scalar_is_flagged() {
             root,
             "src/shelf/ops.mw",
             "module shelf::ops\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              fn f(): Book\n\
              \x20   return ^books(1) ?? 1\n",
         );
@@ -548,8 +554,9 @@ fn scalar_coalesce_still_checks_clean() {
             root,
             "src/shelf/ops.mw",
             "module shelf::ops\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              fn f(): string\n\
              \x20   return ^books(1).title ?? \"x\"\n",
         );

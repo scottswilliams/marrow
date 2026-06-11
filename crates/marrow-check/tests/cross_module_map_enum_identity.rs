@@ -25,8 +25,9 @@ fn a_map_valued_by_a_foreign_enum_records_the_foreign_enum_identity_in_its_fact(
             root,
             "src/m.mw",
             "module m\nuse kinds\n\
-             resource Book at ^books(id: int)\n\
-             \x20   shades: map[string, kinds::Color]\n",
+             resource Book\n\
+             \x20   shades: map[string, kinds::Color]\n\
+             store ^books(id: int): Book\n",
         );
     });
     let (report, program) = check_project(&root, &config()).expect("check");
@@ -73,8 +74,9 @@ fn reading_a_foreign_enum_map_value_into_a_scalar_place_carries_the_foreign_iden
             root,
             "src/m.mw",
             "module m\nuse kinds\n\
-             resource Book at ^books(id: int)\n\
-             \x20   shades: map[string, kinds::Color]\n\n\
+             resource Book\n\
+             \x20   shades: map[string, kinds::Color]\n\
+             store ^books(id: int): Book\n\n\
              fn f(id: Id(^books))\n    \
              const n: int = (^books(id).shades(\"a\") ?? kinds::Color::red)\n",
         );
@@ -118,8 +120,9 @@ fn writing_the_map_value_enforces_the_foreign_enum_nominal_identity() {
             root,
             "src/m.mw",
             "module m\nuse kinds\nuse other\n\
-             resource Book at ^books(id: int)\n\
-             \x20   shades: map[string, kinds::Color]\n\n\
+             resource Book\n\
+             \x20   shades: map[string, kinds::Color]\n\
+             store ^books(id: int): Book\n\n\
              fn ok(id: Id(^books))\n    ^books(id).shades(\"a\") = kinds::Color::red\n\n\
              fn bad(id: Id(^books))\n    ^books(id).shades(\"a\") = other::Shade::dark\n",
         );

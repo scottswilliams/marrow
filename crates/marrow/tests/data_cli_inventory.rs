@@ -96,9 +96,10 @@ fn data_tools_skip_a_pending_member_instead_of_reporting_corruption() {
         "src/app.mw",
         "module app\n\
          \n\
-         resource Counter at ^counter(id: int)\n\
+         resource Counter\n\
          \x20\x20\x20\x20required value: int\n\
          \x20\x20\x20\x20note: string\n\
+         store ^counter(id: int): Counter\n\
          \n\
          pub fn seed()\n\
          \x20\x20\x20\x20var c: Counter\n\

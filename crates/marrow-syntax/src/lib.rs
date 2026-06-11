@@ -152,15 +152,15 @@ mod decl_parser_corpus {
             "const X: notatype = 5\n",
             "const 1: int = 5\n",
             // resources, groups, indexes, keyed roots
-            "resource Book at ^books(id: int)\n    required title: string\n    tags(pos: int): string\n",
+            "resource Book\n    required title: string\n    tags(pos: int): string\nstore ^books(id: int): Book\n",
             "resource Tag\n    name: string\n",
-            "resource Book at ^books\n    title: string\n    notes(noteId: string)\n        text: string\n    index byShelf(shelf, id)\n    index uniq(id) unique\n",
-            "resource Book at ^books()\n    title: string\n",
-            "resource Book at ^books\n",
+            "resource Book\n    title: string\n    notes(noteId: string)\n        text: string\nstore ^books: Book\n    index byShelf(shelf, id)\n    index uniq(id) unique\n",
+            "resource Book\n    title: string\nstore ^books(): Book\n",
+            "resource Book\nstore ^books: Book\n",
             "resource\n    title: string\n",
             "resource Book at books\n    title: string\n",
-            "resource Book at ^books\n    required missing\n",
-            "resource Book at ^books\n    name: string\n        nested: int\n",
+            "resource Book\n    required missing\nstore ^books: Book\n",
+            "resource Book\n    name: string\n        nested: int\nstore ^books: Book\n",
             // functions and parameters
             "pub fn add(a: int, b: int): int\n    return a\n",
             "fn run()\n    return\n",
@@ -184,7 +184,7 @@ mod decl_parser_corpus {
             "fn run()\n    log(level: 1, 2)\n",
             "fn classify(n: int)\n    if n < 0\n        return\n    else if n > 0\n        return\n    else\n        return\n",
             // interleaved blank lines and doc comments inside a resource body
-            "resource Book at ^books\n    ;; a field\n    required title: string\n\n    required author: string\n",
+            "resource Book\n    ;; a field\n    required title: string\n\n    required author: string\nstore ^books: Book\n",
             // trailing blank lines inside a function body before the next decl
             "fn a()\n    return\n\nfn b()\n    return\n",
             "fn a()\n    return\n\n\npub fn b(x: int)\n    return x\n",

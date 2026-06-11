@@ -31,21 +31,25 @@ use std::path::Path;
 /// The pre-evolution schema: a `Book` keyed store plus a separate `Author` store, with
 /// no reference between them yet. Records seeded under this schema carry only `title`.
 const REFERENCE_BASELINE: &str = "module lib\n\
-     resource Author at ^authors(id: int)\n\
+     resource Author\n\
      \x20   name: string\n\
-     resource Book at ^books(id: int)\n\
+     store ^authors(id: int): Author\n\
+     resource Book\n\
      \x20   required title: string\n\
+     store ^books(id: int): Book\n\
      pub fn noop()\n\
      \x20   print(\"noop\")\n";
 
 /// The evolved schema: `Book` gains a sparse `Id(^authors)` reference field. Adding a
 /// sparse field is a non-defaulting evolution, so existing records need no backfill.
 const REFERENCE_EVOLVED: &str = "module lib\n\
-     resource Author at ^authors(id: int)\n\
+     resource Author\n\
      \x20   name: string\n\
-     resource Book at ^books(id: int)\n\
+     store ^authors(id: int): Author\n\
+     resource Book\n\
      \x20   required title: string\n\
      \x20   authorId: Id(^authors)\n\
+     store ^books(id: int): Book\n\
      pub fn noop()\n\
      \x20   print(\"noop\")\n";
 

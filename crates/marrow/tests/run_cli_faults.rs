@@ -94,7 +94,8 @@ fn an_uncaught_unique_conflict_surfaces_its_write_code() {
             root,
             "src/app.mw",
             "module app\n\n\
-             resource Book at ^books(id: int)\n    required title: string\n    isbn: string\n\n    index byIsbn(isbn) unique\n\n\
+             resource Book\n    required title: string\n    isbn: string\n\
+             store ^books(id: int): Book\n\n    index byIsbn(isbn) unique\n\n\
              pub fn main()\n    ^books(1).title = \"Mort\"\n    ^books(1).isbn = \"978-0\"\n    ^books(2).title = \"Pyramids\"\n    ^books(2).isbn = \"978-0\"\n",
         );
     });
@@ -211,7 +212,7 @@ fn an_absent_element_fault_is_located() {
         write(
             root,
             "src/app.mw",
-            "module app\n\nresource Book at ^books(id: int)\n    required title: string\n\n\
+            "module app\n\nresource Book\n    required title: string\nstore ^books(id: int): Book\n\n\
              pub fn main(): string\n    return ^books(99).title\n",
         );
     });
@@ -228,7 +229,7 @@ fn an_absent_element_fault_is_located() {
         "{:?}",
         fault.file
     );
-    assert_eq!(fault.line, Some(7));
+    assert_eq!(fault.line, Some(8));
 }
 
 #[test]

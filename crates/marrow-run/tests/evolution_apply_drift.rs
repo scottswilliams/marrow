@@ -24,9 +24,10 @@ fn optional_add_stamps_epoch_without_data_step() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -81,8 +82,9 @@ fn completion_fails_when_no_effect_resume_recomputes_repair_required() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -101,9 +103,10 @@ fn completion_fails_when_no_effect_resume_recomputes_repair_required() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
          \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
@@ -148,9 +151,10 @@ fn source_digest_drift_aborts() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   required pages: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   default Book.pages = 0\n\
              pub fn add(title: string): Id(^books)\n\
@@ -188,9 +192,10 @@ fn count_drift_aborts() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   required pages: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   default Book.pages = 0\n\
              pub fn add(title: string): Id(^books)\n\
@@ -232,8 +237,9 @@ fn store_commit_drift_aborts() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -274,9 +280,10 @@ fn failed_apply_rolls_back_and_resumes_idempotently() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   required pages: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   default Book.pages = 0\n\
              pub fn add(title: string): Id(^books)\n\
@@ -345,9 +352,10 @@ fn no_op_apply_does_not_churn_the_commit_id() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
              \x20   required pages: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   default Book.pages = 0\n\
              pub fn add(title: string): Id(^books)\n\

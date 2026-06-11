@@ -36,7 +36,7 @@ fn an_inout_parameter_mutates_a_local_resource() {
     // Mutating a field of a local resource passed `inout` is visible to the
     // caller.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    title: string\n\npub fn setTitle(inout book: Book)\n    book.title = \"Small Gods\"\n\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    setTitle(inout book)\n    return book.title\n",
+        "resource Book\n    title: string\nstore ^books(id: int): Book\n\npub fn setTitle(inout book: Book)\n    book.title = \"Small Gods\"\n\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    setTitle(inout book)\n    return book.title\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::main")),
@@ -72,7 +72,7 @@ fn an_inout_parameter_writes_back_to_a_local_resource_field() {
     // A field of a local resource, `book.title`, is an assignable place; passing it
     // `inout` reads it to seed the parameter and writes the result back.
     let program = checked_program(
-        "resource Book at ^books(id: int)\n    title: string\n\npub fn upper(inout s: string)\n    s = \"UPPER\"\n\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    upper(inout book.title)\n    return book.title\n",
+        "resource Book\n    title: string\nstore ^books(id: int): Book\n\npub fn upper(inout s: string)\n    s = \"UPPER\"\n\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    upper(inout book.title)\n    return book.title\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::main")),

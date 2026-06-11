@@ -20,9 +20,10 @@ fn transform_from_decodable_sibling_is_applyable() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required price: int\n\
              \x20   required priceCents: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   transform Book.priceCents\n\
              \x20       return old.price * 100\n\
@@ -64,9 +65,10 @@ fn transform_undecodable_read_member_fails_closed() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required price: int\n\
              \x20   required priceCents: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   transform Book.priceCents\n\
              \x20       return old.price * 100\n\
@@ -114,9 +116,10 @@ fn transform_saved_write_is_check_error() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required price: int\n\
              \x20   required priceCents: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   transform Book.priceCents\n\
              \x20       ^books(1).price = 9\n\
@@ -145,9 +148,10 @@ fn transform_return_type_mismatch_is_check_error() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required price: int\n\
              \x20   required priceCents: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   transform Book.priceCents\n\
              \x20       return \"a string\"\n\
@@ -172,8 +176,9 @@ fn transform_reading_own_target_is_check_error() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required priceCents: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   transform Book.priceCents\n\
              \x20       return old.priceCents * 2\n\
@@ -202,9 +207,10 @@ fn transform_reading_other_transform_target_is_check_error() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required a: int\n\
              \x20   required b: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   transform Book.a\n\
              \x20       return 1\n\
@@ -236,9 +242,10 @@ fn transform_reading_saved_root_is_check_error() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required price: int\n\
              \x20   required priceCents: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   transform Book.priceCents\n\
              \x20       return ^books(1).price * 100\n\
@@ -268,9 +275,10 @@ fn transform_calling_user_function_is_check_error() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required price: int\n\
              \x20   required priceCents: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   transform Book.priceCents\n\
              \x20       return cents(old.price)\n\
@@ -302,9 +310,10 @@ fn transform_reading_same_block_default_target_is_check_error() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required base: int\n\
              \x20   required total: int\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   default Book.base = 10\n\
              \x20   transform Book.total\n\
@@ -334,10 +343,11 @@ fn transform_of_nested_member_is_check_error() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   name\n\
              \x20       required first: string\n\
              \x20       required last: string\n\
+             store ^books(id: int): Book\n\
              evolve\n\
              \x20   transform Book.name.first\n\
              \x20       return \"x\"\n\
@@ -368,8 +378,9 @@ fn witness_composes_catalog_and_store_fingerprints() {
             root,
             "src/books.mw",
             "module books\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
+             store ^books(id: int): Book\n\
              pub fn add(title: string): Id(^books)\n\
              \x20   return nextId(^books)\n",
         );
@@ -382,9 +393,10 @@ fn witness_composes_catalog_and_store_fingerprints() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
          \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );

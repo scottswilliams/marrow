@@ -17,10 +17,11 @@ fn evolve_apply_accepts_two_repeated_approve_retire_flags() {
     let root = native_books_project(
         "evolve-apply-multi-retire",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
          \x20   subtitle: string\n\
          \x20   notes: string\n\
+         store ^books(id: int): Book\n\
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
@@ -50,8 +51,9 @@ fn evolve_apply_accepts_two_repeated_approve_retire_flags() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
+         store ^books(id: int): Book\n\
          evolve\n\
          \x20   retire Book.subtitle\n\
          \x20   retire Book.notes\n\
@@ -116,9 +118,10 @@ fn a_bare_rename_of_a_populated_member_does_not_silently_auto_apply() {
         &root,
         "src/books.mw",
         "module books\n\
-         resource Book at ^books(id: int)\n\
+         resource Book\n\
          \x20   required title: string\n\
          \x20   blurb: string\n\
+         store ^books(id: int): Book\n\
          pub fn show(): string\n\
          \x20   return (^books(1).blurb ?? \"absent\")\n",
     );

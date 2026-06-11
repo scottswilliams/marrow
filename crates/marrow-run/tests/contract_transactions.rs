@@ -15,11 +15,13 @@ use marrow_store::tree::TreeStore;
 /// faulting after staging both writes. Helpers read each root's presence and field
 /// so a write's effect (or its rollback) is observable per root.
 const TWO_ROOTS: &str = "\
-resource Book at ^books(id: int)
+resource Book
     required title: string
+store ^books(id: int): Book
 
-resource Author at ^authors(id: int)
+resource Author
     required name: string
+store ^authors(id: int): Author
 
 pub fn seed()
     ^books(1).title = \"old-book\"

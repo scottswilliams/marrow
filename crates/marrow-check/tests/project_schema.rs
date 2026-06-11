@@ -57,8 +57,9 @@ fn rejects_a_named_type_in_a_key_position() {
              enum Status\n\
              \x20   active\n\
              \x20   archived\n\
-             resource Order at ^orders(state: Status)\n\
-             \x20   required note: string\n",
+             resource Order\n\
+             \x20   required note: string\n\
+             store ^orders(state: Status): Order\n",
             identity("state"),
             "Status",
         ),
@@ -68,24 +69,27 @@ fn rejects_a_named_type_in_a_key_position() {
              enum Status\n\
              \x20   active\n\
              \x20   archived\n\
-             resource Order at ^orders(id: int)\n\
-             \x20   byState(state: Status): string\n",
+             resource Order\n\
+             \x20   byState(state: Status): string\n\
+             store ^orders(id: int): Order\n",
             key_param("state"),
             "Status",
         ),
         (
             "typo-identity-key",
             "module m\n\
-             resource Order at ^orders(state: Stutus)\n\
-             \x20   required note: string\n",
+             resource Order\n\
+             \x20   required note: string\n\
+             store ^orders(state: Stutus): Order\n",
             identity("state"),
             "Stutus",
         ),
         (
             "typo-layer-key",
             "module m\n\
-             resource Order at ^orders(id: int)\n\
-             \x20   byState(state: Stutus): string\n",
+             resource Order\n\
+             \x20   byState(state: Stutus): string\n\
+             store ^orders(id: int): Order\n",
             key_param("state"),
             "Stutus",
         ),
@@ -94,8 +98,9 @@ fn rejects_a_named_type_in_a_key_position() {
             "module m\n\
              resource Person\n\
              \x20   required name: string\n\
-             resource Order at ^orders(owner: Person)\n\
-             \x20   required note: string\n",
+             resource Order\n\
+             \x20   required note: string\n\
+             store ^orders(owner: Person): Order\n",
             identity("owner"),
             "Person",
         ),
@@ -129,7 +134,8 @@ fn rejects_a_cross_module_qualified_enum_identity_key() {
             root,
             "src/b.mw",
             "module b\nuse a\n\
-             resource Order at ^orders(state: a::Status)\n    required note: string\n",
+             resource Order\n    required note: string\n\
+             store ^orders(state: a::Status): Order\n",
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
@@ -153,8 +159,9 @@ fn rejects_a_sequence_index_argument() {
     let errors = check_module(
         "sequence-index-arg",
         "module m\n\
-         resource Order at ^orders(id: int)\n\
+         resource Order\n\
          \x20   tags: sequence[string]\n\
+         store ^orders(id: int): Order\n\
          \x20   index byTags(tags, id)\n",
         "schema.unknown_index_arg",
     );
@@ -176,8 +183,9 @@ fn an_enum_field_index_argument_checks_clean() {
          enum Status\n\
          \x20   active\n\
          \x20   archived\n\
-         resource Order at ^orders(id: int)\n\
+         resource Order\n\
          \x20   state: Status\n\
+         store ^orders(id: int): Order\n\
          \x20   index byState(state, id)\n",
     );
     assert_clean(&report);
@@ -193,9 +201,10 @@ fn an_orderable_scalar_key_checks_clean() {
          enum Status\n\
          \x20   active\n\
          \x20   archived\n\
-         resource Order at ^orders(id: int)\n\
+         resource Order\n\
          \x20   required state: Status\n\
-         \x20   byTag(tag: string): string\n",
+         \x20   byTag(tag: string): string\n\
+         store ^orders(id: int): Order\n",
     );
     assert_clean(&report);
 }
@@ -208,10 +217,12 @@ fn reports_two_stores_sharing_one_saved_root() {
             root,
             "src/shelf.mw",
             "module shelf\n\
-             resource Book at ^books(id: int)\n\
+             resource Book\n\
              \x20   required title: string\n\
-             resource Tome at ^books(id: int)\n\
-             \x20   required title: string\n",
+             store ^books(id: int): Book\n\
+             resource Tome\n\
+             \x20   required title: string\n\
+             store ^books(id: int): Tome\n",
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
@@ -274,7 +285,8 @@ fn saved_inout_through_resource_reference_is_rejected() {
     let report = check_module_report(
         "saved-inout-resource-reference",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
          fn normalize(inout book: Book)\n    return\n\
          fn f(id: int)\n    var local = Book(title: \"local\")\n    normalize(inout local)\n    normalize(inout ^books(id))\n",
     );
@@ -293,7 +305,8 @@ fn saved_inout_through_index_entry_is_rejected_surface() {
     let report = check_module_report(
         "rejected-index-inout",
         "module m\n\
-         resource Book at ^books(id: int)\n    shelf: string\n    index byShelf(shelf, id)\n\n\
+         resource Book\n    shelf: string\n\
+         store ^books(id: int): Book\n    index byShelf(shelf, id)\n\n\
          fn touch(inout id: Id(^books))\n    return\n\
          fn f(id: int)\n    touch(inout ^books.byShelf(\"fiction\")(id))\n",
     );
@@ -312,7 +325,8 @@ fn malformed_saved_inout_through_keyed_root_field_is_rejected() {
     let report = check_module_report(
         "malformed-saved-inout-keyed-root-field",
         "module m\n\
-         resource Book at ^books(id: int)\n    required title: string\n\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
          fn touch(inout value: unknown)\n    value = \"x\"\n\
          fn f()\n    touch(inout ^books.title)\n",
     );
@@ -331,7 +345,8 @@ fn malformed_saved_inout_through_index_branch_is_rejected() {
     let report = check_module_report(
         "malformed-saved-inout-index-branch",
         "module m\n\
-         resource Book at ^books(id: int)\n    shelf: string\n    index byShelf(shelf, id)\n\n\
+         resource Book\n    shelf: string\n\
+         store ^books(id: int): Book\n    index byShelf(shelf, id)\n\n\
          fn touch(inout value: unknown)\n    value = \"x\"\n\
          fn f()\n    touch(inout ^books.byShelf)\n",
     );
@@ -350,7 +365,8 @@ fn old_saved_traversal_method_shapers_are_rejected() {
     let report = check_module_report(
         "rejected-saved-traversal-shapers",
         "module m\n\
-         resource Book at ^books(id: int)\n    shelf: string\n    index byShelf(shelf, id)\n\n\
+         resource Book\n    shelf: string\n\
+         store ^books(id: int): Book\n    index byShelf(shelf, id)\n\n\
          fn f(token: string)\n    \
          for id in ^books.take(10)\n        print($\"{id}\")\n    \
          for id in ^books.byShelf(\"fiction\").window(size: 10)\n        print($\"{id}\")\n    \
@@ -386,7 +402,8 @@ fn declared_saved_members_named_like_traversal_shapers_are_not_rejected() {
     let report = check_module_report(
         "declared-traversal-shaped-names",
         "module m\n\
-         resource Book at ^books(id: int)\n    shelf: string\n    window(pos: int): string\n    index take(shelf, id)\n\n\
+         resource Book\n    shelf: string\n    window(pos: int): string\n\
+         store ^books(id: int): Book\n    index take(shelf, id)\n\n\
          fn f(id: Id(^books))\n    \
          ^books(id).window(1) = \"open\"\n    \
          for found in ^books.take(\"fiction\")\n        var typed: Id(^books) = found\n",
