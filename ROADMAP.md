@@ -829,14 +829,6 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 Goal: every deletion and truth-fix with no implementation dependency lands before building.
 Mostly parallel; two wide-churn barrier lanes close the wave.
 
-**W1.4 ∥ Dead-model deletions.** Carries: removals `touches_saved_data`,
-`FutureEphemeralRootEffects`, `Statement::Match` fields; the ast.rs:376 stale-comment fix
-(III.C4 item). `StoredValueMeaning::Identity` is kept — gate 4 rejects its removal; W4.7 makes
-it load-bearing. Owns: marrow-check program.rs/driver.rs/facts.rs slices, marrow-syntax ast.rs +
-parse_decl/stmt.rs. Seed: failing compile after field removal proves zero readers. Review:
-public-API shrink verified against marrow-lsp; the `~` lexer reservation survives (that IS
-model-ir/04's footprint). Done: grep-zero for the deleted names in both repos.
-
 **W1.5 ∥ Fence-fallback deletion.** Carries: removal "Delete the pre-digest-stamp adoption
 fallback" (window.rs, preview.rs, apply.rs unchanged), with the corrected test plan (commit==None
 path untouched; new `epoch_stamped_receipt_with_empty_digest_is_schema_drift` test). Owns:
