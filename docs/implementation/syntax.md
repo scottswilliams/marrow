@@ -48,7 +48,6 @@ A value the grammar cannot structure yields `None` plus a `parse.syntax` diagnos
 - `format_source` re-parses rather than consuming a caller-held AST, so a caller already holding a `ParsedSource` pays for a second parse.
 - `StoreDecl` is produced two ways: standalone `store ^root: Resource`, and synthesized from `resource Name at ^root`. The formatter only emits the `store ^root: Resource` spelling, so formatting an `at ^root` input splits it into separate `resource` and `store` declarations.
 - `EnumDecl.public` is parsed and round-tripped but visibility is not enforced here; the flag is inert until a later crate.
-- `Statement::Match` carries `enum_name`/`enum_module` slots the parser always leaves `None` (the checker fills them).
 - `is_type_text` recognizes `map[...]` and `Id(^root)` spellings that no current production emits; that part of the guard is unexercised by the front end.
 
 ## Read next

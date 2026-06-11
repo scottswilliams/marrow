@@ -23,7 +23,6 @@ use crate::program::{
 };
 use crate::resolve::{self, Def, DefItem, Resolution, ResolvableKind, resolve};
 use crate::rules;
-use crate::walk;
 use crate::{CheckedParamMode, MarrowType, ScalarType};
 
 /// An overlay of in-memory source text keyed by file path. Editor tooling fills
@@ -956,87 +955,8 @@ fn checked_function(
             .as_ref()
             .map(|ty| MarrowType::resolve(ty, names)),
         span: function.span,
-        touches_saved_data: block_touches_saved_data(&function.body),
         runtime_body: None,
     }
-}
-
-/// Does a block read or write any saved root (`^...`)? Walks every statement and
-/// nested expression, recursing through nested blocks.
-fn block_touches_saved_data(block: &marrow_syntax::Block) -> bool {
-    block.statements.iter().any(statement_touches_saved_data)
-}
-
-fn statement_touches_saved_data(statement: &marrow_syntax::Statement) -> bool {
-    use marrow_syntax::Statement;
-    match statement {
-        Statement::Const { value, .. } | Statement::Throw { value, .. } => {
-            expr_touches_saved_data(value)
-        }
-        Statement::Var { value, .. } => value.as_ref().is_some_and(expr_touches_saved_data),
-        Statement::Assign { target, value, .. } => {
-            expr_touches_saved_data(target) || expr_touches_saved_data(value)
-        }
-        Statement::Delete { path, .. } => expr_touches_saved_data(path),
-        Statement::Return { value, .. } => value.as_ref().is_some_and(expr_touches_saved_data),
-        Statement::Expr { value, .. } => expr_touches_saved_data(value),
-        Statement::If {
-            condition,
-            then_block,
-            else_ifs,
-            else_block,
-            ..
-        } => {
-            condition.as_ref().is_some_and(expr_touches_saved_data)
-                || block_touches_saved_data(then_block)
-                || else_ifs.iter().any(|else_if| {
-                    else_if
-                        .condition
-                        .as_ref()
-                        .is_some_and(expr_touches_saved_data)
-                        || block_touches_saved_data(&else_if.block)
-                })
-                || else_block.as_ref().is_some_and(block_touches_saved_data)
-        }
-        Statement::While {
-            condition, body, ..
-        } => {
-            condition.as_ref().is_some_and(expr_touches_saved_data)
-                || block_touches_saved_data(body)
-        }
-        Statement::For { iterable, body, .. } => {
-            expr_touches_saved_data(iterable) || block_touches_saved_data(body)
-        }
-        Statement::Transaction { body, .. } => block_touches_saved_data(body),
-        Statement::Try {
-            body,
-            catch,
-            finally,
-            ..
-        } => {
-            block_touches_saved_data(body)
-                || catch
-                    .as_ref()
-                    .is_some_and(|catch| block_touches_saved_data(&catch.block))
-                || finally.as_ref().is_some_and(block_touches_saved_data)
-        }
-        Statement::Match {
-            scrutinee, arms, ..
-        } => {
-            scrutinee.as_ref().is_some_and(expr_touches_saved_data)
-                || arms.iter().any(|arm| block_touches_saved_data(&arm.block))
-        }
-        Statement::Break { .. } | Statement::Continue { .. } => false,
-    }
-}
-
-fn expr_touches_saved_data(expr: &marrow_syntax::Expression) -> bool {
-    if matches!(expr, marrow_syntax::Expression::SavedRoot { .. }) {
-        return true;
-    }
-    let mut touches = false;
-    walk::for_each_child_expr(expr, |child| touches |= expr_touches_saved_data(child));
-    touches
 }
 
 /// Build the per-file short→full alias map from a file's full import paths

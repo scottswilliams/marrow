@@ -351,17 +351,10 @@ impl CheckedStmt {
             syntax::Statement::Match {
                 scrutinee,
                 arms,
-                enum_module,
-                enum_name,
                 span,
                 ..
             } => {
-                let inferred = infer_match_enum(scrutinee.as_ref(), context, scope);
-                let declared = enum_module
-                    .as_deref()
-                    .zip(enum_name.as_deref())
-                    .map(|(module, name)| (module.to_string(), name.to_string()));
-                let match_enum = declared.or(inferred);
+                let match_enum = infer_match_enum(scrutinee.as_ref(), context, scope);
                 let match_enum_ref = match_enum
                     .as_ref()
                     .map(|(module, name)| (module.as_str(), name.as_str()));

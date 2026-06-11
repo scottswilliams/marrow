@@ -182,16 +182,6 @@ fn checked_facts_record_function_effects_with_typed_places() {
 
     let fail = facts.function_id(module, "fail").expect("fail");
     assert!(facts.function(fail).direct_effects.throws);
-
-    for name in ["readTitle", "rename", "addTag", "logTitle", "stamp", "fail"] {
-        let function = facts.function_id(module, name).expect("effect function");
-        let ephemeral = &facts
-            .function(function)
-            .direct_effects
-            .future_ephemeral_roots;
-        assert!(ephemeral.reads.is_empty(), "{name} has ephemeral reads");
-        assert!(ephemeral.writes.is_empty(), "{name} has ephemeral writes");
-    }
 }
 
 #[test]

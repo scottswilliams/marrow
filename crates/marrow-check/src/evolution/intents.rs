@@ -236,11 +236,11 @@ pub(crate) fn check_transform_effects(
     }
 }
 
-/// Why a transform body is impure, or `None` when it is pure. A saved read, a saved
-/// write, a host effect, a transaction, and a read or write of a future ephemeral root
-/// are read from the canonical direct-effect facts; a call into a user function is its
-/// own reason, since this model evaluates a transform as a self-contained pure
-/// expression rather than propagating callee effects.
+/// Why a transform body is impure, or `None` when it is pure. A saved read,
+/// saved write, host effect, or transaction is read from the canonical
+/// direct-effect facts; a call into a user function is its own reason, since this
+/// model evaluates a transform as a self-contained pure expression rather than
+/// propagating callee effects.
 ///
 /// Reading saved data is the soundness-critical case: a transform body is a per-record
 /// function of `old` only, so a direct `^root(key).field` read would let one record's
@@ -248,10 +248,7 @@ pub(crate) fn check_transform_effects(
 /// binding and the decodability proof discharge builds for each read member.
 fn impurity_reason(program: &CheckedProgram, body: &CheckedBody) -> Option<&'static str> {
     let effects = crate::presence::direct_effects_for_block(&program.facts, body);
-    if !effects.saved_reads.is_empty()
-        || !effects.future_ephemeral_roots.reads.is_empty()
-        || !effects.future_ephemeral_roots.writes.is_empty()
-    {
+    if !effects.saved_reads.is_empty() {
         return Some("it reads saved data; a transform body may only read `old`");
     }
     if !effects.saved_writes.is_empty() {

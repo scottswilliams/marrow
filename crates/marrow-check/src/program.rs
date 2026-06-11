@@ -351,8 +351,8 @@ pub struct CheckedConst {
     pub span: SourceSpan,
 }
 
-/// A checked function: its resolved signature, effect summary, and checked
-/// executable body for runtime.
+/// A checked function: its resolved signature and checked executable body for
+/// runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedFunction {
     pub name: String,
@@ -360,8 +360,6 @@ pub struct CheckedFunction {
     pub params: Vec<CheckedParam>,
     pub return_type: Option<MarrowType>,
     pub span: SourceSpan,
-    /// True when the body reads or writes any saved root (`^...`).
-    pub touches_saved_data: bool,
     pub(crate) runtime_body: Option<CheckedBody>,
 }
 
@@ -580,7 +578,6 @@ pub struct CheckedRuntimeFunction {
     entry_params: Vec<CheckedRuntimeParam>,
     pub return_type: Option<MarrowType>,
     pub span: SourceSpan,
-    pub touches_saved_data: bool,
     body: Option<CheckedBody>,
 }
 
@@ -597,7 +594,6 @@ impl CheckedRuntimeFunction {
                 .collect(),
             return_type: function.return_type.clone(),
             span: function.span,
-            touches_saved_data: function.touches_saved_data,
             body: function.runtime_body.clone(),
         }
     }

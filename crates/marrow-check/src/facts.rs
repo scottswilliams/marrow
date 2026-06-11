@@ -1203,7 +1203,6 @@ impl StoredValueMeaning {
 pub struct DirectEffectFacts {
     pub saved_reads: Vec<SavedPlaceEffect>,
     pub saved_writes: Vec<SavedPlaceEffect>,
-    pub future_ephemeral_roots: FutureEphemeralRootEffects,
     pub transactions: bool,
     pub host_calls: Vec<HostEffect>,
     pub throws: bool,
@@ -1211,17 +1210,6 @@ pub struct DirectEffectFacts {
     /// direct summary, so callers that require a self-contained body (such as evolve transforms,
     /// which cannot delegate to another function) read this bit instead of re-walking the AST.
     pub calls_user_function: bool,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct FutureEphemeralRootEffects {
-    pub reads: Vec<FutureEphemeralRootEffect>,
-    pub writes: Vec<FutureEphemeralRootEffect>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FutureEphemeralRootEffect {
-    pub root: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -39,8 +39,6 @@ fn builds_a_module_for_a_clean_library_file() {
     assert_eq!(add.params[0].name, "title");
     assert_eq!(add.params[0].ty, MarrowType::Primitive(ScalarType::Str));
     assert!(add.return_type.is_some(), "{add:#?}");
-    // `add`'s body touches the `^books` saved root (allocating an id with `nextId`).
-    assert!(add.touches_saved_data, "{add:#?}");
     assert!(
         add.runtime_body()
             .is_some_and(|body| !body.statements().is_empty()),

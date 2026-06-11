@@ -47,7 +47,6 @@ Key types live mostly in `presence/target.rs` (`ReadTarget`, `ReadPlace`), `pres
 
 - `function_ref_writes_saved_data` (`writes.rs`) reads each callee's precomputed `direct_effects.saved_writes`, so direct effects must be refreshed *before* the presence walk relies on them.
 - `read_target` resolves with `NameScope::default()`, so a single-segment LHS name is keyed as `name:` rather than a binding id. Fine for its boolean is-saved use, but its `ReadTarget` is not comparable for narrowing identity against the scope-aware ones from the walk.
-- `FutureEphemeralRootEffects` is a field of `DirectEffectFacts` that no pass ever populates — it always reads empty (only `evolution/intents.rs` reads it). Likely dead pending a future feature.
 - `keys.rs` claims `expression_key` is the sole canonical-form owner, yet `binding_key` in the same file independently formats the identical `binding:{id}:{name}` string — a second, consistent producer of that text.
 
 ## Tests

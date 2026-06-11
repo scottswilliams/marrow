@@ -70,11 +70,10 @@ pub use executable::{
 pub use facts::PresenceProofRead;
 pub use facts::{
     CheckedFacts, CheckedType, DirectEffectFacts, EnumFact, EnumId, EnumMemberFact, EnumMemberId,
-    FunctionFact, FunctionId, FutureEphemeralRootEffect, FutureEphemeralRootEffects, HostEffect,
-    LocalFact, LocalId, ModuleFact, ModuleId, ResourceFact, ResourceId, ResourceMemberFact,
-    ResourceMemberId, ResourceMemberKind, SavedPlaceEffect, StoreFact, StoreId,
-    StoreIdentityKeyFact, StoreIndexFact, StoreIndexId, StoreIndexKeyFact, StoreIndexKeySource,
-    StoredValueMeaning,
+    FunctionFact, FunctionId, HostEffect, LocalFact, LocalId, ModuleFact, ModuleId, ResourceFact,
+    ResourceId, ResourceMemberFact, ResourceMemberId, ResourceMemberKind, SavedPlaceEffect,
+    StoreFact, StoreId, StoreIdentityKeyFact, StoreIndexFact, StoreIndexId, StoreIndexKeyFact,
+    StoreIndexKeySource, StoredValueMeaning,
 };
 pub use facts::{
     PresenceProofFact, PresenceProofId, PresenceProofPlace, PresenceProofSource,

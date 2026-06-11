@@ -402,8 +402,6 @@ impl<'a> StmtParser<'a> {
         Statement::Match {
             scrutinee,
             arms,
-            enum_name: None,
-            enum_module: None,
             span: join_spans(start, end),
         }
     }

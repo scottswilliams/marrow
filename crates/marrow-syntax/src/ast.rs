@@ -518,15 +518,9 @@ pub enum Statement {
     /// a local enum's `match` has no wildcard arm. Exhaustiveness and member
     /// validity are checker rules.
     ///
-    /// `enum_name`/`enum_module` are the scrutinee's resolved enum identity; the
-    /// parser leaves both `None` and the checker fills them. The runtime
-    /// dispatches arms by that exact enum's ordinals, so two enums that share
-    /// member names — even across modules — never alias.
     Match {
         scrutinee: Option<Expression>,
         arms: Vec<MatchArm>,
-        enum_name: Option<String>,
-        enum_module: Option<String>,
         span: SourceSpan,
     },
 }
