@@ -177,6 +177,22 @@ impl CheckedFacts {
         self.enum_members.get(id.0 as usize)
     }
 
+    pub(crate) fn enum_member_catalog_path(
+        &self,
+        modules: &[CheckedModule],
+        id: EnumMemberId,
+    ) -> Option<String> {
+        let member = self.enum_member(id)?;
+        let enum_fact = self.enum_(member.enum_id)?;
+        let module = modules.get(enum_fact.module.0 as usize)?;
+        let path = enum_member_name_path(&self.enum_members, id)?;
+        Some(format!(
+            "{}::{}",
+            enum_path(&module.name, &enum_fact.name),
+            path.join("::")
+        ))
+    }
+
     pub(crate) fn enum_member_by_source_order(
         &self,
         enum_id: EnumId,
@@ -335,22 +351,15 @@ impl CheckedFacts {
         modules: &[CheckedModule],
         ids: &HashMap<CatalogKey, String>,
     ) {
-        let enum_member_paths: Vec<String> = self
+        let enum_member_paths: Vec<Option<String>> = self
             .enum_members
             .iter()
-            .map(|member| {
-                let enum_fact = &self.enums[member.enum_id.0 as usize];
-                let module = &modules[enum_fact.module.0 as usize];
-                let path = enum_member_name_path(&self.enum_members, member.id);
-                format!(
-                    "{}::{}",
-                    enum_path(&module.name, &enum_fact.name),
-                    path.join("::")
-                )
-            })
+            .map(|member| self.enum_member_catalog_path(modules, member.id))
             .collect();
         for (member, path) in self.enum_members.iter_mut().zip(enum_member_paths) {
-            member.catalog_id = catalog_id(ids, marrow_catalog::CatalogEntryKind::EnumMember, path);
+            member.catalog_id = path.and_then(|path| {
+                catalog_id(ids, marrow_catalog::CatalogEntryKind::EnumMember, path)
+            });
         }
     }
 
@@ -1301,14 +1310,14 @@ fn resource_member_name_path(members: &[ResourceMemberFact], id: ResourceMemberI
     path
 }
 
-fn enum_member_name_path(members: &[EnumMemberFact], id: EnumMemberId) -> Vec<String> {
-    let member = &members[id.0 as usize];
+fn enum_member_name_path(members: &[EnumMemberFact], id: EnumMemberId) -> Option<Vec<String>> {
+    let member = members.get(id.0 as usize)?;
     let mut path = match member.parent {
-        Some(parent) => enum_member_name_path(members, parent),
+        Some(parent) => enum_member_name_path(members, parent)?,
         None => Vec::new(),
     };
     path.push(member.name.clone());
-    path
+    Some(path)
 }
 
 fn overwrite_prefix<T>(target: &mut [T], prefix: &[T])

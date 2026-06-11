@@ -372,20 +372,25 @@ $ marrow data stats --format json ./proj
 ### `data dump`
 
 Print every stored `(path, value)` for inspection: records in identity-key
-order, each record's fields in declaration order. Values
-render as canonical payload bytes — UTF-8 text when valid, else `0x<hex>`.
-JSON/JSONL carry the checked path plus base64 of the value bytes. This is not a
-production backup format.
+order, each record's fields in declaration order. Text renders values through
+their checked leaf type: strings are quoted and escaped, bytes are `0x<hex>`,
+`Id(^store)` references are saved paths, and enum values are module-qualified
+member identities. JSON/JSONL carry the checked path plus base64 of the value
+bytes. This is not a production backup format.
 
 ```console
 $ marrow data dump ./proj
-^books(1).title	Small Gods
-^books(1).author	Terry Pratchett
+^books(1).title	"Small Gods"
+^books(1).author	"Terry Pratchett"
+^books(1).loanedTo	^authors(1)
+^books(1).state	app::Status::archived
 
 $ marrow data dump --format jsonl ./proj
 {"path":"^books(1).title","value_b64":"…"}
 {"path":"^books(1).author","value_b64":"…"}
-{"kind":"summary","records":2}
+{"path":"^books(1).loanedTo","value_b64":"…"}
+{"path":"^books(1).state","value_b64":"…"}
+{"kind":"summary","records":4}
 ```
 
 ### `data integrity`
@@ -425,15 +430,19 @@ store open/repair completed: ./proj/.data/marrow.redb
 
 ### `data get`
 
-Read one path's value for inspection. The value renders as canonical payload
-bytes, like `dump`.
+Read one path's value for inspection. The value renders as checked text, like
+`dump`: strings are quoted and escaped, bytes are `0x<hex>`, references are
+saved paths, and enum values are member identities.
 Absence is a valid result (exit `0`): a path with no value but children prints
 `(no value; has children)`, a truly absent path prints `(absent)`. An
 unparseable path is a usage error (exit `2`).
 
 ```console
 $ marrow data get ./proj '^books(1).title'
-Small Gods
+"Small Gods"
+
+$ marrow data get ./proj '^books(1).loanedTo'
+^authors(1)
 
 $ marrow data get --format json ./proj '^books(1).title'
 {"path":"^books(1).title","presence":"value_only","value_b64":"U21hbGwgR29kcw=="}

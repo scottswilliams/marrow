@@ -10,8 +10,9 @@ pub use data::{
     DataChild, DataChildrenPage, DataEntry, DataPresence, DataQuery, DataQuerySegment, DataRecord,
     DataWalkPage, DebugDataCursorPath, DebugDataPayload, MAX_PREVIEW_ITEMS, MemberFlavor,
     QueryError, count_data_records, data_children, data_children_supports_paging,
-    data_query_under_prefix, data_roots_in_store, read_data_query, render_query_segments,
-    resolve_data_query, resolve_source_text_data_query, visit_data_records, walk_data,
+    data_query_under_prefix, data_roots_in_store, read_data_query, render_data_query_value,
+    render_data_value, render_query_segments, resolve_data_query, resolve_source_text_data_query,
+    visit_data_records, walk_data,
 };
 pub use integrity::{
     IntegrityOutcome, IntegrityProblem, count_activation_integrity_problems,

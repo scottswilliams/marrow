@@ -4,7 +4,9 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 
 use marrow_check::CheckedProgram;
-use marrow_check::tooling::{count_data_records, data_roots_in_store, visit_data_records};
+use marrow_check::tooling::{
+    count_data_records, data_roots_in_store, render_data_value, visit_data_records,
+};
 use marrow_store::StoreError;
 use marrow_store::tree::TreeStore;
 use serde_json::json;
@@ -309,7 +311,7 @@ fn render_dump_text(
         println!(
             "{}\t{}",
             record.path,
-            crate::render_value_bytes(record.payload.as_bytes())
+            render_data_value(program, record.leaf(), record.payload.as_bytes())
         );
         Ok(())
     })

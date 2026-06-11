@@ -2,11 +2,12 @@ use std::process::ExitCode;
 
 use marrow_check::parse_path;
 use marrow_check::tooling::{
-    DataPresence, ToolingError, read_data_query, resolve_source_text_data_query,
+    DataPresence, ToolingError, read_data_query, render_data_query_value,
+    resolve_source_text_data_query,
 };
 use serde_json::json;
 
-use crate::{CheckFormat, load_checked_project, render_value_bytes, write_json};
+use crate::{CheckFormat, load_checked_project, write_json};
 
 pub(super) fn data_get(args: &[String]) -> ExitCode {
     let (dir, path_text, format) = match crate::dir_and_path_args("data get", "path", args) {
@@ -60,7 +61,10 @@ pub(super) fn data_get(args: &[String]) -> ExitCode {
     };
     match format {
         CheckFormat::Text => match &value {
-            Some(payload) => println!("{}", render_value_bytes(payload.as_bytes())),
+            Some(payload) => println!(
+                "{}",
+                render_data_query_value(&program, &query, payload.as_bytes())
+            ),
             None => match presence {
                 DataPresence::ChildrenOnly => println!("(no value; has children)"),
                 _ => println!("(absent)"),

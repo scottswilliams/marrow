@@ -116,17 +116,20 @@ Prints every declared data cell `(path, value)` from one read-only snapshot —
 identities in key order, members in declaration order. Derived index cells and
 engine metadata are excluded. This is an explicit operator/admin dump, so it is
 allowed to walk the whole store; production preview or protocol reads must use
-bounded pages. Values render as canonical payload bytes; text uses UTF-8 when
-possible and `0x<hex>` otherwise.
+bounded pages. Text renders each value through its checked leaf type: strings are
+quoted and escaped, bytes are `0x<hex>`, `Id(^store)` references are saved paths,
+and enum values are module-qualified member identities.
 
 ```
 $ marrow data dump ./project
 ^counter(1).value	42
 ```
 
-Text is tab-separated: the Marrow path, then the value rendered as UTF-8 text
-when the bytes are valid UTF-8 (the common case, since canonical forms are
-ASCII), else as `0x<hex>`.
+Text is tab-separated: the Marrow path, then one leaf value. String values use
+the same quoting and escaping as string keys, so tabs, newlines, and path-like
+text stay inside one TSV field. Bytes values always render as `0x<hex>`.
+References render as their referent path, for example `^authors(1)`. Enum values
+render as one member identity, for example `app::Status::archived`.
 
 `--format json` wraps all records in one object; each record carries the checked
 path plus base64 of the value bytes:
@@ -157,6 +160,11 @@ backup/restore format.
 $ marrow data get ./project '^counter(1).value'
 42
 ```
+
+The default text renderer uses the same value contract as `data dump`: strings
+are quoted and escaped, bytes are `0x<hex>`, references are saved paths, and enum
+values are member identities. Use `--format json` when a caller needs the exact
+stored bytes.
 
 A path with no direct value but with children (a record identity node, for
 example) is distinct from a truly absent path:

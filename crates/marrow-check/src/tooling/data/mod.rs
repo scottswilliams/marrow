@@ -15,7 +15,7 @@ pub use children::{data_children, data_children_supports_paging};
 pub use query::{data_query_under_prefix, resolve_data_query, resolve_source_text_data_query};
 pub use query_error::{MemberFlavor, QueryError};
 pub use read::read_data_query;
-pub use render::render_query_segments;
+pub use render::{render_data_query_value, render_data_value, render_query_segments};
 pub use traversal::{count_data_records, data_roots_in_store, visit_data_records};
 pub use walk::walk_data;
 
@@ -31,6 +31,7 @@ pub struct DataQuery {
     path: String,
     root: String,
     segments: Vec<DataQuerySegment>,
+    leaf: Option<StoreLeafKind>,
     pub(crate) storage: StorageDataQuery,
 }
 
@@ -43,16 +44,22 @@ impl DataQuery {
         &self.segments
     }
 
+    pub fn leaf(&self) -> Option<&StoreLeafKind> {
+        self.leaf.as_ref()
+    }
+
     pub(crate) fn new(
         path: String,
         root: String,
         segments: Vec<DataQuerySegment>,
+        leaf: Option<StoreLeafKind>,
         storage: StorageDataQuery,
     ) -> Self {
         Self {
             path,
             root,
             segments,
+            leaf,
             storage,
         }
     }
@@ -151,6 +158,12 @@ pub struct DataRecord {
     pub payload: DebugDataPayload,
     pub(crate) leaf: StoreLeafKind,
     pub(crate) key_mismatch: Option<KeyMismatch>,
+}
+
+impl DataRecord {
+    pub fn leaf(&self) -> &StoreLeafKind {
+        &self.leaf
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -3,7 +3,7 @@ use marrow_store::key::SavedKey;
 use marrow_store::tree::DataPathSegment;
 
 use crate::tooling::ToolingError;
-use crate::{CheckedProgram, CheckedSavedMemberKind, checked_saved_root_place};
+use crate::{CheckedProgram, CheckedSavedMemberKind, StoreLeafKind, checked_saved_root_place};
 
 use super::query_error::QueryError;
 use super::render::render_query_segments;
@@ -87,6 +87,7 @@ fn resolve_query_steps(
 
     let mut data_path = Vec::new();
     let mut members = place.root_members.as_slice();
+    let mut leaf: Option<StoreLeafKind> = None;
     while let Some(segment) = rest.get(index) {
         let Some((name, kind)) = query_member(segment) else {
             return Err(QueryError::UnexpectedKey.into());
@@ -103,6 +104,7 @@ fn resolve_query_steps(
             return Ok(None);
         };
         data_path.push(DataPathSegment::Member(member_id));
+        leaf = None;
         index += 1;
 
         let mut key_count = 0usize;
@@ -137,8 +139,14 @@ fn resolve_query_steps(
             break;
         }
         members = match &member.kind {
-            CheckedSavedMemberKind::Group => member.group_members.as_slice(),
-            CheckedSavedMemberKind::Field { .. } => &[],
+            CheckedSavedMemberKind::Group => {
+                leaf = None;
+                member.group_members.as_slice()
+            }
+            CheckedSavedMemberKind::Field { .. } => {
+                leaf = member.leaf.clone();
+                &[]
+            }
         };
     }
 
@@ -146,6 +154,7 @@ fn resolve_query_steps(
         path,
         (*root).to_string(),
         rendered_segments,
+        leaf,
         StorageDataQuery {
             store,
             identity,

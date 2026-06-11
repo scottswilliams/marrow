@@ -643,8 +643,8 @@ pub(crate) fn hex_string(bytes: &[u8]) -> String {
     text
 }
 
-/// The one owner of how saved value bytes display: UTF-8 text when valid,
-/// otherwise `0x<hex>`. Shared by `data dump`/`data get` and the execution trace.
+/// The one owner of raw saved bytes display for execution traces: UTF-8 text when
+/// valid, otherwise `0x<hex>`.
 pub(crate) fn render_value_bytes(bytes: &[u8]) -> String {
     match std::str::from_utf8(bytes) {
         Ok(text) => text.to_string(),
