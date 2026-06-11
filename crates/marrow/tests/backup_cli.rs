@@ -541,6 +541,7 @@ fn restore_rejects_a_corrupt_backup() {
     let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
     assert_eq!(json_code(&restore), "restore.corrupt_chunk");
+    assert_store_empty(&data_dir);
 }
 
 /// A native-store project with both a non-unique and a unique index over a keyed
@@ -777,6 +778,7 @@ fn restore_rejects_trailing_bytes() {
     let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
     assert_eq!(json_code(&restore), "restore.corrupt_chunk");
+    assert_store_empty(&data_dir);
 }
 
 /// `nextId(^books)` allocates from the highest stored record id, which lives in the

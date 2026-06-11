@@ -227,3 +227,56 @@ pub(crate) fn decode_escaped_bytes(bytes: &[u8]) -> Option<(Vec<u8>, usize)> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{SavedKey, decode_key_value, encode_key_value};
+
+    fn representative_keys() -> Vec<SavedKey> {
+        vec![
+            SavedKey::Bool(false),
+            SavedKey::Bool(true),
+            SavedKey::Int(i64::MIN),
+            SavedKey::Int(-1),
+            SavedKey::Int(0),
+            SavedKey::Int(i64::MAX),
+            SavedKey::Date(-719_162),
+            SavedKey::Date(0),
+            SavedKey::Date(2_932_896),
+            SavedKey::Instant(i128::MIN),
+            SavedKey::Instant(0),
+            SavedKey::Instant(i128::MAX),
+            SavedKey::Duration(i128::MIN),
+            SavedKey::Duration(-1),
+            SavedKey::Duration(i128::MAX),
+            SavedKey::Str(String::new()),
+            SavedKey::Str("a\u{0}b".into()),
+            SavedKey::Bytes(vec![]),
+            SavedKey::Bytes(vec![0x00, 0x01, 0xff]),
+        ]
+    }
+
+    #[test]
+    fn saved_key_codec_round_trips_representative_values() {
+        for key in representative_keys() {
+            let bytes = encode_key_value(&key);
+            let (decoded, used) = decode_key_value(&bytes).expect("key decodes");
+            assert_eq!(decoded, key);
+            assert_eq!(used, bytes.len(), "decoder consumes the exact key frame");
+        }
+    }
+
+    #[test]
+    fn saved_key_codec_preserves_typed_order_in_bytes() {
+        let mut by_type = representative_keys();
+        by_type.sort();
+
+        let mut by_bytes = representative_keys();
+        by_bytes.sort_by_key(encode_key_value);
+
+        assert_eq!(
+            by_bytes, by_type,
+            "encoded key bytes must sort like SavedKey"
+        );
+    }
+}

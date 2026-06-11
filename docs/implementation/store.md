@@ -31,7 +31,7 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 | `crates/marrow-store/src/metadata.rs` | `EngineProfile`, `CommitMetadata`, and their length-prefixed binary codec with bounded-count guards. |
 | `crates/marrow-store/src/catalog.rs` | The accepted-catalog table codec: header/entry rows under `FAMILY_CATALOG`, bounded paged scan, ordinal-contiguity, canonical digest normalization, legacy order-sensitive digest compatibility, and read/replace through `TreeStore`. |
 | `crates/marrow-store/src/mem.rs` | `MemStore`: in-memory `Backend` with full-map clone savepoints and a frozen pinned-read snapshot. |
-| `crates/marrow-store/src/redb.rs` | `RedbStore`: persistent `Backend` with format-version stamp, undo-journal nesting (not redb savepoints), batched prefix delete, pinned read snapshots. |
+| `crates/marrow-store/src/redb.rs` | `RedbStore`: persistent `Backend` with explicit immediate-durability redb transactions, format-version stamp plus parent-directory sync on fresh creation, undo-journal nesting (not redb savepoints), batched prefix delete, pinned read snapshots. |
 | `crates/marrow-store/src/traversal.rs` | Shared prefix-scan page driver both engines feed to build a bounded, prefix-clipped, truncation-flagged `ScanPage`. |
 | `crates/marrow-store/src/backup.rs` | `TreeBackupCell(Buf)`: data-only backup cell, framed target+value codec, FNV-64 checksum, bounded read guards. |
 | `crates/marrow-store/src/conformance.rs` | Private `Backend` conformance suite (`run_all`): 17 laws run by both engines. |
@@ -40,6 +40,7 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 
 - `0x00` is the only structural separator. Strings/bytes/ids escape it (`0x00` → `0x00 0x01`) and terminate with `0x00 0x00`; the typed-key tag band is held by compile-time asserts (`KEY_STR == 0x07`, `KEY_DATE == KEY_INT + 1`).
 - Transactions are atomic across the whole staged plan. A mid-plan fault rolls the entire bracket back with no surviving write and no metadata stamp. `MemStore` clones the map; `RedbStore` runs one long-lived write transaction with per-level undo journals.
+- Native redb commits pin immediate durability and keep redb's one-phase commit posture. Fresh store creation fsyncs the containing directory after the first format-stamp commit.
 - A pinned read snapshot is mutually exclusive with writes on the same handle (offenders get `store.transaction`) and is non-reentrant, so a multi-page backup sees one coherent version.
 - Scans are always bounded and resumable. A truncated page with no resume key is treated as corrupt scan state (`store.cursor`), never as the end.
 - Catalog snapshot integrity is independent of declaration order. New headers store a digest over entries sorted by kind tag, path, stable ID, aliases, lifecycle tag, accepted key shape, and accepted structural signature. Reads also accept the legacy order-sensitive row-order digest when it matches the decoded rows, then normalize the returned snapshot to the canonical digest.

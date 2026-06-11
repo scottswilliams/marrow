@@ -275,3 +275,68 @@ fn corrupt_metadata(bytes: &[u8]) -> StoreError {
         message: format!("tree-cell metadata is malformed ({} bytes)", bytes.len()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ActivationDefaultRecordCount, CommitMetadata, EngineProfile, decode_commit_metadata,
+        encode_commit_metadata,
+    };
+    use crate::StoreError;
+    use crate::cell::CatalogId;
+
+    fn catalog_id(suffix: &str) -> CatalogId {
+        CatalogId::new(format!("cat_{suffix:0>32}")).expect("catalog id")
+    }
+
+    fn rich_commit_metadata() -> CommitMetadata {
+        let profile = EngineProfile::new(5);
+        CommitMetadata {
+            commit_id: 9,
+            catalog_epoch: 4,
+            layout_epoch: 5,
+            source_digest: "sha256:source".into(),
+            engine_profile_digest: profile.digest_bytes(),
+            changed_root_catalog_ids: vec![catalog_id("1"), catalog_id("2")],
+            changed_index_catalog_ids: vec![catalog_id("3")],
+            activation_evolution_digest: "sha256:evolution".into(),
+            activation_proposal_catalog_digest: Some("sha256:proposal".into()),
+            activation_proposal_new_catalog_ids: vec![catalog_id("4")],
+            activation_records_backfilled: 11,
+            activation_default_records_by_id: vec![ActivationDefaultRecordCount {
+                catalog_id: catalog_id("5"),
+                records_backfilled: 6,
+                target_records: 7,
+                evidence_digest: "sha256:default".into(),
+            }],
+            activation_indexes_rebuilt: 12,
+            activation_records_retired: 13,
+            activation_retire_evidence_digest: "sha256:retire".into(),
+            activation_records_retired_by_id: vec![(catalog_id("6"), 8)],
+            activation_records_transformed: 14,
+        }
+    }
+
+    #[test]
+    fn commit_metadata_codec_round_trips_every_field() {
+        let metadata = rich_commit_metadata();
+        let bytes = encode_commit_metadata(&metadata).expect("metadata encodes");
+
+        assert_eq!(
+            decode_commit_metadata(&bytes).expect("metadata decodes"),
+            metadata
+        );
+    }
+
+    #[test]
+    fn commit_metadata_codec_rejects_trailing_bytes() {
+        let metadata = rich_commit_metadata();
+        let mut bytes = encode_commit_metadata(&metadata).expect("metadata encodes");
+        bytes.push(0);
+
+        assert!(matches!(
+            decode_commit_metadata(&bytes),
+            Err(StoreError::Corruption { .. })
+        ));
+    }
+}

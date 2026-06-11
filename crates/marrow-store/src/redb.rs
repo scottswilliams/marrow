@@ -10,13 +10,14 @@
 //! reverse, an inner `commit` merges its journal outward, and only the outermost
 //! `commit`/`rollback` persists or aborts the redb transaction.
 
+use std::fs;
 use std::ops::Bound;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 
 use redb::{
-    Database, DatabaseError, ReadOnlyDatabase, ReadTransaction, ReadableDatabase, ReadableTable,
-    StorageError, Table, TableDefinition, WriteTransaction,
+    Database, DatabaseError, Durability, ReadOnlyDatabase, ReadTransaction, ReadableDatabase,
+    ReadableTable, StorageError, Table, TableDefinition, WriteTransaction,
 };
 
 use crate::backend::{Backend, ScanPage, StoreError};
@@ -29,6 +30,8 @@ const META: TableDefinition<&str, u32> = TableDefinition::new("marrow.meta");
 /// The on-disk format version this build writes and accepts. A file recording a
 /// different version is refused rather than misread; there is no auto-migration.
 const FORMAT_VERSION: u32 = 1;
+
+const MARROW_REDB_DURABILITY: Durability = Durability::Immediate;
 
 const DELETE_BATCH_LIMIT: usize = 256;
 
@@ -77,7 +80,11 @@ impl DatabaseHandle {
 
     fn begin_write(&self, op: &'static str) -> Result<WriteTransaction, StoreError> {
         match self {
-            Self::ReadWrite(db) => db.begin_write().map_err(io(op)),
+            Self::ReadWrite(db) => {
+                let mut write = db.begin_write().map_err(io(op))?;
+                pin_write_durability(&mut write, op)?;
+                Ok(write)
+            }
             Self::ReadOnly(_) => Err(StoreError::ReadOnly { op }),
         }
     }
@@ -88,6 +95,10 @@ impl DatabaseHandle {
             Self::ReadOnly(_) => Err(StoreError::ReadOnly { op }),
         }
     }
+}
+
+fn pin_write_durability(write: &mut WriteTransaction, op: &'static str) -> Result<(), StoreError> {
+    write.set_durability(MARROW_REDB_DURABILITY).map_err(io(op))
 }
 
 fn io<E: std::fmt::Display>(op: &'static str) -> impl Fn(E) -> StoreError {
@@ -195,6 +206,39 @@ fn check_format_version(recorded: Option<u32>) -> Result<(), StoreError> {
     }
 }
 
+#[cfg(unix)]
+fn sync_parent_directory(path: &Path) -> Result<(), StoreError> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let directory = fs::File::open(parent).map_err(io("sync_parent_dir"))?;
+    directory.sync_all().map_err(io("sync_parent_dir"))
+}
+
+#[cfg(windows)]
+fn sync_parent_directory(path: &Path) -> Result<(), StoreError> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x02000000;
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let directory = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(parent)
+        .map_err(io("sync_parent_dir"))?;
+    directory.sync_all().map_err(io("sync_parent_dir"))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn sync_parent_directory(_path: &Path) -> Result<(), StoreError> {
+    Ok(())
+}
+
 /// Stamp the format version on a brand-new file or verify it on an existing one,
 /// then ensure the data table exists, in one write transaction. `Database::create`
 /// opens existing files too, so a database with no tables is fresh and gets stamped;
@@ -202,8 +246,13 @@ fn check_format_version(recorded: Option<u32>) -> Result<(), StoreError> {
 /// rather than adopted. This probe also forces redb to walk the file's structure,
 /// so a damaged body surfaces here (as a typed error or a caught panic) rather than
 /// on first use.
-fn stamp_or_verify_format_version(db: &Database) -> Result<(), StoreError> {
-    let write = db.begin_write().map_err(open_transaction_error)?;
+fn stamp_or_verify_format_version(
+    path: &Path,
+    sync_parent_after_commit: bool,
+    db: &Database,
+) -> Result<(), StoreError> {
+    let mut write = db.begin_write().map_err(open_transaction_error)?;
+    pin_write_durability(&mut write, "open")?;
     let is_new = write
         .list_tables()
         .map_err(open_storage_error)?
@@ -226,7 +275,11 @@ fn stamp_or_verify_format_version(db: &Database) -> Result<(), StoreError> {
     }
     // Create the data table now so later reads never meet a missing table.
     write.open_table(TABLE).map_err(open_table_error)?;
-    write.commit().map_err(open_commit_error)
+    write.commit().map_err(open_commit_error)?;
+    if sync_parent_after_commit {
+        sync_parent_directory(path)?;
+    }
+    Ok(())
 }
 
 /// Verify the recorded format version and data table on an existing-store open.
@@ -364,8 +417,9 @@ impl RedbStore {
     /// process; the open and its structural probe run under [`catch_open`].
     pub(crate) fn open(path: &Path) -> Result<Self, StoreError> {
         let db = catch_open(|| {
+            let sync_parent_after_commit = !path.exists();
             let db = Database::create(path).map_err(|error| map_open_error(path, error))?;
-            stamp_or_verify_format_version(&db)?;
+            stamp_or_verify_format_version(path, sync_parent_after_commit, &db)?;
             Ok(db)
         })?;
         Ok(Self {
@@ -667,6 +721,26 @@ mod tests {
     #[test]
     fn catch_open_passes_a_clean_result_through() {
         assert_eq!(catch_open(|| Ok(7)).expect("clean open"), 7);
+    }
+
+    #[test]
+    fn redb_write_policy_is_pinned_and_fresh_store_creation_syncs_the_parent() {
+        let source = include_str!("redb.rs");
+        let durability_pin = ["set", "_durability(MARROW_REDB_DURABILITY)"].concat();
+        let two_phase = ["set", "_two_phase_commit("].concat();
+
+        assert!(
+            source.contains(&durability_pin),
+            "redb write transactions must explicitly pin Marrow's durability policy"
+        );
+        assert!(
+            source.contains("sync_parent_directory(path)?"),
+            "fresh native store creation must fsync the containing directory"
+        );
+        assert!(
+            !source.contains(&two_phase),
+            "W2.2 documents one-phase redb commit; do not enable two-phase commit here"
+        );
     }
 
     /// The redb-error mapping is damage-faithful: a recoverable unclean shutdown, a

@@ -48,6 +48,9 @@ point at the [language reference](language/) for the exact rules.
 - [Backend Contract](backend-contract.md) — the ordered path/value operations,
   savepoints, presence states, bounded scans, the conformance suite, and
   native-store responsibilities a store backend must satisfy.
+- [Freeze-Gate Evidence](freeze-gate-evidence.md) — the storage-engine/04
+  gate-35 evidence ledger assembled from producing lanes and the final W7.2
+  clean-worktree run.
 - [Testing Architecture](testing-architecture.md) — the test tiers, allowed
   oracles, and fixture rules the test suite follows.
 - [Future](future/) — selected future surfaces whose designed contracts are not

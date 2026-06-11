@@ -15,6 +15,10 @@ engine-relative. They are not wall-clock time: an engine's page cache,
 copy-on-write, and fsync behavior sit below this model and decide latency, but
 they never change which operations a program performs.
 
+On the native redb backend, a commit is an immediate-durability engine commit:
+an unbracketed single write pays one fsync, while writes grouped in a source
+`transaction` share one commit fsync.
+
 ## Reading Cost From The Source
 
 Each construct maps to a fixed shape of work:

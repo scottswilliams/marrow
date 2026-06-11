@@ -504,8 +504,8 @@ fn prefix_successor(prefix: &[u8]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CatalogId, CellKey, DataCellKind, DataPathSegment, FAMILY_DATA, SequencePosition,
-        decode_data_cell_key, decode_index_child_key, decode_index_entry_key,
+        CatalogId, CellKey, DataCellKey, DataCellKind, DataPathSegment, FAMILY_DATA,
+        SequencePosition, decode_data_cell_key, decode_index_child_key, decode_index_entry_key,
         decode_index_identity, encode_id, family,
     };
     use crate::key::SavedKey;
@@ -582,6 +582,60 @@ mod tests {
                 position: SequencePosition::new(7)
             }
         );
+    }
+
+    #[test]
+    fn data_cell_key_codec_round_trips_each_data_cell_kind() {
+        let store = store_id("");
+        let member = member_id();
+        let identity = vec![SavedKey::Int(7), SavedKey::Str("a\u{0}b".into())];
+        let path = vec![
+            DataPathSegment::Member(member.clone()),
+            DataPathSegment::Key(SavedKey::Bytes(vec![0x00, 0xff])),
+        ];
+        let cases = [
+            (
+                CellKey::node(&store, &identity),
+                DataCellKey {
+                    store: store.clone(),
+                    identity: identity.clone(),
+                    kind: DataCellKind::Node,
+                },
+            ),
+            (
+                CellKey::leaf(&store, &identity, &member),
+                DataCellKey {
+                    store: store.clone(),
+                    identity: identity.clone(),
+                    kind: DataCellKind::Leaf {
+                        member: member.clone(),
+                    },
+                },
+            ),
+            (
+                CellKey::sequence(&store, &identity, &member, SequencePosition::new(42)),
+                DataCellKey {
+                    store: store.clone(),
+                    identity: identity.clone(),
+                    kind: DataCellKind::Sequence {
+                        member: member.clone(),
+                        position: SequencePosition::new(42),
+                    },
+                },
+            ),
+            (
+                CellKey::data_path_value(&store, &identity, &path),
+                DataCellKey {
+                    store: store.clone(),
+                    identity: identity.clone(),
+                    kind: DataCellKind::Value { path },
+                },
+            ),
+        ];
+
+        for (encoded, expected) in cases {
+            assert_eq!(decode_data_cell_key(encoded.as_bytes()), Some(expected));
+        }
     }
 
     #[test]

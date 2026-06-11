@@ -216,6 +216,34 @@ fails with `store.transaction`, so dropping one guard cannot unpin another.
 Backups and long inspections pin snapshots outside write transactions; source
 transactions use the write transaction's read-your-writes view.
 
+## Durability And Recovery
+
+Native redb write transactions explicitly pin `Durability::Immediate` when the
+transaction begins. An unbracketed single tree-cell write is still its own redb
+write transaction, so its engine-relative cost includes one durable commit fsync;
+a source `transaction` brackets many tree-cell writes into one outer commit.
+
+Marrow uses redb's one-phase commit posture: the store does not call
+`WriteTransaction::set_two_phase_commit`, expose a posture flag, or add a
+configuration switch. A successful native commit has redb's immediate-durability
+guarantee for the database file. When a missing native store file is created and
+stamped as a Marrow store, Marrow also fsyncs the containing directory after the
+format-stamp commit so the new directory entry is durable.
+
+The residual one-phase risk is a crash that tears the active commit slot and is
+misread as committed only if the torn bytes collide with redb's
+non-cryptographic slot checksum. The named escalation is enabling
+`WriteTransaction::set_two_phase_commit(true)`, which doubles commit fsyncs; that
+would be a runtime durability posture change, not a tree-cell format break.
+
+The crash/recovery harness asserts both-or-invisible transaction recovery at
+deterministic kill points and with a bounded commit-race soak. Torn or truncated
+native store bodies fail closed as `store.corruption`. A store left needing
+repair by an unclean shutdown is reported on a read-only open as
+`store.recovery_required`; a write-capable open attempts the replay and reports
+whether the store opened, so damage beyond replay still surfaces
+`store.corruption`.
+
 ## Native Store Duties
 
 The native store records format version `1` in a metadata table. Opening a file
@@ -227,10 +255,7 @@ Opening a damaged native store fails closed with a typed code, never a process
 crash. A truncated or torn body — including a file whose damage drives the engine
 into a panic during its open-and-repair path — is rejected as `store.corruption`;
 a foreign redb file with no Marrow metadata is `store.corruption`; a transient
-I/O fault is `store.io`. A store left needing repair by an unclean shutdown is
-reported on a read-only open as `store.recovery_required`: a write-capable open
-attempts to replay the interrupted commit and reports whether the store opened,
-so a store damaged beyond replay still surfaces `store.corruption`.
+I/O fault is `store.io`.
 
 ## Conformance
 
