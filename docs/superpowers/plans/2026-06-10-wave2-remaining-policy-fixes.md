@@ -1,8 +1,8 @@
 # Wave 2 — Remaining Policy Fixes (continuation plan)
 
-Status as of 2026-06-10. Wave 1 (engine-resident-catalog) and the highest-severity
-Wave 2 behavioral fixes are shipped to `main`. This file is the forward-only backlog
-for the rest of the owner-approved policy decisions and the probe findings they map to.
+Status as of 2026-06-11. Wave 1 (engine-resident-catalog), the highest-severity
+Wave 2 behavioral fixes, and the remaining owner-approved Wave 2 policy fixes are
+shipped to `main`. This file is the closeout ledger for the probe findings they map to.
 
 Repros: `.build/marrow-hardening/PROBE-FINDINGS-2026-06-09.md` (findings B38–B75).
 Decisions: `.build/marrow-hardening/POLICY-DECISIONS-2026-06-09.md` and the project
@@ -39,70 +39,37 @@ repro as oracle, soundness + idiom review, full gate, then fast-forward integrat
 - CAT-2 (B70) — verified closed: `marrow test` binds a proposed baseline catalog
   over fresh in-memory stores, so test-first saved writes resolve without a prior
   durable run or evolve apply.
+- DUR-2 (B56) — `marrow data recover` does a write-capable repair open for
+  stores that report typed `store.recovery_required`, while ordinary read-only
+  inspection stays fail-closed on missing or corrupt native stores.
+- DUR-6 (B48) — rejected `restore` validates target binding before opening and
+  rolls back a newly-created target store file, including dangling symlink targets.
+- B-RESTORE-EMPTY — `restore` rejects catalog-only targets instead of treating
+  them as empty data stores.
+- EVO-4(c)/EVO-5 (B40/B61) — catalog digests are canonical and order-insensitive
+  with bounded legacy digest normalization; pure enum-member reorder auto-restamps
+  instead of bricking a stamped store; stale `evolve apply` suppresses already-applied
+  transforms using historical applied-step evidence without replaying over later data.
+- DIAG-4/5 (B41/B63) — runtime output streams live through uncaught faults, and
+  `run --trace` / `run --dry-run` flush JSON/JSONL reports on fault paths.
+- DIAG-6 (B55) — absent whole-record coalesce yields the fallback while
+  present-but-malformed records still fault.
+- Check/run consistency (B45/B46/B64/B65) — the checker rejects non-renderable
+  print/write/interpolation arguments, rejects unsupported `exists(next(...))` /
+  `exists(prev(...))` values, and rejects nested local-resource writes that runtime
+  cannot support.
+- OUT-1/2 (B67/B74/B51) — `data dump` / `data get` text rendering quotes and
+  escapes string values, renders bytes as `0x<hex>`, renders identity references as
+  saved paths, and renders enum values as member identities through catalog facts.
+- OUT-4 (B49) — `marrow test --format json|jsonl` emits structured per-test
+  records and summaries.
+- B-STORE-CODEC-1/2 — `marrow-store` now shares one bounds-checked length-prefixed
+  reader and one paged scan driver across catalog, metadata, backup, memory, and
+  redb traversal paths.
 
-## Remaining, by cluster (decided fix in brackets)
+## Remaining
 
-### Durability / recovery
-- **B56** — SIGKILL mid-write can brick a store with no recovery path. [DUR-2: ship a
-  `marrow data recover` verb that does a write-capable repair open and reports survival;
-  hangs off the typed `store.recovery_required` from DUR-4.]
-- **B48** — a rejected `restore` leaves an orphan `marrow.redb` in a previously-pristine
-  `.data`, violating rollback-to-empty. [DUR-6: validate binding before opening the target
-  and track/delete the created file on a rolled-back restore.]
-### Evolution
-- **B40** — a pure enum-member reorder bricks a stamped native store (check passes, run
-  fences `run.schema_drift`, evolve apply cannot recover). [Reorder is identity-preserving:
-  it should re-stamp the durable shape via auto-apply, not brick. Investigate the run-time
-  fence vs auto-apply classification for a member-order-only change.]
-- **B61** — a stale `evolve apply` re-runs an already-applied transform and corrupts derived
-  data. [EVO-5: suppress an already-applied transform keyed on the stamped state match.]
-- **EVO-4(c)** — drop member order from the catalog digest (order-insensitive / canonical
-  rendering). [Deferred refactor-sequenced store-format follow-up; Wave 1 keeps order via an
-  ordinal, which is correct but not order-insensitive.]
-
-### Diagnostics / check-run consistency
-- **B41** — all program output is lost when a run ends with an uncaught error/fault.
-  [DIAG-4: STREAM program output live; changes the `run_entry_with_host` signature
-  marrow-lsp consumes — land the Marrow streaming API first, then adapt the LSP.]
-- **B63** — `run --trace`/`--dry-run` with `--format json|jsonl` drops the whole trace/plan
-  report on a faulting run (text shows it). [DIAG-5: flush the trace/dry-run report on the
-  `Err` arm for format parity.]
-- **B55** — a whole-record `^record(key) ?? fallback` faults at runtime on an absent keyed
-  record despite a clean check. [DIAG-6: an absent whole-record `??` yields the fallback; a
-  present-but-malformed record still faults.]
-- **B65** — print/write/interpolation accept non-renderable values caught only at runtime.
-  [The checker should reject a non-renderable interpolation/print argument; coordinate with
-  B45 below.]
-- **B45** — interpolating a date/instant/duration value checks clean then faults
-  `run.unsupported` (the checker rejects bytes/enum but not temporal scalars). [Either render
-  temporal values in interpolation, or reject them at check like bytes/enum — pick one and
-  apply it uniformly with B65.]
-- **B46** — `exists(next(...))` / `exists(prev(...))` checks clean but faults at run. [check-run
-  consistency: the checker should accept or reject these uniformly with run.]
-- **B64** — a nested unkeyed-group field write on a local resource value passes `check` but
-  faults at runtime `run.unsupported`. [check-run consistency.]
-
-### Tooling output / formatter / test framework
-- **B67** — `data dump`/`data get` text renders string values verbatim, so tabs/newlines break
-  the TSV framing and a value can forge a fake record path; string vs bytes is also
-  indistinguishable. [OUT-1: mirror the key escaping onto values (quoted/escaped strings,
-  `0x<hex>` bytes) — a deliberate contract edit to `data-tools.md`/`cli.md`.]
-- **B74** / **B51** — `data dump`/`data get` render an `Id(^store)` reference field as
-  undecodable opaque hex, and an enum value as two ragged `$cat_` ids. [OUT-2: render an
-  `Id(^store)` as its referent `^authors(1)` and an enum value as one member identity, in the
-  OUT-1 value-rendering pass (decode reads catalog stable-id/key facts).]
-- **B49** — `marrow test --format json|jsonl` is advertised and validated but the test report
-  always emits human text. [OUT-4: emit a JSON/JSONL test-result envelope (per-test
-  `{name,status,location}` + summary, mirroring `data`/`integrity`).]
-## Deferred engineering backlog (from reviews)
-
-In `.build/marrow-hardening/BACKLOG.md`:
-- **B-STORE-CODEC-1/2** — three near-duplicate length-prefixed byte cursors and a duplicated
-  paged-scan driver in `marrow-store`; extract one shared bounds-checked reader and one page
-  driver. Pre-existing; do as a focused store-codec cleanup.
-- **B-RESTORE-EMPTY** — `restore` uses `is_empty()` (data+index only) to gate a target; a store
-  holding only a baseline catalog passes. Safe today; tighten to reject a target that already
-  holds a catalog for a cleaner contract.
+No remaining items from this plan.
 
 ## Notes
 
