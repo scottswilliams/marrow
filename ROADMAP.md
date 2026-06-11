@@ -829,20 +829,6 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 Goal: every deletion and truth-fix with no implementation dependency lands before building.
 Mostly parallel; two wide-churn barrier lanes close the wave.
 
-**W1.3 ∥ serve + lsp deletion (gate 23).** Carries: removals #12 + #13;
-docs/future/serve-protocol.md is deleted outright with no replacement stub, Deferred ADR
-tooling/02 the sole owner of any future app-server/local-API contract. Owns: crates/marrow/src/
-{serve/, lsp.rs}, main.rs dispatch/HELP, serve/lsp test suites, docs/serve-protocol.md,
-docs/future/serve-protocol.md, docs/lsp.md, the error-codes.md `protocol.*` section and kind row
-(W1.6 owns the page's other rows), docs/implementation/serve-lsp.md, tooling-surfaces.md rows.
-Deletes: ~4,000-4,500 lines.
-Keeps: the entire analysis API (marrow-lsp's contract) untouched. Seed: a failing absence test —
-`marrow serve`/`marrow lsp` are usage errors; no `protocol.` code constructible. Review:
-analysis-API coverage for the behaviors the lsp tests pinned exists in analysis_api.rs +
-marrow-lsp suites; nothing in marrow-lsp breaks (recompile check against the sibling repo).
-Done: absence scan for serve/protocol/lsp identifiers across code+docs; marrow-lsp builds green
-against the head; III.D4 retired as moot.
-
 **W1.4 ∥ Dead-model deletions.** Carries: removals `touches_saved_data`,
 `FutureEphemeralRootEffects`, `Statement::Match` fields; the ast.rs:376 stale-comment fix
 (III.C4 item). `StoredValueMeaning::Identity` is kept — gate 4 rejects its removal; W4.7 makes
