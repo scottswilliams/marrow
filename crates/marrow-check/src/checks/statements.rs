@@ -249,7 +249,28 @@ impl StatementCheck<'_> {
                 "generated index branches cannot be assigned",
             ));
         }
+        if self.is_nested_local_resource_field_write(target)
+            && !has_invalid_assign_target(self.diagnostics, self.file, target.span())
+        {
+            self.diagnostics.push(CheckDiagnostic::error(
+                crate::rules::CHECK_INVALID_ASSIGN_TARGET,
+                self.file,
+                target.span(),
+                "nested local resource fields cannot be assigned",
+            ));
+        }
         check_assignment(self.file, span, &target_type, &value_type, self.diagnostics);
+    }
+
+    fn is_nested_local_resource_field_write(&self, target: &marrow_syntax::Expression) -> bool {
+        let Some(root) = nested_local_field_root(target) else {
+            return false;
+        };
+        self.scope
+            .iter()
+            .rev()
+            .find_map(|frame| frame.get(root))
+            .is_some_and(|ty| matches!(ty, MarrowType::Resource(_)))
     }
 
     fn check_delete_statement(&mut self, path: &marrow_syntax::Expression) {
@@ -404,4 +425,43 @@ impl StatementCheck<'_> {
             diagnostics: self.diagnostics,
         });
     }
+}
+
+fn nested_local_field_root(target: &marrow_syntax::Expression) -> Option<&str> {
+    let marrow_syntax::Expression::Field { base, .. } = target else {
+        return None;
+    };
+    if matches!(base.as_ref(), marrow_syntax::Expression::Name { .. }) {
+        return None;
+    }
+    local_field_root(base)
+}
+
+fn local_field_root(expr: &marrow_syntax::Expression) -> Option<&str> {
+    match expr {
+        marrow_syntax::Expression::Name { segments, .. } => {
+            let [name] = segments.as_slice() else {
+                return None;
+            };
+            Some(name)
+        }
+        marrow_syntax::Expression::Field { base, .. } => local_field_root(base),
+        marrow_syntax::Expression::Call { callee, .. } => match callee.as_ref() {
+            marrow_syntax::Expression::Field { .. } => local_field_root(callee),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn has_invalid_assign_target(
+    diagnostics: &[CheckDiagnostic],
+    file: &Path,
+    span: SourceSpan,
+) -> bool {
+    diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == crate::rules::CHECK_INVALID_ASSIGN_TARGET
+            && diagnostic.file == file
+            && diagnostic.span == span
+    })
 }

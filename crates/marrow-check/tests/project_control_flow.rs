@@ -422,6 +422,66 @@ fn local_field_and_name_assignment_targets_are_allowed() {
 }
 
 #[test]
+fn nested_local_resource_field_assignment_targets_are_rejected() {
+    let found = check_module(
+        "assign-nested-local-resource-field",
+        "module m\n\
+         resource Book\n    title: string\n    meta\n        subtitle: string\n\n\
+         fn f()\n    var book: Book\n    book.meta.subtitle = \"x\"\n",
+        "check.invalid_assign_target",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn nested_local_resource_keyed_layer_field_assignment_targets_are_rejected() {
+    let found = check_module(
+        "assign-nested-local-resource-keyed-layer-field",
+        "module m\n\
+         resource Book\n    title: string\n    versions(version: int)\n        title: string\n\n\
+         fn f()\n    var book: Book\n    book.versions(1).title = \"x\"\n",
+        "check.invalid_assign_target",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn nested_read_only_resource_parameter_write_reports_one_assignment_target_error() {
+    let found = check_module(
+        "assign-nested-readonly-resource-param-field",
+        "module m\n\
+         resource Book\n    title: string\n    meta\n        subtitle: string\n\n\
+         fn f(book: Book)\n    book.meta.subtitle = \"x\"\n",
+        "check.invalid_assign_target",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn nested_saved_field_assignment_targets_are_allowed() {
+    let found = check_module(
+        "assign-nested-saved-field",
+        "module m\n\
+         resource Book at ^books(id: int)\n    title: string\n    meta\n        subtitle: string\n\n\
+         fn f()\n    ^books(1).meta.subtitle = \"x\"\n",
+        "check.invalid_assign_target",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn nested_saved_keyed_layer_field_assignment_targets_are_allowed() {
+    let found = check_module(
+        "assign-nested-saved-keyed-layer-field",
+        "module m\n\
+         resource Book at ^books(id: int)\n    title: string\n    versions(version: int)\n        title: string\n\n\
+         fn f()\n    ^books(1).versions(1).title = \"x\"\n",
+        "check.invalid_assign_target",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
 fn merge_is_rejected_by_the_parser() {
     let report = check_module_report("merge-bad", "module m\nfn f()\n    merge f(x) = y\n");
     assert!(
