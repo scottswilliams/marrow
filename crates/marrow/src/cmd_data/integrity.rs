@@ -6,14 +6,14 @@ use marrow_store::StoreError;
 use marrow_store::tree::TreeStore;
 use serde_json::json;
 
-use crate::{CheckFormat, envelope, load_checked_project, write_json};
+use crate::{CheckFormat, envelope, load_checked_project_with_format, write_json};
 
 pub(super) fn data_integrity(args: &[String]) -> ExitCode {
     let (dir, format) = match super::one_positional_with_format("data integrity", args) {
         Ok(parsed) => parsed,
         Err(code) => return code,
     };
-    let (config, program) = match load_checked_project(&dir) {
+    let (config, program) = match load_checked_project_with_format(&dir, format) {
         Ok(checked) => checked,
         Err(code) => return code,
     };

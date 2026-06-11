@@ -55,6 +55,59 @@ fn data_integrity_passes_on_a_healthy_seeded_project() {
 }
 
 #[test]
+fn data_json_commands_report_catalog_intent_not_store_corruption() {
+    let (project, dir) = seeded_project("data-integrity-catalog-intent-json");
+    write(
+        &project,
+        "src/app.mw",
+        "module app\n\
+         \n\
+         resource Counter\n\
+         \x20\x20\x20\x20a: int\n\
+         \x20\x20\x20\x20b: int\n\
+         \x20\x20\x20\x20c: int\n\
+         store ^counter(id: int): Counter\n\
+         \n\
+         evolve\n\
+         \x20\x20\x20\x20rename Counter.a -> Counter.c\n\
+         \x20\x20\x20\x20rename Counter.b -> Counter.c\n\
+         \n\
+         pub fn seed()\n\
+         \x20\x20\x20\x20var c: Counter\n\
+         \x20\x20\x20\x20c.a = 1\n\
+         \x20\x20\x20\x20c.b = 2\n\
+         \x20\x20\x20\x20c.c = 3\n\
+         \x20\x20\x20\x20transaction\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20^counter(1) = c\n",
+    );
+
+    for args in [
+        vec!["data", "roots", "--format", "json", &dir],
+        vec!["data", "stats", "--format", "json", &dir],
+        vec!["data", "dump", "--format", "json", &dir],
+        vec!["data", "get", "--format", "json", &dir, "^counter(1).a"],
+        vec!["data", "integrity", "--format", "json", &dir],
+    ] {
+        let output = support::marrow(&args);
+
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        let value = support::json(output.stdout);
+        let diagnostics = value["diagnostics"].as_array().expect("diagnostics");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == serde_json::json!("check.catalog_intent")),
+            "{args:?}: {value}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !value.to_string().contains("store.corruption") && !stderr.contains("store.corruption"),
+            "catalog-intent state must not render as store corruption for {args:?}: stdout={value} stderr={stderr}"
+        );
+    }
+}
+
+#[test]
 fn data_integrity_accepts_singleton_fields_and_keyed_tree_members() {
     let project = support::temp_dir("data-integrity-singleton-members");
     write(&project, "marrow.json", NATIVE_STORE_CONFIG);

@@ -12,7 +12,7 @@ use marrow_store::tree::TreeStore;
 use serde_json::json;
 
 use crate::{
-    CheckFormat, load_checked_project, load_config_with_format, native_store_path,
+    CheckFormat, load_checked_project_with_format, load_config_with_format, native_store_path,
     open_store_for_inspection, report_simple_error, write_json,
 };
 
@@ -182,7 +182,7 @@ fn data_roots(args: &[String]) -> ExitCode {
         Ok(parsed) => parsed,
         Err(code) => return code,
     };
-    let (config, program) = match load_checked_project(&dir) {
+    let (config, program) = match load_checked_project_with_format(&dir, format) {
         Ok(checked) => checked,
         Err(code) => return code,
     };
@@ -221,7 +221,7 @@ fn data_stats(args: &[String]) -> ExitCode {
         Ok(parsed) => parsed,
         Err(code) => return code,
     };
-    let (config, program) = match load_checked_project(&dir) {
+    let (config, program) = match load_checked_project_with_format(&dir, format) {
         Ok(checked) => checked,
         Err(code) => return code,
     };
@@ -266,7 +266,7 @@ fn data_dump(args: &[String]) -> ExitCode {
         Ok(parsed) => parsed,
         Err(code) => return code,
     };
-    let (config, program) = match load_checked_project(&dir) {
+    let (config, program) = match load_checked_project_with_format(&dir, format) {
         Ok(checked) => checked,
         Err(code) => return code,
     };

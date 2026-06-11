@@ -7,7 +7,7 @@ use marrow_check::tooling::{
 };
 use serde_json::json;
 
-use crate::{CheckFormat, load_checked_project, write_json};
+use crate::{CheckFormat, load_checked_project_with_format, write_json};
 
 pub(super) fn data_get(args: &[String]) -> ExitCode {
     let (dir, path_text, format) = match crate::dir_and_path_args("data get", "path", args) {
@@ -21,7 +21,7 @@ pub(super) fn data_get(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let (config, program) = match load_checked_project(&dir) {
+    let (config, program) = match load_checked_project_with_format(&dir, format) {
         Ok(checked) => checked,
         Err(code) => return code,
     };

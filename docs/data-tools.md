@@ -202,6 +202,13 @@ read-only and typed: it needs the checked project to know each path's type. The
 whole verdict reads one stable store snapshot, so it describes a single coherent
 version of the data.
 
+Catalog state is not store corruption. A saved root or member whose durable
+identity is still pending is treated as absent until a run or evolution apply
+records it. If source carries an in-flight catalog-intent diagnostic, data
+commands report that original `check.*` diagnostic in the requested format
+before inspecting the store. Only malformed tree-cell bytes, malformed catalog
+rows, or backend damage report `store.corruption`.
+
 It exits `0` on a clean store and `1` when it finds any problem.
 
 ```
