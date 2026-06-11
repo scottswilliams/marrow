@@ -826,15 +826,6 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 
 ## Wave 2 — P0 foundation (REPORT Part V order)
 
-**W2.4 ∥ Atomic backup/restore/fmt writes (III.A1, gate 29).** Carries (G3-2): store files and
-backup artifacts created owner-only (0600) at the `File::create` sites this lane already scans.
-Owns: cmd_backup.rs, backup/create.rs, cmd_restore.rs, cmd_fmt.rs. Seed: injected mid-stream
-failure test — prior backup byte-identical, no temp file. Review: plain rename (no
-remove-then-rename); restore leaves no artifacts on validation failure; `File::create`/
-`fs::write` scan confirms no other unsafe production write site; cli.md documents
-replace-only-on-success and no overwrite flag was introduced (gate 29). Done: the scan, with the
-0600 mode assertion, recorded as a tidy check.
-
 **W2.5 → Concurrency contract rendered (II.B3 items 1,3,4 + II.B4; after W2.2 —
 backend-contract.md: W2.2 writes Durability and Recovery, then W2.5 the Concurrency section).**
 Owns: docs/backend-contract.md Concurrency section plus the C25 outbox-idiom paragraph
