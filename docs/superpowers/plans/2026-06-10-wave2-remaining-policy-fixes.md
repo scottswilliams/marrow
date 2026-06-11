@@ -36,6 +36,9 @@ repro as oracle, soundness + idiom review, full gate, then fast-forward integrat
 - OUT-3 (B62) — `fmt` preserves an over-indented own-line body comment and
   re-emits it at the block indent instead of dropping it during indentation
   recovery.
+- CAT-2 (B70) — verified closed: `marrow test` binds a proposed baseline catalog
+  over fresh in-memory stores, so test-first saved writes resolve without a prior
+  durable run or evolve apply.
 
 ## Remaining, by cluster (decided fix in brackets)
 
@@ -91,11 +94,6 @@ repro as oracle, soundness + idiom review, full gate, then fast-forward integrat
 - **B49** — `marrow test --format json|jsonl` is advertised and validated but the test report
   always emits human text. [OUT-4: emit a JSON/JSONL test-result envelope (per-test
   `{name,status,location}` + summary, mirroring `data`/`integrity`).]
-- **B70** — `marrow test` fails cryptically on a clean-checking test-first project (tests that
-  write saved data error with "catalog identity is missing" until run/evolve apply first).
-  [CAT-2: `marrow test` provisions an ephemeral in-memory baseline catalog so a test-first
-  project resolves saved-root ids without a prior run.]
-
 ## Deferred engineering backlog (from reviews)
 
 In `.build/marrow-hardening/BACKLOG.md`:
