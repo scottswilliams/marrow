@@ -408,10 +408,13 @@ $ marrow data dump <projectdir>
 ```
 
 Dump prints declared data cells only — identities in key order, members in
-declaration order. Derived index trees and engine metadata never appear. The
-modeling rules stay visible: identity keys appear in the path (`^books(1)`),
-not as fields, and string keys render quoted (`^users("alice")`), so a quoted
-key segment never collides with a structural name.
+declaration order. Derived index trees are maintained by the runtime, are not
+emitted by `data dump`, and cannot be addressed by `data get`; inspect records
+through their declared data paths instead. Engine metadata also never appears.
+The modeling rules stay visible: identity keys appear in the path
+(`^books(1)`), not as fields, and string keys render quoted
+(`^users("alice")`), so a quoted key segment never collides with a structural
+name.
 
 Other inspection commands: `marrow data roots` (list saved roots), `marrow data
 stats` (count roots and records), `marrow data get <projectdir> <path>` (one
