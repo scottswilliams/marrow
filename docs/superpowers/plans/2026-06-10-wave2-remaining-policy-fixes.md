@@ -28,6 +28,9 @@ repro as oracle, soundness + idiom review, full gate, then fast-forward integrat
   the shared checker/runtime grammar.
 - CLI consistency B73/B75 — `lsp` extra args and duplicate `--entry`/`--port` are usage
   errors; duplicate single-valued flags no longer silently take the last value.
+- CLI consistency B68 — interpolation documents and tests the existing brace contract:
+  a lone `}` is text, while a lone `{` starts interpolation and must be escaped as `{{`
+  when meant literally.
 
 ## Remaining, by cluster (decided fix in brackets)
 
@@ -95,10 +98,6 @@ repro as oracle, soundness + idiom review, full gate, then fast-forward integrat
   write saved data error with "catalog identity is missing" until run/evolve apply first).
   [CAT-2: `marrow test` provisions an ephemeral in-memory baseline catalog so a test-first
   project resolves saved-root ids without a prior run.]
-
-### CLI consistency (low)
-- **B68** — interpolation accepts a lone `}` as a literal brace while a lone `{` is a hard
-  error; document or unify the asymmetry.
 
 ## Deferred engineering backlog (from reviews)
 

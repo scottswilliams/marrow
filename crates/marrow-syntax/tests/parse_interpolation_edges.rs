@@ -1,11 +1,9 @@
-//! Interpolation edge cases the lexer and parser must reject: an interpolation
-//! expression that runs off the end of the line, a nested `{` inside an
-//! interpolation expression, and an empty `{}` interpolation with no expression.
-//! Each pins the typed diagnostic reason, not rendered prose.
+//! Interpolation edge cases pin accepted and rejected brace handling through
+//! typed lexer and parser behavior, not rendered prose.
 
 use marrow_syntax::{
-    DiagnosticReason, ExpectedSyntax, LexerDiagnosticReason, ParseDiagnosticReason, lex_source,
-    parse_source,
+    Declaration, DiagnosticReason, ExpectedSyntax, Expression, InterpolationPart,
+    LexerDiagnosticReason, ParseDiagnosticReason, lex_source, parse_source,
 };
 
 mod common;
@@ -76,6 +74,22 @@ fn empty_interpolation_expression_is_rejected_by_the_parser() {
         ),
         "expected an `expected an expression` diagnostic for `{{}}`: {:#?}",
         parsed.diagnostics
+    );
+}
+
+#[test]
+fn a_lone_closing_brace_is_literal_interpolation_text() {
+    let parsed = parse_source("const Label = $\"book }\"\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected const declaration");
+    };
+    let Some(Expression::Interpolation { parts, .. }) = &decl.value else {
+        panic!("expected interpolation, got {:?}", decl.value);
+    };
+    assert!(
+        matches!(&parts[..], [InterpolationPart::Text { text, .. }] if text == "book }"),
+        "expected the closing brace to stay text: {parts:#?}"
     );
 }
 

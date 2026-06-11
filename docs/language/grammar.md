@@ -44,7 +44,9 @@ hex_digit       = digit | "A".."F" | "a".."f" ;
 
 `string_text` is any UTF-8 scalar value except `"`, `\`, or newline.
 `byte_text` has the same source shape and contributes its UTF-8 bytes.
-`interp_text_char` additionally excludes unescaped `{` and `}`.
+`interp_text_char` additionally excludes unescaped `{`. In interpolation text,
+the lexer recognizes `{{` and `}}` before single-character text, so `}}` is the
+escaped spelling for one `}` while a lone `}` remains text.
 
 A `qualified_name` segment may also be a type keyword used as a name — the
 `bytes` in `std::bytes::length` or `use std::bytes` — so standard-library
