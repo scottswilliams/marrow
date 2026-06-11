@@ -10,6 +10,7 @@ use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMe
 
 use crate::backend::{Backend, StoreError};
 use crate::cell::CellKey;
+use crate::codec::BoundedReader;
 
 const CATALOG_SCAN_PAGE: usize = 1024;
 const HEADER_ROW: u8 = 0x00;
@@ -163,10 +164,10 @@ fn encode_header(snapshot: &CatalogMetadata) -> Result<Vec<u8>, StoreError> {
 }
 
 fn decode_header(bytes: &[u8]) -> Result<Header, StoreError> {
-    let mut cursor = Cursor::new(bytes);
-    cursor.take_version()?;
+    let mut cursor = BoundedReader::new(bytes, corrupt_catalog_truncated);
+    take_version(&mut cursor)?;
     let epoch = cursor.take_u64()?;
-    let digest = cursor.take_text()?;
+    let digest = take_text(&mut cursor)?;
     if !cursor.is_empty() {
         return Err(corrupt_catalog("catalog header has trailing bytes"));
     }
@@ -186,15 +187,15 @@ fn encode_entry(ordinal: u64, entry: &CatalogEntry) -> Result<Vec<u8>, StoreErro
 }
 
 fn decode_entry(stable_id: &str, bytes: &[u8]) -> Result<EntryRow, StoreError> {
-    let mut cursor = Cursor::new(bytes);
-    cursor.take_version()?;
+    let mut cursor = BoundedReader::new(bytes, corrupt_catalog_truncated);
+    take_version(&mut cursor)?;
     let ordinal = cursor.take_u64()?;
     let kind = decode_kind(cursor.take_u8()?)?;
-    let path = cursor.take_text()?;
-    let aliases = cursor.take_texts()?;
+    let path = take_text(&mut cursor)?;
+    let aliases = take_texts(&mut cursor)?;
     let lifecycle = decode_lifecycle(cursor.take_u8()?)?;
-    let accepted_key_shape = cursor.take_optional_text()?;
-    let accepted_struct = cursor.take_optional_text()?;
+    let accepted_key_shape = take_optional_text(&mut cursor)?;
+    let accepted_struct = take_optional_text(&mut cursor)?;
     if !cursor.is_empty() {
         return Err(corrupt_catalog("catalog entry has trailing bytes"));
     }
@@ -278,81 +279,46 @@ fn decode_lifecycle(tag: u8) -> Result<CatalogLifecycle, StoreError> {
         .ok_or_else(|| corrupt_catalog("catalog lifecycle tag is unknown"))
 }
 
-struct Cursor<'a> {
-    bytes: &'a [u8],
+type CatalogReader<'a> = BoundedReader<'a, StoreError>;
+
+fn take_version(cursor: &mut CatalogReader<'_>) -> Result<(), StoreError> {
+    let version = cursor.take_u8()?;
+    if version == ROW_VALUE_VERSION_V0 {
+        Ok(())
+    } else {
+        Err(corrupt_catalog("catalog row version is unknown"))
+    }
 }
 
-impl<'a> Cursor<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes }
-    }
+fn take_text(cursor: &mut CatalogReader<'_>) -> Result<String, StoreError> {
+    let bytes = cursor.take_prefixed_bytes()?;
+    String::from_utf8(bytes.to_vec()).map_err(|_| corrupt_catalog("catalog text is not UTF-8"))
+}
 
-    fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
+fn take_texts(cursor: &mut CatalogReader<'_>) -> Result<Vec<String>, StoreError> {
+    let len =
+        cursor.take_bounded_count_with(MIN_LENGTH_PREFIX_BYTES, corrupt_catalog_text_count)?;
+    let mut values = Vec::with_capacity(len);
+    for _ in 0..len {
+        values.push(take_text(cursor)?);
     }
+    Ok(values)
+}
 
-    fn take_version(&mut self) -> Result<(), StoreError> {
-        let version = self.take_u8()?;
-        if version == ROW_VALUE_VERSION_V0 {
-            Ok(())
-        } else {
-            Err(corrupt_catalog("catalog row version is unknown"))
-        }
+fn take_optional_text(cursor: &mut CatalogReader<'_>) -> Result<Option<String>, StoreError> {
+    match cursor.take_u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(take_text(cursor)?)),
+        _ => Err(corrupt_catalog("catalog optional text tag is unknown")),
     }
+}
 
-    fn take_u8(&mut self) -> Result<u8, StoreError> {
-        Ok(self.take(1)?[0])
-    }
+fn corrupt_catalog_truncated(_: &[u8]) -> StoreError {
+    corrupt_catalog("catalog row is truncated")
+}
 
-    fn take_u64(&mut self) -> Result<u64, StoreError> {
-        let bytes = self.take(8)?;
-        let array: [u8; 8] = bytes
-            .try_into()
-            .map_err(|_| corrupt_catalog("catalog integer is malformed"))?;
-        Ok(u64::from_be_bytes(array))
-    }
-
-    fn take_text(&mut self) -> Result<String, StoreError> {
-        let len = self.take_u32()? as usize;
-        let bytes = self.take(len)?;
-        String::from_utf8(bytes.to_vec()).map_err(|_| corrupt_catalog("catalog text is not UTF-8"))
-    }
-
-    fn take_texts(&mut self) -> Result<Vec<String>, StoreError> {
-        let len = self.take_u32()? as usize;
-        if len > self.bytes.len() / MIN_LENGTH_PREFIX_BYTES {
-            return Err(corrupt_catalog("catalog text count is malformed"));
-        }
-        let mut values = Vec::with_capacity(len);
-        for _ in 0..len {
-            values.push(self.take_text()?);
-        }
-        Ok(values)
-    }
-
-    fn take_optional_text(&mut self) -> Result<Option<String>, StoreError> {
-        match self.take_u8()? {
-            0 => Ok(None),
-            1 => Ok(Some(self.take_text()?)),
-            _ => Err(corrupt_catalog("catalog optional text tag is unknown")),
-        }
-    }
-
-    fn take_u32(&mut self) -> Result<u32, StoreError> {
-        let bytes = self.take(4)?;
-        let array: [u8; 4] = bytes
-            .try_into()
-            .map_err(|_| corrupt_catalog("catalog length is malformed"))?;
-        Ok(u32::from_be_bytes(array))
-    }
-
-    fn take(&mut self, len: usize) -> Result<&'a [u8], StoreError> {
-        let Some((head, tail)) = self.bytes.split_at_checked(len) else {
-            return Err(corrupt_catalog("catalog row is truncated"));
-        };
-        self.bytes = tail;
-        Ok(head)
-    }
+fn corrupt_catalog_text_count(_: &[u8]) -> StoreError {
+    corrupt_catalog("catalog text count is malformed")
 }
 
 fn corrupt_catalog(message: impl Into<String>) -> StoreError {

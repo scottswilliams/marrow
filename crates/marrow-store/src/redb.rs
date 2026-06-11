@@ -35,6 +35,21 @@ const DELETE_BATCH_LIMIT: usize = 256;
 /// A key and the value it held before a change, so a rollback can restore it.
 type Undo = (Vec<u8>, Option<Vec<u8>>);
 
+impl<'a> traversal::ScanEntry
+    for (
+        redb::AccessGuard<'a, &'static [u8]>,
+        redb::AccessGuard<'a, &'static [u8]>,
+    )
+{
+    fn key(&self) -> &[u8] {
+        self.0.value()
+    }
+
+    fn value(&self) -> &[u8] {
+        self.1.value()
+    }
+}
+
 pub(crate) struct RedbStore {
     db: DatabaseHandle,
     /// The live write transaction while one is open (`Some` iff `journals` is
@@ -297,7 +312,7 @@ where
     T: ReadableTable<&'static [u8], &'static [u8]>,
 {
     let range = table.range::<&[u8]>(prefix..).map_err(io("scan"))?;
-    accumulate_scan(range, prefix, limit, "scan")
+    traversal::scan(range, prefix, limit, io("scan"))
 }
 
 fn streamed_scan_after<T>(
@@ -312,32 +327,7 @@ where
     let range = table
         .range::<&[u8]>((Bound::Excluded(cursor), Bound::Unbounded))
         .map_err(io("scan_after"))?;
-    accumulate_scan(range, prefix, limit, "scan_after")
-}
-
-fn accumulate_scan<'a, R>(
-    range: R,
-    prefix: &[u8],
-    limit: usize,
-    op: &'static str,
-) -> Result<ScanPage, StoreError>
-where
-    R: Iterator<
-        Item = redb::Result<(
-            redb::AccessGuard<'a, &'static [u8]>,
-            redb::AccessGuard<'a, &'static [u8]>,
-        )>,
-    >,
-{
-    let mut scan = traversal::ScanAccumulator::new(prefix, limit);
-    for entry in range {
-        let (key, value) = entry.map_err(io(op))?;
-        match scan.step(key.value(), value.value()) {
-            traversal::ScanStep::Done => break,
-            traversal::ScanStep::Continue => {}
-        }
-    }
-    Ok(scan.into_page())
+    traversal::scan(range, prefix, limit, io("scan_after"))
 }
 
 /// Run a read `$body` over the current read view: the open write transaction's

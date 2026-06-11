@@ -1,5 +1,6 @@
 use crate::StoreError;
 use crate::cell::CatalogId;
+use crate::codec::BoundedReader;
 
 const ENGINE_PROFILE_KEY_VERSION_V0: u8 = 0;
 const ENGINE_PROFILE_DIGEST_BYTES: usize = 8;
@@ -113,24 +114,24 @@ pub(crate) fn encode_commit_metadata(metadata: &CommitMetadata) -> Result<Vec<u8
 }
 
 pub(crate) fn decode_commit_metadata(bytes: &[u8]) -> Result<CommitMetadata, StoreError> {
-    let mut cursor = MetadataCursor::new(bytes);
+    let mut cursor = BoundedReader::new(bytes, corrupt_metadata);
     let commit_id = cursor.take_u64()?;
     let catalog_epoch = cursor.take_u64()?;
     let layout_epoch = cursor.take_u64()?;
-    let source_digest = cursor.take_string()?;
-    let engine_profile_digest = cursor.take_digest()?;
-    let changed_root_catalog_ids = cursor.take_catalog_ids()?;
-    let changed_index_catalog_ids = cursor.take_catalog_ids()?;
-    let activation_evolution_digest = cursor.take_string()?;
-    let proposal_digest = cursor.take_string()?;
+    let source_digest = take_string(&mut cursor)?;
+    let engine_profile_digest = take_digest(&mut cursor)?;
+    let changed_root_catalog_ids = take_catalog_ids(&mut cursor)?;
+    let changed_index_catalog_ids = take_catalog_ids(&mut cursor)?;
+    let activation_evolution_digest = take_string(&mut cursor)?;
+    let proposal_digest = take_string(&mut cursor)?;
     let activation_records_backfilled = cursor.take_u64()?;
     let activation_indexes_rebuilt = cursor.take_u64()?;
     let activation_records_retired = cursor.take_u64()?;
     let activation_records_transformed = cursor.take_u64()?;
-    let activation_retire_evidence_digest = cursor.take_string()?;
-    let activation_records_retired_by_id = cursor.take_retire_counts()?;
-    let activation_default_records_by_id = cursor.take_default_counts()?;
-    let activation_proposal_new_catalog_ids = cursor.take_catalog_ids()?;
+    let activation_retire_evidence_digest = take_string(&mut cursor)?;
+    let activation_records_retired_by_id = take_retire_counts(&mut cursor)?;
+    let activation_default_records_by_id = take_default_counts(&mut cursor)?;
+    let activation_proposal_new_catalog_ids = take_catalog_ids(&mut cursor)?;
     let activation_proposal_catalog_digest =
         (!proposal_digest.is_empty()).then_some(proposal_digest);
     if !cursor.is_empty() {
@@ -219,96 +220,54 @@ fn decode_digest(bytes: &[u8]) -> Result<EngineProfileDigest, StoreError> {
     bytes.try_into().map_err(|_| corrupt_metadata(bytes))
 }
 
-struct MetadataCursor<'a> {
-    bytes: &'a [u8],
+type MetadataReader<'a> = BoundedReader<'a, StoreError>;
+
+fn take_digest(cursor: &mut MetadataReader<'_>) -> Result<EngineProfileDigest, StoreError> {
+    decode_digest(cursor.take_prefixed_bytes()?)
 }
 
-impl<'a> MetadataCursor<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes }
-    }
+fn take_string(cursor: &mut MetadataReader<'_>) -> Result<String, StoreError> {
+    let raw = cursor.take_prefixed_bytes()?;
+    std::str::from_utf8(raw)
+        .map(str::to_string)
+        .map_err(|_| corrupt_metadata(raw))
+}
 
-    fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
-    }
+fn take_catalog_id(cursor: &mut MetadataReader<'_>) -> Result<CatalogId, StoreError> {
+    let raw = cursor.take_prefixed_bytes()?;
+    let id = std::str::from_utf8(raw).map_err(|_| corrupt_metadata(raw))?;
+    CatalogId::new(id).map_err(|_| corrupt_metadata(raw))
+}
 
-    fn take_array<const N: usize>(&mut self) -> Result<[u8; N], StoreError> {
-        let bytes = self.take(N)?;
-        bytes.try_into().map_err(|_| corrupt_metadata(bytes))
-    }
+fn take_catalog_ids(cursor: &mut MetadataReader<'_>) -> Result<Vec<CatalogId>, StoreError> {
+    let len = cursor.take_bounded_count(MIN_ENCODED_CATALOG_ID_BYTES)?;
+    (0..len).map(|_| take_catalog_id(cursor)).collect()
+}
 
-    fn take_u64(&mut self) -> Result<u64, StoreError> {
-        Ok(u64::from_be_bytes(self.take_array()?))
-    }
+fn take_retire_counts(
+    cursor: &mut MetadataReader<'_>,
+) -> Result<Vec<(CatalogId, u64)>, StoreError> {
+    let len = cursor.take_bounded_count(MIN_ENCODED_CATALOG_ID_BYTES + 8)?;
+    (0..len)
+        .map(|_| Ok((take_catalog_id(cursor)?, cursor.take_u64()?)))
+        .collect()
+}
 
-    fn take_bytes(&mut self) -> Result<&'a [u8], StoreError> {
-        let len = self.take_u32()? as usize;
-        self.take(len)
-    }
-
-    fn take_digest(&mut self) -> Result<EngineProfileDigest, StoreError> {
-        decode_digest(self.take_bytes()?)
-    }
-
-    fn take_string(&mut self) -> Result<String, StoreError> {
-        let raw = self.take_bytes()?;
-        std::str::from_utf8(raw)
-            .map(str::to_string)
-            .map_err(|_| corrupt_metadata(raw))
-    }
-
-    fn take_catalog_id(&mut self) -> Result<CatalogId, StoreError> {
-        let raw = self.take_bytes()?;
-        let id = std::str::from_utf8(raw).map_err(|_| corrupt_metadata(raw))?;
-        CatalogId::new(id).map_err(|_| corrupt_metadata(raw))
-    }
-
-    fn take_catalog_ids(&mut self) -> Result<Vec<CatalogId>, StoreError> {
-        let len = self.take_u32()? as usize;
-        if len > self.bytes.len() / MIN_ENCODED_CATALOG_ID_BYTES {
-            return Err(corrupt_metadata(self.bytes));
-        }
-        (0..len).map(|_| self.take_catalog_id()).collect()
-    }
-
-    fn take_retire_counts(&mut self) -> Result<Vec<(CatalogId, u64)>, StoreError> {
-        let len = self.take_u32()? as usize;
-        if len > self.bytes.len() / (MIN_ENCODED_CATALOG_ID_BYTES + 8) {
-            return Err(corrupt_metadata(self.bytes));
-        }
-        (0..len)
-            .map(|_| Ok((self.take_catalog_id()?, self.take_u64()?)))
-            .collect()
-    }
-
-    fn take_default_counts(&mut self) -> Result<Vec<ActivationDefaultRecordCount>, StoreError> {
-        let len = self.take_u32()? as usize;
-        if len > self.bytes.len() / (MIN_ENCODED_CATALOG_ID_BYTES + 16 + MIN_LENGTH_PREFIX_BYTES) {
-            return Err(corrupt_metadata(self.bytes));
-        }
-        (0..len)
-            .map(|_| {
-                Ok(ActivationDefaultRecordCount {
-                    catalog_id: self.take_catalog_id()?,
-                    records_backfilled: self.take_u64()?,
-                    target_records: self.take_u64()?,
-                    evidence_digest: self.take_string()?,
-                })
+fn take_default_counts(
+    cursor: &mut MetadataReader<'_>,
+) -> Result<Vec<ActivationDefaultRecordCount>, StoreError> {
+    let len =
+        cursor.take_bounded_count(MIN_ENCODED_CATALOG_ID_BYTES + 16 + MIN_LENGTH_PREFIX_BYTES)?;
+    (0..len)
+        .map(|_| {
+            Ok(ActivationDefaultRecordCount {
+                catalog_id: take_catalog_id(cursor)?,
+                records_backfilled: cursor.take_u64()?,
+                target_records: cursor.take_u64()?,
+                evidence_digest: take_string(cursor)?,
             })
-            .collect()
-    }
-
-    fn take_u32(&mut self) -> Result<u32, StoreError> {
-        Ok(u32::from_be_bytes(self.take_array()?))
-    }
-
-    fn take(&mut self, len: usize) -> Result<&'a [u8], StoreError> {
-        let Some((head, tail)) = self.bytes.split_at_checked(len) else {
-            return Err(corrupt_metadata(self.bytes));
-        };
-        self.bytes = tail;
-        Ok(head)
-    }
+        })
+        .collect()
 }
 
 fn corrupt_metadata(bytes: &[u8]) -> StoreError {

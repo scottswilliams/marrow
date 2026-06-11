@@ -10,6 +10,7 @@ mod backend;
 mod backup;
 mod catalog;
 pub mod cell;
+mod codec;
 pub mod decimal;
 pub mod key;
 mod mem;

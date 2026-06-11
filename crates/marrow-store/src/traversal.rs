@@ -2,19 +2,34 @@
 
 use crate::backend::{ScanPage, StoreError};
 
-pub(crate) enum ScanStep {
+pub(crate) trait ScanEntry {
+    fn key(&self) -> &[u8];
+    fn value(&self) -> &[u8];
+}
+
+impl ScanEntry for (&[u8], &[u8]) {
+    fn key(&self) -> &[u8] {
+        self.0
+    }
+
+    fn value(&self) -> &[u8] {
+        self.1
+    }
+}
+
+enum ScanStep {
     Done,
     Continue,
 }
 
-pub(crate) struct ScanAccumulator<'a> {
+struct ScanAccumulator<'a> {
     prefix: &'a [u8],
     limit: usize,
     page: ScanPage,
 }
 
 impl<'a> ScanAccumulator<'a> {
-    pub(crate) fn new(prefix: &'a [u8], limit: usize) -> Self {
+    fn new(prefix: &'a [u8], limit: usize) -> Self {
         Self {
             prefix,
             limit,
@@ -22,7 +37,7 @@ impl<'a> ScanAccumulator<'a> {
         }
     }
 
-    pub(crate) fn step(&mut self, key: &[u8], value: &[u8]) -> ScanStep {
+    fn step(&mut self, key: &[u8], value: &[u8]) -> ScanStep {
         if !key.starts_with(self.prefix) {
             return ScanStep::Done;
         }
@@ -34,20 +49,21 @@ impl<'a> ScanAccumulator<'a> {
         ScanStep::Continue
     }
 
-    pub(crate) fn into_page(self) -> ScanPage {
+    fn into_page(self) -> ScanPage {
         self.page
     }
 }
 
-pub(crate) fn scan<'a>(
-    entries: impl Iterator<Item = Result<(&'a [u8], &'a [u8]), StoreError>>,
+pub(crate) fn scan<T: ScanEntry, E>(
+    entries: impl IntoIterator<Item = Result<T, E>>,
     prefix: &[u8],
     limit: usize,
+    mut map_error: impl FnMut(E) -> StoreError,
 ) -> Result<ScanPage, StoreError> {
     let mut scan = ScanAccumulator::new(prefix, limit);
     for entry in entries {
-        let (key, value) = entry?;
-        match scan.step(key, value) {
+        let entry = entry.map_err(&mut map_error)?;
+        match scan.step(entry.key(), entry.value()) {
             ScanStep::Done => break,
             ScanStep::Continue => {}
         }

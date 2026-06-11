@@ -36,11 +36,13 @@ impl MemStore {
     }
 
     fn scan(&self, prefix: &[u8], limit: usize) -> ScanPage {
-        traversal::scan(self.range_from(prefix), prefix, limit).expect("memory scan is infallible")
+        traversal::scan(self.range_from(prefix), prefix, limit, |error| error)
+            .expect("memory scan is infallible")
     }
 
     fn scan_after(&self, prefix: &[u8], cursor: &[u8], limit: usize) -> ScanPage {
-        traversal::scan(self.range_after(cursor), prefix, limit).expect("memory scan is infallible")
+        traversal::scan(self.range_after(cursor), prefix, limit, |error| error)
+            .expect("memory scan is infallible")
     }
 
     fn range_from<'a>(

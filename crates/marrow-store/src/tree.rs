@@ -7,6 +7,7 @@ use crate::cell::{
     CatalogId, CellKey, MetaCell, NODE_MARKER, SequencePosition, decode_data_child_key,
     decode_index_child_key, decode_index_entry_key, decode_index_identity, decode_record_child_key,
 };
+use crate::codec::BoundedReader;
 use crate::key::SavedKey;
 use crate::metadata::{decode_commit_metadata, encode_commit_metadata};
 
@@ -922,10 +923,10 @@ pub fn encode_tree_enum_member(value: &TreeEnumMember) -> Result<Vec<u8>, StoreE
 }
 
 pub fn decode_tree_enum_member(bytes: &[u8]) -> Result<TreeEnumMember, StoreError> {
-    let mut cursor = Cursor::new(bytes);
-    cursor.take_version()?;
-    let enum_id = cursor.take_catalog_id()?;
-    let member_id = cursor.take_catalog_id()?;
+    let mut cursor = BoundedReader::new(bytes, corrupt_cell);
+    take_tree_value_version(&mut cursor)?;
+    let enum_id = take_catalog_id(&mut cursor)?;
+    let member_id = take_catalog_id(&mut cursor)?;
     if !cursor.is_empty() {
         return Err(corrupt_cell(bytes));
     }
@@ -954,52 +955,21 @@ fn decode_digest(bytes: &[u8]) -> Result<EngineProfileDigest, StoreError> {
     bytes.try_into().map_err(|_| corrupt_cell(bytes))
 }
 
-struct Cursor<'a> {
-    bytes: &'a [u8],
+type TreeValueReader<'a> = BoundedReader<'a, StoreError>;
+
+fn take_tree_value_version(cursor: &mut TreeValueReader<'_>) -> Result<(), StoreError> {
+    let version = cursor.take_u8()?;
+    if version == TREE_VALUE_VERSION_V0 {
+        Ok(())
+    } else {
+        Err(corrupt_cell(&[version]))
+    }
 }
 
-impl<'a> Cursor<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
-    }
-
-    fn take_version(&mut self) -> Result<(), StoreError> {
-        let version = self.take(1)?[0];
-        if version == TREE_VALUE_VERSION_V0 {
-            Ok(())
-        } else {
-            Err(corrupt_cell(&[version]))
-        }
-    }
-
-    fn take_bytes(&mut self) -> Result<&'a [u8], StoreError> {
-        let len = self.take_u32()? as usize;
-        self.take(len)
-    }
-
-    fn take_catalog_id(&mut self) -> Result<CatalogId, StoreError> {
-        let raw = self.take_bytes()?;
-        let id = std::str::from_utf8(raw).map_err(|_| corrupt_cell(raw))?;
-        CatalogId::new(id).map_err(|_| corrupt_cell(raw))
-    }
-
-    fn take_u32(&mut self) -> Result<u32, StoreError> {
-        let bytes = self.take(4)?;
-        let raw: [u8; 4] = bytes.try_into().map_err(|_| corrupt_cell(bytes))?;
-        Ok(u32::from_be_bytes(raw))
-    }
-
-    fn take(&mut self, len: usize) -> Result<&'a [u8], StoreError> {
-        let Some((head, tail)) = self.bytes.split_at_checked(len) else {
-            return Err(corrupt_cell(self.bytes));
-        };
-        self.bytes = tail;
-        Ok(head)
-    }
+fn take_catalog_id(cursor: &mut TreeValueReader<'_>) -> Result<CatalogId, StoreError> {
+    let raw = cursor.take_prefixed_bytes()?;
+    let id = std::str::from_utf8(raw).map_err(|_| corrupt_cell(raw))?;
+    CatalogId::new(id).map_err(|_| corrupt_cell(raw))
 }
 
 fn corrupt_cell(bytes: &[u8]) -> StoreError {
