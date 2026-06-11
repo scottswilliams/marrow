@@ -378,7 +378,7 @@ store. `marrow backup` itself reports `io.write` for a file it cannot write and 
 |---|---|
 | `restore.format_version` | The file is not a Marrow backup, or its format version is not the one this build restores. |
 | `restore.corrupt_chunk` | The backup's cell stream is truncated or its data checksum does not match the manifest. |
-| `restore.not_empty` | The target store already holds saved data. v0.1 restore writes into an empty store only. |
+| `restore.not_empty` | The target store already holds saved data, generated indexes, or an accepted catalog. v0.1 restore writes into an empty store only. |
 | `restore.engine_recompile_required` | The backup was written under a different engine, layout, or value codec. A cross-engine restore is a future engine recompile. |
 | `restore.source_mismatch` | The backup was written from a program whose schema does not match this project. |
 | `restore.catalog_mismatch` | The backup's catalog epoch does not match this project's accepted catalog. |

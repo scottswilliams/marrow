@@ -360,7 +360,7 @@ pub(crate) enum BackupError {
         problem: BackupCorruptProblem,
         message: String,
     },
-    /// The restore target already holds saved data.
+    /// The restore target already holds saved data or an accepted catalog.
     NotEmpty,
     /// The backup was written under a different engine, layout, or value codec.
     EngineRecompileRequired(String),
@@ -465,7 +465,7 @@ impl std::fmt::Display for BackupError {
             | Self::DataInvalid(message) => write!(f, "{message}"),
             Self::NotEmpty => write!(
                 f,
-                "the restore target already holds saved data; restore writes into an empty store"
+                "the restore target already holds saved data or an accepted catalog; restore writes into an empty store"
             ),
         }
     }

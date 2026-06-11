@@ -494,8 +494,9 @@ marrow restore [--format text|json|jsonl] <projectdir> <backup-file>
 Replay a backup into the project's native store. Restore checks the project
 against the accepted catalog the backup carries, validates the backup against
 it (`restore.source_mismatch`, `restore.catalog_mismatch`,
-`restore.engine_recompile_required`), and refuses a non-empty target
-(`restore.not_empty`) — v0.1 restores into an empty store only. The replay
+`restore.engine_recompile_required`), and refuses a target that already holds
+saved data, generated indexes, or an accepted catalog (`restore.not_empty`) —
+v0.1 restores into an empty store only. The replay
 writes the backup's catalog rows alongside its data cells, so the restored
 store carries its accepted identity and runs immediately.
 The whole replay runs in one transaction: a checksum mismatch or trailing bytes

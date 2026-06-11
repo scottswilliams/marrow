@@ -62,8 +62,11 @@ fn empty_store_data(_root: &Path, data_dir: &Path) {
 /// catalog. A rejected restore rolls its whole transaction back, so the target is exactly
 /// as empty as it was found, carrying neither replayed data nor catalog rows.
 fn assert_store_empty(data_dir: &Path) {
-    let store =
-        TreeStore::open_read_only(&data_dir.join("marrow.redb")).expect("open target store");
+    let store_file = data_dir.join("marrow.redb");
+    if !store_file.exists() {
+        return;
+    }
+    let store = TreeStore::open_read_only(&store_file).expect("open target store");
     assert!(
         store.is_empty().expect("read target data"),
         "a rejected restore leaves no data or index cells"
@@ -283,6 +286,232 @@ fn restore_refuses_a_non_empty_target() {
     let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
     assert_eq!(json_code(&restore), "restore.not_empty");
+}
+
+#[test]
+fn rejected_restore_does_not_leave_a_created_store_file() {
+    let (root, data_dir) = seeded_project("backup-rollback-no-created-store-file");
+    let dir = root.to_str().unwrap().to_string();
+    let archive = root.join("books.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+
+    assert_eq!(
+        marrow(&["backup", &dir, &archive_arg]).status.code(),
+        Some(0)
+    );
+    let mut bytes = fs::read(&archive).expect("read archive");
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0xff;
+    fs::write(&archive, &bytes).expect("write corrupt archive");
+
+    fs::remove_dir_all(&data_dir).expect("remove store data");
+    fs::create_dir_all(&data_dir).expect("recreate pristine data dir");
+    let store_file = data_dir.join("marrow.redb");
+    assert!(
+        !store_file.exists(),
+        "the target starts as an existing .data dir with no store file"
+    );
+
+    let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
+    assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
+    assert_eq!(json_code(&restore), "restore.corrupt_chunk");
+    assert!(
+        !store_file.exists(),
+        "a rejected restore removes only the store file it created"
+    );
+    assert!(
+        data_dir.exists(),
+        "a pre-existing empty .data directory is left in place"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn rejected_restore_preserves_dangling_store_symlink_without_orphaning_target() {
+    let (root, data_dir) = seeded_project("backup-rollback-dangling-store-symlink");
+    let dir = root.to_str().unwrap().to_string();
+    let archive = root.join("books.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+
+    assert_eq!(
+        marrow(&["backup", &dir, &archive_arg]).status.code(),
+        Some(0)
+    );
+    let mut bytes = fs::read(&archive).expect("read archive");
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0xff;
+    fs::write(&archive, &bytes).expect("write corrupt archive");
+
+    fs::remove_dir_all(&data_dir).expect("remove store data");
+    fs::create_dir_all(&data_dir).expect("recreate data dir");
+    let store_file = data_dir.join("marrow.redb");
+    let symlink_target_dir = root.join("outside-data");
+    fs::create_dir_all(&symlink_target_dir).expect("create symlink target parent");
+    let symlink_target = symlink_target_dir.join("marrow.redb");
+    std::os::unix::fs::symlink(&symlink_target, &store_file).expect("create store symlink");
+    assert!(
+        fs::symlink_metadata(&store_file)
+            .expect("read store symlink metadata")
+            .file_type()
+            .is_symlink(),
+        "fixture store path starts as a symlink"
+    );
+    assert!(!store_file.exists(), "fixture store symlink is dangling");
+    assert!(!symlink_target.exists(), "fixture target starts absent");
+
+    let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
+    assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
+    assert_eq!(json_code(&restore), "restore.corrupt_chunk");
+
+    let link_preserved = fs::symlink_metadata(&store_file)
+        .as_ref()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink());
+    let target_exists = symlink_target.exists();
+    assert!(
+        link_preserved && !target_exists,
+        "rejected restore must preserve the symlink and remove the created target; \
+         link_preserved={link_preserved} target_exists={target_exists}"
+    );
+    assert_eq!(
+        fs::read_link(&store_file).expect("read preserved store symlink"),
+        symlink_target,
+        "restore leaves the configured symlink target unchanged"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn rejected_restore_removes_created_final_target_behind_store_symlink_chain() {
+    let (root, data_dir) = seeded_project("backup-rollback-store-symlink-chain");
+    let dir = root.to_str().unwrap().to_string();
+    let archive = root.join("books.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+
+    assert_eq!(
+        marrow(&["backup", &dir, &archive_arg]).status.code(),
+        Some(0)
+    );
+    let mut bytes = fs::read(&archive).expect("read archive");
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0xff;
+    fs::write(&archive, &bytes).expect("write corrupt archive");
+
+    fs::remove_dir_all(&data_dir).expect("remove store data");
+    fs::create_dir_all(&data_dir).expect("recreate data dir");
+    let store_file = data_dir.join("marrow.redb");
+    let intermediate_link = root.join("outside-link.redb");
+    let final_target = root.join("missing-final.redb");
+    std::os::unix::fs::symlink("missing-final.redb", &intermediate_link)
+        .expect("create intermediate symlink");
+    std::os::unix::fs::symlink("../outside-link.redb", &store_file).expect("create store symlink");
+
+    assert!(
+        fs::symlink_metadata(&store_file)
+            .expect("read store symlink metadata")
+            .file_type()
+            .is_symlink(),
+        "fixture store path starts as a symlink"
+    );
+    assert!(
+        fs::symlink_metadata(&intermediate_link)
+            .expect("read intermediate symlink metadata")
+            .file_type()
+            .is_symlink(),
+        "fixture intermediate path starts as a symlink"
+    );
+    assert!(!store_file.exists(), "fixture store symlink is dangling");
+    assert!(
+        !intermediate_link.exists(),
+        "fixture intermediate symlink is dangling"
+    );
+    assert!(!final_target.exists(), "fixture final target starts absent");
+
+    let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
+    assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
+    assert_eq!(json_code(&restore), "restore.corrupt_chunk");
+
+    let store_link_preserved = fs::symlink_metadata(&store_file)
+        .as_ref()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink());
+    let intermediate_link_preserved = fs::symlink_metadata(&intermediate_link)
+        .as_ref()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink());
+    let final_target_exists = final_target.exists();
+    assert!(
+        store_link_preserved && intermediate_link_preserved && !final_target_exists,
+        "rejected restore must preserve both symlinks and remove the created final target; \
+         store_link_preserved={store_link_preserved} \
+         intermediate_link_preserved={intermediate_link_preserved} \
+         final_target_exists={final_target_exists}"
+    );
+    assert_eq!(
+        fs::read_link(&store_file).expect("read preserved store symlink"),
+        PathBuf::from("../outside-link.redb"),
+        "restore leaves the configured symlink target unchanged"
+    );
+    assert_eq!(
+        fs::read_link(&intermediate_link).expect("read preserved intermediate symlink"),
+        PathBuf::from("missing-final.redb"),
+        "restore leaves the intermediate symlink target unchanged"
+    );
+}
+
+#[test]
+fn restore_refuses_a_catalog_only_target() {
+    let (source, _source_data_dir) = seeded_project("backup-catalog-only-source");
+    let source_dir = source.to_str().unwrap().to_string();
+    let archive = source.join("books.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+    assert_eq!(
+        marrow(&["backup", &source_dir, &archive_arg]).status.code(),
+        Some(0)
+    );
+
+    let target = temp_project("backup-catalog-only-target", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "shelf::seed" } }"#,
+        );
+        write(
+            root,
+            "src/shelf.mw",
+            "module shelf\n\
+             \n\
+             resource Book at ^books(id: int)\n\
+             \x20\x20\x20\x20required title: string\n\
+             \n\
+             pub fn seed()\n\
+             \x20\x20\x20\x20var b: Book\n\
+             \x20\x20\x20\x20b.title = \"Mort\"\n\
+             \x20\x20\x20\x20transaction\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(1) = b\n",
+        );
+    });
+    let target_dir = target.to_str().unwrap().to_string();
+    let target_data_dir = target.join(".data");
+    let target_store_file = target_data_dir.join("marrow.redb");
+    let before_catalog = read_store_catalog(&target_data_dir).expect("catalog-only baseline");
+    assert!(
+        TreeStore::open_read_only(&target_store_file)
+            .expect("open target read-only")
+            .is_empty()
+            .expect("catalog-only target has no data or index cells"),
+        "fixture target is catalog-only"
+    );
+
+    let restore = marrow(&["restore", "--format", "json", &target_dir, &archive_arg]);
+    assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
+    assert_eq!(json_code(&restore), "restore.not_empty");
+    assert!(
+        target_store_file.exists(),
+        "restore must not delete a pre-existing catalog-only store"
+    );
+    assert_eq!(
+        read_store_catalog(&target_data_dir),
+        Some(before_catalog),
+        "restore leaves the pre-existing catalog-only baseline unchanged"
+    );
 }
 
 #[test]
@@ -626,12 +855,14 @@ fn backup_of_an_unseeded_project_restores_empty() {
         );
     });
     let dir = root.to_str().unwrap().to_string();
+    let data_dir = root.join(".data");
     let archive = root.join("empty.mwbackup");
     let archive_arg = archive.to_str().unwrap().to_string();
 
     let backup = marrow(&["backup", &dir, &archive_arg]);
     assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
 
+    empty_store_data(&root, &data_dir);
     let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
     assert_eq!(restore.status.code(), Some(0), "restore: {restore:?}");
     assert_eq!(

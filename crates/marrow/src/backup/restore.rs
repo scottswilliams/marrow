@@ -72,7 +72,7 @@ pub(crate) fn restore_backup_with_prologue(
 ) -> Result<RestoreReport, BackupError> {
     let BackupPrologue { manifest, section } = prologue;
     let restore_program = restore_program(program, &manifest)?;
-    if !store.is_empty()? {
+    if !restore_target_is_empty(store)? {
         return Err(BackupError::NotEmpty);
     }
 
@@ -88,6 +88,10 @@ pub(crate) fn restore_backup_with_prologue(
             Err(error)
         }
     }
+}
+
+fn restore_target_is_empty(store: &TreeStore) -> Result<bool, BackupError> {
+    Ok(store.is_empty()? && store.read_catalog_snapshot()?.is_none())
 }
 
 /// Restore the backup in `input` into `store`, an empty native store already bound to
