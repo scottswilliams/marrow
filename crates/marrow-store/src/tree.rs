@@ -6,9 +6,10 @@ use crate::backend::{Backend, ScanPage, StoreError};
 use crate::cell::{
     CatalogId, CellKey, MetaCell, NODE_MARKER, SequencePosition, decode_data_cell_key,
     decode_data_child_key, decode_index_child_key, decode_index_entry_key, decode_index_identity,
+    prefix_successor,
 };
 use crate::codec::BoundedReader;
-use crate::key::SavedKey;
+use crate::key::{KEY_INT_EXCLUSIVE_END, SavedKey, encode_key_value};
 use crate::metadata::{decode_commit_metadata, encode_commit_metadata};
 
 pub use crate::backup::{TreeBackupCell, TreeBackupCellBuf, TreeBackupCellReadError};
@@ -292,12 +293,10 @@ impl TreeStore {
         let mut cursor_path = path.to_vec();
         cursor_path.push(DataPathSegment::Key(after.clone()));
         let cursor = CellKey::data_path_prefix(store, identity, &cursor_path);
-        self.next_child_after_cursor(
-            prefix.as_bytes(),
-            cursor.as_bytes(),
-            after,
-            decode_data_child,
-        )
+        let Some(cursor) = prefix_successor(cursor.as_bytes()) else {
+            return Ok(None);
+        };
+        self.next_child_after_cursor(prefix.as_bytes(), &cursor, decode_data_child)
     }
 
     pub fn data_first_child(
@@ -328,7 +327,15 @@ impl TreeStore {
         before: &SavedKey,
     ) -> Result<Option<SavedKey>, StoreError> {
         let prefix = CellKey::data_path_prefix(store, identity, path);
-        self.prev_child_before(prefix.as_bytes(), before, decode_data_child)
+        let mut cursor_path = path.to_vec();
+        cursor_path.push(DataPathSegment::Key(before.clone()));
+        let cursor = CellKey::data_path_prefix(store, identity, &cursor_path);
+        self.prev_child_before(
+            prefix.as_bytes(),
+            cursor.as_bytes(),
+            before,
+            decode_data_child,
+        )
     }
 
     pub fn data_child_count(
@@ -348,7 +355,9 @@ impl TreeStore {
         path: &[DataPathSegment],
     ) -> Result<Option<i64>, StoreError> {
         let prefix = CellKey::data_path_prefix(store, identity, path);
-        self.max_int_child(prefix.as_bytes(), decode_data_child)
+        let cursor =
+            CellKey::data_path_child_tag_upper_bound(store, identity, path, KEY_INT_EXCLUSIVE_END);
+        self.max_int_child(prefix.as_bytes(), cursor.as_bytes(), decode_data_child)
     }
 
     pub fn record_child_count(
@@ -408,12 +417,15 @@ impl TreeStore {
         scan: RecordChildScan,
     ) -> Result<Option<SavedKey>, StoreError> {
         let mut result = None;
-        self.scan_record_children_until(store, identity_prefix, scan, |child| {
-            if child.cmp(after).is_gt() {
-                result = Some(child);
-                return std::ops::ControlFlow::Break(());
-            }
-            std::ops::ControlFlow::Continue(())
+        let mut cursor_identity = identity_prefix.to_vec();
+        cursor_identity.push(after.clone());
+        let cursor = CellKey::record_prefix(store, &cursor_identity);
+        let Some(cursor) = prefix_successor(cursor.as_bytes()) else {
+            return Ok(None);
+        };
+        self.scan_record_children_after_cursor(store, identity_prefix, &cursor, scan, |child| {
+            result = Some(child);
+            std::ops::ControlFlow::Break(())
         })?;
         Ok(result)
     }
@@ -471,9 +483,14 @@ impl TreeStore {
         scan: RecordChildScan,
     ) -> Result<Option<SavedKey>, StoreError> {
         let mut result = None;
-        self.scan_record_children_until(store, identity_prefix, scan, |child| {
+        let prefix = CellKey::record_prefix(store, identity_prefix);
+        let cursor =
+            prefix_successor(prefix.as_bytes()).ok_or_else(|| StoreError::InvalidCursor {
+                message: "record prefix has no upper bound".into(),
+            })?;
+        self.scan_record_children_reverse_until(store, identity_prefix, &cursor, scan, |child| {
             result = Some(child);
-            std::ops::ControlFlow::Continue(())
+            std::ops::ControlFlow::Break(())
         })?;
         Ok(result)
     }
@@ -508,15 +525,21 @@ impl TreeStore {
         before: &SavedKey,
         scan: RecordChildScan,
     ) -> Result<Option<SavedKey>, StoreError> {
-        let mut previous = None;
-        self.scan_record_children_until(store, identity_prefix, scan, |child| {
-            if child.cmp(before).is_ge() {
-                return std::ops::ControlFlow::Break(());
-            }
-            previous = Some(child);
-            std::ops::ControlFlow::Continue(())
-        })?;
-        Ok(previous)
+        let mut result = None;
+        let mut cursor_identity = identity_prefix.to_vec();
+        cursor_identity.push(before.clone());
+        let cursor = CellKey::record_prefix(store, &cursor_identity);
+        self.scan_record_children_reverse_until(
+            store,
+            identity_prefix,
+            cursor.as_bytes(),
+            scan,
+            |child| {
+                result = Some(child);
+                std::ops::ControlFlow::Break(())
+            },
+        )?;
+        Ok(result)
     }
 
     pub fn max_int_record_child(
@@ -524,19 +547,22 @@ impl TreeStore {
         store: &CatalogId,
         identity_prefix: &[SavedKey],
     ) -> Result<Option<i64>, StoreError> {
-        let mut max = None;
-        self.scan_record_children_until(
+        let mut result = None;
+        let cursor =
+            CellKey::record_child_tag_upper_bound(store, identity_prefix, KEY_INT_EXCLUSIVE_END);
+        self.scan_record_children_reverse_until(
             store,
             identity_prefix,
+            cursor.as_bytes(),
             RecordChildScan::ExactNode,
             |child| {
                 if let SavedKey::Int(value) = child {
-                    max = Some(max.map_or(value, |current: i64| current.max(value)));
+                    result = Some(value);
                 }
-                std::ops::ControlFlow::Continue(())
+                std::ops::ControlFlow::Break(())
             },
         )?;
-        Ok(max)
+        Ok(result)
     }
 
     pub fn record_identity_exists_under(
@@ -725,7 +751,11 @@ impl TreeStore {
         after: &SavedKey,
     ) -> Result<Option<SavedKey>, StoreError> {
         let prefix = CellKey::index_key_prefix(index, key_prefix);
-        self.next_child_after(prefix.as_bytes(), after, decode_index_child)
+        let cursor = self.index_child_stem(index, key_prefix, after)?;
+        let Some(cursor) = prefix_successor(&cursor) else {
+            return Ok(None);
+        };
+        self.next_child_after_cursor(prefix.as_bytes(), &cursor, decode_index_child)
     }
 
     pub fn index_first_child(
@@ -753,7 +783,8 @@ impl TreeStore {
         before: &SavedKey,
     ) -> Result<Option<SavedKey>, StoreError> {
         let prefix = CellKey::index_key_prefix(index, key_prefix);
-        self.prev_child_before(prefix.as_bytes(), before, decode_index_child)
+        let cursor = self.index_child_stem(index, key_prefix, before)?;
+        self.prev_child_before(prefix.as_bytes(), &cursor, before, decode_index_child)
     }
 
     pub fn scan_index_tuple(
@@ -871,6 +902,15 @@ impl TreeStore {
         self.backend.borrow().scan_after(prefix, cursor, limit)
     }
 
+    fn scan_before(
+        &self,
+        prefix: &[u8],
+        cursor: &[u8],
+        limit: usize,
+    ) -> Result<ScanPage, StoreError> {
+        self.backend.borrow().scan_before(prefix, cursor, limit)
+    }
+
     fn write_u64_meta(&self, cell: MetaCell, value: u64) -> Result<(), StoreError> {
         self.write_cell(CellKey::meta(cell).as_bytes(), value.to_be_bytes().to_vec())
     }
@@ -967,22 +1007,6 @@ impl TreeStore {
         Ok(count)
     }
 
-    fn scan_children(
-        &self,
-        prefix: &[u8],
-        mut visit: impl FnMut(SavedKey),
-        decode: fn(&[u8]) -> Result<Option<SavedKey>, StoreError>,
-    ) -> Result<(), StoreError> {
-        self.scan_children_until(
-            prefix,
-            |child| {
-                visit(child);
-                std::ops::ControlFlow::Continue(())
-            },
-            decode,
-        )
-    }
-
     /// Drive a bounded prefix scan to exhaustion, paging by [`CHILD_SCAN_PAGE_LIMIT`]
     /// and resuming each page from the previous page's last key. `visit` sees every
     /// raw `(key, value)` under `prefix` in order and may stop the walk early. A
@@ -1037,6 +1061,41 @@ impl TreeStore {
         })
     }
 
+    fn scan_children_reverse_until(
+        &self,
+        prefix: &[u8],
+        cursor: &[u8],
+        mut visit: impl FnMut(SavedKey) -> std::ops::ControlFlow<()>,
+        decode: fn(&[u8]) -> Result<Option<SavedKey>, StoreError>,
+    ) -> Result<(), StoreError> {
+        let mut cursor = cursor.to_vec();
+        let mut last_child: Option<SavedKey> = None;
+        loop {
+            let page = self.scan_before(prefix, &cursor, CHILD_SCAN_PAGE_LIMIT)?;
+            let next_cursor = page.entries.last().map(|(key, _)| key.clone());
+            for (key, _) in page.entries {
+                let rest = key.get(prefix.len()..).unwrap_or_default();
+                let Some(child) = decode(rest)? else {
+                    continue;
+                };
+                if last_child.as_ref() == Some(&child) {
+                    continue;
+                }
+                last_child = Some(child.clone());
+                if visit(child).is_break() {
+                    return Ok(());
+                }
+            }
+            if !page.truncated {
+                break;
+            }
+            cursor = next_cursor.ok_or_else(|| StoreError::InvalidCursor {
+                message: "reverse child scan page was truncated without a cursor".into(),
+            })?;
+        }
+        Ok(())
+    }
+
     fn scan_record_children_until(
         &self,
         store: &CatalogId,
@@ -1077,48 +1136,144 @@ impl TreeStore {
         })
     }
 
-    fn next_child_after(
+    fn scan_record_children_after_cursor(
         &self,
-        prefix: &[u8],
-        after: &SavedKey,
-        decode: fn(&[u8]) -> Result<Option<SavedKey>, StoreError>,
-    ) -> Result<Option<SavedKey>, StoreError> {
-        let mut seen_anchor = false;
-        let mut result = None;
-        self.scan_children_until(
-            prefix,
-            |child| {
-                if seen_anchor {
-                    result = Some(child);
-                    return std::ops::ControlFlow::Break(());
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+        cursor: &[u8],
+        scan: RecordChildScan,
+        mut visit: impl FnMut(SavedKey) -> std::ops::ControlFlow<()>,
+    ) -> Result<(), StoreError> {
+        let prefix = CellKey::record_prefix(store, identity_prefix);
+        let mut cursor = cursor.to_vec();
+        loop {
+            let page = self.scan_after(prefix.as_bytes(), &cursor, 1)?;
+            let next_cursor = page.entries.last().map(|(key, _)| key.clone());
+            for (key, value) in page.entries {
+                let decoded = decode_data_cell_key(&key).ok_or_else(|| corrupt_cell(&key))?;
+                if decoded.store != *store
+                    || !matches!(decoded.kind, crate::cell::DataCellKind::Node)
+                    || !decoded.identity.starts_with(identity_prefix)
+                    || value != NODE_MARKER
+                {
+                    continue;
                 }
-                seen_anchor = &child == after;
-                std::ops::ControlFlow::Continue(())
-            },
-            decode,
-        )?;
-        Ok(result)
+                match scan {
+                    RecordChildScan::DescendantNode
+                        if decoded.identity.len() <= identity_prefix.len() =>
+                    {
+                        continue;
+                    }
+                    RecordChildScan::ExactNode
+                        if decoded.identity.len() != identity_prefix.len() + 1 =>
+                    {
+                        continue;
+                    }
+                    _ => {}
+                }
+                let child = decoded.identity[identity_prefix.len()].clone();
+                if visit(child).is_break() {
+                    return Ok(());
+                }
+            }
+            if !page.truncated {
+                break;
+            }
+            cursor = next_cursor.ok_or_else(|| StoreError::InvalidCursor {
+                message: "record seek page was truncated without a cursor".into(),
+            })?;
+        }
+        Ok(())
+    }
+
+    fn scan_record_children_reverse_until(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+        cursor: &[u8],
+        scan: RecordChildScan,
+        mut visit: impl FnMut(SavedKey) -> std::ops::ControlFlow<()>,
+    ) -> Result<(), StoreError> {
+        let prefix = CellKey::record_prefix(store, identity_prefix);
+        let mut cursor = cursor.to_vec();
+        let mut last_child: Option<SavedKey> = None;
+        loop {
+            let page = self.scan_before(prefix.as_bytes(), &cursor, CHILD_SCAN_PAGE_LIMIT)?;
+            let next_cursor = page.entries.last().map(|(key, _)| key.clone());
+            for (key, value) in page.entries {
+                let decoded = decode_data_cell_key(&key).ok_or_else(|| corrupt_cell(&key))?;
+                if decoded.store != *store
+                    || !matches!(decoded.kind, crate::cell::DataCellKind::Node)
+                    || !decoded.identity.starts_with(identity_prefix)
+                    || value != NODE_MARKER
+                {
+                    continue;
+                }
+                match scan {
+                    RecordChildScan::DescendantNode
+                        if decoded.identity.len() <= identity_prefix.len() =>
+                    {
+                        continue;
+                    }
+                    RecordChildScan::ExactNode
+                        if decoded.identity.len() != identity_prefix.len() + 1 =>
+                    {
+                        continue;
+                    }
+                    _ => {}
+                }
+                let child = decoded.identity[identity_prefix.len()].clone();
+                if last_child.as_ref() == Some(&child) {
+                    continue;
+                }
+                last_child = Some(child.clone());
+                if visit(child).is_break() {
+                    return Ok(());
+                }
+            }
+            if !page.truncated {
+                break;
+            }
+            cursor = next_cursor.ok_or_else(|| StoreError::InvalidCursor {
+                message: "reverse record scan page was truncated without a cursor".into(),
+            })?;
+        }
+        Ok(())
+    }
+
+    fn index_child_stem(
+        &self,
+        index: &CatalogId,
+        key_prefix: &[SavedKey],
+        child: &SavedKey,
+    ) -> Result<Vec<u8>, StoreError> {
+        let identity_stem = index_identity_child_stem(index, key_prefix, child);
+        let page = self.scan(&identity_stem, 1)?;
+        if let Some((key, _)) = page.entries.first() {
+            let prefix = CellKey::index_key_prefix(index, key_prefix);
+            let rest = key.get(prefix.as_bytes().len()..).unwrap_or_default();
+            if decode_index_child(rest)?.as_ref() == Some(child) {
+                return Ok(identity_stem);
+            }
+        }
+        Ok(index_key_child_stem(index, key_prefix, child))
     }
 
     fn next_child_after_cursor(
         &self,
         prefix: &[u8],
         cursor: &[u8],
-        after: &SavedKey,
         decode: fn(&[u8]) -> Result<Option<SavedKey>, StoreError>,
     ) -> Result<Option<SavedKey>, StoreError> {
         let mut cursor = cursor.to_vec();
         loop {
-            let page = self.scan_after(prefix, &cursor, CHILD_SCAN_PAGE_LIMIT)?;
+            let page = self.scan_after(prefix, &cursor, 1)?;
             let next_cursor = page.entries.last().map(|(key, _)| key.clone());
             for (key, _) in page.entries {
                 let rest = key.get(prefix.len()..).unwrap_or_default();
                 let Some(child) = decode(rest)? else {
                     continue;
                 };
-                if &child == after {
-                    continue;
-                }
                 return Ok(Some(child));
             }
             if !page.truncated {
@@ -1134,19 +1289,19 @@ impl TreeStore {
     fn prev_child_before(
         &self,
         prefix: &[u8],
+        cursor: &[u8],
         before: &SavedKey,
         decode: fn(&[u8]) -> Result<Option<SavedKey>, StoreError>,
     ) -> Result<Option<SavedKey>, StoreError> {
-        let mut previous = None;
         let mut result = None;
-        self.scan_children_until(
+        self.scan_children_reverse_until(
             prefix,
+            cursor,
             |child| {
-                if &child == before {
-                    result = previous.take();
+                if &child != before {
+                    result = Some(child);
                     return std::ops::ControlFlow::Break(());
                 }
-                previous = Some(child);
                 std::ops::ControlFlow::Continue(())
             },
             decode,
@@ -1177,22 +1332,36 @@ impl TreeStore {
         decode: fn(&[u8]) -> Result<Option<SavedKey>, StoreError>,
     ) -> Result<Option<SavedKey>, StoreError> {
         let mut result = None;
-        self.scan_children(prefix, |child| result = Some(child), decode)?;
+        let cursor = prefix_successor(prefix).ok_or_else(|| StoreError::InvalidCursor {
+            message: "child prefix has no upper bound".into(),
+        })?;
+        self.scan_children_reverse_until(
+            prefix,
+            &cursor,
+            |child| {
+                result = Some(child);
+                std::ops::ControlFlow::Break(())
+            },
+            decode,
+        )?;
         Ok(result)
     }
 
     fn max_int_child(
         &self,
         prefix: &[u8],
+        cursor: &[u8],
         decode: fn(&[u8]) -> Result<Option<SavedKey>, StoreError>,
     ) -> Result<Option<i64>, StoreError> {
         let mut result = None;
-        self.scan_children(
+        self.scan_children_reverse_until(
             prefix,
+            cursor,
             |child| {
                 if let SavedKey::Int(value) = child {
-                    result = Some(result.map_or(value, |max: i64| max.max(value)));
+                    result = Some(value);
                 }
+                std::ops::ControlFlow::Break(())
             },
             decode,
         )?;
@@ -1206,6 +1375,22 @@ fn decode_data_child(bytes: &[u8]) -> Result<Option<SavedKey>, StoreError> {
 
 fn decode_index_child(bytes: &[u8]) -> Result<Option<SavedKey>, StoreError> {
     decode_index_child_key(bytes).map_err(|_| corrupt_cell(bytes))
+}
+
+fn index_identity_child_stem(
+    index: &CatalogId,
+    key_prefix: &[SavedKey],
+    child: &SavedKey,
+) -> Vec<u8> {
+    let mut bytes = CellKey::index_tuple_prefix(index, key_prefix).into_bytes();
+    bytes.extend_from_slice(&encode_key_value(child));
+    bytes
+}
+
+fn index_key_child_stem(index: &CatalogId, key_prefix: &[SavedKey], child: &SavedKey) -> Vec<u8> {
+    let mut child_prefix = key_prefix.to_vec();
+    child_prefix.push(child.clone());
+    CellKey::index_key_prefix(index, &child_prefix).into_bytes()
 }
 
 pub fn encode_tree_enum_member(value: &TreeEnumMember) -> Result<Vec<u8>, StoreError> {
@@ -1291,6 +1476,7 @@ mod tests {
         TreeBackupCellBuf, TreeStore,
     };
     use crate::StoreError;
+    use crate::backend::counting::{BackendCounts, CountingBackend};
     use crate::backend::{Backend, ScanPage};
     use crate::cell::{CatalogId, DataCellKind};
     use crate::key::SavedKey;
@@ -1347,6 +1533,15 @@ mod tests {
             limit: usize,
         ) -> Result<ScanPage, StoreError> {
             self.inner.scan_after(prefix, cursor, limit)
+        }
+
+        fn scan_before(
+            &self,
+            prefix: &[u8],
+            cursor: &[u8],
+            limit: usize,
+        ) -> Result<ScanPage, StoreError> {
+            self.inner.scan_before(prefix, cursor, limit)
         }
 
         fn begin(&mut self) -> Result<(), StoreError> {
@@ -1613,6 +1808,193 @@ mod tests {
                 vec![SavedKey::Str("fiction".into()), SavedKey::Int(2)],
                 vec![SavedKey::Str("history".into()), SavedKey::Int(5)],
             ]
+        );
+    }
+
+    #[test]
+    fn record_last_child_uses_one_bounded_scan_not_all_pages() {
+        let store_id = catalog("cat_00000000000000000000000000000001");
+        let counts = BackendCounts::default();
+        let store = TreeStore::from_backend(Box::new(CountingBackend::new(
+            MemStore::default(),
+            counts.clone(),
+        )));
+        for id in 0..257 {
+            store
+                .write_node(&store_id, &[SavedKey::Int(id)])
+                .expect("seed record");
+        }
+
+        counts.reset();
+        let last = store.record_last_child(&store_id, &[]).expect("last child");
+
+        assert_eq!(last, Some(SavedKey::Int(256)));
+        assert_eq!(
+            counts.total_scans(),
+            1,
+            "last-child lookup should be one bounded seek/reverse operation, not a full \
+             forward scan over every prefix page"
+        );
+    }
+
+    #[test]
+    fn for_each_record_moves_linear_entries_not_repeated_prefix_pages() {
+        let store_id = catalog("cat_00000000000000000000000000000001");
+        let counts = BackendCounts::default();
+        let store = TreeStore::from_backend(Box::new(CountingBackend::new(
+            MemStore::default(),
+            counts.clone(),
+        )));
+        let record_count = 257usize;
+        for id in 0..record_count {
+            store
+                .write_node(&store_id, &[SavedKey::Int(id as i64)])
+                .expect("seed record");
+        }
+
+        let mut visited = 0usize;
+        counts.reset();
+        store
+            .for_each_record(&store_id, 1, &mut |_| {
+                visited += 1;
+                Ok(())
+            })
+            .expect("iterate records");
+
+        assert_eq!(visited, record_count);
+        assert!(
+            counts.entries_returned() <= record_count + super::CHILD_SCAN_PAGE_LIMIT + 2,
+            "record iteration should move O(n) entries; moved {} entries for {record_count} \
+             records",
+            counts.entries_returned()
+        );
+    }
+
+    #[test]
+    fn max_int_record_child_uses_one_int_band_reverse_seek() {
+        let store_id = catalog("cat_00000000000000000000000000000001");
+        let counts = BackendCounts::default();
+        let store = TreeStore::from_backend(Box::new(CountingBackend::new(
+            MemStore::default(),
+            counts.clone(),
+        )));
+        for id in 0..257 {
+            store
+                .write_node(&store_id, &[SavedKey::Int(id)])
+                .expect("seed int record");
+        }
+        store
+            .write_node(&store_id, &[SavedKey::Str("later type band".into())])
+            .expect("seed non-int record");
+
+        counts.reset();
+        let max = store
+            .max_int_record_child(&store_id, &[])
+            .expect("max int record child");
+
+        assert_eq!(max, Some(256));
+        assert_eq!(
+            counts.total_scans(),
+            1,
+            "max int record lookup should seek inside the int key band"
+        );
+        assert!(
+            counts.entries_returned() <= super::CHILD_SCAN_PAGE_LIMIT,
+            "max int record lookup should not move all children; moved {} entries",
+            counts.entries_returned()
+        );
+    }
+
+    #[test]
+    fn max_int_data_child_uses_one_int_band_reverse_seek() {
+        let store_id = catalog("cat_00000000000000000000000000000001");
+        let member = catalog("cat_00000000000000000000000000000002");
+        let identity = [SavedKey::Int(1)];
+        let path = [DataPathSegment::Member(member)];
+        let counts = BackendCounts::default();
+        let store = TreeStore::from_backend(Box::new(CountingBackend::new(
+            MemStore::default(),
+            counts.clone(),
+        )));
+        for id in 0..257 {
+            let mut child_path = path.to_vec();
+            child_path.push(DataPathSegment::Key(SavedKey::Int(id)));
+            store
+                .write_data_value(&store_id, &identity, &child_path, b"value".to_vec())
+                .expect("seed int data child");
+        }
+        let mut str_path = path.to_vec();
+        str_path.push(DataPathSegment::Key(SavedKey::Str(
+            "later type band".into(),
+        )));
+        store
+            .write_data_value(&store_id, &identity, &str_path, b"value".to_vec())
+            .expect("seed non-int data child");
+
+        counts.reset();
+        let max = store
+            .max_int_data_child(&store_id, &identity, &path)
+            .expect("max int data child");
+
+        assert_eq!(max, Some(256));
+        assert_eq!(
+            counts.total_scans(),
+            1,
+            "max int data lookup should seek inside the int key band"
+        );
+        assert!(
+            counts.entries_returned() <= super::CHILD_SCAN_PAGE_LIMIT,
+            "max int data lookup should not move all children; moved {} entries",
+            counts.entries_returned()
+        );
+    }
+
+    #[test]
+    #[ignore = "W2.8 scale smoke; run explicitly with --ignored"]
+    fn linear_navigation_scale_smoke() {
+        let store_id = catalog("cat_00000000000000000000000000000001");
+        let counts = BackendCounts::default();
+        let store = TreeStore::from_backend(Box::new(CountingBackend::new(
+            MemStore::default(),
+            counts.clone(),
+        )));
+        let record_count = 4096usize;
+        for id in 0..record_count {
+            store
+                .write_node(&store_id, &[SavedKey::Int(id as i64)])
+                .expect("seed scale record");
+        }
+
+        counts.reset();
+        assert_eq!(
+            store.record_last_child(&store_id, &[]).expect("last child"),
+            Some(SavedKey::Int((record_count - 1) as i64))
+        );
+        assert_eq!(counts.total_scans(), 1);
+
+        counts.reset();
+        assert_eq!(
+            store
+                .max_int_record_child(&store_id, &[])
+                .expect("max int child"),
+            Some((record_count - 1) as i64)
+        );
+        assert_eq!(counts.total_scans(), 1);
+
+        counts.reset();
+        let mut visited = 0usize;
+        store
+            .for_each_record(&store_id, 1, &mut |_| {
+                visited += 1;
+                Ok(())
+            })
+            .expect("iterate records");
+        assert_eq!(visited, record_count);
+        assert!(
+            counts.entries_returned() <= record_count + super::CHILD_SCAN_PAGE_LIMIT + 2,
+            "scale iteration should move O(n) entries; moved {} entries for {record_count} \
+             records",
+            counts.entries_returned()
         );
     }
 

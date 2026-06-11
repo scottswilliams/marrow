@@ -95,6 +95,13 @@ fn index_children(store: &TreeStore, index: &CatalogId, prefix: &[SavedKey]) -> 
     )
 }
 
+fn index_children_rev(store: &TreeStore, index: &CatalogId, prefix: &[SavedKey]) -> Vec<SavedKey> {
+    collect_children(
+        || store.index_last_child(index, prefix),
+        |child| store.index_prev_child(index, prefix, child),
+    )
+}
+
 #[test]
 fn enum_member_values_store_catalog_ids_not_source_order() {
     let status = catalog_id("aaaaaaaaaaaaaaaa");
@@ -403,6 +410,68 @@ fn record_and_index_child_navigation_use_catalog_roots() {
     assert_eq!(
         index_children(&store, &by_shelf, &[SavedKey::Str("fiction".into())]),
         vec![SavedKey::Int(1), SavedKey::Int(2), SavedKey::Int(3)]
+    );
+}
+
+#[test]
+fn index_child_navigation_mixes_exact_identity_and_key_branches() {
+    let by_shelf = catalog_id("2222222222222222");
+    let store = TreeStore::memory();
+    let fiction = SavedKey::Str("fiction".into());
+    let hardcover = SavedKey::Str("hardcover".into());
+    let paperback = SavedKey::Str("paperback".into());
+
+    for id in [2, 1] {
+        store
+            .write_index_entry(
+                &by_shelf,
+                std::slice::from_ref(&fiction),
+                &[SavedKey::Int(id)],
+                b"present".to_vec(),
+            )
+            .expect("write exact tuple identity child");
+    }
+    for (format, id) in [(hardcover.clone(), 3), (paperback.clone(), 4)] {
+        store
+            .write_index_entry(
+                &by_shelf,
+                &[fiction.clone(), format],
+                &[SavedKey::Int(id)],
+                b"present".to_vec(),
+            )
+            .expect("write deeper key branch child");
+    }
+
+    let prefix = [fiction];
+    assert_eq!(
+        index_children(&store, &by_shelf, &prefix),
+        vec![
+            SavedKey::Int(1),
+            SavedKey::Int(2),
+            hardcover.clone(),
+            paperback.clone(),
+        ]
+    );
+    assert_eq!(
+        index_children_rev(&store, &by_shelf, &prefix),
+        vec![
+            paperback.clone(),
+            hardcover.clone(),
+            SavedKey::Int(2),
+            SavedKey::Int(1)
+        ]
+    );
+    assert_eq!(
+        store
+            .index_prev_child(&by_shelf, &prefix, &hardcover)
+            .expect("previous child crosses from key branch to exact identity branch"),
+        Some(SavedKey::Int(2))
+    );
+    assert_eq!(
+        store
+            .index_next_child(&by_shelf, &prefix, &SavedKey::Int(2))
+            .expect("next child crosses from exact identity branch to key branch"),
+        Some(hardcover)
     );
 }
 

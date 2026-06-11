@@ -80,8 +80,9 @@ pub(crate) const KEY_DURATION: u8 = 0x05;
 pub(crate) const KEY_STR: u8 = 0x07;
 pub(crate) const KEY_BYTES: u8 = 0x08;
 
-// The bounded int-key band uses `KEY_INT + 1` as its exclusive upper bound.
-const _: () = assert!(KEY_DATE == KEY_INT + 1);
+// The bounded int-key band uses this tag-only cursor as its exclusive upper bound.
+pub(crate) const KEY_INT_EXCLUSIVE_END: u8 = KEY_INT + 1;
+const _: () = assert!(KEY_DATE == KEY_INT_EXCLUSIVE_END);
 
 pub(crate) fn encode_key_value(key: &SavedKey) -> Vec<u8> {
     let mut bytes = Vec::new();
@@ -277,6 +278,32 @@ mod tests {
         assert_eq!(
             by_bytes, by_type,
             "encoded key bytes must sort like SavedKey"
+        );
+    }
+
+    #[test]
+    fn saved_key_codec_preserves_typed_reverse_order_in_bytes() {
+        let mut by_type = representative_keys();
+        by_type.sort_by(|left, right| right.cmp(left));
+
+        let mut by_bytes = representative_keys();
+        by_bytes.sort_by_key(|key| std::cmp::Reverse(encode_key_value(key)));
+
+        assert_eq!(
+            by_bytes, by_type,
+            "reverse encoded key bytes must sort like reverse SavedKey order"
+        );
+    }
+
+    #[test]
+    fn escaped_key_byte_fingerprints_are_stable() {
+        assert_eq!(
+            encode_key_value(&SavedKey::Str("a\u{0}b".into())),
+            vec![0x07, b'a', 0x00, 0x01, b'b', 0x00, 0x00]
+        );
+        assert_eq!(
+            encode_key_value(&SavedKey::Bytes(vec![0x00, 0x01, 0xff])),
+            vec![0x08, 0x00, 0x01, 0x01, 0xff, 0x00, 0x00]
         );
     }
 }

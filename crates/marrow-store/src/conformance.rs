@@ -9,6 +9,7 @@ pub(crate) fn run_all<B: Backend>(mut make: impl FnMut() -> B) {
     scan_returns_only_the_prefix_in_order(&mut make());
     scan_is_bounded_by_the_limit(&mut make());
     scan_after_resumes_inside_the_prefix(&mut make());
+    scan_before_resumes_inside_the_prefix_in_reverse(&mut make());
     a_committed_transaction_keeps_its_writes(&mut make());
     a_rolled_back_transaction_discards_its_writes(&mut make());
     an_unbalanced_commit_or_rollback_is_a_no_op(&mut make());
@@ -82,6 +83,26 @@ fn scan_after_resumes_inside_the_prefix(store: &mut dyn Backend) {
     assert_eq!(
         second.entries,
         vec![(b"\x50\x02".to_vec(), b"second".to_vec())]
+    );
+}
+
+fn scan_before_resumes_inside_the_prefix_in_reverse(store: &mut dyn Backend) {
+    store.write(b"\x50\x01", b"first".to_vec()).unwrap();
+    store.write(b"\x50\x02", b"second".to_vec()).unwrap();
+    store.write(b"\x51\x01", b"outside".to_vec()).unwrap();
+
+    let first = store.scan_before(b"\x50", b"\x51", 1).unwrap();
+    assert!(first.truncated);
+    assert_eq!(
+        first.entries,
+        vec![(b"\x50\x02".to_vec(), b"second".to_vec())]
+    );
+    let cursor = first.entries.last().unwrap().0.clone();
+    let second = store.scan_before(b"\x50", &cursor, 10).unwrap();
+    assert!(!second.truncated);
+    assert_eq!(
+        second.entries,
+        vec![(b"\x50\x01".to_vec(), b"first".to_vec())]
     );
 }
 

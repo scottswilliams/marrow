@@ -456,6 +456,21 @@ where
     traversal::scan(range, prefix, limit, io("scan_after"))
 }
 
+fn streamed_scan_before<T>(
+    table: &T,
+    prefix: &[u8],
+    cursor: &[u8],
+    limit: usize,
+) -> Result<ScanPage, StoreError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let range = table
+        .range::<&[u8]>((Bound::Unbounded, Bound::Excluded(cursor)))
+        .map_err(io("scan_before"))?;
+    traversal::scan(range.rev(), prefix, limit, io("scan_before"))
+}
+
 /// Run a read `$body` over the current read view: the open write transaction's
 /// table, the pinned snapshot, or a fresh read transaction. A macro rather than a
 /// `&dyn` helper because redb's `ReadableTable` is not object-safe, so the body is
@@ -648,6 +663,17 @@ impl Backend for RedbStore {
     ) -> Result<ScanPage, StoreError> {
         read_view!(self, "scan_after", |table| {
             streamed_scan_after(&table, prefix, cursor, limit)
+        })
+    }
+
+    fn scan_before(
+        &self,
+        prefix: &[u8],
+        cursor: &[u8],
+        limit: usize,
+    ) -> Result<ScanPage, StoreError> {
+        read_view!(self, "scan_before", |table| {
+            streamed_scan_before(&table, prefix, cursor, limit)
         })
     }
 

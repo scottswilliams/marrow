@@ -45,6 +45,11 @@ impl MemStore {
             .expect("memory scan is infallible")
     }
 
+    fn scan_before(&self, prefix: &[u8], cursor: &[u8], limit: usize) -> ScanPage {
+        traversal::scan(self.range_before(cursor), prefix, limit, |error| error)
+            .expect("memory scan is infallible")
+    }
+
     fn range_from<'a>(
         &'a self,
         prefix: &[u8],
@@ -60,6 +65,16 @@ impl MemStore {
     ) -> impl Iterator<Item = Result<(&'a [u8], &'a [u8]), StoreError>> {
         self.view()
             .range((Bound::Excluded(cursor.to_vec()), Bound::Unbounded))
+            .map(|(key, value)| Ok((key.as_slice(), value.as_slice())))
+    }
+
+    fn range_before<'a>(
+        &'a self,
+        cursor: &[u8],
+    ) -> impl Iterator<Item = Result<(&'a [u8], &'a [u8]), StoreError>> {
+        self.view()
+            .range((Bound::Unbounded, Bound::Excluded(cursor.to_vec())))
+            .rev()
             .map(|(key, value)| Ok((key.as_slice(), value.as_slice())))
     }
 }
@@ -96,6 +111,15 @@ impl Backend for MemStore {
         limit: usize,
     ) -> Result<ScanPage, StoreError> {
         Ok(MemStore::scan_after(self, prefix, cursor, limit))
+    }
+
+    fn scan_before(
+        &self,
+        prefix: &[u8],
+        cursor: &[u8],
+        limit: usize,
+    ) -> Result<ScanPage, StoreError> {
+        Ok(MemStore::scan_before(self, prefix, cursor, limit))
     }
 
     fn begin(&mut self) -> Result<(), StoreError> {

@@ -21,7 +21,8 @@ The public store crate surface is:
 
 The private engine substrate stores byte keys and byte values in one
 byte-lexicographic order. It provides exact read, exact write, prefix delete,
-bounded prefix scans, cursor-resumed prefix scans, and savepoint transactions.
+bounded prefix scans, cursor-resumed forward and reverse prefix scans, and
+savepoint transactions.
 The in-memory engine uses `BTreeMap`; the native engine uses redb. The supported
 production saved-data backend is the native redb engine. The in-memory engine is
 for tests, development, REPLs, short runs, and conformance. It can exercise the
@@ -37,6 +38,11 @@ sigil.
 Physical tree-cell keys, prefix ranges, and ordered key byte codecs are private
 store substrate. Public callers provide typed IDs and key values; the store
 constructs physical bytes internally.
+
+The private backend counting decorator is the canonical cost-conformance oracle:
+tests assert operation shape through reads, writes, deletes, scan direction,
+bytes moved, entries returned, commits, and commit fsync counts rather than by
+timing a backend.
 
 There is no public production raw saved-path API in v0.1 store. There is no
 public production raw archive API. Backup, tooling, and runtime code consume

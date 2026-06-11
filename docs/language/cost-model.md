@@ -19,6 +19,27 @@ On the native redb backend, a commit is an immediate-durability engine commit:
 an unbracketed single write pays one fsync, while writes grouped in a source
 `transaction` share one commit fsync.
 
+The implementation's cost oracle is a private backend counting decorator. It
+counts operation shape, not elapsed time: reads, writes, deletes, forward and
+reverse scans, entries returned, bytes moved, commits, and commit fsyncs. The
+operation-shape fixtures exercise both `n` and `2n` sized data where a law claims
+linear work, so an accidental repeated prefix scan is caught as a conformance
+failure.
+
+An operation-shape fixture is named by the API under observation, the data scale
+(`n` and `2n` for linear laws), the expected operation family, and any typed
+deduction the checker/runtime lowering is allowed to apply. The only permitted
+deduction names in v0.1 are:
+
+- `key-only`: a checked loop or collection shape binds only keys/identities, so
+  it may skip value materialization reads.
+- `count-only`: a checked `count`/presence shape asks only for cardinality or
+  presence, so it may use node/count primitives instead of reading values.
+
+No other operation elimination is implicit. A future `run --profile` surface may
+render these counts for an operator, but v0.1 exposes no profile flag; profiling
+is measurement of this model, not a second explanation of program meaning.
+
 ## Reading Cost From The Source
 
 Each construct maps to a fixed shape of work:

@@ -22,6 +22,8 @@ enum RunObservation {
     Trace(CheckFormat),
     DryRun(CheckFormat),
     TraceDryRun(CheckFormat),
+    #[allow(dead_code)]
+    Profile(CheckFormat),
 }
 
 impl RunObservation {
@@ -36,7 +38,10 @@ impl RunObservation {
     fn format(self) -> CheckFormat {
         match self {
             Self::Plain => CheckFormat::Text,
-            Self::Trace(format) | Self::DryRun(format) | Self::TraceDryRun(format) => format,
+            Self::Trace(format)
+            | Self::DryRun(format)
+            | Self::TraceDryRun(format)
+            | Self::Profile(format) => format,
         }
     }
 }

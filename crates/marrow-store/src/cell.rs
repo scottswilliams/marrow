@@ -130,6 +130,16 @@ impl CellKey {
         Self(data_node_stem(store, identity_prefix))
     }
 
+    pub(crate) fn record_child_tag_upper_bound(
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+        upper_key_tag: u8,
+    ) -> Self {
+        let mut bytes = data_node_stem(store, identity_prefix);
+        bytes.push(upper_key_tag);
+        Self(bytes)
+    }
+
     pub(crate) fn data_path_prefix(
         store: &CatalogId,
         identity: &[SavedKey],
@@ -137,6 +147,18 @@ impl CellKey {
     ) -> Self {
         let mut bytes = Self::node(store, identity).into_bytes();
         encode_data_path(path, &mut bytes);
+        Self(bytes)
+    }
+
+    pub(crate) fn data_path_child_tag_upper_bound(
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+        upper_key_tag: u8,
+    ) -> Self {
+        let mut bytes = Self::data_path_prefix(store, identity, path).into_bytes();
+        bytes.push(DATA_KEY_SEGMENT);
+        bytes.push(upper_key_tag);
         Self(bytes)
     }
 
@@ -489,7 +511,7 @@ fn encode_id(id: &str, out: &mut Vec<u8>) {
     encode_escaped_bytes(id.as_bytes(), out);
 }
 
-fn prefix_successor(prefix: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn prefix_successor(prefix: &[u8]) -> Option<Vec<u8>> {
     let mut end = prefix.to_vec();
     while let Some(last) = end.last_mut() {
         if *last < 0xff {

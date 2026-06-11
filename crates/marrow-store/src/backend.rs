@@ -126,6 +126,14 @@ pub(crate) trait Backend {
         cursor: &[u8],
         limit: usize,
     ) -> Result<ScanPage, StoreError>;
+    /// Return at most `limit` entries under `prefix` in reverse key order,
+    /// strictly before `cursor`.
+    fn scan_before(
+        &self,
+        prefix: &[u8],
+        cursor: &[u8],
+        limit: usize,
+    ) -> Result<ScanPage, StoreError>;
     fn begin(&mut self) -> Result<(), StoreError>;
     fn commit(&mut self) -> Result<(), StoreError>;
     fn rollback(&mut self) -> Result<(), StoreError>;
@@ -138,4 +146,241 @@ pub(crate) trait Backend {
     /// Release the pinned read view, so later reads observe the latest committed
     /// data. Idempotent, so a guard's `Drop` can call it unconditionally.
     fn end_snapshot(&mut self);
+}
+
+#[cfg(test)]
+pub(crate) mod counting {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use super::{Backend, ScanPage, StoreError};
+
+    #[derive(Default)]
+    struct CountCells {
+        reads: Cell<usize>,
+        writes: Cell<usize>,
+        deletes: Cell<usize>,
+        scans: Cell<usize>,
+        scan_afters: Cell<usize>,
+        scan_befores: Cell<usize>,
+        entries_returned: Cell<usize>,
+        bytes_moved: Cell<usize>,
+        commits: Cell<usize>,
+        fsyncs: Cell<usize>,
+    }
+
+    /// Shared operation counters for the private backend cost oracle.
+    #[derive(Clone, Default)]
+    pub(crate) struct BackendCounts {
+        cells: Rc<CountCells>,
+    }
+
+    impl BackendCounts {
+        pub(crate) fn reset(&self) {
+            self.cells.reads.set(0);
+            self.cells.writes.set(0);
+            self.cells.deletes.set(0);
+            self.cells.scans.set(0);
+            self.cells.scan_afters.set(0);
+            self.cells.scan_befores.set(0);
+            self.cells.entries_returned.set(0);
+            self.cells.bytes_moved.set(0);
+            self.cells.commits.set(0);
+            self.cells.fsyncs.set(0);
+        }
+
+        pub(crate) fn total_scans(&self) -> usize {
+            self.cells.scans.get() + self.cells.scan_afters.get() + self.cells.scan_befores.get()
+        }
+
+        pub(crate) fn entries_returned(&self) -> usize {
+            self.cells.entries_returned.get()
+        }
+
+        pub(crate) fn bytes_moved(&self) -> usize {
+            self.cells.bytes_moved.get()
+        }
+
+        pub(crate) fn commit_count(&self) -> usize {
+            self.cells.commits.get()
+        }
+
+        pub(crate) fn fsync_count(&self) -> usize {
+            self.cells.fsyncs.get()
+        }
+
+        fn add_bytes(&self, bytes: usize) {
+            self.cells
+                .bytes_moved
+                .set(self.cells.bytes_moved.get().saturating_add(bytes));
+        }
+
+        fn count_page(&self, page: &ScanPage) {
+            self.cells
+                .entries_returned
+                .set(self.cells.entries_returned.get() + page.entries.len());
+            let bytes = page
+                .entries
+                .iter()
+                .map(|(key, value)| key.len() + value.len())
+                .sum();
+            self.add_bytes(bytes);
+        }
+    }
+
+    /// Backend decorator used by store conformance tests to assert operation shape.
+    pub(crate) struct CountingBackend<B> {
+        inner: B,
+        counts: BackendCounts,
+        fsyncs_per_commit: usize,
+    }
+
+    impl<B> CountingBackend<B> {
+        pub(crate) fn new(inner: B, counts: BackendCounts) -> Self {
+            Self {
+                inner,
+                counts,
+                fsyncs_per_commit: 0,
+            }
+        }
+
+        #[allow(dead_code)]
+        pub(crate) fn with_fsyncs_per_commit(
+            inner: B,
+            counts: BackendCounts,
+            fsyncs_per_commit: usize,
+        ) -> Self {
+            Self {
+                inner,
+                counts,
+                fsyncs_per_commit,
+            }
+        }
+    }
+
+    impl<B: Backend> Backend for CountingBackend<B> {
+        fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+            self.cells().reads.set(self.cells().reads.get() + 1);
+            let value = self.inner.read(key)?;
+            self.counts
+                .add_bytes(key.len() + value.as_ref().map_or(0, Vec::len));
+            Ok(value)
+        }
+
+        fn write(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
+            self.cells().writes.set(self.cells().writes.get() + 1);
+            self.counts.add_bytes(key.len() + value.len());
+            self.inner.write(key, value)
+        }
+
+        fn delete(&mut self, prefix: &[u8]) -> Result<(), StoreError> {
+            self.cells().deletes.set(self.cells().deletes.get() + 1);
+            self.counts.add_bytes(prefix.len());
+            self.inner.delete(prefix)
+        }
+
+        fn scan(&self, prefix: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
+            self.cells().scans.set(self.cells().scans.get() + 1);
+            let page = self.inner.scan(prefix, limit)?;
+            self.counts.count_page(&page);
+            Ok(page)
+        }
+
+        fn scan_after(
+            &self,
+            prefix: &[u8],
+            cursor: &[u8],
+            limit: usize,
+        ) -> Result<ScanPage, StoreError> {
+            self.cells()
+                .scan_afters
+                .set(self.cells().scan_afters.get() + 1);
+            self.counts.add_bytes(cursor.len());
+            let page = self.inner.scan_after(prefix, cursor, limit)?;
+            self.counts.count_page(&page);
+            Ok(page)
+        }
+
+        fn scan_before(
+            &self,
+            prefix: &[u8],
+            cursor: &[u8],
+            limit: usize,
+        ) -> Result<ScanPage, StoreError> {
+            self.cells()
+                .scan_befores
+                .set(self.cells().scan_befores.get() + 1);
+            self.counts.add_bytes(cursor.len());
+            let page = self.inner.scan_before(prefix, cursor, limit)?;
+            self.counts.count_page(&page);
+            Ok(page)
+        }
+
+        fn begin(&mut self) -> Result<(), StoreError> {
+            self.inner.begin()
+        }
+
+        fn commit(&mut self) -> Result<(), StoreError> {
+            self.cells().commits.set(self.cells().commits.get() + 1);
+            self.cells()
+                .fsyncs
+                .set(self.cells().fsyncs.get() + self.fsyncs_per_commit);
+            self.inner.commit()
+        }
+
+        fn rollback(&mut self) -> Result<(), StoreError> {
+            self.inner.rollback()
+        }
+
+        fn begin_snapshot(&mut self) -> Result<(), StoreError> {
+            self.inner.begin_snapshot()
+        }
+
+        fn end_snapshot(&mut self) {
+            self.inner.end_snapshot();
+        }
+    }
+
+    impl<B> CountingBackend<B> {
+        fn cells(&self) -> &CountCells {
+            &self.counts.cells
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Backend;
+    use super::counting::{BackendCounts, CountingBackend};
+    use crate::mem::MemStore;
+
+    #[test]
+    fn counting_backend_tracks_scan_bytes_commit_and_fsync_counts() {
+        let counts = BackendCounts::default();
+        let mut backend =
+            CountingBackend::with_fsyncs_per_commit(MemStore::default(), counts.clone(), 1);
+
+        backend.begin().expect("begin");
+        backend
+            .write(b"key", b"value".to_vec())
+            .expect("write through decorator");
+        let page = backend.scan(b"k", 10).expect("scan through decorator");
+        assert_eq!(page.entries.len(), 1);
+        backend.commit().expect("commit through decorator");
+
+        assert_eq!(counts.total_scans(), 1);
+        assert_eq!(counts.entries_returned(), 1);
+        assert_eq!(counts.commit_count(), 1);
+        assert_eq!(counts.fsync_count(), 1);
+        assert!(
+            counts.bytes_moved() >= b"key".len() + b"value".len(),
+            "bytes moved should count scanned and written bytes"
+        );
+
+        counts.reset();
+        assert_eq!(counts.total_scans(), 0);
+        assert_eq!(counts.commit_count(), 0);
+        assert_eq!(counts.fsync_count(), 0);
+        assert_eq!(counts.bytes_moved(), 0);
+    }
 }
