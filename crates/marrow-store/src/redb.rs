@@ -164,9 +164,8 @@ fn is_torn_body(error: &std::io::Error) -> bool {
 /// panic hook is installed for the duration of the open so an expected redb open
 /// panic does not print its message and backtrace, then the previous hook is
 /// restored — every other panic in the process still reports normally. The hook is
-/// process-global, so this is sound only because every store open is serialized on
-/// one thread: the CLI runs on a single worker, and serve and lsp open one store at
-/// a time. A future concurrent opener would have to serialize this swap.
+/// process-global, so concurrent in-process store opens would have to serialize
+/// this swap; the CLI paths call it synchronously.
 fn catch_open<T>(open: impl FnOnce() -> Result<T, StoreError>) -> Result<T, StoreError> {
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));

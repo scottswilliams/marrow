@@ -6,8 +6,7 @@ API by being documented.
 
 A shared tooling facts layer owns typed data-query resolution, path rendering,
 bounded previews, integrity findings, catalog/snapshot metadata, and cursor
-validation. CLI commands, `marrow serve`, the LSP server, and backup/restore
-are renderers over those facts.
+validation. CLI commands and backup/restore are renderers over those facts.
 
 ## Surfaces
 
@@ -17,12 +16,10 @@ are renderers over those facts.
 | `marrow data dump` | Operator/admin inspection. | Walks a full stable snapshot by explicit operator request and may expose canonical payload bytes; not a backup/restore format, sync format, production preview, or production data API. |
 | `marrow data get` | Operator/admin point inspection. | Presence states are typed facts; raw payload bytes are diagnostic output. |
 | `marrow data integrity` | Read-only data-integrity tooling. | Reports `data.orphan` with repair guidance; does not bless orphaned managed data. |
-| `marrow serve` (`debug_data_*`) | Loopback debug/admin protocol. | Bounded reads only, per-connection snapshot, stale-epoch refusal; no production app, sync, backup, or raw-path contract. |
-| `run --trace` / `test --trace` | Debug execution rendering. | Observes runtime statement/write facts over checked source spans; does not change run semantics; not a stable external protocol. |
+| `run --trace` / `test --trace` | Debug execution rendering. | Observes runtime statement/write facts over checked source spans; does not change run semantics; not a stable external API. |
 | `run --dry-run` | Checked write preview for one operator-run entry. | Previews that run's managed writes, rolled back by savepoint; use `evolve preview` for evolution. |
 | `--maintenance` | Explicit operator capability. | For modeled repair/evolution code, not raw store mutation; cannot be injected by project config or a default entry. |
 | `marrow backup` / `restore` | Production typed backup/restore. | Carries source digest, accepted catalog epoch, engine descriptor, and typed cells; rebuilds generated indexes, rejects orphaned managed cells before commit, and rolls back on `restore.data_invalid`. |
-| `marrow lsp` | Editor protocol over checked facts. | Project checker with open-buffer overlays, parse fallback without a project root; diagnostic positions use LSP UTF-16 code units; exposes no data or debug surface. |
 
 ## Boundaries
 
@@ -34,10 +31,8 @@ These hold across every surface:
 - Raw payload bytes are debug/admin output only. They may appear in
   machine-readable inspection output as base64; they are not a production
   payload contract.
-- Cursors are opaque adapter tokens bound to one connection and one request
-  prefix; forged or replayed cursors fail closed.
 - Unbounded scans are allowed only for explicit operator/admin commands;
-  production previews and protocol reads must be bounded or paged.
+  production previews must be bounded or paged.
 - No production local API exists. One would be generated from the same shared
-  checked facts, not promoted from `debug_data_*`, raw bytes, raw paths, or an
-  ad hoc query language.
+  checked facts, not promoted from raw bytes, raw paths, or an ad hoc query
+  language.

@@ -1,6 +1,9 @@
 # Analysis & Tooling Facts
 
-The read-only, transport-free surface that editors, the CLI, backup/restore, and the debug server consume on top of the checker. It owns no semantics: it walks the parse and facts the checker already built and the keys the store already holds, so editor and CLI views cannot drift from the checked program.
+The read-only, transport-free surface that editors, the CLI, and backup/restore
+consume on top of the checker. It owns no semantics: it walks the parse and
+facts the checker already built and the keys the store already holds, so editor
+and CLI views cannot drift from the checked program.
 
 Two halves live in `crates/marrow-check/src`:
 
@@ -15,7 +18,7 @@ Two halves live in `crates/marrow-check/src`:
 
 ## Tooling facts
 
-Path resolution is the single chokepoint: `resolve_query_steps` validates source-text or wire segments against a checked place's identity keys and member tree into a `StorageDataQuery` (physical store `CatalogId`, identity keys, data path), emitting typed `QueryError` on malformity. `ToolingError` keeps client request-malformity (`Query`) distinct from server store faults (`Store`); a missing or malformed checked catalog id stays `StoreError::Corruption` on purpose. Callers match variants, never prose.
+Path resolution is the single chokepoint: `resolve_query_steps` validates source-text or wire segments against a checked place's identity keys and member tree into a `StorageDataQuery` (physical store `CatalogId`, identity keys, data path), emitting typed `QueryError` on malformity. `ToolingError` keeps request-malformity (`Query`) distinct from store faults (`Store`); a missing or malformed checked catalog id stays `StoreError::Corruption` on purpose. Callers match variants, never prose.
 
 `shape.rs::classify_data_path` is the one member-tree shape owner, so the walk cursor's value-position test and integrity orphan detection share a single definition of "declared value path." Every walk and child listing pages with explicit limits, resume cursors, and truncated flags; counts use `checked_add` into `StoreError::LimitExceeded`. Integrity separates declared records (decode, key-type, enum-membership against schema and catalog) from orphan cells (data under a root/shape/member the schema no longer declares), each a typed `IntegrityProblem` with a stable code.
 
@@ -43,20 +46,26 @@ Path resolution is the single chokepoint: `resolve_query_steps` validates source
 
 - `AnalysisSnapshot` / `AnalyzedFile` (`analysis.rs`) — the IDE view: report + best-effort `CheckedProgram` + every parsed file, error files retained.
 - `DataQuery` / `StorageDataQuery` (`tooling/data/mod.rs`, `query.rs`) — a resolved, schema-validated path; public display form vs crate-internal physical store form.
-- `QueryError` / `ToolingError` (`query_error.rs`, `tooling/mod.rs`) — typed request malformity vs the client/server fault split.
+- `QueryError` / `ToolingError` (`query_error.rs`, `tooling/mod.rs`) — typed request malformity vs store faults.
 - `DataRecord` / `DataPresence` / `DataWalkPage` / `DataChildrenPage` (`tooling/data/mod.rs`) — the paged data facts carrying truncation and resume cursors.
 - `IntegrityProblem` / `IntegrityOutcome` (`integrity.rs`) — a typed finding implementing `Diagnose`, tagged declared-record vs orphan-cell.
 - `ToolingCatalogMetadata` (`metadata.rs`) — the version snapshot read for staleness gating.
 
 ## Notes
 
-- Saved-data tooling (integrity/children/walk/get) has no in-crate unit tests; it is exercised end-to-end from `crates/marrow/tests` (`data_cli_integrity.rs`, `serve_cli.rs`) and `crates/marrow-store/tests/tree_store.rs`. Cursor and snapshot facts are covered in `crates/marrow-check/tests` (`analysis_api.rs`, `project_analysis_overlay_snapshot.rs`, `project_analysis_test_resolution.rs`).
+- Saved-data tooling (integrity/children/walk/get) has no in-crate unit tests;
+  it is exercised end-to-end from `crates/marrow/tests`
+  (`data_cli_integrity.rs`, `data_cli_get.rs`, `data_cli_inventory.rs`) and
+  `crates/marrow-store/tests/tree_store.rs`. Cursor and snapshot facts are
+  covered in `crates/marrow-check/tests` (`analysis_api.rs`,
+  `project_analysis_overlay_snapshot.rs`, `project_analysis_test_resolution.rs`).
 - `analyze_source_project` is crate-internal (`pub(crate)`); the public entry is `analyze_project`. Both take the accepted catalog as an `Option<&CatalogMetadata>` input the caller supplies. The convenience `check_project` binds no accepted catalog (the first-run shape); `check_project_with_catalog` takes the snapshot the CLI reads from the engine-resident store.
 
 ## Read next
 
 - `analysis.rs` → `analyze_source_project` — two-pass assembly, ownership rules, and the shared checker tail that defines a `CheckedProgram`.
 - `tooling/data/query.rs` → `resolve_query_steps` — the single path-resolution authority and origin of every `QueryError`.
-- `tooling/data/walk.rs` → `walk_data` — the most intricate fact: cursor-resumable leaf walk across identity and member-key levels; the model for the serve/CLI cursor protocol.
+- `tooling/data/walk.rs` → `walk_data` — the most intricate fact:
+  cursor-resumable leaf walk across identity and member-key levels.
 - `tooling/data/shape.rs` → `classify_data_path` — the shared shape owner keeping walk and integrity from diverging.
 - `analysis/cursor.rs` → `type_at` / `scope_at` — checker-faithful cursor queries.

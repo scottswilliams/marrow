@@ -23,6 +23,40 @@ fn an_unknown_subcommand_is_a_usage_failure() {
 }
 
 #[test]
+fn removed_server_commands_are_usage_failures() {
+    for command in ["serve", "lsp"] {
+        let output = marrow(&[command]);
+        assert_eq!(output.status.code(), Some(2), "{command}: {output:?}");
+        assert!(
+            output.stdout.is_empty(),
+            "{command} unexpected stdout: {:?}",
+            output.stdout
+        );
+        let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+        assert!(
+            stderr.contains("unknown command"),
+            "{command} should be removed from dispatch: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn help_does_not_advertise_removed_server_commands() {
+    let output = marrow(&["--help"]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(
+        output.stderr.is_empty(),
+        "unexpected stderr: {:?}",
+        output.stderr
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    for command in ["serve", "lsp"] {
+        assert!(!stdout.contains(&format!("marrow {command}")), "{stdout}");
+    }
+}
+
+#[test]
 fn run_with_no_project_dir_is_a_usage_failure() {
     let output = marrow(&["run"]);
     assert_eq!(output.status.code(), Some(2), "{output:?}");
@@ -71,21 +105,6 @@ fn test_help_names_stdout_report_and_stderr_trace_streams() {
         stdout.contains("trace") && stdout.contains("stderr"),
         "help should name stderr trace stream: {stdout}"
     );
-}
-
-#[test]
-fn serve_duplicate_port_is_a_usage_failure() {
-    let dir = support::temp_dir("usage-serve-duplicate-port");
-    let output = marrow(&["serve", "--port", "1", "--port", "2", dir.to_str().unwrap()]);
-
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    assert!(
-        output.stdout.is_empty(),
-        "unexpected stdout: {:?}",
-        output.stdout
-    );
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("duplicate --port"), "{stderr}");
 }
 
 #[test]

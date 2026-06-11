@@ -34,9 +34,9 @@ Eight crates stacked in dependency order, lowest first:
   wires the above together and renders results.
 
 `check` is the spine. It is the one owner of resolution, types, facts, identity,
-and lowering; `run`, the CLI, the LSP, and backup/restore are all downstream of
-its `CheckedProgram` / `CheckedRuntimeProgram` artifacts and never re-derive
-semantics.
+and lowering; `run`, the CLI, editor tooling, and backup/restore are all
+downstream of its `CheckedProgram` / `CheckedRuntimeProgram` artifacts and never
+re-derive semantics.
 
 ## The pipeline
 
@@ -74,15 +74,14 @@ over data the checker has not proven safe.
 | `marrow-run` | Tree-walking interpreter; saved reads/writes; evolution apply | [runtime/](runtime/README.md) |
 | `marrow-catalog` | Accepted-catalog model: epoch/digest/entries, validation, structural-signature decode | [check/](check/README.md) |
 | `marrow-project` | `marrow.json` schema, discovery, the project digest | [cli.md](cli.md) |
-| `marrow` | CLI dispatch, run/test/fmt, data/backup/evolve, LSP, serve | [cli.md](cli.md), [serve-lsp.md](serve-lsp.md) |
+| `marrow` | CLI dispatch, run/test/fmt, data/backup/evolve | [cli.md](cli.md) |
 
 `marrow-check` and `marrow-run` are large enough to split into a directory of
 pages: [check/](check/README.md) covers the type core, presence/effects, catalog
 identity, the executable IR, evolution discharge, and the analysis/tooling
 surface; [runtime/](runtime/README.md) covers the evaluator core, saved reads,
 managed writes, evolution apply, and the stdlib boundary. [cli.md](cli.md)
-documents both `marrow-project` and the `marrow` CLI; [serve-lsp.md](serve-lsp.md)
-covers the LSP and `marrow serve` long-running surfaces.
+documents both `marrow-project` and the `marrow` CLI.
 
 ## How to navigate
 
@@ -105,4 +104,3 @@ pointers into the code.
 - [schema.md](schema.md) — `compile_resource` (`crates/marrow-schema/src/lib.rs`)
 - [store.md](store.md) — `TreeStore` (`crates/marrow-store/src/tree.rs`)
 - [cli.md](cli.md) — `main` (`crates/marrow/src/main.rs`)
-- [serve-lsp.md](serve-lsp.md) — `lsp::run`, `serve::run` (`crates/marrow/src/lsp.rs`, `serve/mod.rs`)

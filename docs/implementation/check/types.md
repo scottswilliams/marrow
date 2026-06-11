@@ -1,6 +1,11 @@
 # Type-Checking Spine
 
-The semantic core of `marrow-check`. It consumes the parsed AST (`marrow-syntax`) and compiled schemas (`marrow-schema`) and produces the typed diagnostics plus the `CheckedProgram` / `CheckedRuntimeProgram` artifacts every downstream crate (runtime, evolution, catalog, LSP) reads. One resolver, one best-effort type lattice, one statement/expression check driver, one set of read-only fact tables.
+The semantic core of `marrow-check`. It consumes the parsed AST
+(`marrow-syntax`) and compiled schemas (`marrow-schema`) and produces the typed
+diagnostics plus the `CheckedProgram` / `CheckedRuntimeProgram` artifacts every
+downstream crate (runtime, evolution, catalog, editor tooling) reads. One
+resolver, one best-effort type lattice, one statement/expression check driver,
+one set of read-only fact tables.
 
 The orchestration that sequences the passes lives in `analysis.rs`, outside this spine — the full pass sequence is owned by [check/README.md](README.md) — and calls in through `normalize_program_named_types`, `check_resolved_files`, fact rebuild, `bind_catalog`, and `lower_runtime_bodies`.
 
@@ -31,7 +36,11 @@ The orchestration that sequences the passes lives in `analysis.rs`, outside this
 
 ## Invariants worth knowing
 
-- **One resolver.** `resolve` is the only module/visibility-aware resolver; checker, runtime, and LSP all route through it. A bare name resolves in its own module first regardless of `pub`; `use` imports module names, not the names inside them. Saved roots are project-wide; source names are module-scoped — the two namespaces never collapse.
+- **One resolver.** `resolve` is the only module/visibility-aware resolver;
+  checker, runtime, and binding tooling all route through it. A bare name
+  resolves in its own module first regardless of `pub`; `use` imports module
+  names, not the names inside them. Saved roots are project-wide; source names
+  are module-scoped — the two namespaces never collapse.
 - **Strict typing across conversion boundaries.** An `Unknown` value flowing into a concrete typed place with a conversion boundary (`expects_conversion`) is `check.untyped_value`, not silent acceptance.
 - **Catalog identity is engine-resident.** Production durable identity lives in the store: the CLI freezes a baseline into the store transactionally and reads the accepted snapshot back from it. Later identity changes flow through evolve apply's witness, which advances the catalog rows in the same store transaction as its data effects. Check never mutates durable identity.
 
@@ -47,4 +56,4 @@ The orchestration that sequences the passes lives in `analysis.rs`, outside this
 - `checks/calls.rs` and `checks/statements.rs` — `check_call`, `StatementCheck::check` (the dispatch heart; how every type diagnostic is produced and how scope threads through blocks).
 - `infer.rs` — `infer_type`, `saved_call_type` (layered `^root(key).layer(key).field` typing — the trickiest part of the lattice).
 - `facts.rs` — `CheckedFacts::from_modules`, `StoredValueMeaning::stored_key` (id-assignment order and the single owner of durable member-byte → `SavedKey` decoding).
-- `resolve.rs` — `resolve`, `resolve_store_by_root` (the resolution outcome shared by checker, runtime, and LSP).
+- `resolve.rs` — `resolve`, `resolve_store_by_root` (the resolution outcome shared by checker, runtime, and binding tooling).

@@ -14,7 +14,7 @@ The v0.1 tooling contract is:
   store APIs;
 - render durable places from checked/catalog facts, not by decoding physical
   engine keys into source-shaped paths;
-- page production previews and protocol reads with opaque cursors;
+- keep operator/admin full-store scans explicit;
 - report typed data findings such as `data.decode`, `data.key_type`, and
   `data.orphan`;
 - surface tree-cell store faults through the `store.*` family;
@@ -24,7 +24,7 @@ The v0.1 tooling contract is:
 whole typed store snapshot and prints every record. It is not a production
 preview API.
 
-Typed backup/restore is a tooling and backup-protocol contract, not a raw
+Typed backup/restore is a tooling and backup-format contract, not a raw
 archive replay: the archive carries a typed manifest, the accepted-catalog
 rows, and the canonical data-cell stream, and a restore validates the manifest
 binding plus full data integrity — including orphaned managed cells — before it
@@ -115,10 +115,10 @@ The record count is a full store scan; it is exact, not an estimate.
 Prints every declared data cell `(path, value)` from one read-only snapshot —
 identities in key order, members in declaration order. Derived index cells and
 engine metadata are excluded. This is an explicit operator/admin dump, so it is
-allowed to walk the whole store; production preview or protocol reads must use
-bounded pages. Text renders each value through its checked leaf type: strings are
-quoted and escaped, bytes are `0x<hex>`, `Id(^store)` references are saved paths,
-and enum values are module-qualified member identities.
+allowed to walk the whole store. Any future production preview must use bounded
+pages. Text renders each value through its checked leaf type: strings are quoted
+and escaped, bytes are `0x<hex>`, `Id(^store)` references are saved paths, and
+enum values are module-qualified member identities.
 
 ```
 $ marrow data dump ./project
@@ -190,9 +190,8 @@ store and exits `2`.
 {"path":"^counter(2).value","presence":"absent","value_b64":null}
 ```
 
-The presence states are `absent`, `value_only`, and `children_only` — the same
-spelling the serve protocol uses. `jsonl` emits the same single object as
-`json`.
+The presence states are `absent`, `value_only`, and `children_only`. `jsonl`
+emits the same single object as `json`.
 
 ## `marrow data integrity`
 

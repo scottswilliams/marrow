@@ -9,12 +9,12 @@ not a layer on another system. Durable data stays under Marrow's language and
 tooling contract regardless of which storage engine holds the bytes.
 
 `docs/language/` is the canonical source for Marrow language behavior. Parser,
-checker, runtime, CLI, LSP, examples, tests, and other docs converge on that
+checker, runtime, CLI, language-service adapters, examples, tests, and other docs converge on that
 directory. When implementation and documentation disagree, treat the
 disagreement as implementation work, not as a competing design.
 
 Implementation and tooling references live in concise `docs/` pages such as
-the backend and server references. Keep them simple, current, and organized
+the backend and tooling references. Keep them simple, current, and organized
 like a real language/database reference. The code itself should be
 self-documenting where possible.
 

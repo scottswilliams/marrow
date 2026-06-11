@@ -13,7 +13,7 @@ is permitted to assert on.
 | **0 — Laws** | one component, no pipeline | syntax/AST shape, store codec bytes, schema facts asserted directly |
 | **1 — Invariants** | through the production pipeline (the bulk) | typed: diagnostic *codes* + payloads, runtime *values*/effects, store effects, evolution witnesses |
 | **2 — Scenarios** | end-to-end realistic `.mw`: check → run → save → (evolve) → re-run | observable behavior over the shared fixtures |
-| **3 — CLI / LSP boundary** | thin boundary checks | structured-first (parsed JSON/JSONL codes, payloads, exit) + a small reviewed golden set for genuinely human-rendered text |
+| **3 — CLI / editor-adapter boundary** | thin boundary checks | structured-first (parsed JSON/JSONL codes, payloads, exit) + a small reviewed golden set for genuinely human-rendered text |
 | **4 — Architecture backstops** | source-structure absence guards | identifier-aware scans, kept minimal, always paired with positive behavior coverage; prefer a real type boundary where one can express the rule |
 
 The tier is not a label for its own sake — it is the contract for the oracle. A Tier-1 test

@@ -191,7 +191,6 @@ pub fn kind_for_code(code: &str) -> &'static str {
         "run" | "value" => "runtime",
         "store" => "storage",
         "io" => "io",
-        "protocol" => "protocol",
         // Configuration and project-discovery failures are tooling errors.
         _ => "tooling",
     }
@@ -212,5 +211,10 @@ mod tests {
     #[test]
     fn value_codes_are_runtime_diagnostics() {
         assert_eq!(kind_for_code("value.range"), "runtime");
+    }
+
+    #[test]
+    fn unknown_code_families_are_tooling_diagnostics() {
+        assert_eq!(kind_for_code("unknown.family"), "tooling");
     }
 }

@@ -42,7 +42,7 @@ Common fields:
 
 - `code`: stable machine code;
 - `kind`: broad category such as `parse`, `check`, `capability`, `runtime`,
-  `storage`, `io`, `usage`, `protocol`, or `tooling`;
+  `storage`, `io`, `usage`, or `tooling`;
 - `message`: short human summary;
 - `help`: optional repair guidance;
 - `source_span`: optional source location;
@@ -69,13 +69,6 @@ work without the maintenance capability: `write.requires_maintenance` for a
 whole managed-root delete. Deleting a required field on its own raises
 `write.required_field` outside maintenance.
 
-The `marrow serve` debug/admin loopback server reports a `protocol.*` code when a request is bad:
-`protocol.malformed` (not JSON, or no `op`), `protocol.unknown_op`,
-`protocol.bad_request` (malformed operation arguments, durable places, cursors,
-or encoded payloads), and `protocol.stale_epoch` when the served store has
-evolved past the schema the running server was checked against. A request that
-reaches the store carries the store's own `store.*` code through unchanged.
-
 `marrow data integrity` reports `data.*` codes (kind `tooling`) for the findings
 it surfaces while verifying saved data against the project schema:
 `data.decode` for a stored value that is not a canonical form of its declared
@@ -99,7 +92,6 @@ code is stable and predictable:
 | `run`, `value` | `runtime` |
 | `store` | `storage` |
 | `io` | `io` |
-| `protocol` | `protocol` |
 | everything else (`config`, `project`, `data`, `evolve`, `write`, `test`, `restore`) | `tooling` |
 
 A `run.capability` error is the runtime form of a missing host capability; it
@@ -111,8 +103,7 @@ a category label, not a separate code prefix).
 Every code below is emitted by the current build. Codes are grouped by family.
 The "Surface" column says where a developer first meets the code: a single-file
 `check`, a project `check`/`run`/`test`, a managed write inside a running
-program, the store, the `serve` debug/admin loopback server, or a `data`
-maintenance command.
+program, the store, or a `data` maintenance command.
 
 ### `parse.*` — kind `parse`
 
@@ -285,8 +276,8 @@ recovery, limit, and read-only variants. Opening a damaged native store fails
 closed with a typed code — never a process crash: a truncated or torn body is
 `store.corruption`, and a store left needing repair by an unclean shutdown is
 `store.recovery_required`. A store fault met during a program read or write
-travels as `run.store` or `write.store`; the `serve` server passes the `store.*`
-code through unchanged.
+travels as `run.store` or `write.store`; data tooling reports the `store.*` code
+directly.
 
 | Code | Meaning |
 |---|---|
@@ -299,20 +290,6 @@ code through unchanged.
 | `store.cursor` | A bounded scan cursor does not belong to the scan being resumed. |
 | `store.transaction` | A transaction or snapshot operation was requested in an invalid store state. |
 | `store.read_only` | A write-capability operation was requested through a read-only store handle. |
-
-### `protocol.*` — kind `protocol`
-
-Request faults from the `marrow serve` debug/admin loopback server. A serve error reply is
-`{"id": …, "error": {"code": …, "message": …}}`; it does not carry `kind` or
-`source_span`. A request that reaches the store carries the store's own
-`store.*` code through.
-
-| Code | Meaning |
-|---|---|
-| `protocol.malformed` | A request is not a JSON object, or is missing a string `op`. |
-| `protocol.unknown_op` | A request names an operation the server does not support. |
-| `protocol.bad_request` | A known operation's arguments are malformed: bad typed resource arguments, durable places, cursors, or encoded payloads. |
-| `protocol.stale_epoch` | The store has evolved past the schema this `marrow serve` process was checked against (its stamped catalog epoch is newer than the served program's), so a data op refuses rather than render evolved data under the stale schema. Restart `marrow serve` to read the evolved data. |
 
 ### `io.*` — kind `io`
 

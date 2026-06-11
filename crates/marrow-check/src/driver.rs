@@ -199,7 +199,7 @@ pub(crate) fn expand_module_alias(module: &str, aliases: &HashMap<String, Vec<St
 /// that owns it so the binding index can locate the definition's source file. A
 /// small wrapper over the unified [`resolve`]: a bare name resolves in `from_module`,
 /// a qualified name in the named module — so a bare cross-module call no longer
-/// first-matches a foreign function. Used by the LSP binding index, which carries
+/// first-matches a foreign function. Used by the binding index, which carries
 /// the referencing module.
 pub(crate) fn resolve_function_in_module<'p>(
     program: &'p CheckedProgram,

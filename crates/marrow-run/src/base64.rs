@@ -1,6 +1,6 @@
-//! The one canonical base64 codec, shared by the `std::bytes` builtins and the
-//! `marrow serve` protocol so the two surfaces accept and reject exactly the
-//! same inputs.
+//! The one canonical base64 codec, shared by the `std::bytes` builtins and
+//! machine-readable tooling output so every surface accepts and rejects exactly
+//! the same inputs.
 //!
 //! This is standard RFC 4648 base64 with `+`/`/` and required `=` padding:
 //! encoding always pads to a multiple of four, and decoding requires that same

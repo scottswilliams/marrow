@@ -1,6 +1,10 @@
 # check (marrow-check)
 
-The semantic core of the toolchain. It consumes the parsed AST (`marrow-syntax`) and compiled schemas (`marrow-schema`) and produces a `CheckedProgram`: the single structured view of a checked project that the runtime, evolution, catalog, and LSP all read against. Everything downstream resolves names and types against this artifact, never against source spelling.
+The semantic core of the toolchain. It consumes the parsed AST (`marrow-syntax`)
+and compiled schemas (`marrow-schema`) and produces a `CheckedProgram`: the
+single structured view of a checked project that the runtime, evolution,
+catalog, and editor tooling all read against. Everything downstream resolves
+names and types against this artifact, never against source spelling.
 
 ## Phase order
 

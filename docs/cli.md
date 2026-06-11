@@ -14,8 +14,6 @@ marrow data <roots|stats|dump|integrity|recover> [--format text|json|jsonl] <pro
 marrow data get [--format text|json|jsonl] <projectdir> <path>
 marrow backup [--format text|json|jsonl] <projectdir> <output-file>
 marrow restore [--format text|json|jsonl] <projectdir> <backup-file>
-marrow lsp
-marrow serve [--port <port>] <projectdir>
 marrow --version
 marrow --help
 ```
@@ -324,7 +322,7 @@ streams as production CLI behavior.
 
 There is no `marrow explain` command in v0.1. Checked access, path, and name
 facts are internal compiler/tooling facts surfaced through diagnostics,
-`marrow data integrity`, dry-run reports, LSP/editor features, or future
+`marrow data integrity`, dry-run reports, editor features, or future
 accepted tooling surfaces. They are not exposed as query-plan, optimizer, or
 standalone explanation output.
 
@@ -526,52 +524,3 @@ ok: restored 12 record(s) from ./proj-backup.mwbackup
 Exits `0` on success, `1` on any validation, checksum, store, or i/o failure, and
 `2` on a command-line usage error. See [error-codes.md](error-codes.md) for the
 `restore.*` family.
-
----
-
-## `marrow lsp`
-
-```
-marrow lsp
-```
-
-Run the Marrow language server over stdio: JSON-RPC 2.0 with `Content-Length`
-framing. It handles the `initialize`/`shutdown`/`exit` lifecycle, tracks open
-documents, and publishes diagnostics for open `.mw` documents on every
-`didOpen`/`didChange`. With a valid project `rootUri`, diagnostics come from the
-project checker using open-buffer overlays; otherwise they fall back to parsing
-the open buffer. Point an LSP-capable editor at this command; it is not meant to
-be run by hand. It takes no arguments — any flag other than `--help` is a usage
-error (exit `2`).
-
-This is the editor language server, distinct from `marrow serve`.
-
----
-
-## `marrow serve`
-
-```
-marrow serve [--port <port>] <projectdir>
-```
-
-Run the Marrow debug/admin loopback inspection server. It answers
-newline-delimited JSON requests over a loopback (`127.0.0.1`) TCP connection,
-reads checked saved data, and never writes managed data. It is not a production
-app server, sync protocol, generated API, or remote database.
-
-The bound address is printed on startup, then the server blocks accepting
-connections one at a time:
-
-```console
-$ marrow serve --port 0 ./proj
-marrow serve listening on 127.0.0.1:52224
-```
-
-`--port` chooses the TCP port; `--port 0` (the default) lets the OS pick a free
-port, printed on the line above. The server runs until interrupted. Its v0.1
-protocol exposes `debug_data_roots`, `debug_data_get`, `debug_data_children`,
-and `debug_data_walk` for local inspection. See
-[serve-protocol.md](serve-protocol.md).
-
-Exits `2` on a usage error, `1` if the project cannot be loaded or does not
-check, the store cannot be opened, or the address cannot be bound.

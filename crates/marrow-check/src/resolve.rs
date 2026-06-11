@@ -1,5 +1,5 @@
 //! The one module-aware, visibility-aware name resolver, shared by the checker,
-//! runtime, and LSP binding index so they cannot drift. A bare name resolves in
+//! runtime, and binding index so they cannot drift. A bare name resolves in
 //! its own module only — because `use` imports module names, not their contents —
 //! while saved roots stay project-wide, since a `^root` addresses its one owning
 //! store from any module. Builtins and `std::` helpers dispatch before user

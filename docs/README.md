@@ -37,10 +37,6 @@ point at the [language reference](language/) for the exact rules.
   commands and the explicit recover command in depth.
 - [Tooling Surfaces](tooling-surfaces.md) — support levels and boundaries for
   debug, admin, and production tool surfaces.
-- [Serve Protocol](serve-protocol.md) — the newline-delimited JSON protocol the
-  `marrow serve` debug/admin loopback server speaks.
-- [Language Server](lsp.md) — the `marrow lsp` editor language server:
-  protocol, document sync, and diagnostics.
 - [Errors](error-codes.md) — CLI exit codes, the machine-readable error
   envelope, and the stable dotted error codes.
 

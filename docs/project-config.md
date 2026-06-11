@@ -2,7 +2,7 @@
 
 A Marrow project is described by a single file, `marrow.json`, at the project
 root. Every command that takes a project directory — `check`, `run`, `test`,
-`fmt`, `data`, `evolve`, `backup`, `restore`, and `serve` — reads
+`fmt`, `data`, `evolve`, `backup`, and `restore` — reads
 `<projectdir>/marrow.json` first. The file
 holds project choices only: source roots, a default entrypoint, the store
 backend and its data directory, and test patterns. It does not hold compiled
@@ -112,8 +112,8 @@ production saved-data backend is the native redb store.
 - `native` — the persistent on-disk store. Requires a non-empty `dataDir`,
   a relative path under the project root. The store file is created at
   `<dataDir>/marrow.redb`. The data directory is created on first use by a
-  command that writes (such as `run`); read-only inspection (`data`, `serve`)
-  never creates it.
+  command that writes (such as `run`); read-only inspection (`data`) never
+  creates it.
 
   ```json
   {

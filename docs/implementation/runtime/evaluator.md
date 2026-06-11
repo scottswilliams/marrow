@@ -31,7 +31,7 @@ One run is a tree of activations. `run_entry` resolves the entry, builds an `Env
 | `crates/marrow-run/src/host.rs` | `Host` capability bundle (clock/env/log/filesystem/maintenance) with builders; `StepHook` (`before_statement` can abort, `before_write` is observational); the read-only `Frame` view. |
 | `crates/marrow-run/src/path.rs` | Saved-path lowering: `lower` walks a checked place into a `SavedPath`; `SavedPath::read`/`write`, key lowering with identity-splice and typed-keyspace guards, `saved_path_present` for `exists`. |
 | `crates/marrow-run/src/neighbor.rs` | `next`/`prev` ordered navigation: seeks the adjacent record or data-layer child via store cursors, returns an identity or key value, or an absent fault at a layer edge. |
-| `crates/marrow-run/src/base64.rs` | The single canonical strict RFC 4648 base64 codec (padded encode, canonical-only decode) shared by `std::bytes` builtins and the serve protocol. |
+| `crates/marrow-run/src/base64.rs` | The single canonical strict RFC 4648 base64 codec (padded encode, canonical-only decode) used by `std::bytes` builtins. |
 
 Saved-write and read execution (`write*`, `read`, `durable_read`, `group_write`, `local_collection`, `saved_iter`), the stdlib boundary (`stdlib`, `std_pure`, `host_effects`), `transaction`, and `evolution` are sibling subsystems documented on their own pages.
 

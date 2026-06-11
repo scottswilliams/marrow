@@ -11,8 +11,8 @@ use crate::ScalarType;
 /// boundary. Each variant carries the structured facts a caller needs (which
 /// root, which member, the expected and found key types) rather than a
 /// pre-rendered sentence. The boundary that surfaces the error renders it
-/// through [`fmt::Display`]; checker, serve, and CLI logic match on the
-/// variant, never on the rendered text.
+/// through [`fmt::Display`]; callers match on the variant, never on the
+/// rendered text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueryError {
     /// The path did not begin with a saved root segment.

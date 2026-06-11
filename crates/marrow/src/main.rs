@@ -14,8 +14,6 @@ mod cmd_restore;
 mod cmd_run;
 mod cmd_test;
 mod dry_run;
-mod lsp;
-mod serve;
 mod trace;
 
 const HELP: &str = "\
@@ -31,8 +29,6 @@ Usage:
   marrow data get <projectdir> <path>
   marrow backup [--format text|json|jsonl] <projectdir> <output-file>
   marrow restore [--format text|json|jsonl] <projectdir> <backup-file>
-  marrow lsp
-  marrow serve [--port <port>] <projectdir>
   marrow --version
   marrow --help
 ";
@@ -65,8 +61,6 @@ fn dispatch(command: &str, rest: &[String]) -> ExitCode {
         "data" => cmd_data::data(rest),
         "backup" => cmd_backup::backup(rest),
         "restore" => cmd_restore::restore(rest),
-        "lsp" => lsp::run(rest),
-        "serve" => serve::run(rest),
         "--help" | "-h" | "help" => {
             print!("{HELP}");
             ExitCode::SUCCESS

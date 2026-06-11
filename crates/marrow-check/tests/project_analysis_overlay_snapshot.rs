@@ -1,5 +1,6 @@
 mod support;
 
+use std::fs;
 use std::path::Path;
 
 use marrow_check::check_project;
@@ -37,6 +38,36 @@ fn analyze_project_uses_overlay_source_instead_of_disk() {
         "disk source is clean: {:#?}",
         clean.diagnostics
     );
+}
+
+#[test]
+fn analyze_project_includes_unsaved_source_root_files() {
+    use marrow_check::{ProjectSources, analyze_project};
+
+    let root = temp_project("analyze-unsaved-source-file", |root| {
+        fs::create_dir_all(root.join("src")).expect("create src");
+    });
+    let path = root.join("src/new_file.mw");
+    let sources =
+        ProjectSources::new().with(&path, "module new_file\nfn f()\n    var x: int = \"str\"\n");
+
+    let snapshot = analyze_project(&root, &config(), &sources, None).expect("analyze");
+
+    assert!(
+        snapshot
+            .report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "check.assignment_type" && d.file == path),
+        "unsaved source-root files should be checked: {:#?}",
+        snapshot.report.diagnostics
+    );
+    let analyzed = snapshot
+        .files
+        .iter()
+        .find(|file| file.path == path)
+        .expect("snapshot retains unsaved source-root file");
+    assert_eq!(analyzed.module_name.as_deref(), Some("new_file"));
 }
 
 #[test]

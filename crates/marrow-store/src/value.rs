@@ -12,7 +12,7 @@ use crate::key::SavedKey;
 /// refuse data it cannot decode. Advances only on an incompatible byte-format change.
 pub const VALUE_CODEC_VERSION: u32 = 0;
 
-/// A decoded scalar value, shared by the store, runtime, and serve protocol.
+/// A decoded scalar value, shared by the store, runtime, and tooling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scalar {
     Bool(bool),
