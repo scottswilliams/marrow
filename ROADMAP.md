@@ -826,15 +826,6 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 
 ## Wave 2 — P0 foundation (REPORT Part V order)
 
-**W2.9 ∥ (after W2.2) Hostile-input corpus, non-codec surfaces (G3-6; v01-full).** Joins W2.2's
-CI family. Owns: adversarial fixture families for catalog JSON (duplicate keys, lying versions,
-truncation, valid-checksum-wrong-content) and marrow.json config (unknown keys, type-wrong
-values, null bytes). Asserts typed error, no panic, no partial state, bounded allocation.
-Store/backup codec families stay owned by W2.2/IV.B1 (no second owner); the `--arg`
-hostile-fixture family is W6.6's. Seed: a crafted-catalog fixture that panics or half-loads
-today, red. Review: allocation bounds probed adversarially. Done: families green in CI; findings
-feed the gate-35 evidence packet.
-
 **W2.10 ∥ False corruption verdicts.** Carries: the verified data-tools and serve-path fix that
 pending/unrecorded members and in-flight evolution `catalog_intent` states are normal catalog
 states, never `store.corruption`. Owns: the data-tool inspection path and any still-live
