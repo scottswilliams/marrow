@@ -826,18 +826,6 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 
 ## Wave 2 — P0 foundation (REPORT Part V order)
 
-**W2.6 → Identity constructor (II.A3, gate 2; after W2.3 — shared parse_expr.rs: the nesting
-budget lands first).** Owns: marrow-syntax expression grammar slice, marrow-check key arity/type
-checking (`check.key_type`), marrow-run identity-splice reuse,
-types.md/builtins.md/resources-and-storage.md example rewrites (carries removal #1's deletion of
-the fictional helpers; the resources-and-storage.md rewrites integrate after W2.5's Concurrency
-section). Seed: failing check fixture — `Id(^books, "book-17")` typechecks; wrong
-arity/kind rejected. Review: no presence proof attached to constructed identities; `unknown`
-arguments rejected; reserved-word bookkeeping handed to II.E2; removal #1's compensating
-honest-absence notes and the docs/future constructor entry are superseded and must not appear
-(the docs teach only the real constructor). Done: grep-zero
-loadBookId/loadEnrollmentId across docs.
-
 **W2.7 (after W2.1 and W2.5) Presence totality (II.A2 per gates 1a/1c/1d + gate 38).** Owns:
 marrow-check presence/proofs.rs + facts.rs discharge rules, the early-return guard narrowing —
 `if not exists(place)` with a diverging body installs narrowing for the remainder of the
