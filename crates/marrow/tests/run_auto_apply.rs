@@ -42,6 +42,14 @@ fn accepted_epoch(root: &TempProject) -> u64 {
     support_evolve::accepted_catalog(root).epoch
 }
 
+fn commit_stamp(root: &TempProject) -> marrow_store::tree::CommitMetadata {
+    TreeStore::open_read_only(&native_store_path(root))
+        .expect("open store read-only")
+        .read_commit_metadata()
+        .expect("read commit stamp")
+        .expect("store has a commit stamp")
+}
+
 /// The baseline: a `Book` with only `title`, plus a `Log` the default `seed` writes so
 /// the store file is stamped. `seedBook` writes one `Book` so a test can populate the
 /// affected store; the default `seed` never touches `^books`.
@@ -333,5 +341,61 @@ fn a_multi_store_evolution_with_one_empty_and_one_populated_store_fences_as_a_wh
         accepted_epoch(&root),
         epoch_before,
         "the fenced multi-store run does not advance the epoch",
+    );
+}
+
+const ENUM_REORDER_BASELINE: &str = "module app\n\
+     enum Status\n\
+     \x20   active\n\
+     \x20   archived\n\
+     resource Log at ^log(id: int)\n\
+     \x20   required state: Status\n\
+     pub fn seed()\n\
+     \x20   var log: Log\n\
+     \x20   log.state = Status::active\n\
+     \x20   transaction\n\
+     \x20       ^log(1) = log\n";
+
+const ENUM_REORDERED: &str = "module app\n\
+     enum Status\n\
+     \x20   archived\n\
+     \x20   active\n\
+     resource Log at ^log(id: int)\n\
+     \x20   required state: Status\n\
+     pub fn seed()\n\
+     \x20   var log: Log\n\
+     \x20   log.state = Status::active\n\
+     \x20   transaction\n\
+     \x20       ^log(1) = log\n";
+
+#[test]
+fn an_enum_member_reorder_restamps_instead_of_fencing_run() {
+    let root = books_and_log_project("run-autoapply-enum-reorder", ENUM_REORDER_BASELINE);
+    let first = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    let epoch_before = accepted_epoch(&root);
+    let before = commit_stamp(&root);
+
+    write(&root, "src/app.mw", ENUM_REORDERED);
+    let rerun = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(
+        rerun.status.code(),
+        Some(0),
+        "a pure enum-member reorder is an identity-preserving restamp: {rerun:?}",
+    );
+
+    let after = commit_stamp(&root);
+    assert_eq!(
+        accepted_epoch(&root),
+        epoch_before,
+        "member reordering does not advance catalog identity",
+    );
+    assert_ne!(
+        after.source_digest, before.source_digest,
+        "the reordered durable shape is stamped under its own digest",
+    );
+    assert!(
+        after.commit_id > before.commit_id,
+        "the zero-mutation auto-apply writes a fresh stamp"
     );
 }

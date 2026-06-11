@@ -33,18 +33,32 @@ impl CatalogMetadata {
         }
     }
 
+    pub fn from_stored_parts(
+        epoch: u64,
+        stored_digest: String,
+        entries: Vec<CatalogEntry>,
+    ) -> Result<Self, CatalogError> {
+        let digest = catalog_digest(epoch, &entries);
+        if stored_digest != digest
+            && stored_digest != legacy_order_sensitive_catalog_digest(epoch, &entries)
+        {
+            return Err(CatalogError::new(format!(
+                "catalog digest `{stored_digest}` does not match computed digest `{digest}`"
+            )));
+        }
+        let catalog = Self {
+            epoch,
+            digest,
+            entries,
+        };
+        catalog.validate()?;
+        Ok(catalog)
+    }
+
     pub fn from_json(json: &str) -> Result<Self, CatalogError> {
         let catalog: Self =
             serde_json::from_str(json).map_err(|error| CatalogError::new(error.to_string()))?;
-        let expected = catalog_digest(catalog.epoch, &catalog.entries);
-        if catalog.digest != expected {
-            return Err(CatalogError::new(format!(
-                "catalog digest `{}` does not match computed digest `{expected}`",
-                catalog.digest
-            )));
-        }
-        catalog.validate()?;
-        Ok(catalog)
+        Self::from_stored_parts(catalog.epoch, catalog.digest, catalog.entries)
     }
 
     pub fn to_json_pretty(&self) -> String {
@@ -225,6 +239,62 @@ mod tag_tests {
 }
 
 #[cfg(test)]
+mod digest_tests {
+    use super::{
+        CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata, catalog_digest,
+        legacy_order_sensitive_catalog_digest,
+    };
+
+    fn entry(kind: CatalogEntryKind, path: &str, suffix: u8) -> CatalogEntry {
+        CatalogEntry {
+            kind,
+            path: path.to_string(),
+            stable_id: format!("cat_{suffix:032x}"),
+            aliases: Vec::new(),
+            lifecycle: CatalogLifecycle::Active,
+            accepted_key_shape: None,
+            accepted_struct: None,
+        }
+    }
+
+    fn reordered_entries() -> Vec<CatalogEntry> {
+        vec![
+            entry(CatalogEntryKind::EnumMember, "books::Status::archived", 3),
+            entry(CatalogEntryKind::Enum, "books::Status", 1),
+            entry(CatalogEntryKind::EnumMember, "books::Status::active", 2),
+        ]
+    }
+
+    #[test]
+    fn stored_parts_accept_legacy_order_sensitive_digest_and_normalize_it() {
+        let entries = reordered_entries();
+        let legacy = legacy_order_sensitive_catalog_digest(7, &entries);
+        assert_ne!(legacy, catalog_digest(7, &entries));
+
+        let metadata =
+            CatalogMetadata::from_stored_parts(7, legacy, entries).expect("legacy digest accepted");
+
+        assert_eq!(metadata.digest, catalog_digest(7, &metadata.entries));
+    }
+
+    #[test]
+    fn json_accepts_legacy_order_sensitive_digest_and_normalizes_it() {
+        let entries = reordered_entries();
+        let legacy = legacy_order_sensitive_catalog_digest(7, &entries);
+        let json = serde_json::json!({
+            "epoch": 7,
+            "digest": legacy,
+            "entries": entries,
+        })
+        .to_string();
+
+        let metadata = CatalogMetadata::from_json(&json).expect("legacy JSON digest accepted");
+
+        assert_eq!(metadata.digest, catalog_digest(7, &metadata.entries));
+    }
+}
+
+#[cfg(test)]
 mod structural_signature_tests {
     use super::{StructuralSignature, structural_signature, structural_signature_leaf_token};
 
@@ -374,12 +444,35 @@ impl std::error::Error for CatalogError {}
 #[serde(rename_all = "camelCase")]
 struct DigestPayload<'a> {
     epoch: u64,
+    entries: Vec<&'a CatalogEntry>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyDigestPayload<'a> {
+    epoch: u64,
     entries: &'a [CatalogEntry],
 }
 
 fn catalog_digest(epoch: u64, entries: &[CatalogEntry]) -> String {
-    let json = serde_json::to_string(&DigestPayload { epoch, entries })
+    let mut canonical_entries: Vec<&CatalogEntry> = entries.iter().collect();
+    canonical_entries
+        .sort_by(|left, right| digest_entry_order(left).cmp(&digest_entry_order(right)));
+    let json = serde_json::to_string(&DigestPayload {
+        epoch,
+        entries: canonical_entries,
+    })
+    .expect("catalog digest payload serializes");
+    digest_json(&json)
+}
+
+fn legacy_order_sensitive_catalog_digest(epoch: u64, entries: &[CatalogEntry]) -> String {
+    let json = serde_json::to_string(&LegacyDigestPayload { epoch, entries })
         .expect("catalog digest payload serializes");
+    digest_json(&json)
+}
+
+fn digest_json(json: &str) -> String {
     let digest = Sha256::digest(json.as_bytes());
     let mut out = String::with_capacity("sha256:".len() + digest.len() * 2);
     out.push_str("sha256:");
@@ -387,6 +480,28 @@ fn catalog_digest(epoch: u64, entries: &[CatalogEntry]) -> String {
         write!(&mut out, "{byte:02x}").expect("writing to String cannot fail");
     }
     out
+}
+
+fn digest_entry_order(
+    entry: &CatalogEntry,
+) -> (
+    u8,
+    &str,
+    &str,
+    &[String],
+    u8,
+    &Option<String>,
+    &Option<String>,
+) {
+    (
+        entry.kind.tag(),
+        entry.path.as_str(),
+        entry.stable_id.as_str(),
+        &entry.aliases,
+        entry.lifecycle.tag(),
+        &entry.accepted_key_shape,
+        &entry.accepted_struct,
+    )
 }
 
 fn is_catalog_stable_id(id: &str) -> bool {

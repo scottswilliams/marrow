@@ -13,6 +13,7 @@ use marrow_syntax::SourceSpan;
 use crate::error::{
     Located, RUN_CAPABILITY, RUN_TRAVERSAL, RuntimeError, raise_fault, write_fault,
 };
+use crate::evolution::AppliedActivationEvidence;
 use crate::host::{Host, StepHook};
 use crate::store::{DataAddress, IndexAddress, LayerAddress, catalog_id};
 use crate::value::{RunOutputSink, Value};
@@ -768,10 +769,14 @@ fn build_commit_metadata_stamp(
     if changed_root_catalog_ids.is_empty() && changed_index_catalog_ids.is_empty() {
         return Ok(None);
     }
-    let commit_id = store
-        .read_commit_metadata()?
+    let previous = store.read_commit_metadata()?;
+    let commit_id = previous
+        .as_ref()
         .map(|commit| commit.commit_id + 1)
         .unwrap_or(1);
+    let applied_activation_evidence = previous.as_ref().and_then(|commit| {
+        carried_applied_activation_evidence(catalog_epoch, source_digest, commit)
+    });
     Ok(Some(crate::evolution::metadata_stamp(
         crate::evolution::StampFacts {
             catalog_epoch,
@@ -780,9 +785,34 @@ fn build_commit_metadata_stamp(
             source_digest: source_digest.to_string(),
             changed_root_catalog_ids,
             changed_index_catalog_ids,
-            activation: None,
+            applied_activation_evidence,
         },
     )))
+}
+
+fn carried_applied_activation_evidence(
+    catalog_epoch: u64,
+    source_digest: &str,
+    commit: &marrow_store::tree::CommitMetadata,
+) -> Option<AppliedActivationEvidence> {
+    if commit.catalog_epoch != catalog_epoch
+        || commit.source_digest != source_digest
+        || commit.activation_evolution_digest.is_empty()
+    {
+        return None;
+    }
+    Some(AppliedActivationEvidence {
+        evolution_digest: commit.activation_evolution_digest.clone(),
+        proposal_catalog_digest: commit.activation_proposal_catalog_digest.clone(),
+        proposal_new_catalog_ids: commit.activation_proposal_new_catalog_ids.clone(),
+        records_backfilled: commit.activation_records_backfilled,
+        default_records_by_id: commit.activation_default_records_by_id.clone(),
+        indexes_rebuilt: commit.activation_indexes_rebuilt,
+        records_retired: commit.activation_records_retired,
+        retire_evidence_digest: commit.activation_retire_evidence_digest.clone(),
+        records_retired_by_id: commit.activation_records_retired_by_id.clone(),
+        records_transformed: commit.activation_records_transformed,
+    })
 }
 
 fn changed_catalog_ids(steps: &[PlanStep]) -> (Vec<CatalogId>, Vec<CatalogId>) {

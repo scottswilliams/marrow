@@ -61,7 +61,7 @@ names, member names, index names, enum member spelling, or declaration order.
 | Sequence cell | node prefix + `20` + member ID + `u64_be(position)` | A sequence element under a node/member, ordered by position. |
 | Index cell | index family + index ID + index-key tuple + `00` + record-key tuple + `00` | Sorts by exact index tuple, then record identity. |
 | Meta cells | meta family + `01`, `02`, `03`, or `04` | Catalog epoch, layout epoch, engine profile digest, or latest commit metadata. |
-| Catalog cells | catalog family + `00` header row, then `10` + `u64_be(ordinal)` per entry | The accepted catalog snapshot: one header row (epoch and digest), one row per entry in catalog order. |
+| Catalog cells | catalog family + `00` header row, then `10` + stable catalog ID per entry | The accepted catalog snapshot: one header row (epoch and digest), one row per entry; the entry value carries its catalog ordinal. |
 | Prefix ranges | `[prefix, successor(prefix))` | A prefix range includes exactly keys beginning with the prefix. Empty/all-`ff` prefixes have no upper bound. |
 
 Index tuple scans use an exact tuple prefix. Scanning the exact tuple `["a"]`
@@ -117,7 +117,7 @@ Store-level metadata is written through typed meta cells:
 | Catalog epoch | `01` | `u64_be(catalog_epoch)` |
 | Layout epoch | `02` | `u64_be(layout_epoch)` |
 | Engine profile digest | `03` | 8 bytes, the stable v0 engine-profile digest |
-| Commit metadata | `04` | Commit id, catalog epoch, layout epoch, source digest, profile digest, changed root/index catalog IDs, and activation evidence |
+| Commit metadata | `04` | Commit id, catalog epoch, layout epoch, source digest, profile digest, changed root/index catalog IDs, and historical applied-step evidence |
 
 The v0 engine profile records layout epoch and key profile version `0`. Its
 profile fingerprint is deterministic, non-cryptographic, and scoped only to
@@ -130,26 +130,47 @@ profile digest, catalog ID lists, per-default activation counts, and per-retire
 approval counts are length-prefixed with big-endian `u32` counts or byte
 lengths. Catalog IDs remain opaque storage IDs inside metadata values.
 
-Activation evidence binds the durable commit boundary: source digest, evolution
-digest, proposal catalog digest, changed root/index IDs, per-default bounded
-effect digests plus counts, rebuilt-index count, retire count digest plus per-id
-counts, and transform count. These fields are receipts over the committed
-activation, not executable migration history and not proposal catalog bodies.
-The accepted catalog rows advance in the same transaction as this metadata and
-the data and index cells they describe, so there is no post-commit publish step
-to resume: a failure before commit rolls every effect back together.
+The top-level changed root/index catalog ID lists are per-commit stamp facts:
+they describe the data roots and indexes this commit itself touched. An
+evolution apply stamps the activation commit's changed IDs there, but a later
+managed write replaces them with that write's own changed IDs and does not carry
+the activation commit's changed IDs forward. If a stamped commit has no changed
+roots or indexes, the lists are empty.
+
+Applied-step evidence records that an activation or evolve step completed at a
+prior commit under the same catalog epoch, source digest, and evolution digest:
+proposal catalog digest, proposal-new catalog IDs, per-default bounded effect
+digests plus counts, rebuilt-index count, retire count digest plus per-id
+counts, and transform count. An evolution apply writes new applied-step
+evidence. A later managed write carries that evidence forward only when the
+previous commit has an activation evolution digest and its catalog epoch and
+source digest match the new commit. If either fact differs, or no applied step
+is recorded, the activation fields are cleared to their default empty/zero
+values. These fields are historical replay-suppression evidence, not executable
+migration history, not proposal catalog bodies, and not proof that current data
+still matches default, transform, retire, or index completion. Current
+completion verification recomputes the witness effects from the live store and
+may report drift after later ordinary writes. The accepted catalog rows advance
+in the same transaction as the activation metadata and the data and index cells
+they describe, so there is no post-commit publish step to resume: a failure
+before commit rolls every effect back together.
 
 The catalog family is private engine metadata, not language data. No source
 declaration, runtime expression, standard-library call, data CLI operation, or
 user transaction can address, scan, or mutate catalog rows; they are reached only
 through the typed snapshot read/replace operations. A read rebuilds the snapshot
-from its rows and recomputes the digest against the stored header, so a tampered
-catalog row — even one that decodes into a structurally valid entry — fails closed
-as `store.corruption`.
+from its rows and verifies the stored header against the decoded entries. The
+canonical catalog digest sorts entries by declaration kind tag, canonical path,
+stable ID, aliases, lifecycle tag, accepted store-key shape, and accepted
+structural signature before hashing, so declaration order does not change the
+digest. Reads also accept a legacy order-sensitive row-order header digest when
+it matches the decoded rows, then return the snapshot with the canonical digest.
+A tampered catalog row — even one that decodes into a structurally valid entry —
+fails closed as `store.corruption`.
 
 Malformed tree-cell metadata, malformed node markers, malformed tree-cell
 reference/enum values, malformed index identity suffixes, and a catalog snapshot
-whose recomputed digest does not match its header report `store.corruption`.
+whose header matches neither accepted digest report `store.corruption`.
 
 ## Value Codecs
 

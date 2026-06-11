@@ -110,6 +110,31 @@ fn round_trips_stable_ids_aliases_lifecycle_epoch_and_digest() {
 }
 
 #[test]
+fn digest_is_independent_of_entry_order() {
+    let enum_entry = entry(CatalogEntryKind::Enum, "books::Status", "enum-status", &[]);
+    let active = entry(
+        CatalogEntryKind::EnumMember,
+        "books::Status::active",
+        "member-active",
+        &[],
+    );
+    let archived = entry(
+        CatalogEntryKind::EnumMember,
+        "books::Status::archived",
+        "member-archived",
+        &[],
+    );
+
+    let source_order = catalog(vec![enum_entry.clone(), active.clone(), archived.clone()]);
+    let reordered = catalog(vec![archived, enum_entry, active]);
+
+    assert_eq!(
+        source_order.digest, reordered.digest,
+        "catalog digest must bind identity entries, not their source/member order"
+    );
+}
+
+#[test]
 fn round_trips_reserved_lifecycle() {
     let metadata = catalog(vec![CatalogEntry {
         lifecycle: CatalogLifecycle::Reserved,

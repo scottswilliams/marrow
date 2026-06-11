@@ -1,8 +1,9 @@
+use marrow_check::evolution::{EvolutionWitness, Verdict};
 use marrow_check::{CatalogEntryKind, CheckedProgram, CheckedSavedIndex, CheckedSavedPlace};
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{CommitMetadata, TreeStore};
+use marrow_store::tree::TreeStore;
 use marrow_syntax::SourceSpan;
 
 use crate::index_maintenance::{EmptyStagedData, index_rebuild_entry_with_staged};
@@ -19,11 +20,11 @@ use super::catalog_id;
 pub(super) fn verify_index_completion(
     program: &CheckedProgram,
     store: &TreeStore,
-    commit: &CommitMetadata,
+    witness: &EvolutionWitness,
     places: &[CheckedSavedPlace],
 ) -> Result<usize, ApplyError> {
     let mut rebuilt = 0usize;
-    for index_id in &commit.changed_index_catalog_ids {
+    for index_id in rebuilt_index_ids(witness) {
         if let Some((place, index)) = active_index(places, index_id) {
             verify_rebuilt_index(store, place, index)?;
             rebuilt += 1;
@@ -37,6 +38,16 @@ pub(super) fn verify_index_completion(
         }
     }
     Ok(rebuilt)
+}
+
+fn rebuilt_index_ids(witness: &EvolutionWitness) -> impl Iterator<Item = &CatalogId> {
+    witness
+        .verdicts
+        .iter()
+        .filter_map(|obligation| match obligation.verdict {
+            Verdict::DerivedRebuild => Some(&obligation.catalog_id),
+            _ => None,
+        })
 }
 
 fn verify_rebuilt_index(

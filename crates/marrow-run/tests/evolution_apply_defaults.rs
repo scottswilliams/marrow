@@ -221,6 +221,25 @@ fn completion_rejects_erased_commit_source_digest() {
 }
 
 #[test]
+fn completion_uses_applied_step_evidence_not_per_commit_changed_ids() {
+    let (_root, program, _place, store, _pages_id) =
+        applied_proposal_default_fixture("completion-changed-ids-cleared", 1);
+    let mut commit = store
+        .read_commit_metadata()
+        .expect("read commit")
+        .expect("activation commit");
+    assert!(!commit.changed_root_catalog_ids.is_empty());
+    commit.changed_root_catalog_ids.clear();
+    commit.changed_index_catalog_ids.clear();
+    store
+        .write_commit_metadata(&commit)
+        .expect("clear per-commit changed ids");
+
+    verify_activation_completion(&program, &store, &commit)
+        .expect("carried applied-step evidence does not include per-commit changed ids");
+}
+
+#[test]
 fn proposal_required_default_rejects_preexisting_target_data() {
     let root = temp_project("apply-proposal-required-default-existing-target", |root| {
         write(

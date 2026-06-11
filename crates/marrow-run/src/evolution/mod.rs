@@ -27,5 +27,5 @@ pub use auto_apply::{AutoApplyOutcome, RunObligation, try_auto_apply};
 pub use baseline::commit_catalog_baseline;
 pub use completion::verify_activation_completion;
 pub use rebuild::rebuild_store_indexes;
+pub(crate) use window::{AppliedActivationEvidence, StampFacts, metadata_stamp};
 pub use window::{FenceError, current_engine_profile, fence};
-pub(crate) use window::{StampFacts, metadata_stamp};

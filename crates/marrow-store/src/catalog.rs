@@ -1,10 +1,10 @@
 //! Private row codec for the engine catalog family.
 //!
 //! The accepted catalog persists as one header row plus one row per entry, all
-//! under [`CellKey::catalog_family`]. A read rebuilds the snapshot through
-//! [`CatalogMetadata::new`], so the digest is recomputed from the decoded entries
-//! and compared against the stored header: any tampered entry row, even one that
-//! decodes into a structurally valid form, fails closed as corruption.
+//! under [`CellKey::catalog_family`]. A read verifies the stored digest against
+//! the decoded entries before returning a normalized snapshot: any tampered entry
+//! row, even one that decodes into a structurally valid form, fails closed as
+//! corruption.
 
 use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 
@@ -59,19 +59,12 @@ pub(crate) fn read_catalog_snapshot(
         }
     }
     let entries = entries.into_iter().map(|row| row.entry).collect();
-    // Rebuilding through `new` recomputes the digest from the decoded entries, so a
-    // mismatch against the stored header proves a row was tampered even when every
-    // field still decodes into a structurally valid form.
-    let snapshot = CatalogMetadata::new(header.epoch, entries);
-    if snapshot.digest != header.digest {
-        return Err(corrupt_catalog(
-            "catalog digest does not match stored entries",
-        ));
-    }
-    snapshot
-        .validate()
-        .map_err(|error| corrupt_catalog(error.message))?;
-    Ok(Some(snapshot))
+    // Rebuilding through the catalog normalizer recomputes the digest from the decoded
+    // entries, so a mismatch against every accepted header digest proves a row was
+    // tampered even when every field still decodes into a structurally valid form.
+    CatalogMetadata::from_stored_parts(header.epoch, header.digest, entries)
+        .map(Some)
+        .map_err(|_| corrupt_catalog("catalog digest does not match stored entries"))
 }
 
 pub(crate) fn read_catalog_snapshot_digest(

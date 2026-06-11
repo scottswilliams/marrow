@@ -21,7 +21,8 @@ use super::lifecycle::retired_proposal_ids;
 use super::transform::{TransformVisit, visit_transform_writes};
 use super::validate::{assert_commit_pin, validate_witness};
 use super::window::{
-    ActivationStampFacts, FenceError, StampFacts, current_engine_profile, fence, metadata_stamp,
+    AppliedActivationEvidence, FenceError, StampFacts, current_engine_profile, fence,
+    metadata_stamp,
 };
 
 /// The scoped developer decision a destructive retire requires. Each entry names one
@@ -142,6 +143,18 @@ pub fn apply(
         .map(|catalog| catalog.epoch)
         .unwrap_or(witness.accepted_catalog.epoch);
     let current_epoch = store.read_catalog_epoch()?;
+    if store_stamped_at_target(witness, target_epoch, current_epoch, store)? {
+        let commit_id = witness.store_commit_id.unwrap_or(0);
+        let staged = StagedWork::default();
+        let parts = receipt_parts(program, commit_id, &staged, &[])?;
+        return Ok(build_outcome(
+            witness,
+            commit_id,
+            target_epoch,
+            &staged,
+            parts,
+        ));
+    }
 
     let mut staged = StagedWork::default();
     let mut steps = Vec::new();
@@ -176,21 +189,6 @@ pub fn apply(
     let destructive_retire_counts = expected_retire_counts(witness);
     reconcile_counts(&staged, witness, &destructive_retire_counts)?;
 
-    // Nothing to write and the store already sits at the target epoch: applying again
-    // would only churn the commit id and restamp the same epoch. Leave the store
-    // untouched and report the current commit id rather than advancing it.
-    if steps.is_empty() && current_epoch == Some(target_epoch) {
-        let commit_id = witness.store_commit_id.unwrap_or(0);
-        let parts = receipt_parts(program, commit_id, &staged, &destructive_retire_counts)?;
-        return Ok(build_outcome(
-            witness,
-            commit_id,
-            target_epoch,
-            &staged,
-            parts,
-        ));
-    }
-
     let commit_id = witness.store_commit_id.unwrap_or(0) + 1;
     let parts = receipt_parts(program, commit_id, &staged, &destructive_retire_counts)?;
     steps.push(activation_stamp(
@@ -209,6 +207,44 @@ pub fn apply(
         &staged,
         parts,
     ))
+}
+
+/// Whether the store already carries the exact target activation stamp this apply would
+/// publish. A matching historical applied-step stamp means any remaining source `evolve`
+/// block is stale transition text; staging it again would rewrite current data. This is
+/// only a replay-suppression check. Current completion verification recomputes data and
+/// index effects from the live store. A same-epoch store with an older source digest is
+/// not a target match, so apply still writes a metadata-only restamp for
+/// identity-preserving source reorders.
+fn store_stamped_at_target(
+    witness: &EvolutionWitness,
+    target_epoch: u64,
+    current_epoch: Option<u64>,
+    store: &TreeStore,
+) -> Result<bool, ApplyError> {
+    if current_epoch != Some(target_epoch) {
+        return Ok(false);
+    }
+    let Some(commit) = store.read_commit_metadata()? else {
+        return Ok(false);
+    };
+    if commit.source_digest != witness.source_digest {
+        return Ok(false);
+    }
+    if commit.activation_evolution_digest != witness.evolution_digest {
+        return Ok(false);
+    }
+    match store.catalog_snapshot_digest()? {
+        Some(found) => {
+            let target_catalog_digest = witness
+                .proposal_catalog
+                .as_ref()
+                .map(|catalog| catalog.digest.as_str())
+                .unwrap_or(witness.accepted_catalog.digest.as_str());
+            Ok(found == target_catalog_digest)
+        }
+        None => Ok(witness.proposal_catalog.is_none()),
+    }
 }
 
 /// Confirm the staged work matches the counts the witness proved, failing closed before any
@@ -304,7 +340,7 @@ fn activation_stamp(
         source_digest: witness.source_digest.clone(),
         changed_root_catalog_ids: witness.changed_root_catalog_ids.clone(),
         changed_index_catalog_ids: witness.changed_index_catalog_ids.clone(),
-        activation: Some(ActivationStampFacts {
+        applied_activation_evidence: Some(AppliedActivationEvidence {
             evolution_digest: witness.evolution_digest.clone(),
             proposal_catalog_digest: witness
                 .proposal_catalog

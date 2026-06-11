@@ -124,6 +124,55 @@ fn completion_rejects_stale_index_row_with_old_key_arity() {
 }
 
 #[test]
+fn completion_uses_witness_rebuilds_not_per_commit_changed_index_ids() {
+    let root = temp_project("completion-index-changed-ids-cleared", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required isbn: string\n\
+             pub fn add(isbn: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    seed.record(1);
+    seed.member(1, "isbn", Scalar::Str("111".into()));
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required isbn: string\n\
+         \x20   index byIsbn(isbn) unique\n\
+         pub fn add(isbn: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root);
+    apply(&witness(&program, &store), &program, &store, false, None).expect("apply");
+
+    let mut commit = store
+        .read_commit_metadata()
+        .expect("read commit")
+        .expect("activation commit");
+    assert!(!commit.changed_index_catalog_ids.is_empty());
+    commit.changed_index_catalog_ids.clear();
+    store
+        .write_commit_metadata(&commit)
+        .expect("clear per-commit changed index ids");
+
+    verify_activation_completion(&program, &store, &commit)
+        .expect("index rebuild completion is derived from the witness");
+}
+
+#[test]
 fn proposal_index_rebuild_reads_defaulted_member_before_catalog_acceptance() {
     let root = temp_project("apply-proposal-index-default", |root| {
         write(

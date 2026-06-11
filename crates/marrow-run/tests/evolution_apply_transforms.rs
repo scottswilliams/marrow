@@ -12,7 +12,7 @@ use marrow_run::evolution::{ApplyError, Approval, apply, verify_activation_compl
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
-use marrow_store::value::Scalar;
+use marrow_store::value::{Scalar, encode_value};
 
 #[test]
 fn proposal_transform_writes_target_before_catalog_acceptance() {
@@ -126,6 +126,66 @@ fn completion_rejects_missing_transform_cell() {
         .expect("activation commit");
     let error = verify_activation_completion(&program, &store, &commit)
         .expect_err("missing transform cell fails");
+
+    assert_eq!(error, ApplyError::Drift);
+}
+
+#[test]
+fn completion_rejects_transform_target_changed_after_activation() {
+    let root = temp_project("completion-transform-target-changed", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book at ^books(id: int)\n\
+             \x20   required price: int\n\
+             pub fn add(price: int): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    seed.record(1);
+    seed.member(1, "price", Scalar::Int(3));
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book at ^books(id: int)\n\
+         \x20   required price: int\n\
+         \x20   required priceCents: int\n\
+         evolve\n\
+         \x20   transform Book.priceCents\n\
+         \x20       return old.price * 100\n\
+         pub fn add(price: int): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root);
+    let cents_id = CatalogId::new(proposal_catalog_id(&program, "books::Book::priceCents"))
+        .expect("priceCents id");
+    apply(&witness(&program, &store), &program, &store, false, None).expect("apply");
+    let commit = store
+        .read_commit_metadata()
+        .expect("read commit")
+        .expect("activation commit");
+    assert_eq!(commit.activation_records_transformed, 1);
+
+    let store_id = store_id_of(&accepted_place);
+    store
+        .write_data_value(
+            &store_id,
+            &[SavedKey::Int(1)],
+            &[DataPathSegment::Member(cents_id)],
+            encode_value(&Scalar::Int(999)).expect("encode changed target"),
+        )
+        .expect("change transformed value");
+    let error = verify_activation_completion(&program, &store, &commit)
+        .expect_err("changed transform target fails current completion");
 
     assert_eq!(error, ApplyError::Drift);
 }

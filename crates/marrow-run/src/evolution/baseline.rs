@@ -48,7 +48,7 @@ pub fn commit_catalog_baseline(
         source_digest: program.source_digest(),
         changed_root_catalog_ids: Vec::new(),
         changed_index_catalog_ids: Vec::new(),
-        activation: None,
+        applied_activation_evidence: None,
     });
 
     WritePlan { steps: vec![stamp] }

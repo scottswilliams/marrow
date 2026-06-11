@@ -23,11 +23,13 @@ pub fn current_engine_profile() -> EngineProfile {
     EngineProfile::new(CANONICAL_LAYOUT_EPOCH)
 }
 
-/// The catalog epoch, schema-bearing source digest, and changed catalog ids a managed
-/// write or an evolution apply records for the commit it stamps. `catalog_snapshot` is
-/// the activated catalog to publish atomically with the stamp, or `None` when the commit
-/// does not advance the accepted catalog (a non-activation managed write or a pure
-/// backfill).
+/// The durable context a managed write or evolution apply records for the commit it
+/// stamps. `catalog_snapshot` is the accepted catalog to publish atomically with the
+/// stamp. `changed_root_catalog_ids` and `changed_index_catalog_ids` describe this
+/// commit's own writes. `applied_activation_evidence` is historical evidence that an
+/// activation step was already applied under this catalog epoch and source digest. It
+/// may be carried by later writes to suppress stale replay, but it is not proof that
+/// the current data still matches the step's derived effects.
 pub(crate) struct StampFacts {
     pub(crate) catalog_epoch: u64,
     pub(crate) catalog_snapshot: Option<Box<CatalogMetadata>>,
@@ -35,11 +37,11 @@ pub(crate) struct StampFacts {
     pub(crate) source_digest: String,
     pub(crate) changed_root_catalog_ids: Vec<CatalogId>,
     pub(crate) changed_index_catalog_ids: Vec<CatalogId>,
-    pub(crate) activation: Option<ActivationStampFacts>,
+    pub(crate) applied_activation_evidence: Option<AppliedActivationEvidence>,
 }
 
 #[derive(Default)]
-pub(crate) struct ActivationStampFacts {
+pub(crate) struct AppliedActivationEvidence {
     pub(crate) evolution_digest: String,
     pub(crate) proposal_catalog_digest: Option<String>,
     pub(crate) proposal_new_catalog_ids: Vec<CatalogId>,
@@ -58,10 +60,9 @@ pub(crate) struct ActivationStampFacts {
 /// construction: the fence reads exactly the layout and digest this stamp wrote.
 pub(crate) fn metadata_stamp(facts: StampFacts) -> PlanStep {
     let profile = current_engine_profile();
-    // A non-activation managed write carries no activation facts, so the absent case is
-    // expressed once as the all-default activation rather than per field. The activation
-    // columns then stamp the same zero/empty values an unstamped activation would.
-    let activation = facts.activation.unwrap_or_default();
+    // Absence is expressed once as all-default evidence rather than per field, so the
+    // activation columns stamp the same zero/empty values an unstamped activation would.
+    let applied_activation_evidence = facts.applied_activation_evidence.unwrap_or_default();
     let commit = CommitMetadata {
         commit_id: facts.commit_id,
         catalog_epoch: facts.catalog_epoch,
@@ -70,16 +71,16 @@ pub(crate) fn metadata_stamp(facts: StampFacts) -> PlanStep {
         engine_profile_digest: profile.digest_bytes(),
         changed_root_catalog_ids: facts.changed_root_catalog_ids,
         changed_index_catalog_ids: facts.changed_index_catalog_ids,
-        activation_evolution_digest: activation.evolution_digest,
-        activation_proposal_catalog_digest: activation.proposal_catalog_digest,
-        activation_proposal_new_catalog_ids: activation.proposal_new_catalog_ids,
-        activation_records_backfilled: activation.records_backfilled,
-        activation_default_records_by_id: activation.default_records_by_id,
-        activation_indexes_rebuilt: activation.indexes_rebuilt,
-        activation_records_retired: activation.records_retired,
-        activation_retire_evidence_digest: activation.retire_evidence_digest,
-        activation_records_retired_by_id: activation.records_retired_by_id,
-        activation_records_transformed: activation.records_transformed,
+        activation_evolution_digest: applied_activation_evidence.evolution_digest,
+        activation_proposal_catalog_digest: applied_activation_evidence.proposal_catalog_digest,
+        activation_proposal_new_catalog_ids: applied_activation_evidence.proposal_new_catalog_ids,
+        activation_records_backfilled: applied_activation_evidence.records_backfilled,
+        activation_default_records_by_id: applied_activation_evidence.default_records_by_id,
+        activation_indexes_rebuilt: applied_activation_evidence.indexes_rebuilt,
+        activation_records_retired: applied_activation_evidence.records_retired,
+        activation_retire_evidence_digest: applied_activation_evidence.retire_evidence_digest,
+        activation_records_retired_by_id: applied_activation_evidence.records_retired_by_id,
+        activation_records_transformed: applied_activation_evidence.records_transformed,
     };
     PlanStep::StampMetadata {
         catalog_epoch: facts.catalog_epoch,
@@ -215,7 +216,7 @@ mod tests {
             source_digest: digest.to_string(),
             changed_root_catalog_ids: Vec::new(),
             changed_index_catalog_ids: Vec::new(),
-            activation: None,
+            applied_activation_evidence: None,
         });
         let PlanStep::StampMetadata { commit, .. } = step else {
             panic!("metadata_stamp builds a StampMetadata step");

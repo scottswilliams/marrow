@@ -21,8 +21,6 @@ pub(super) fn verify_proposal_identity(
         || commit.activation_evolution_digest.is_empty()
         || commit.activation_evolution_digest != witness.evolution_digest
         || commit.activation_proposal_catalog_digest.as_deref() != Some(proposal.digest.as_str())
-        || commit.changed_root_catalog_ids != witness.changed_root_catalog_ids
-        || commit.changed_index_catalog_ids != witness.changed_index_catalog_ids
     {
         return Err(ApplyError::Drift);
     }

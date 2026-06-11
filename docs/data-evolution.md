@@ -179,10 +179,16 @@ catalog table or an astronomically unlikely clash — fails closed rather than
 corrupting storage.
 
 The catalog digest is `sha256:<64 lowercase hex>` over the canonical object
-`{"epoch": <u64>, "entries": <entries in catalog order>}`. The digest covers
-stable IDs, paths, aliases, lifecycle states, and accepted structural tokens, and
-is recomputed when the snapshot is read; a snapshot whose digest no longer
-matches is rejected before its IDs bind.
+`{"epoch": <u64>, "entries": <entries in canonical digest order>}`. Canonical
+digest order sorts entries by declaration kind tag, canonical path, stable ID,
+aliases, lifecycle tag, accepted store-key shape, and accepted structural
+signature. Source/member order and catalog-row order are not digest inputs, so a
+pure enum-member reorder preserves catalog identity. New catalog writes stamp
+the canonical digest. Reads also accept a stored header digest computed by the
+legacy order-sensitive row-order form only when that digest still matches the
+decoded rows; the returned snapshot is normalized to the canonical digest before
+its IDs bind. A snapshot whose stored header matches neither accepted digest is
+rejected.
 
 ## Activation Fencing
 
@@ -219,17 +225,28 @@ canonical formatter's rendering of every `resource`, `store`, `enum`, and
 module `const` declaration, in deterministic order, so a shape change drifts
 the digest while a whitespace reformat does not.
 
-An evolution apply stamps activation evidence in the same transaction as its
-data effects: proposal/evolution digests, changed catalog IDs, default
+An evolution apply stamps applied-step evidence in the same transaction as its
+data effects: proposal/evolution digests, proposal-new catalog IDs, default
 backfill counts and bounded effect digests, transform counts, exact per-id
-retire counts with a bounded evidence digest, and rebuilt-index counts. Receipts
-are evidence that tooling, backup, and support may render or verify; they store
-no proposal catalog bodies or executable migration steps. The accepted
-catalog rows, the catalog epoch, the commit metadata, and the data and index
-cells all advance in that one store transaction, so a reader sees either the
-whole activation or none of it. There is no separate file-publish step and no
-crash-resume window to reconcile: a failure before commit rolls every effect back
-to the prior accepted snapshot.
+retire counts with a bounded evidence digest, and rebuilt-index counts. Changed
+root/index catalog IDs are separate per-commit facts: the activation commit
+records the roots and indexes it touched, but later managed writes replace those
+lists with their own changed roots and indexes rather than carrying activation
+changed IDs forward. Later managed writes carry applied-step evidence forward
+while they keep the same catalog epoch and source digest; a write that cannot
+prove the same applied-step context clears the activation fields. The carried
+fields prove only that the activation or evolve step completed at a prior commit
+under the same catalog epoch, source digest, and evolution digest. They suppress
+stale replay when an old `evolve` block remains in source; they are not proof
+that current data still matches default, transform, retire, or index completion
+after later ordinary writes. Current completion verification recomputes those
+effects from the live store. Receipts are evidence that tooling, backup, and
+support may render or verify; they store no proposal catalog bodies or
+executable migration steps. The accepted catalog rows, the catalog epoch, the
+commit metadata, and the data and index cells all advance in that one store
+transaction, so a reader sees either the whole activation or none of it. There
+is no separate file-publish step and no crash-resume window to reconcile: a
+failure before commit rolls every effect back to the prior accepted snapshot.
 
 A program with no accepted catalog has no durable activation context, so there is
 nothing to fence against. A run records the baseline catalog before it reaches the
