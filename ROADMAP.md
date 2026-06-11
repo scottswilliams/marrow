@@ -829,9 +829,6 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 Goal: every deletion and truth-fix with no implementation dependency lands before building.
 Mostly parallel; two wide-churn barrier lanes close the wave.
 
-Wave gate: full workspace gate + the two absence scans (serve/lsp, at-sugar) recorded; the W1.2
-docs lint run green.
-
 ---
 
 ## Wave 2 — P0 foundation (REPORT Part V order)
