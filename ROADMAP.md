@@ -824,13 +824,6 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 
 ---
 
-## Wave 1 — Subtract and tell the truth
-
-Goal: every deletion and truth-fix with no implementation dependency lands before building.
-Mostly parallel; two wide-churn barrier lanes close the wave.
-
----
-
 ## Wave 2 — P0 foundation (REPORT Part V order)
 
 **W2.1 ∥ Record node cells (II.A1).** Owns: marrow-run write.rs/path.rs, marrow-store tree.rs
