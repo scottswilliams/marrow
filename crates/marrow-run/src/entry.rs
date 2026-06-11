@@ -16,7 +16,17 @@ use crate::error::{
     unknown_function,
 };
 use crate::host::{Host, StepHook};
-use crate::value::{RunOutput, Value, enum_value_from_member, value_scalar_type};
+use crate::value::{RunOutput, RunOutputSink, Value, enum_value_from_member, value_scalar_type};
+
+struct ForwardOutput<'a> {
+    sink: &'a mut dyn RunOutputSink,
+}
+
+impl RunOutputSink for ForwardOutput<'_> {
+    fn write(&mut self, text: &str) {
+        self.sink.write(text);
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct CheckedEntryCall<'p> {
@@ -45,16 +55,18 @@ impl<'p> CheckedEntryCall<'p> {
 pub fn run_entry(
     store: &TreeStore,
     call: &CheckedEntryCall<'_>,
+    output: &mut dyn RunOutputSink,
 ) -> Result<RunOutput, RuntimeError> {
-    run_entry_with_host(store, &Host::new(), call)
+    run_entry_with_host(store, &Host::new(), call, output)
 }
 
 pub fn run_entry_with_host(
     store: &TreeStore,
     host: &Host,
     call: &CheckedEntryCall<'_>,
+    output: &mut dyn RunOutputSink,
 ) -> Result<RunOutput, RuntimeError> {
-    run_entry_impl(store, host, call, None)
+    run_entry_impl(store, host, call, output, None)
 }
 
 pub fn run_entry_with_debugger(
@@ -62,21 +74,24 @@ pub fn run_entry_with_debugger(
     host: &Host,
     hook: &mut dyn StepHook,
     call: &CheckedEntryCall<'_>,
+    output: &mut dyn RunOutputSink,
 ) -> Result<RunOutput, RuntimeError> {
-    run_entry_impl(store, host, call, Some(hook))
+    run_entry_impl(store, host, call, output, Some(hook))
 }
 
 fn run_entry_impl<'p>(
     store: &'p TreeStore,
     host: &'p Host,
     call: &'p CheckedEntryCall<'p>,
+    output: &'p mut dyn RunOutputSink,
     hook: Option<&'p mut dyn StepHook>,
 ) -> Result<RunOutput, RuntimeError> {
     let program = call.program;
     let target = call.target;
     let (module, function) = function_by_ref(program, target, SourceSpan::default())?;
     let args = &call.args;
-    let output = Rc::new(RefCell::new(String::new()));
+    let output: Rc<RefCell<dyn RunOutputSink + 'p>> =
+        Rc::new(RefCell::new(ForwardOutput { sink: output }));
     let names: Vec<&str> = function
         .params
         .iter()
@@ -117,10 +132,7 @@ fn run_entry_impl<'p>(
             return Err(reraise_fault(error, code, span, origin));
         }
     };
-    Ok(RunOutput {
-        value,
-        output: output.borrow().clone(),
-    })
+    Ok(RunOutput { value })
 }
 
 fn entry_target(

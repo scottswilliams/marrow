@@ -22,7 +22,8 @@ fn run_entry_with_debugger(
     hook: &mut dyn StepHook,
     call: CheckedEntryCall<'_>,
 ) -> Result<RunOutput, marrow_run::RuntimeError> {
-    marrow_run::run_entry_with_debugger(store, host, hook, &call)
+    let mut output = |_text: &str| {};
+    marrow_run::run_entry_with_debugger(store, host, hook, &call, &mut output)
 }
 
 /// A test hook that records, for each statement it is offered, the statement's

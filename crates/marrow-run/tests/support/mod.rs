@@ -18,7 +18,7 @@ use marrow_check::{
     CheckedProgram, CheckedRuntimeProgram, ProjectConfig, ResourceId, ResourceMemberId,
     ResourceMemberKind, check_project,
 };
-use marrow_run::{CheckedEntryCall, Host, RunOutput, Value, WriteDataSegment};
+use marrow_run::{CheckedEntryCall, Host, Value, WriteDataSegment};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
@@ -400,16 +400,21 @@ pub fn read_data_bytes(
         .expect("typed data read succeeds")
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunResult {
+    pub value: Option<Value>,
+    pub output: String,
+}
+
 /// Run an entry function against an empty store, returning only its value.
 pub fn run(call: CheckedEntryCall<'_>) -> Result<Option<Value>, marrow_run::RuntimeError> {
-    let store = empty_store();
-    marrow_run::run_entry(&store, &call).map(|outcome| outcome.value)
+    run_full(call).map(|outcome| outcome.value)
 }
 
 /// Run an entry function against an empty store, returning its value and output.
-pub fn run_full(call: CheckedEntryCall<'_>) -> Result<RunOutput, marrow_run::RuntimeError> {
+pub fn run_full(call: CheckedEntryCall<'_>) -> Result<RunResult, marrow_run::RuntimeError> {
     let store = empty_store();
-    marrow_run::run_entry(&store, &call)
+    run_entry(&store, call)
 }
 
 /// Run an entry against a caller-supplied store with no host capabilities, so any
@@ -418,8 +423,16 @@ pub fn run_full(call: CheckedEntryCall<'_>) -> Result<RunOutput, marrow_run::Run
 pub fn run_entry(
     store: &TreeStore,
     call: CheckedEntryCall<'_>,
-) -> Result<RunOutput, marrow_run::RuntimeError> {
-    marrow_run::run_entry(store, &call)
+) -> Result<RunResult, marrow_run::RuntimeError> {
+    let mut output = String::new();
+    let result = {
+        let mut sink = |text: &str| output.push_str(text);
+        marrow_run::run_entry(store, &call, &mut sink)
+    };
+    result.map(|outcome| RunResult {
+        value: outcome.value,
+        output,
+    })
 }
 
 pub fn assert_identity_value(value: Option<Value>, root: &str, keys: &[SavedKey]) {
@@ -434,8 +447,16 @@ pub fn run_entry_with_host(
     store: &TreeStore,
     host: &Host,
     call: CheckedEntryCall<'_>,
-) -> Result<RunOutput, marrow_run::RuntimeError> {
-    marrow_run::run_entry_with_host(store, host, &call)
+) -> Result<RunResult, marrow_run::RuntimeError> {
+    let mut output = String::new();
+    let result = {
+        let mut sink = |text: &str| output.push_str(text);
+        marrow_run::run_entry_with_host(store, host, &call, &mut sink)
+    };
+    result.map(|outcome| RunResult {
+        value: outcome.value,
+        output,
+    })
 }
 
 /// The single oracle for a failed runtime entry call: assert the run produced a

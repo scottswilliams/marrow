@@ -41,12 +41,11 @@ pub(crate) fn eval_output(
             span,
         ));
     };
-    let text = render(eval_expr(&arg.value, env)?, span)?;
+    let mut text = render(eval_expr(&arg.value, env)?, span)?;
     env.guard_rollback_sensitive_host_effect(kind.label(), span)?;
-    let mut output = env.output.borrow_mut();
-    output.push_str(&text);
     if kind.trailing_newline() {
-        output.push('\n');
+        text.push('\n');
     }
+    env.output.borrow_mut().write(&text);
     Ok(None)
 }

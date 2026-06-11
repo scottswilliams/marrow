@@ -17,6 +17,15 @@ pub(crate) fn jsonl(stdout: Vec<u8>) -> Vec<serde_json::Value> {
 }
 
 #[allow(dead_code)]
+pub(crate) fn json_records_in_stderr(stderr: Vec<u8>) -> Vec<serde_json::Value> {
+    let text = String::from_utf8(stderr).expect("stderr utf8");
+    text.lines()
+        .filter(|line| line.trim_start().starts_with('{'))
+        .map(|line| serde_json::from_str(line).expect("json stderr record"))
+        .collect()
+}
+
+#[allow(dead_code)]
 pub(crate) fn codes(records: &[serde_json::Value]) -> Vec<&str> {
     records
         .iter()

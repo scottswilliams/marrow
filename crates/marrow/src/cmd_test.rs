@@ -136,6 +136,7 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
     let mut json_traces = Vec::new();
     for test in &tests {
         let store = marrow_store::tree::TreeStore::memory();
+        let mut program_output = |_text: &str| {};
         // A traced test runs under the debugger entry with a hook labelled by the
         // test name, so its statements and writes are attributed to it; an untraced
         // test runs through the plain entry and pays nothing.
@@ -144,8 +145,13 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
                 Err(error) => Err(error),
                 Ok(call) if trace => {
                     let mut hook = TraceHook::new(format, test.name.clone(), &runtime_program);
-                    let result =
-                        marrow_run::run_entry_with_debugger(&store, &host, &mut hook, &call);
+                    let result = marrow_run::run_entry_with_debugger(
+                        &store,
+                        &host,
+                        &mut hook,
+                        &call,
+                        &mut program_output,
+                    );
                     if matches!(format, CheckFormat::Json) {
                         json_traces.push(hook.into_trace_record());
                     } else {
@@ -153,7 +159,9 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
                     }
                     result
                 }
-                Ok(call) => marrow_run::run_entry_with_host(&store, &host, &call),
+                Ok(call) => {
+                    marrow_run::run_entry_with_host(&store, &host, &call, &mut program_output)
+                }
             };
         match result {
             Ok(_) => {

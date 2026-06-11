@@ -2,13 +2,28 @@ mod support;
 
 use serde_json::{Value, json};
 
-use support::{jsonl, marrow, temp_project, write};
+use support::{json_records_in_stderr, jsonl, marrow, temp_project, write};
 
 /// Parse the trace record stream a `--format jsonl` run emits on stderr. Every
 /// line is one JSON record; the pass/fail report stays on stdout, so the trace
 /// stream needs no filtering.
 fn jsonl_trace_records(stderr: Vec<u8>) -> Vec<Value> {
     jsonl(stderr)
+}
+
+fn faulting_print_project(name: &str) -> support::TempProject {
+    temp_project(name, |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main()\n    print(\"before fault\")\n    const boom = 1 / 0\n",
+        );
+    })
 }
 
 #[test]
@@ -356,6 +371,53 @@ fn run_trace_jsonl_keeps_program_output_off_the_record_stream() {
         records.iter().any(|record| record["kind"] == "summary"),
         "the summary record must be on stderr: {records:?}"
     );
+}
+
+#[test]
+fn run_trace_jsonl_flushes_records_when_the_run_faults() {
+    let project = faulting_print_project("trace-jsonl-fault");
+    let dir = project.to_str().unwrap().to_string();
+    let output = marrow(&["run", "--trace", "--format", "jsonl", &dir]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    assert_eq!(stdout, "before fault\n");
+    let records = json_records_in_stderr(output.stderr);
+    assert!(
+        records
+            .iter()
+            .any(|record| record["kind"] == "step" && record["line"] == 4),
+        "faulting trace must include the print step: {records:?}"
+    );
+    assert!(
+        records
+            .iter()
+            .any(|record| record["kind"] == "summary" && record["events"] == 2),
+        "faulting trace must include a summary: {records:?}"
+    );
+}
+
+#[test]
+fn run_trace_json_flushes_the_envelope_when_the_run_faults() {
+    let project = faulting_print_project("trace-json-fault");
+    let dir = project.to_str().unwrap().to_string();
+    let output = marrow(&["run", "--trace", "--format", "json", &dir]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    assert_eq!(stdout, "before fault\n");
+    let records = json_records_in_stderr(output.stderr);
+    let [trace] = records.as_slice() else {
+        panic!("expected one trace JSON envelope before the fault: {records:?}");
+    };
+    let events = trace["events"].as_array().expect("trace events");
+    assert!(
+        events
+            .iter()
+            .any(|event| event["kind"] == "step" && event["line"] == 4),
+        "faulting trace must include the print step: {trace}"
+    );
+    assert_eq!(events.len(), 2, "{trace}");
 }
 
 #[test]

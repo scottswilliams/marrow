@@ -15,7 +15,7 @@ use crate::error::{
 };
 use crate::host::{Host, StepHook};
 use crate::store::{DataAddress, IndexAddress, LayerAddress, catalog_id};
-use crate::value::Value;
+use crate::value::{RunOutputSink, Value};
 use crate::write::{WriteError, validate_required_fields_for_entry};
 use crate::write_plan::{PlanStep, WritePlan};
 
@@ -149,15 +149,14 @@ pub(crate) struct Context<'p> {
 }
 
 /// A lexical environment: a stack of scopes, the ambient run context (program,
-/// store, and host capabilities), and the shared output stream (so `print`/
-/// `write` from any activation append to one buffer). A resource has few locals,
-/// so lookups are linear and innermost-first.
+/// store, and host capabilities), and the shared output stream. A resource has
+/// few locals, so lookups are linear and innermost-first.
 pub(crate) struct Env<'p> {
     pub(crate) scopes: Vec<Vec<(String, Binding)>>,
     pub(crate) program: &'p CheckedRuntimeProgram,
     pub(crate) store: &'p TreeStore,
     pub(crate) host: &'p Host,
-    pub(crate) output: Rc<RefCell<String>>,
+    pub(crate) output: Rc<RefCell<dyn RunOutputSink + 'p>>,
     /// Saved record, data, and index layers loops are actively traversing,
     /// innermost last.
     pub(crate) traversed_layers: Vec<TraversedLayer>,
@@ -187,7 +186,7 @@ pub(crate) enum AssignError {
 impl<'p> Env<'p> {
     pub(crate) fn new(
         ctx: Context<'p>,
-        output: Rc<RefCell<String>>,
+        output: Rc<RefCell<dyn RunOutputSink + 'p>>,
         module: Option<&'p CheckedRuntimeModule>,
         hook: Option<&'p mut dyn StepHook>,
         depth: usize,

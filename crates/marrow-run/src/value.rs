@@ -192,11 +192,30 @@ pub(crate) fn saved_key_preview(key: &SavedKey) -> String {
     }
 }
 
-/// An entry function's result: its returned value and its `print`/`write` output.
+/// Receives an entry function's `print`/`write` output as the run produces it.
+pub trait RunOutputSink {
+    fn write(&mut self, text: &str);
+}
+
+impl<F> RunOutputSink for F
+where
+    F: FnMut(&str),
+{
+    fn write(&mut self, text: &str) {
+        self(text);
+    }
+}
+
+impl RunOutputSink for String {
+    fn write(&mut self, text: &str) {
+        self.push_str(text);
+    }
+}
+
+/// An entry function's result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunOutput {
     pub value: Option<Value>,
-    pub output: String,
 }
 
 /// A child key as its runtime value. Every saved key kind converts — including

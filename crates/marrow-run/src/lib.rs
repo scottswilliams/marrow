@@ -58,5 +58,5 @@ pub use error::{
     RUN_UNCAUGHT_THROW, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RuntimeError,
 };
 pub use host::{Frame, Host, StepHook};
-pub use value::{IdentityValue, RunOutput, Value};
+pub use value::{IdentityValue, RunOutput, RunOutputSink, Value};
 pub use write_plan::{WriteDataSegment, WriteOp, WriteTarget};

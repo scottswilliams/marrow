@@ -13,6 +13,13 @@ use crate::host::Host;
 use crate::host_effects::{eval_clock_capability, eval_env, eval_io, eval_log};
 use crate::std_pure::eval_std;
 use crate::stdlib::eval_assert;
+use crate::value::RunOutputSink;
+
+struct NoProgramOutput;
+
+impl RunOutputSink for NoProgramOutput {
+    fn write(&mut self, _text: &str) {}
+}
 
 #[test]
 fn every_table_row_reaches_a_live_handler() {
@@ -33,7 +40,7 @@ fn every_table_row_reaches_a_live_handler() {
             host: &host,
             transaction: Rc::new(RefCell::new(TransactionState::default())),
         };
-        let mut env = Env::new(ctx, Rc::new(RefCell::new(String::new())), None, None, 1);
+        let mut env = Env::new(ctx, Rc::new(RefCell::new(NoProgramOutput)), None, None, 1);
         let result = match entry.capability {
             Capability::Clock => eval_clock_capability(entry.op, no_args, span, &mut env).map(Some),
             Capability::Env => eval_env(entry.op, no_args, span, &mut env).map(Some),

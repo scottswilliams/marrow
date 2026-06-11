@@ -32,7 +32,7 @@ use crate::activation::{Completion, Invocation, invoke};
 use crate::env::{Context, TransactionState};
 use crate::host::Host;
 use crate::store::DataAddress;
-use crate::value::{Value, decode_leaf, value_to_leaf};
+use crate::value::{RunOutputSink, Value, decode_leaf, value_to_leaf};
 
 use super::apply::ApplyError;
 use super::locate::{for_each_place_record, store_id};
@@ -49,6 +49,12 @@ pub(super) struct TransformVisit<'a> {
     pub(super) places: &'a [CheckedSavedPlace],
     pub(super) store: &'a TreeStore,
     pub(super) visit: &'a mut dyn FnMut(DataAddress, Vec<u8>) -> Result<(), ApplyError>,
+}
+
+struct DiscardTransformOutput;
+
+impl RunOutputSink for DiscardTransformOutput {
+    fn write(&mut self, _text: &str) {}
 }
 
 /// Visit one recomputed `WriteData` per record for the transform the witness names.
@@ -193,7 +199,7 @@ fn run_transform(
     body: &marrow_check::CheckedBody,
     old: Value,
 ) -> Result<Value, String> {
-    let output = Rc::new(RefCell::new(String::new()));
+    let output = Rc::new(RefCell::new(DiscardTransformOutput));
     let host = Host::new();
     let ctx = Context {
         program: runtime,

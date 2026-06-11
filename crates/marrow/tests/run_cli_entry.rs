@@ -1,6 +1,6 @@
 mod support;
 
-use support::{marrow_sub, temp_project, write};
+use support::{marrow_sub, parse_result_line, temp_project, write};
 
 /// The diagnostic code of a run fault, read from the structured position of the
 /// rendered fault line rather than matched anywhere in the stderr blob. A run
@@ -15,9 +15,7 @@ fn fault_code(stderr: &[u8]) -> String {
         .rev()
         .find(|line| !line.trim().is_empty())
         .expect("a fault line");
-    line.split_once(": ")
-        .map(|(code, _)| code.to_string())
-        .unwrap_or_else(|| line.to_string())
+    parse_result_line(line).code
 }
 
 #[test]
@@ -39,6 +37,28 @@ fn runs_the_default_entry_and_prints_its_output() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
     assert_eq!(stdout, "hello from marrow\n");
+}
+
+#[test]
+fn failing_run_keeps_program_output_written_before_the_fault() {
+    let root = temp_project("run-fault-output", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main()\n    print(\"before fault\")\n    const boom = 1 / 0\n",
+        );
+    });
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert_eq!(stdout, "before fault\n");
+    assert_eq!(fault_code(&output.stderr), "run.divide_by_zero");
 }
 
 #[test]

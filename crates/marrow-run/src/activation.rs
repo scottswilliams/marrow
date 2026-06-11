@@ -12,7 +12,7 @@ use crate::error::{
 use crate::exec::eval_block;
 use crate::expr::eval_expr;
 use crate::host::StepHook;
-use crate::value::Value;
+use crate::value::{RunOutputSink, Value};
 
 pub(crate) enum Completion {
     Returned(Option<Value>),
@@ -40,7 +40,7 @@ pub(crate) type Activation<'p> = (Completion, Vec<Option<Value>>, Option<&'p mut
 
 pub(crate) struct Invocation<'a, 'p> {
     pub(crate) ctx: Context<'p>,
-    pub(crate) output: Rc<RefCell<String>>,
+    pub(crate) output: Rc<RefCell<dyn RunOutputSink + 'p>>,
     pub(crate) module: Option<&'p CheckedRuntimeModule>,
     pub(crate) param_names: &'a [&'p str],
     pub(crate) body: &'p ExecBody,
@@ -105,7 +105,7 @@ pub(crate) fn check_argument_count(
 
 struct ActivationEnv<'a, 'p> {
     ctx: Context<'p>,
-    output: Rc<RefCell<String>>,
+    output: Rc<RefCell<dyn RunOutputSink + 'p>>,
     module: Option<&'p CheckedRuntimeModule>,
     hook: Option<&'p mut dyn StepHook>,
     depth: usize,

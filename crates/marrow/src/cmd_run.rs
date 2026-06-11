@@ -1,6 +1,7 @@
 //! `marrow run`: check a project, then run an entry function over its store.
 
 use std::cell::RefCell;
+use std::io::Write;
 use std::process::ExitCode;
 
 use marrow_check::evolution::preview;
@@ -488,7 +489,14 @@ fn execute(
     // hook the trace uses. A `--trace` (with or without `--dry-run`) installs the
     // trace hook; a plain run installs none.
     let format = observe.format();
-    let result = if observe.rolls_back() {
+    let mut stdout = std::io::stdout();
+    let mut program_output = |text: &str| {
+        stdout
+            .write_all(text.as_bytes())
+            .expect("program stdout write failed");
+        stdout.flush().expect("program stdout flush failed");
+    };
+    let (result, report) = if observe.rolls_back() {
         let trace = observe
             .traces()
             .then(|| TraceHook::new(format, "", program));
@@ -497,31 +505,43 @@ fn execute(
             report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
             return ExitCode::FAILURE;
         }
-        let result = marrow_run::run_entry_with_debugger(store, &host, &mut hook, &call);
+        let result = marrow_run::run_entry_with_debugger(
+            store,
+            &host,
+            &mut hook,
+            &call,
+            &mut program_output,
+        );
         // Discard everything the run staged, whatever its outcome.
         if let Err(error) = store.rollback() {
             report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
             return ExitCode::FAILURE;
         }
         let (planned, trace) = hook.into_report();
-        result.map(|outcome| (outcome, Report::Dry { planned, trace }))
+        (result, Report::Dry { planned, trace })
     } else if observe.traces() {
         let mut hook = TraceHook::new(format, "", program);
-        let result = marrow_run::run_entry_with_debugger(store, &host, &mut hook, &call);
-        result.map(|outcome| (outcome, Report::Trace(hook)))
+        let result = marrow_run::run_entry_with_debugger(
+            store,
+            &host,
+            &mut hook,
+            &call,
+            &mut program_output,
+        );
+        (result, Report::Trace(hook))
     } else {
-        marrow_run::run_entry_with_host(store, &host, &call).map(|outcome| (outcome, Report::None))
+        (
+            marrow_run::run_entry_with_host(store, &host, &call, &mut program_output),
+            Report::None,
+        )
     };
 
     // Log output is collected even on a failing run; it goes to stderr, off the
     // program's own stdout stream.
     eprint!("{}", log.borrow());
+    report.emit(format, program);
     match result {
-        Ok((outcome, report)) => {
-            print!("{}", outcome.output);
-            report.emit(format, program);
-            ExitCode::SUCCESS
-        }
+        Ok(_) => ExitCode::SUCCESS,
         Err(error) => {
             report_runtime_fault(program, &error);
             ExitCode::FAILURE

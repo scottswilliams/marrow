@@ -1,6 +1,6 @@
 mod support;
 
-use support::{marrow, temp_project, write};
+use support::{json_records_in_stderr, marrow, temp_project, write};
 
 /// A native-store project whose entry writes one field inside a `transaction`,
 /// plus a reader that dumps the store and a second writer for the dry-vs-real
@@ -35,6 +35,26 @@ fn native_project(name: &str) -> support::TempProject {
             r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::add" } }"#,
         );
         write(root, "src/app.mw", SRC);
+    })
+}
+
+fn faulting_dry_run_project(name: &str) -> support::TempProject {
+    temp_project(name, |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             resource Book at ^books(id: int)\n\
+             \x20\x20\x20\x20title: string\n\n\
+             pub fn main()\n\
+             \x20\x20\x20\x20^books(1).title = \"Mort\"\n\
+             \x20\x20\x20\x20const boom = 1 / 0\n",
+        );
     })
 }
 
@@ -434,6 +454,64 @@ fn dry_run_jsonl_keeps_program_output_off_the_record_stream() {
             .iter()
             .any(|step| step["op"] == "write" && step["path"] == "^books(1).title"),
         "the planned write must appear in the stderr report: {report}"
+    );
+}
+
+#[test]
+fn dry_run_json_flushes_the_plan_when_the_run_faults() {
+    let project = faulting_dry_run_project("dryrun-json-fault");
+    let dir = project.to_str().unwrap().to_string();
+    let output = marrow(&["run", "--dry-run", "--format", "json", &dir]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let records = json_records_in_stderr(output.stderr);
+    let [report] = records.as_slice() else {
+        panic!("expected one dry-run JSON report before the fault: {records:?}");
+    };
+    assert_eq!(report["committed"], false, "{report}");
+    assert_eq!(report["writes"], 1, "{report}");
+    assert_eq!(report["deletes"], 0, "{report}");
+    assert!(
+        report["planned"]
+            .as_array()
+            .expect("planned array")
+            .iter()
+            .any(|step| step["op"] == "write" && step["path"] == "^books(1).title"),
+        "faulting dry run must include the planned write: {report}"
+    );
+
+    let dump = marrow(&["data", "dump", "--format", "json", &dir]);
+    assert_eq!(dump.status.code(), Some(0), "dump: {dump:?}");
+    let dump_json: serde_json::Value =
+        serde_json::from_str(String::from_utf8(dump.stdout).expect("utf8").trim())
+            .expect("dump json");
+    assert_eq!(
+        dump_json["records"],
+        serde_json::json!([]),
+        "faulting dry run must leave saved data unchanged: {dump_json}"
+    );
+}
+
+#[test]
+fn dry_run_jsonl_flushes_the_plan_when_the_run_faults() {
+    let project = faulting_dry_run_project("dryrun-jsonl-fault");
+    let dir = project.to_str().unwrap().to_string();
+    let output = marrow(&["run", "--dry-run", "--format", "jsonl", &dir]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let records = json_records_in_stderr(output.stderr);
+    let [report] = records.as_slice() else {
+        panic!("expected one dry-run JSONL report before the fault: {records:?}");
+    };
+    assert_eq!(report["committed"], false, "{report}");
+    assert_eq!(report["writes"], 1, "{report}");
+    assert!(
+        report["planned"]
+            .as_array()
+            .expect("planned array")
+            .iter()
+            .any(|step| step["op"] == "write" && step["path"] == "^books(1).title"),
+        "faulting dry run must include the planned write: {report}"
     );
 }
 
