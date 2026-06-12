@@ -36,6 +36,24 @@ pub trait StepHook {
     ) {
         let _ = (op, target, value, depth);
     }
+
+    /// Called when a source `transaction` block begins. `transaction_depth` is
+    /// the source transaction nesting depth after entering the block.
+    fn transaction_begin(&mut self, transaction_depth: usize) {
+        let _ = transaction_depth;
+    }
+
+    /// Called when a source `transaction` block exits cleanly. `transaction_depth`
+    /// is the source transaction nesting depth before leaving the block.
+    fn transaction_commit(&mut self, transaction_depth: usize) {
+        let _ = transaction_depth;
+    }
+
+    /// Called when a source `transaction` block aborts. `transaction_depth` is
+    /// the source transaction nesting depth before leaving the block.
+    fn transaction_rollback(&mut self, transaction_depth: usize) {
+        let _ = transaction_depth;
+    }
 }
 
 /// A read-only view of the current activation handed to a [`StepHook`]. It

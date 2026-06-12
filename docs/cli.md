@@ -217,25 +217,24 @@ rendered as its declared typed scalar, not as raw codec bytes: a `bool` reads
 `true`/`false`, an int/date/duration/instant reads its canonical typed text. The
 machine-readable `value_b64` field in the JSON output stays the raw stored bytes.
 
-`--dry-run` runs the entry, reports the saved-data writes it would commit, then
-rolls them back. No saved data changes: the run rides one outer savepoint that is
-always rolled back, so managed writes inside `transaction` blocks stage and then
-discard with the rest. The guarantee is logical saved-data stability — the same
-records read back afterward — not native-file byte identity, since aborting the
-store transaction can still rewrite backend metadata. Only saved data is rewound;
-host side effects such as `std::io` writes or `std::log` lines are not.
+`--dry-run` runs the entry against an isolated store and reports the saved-data
+writes it would commit. Native-store dry runs copy the configured store after the
+normal run setup has opened, fenced, and applied any zero-mutation schema drift;
+the entry then runs against the copy, so user `transaction` blocks cannot consume
+the dry-run boundary. Only saved data is isolated; host side effects such as
+`std::io` writes or `std::log` lines are not.
 
 `--dry-run` takes `--format`. A plain run's stdout is the program's own output
 and takes no format, so `--format` without `--trace` or `--dry-run` is a usage
 error (exit `2`). The report is tooling output on stderr under every format,
 off the program's stdout stream. Under text, planned writes are
 `would write <path>` / `would delete <path>` lines and a
-`dry run: N write(s), M delete(s) (rolled back)` summary. Under `json`/`jsonl`,
+`dry run: N write(s), M delete(s) (not committed)` summary. Under `json`/`jsonl`,
 the report is a `{"committed": false, "planned": […]}` envelope whose planned
 entries carry the op, human path, and base64 value bytes.
 
-`--trace` composes with `--dry-run`: the run is traced and its writes are then
-discarded. The trace and the dry-run report both go to stderr — under `--format
+`--trace` composes with `--dry-run`: the run is traced while its saved writes are
+isolated from the configured store. The trace and the dry-run report both go to stderr — under `--format
 json` the trace object followed by the dry-run envelope as separate top-level JSON
 objects — so the program's own stdout output stays uninterrupted. For source-native
 data evolution use `marrow evolve preview`; `run --maintenance --dry-run` is for

@@ -32,7 +32,11 @@ pub(crate) enum Flow {
     Continue(Option<String>),
     /// A `throw`, carrying the thrown `Error` value, unwinding until a `catch`
     /// handles it or it leaves the function as an uncaught-error fault.
-    Throw { value: Value, span: SourceSpan },
+    Throw {
+        value: Value,
+        span: SourceSpan,
+        transaction_escape: bool,
+    },
 }
 
 /// A name binding: its value and whether it may be reassigned (`var` vs `let`).
@@ -45,7 +49,7 @@ pub(crate) struct Binding {
 #[derive(Default)]
 pub(crate) struct TransactionState {
     /// How many user `transaction` blocks are open right now. Nonzero means a
-    /// managed write's own steps already ride an open savepoint, so [`WritePlan`]
+    /// managed write's own steps already ride the open transaction, so [`WritePlan`]
     /// applies them in place instead of wrapping them in a redundant
     /// begin/commit ([`WritePlan::commit`]'s `in_txn`).
     pub(crate) depth: usize,
@@ -61,14 +65,14 @@ pub(crate) struct TransactionState {
     /// maintenance delete of the same path must not count as repairing existing
     /// invalid data.
     pub(crate) created_required_paths: Vec<RequiredPath>,
-    pub(crate) pending_commit_metadata: Vec<PendingCommitMetadata>,
+    pub(crate) pending_root_catalog_ids: BTreeSet<CatalogId>,
+    pub(crate) pending_index_catalog_ids: BTreeSet<CatalogId>,
 }
 
 /// A resource or keyed-group entry whose required fields must be checked before
 /// the surrounding transaction commits.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct RequiredEntryCheck {
-    pub(crate) depth: usize,
     pub(crate) place: CheckedSavedPlace,
     pub(crate) identity: Vec<SavedKey>,
     pub(crate) layers: Vec<LayerAddress>,
@@ -85,15 +89,7 @@ impl RequiredEntryCheck {
 /// A required materialized field path created while a transaction is open.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct RequiredPath {
-    pub(crate) depth: usize,
     pub(crate) path: DataAddress,
-}
-
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct PendingCommitMetadata {
-    pub(crate) depth: usize,
-    pub(crate) root_catalog_ids: BTreeSet<CatalogId>,
-    pub(crate) index_catalog_ids: BTreeSet<CatalogId>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -166,7 +162,7 @@ pub(crate) struct Env<'p> {
     /// body.
     pub(crate) module: &'p str,
     /// Transaction state is shared across helper calls so writes in callees obey
-    /// the surrounding transaction's commit-time validation and savepoint rules.
+    /// the surrounding transaction's commit-time validation and rollback rules.
     pub(crate) transaction: Rc<RefCell<TransactionState>>,
     /// The opt-in statement debugger. It is `None` for every ordinary run, where
     /// the per-statement check is a single `Option::is_none`. The hook is moved
@@ -247,9 +243,8 @@ impl<'p> Env<'p> {
 
     /// Apply a planned managed write: surface a planning failure as a catchable
     /// `write.*` fault, then commit the plan's staged steps. `in_txn` is whether a
-    /// user `transaction` is open, so the plan rides that savepoint instead of
-    /// opening its own. A store failure during commit surfaces as a runtime store
-    /// error.
+    /// user `transaction` is open, so the plan joins it instead of opening its
+    /// own. A store failure during commit surfaces as a runtime store error.
     pub(crate) fn apply_plan(
         &mut self,
         plan: Result<WritePlan, WriteError>,
@@ -320,15 +315,13 @@ impl<'p> Env<'p> {
         identity: &[SavedKey],
         layers: &[LayerAddress],
     ) {
-        let depth = self.transaction_depth();
-        if depth == 0 {
+        if self.transaction_depth() == 0 {
             return;
         }
         self.transaction
             .borrow_mut()
             .required_entry_checks
             .push(RequiredEntryCheck {
-                depth,
                 place: place.clone(),
                 identity: identity.to_vec(),
                 layers: layers.to_vec(),
@@ -341,15 +334,13 @@ impl<'p> Env<'p> {
         identity: &[SavedKey],
         layers: &[LayerAddress],
     ) {
-        let depth = self.transaction_depth();
-        if depth == 0 || !self.host.maintenance {
+        if self.transaction_depth() == 0 || !self.host.maintenance {
             return;
         }
         self.transaction
             .borrow_mut()
             .maintenance_required_deletes
             .push(RequiredEntryCheck {
-                depth,
                 place: place.clone(),
                 identity: identity.to_vec(),
                 layers: layers.to_vec(),
@@ -357,43 +348,30 @@ impl<'p> Env<'p> {
     }
 
     pub(crate) fn note_created_required_path(&mut self, path: DataAddress) {
-        let depth = self.transaction_depth();
-        if depth == 0 {
+        if self.transaction_depth() == 0 {
             return;
         }
         self.transaction
             .borrow_mut()
             .created_required_paths
-            .push(RequiredPath { depth, path });
+            .push(RequiredPath { path });
     }
 
     pub(crate) fn required_path_created_in_transaction(&self, path: &DataAddress) -> bool {
-        let depth = self.transaction_depth();
         self.transaction
             .borrow()
             .created_required_paths
             .iter()
-            .any(|created| created.depth <= depth && created.path == *path)
+            .any(|created| created.path == *path)
     }
 
     pub(crate) fn validate_required_entry_checks(
         &self,
-        depth: usize,
         span: SourceSpan,
     ) -> Result<(), RuntimeError> {
         let transaction = self.transaction.borrow();
-        let checks: Vec<RequiredEntryCheck> = transaction
-            .required_entry_checks
-            .iter()
-            .filter(|check| check.depth == depth)
-            .cloned()
-            .collect();
-        let maintenance_deletes: Vec<RequiredEntryCheck> = transaction
-            .maintenance_required_deletes
-            .iter()
-            .filter(|check| check.depth <= depth)
-            .cloned()
-            .collect();
+        let checks = transaction.required_entry_checks.to_vec();
+        let maintenance_deletes = transaction.maintenance_required_deletes.to_vec();
         drop(transaction);
         for check in checks {
             if maintenance_deletes
@@ -423,51 +401,33 @@ impl<'p> Env<'p> {
         Ok(())
     }
 
-    pub(crate) fn commit_required_entry_checks(&mut self, depth: usize) {
+    pub(crate) fn commit_required_entry_checks(&mut self) {
         let mut transaction = self.transaction.borrow_mut();
-        lower_savepoint_level(&mut transaction.required_entry_checks, depth, |check| {
-            &mut check.depth
-        });
-        lower_savepoint_level(
-            &mut transaction.maintenance_required_deletes,
-            depth,
-            |check| &mut check.depth,
-        );
-        lower_savepoint_level(&mut transaction.created_required_paths, depth, |created| {
-            &mut created.depth
-        });
+        transaction.required_entry_checks.clear();
+        transaction.maintenance_required_deletes.clear();
+        transaction.created_required_paths.clear();
     }
 
-    pub(crate) fn discard_required_entry_checks(&mut self, depth: usize) {
+    pub(crate) fn discard_required_entry_checks(&mut self) {
         let mut transaction = self.transaction.borrow_mut();
-        transaction
-            .required_entry_checks
-            .retain(|check| check.depth < depth);
-        transaction
-            .maintenance_required_deletes
-            .retain(|check| check.depth < depth);
-        transaction
-            .created_required_paths
-            .retain(|created| created.depth < depth);
+        transaction.required_entry_checks.clear();
+        transaction.maintenance_required_deletes.clear();
+        transaction.created_required_paths.clear();
     }
 
     pub(crate) fn stamp_transaction_commit(
         &mut self,
-        depth: usize,
         span: SourceSpan,
     ) -> Result<(), RuntimeError> {
-        if depth != 1 {
-            return Ok(());
-        }
         let Some(catalog_epoch) = self.program.accepted_catalog_epoch() else {
             return Ok(());
         };
-        let pending = self.pending_commit_metadata(depth);
+        let (pending_roots, pending_indexes) = self.pending_commit_metadata();
         let stamp = build_commit_metadata_stamp(
             catalog_epoch,
             self.program.source_digest(),
-            pending.root_catalog_ids.into_iter().collect(),
-            pending.index_catalog_ids.into_iter().collect(),
+            pending_roots,
+            pending_indexes,
             self.store,
         )
         .map_err(|error| error.located(span))?;
@@ -479,19 +439,16 @@ impl<'p> Env<'p> {
             .map_err(|error| error.located(span))
     }
 
-    pub(crate) fn commit_transaction_metadata(&mut self, depth: usize) {
+    pub(crate) fn commit_transaction_metadata(&mut self) {
         let mut transaction = self.transaction.borrow_mut();
-        lower_savepoint_level(&mut transaction.pending_commit_metadata, depth, |pending| {
-            &mut pending.depth
-        });
-        merge_pending_commit_metadata(&mut transaction.pending_commit_metadata);
+        transaction.pending_root_catalog_ids.clear();
+        transaction.pending_index_catalog_ids.clear();
     }
 
-    pub(crate) fn discard_transaction_metadata(&mut self, depth: usize) {
+    pub(crate) fn discard_transaction_metadata(&mut self) {
         let mut transaction = self.transaction.borrow_mut();
-        transaction
-            .pending_commit_metadata
-            .retain(|pending| pending.depth < depth);
+        transaction.pending_root_catalog_ids.clear();
+        transaction.pending_index_catalog_ids.clear();
     }
 
     fn note_managed_write_metadata(&mut self, plan: &WritePlan) {
@@ -507,33 +464,29 @@ impl<'p> Env<'p> {
         if changed_root_catalog_ids.is_empty() && changed_index_catalog_ids.is_empty() {
             return;
         }
-        let depth = self.transaction_depth();
         let mut transaction = self.transaction.borrow_mut();
-        let pending = pending_commit_metadata_at_depth(&mut transaction, depth);
-        pending.root_catalog_ids.extend(changed_root_catalog_ids);
-        pending.index_catalog_ids.extend(changed_index_catalog_ids);
+        transaction
+            .pending_root_catalog_ids
+            .extend(changed_root_catalog_ids);
+        transaction
+            .pending_index_catalog_ids
+            .extend(changed_index_catalog_ids);
     }
 
-    fn pending_commit_metadata(&self, depth: usize) -> PendingCommitMetadata {
+    fn pending_commit_metadata(&self) -> (Vec<CatalogId>, Vec<CatalogId>) {
         let transaction = self.transaction.borrow();
-        let mut pending = PendingCommitMetadata {
-            depth,
-            root_catalog_ids: BTreeSet::new(),
-            index_catalog_ids: BTreeSet::new(),
-        };
-        for change in transaction
-            .pending_commit_metadata
-            .iter()
-            .filter(|change| change.depth == depth)
-        {
-            pending
-                .root_catalog_ids
-                .extend(change.root_catalog_ids.iter().cloned());
-            pending
-                .index_catalog_ids
-                .extend(change.index_catalog_ids.iter().cloned());
-        }
-        pending
+        (
+            transaction
+                .pending_root_catalog_ids
+                .iter()
+                .cloned()
+                .collect(),
+            transaction
+                .pending_index_catalog_ids
+                .iter()
+                .cloned()
+                .collect(),
+        )
     }
 
     fn guard_plan_traversal(&self, plan: &WritePlan, span: SourceSpan) -> Result<(), RuntimeError> {
@@ -868,60 +821,6 @@ fn changed_catalog_ids(steps: &[PlanStep]) -> (Vec<CatalogId>, Vec<CatalogId>) {
         }
     }
     (roots.into_iter().collect(), indexes.into_iter().collect())
-}
-
-fn pending_commit_metadata_at_depth(
-    transaction: &mut TransactionState,
-    depth: usize,
-) -> &mut PendingCommitMetadata {
-    let pending = &mut transaction.pending_commit_metadata;
-    if let Some(index) = pending.iter().position(|entry| entry.depth == depth) {
-        return &mut pending[index];
-    }
-    pending.push(PendingCommitMetadata {
-        depth,
-        root_catalog_ids: BTreeSet::new(),
-        index_catalog_ids: BTreeSet::new(),
-    });
-    pending
-        .last_mut()
-        .expect("pending metadata was just inserted")
-}
-
-/// Lower one savepoint level on commit. A nested commit (`depth > 1`) folds items
-/// recorded at this level into the enclosing savepoint by decrementing their depth;
-/// the outermost commit (`depth == 1`) discards anything that level alone owned.
-fn lower_savepoint_level<T>(
-    items: &mut Vec<T>,
-    depth: usize,
-    item_depth: impl Fn(&mut T) -> &mut usize,
-) {
-    if depth > 1 {
-        for item in items.iter_mut() {
-            let item_depth = item_depth(item);
-            if *item_depth == depth {
-                *item_depth -= 1;
-            }
-        }
-    } else {
-        items.retain_mut(|item| *item_depth(item) < depth);
-    }
-}
-
-fn merge_pending_commit_metadata(changes: &mut Vec<PendingCommitMetadata>) {
-    let mut merged: Vec<PendingCommitMetadata> = Vec::new();
-    for change in changes.drain(..) {
-        if let Some(existing) = merged
-            .iter_mut()
-            .find(|existing| existing.depth == change.depth)
-        {
-            existing.root_catalog_ids.extend(change.root_catalog_ids);
-            existing.index_catalog_ids.extend(change.index_catalog_ids);
-        } else {
-            merged.push(change);
-        }
-    }
-    *changes = merged;
 }
 
 fn data_child_under<'a>(

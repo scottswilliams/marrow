@@ -1,5 +1,5 @@
 //! Saved field writes, the out-of-transaction and transaction-commit
-//! required-field rules, nested-transaction commit and rollback metadata, and
+//! required-field rules, joined nested-transaction commit and abort metadata, and
 //! the mistyped-write rejection.
 
 #[macro_use]
@@ -290,7 +290,7 @@ fn nested_transaction_commit_metadata_reports_the_outer_durable_commit() {
 }
 
 #[test]
-fn nested_transaction_rollback_does_not_stamp_attempted_inner_writes() {
+fn nested_transaction_abort_does_not_stamp_attempted_writes() {
     let program = checked_program(
         "resource Book\n\
          \x20   required title: string\n\

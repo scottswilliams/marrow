@@ -317,6 +317,7 @@ fn eval_throw(value: &ExecExpr, span: SourceSpan, env: &mut Env<'_>) -> Result<F
     Ok(Flow::Throw {
         value: thrown,
         span,
+        transaction_escape: false,
     })
 }
 
@@ -328,8 +329,15 @@ fn eval_try(
 ) -> Result<Flow, RuntimeError> {
     let outcome = eval_block(body, env);
     let handled = match (outcome, catch) {
-        (Ok(Flow::Throw { value, .. }), Some(clause)) => eval_catch(clause, value, env),
-        (Err(error), Some(clause)) if error.is_catchable() => {
+        (
+            Ok(Flow::Throw {
+                value,
+                transaction_escape: false,
+                ..
+            }),
+            Some(clause),
+        ) => eval_catch(clause, value, env),
+        (Err(error), Some(clause)) if !error.is_transaction_escape() && error.is_catchable() => {
             let error = error
                 .into_error_value()
                 .expect("a catchable runtime fault materializes an Error value");
@@ -339,7 +347,15 @@ fn eval_try(
     };
     match finally {
         Some(block) => match eval_block(block, env) {
-            Ok(Flow::Throw { value, span }) => Ok(Flow::Throw { value, span }),
+            Ok(Flow::Throw {
+                value,
+                span,
+                transaction_escape,
+            }) => Ok(Flow::Throw {
+                value,
+                span,
+                transaction_escape,
+            }),
             Err(error) => Err(error),
             Ok(_) => handled,
         },

@@ -9,11 +9,17 @@ use crate::traversal;
 #[derive(Debug, Default, Clone)]
 pub(crate) struct MemStore {
     entries: BTreeMap<Vec<u8>, Vec<u8>>,
-    savepoints: Vec<BTreeMap<Vec<u8>, Vec<u8>>>,
+    transaction: Option<TransactionBackup>,
     /// A frozen copy of `entries` while a read snapshot is pinned. Reads observe
     /// it, and this handle rejects writes and write transactions until the
     /// snapshot is released.
     snapshot: Option<BTreeMap<Vec<u8>, Vec<u8>>>,
+}
+
+#[derive(Debug, Clone)]
+struct TransactionBackup {
+    entries: BTreeMap<Vec<u8>, Vec<u8>>,
+    depth: usize,
 }
 
 impl MemStore {
@@ -126,24 +132,39 @@ impl Backend for MemStore {
         if self.snapshot.is_some() {
             return Err(StoreError::begin_while_snapshot_pinned());
         }
-        self.savepoints.push(self.entries.clone());
+        match &mut self.transaction {
+            Some(transaction) => transaction.depth += 1,
+            None => {
+                self.transaction = Some(TransactionBackup {
+                    entries: self.entries.clone(),
+                    depth: 1,
+                });
+            }
+        }
         Ok(())
     }
 
     fn commit(&mut self) -> Result<(), StoreError> {
-        self.savepoints.pop();
+        let Some(transaction) = &mut self.transaction else {
+            return Ok(());
+        };
+        if transaction.depth > 1 {
+            transaction.depth -= 1;
+        } else {
+            self.transaction = None;
+        }
         Ok(())
     }
 
     fn rollback(&mut self) -> Result<(), StoreError> {
-        if let Some(snapshot) = self.savepoints.pop() {
-            self.entries = snapshot;
+        if let Some(transaction) = self.transaction.take() {
+            self.entries = transaction.entries;
         }
         Ok(())
     }
 
     fn begin_snapshot(&mut self) -> Result<(), StoreError> {
-        if !self.savepoints.is_empty() {
+        if self.transaction.is_some() {
             return Err(StoreError::snapshot_while_transaction_open());
         }
         if self.snapshot.is_some() {

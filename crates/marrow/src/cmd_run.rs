@@ -1,8 +1,11 @@
 //! `marrow run`: check a project, then run an entry function over its store.
 
 use std::cell::RefCell;
+use std::fs;
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use marrow_check::evolution::preview;
 use marrow_run::evolution::{AutoApplyOutcome, FenceError, RunObligation, fence, try_auto_apply};
@@ -10,11 +13,13 @@ use marrow_run::evolution::{AutoApplyOutcome, FenceError, RunObligation, fence, 
 use crate::cmd_check::report_runtime_fault;
 use crate::dry_run::{self, DryRunHook};
 use crate::trace::TraceHook;
-use crate::{CheckFormat, load_checked_project, report_simple_error, resolve_store_path};
+use crate::{
+    CheckFormat, load_checked_project, report_io_error, report_simple_error, resolve_store_path,
+};
 
 /// How a run observes itself: a plain run with no tooling report, an execution
-/// `--trace`, a `--dry-run` that rolls its writes back, or both composed (trace the
-/// run, then discard). The report `--format` lives only on the variants that emit a
+/// `--trace`, a `--dry-run` that isolates its writes from the configured store, or
+/// both composed. The report `--format` lives only on the variants that emit a
 /// report, so a plain run cannot carry one.
 #[derive(Clone, Copy)]
 enum RunObservation {
@@ -31,7 +36,7 @@ impl RunObservation {
         matches!(self, Self::Trace(_) | Self::TraceDryRun(_))
     }
 
-    fn rolls_back(self) -> bool {
+    fn isolates_writes(self) -> bool {
         matches!(self, Self::DryRun(_) | Self::TraceDryRun(_))
     }
 
@@ -106,9 +111,10 @@ with `print`/`write` goes to stdout.
                  and each managed write as the run executes, in execution order.
                  The trace is tooling output on stderr, leaving stdout for the
                  program's own output.
-  --dry-run      Run the entry, report the saved-data writes it would commit,
-                 then roll them back: no saved data changes. Side effects outside
-                 saved data are not rewound. The plan is tooling output on stderr.
+  --dry-run      Run the entry against an isolated store, report the saved-data
+                 writes it would commit, and leave the configured store unchanged.
+                 Side effects outside saved data are not rewound. The plan is
+                 tooling output on stderr.
   --format       The report format for --trace/--dry-run (default text). A plain
                  run's stdout is the program's own output and takes no --format.
 "
@@ -176,16 +182,38 @@ fn run_project_dir(
     // an authorized state-establishing flow, so a pending durable identity is frozen into
     // the store here as its baseline, and an auto-applied evolution advances the epoch, so
     // the returned program may be a re-check past the one loaded above.
-    let (program, store) = match open_run_store(dir, &config, program, observe.format()) {
-        Ok(OpenStore::Memory(program)) => (program, marrow_store::tree::TreeStore::memory()),
-        Ok(OpenStore::Native { program, store }) => (program, store),
+    let open_store = match open_run_store(dir, &config, program, observe.format()) {
+        Ok(open_store) => open_store,
         Err(code) => return code,
     };
     let entry = entry_override
         .or(config.default_entry.as_deref())
         .expect("entry presence proven before the store opened");
-    let runtime_program = program.runtime();
-    execute(&runtime_program, &store, entry, maintenance, observe)
+    match open_store {
+        OpenStore::Memory(program) => {
+            let runtime_program = program.runtime();
+            let store = marrow_store::tree::TreeStore::memory();
+            execute(&runtime_program, &store, entry, maintenance, observe)
+        }
+        OpenStore::Native { program, store } => {
+            let runtime_program = program.runtime();
+            if observe.isolates_writes() {
+                let isolated = match isolated_dry_run_store(store, observe.format()) {
+                    Ok(isolated) => isolated,
+                    Err(code) => return code,
+                };
+                execute(
+                    &runtime_program,
+                    &isolated.store,
+                    entry,
+                    maintenance,
+                    observe,
+                )
+            } else {
+                execute(&runtime_program, &store.store, entry, maintenance, observe)
+            }
+        }
+    }
 }
 
 /// The store a run executes over, paired with the program bound against the catalog the
@@ -195,8 +223,81 @@ enum OpenStore {
     Memory(marrow_check::CheckedProgram),
     Native {
         program: marrow_check::CheckedProgram,
-        store: marrow_store::tree::TreeStore,
+        store: NativeRunStore,
     },
+}
+
+struct NativeRunStore {
+    path: PathBuf,
+    store: marrow_store::tree::TreeStore,
+}
+
+struct IsolatedDryRunStore {
+    store: marrow_store::tree::TreeStore,
+    _dir: TempStoreDir,
+}
+
+struct TempStoreDir {
+    path: PathBuf,
+}
+
+impl Drop for TempStoreDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn isolated_dry_run_store(
+    source: NativeRunStore,
+    format: CheckFormat,
+) -> Result<IsolatedDryRunStore, ExitCode> {
+    let NativeRunStore {
+        path: source_path,
+        store,
+    } = source;
+    drop(store);
+
+    let temp_dir = create_temp_store_dir(format)?;
+    let isolated_path = temp_dir.path.join("marrow.redb");
+    fs::copy(&source_path, &isolated_path).map_err(|error| {
+        report_io_error(&source_path.display().to_string(), &error, format);
+        ExitCode::FAILURE
+    })?;
+    let store = marrow_store::tree::TreeStore::open(&isolated_path).map_err(|error| {
+        report_simple_error(error.code(), &error.to_string(), format);
+        ExitCode::FAILURE
+    })?;
+    Ok(IsolatedDryRunStore {
+        store,
+        _dir: temp_dir,
+    })
+}
+
+fn create_temp_store_dir(format: CheckFormat) -> Result<TempStoreDir, ExitCode> {
+    let temp_root = std::env::temp_dir();
+    for attempt in 0..100 {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let path = temp_root.join(format!(
+            "marrow-dry-run-store-{}-{nanos}-{attempt}",
+            std::process::id()
+        ));
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(TempStoreDir { path }),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                report_io_error(&path.display().to_string(), &error, format);
+                return Err(ExitCode::FAILURE);
+            }
+        }
+    }
+    report_simple_error(
+        "run.dry_run_isolation",
+        "could not allocate a temporary dry-run store directory",
+        format,
+    );
+    Err(ExitCode::FAILURE)
 }
 
 /// Open the project's configured native store for writing, fenced against the store's
@@ -221,8 +322,8 @@ fn open_run_store(
     let Some(store) = open_store_file(dir, config, format)? else {
         return open_memory_store(program, format);
     };
-    let program = crate::establish_store_baseline(dir, config, &store, program, format)?;
-    match fence_run(&program, &store) {
+    let program = crate::establish_store_baseline(dir, config, &store.store, program, format)?;
+    match fence_run(&program, &store.store) {
         Ok(()) => finish_open(program, store),
         Err(FenceError::SchemaDrift) => auto_apply_then_reopen(dir, program, store, format),
         Err(error) => {
@@ -272,12 +373,12 @@ fn open_store_file(
     dir: &str,
     config: &marrow_project::ProjectConfig,
     format: CheckFormat,
-) -> Result<Option<marrow_store::tree::TreeStore>, ExitCode> {
+) -> Result<Option<NativeRunStore>, ExitCode> {
     let Some(path) = resolve_store_path(dir, config, format)? else {
         return Ok(None);
     };
     marrow_store::tree::TreeStore::open(&path)
-        .map(Some)
+        .map(|store| Some(NativeRunStore { path, store }))
         .map_err(|error| {
             report_simple_error(error.code(), &error.to_string(), format);
             ExitCode::FAILURE
@@ -300,9 +401,9 @@ fn fence_run(
 /// Confirm a fenced store is not populated-but-unstamped, then admit it for the run.
 fn finish_open(
     program: marrow_check::CheckedProgram,
-    store: marrow_store::tree::TreeStore,
+    store: NativeRunStore,
 ) -> Result<OpenStore, ExitCode> {
-    match populated_unstamped_store(&program, &store) {
+    match populated_unstamped_store(&program, &store.store) {
         Ok(false) => Ok(OpenStore::Native { program, store }),
         Ok(true) => {
             report_simple_error(
@@ -330,17 +431,17 @@ fn finish_open(
 fn auto_apply_then_reopen(
     dir: &str,
     program: marrow_check::CheckedProgram,
-    store: marrow_store::tree::TreeStore,
+    store: NativeRunStore,
     format: CheckFormat,
 ) -> Result<OpenStore, ExitCode> {
-    let witness = match preview(&program, &store) {
+    let witness = match preview(&program, &store.store) {
         Ok((witness, _diagnostics)) => witness,
         Err(error) => {
             report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
             return Err(ExitCode::FAILURE);
         }
     };
-    match try_auto_apply(&witness, &program, &store) {
+    match try_auto_apply(&witness, &program, &store.store) {
         Ok(AutoApplyOutcome::Applied) => {}
         Ok(AutoApplyOutcome::MustFence(obligation)) => {
             report_simple_error(
@@ -374,7 +475,7 @@ fn auto_apply_then_reopen(
     let Some(store) = open_store_file(dir, &config, format)? else {
         return Ok(OpenStore::Memory(program));
     };
-    if let Err(error) = fence_run(&program, &store) {
+    if let Err(error) = fence_run(&program, &store.store) {
         report_simple_error(error.code(), &error.message(), CheckFormat::Text);
         return Err(ExitCode::FAILURE);
     }
@@ -468,7 +569,7 @@ pub(crate) fn base_host(log: std::rc::Rc<RefCell<String>>) -> marrow_run::Host {
 /// and sending `std::log` output to stderr so the two streams stay separate.
 /// `maintenance` grants the maintenance capability, set only when the operator passed
 /// `--maintenance`. `observe` selects a plain run, a traced run, a dry run
-/// (run-then-rollback), or both composed.
+/// against an isolated store, or both composed.
 fn execute(
     program: &marrow_check::CheckedRuntimeProgram,
     store: &marrow_store::tree::TreeStore,
@@ -489,10 +590,11 @@ fn execute(
         }
     };
 
-    // A dry run brackets the whole run in one outer savepoint it always rolls back,
-    // so no saved data changes; it observes every managed write through the same
-    // hook the trace uses. A `--trace` (with or without `--dry-run`) installs the
-    // trace hook; a plain run installs none.
+    // A dry run executes on the store selected by `run_project_dir`; for native
+    // stores that is a disposable copy, so user transactions cannot consume the
+    // isolation boundary. It observes every managed write through the same hook the
+    // trace uses. A `--trace` (with or without `--dry-run`) installs the trace hook;
+    // a plain run installs none.
     let format = observe.format();
     let mut stdout = std::io::stdout();
     let mut program_output = |text: &str| {
@@ -501,15 +603,11 @@ fn execute(
             .expect("program stdout write failed");
         stdout.flush().expect("program stdout flush failed");
     };
-    let (result, report) = if observe.rolls_back() {
+    let (result, report) = if observe.isolates_writes() {
         let trace = observe
             .traces()
             .then(|| TraceHook::new(format, "", program));
         let mut hook = DryRunHook::new(trace);
-        if let Err(error) = store.begin() {
-            report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
-            return ExitCode::FAILURE;
-        }
         let result = marrow_run::run_entry_with_debugger(
             store,
             &host,
@@ -517,11 +615,6 @@ fn execute(
             &call,
             &mut program_output,
         );
-        // Discard everything the run staged, whatever its outcome.
-        if let Err(error) = store.rollback() {
-            report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
-            return ExitCode::FAILURE;
-        }
         let (planned, trace) = hook.into_report();
         (result, Report::Dry { planned, trace })
     } else if observe.traces() {

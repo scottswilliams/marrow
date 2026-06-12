@@ -6,8 +6,8 @@ use marrow_syntax::SourceSpan;
 
 use crate::env::{Context, Env, Flow, TraversedLayer};
 use crate::error::{
-    RUN_NO_ENCLOSING_LOOP, RUN_TYPE, RUN_UNCAUGHT_THROW, RuntimeError, raise, reraise_fault,
-    unsupported,
+    RUN_NO_ENCLOSING_LOOP, RUN_TYPE, RUN_UNCAUGHT_THROW, RuntimeError,
+    raise_with_transaction_escape, reraise_fault_with_transaction_escape, unsupported,
 };
 use crate::exec::eval_block;
 use crate::expr::eval_expr;
@@ -20,12 +20,14 @@ pub(crate) enum Completion {
         error: Value,
         span: SourceSpan,
         origin: Option<FileId>,
+        transaction_escape: bool,
     },
     Faulted {
         code: &'static str,
         message: String,
         span: SourceSpan,
         origin: Option<FileId>,
+        transaction_escape: bool,
     },
 }
 
@@ -182,28 +184,39 @@ fn activation_completion(
     Ok(match outcome {
         Ok(Flow::Return(value)) => Completion::Returned(value),
         Ok(Flow::Normal) => Completion::Returned(None),
-        Ok(Flow::Throw { value, span }) => Completion::Threw {
+        Ok(Flow::Throw {
+            value,
+            span,
+            transaction_escape,
+        }) => Completion::Threw {
             error: value,
             span,
             origin: here,
+            transaction_escape,
         },
         Err(RuntimeError {
             throw: Some(error),
             code: RUN_UNCAUGHT_THROW,
             span,
             origin,
+            transaction_escape,
             ..
         }) => Completion::Threw {
             error: *error,
             span,
             origin: origin.or(here),
+            transaction_escape,
         },
-        Err(error) if error.is_catchable() => Completion::Faulted {
-            code: error.code,
-            message: error.message,
-            span: error.span,
-            origin: error.origin.or(here),
-        },
+        Err(error) if error.is_catchable() => {
+            let transaction_escape = error.is_transaction_escape();
+            Completion::Faulted {
+                code: error.code,
+                message: error.message,
+                span: error.span,
+                origin: error.origin.or(here),
+                transaction_escape,
+            }
+        }
         Err(fatal) => return Err(fatal.with_origin_from(env.program, module)),
         Ok(Flow::Break(_)) | Ok(Flow::Continue(_)) => {
             return Err(RuntimeError::fault(
@@ -227,12 +240,25 @@ pub(crate) fn complete_call(completion: Completion) -> Result<Option<Value>, Run
             error,
             span: throw_span,
             origin,
-        } => Err(raise(error, throw_span, origin)),
+            transaction_escape,
+        } => Err(raise_with_transaction_escape(
+            error,
+            throw_span,
+            origin,
+            transaction_escape,
+        )),
         Completion::Faulted {
             code,
             message,
             span: fault_span,
             origin,
-        } => Err(reraise_fault(code, message, fault_span, origin)),
+            transaction_escape,
+        } => Err(reraise_fault_with_transaction_escape(
+            code,
+            message,
+            fault_span,
+            origin,
+            transaction_escape,
+        )),
     }
 }

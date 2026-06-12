@@ -160,7 +160,8 @@ pub(super) fn prospective_index_key(
 
 /// Running collision state for one unique index, keyed by the canonical byte encoding of each
 /// key tuple. Every tuple shares the index's arity, so the encoding is an injective identity for
-/// the tuple; `collisions` holds the distinct tuples more than one record claims.
+/// the tuple. This scan keeps one seen key per distinct populated tuple and reports the number
+/// of distinct tuples more than one record claims; it does not count duplicate records.
 #[derive(Default)]
 pub(super) struct IndexScan {
     seen: HashSet<Vec<u8>>,
@@ -173,6 +174,10 @@ impl IndexScan {
         if !self.seen.insert(encoded.clone()) {
             self.collisions.insert(encoded);
         }
+    }
+
+    fn collision_tuple_count(&self) -> usize {
+        self.collisions.len()
     }
 }
 
@@ -191,15 +196,15 @@ pub(super) fn classify_indexes(
             continue;
         };
         let index_id = catalog_id(index_catalog_id)?;
-        let colliding = collisions
+        let collision_tuples = collisions
             .get(&index_id)
-            .map_or(0, |state| state.collisions.len());
-        let verdict = if index.unique && colliding > 0 {
-            acc.counts.index_collisions += colliding;
+            .map_or(0, IndexScan::collision_tuple_count);
+        let verdict = if index.unique && collision_tuples > 0 {
+            acc.counts.index_collisions += collision_tuples;
             acc.diagnostic(
                 index_id.clone(),
                 format!(
-                    "unique index `{}` has {colliding} colliding key tuple(s); resolve duplicates before activating",
+                    "unique index `{}` has {collision_tuples} colliding key tuple(s); resolve duplicates before activating",
                     index.name
                 ),
             );
@@ -229,7 +234,7 @@ pub(super) fn classify_indexes(
 mod tests {
     use std::collections::{BTreeSet, HashMap, HashSet};
 
-    use super::{classify_indexes, unique_index_plan};
+    use super::{IndexScan, classify_indexes, unique_index_plan};
     use crate::StoreLeafKind;
     use crate::evolution::discharge::{Accumulator, catalog_id};
     use crate::evolution::{RepairReason, Verdict};
@@ -241,6 +246,7 @@ mod tests {
         ResourceMemberId, StoreId, StoreIndexId, StoreIndexKeySource, StoredValueMeaning,
     };
     use marrow_store::cell::CatalogId;
+    use marrow_store::key::SavedKey;
     use marrow_store::value::ScalarType;
 
     fn unique_index(name: &str, catalog_id: &str, key_name: &str) -> CheckedSavedIndex {
@@ -363,5 +369,18 @@ mod tests {
             "a probeable collision-free unique index rebuilds, got {:?}",
             isbn.verdict
         );
+    }
+
+    #[test]
+    fn index_scan_reports_distinct_colliding_tuples_not_duplicate_records() {
+        let mut scan = IndexScan::default();
+
+        scan.observe(vec![SavedKey::Str("dup".into())]);
+        scan.observe(vec![SavedKey::Str("dup".into())]);
+        scan.observe(vec![SavedKey::Str("dup".into())]);
+        scan.observe(vec![SavedKey::Str("other".into())]);
+        scan.observe(vec![SavedKey::Str("other".into())]);
+
+        assert_eq!(scan.collision_tuple_count(), 2);
     }
 }

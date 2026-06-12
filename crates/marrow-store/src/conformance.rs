@@ -13,9 +13,8 @@ pub(crate) fn run_all<B: Backend>(mut make: impl FnMut() -> B) {
     a_committed_transaction_keeps_its_writes(&mut make());
     a_rolled_back_transaction_discards_its_writes(&mut make());
     an_unbalanced_commit_or_rollback_is_a_no_op(&mut make());
-    nested_transactions_are_savepoints(&mut make());
-    an_inner_commit_then_outer_rollback_discards_everything(&mut make());
-    three_level_nesting_with_a_middle_commit_and_outer_rollback(&mut make());
+    a_joined_transaction_commit_waits_for_the_outer_commit(&mut make());
+    rollback_of_a_joined_transaction_aborts_the_whole_transaction(&mut make());
     a_transaction_sees_its_writes_in_scans(&mut make());
     a_snapshot_pins_one_consistent_view(&mut make());
     a_snapshot_and_write_transaction_cannot_overlap(&mut make());
@@ -131,19 +130,7 @@ fn an_unbalanced_commit_or_rollback_is_a_no_op(store: &mut dyn Backend) {
     assert_eq!(store.read(b"k").unwrap(), Some(b"v".to_vec()));
 }
 
-fn nested_transactions_are_savepoints(store: &mut dyn Backend) {
-    store.write(b"k", b"base".to_vec()).unwrap();
-    store.begin().unwrap();
-    store.write(b"k", b"outer".to_vec()).unwrap();
-    store.begin().unwrap();
-    store.write(b"k", b"inner".to_vec()).unwrap();
-    store.rollback().unwrap();
-    assert_eq!(store.read(b"k").unwrap(), Some(b"outer".to_vec()));
-    store.commit().unwrap();
-    assert_eq!(store.read(b"k").unwrap(), Some(b"outer".to_vec()));
-}
-
-fn an_inner_commit_then_outer_rollback_discards_everything(store: &mut dyn Backend) {
+fn a_joined_transaction_commit_waits_for_the_outer_commit(store: &mut dyn Backend) {
     store.write(b"k", b"base".to_vec()).unwrap();
     store.begin().unwrap();
     store.write(b"k", b"outer".to_vec()).unwrap();
@@ -156,20 +143,17 @@ fn an_inner_commit_then_outer_rollback_discards_everything(store: &mut dyn Backe
     assert_eq!(store.read(b"inner").unwrap(), None);
 }
 
-fn three_level_nesting_with_a_middle_commit_and_outer_rollback(store: &mut dyn Backend) {
+fn rollback_of_a_joined_transaction_aborts_the_whole_transaction(store: &mut dyn Backend) {
     store.begin().unwrap();
     store.write(b"outer", b"1".to_vec()).unwrap();
     store.begin().unwrap();
-    store.write(b"middle", b"2".to_vec()).unwrap();
-    store.begin().unwrap();
     store.write(b"inner", b"3".to_vec()).unwrap();
     store.rollback().unwrap();
+    assert_eq!(store.read(b"outer").unwrap(), None);
     assert_eq!(store.read(b"inner").unwrap(), None);
     store.commit().unwrap();
-    assert_eq!(store.read(b"middle").unwrap(), Some(b"2".to_vec()));
-    store.rollback().unwrap();
     assert_eq!(store.read(b"outer").unwrap(), None);
-    assert_eq!(store.read(b"middle").unwrap(), None);
+    assert_eq!(store.read(b"inner").unwrap(), None);
 }
 
 fn a_transaction_sees_its_writes_in_scans(store: &mut dyn Backend) {

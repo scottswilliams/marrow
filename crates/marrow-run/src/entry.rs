@@ -12,8 +12,8 @@ use crate::activation::{Completion, Invocation, check_argument_count, executable
 use crate::call::function_by_ref;
 use crate::env::{Context, TransactionState};
 use crate::error::{
-    RuntimeError, ambiguous_function, private_function, raise, reraise_fault, type_error,
-    unknown_function,
+    RuntimeError, ambiguous_function, private_function, raise_with_transaction_escape,
+    reraise_fault_with_transaction_escape, type_error, unknown_function,
 };
 use crate::host::{Host, StepHook};
 use crate::value::{RunOutput, RunOutputSink, Value, enum_value_from_member, value_scalar_type};
@@ -122,10 +122,16 @@ fn run_entry_impl<'p>(
                 error,
                 span,
                 origin,
+                transaction_escape,
             },
             ..,
         ) => {
-            return Err(raise(error, span, origin));
+            return Err(raise_with_transaction_escape(
+                error,
+                span,
+                origin,
+                transaction_escape,
+            ));
         }
         (
             Completion::Faulted {
@@ -133,10 +139,17 @@ fn run_entry_impl<'p>(
                 message,
                 span,
                 origin,
+                transaction_escape,
             },
             ..,
         ) => {
-            return Err(reraise_fault(code, message, span, origin));
+            return Err(reraise_fault_with_transaction_escape(
+                code,
+                message,
+                span,
+                origin,
+                transaction_escape,
+            ));
         }
     };
     Ok(RunOutput { value })

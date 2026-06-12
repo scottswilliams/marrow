@@ -34,6 +34,9 @@ pub struct RuntimeError {
     pub throw: Option<Box<Value>>,
     /// Whether a `catch` can bind this fault as an `Error`.
     pub catchable: bool,
+    /// True only while the fault is the specific outcome escaping an inner
+    /// transaction toward the outermost transaction boundary.
+    pub transaction_escape: bool,
     /// The file the fault was raised in, as a [`FileId`] into the running
     /// [`CheckedRuntimeProgram`]. The `span`'s byte offsets are per-file, so this
     /// supplies the file identity they lack. It is `None` until the fault leaves
@@ -51,6 +54,7 @@ impl RuntimeError {
             span,
             throw: None,
             catchable: false,
+            transaction_escape: false,
             origin: None,
         }
     }
@@ -58,6 +62,15 @@ impl RuntimeError {
     /// Whether this fault can be handled by a language `catch`.
     pub fn is_catchable(&self) -> bool {
         self.catchable
+    }
+
+    pub(crate) fn is_transaction_escape(&self) -> bool {
+        self.transaction_escape
+    }
+
+    pub(crate) fn with_transaction_escape(mut self, transaction_escape: bool) -> Self {
+        self.transaction_escape = transaction_escape;
+        self
     }
 
     /// Return the `Error` value a catch would bind, materializing it lazily for
@@ -202,6 +215,15 @@ pub(crate) fn recursion_limit(observed_depth: usize, span: SourceSpan) -> Runtim
 /// `message`; a malformed one renders blank, which the constructor and the throw
 /// guard make unreachable in practice.
 pub(crate) fn raise(error: Value, span: SourceSpan, origin: Option<FileId>) -> RuntimeError {
+    raise_with_transaction_escape(error, span, origin, false)
+}
+
+pub(crate) fn raise_with_transaction_escape(
+    error: Value,
+    span: SourceSpan,
+    origin: Option<FileId>,
+    transaction_escape: bool,
+) -> RuntimeError {
     let code = error_field(&error, marrow_schema::error::CODE).unwrap_or_default();
     let message = error_field(&error, marrow_schema::error::MESSAGE).unwrap_or_default();
     RuntimeError {
@@ -210,6 +232,7 @@ pub(crate) fn raise(error: Value, span: SourceSpan, origin: Option<FileId>) -> R
         span,
         throw: Some(Box::new(error)),
         catchable: true,
+        transaction_escape,
         // The completion carries the file the throw was first raised in; this
         // caller-frame re-span keeps it rather than re-deriving a shallower one.
         origin,
@@ -221,6 +244,7 @@ pub(crate) fn unknown_function(name: &str, span: SourceSpan) -> RuntimeError {
     RuntimeError {
         throw: None,
         catchable: false,
+        transaction_escape: false,
         origin: None,
         code: RUN_UNKNOWN_FUNCTION,
         message: format!("the program has no function `{name}`"),
@@ -233,6 +257,7 @@ pub(crate) fn ambiguous_function(name: &str, span: SourceSpan) -> RuntimeError {
     RuntimeError {
         throw: None,
         catchable: false,
+        transaction_escape: false,
         origin: None,
         code: RUN_AMBIGUOUS_FUNCTION,
         message: format!("entry `{name}` is ambiguous; qualify it as `module::{name}`"),
@@ -245,6 +270,7 @@ pub(crate) fn private_function(name: &str, span: SourceSpan) -> RuntimeError {
     RuntimeError {
         throw: None,
         catchable: false,
+        transaction_escape: false,
         origin: None,
         code: RUN_PRIVATE_FUNCTION,
         message: format!("function `{name}` is private to its module"),
@@ -266,14 +292,12 @@ pub(crate) fn assign_error(name: &str, error: AssignError, span: SourceSpan) -> 
     }
 }
 
-/// Re-raise a recoverable fault that escaped a called function so the caller's
-/// `try` can bind it. The `Error` value is still lazy: it is constructed only if
-/// a catch site actually binds it.
-pub(crate) fn reraise_fault(
+pub(crate) fn reraise_fault_with_transaction_escape(
     code: &'static str,
     message: String,
     span: SourceSpan,
     origin: Option<FileId>,
+    transaction_escape: bool,
 ) -> RuntimeError {
     RuntimeError {
         code,
@@ -281,6 +305,7 @@ pub(crate) fn reraise_fault(
         span,
         throw: None,
         catchable: true,
+        transaction_escape,
         // Kept from the completion so the file the fault was raised in survives
         // this caller-frame re-span.
         origin,
@@ -298,6 +323,7 @@ pub(crate) fn raise_fault(code: &'static str, message: String, span: SourceSpan)
         span,
         throw: None,
         catchable: true,
+        transaction_escape: false,
         origin: None,
     }
 }
@@ -383,6 +409,7 @@ pub(crate) fn key_type_fault(
     RuntimeError {
         throw: None,
         catchable: false,
+        transaction_escape: false,
         origin: None,
         code: RUN_TYPE,
         message: format!(

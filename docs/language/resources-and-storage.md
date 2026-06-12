@@ -626,11 +626,12 @@ code. Use a transaction when a group of saved writes must stay coherent, such
 as a record write plus an audit entry or several resources that must change
 together.
 
-Nested transactions are savepoints. An inner transaction can roll back its own
-saved writes without committing the outer transaction. A successful inner
-transaction becomes durable only when the outermost transaction commits.
-If an inner transaction rolls back and the outer code catches the error, the
-outer transaction can continue.
+Nested transactions join the enclosing durable transaction. A successful inner
+transaction does not commit independently; its saved writes become durable only
+when the outermost transaction commits. If an error escapes any transaction
+block, the whole outermost transaction rolls back and the error propagates to the
+first handler outside that outermost block. Handlers between a nested transaction
+and the outermost boundary do not intercept that escaping error.
 
 If a transaction block exits without an escaping error, it commits its saved
 writes before leaving. That includes exit by `return`, `break`, or `continue`.
@@ -642,8 +643,8 @@ logging, and filesystem writes must happen outside the transaction. Host
 capability reads, such as clock, environment, and filesystem reads, do not change
 saved state and may run inside transactions.
 
-An error caught inside the transaction is ordinary control flow; rollback
-happens only if an error still escapes the transaction block.
+An error caught before it escapes any transaction block is ordinary control
+flow; rollback happens only if an error still escapes a transaction block.
 
 Reads inside a transaction see earlier saved writes from the same transaction.
 Outside the transaction, changes become visible through normal Marrow reads as

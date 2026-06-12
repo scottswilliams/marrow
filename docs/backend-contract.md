@@ -22,7 +22,7 @@ The public store crate surface is:
 The private engine substrate stores byte keys and byte values in one
 byte-lexicographic order. It provides exact read, exact write, prefix delete,
 bounded prefix scans, cursor-resumed forward and reverse prefix scans, and
-savepoint transactions.
+flat joined transactions.
 The in-memory engine uses `BTreeMap`; the native engine uses redb. The supported
 production saved-data backend is the native redb engine. The in-memory engine is
 for tests, development, REPLs, short runs, and conformance. It can exercise the
@@ -203,16 +203,15 @@ distinguish members by stable catalog identity instead of source order.
 
 ## Transactions
 
-`begin` opens a savepoint; `commit` and `rollback` close the innermost
-savepoint. Nested transactions are savepoints: an inner rollback undoes only the
-writes made since the inner `begin`, leaving the outer transaction's still-open
-writes intact, and an inner commit keeps its writes but leaves them undoable by an
-outer rollback. Only the outermost commit makes native writes durable. Unbalanced
+`begin` opens a flat write transaction or joins the already-open one. `commit`
+closes one joined level, and only the outermost commit makes writes durable.
+`rollback` at any joined level aborts the whole open transaction. Unbalanced
 `commit` and `rollback` are no-ops.
 
-The in-memory engine snapshots the whole map at each savepoint. The native
-engine holds one redb write transaction while the outermost savepoint is open
-and records per-level undo journals for nested rollback.
+The in-memory engine snapshots the whole map once when the flat transaction
+opens. The native engine holds one redb write transaction while any joined level
+is open; rollback aborts that transaction instead of replaying per-level undo
+state.
 
 A pinned read snapshot and an open write transaction are mutually exclusive on
 one store handle. `begin` fails with `store.transaction` while a read snapshot is
@@ -295,7 +294,7 @@ The private substrate conformance suite keeps memory and redb aligned on:
 - value round trips and replacement writes;
 - prefix delete and absent delete;
 - prefix scan order, bounded scans, and cursor-resumed scans;
-- transaction commit, rollback, nested savepoints, read-your-writes scans,
+- transaction commit, rollback, flat joined nesting, read-your-writes scans,
   rejection of overlapping pinned read snapshots and write transactions on one handle, and
   rejection of nested read snapshots on one handle.
 

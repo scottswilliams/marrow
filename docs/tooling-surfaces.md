@@ -17,7 +17,7 @@ validation. CLI commands and backup/restore are renderers over those facts.
 | `marrow data get` | Operator/admin point inspection. | Presence states are typed facts; raw payload bytes are diagnostic output. |
 | `marrow data integrity` | Read-only data-integrity tooling. | Reports `data.orphan` with repair guidance; does not bless orphaned managed data. |
 | `run --trace` / `test --trace` | Debug execution rendering. | Observes runtime statement/write facts over checked source spans; does not change run semantics; not a stable external API. |
-| `run --dry-run` | Checked write preview for one operator-run entry. | Previews that run's managed writes, rolled back by savepoint; use `evolve preview` for evolution. |
+| `run --dry-run` | Checked write preview for one operator-run entry. | Previews that run's managed writes against an isolated run store; use `evolve preview` for evolution. |
 | `--maintenance` | Explicit operator capability. | For modeled repair/evolution code, not raw store mutation; cannot be injected by project config or a default entry. |
 | `marrow backup` / `restore` | Production typed backup/restore. | Carries source digest, accepted catalog epoch, engine descriptor, and typed cells; rebuilds generated indexes, rejects orphaned managed cells before commit, and rolls back on `restore.data_invalid`. |
 

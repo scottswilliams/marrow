@@ -49,7 +49,7 @@ Stream separation is load-bearing: a program's own `print`/`write` output owns s
 | `crates/marrow/src/cmd_test.rs` | `test`: discover and run test fns, print pass/fail/error summary. |
 | `crates/marrow/src/cmd_fmt.rs` | `fmt`: format to stdout or `--check`/`--write`. |
 | `crates/marrow/src/trace.rs` | `TraceHook` (a `StepHook`) and `WriteTargetNames` mapping catalog ids to store/member/index names. |
-| `crates/marrow/src/dry_run.rs` | `DryRunHook` recording managed writes inside a rolled-back savepoint. |
+| `crates/marrow/src/dry_run.rs` | `DryRunHook` recording managed writes during isolated dry-run execution. |
 
 ### Data and durability (`marrow`)
 

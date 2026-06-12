@@ -7,8 +7,9 @@
 //! longer declares. Both read the same catalog identity facts.
 //!
 //! Records are streamed, never materialized: a single paged scan probes every
-//! required leaf and derives every prospective unique-index key tuple, so the scan
-//! retains only bounded per-obligation state.
+//! required leaf and derives every prospective unique-index key tuple. Required-leaf
+//! state is bounded; each unique-index probe retains a seen set proportional to the
+//! number of distinct populated key tuples so it can fail closed on collisions.
 
 mod absent_source;
 mod accepted_state;

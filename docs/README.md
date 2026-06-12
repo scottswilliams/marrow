@@ -46,7 +46,7 @@ point at the [language reference](language/) for the exact rules.
   each crate and module does and where to read it, mirroring the source pipeline
   from syntax through check and runtime to the store.
 - [Backend Contract](backend-contract.md) — the ordered path/value operations,
-  savepoints, presence states, bounded scans, the conformance suite, and
+  flat transactions, presence states, bounded scans, the conformance suite, and
   native-store responsibilities a store backend must satisfy.
 - [Freeze-Gate Evidence](freeze-gate-evidence.md) — the storage-engine/04
   gate-35 evidence ledger assembled from producing lanes and the final W7.2

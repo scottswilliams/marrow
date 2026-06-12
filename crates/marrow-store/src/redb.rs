@@ -4,11 +4,8 @@
 //! in-memory `BTreeMap`, so range scans need no custom comparator.
 //!
 //! A transaction holds one redb write transaction for its whole life, so reads
-//! inside it see their own writes. Nesting is an undo journal rather than redb
-//! savepoints (which cannot be created once a transaction has written): each
-//! level records pre-images, so an inner `rollback` replays its journal in
-//! reverse, an inner `commit` merges its journal outward, and only the outermost
-//! `commit`/`rollback` persists or aborts the redb transaction.
+//! inside it see their own writes. Nested `begin` calls join that transaction:
+//! only the outermost `commit` persists it, and any `rollback` aborts it.
 
 use std::fs;
 use std::ops::Bound;
@@ -39,9 +36,6 @@ const DELETE_BATCH_LIMIT: usize = 256;
 #[cfg(unix)]
 const STORE_SYMLINK_HOP_LIMIT: usize = 40;
 
-/// A key and the value it held before a change, so a rollback can restore it.
-type Undo = (Vec<u8>, Option<Vec<u8>>);
-
 impl<'a> traversal::ScanEntry
     for (
         redb::AccessGuard<'a, &'static [u8]>,
@@ -59,11 +53,9 @@ impl<'a> traversal::ScanEntry
 
 pub(crate) struct RedbStore {
     db: DatabaseHandle,
-    /// The live write transaction while one is open (`Some` iff `journals` is
-    /// non-empty).
+    /// The live write transaction while one is open.
     txn: Option<WriteTransaction>,
-    /// One undo log per open nesting level (innermost last).
-    journals: Vec<Vec<Undo>>,
+    transaction_depth: usize,
     /// A pinned read transaction while a snapshot is held, so reads observe one
     /// consistent version even as later write transactions commit.
     read_view: Option<ReadTransaction>,
@@ -515,7 +507,7 @@ impl RedbStore {
         Ok(Self {
             db: DatabaseHandle::ReadWrite(db),
             txn: None,
-            journals: Vec::new(),
+            transaction_depth: 0,
             read_view: None,
         })
     }
@@ -532,7 +524,7 @@ impl RedbStore {
         Ok(Self {
             db: DatabaseHandle::ReadWrite(db),
             txn: None,
-            journals: Vec::new(),
+            transaction_depth: 0,
             read_view: None,
         })
     }
@@ -554,16 +546,9 @@ impl RedbStore {
         Ok(Self {
             db: DatabaseHandle::ReadOnly(db),
             txn: None,
-            journals: Vec::new(),
+            transaction_depth: 0,
             read_view: None,
         })
-    }
-
-    fn record(&mut self, entry: Undo) {
-        self.journals
-            .last_mut()
-            .expect("a journal while a transaction is open")
-            .push(entry);
     }
 
     /// Require a writable handle and no pinned read snapshot. `on_snapshot` names
@@ -581,13 +566,12 @@ impl RedbStore {
     }
 
     /// Run `mutate` against the current write table. Outside a transaction it is
-    /// its own short, immediately durable redb transaction and the reported
-    /// preimages are discarded; inside one they join the innermost journal for
-    /// rollback.
+    /// its own short, immediately durable redb transaction; inside one it joins
+    /// the open write transaction.
     fn mutate(
         &mut self,
         op: &'static str,
-        mutate: impl FnOnce(&mut Table<&[u8], &[u8]>) -> Result<Vec<Undo>, StoreError>,
+        mutate: impl FnOnce(&mut Table<&[u8], &[u8]>) -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
         if self.txn.is_none() {
             let write = self.db.begin_write(op)?;
@@ -597,13 +581,10 @@ impl RedbStore {
             }
             return write.commit().map_err(io(op));
         }
-        let undo = {
+        {
             let write = self.txn.as_ref().expect("an open transaction");
             let mut table = write.open_table(TABLE).map_err(io(op))?;
-            mutate(&mut table)?
-        };
-        for entry in undo {
-            self.record(entry);
+            mutate(&mut table)?;
         }
         Ok(())
     }
@@ -620,11 +601,8 @@ impl Backend for RedbStore {
     fn write(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
         self.ensure_writable("write", StoreError::write_while_snapshot_pinned)?;
         self.mutate("write", |table| {
-            let old = table
-                .insert(key, value.as_slice())
-                .map_err(io("write"))?
-                .map(|guard| guard.value().to_vec());
-            Ok(vec![(key.to_vec(), old)])
+            table.insert(key, value.as_slice()).map_err(io("write"))?;
+            Ok(())
         })
     }
 
@@ -633,21 +611,16 @@ impl Backend for RedbStore {
         self.mutate("delete", |table| {
             // Collect and remove keys in bounded batches so a large prefix subtree
             // never materializes every key at once.
-            let mut undo = Vec::new();
             loop {
                 let keys = delete_key_batch(&*table, prefix)?;
                 if keys.is_empty() {
                     break;
                 }
                 for key in keys {
-                    let old = table
-                        .remove(key.as_slice())
-                        .map_err(io("delete"))?
-                        .map(|guard| guard.value().to_vec());
-                    undo.push((key, old));
+                    table.remove(key.as_slice()).map_err(io("delete"))?;
                 }
             }
-            Ok(undo)
+            Ok(())
         })
     }
 
@@ -682,53 +655,31 @@ impl Backend for RedbStore {
         if self.txn.is_none() {
             self.txn = Some(self.db.begin_write("begin")?);
         }
-        self.journals.push(Vec::new());
+        self.transaction_depth += 1;
         Ok(())
     }
 
     fn commit(&mut self) -> Result<(), StoreError> {
         // No open transaction is a harmless no-op, matching the in-memory store.
-        let Some(journal) = self.journals.pop() else {
+        if self.transaction_depth == 0 {
             return Ok(());
-        };
-        // An inner commit keeps its writes but moves its undo log outward, so an
-        // outer rollback still undoes them; the outermost commit persists redb.
-        match self.journals.last_mut() {
-            Some(outer) => outer.extend(journal),
-            None => {
-                let write = self.txn.take().expect("a transaction while committing");
-                write.commit().map_err(io("commit"))?;
-            }
+        }
+        self.transaction_depth -= 1;
+        if self.transaction_depth == 0 {
+            let write = self.txn.take().expect("a transaction while committing");
+            write.commit().map_err(io("commit"))?;
         }
         Ok(())
     }
 
     fn rollback(&mut self) -> Result<(), StoreError> {
         // No open transaction is a harmless no-op, matching the in-memory store.
-        let Some(journal) = self.journals.pop() else {
-            return Ok(());
-        };
-        if self.journals.is_empty() {
-            let write = self.txn.take().expect("a transaction while rolling back");
-            write.abort().map_err(io("rollback"))?;
+        if self.transaction_depth == 0 {
             return Ok(());
         }
-        // Undo this level in reverse against the open transaction, leaving outer
-        // levels in place.
-        let write = self.txn.as_ref().expect("a transaction while rolling back");
-        let mut table = write.open_table(TABLE).map_err(io("rollback"))?;
-        for (key, old) in journal.into_iter().rev() {
-            match old {
-                Some(value) => {
-                    table
-                        .insert(key.as_slice(), value.as_slice())
-                        .map_err(io("rollback"))?;
-                }
-                None => {
-                    table.remove(key.as_slice()).map_err(io("rollback"))?;
-                }
-            }
-        }
+        self.transaction_depth = 0;
+        let write = self.txn.take().expect("a transaction while rolling back");
+        write.abort().map_err(io("rollback"))?;
         Ok(())
     }
 

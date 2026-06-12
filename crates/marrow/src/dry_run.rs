@@ -1,12 +1,10 @@
 //! The dry-run hook and report for `run --dry-run`.
 //!
-//! A dry run executes the entry inside one outer store savepoint that is always
-//! rolled back, then reports the managed writes the run *would* have committed.
-//! Aborting the transaction can still rewrite backend metadata, so the guarantee is
-//! logical saved-data stability, not native-file byte identity. Only saved data is
-//! rewound: side effects outside the store (a `std::io` write, a `std::log` line)
-//! are not, so the report covers managed writes alone. With `--trace` set, each
-//! event also forwards to a [`TraceHook`].
+//! A dry run executes the entry against an isolated run store, then reports the
+//! managed writes the run *would* have committed. Only saved data is isolated:
+//! side effects outside the store (a `std::io` write, a `std::log` line) are not,
+//! so the report covers managed writes alone. With `--trace` set, each event also
+//! forwards to a [`TraceHook`].
 
 use marrow_check::CheckedRuntimeProgram;
 use marrow_run::{Frame, RuntimeError, StepHook, WriteOp, WriteTarget};
@@ -25,10 +23,12 @@ pub(crate) struct PlannedWrite {
 }
 
 /// Collects the managed writes a dry run would commit, optionally forwarding each
-/// event to a [`TraceHook`] under `--dry-run --trace`. Purely observational: the
-/// run's writes still stage inside the outer savepoint and are discarded on rollback.
+/// event to a [`TraceHook`] under `--dry-run --trace`.
 pub(crate) struct DryRunHook {
     planned: Vec<PlannedWrite>,
+    transaction_buffer: Vec<PlannedWrite>,
+    transaction_depth: usize,
+    discarding_transaction: bool,
     trace: Option<TraceHook>,
 }
 
@@ -36,6 +36,9 @@ impl DryRunHook {
     pub(crate) fn new(trace: Option<TraceHook>) -> Self {
         Self {
             planned: Vec::new(),
+            transaction_buffer: Vec::new(),
+            transaction_depth: 0,
+            discarding_transaction: false,
             trace,
         }
     }
@@ -69,11 +72,49 @@ impl StepHook for DryRunHook {
         if let Some(trace) = &mut self.trace {
             trace.before_write(op, target, value, depth);
         }
-        self.planned.push(PlannedWrite {
+        let planned = PlannedWrite {
             op,
             target: target.clone(),
             value: value.map(<[u8]>::to_vec),
-        });
+        };
+        if self.transaction_depth == 0 {
+            self.planned.push(planned);
+        } else if !self.discarding_transaction {
+            self.transaction_buffer.push(planned);
+        }
+    }
+
+    fn transaction_begin(&mut self, transaction_depth: usize) {
+        if transaction_depth == 1 {
+            self.transaction_buffer.clear();
+            self.discarding_transaction = false;
+        }
+        self.transaction_depth = transaction_depth;
+    }
+
+    fn transaction_commit(&mut self, transaction_depth: usize) {
+        if transaction_depth == 1 {
+            if self.discarding_transaction {
+                self.transaction_buffer.clear();
+            } else {
+                self.planned.append(&mut self.transaction_buffer);
+            }
+            self.transaction_depth = 0;
+            self.discarding_transaction = false;
+        } else {
+            self.transaction_depth = transaction_depth.saturating_sub(1);
+        }
+    }
+
+    fn transaction_rollback(&mut self, transaction_depth: usize) {
+        self.transaction_buffer.clear();
+        if transaction_depth == 1 {
+            self.transaction_depth = 0;
+            self.discarding_transaction = false;
+        } else {
+            self.transaction_depth = transaction_depth.saturating_sub(1);
+            self.discarding_transaction = true;
+        }
     }
 }
 
@@ -107,7 +148,7 @@ pub(crate) fn report(
                     }
                 }
             }
-            eprintln!("dry run: {writes} write(s), {deletes} delete(s) (rolled back)");
+            eprintln!("dry run: {writes} write(s), {deletes} delete(s) (not committed)");
         }
         CheckFormat::Json | CheckFormat::Jsonl => {
             let records: Vec<serde_json::Value> = planned

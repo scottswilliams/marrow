@@ -26,7 +26,7 @@ One run is a tree of activations. `run_entry` resolves the entry, builds an `Env
 | `crates/marrow-run/src/exec.rs` | Block and match primitives: `eval_block` (balanced scope), `eval_statements` (stop at first non-Normal `Flow`), `eval_match` (enum-fact-driven, descendant matching), `local_target`. |
 | `crates/marrow-run/src/loop_exec.rs` | Loops and iteration: `while`, `for` over ranges, single/two-name `for` over sequences, local trees, and streamed saved layers; `classify` maps `Flow` to `LoopStep`. |
 | `crates/marrow-run/src/value.rs` | The `Value` model and its codecs: scalar/temporal/decimal/bytes/enum/sequence/local-tree/resource/identity, `IdentityValue` (root + keys), conversions to/from `SavedValue`/`SavedKey`/leaf bytes, text rendering. |
-| `crates/marrow-run/src/env.rs` | The `Env` (scope stack, run context, output buffer, traversed layers, hook, depth), `Flow`/`Binding`/`Context`, scope/lookup/assign, loop-traversal write guards, transaction bookkeeping (`apply_plan`, savepoint depth, deferred required-field checks, commit metadata). |
+| `crates/marrow-run/src/env.rs` | The `Env` (scope stack, run context, output buffer, traversed layers, hook, depth), `Flow`/`Binding`/`Context`, scope/lookup/assign, loop-traversal write guards, transaction bookkeeping (`apply_plan`, open transaction depth, deferred required-field checks, commit metadata). |
 | `crates/marrow-run/src/error.rs` | Fault model: `RuntimeError` (code/message/span + optional boxed throw value + catchable bit + `FileId` origin), the `RUN_*` constants, `raise`/`raise_fault`/`reraise_fault`/type/overflow constructors, the `Located` trait mapping `StoreError`/`ValueError` into spanned faults. |
 | `crates/marrow-run/src/host.rs` | `Host` capability bundle (clock/env/log/filesystem/maintenance) with builders; `StepHook` (`before_statement` can abort, `before_write` is observational); the read-only `Frame` view. |
 | `crates/marrow-run/src/path.rs` | Saved-path lowering: `lower` walks a checked place into a `SavedPath`; `SavedPath::read`/`write`, key lowering with identity-splice and typed-keyspace guards, `saved_path_present` for `exists`. |
@@ -53,7 +53,7 @@ Saved-write and read execution (`write*`, `read`, `durable_read`, `group_write`,
 ## Read next
 
 - `crates/marrow-run/src/activation.rs` — `invoke` / `activation_completion`: where `Flow` becomes a `Completion` and origin/throw/fault classification lives.
-- `crates/marrow-run/src/env.rs` — `Env::apply_plan` and the transaction methods: where evaluation meets durability (write-plan commit, traversal guards, savepoint depth, deferred required-field validation, commit-metadata stamping).
+- `crates/marrow-run/src/env.rs` — `Env::apply_plan` and the transaction methods: where evaluation meets durability (write-plan commit, traversal guards, open transaction depth, deferred required-field validation, commit-metadata stamping).
 - `crates/marrow-run/src/path.rs` — `lower` / `SavedPath::read` / `SavedPath::write`: the one lowering pass every saved read, write, delete, and exists consumes.
 - `crates/marrow-run/src/error.rs` — `raise` / `raise_fault` / `reraise_fault`: catchable-vs-fatal throw semantics and dotted-code preservation.
 - `crates/marrow-run/src/call.rs` — `eval_call`: the central dispatcher for every call kind.

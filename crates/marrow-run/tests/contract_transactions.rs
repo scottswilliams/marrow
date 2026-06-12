@@ -57,6 +57,63 @@ pub fn author_name(id: int): string
     return ^authors(id).name ?? \"\"
 ";
 
+const NESTED_TRANSACTION_CATCH_BOUNDARY: &str = "\
+resource Book
+    required title: string
+store ^books(id: int): Book
+
+pub fn seed()
+    ^books(1).title = \"old\"
+
+pub fn run_nested_fault(): string
+    try
+        transaction
+            ^books(1).title = \"outer\"
+            try
+                transaction
+                    ^books(1).title = \"inner\"
+                    const boom = 1 / 0
+            catch err: Error
+                ^books(1).title = \"caught-inside\"
+                return \"caught-inside\"
+    catch err: Error
+        return err.code
+    return \"committed\"
+
+pub fn title(id: int): string
+    return ^books(id).title ?? \"\"
+";
+
+const TRANSACTION_UNWIND_WITH_LOCAL_CLEANUP: &str = "\
+resource Book
+    required title: string
+store ^books(id: int): Book
+
+pub fn seed()
+    ^books(1).title = \"old\"
+
+pub fn run_cleanup(): string
+    var cleanup = \"none\"
+    try
+        transaction
+            ^books(1).title = \"outer\"
+            try
+                transaction
+                    ^books(1).title = \"inner\"
+                    const boom = 1 / 0
+            finally
+                try
+                    throw Error(code: \"cleanup.local\", message: \"cleanup\")
+                catch err: Error
+                    cleanup = err.code
+    catch err: Error
+        return $\"{cleanup}:{err.code}\"
+    return \"committed\"
+
+pub fn title(id: int): string
+    return ^books(id).title ?? \"\"
+";
+
 #[test]
 fn a_cross_root_transaction_commits_both_roots_on_normal_exit() {
     // The success case: a transaction that writes both roots persists both writes,
@@ -155,5 +212,57 @@ fn a_cross_root_fault_leaves_both_freshly_created_roots_absent() {
         .value,
         Some(Value::Bool(false)),
         "the new authors record rolled back with its sibling"
+    );
+}
+
+#[test]
+fn a_nested_transaction_fault_skips_handlers_inside_the_outer_transaction() {
+    let program = checked_program(NESTED_TRANSACTION_CATCH_BOUNDARY);
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed old value");
+
+    assert_eq!(
+        run_entry(&store, checked_entry!(&program, "test::run_nested_fault"))
+            .expect("outer handler catches escaped transaction fault")
+            .value,
+        Some(Value::Str(RUN_DIVIDE_BY_ZERO.into())),
+        "the handler between the nested transaction and outer boundary must not catch the fault"
+    );
+
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::title", Value::Int(1))
+        )
+        .expect("read title")
+        .value,
+        Some(Value::Str("old".into())),
+        "all writes in the outermost transaction roll back"
+    );
+}
+
+#[test]
+fn transaction_unwind_does_not_suppress_unrelated_catches_in_finally() {
+    let program = checked_program(TRANSACTION_UNWIND_WITH_LOCAL_CLEANUP);
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed old value");
+
+    assert_eq!(
+        run_entry(&store, checked_entry!(&program, "test::run_cleanup"))
+            .expect("outer handler catches escaped transaction fault")
+            .value,
+        Some(Value::Str("cleanup.local:run.divide_by_zero".into())),
+        "finally-local cleanup errors must remain catchable while the transaction error unwinds"
+    );
+
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::title", Value::Int(1))
+        )
+        .expect("read title")
+        .value,
+        Some(Value::Str("old".into())),
+        "the original transaction writes still roll back"
     );
 }

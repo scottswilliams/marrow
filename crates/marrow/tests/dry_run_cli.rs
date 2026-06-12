@@ -15,11 +15,10 @@ const SRC: &str = "module app\n\n\
                    \x20\x20\x20\x20\x20\x20\x20\x20^books(1).title = \"Mort\"\n\
                    \x20\x20\x20\x20\x20\x20\x20\x20^books(1).pages = 272\n";
 
-/// The human-rendered line `run --dry-run` prints under its default text format when a
-/// transaction is discarded. The typed fact is the JSON report's `committed == false`;
-/// this golden pins only the text rendering of the rollback, which has no typed surface
-/// in text mode. Regenerate only on an intentional change to the rendered report.
-const ROLLED_BACK_TEXT_GOLDEN: &str = "rolled back";
+/// The human-rendered line `run --dry-run` prints under its default text format when
+/// planned writes are not committed. The typed fact is the JSON report's
+/// `committed == false`; this golden pins only the text rendering.
+const NOT_COMMITTED_TEXT_GOLDEN: &str = "not committed";
 
 /// The human-rendered planned-write line `run --dry-run` prints for the `^flags(1).on`
 /// bool write under its default text format: the planned path tab-joined to the typed
@@ -60,6 +59,33 @@ fn faulting_dry_run_project(name: &str) -> support::TempProject {
     })
 }
 
+fn dry_run_after_caught_transaction_fault_project(name: &str) -> support::TempProject {
+    temp_project(name, |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             resource Book\n\
+             \x20\x20\x20\x20required title: string\n\
+             store ^books(id: int): Book\n\n\
+             pub fn seed()\n\
+             \x20\x20\x20\x20^books(1).title = \"old\"\n\n\
+             pub fn main()\n\
+             \x20\x20\x20\x20try\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20transaction\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20^books(1).title = \"inside\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20const boom = 1 / 0\n\
+             \x20\x20\x20\x20catch err: Error\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(2).title = \"after\"\n",
+        );
+    })
+}
+
 #[test]
 fn dry_run_leaves_saved_data_unchanged() {
     let project = native_project("dryrun-untouched");
@@ -72,9 +98,9 @@ fn dry_run_leaves_saved_data_unchanged() {
         serde_json::from_str(String::from_utf8(before.stdout).expect("utf8").trim())
             .expect("dump json");
 
-    // A dry run reports the writes it would commit, then rolls them back. The plan is
-    // tooling output on stderr; under json it is one envelope whose `planned` records
-    // carry the write op and field path as typed fields.
+    // A dry run reports writes from isolated execution without committing them. The
+    // plan is tooling output on stderr; under json it is one envelope whose `planned`
+    // records carry the write op and field path as typed fields.
     let dry = marrow(&["run", "--dry-run", "--format", "json", &dir]);
     assert_eq!(dry.status.code(), Some(0), "dry: {dry:?}");
     let dry_json: serde_json::Value =
@@ -102,6 +128,52 @@ fn dry_run_leaves_saved_data_unchanged() {
     assert_eq!(
         before_json["records"], after_json["records"],
         "dry run must leave saved data unchanged: the same records read back"
+    );
+}
+
+#[test]
+fn dry_run_does_not_persist_writes_after_a_caught_transaction_failure() {
+    let project = dry_run_after_caught_transaction_fault_project("dryrun-caught-transaction-fault");
+    let dir = project.to_str().unwrap().to_string();
+
+    let seed = marrow(&["run", "--entry", "app::seed", &dir]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let dry = marrow(&["run", "--dry-run", "--format", "json", &dir]);
+    assert_eq!(dry.status.code(), Some(0), "dry: {dry:?}");
+    let dry_json: serde_json::Value =
+        serde_json::from_str(String::from_utf8(dry.stderr).expect("utf8").trim()).expect("json");
+    assert_eq!(dry_json["committed"], false, "{dry_json}");
+    let planned = dry_json["planned"].as_array().expect("planned array");
+    assert!(
+        planned
+            .iter()
+            .any(|step| step["op"] == "write" && step["path"] == "^books(2).title"),
+        "the dry run should report the write after the caught transaction failure: {dry_json}"
+    );
+    assert!(
+        !planned
+            .iter()
+            .any(|step| step["op"] == "write" && step["path"] == "^books(1).title"),
+        "the dry run report must exclude writes discarded by the failed transaction: {dry_json}"
+    );
+
+    let dump = marrow(&["data", "dump", "--format", "json", &dir]);
+    assert_eq!(dump.status.code(), Some(0), "dump: {dump:?}");
+    let dump_json: serde_json::Value =
+        serde_json::from_str(String::from_utf8(dump.stdout).expect("utf8").trim())
+            .expect("dump json");
+    let records = dump_json["records"].as_array().expect("records array");
+    assert_eq!(
+        records.len(),
+        1,
+        "dry-run isolation must preserve only the seeded saved record: {dump_json}"
+    );
+    assert!(
+        records
+            .iter()
+            .any(|record| record["path"] == "^books(1).title" && record["value_b64"] == "b2xk"),
+        "dry-run isolation must leave the seeded value unchanged: {dump_json}"
     );
 }
 
@@ -520,8 +592,8 @@ fn dry_run_keeps_the_program_output_on_stdout() {
     let stdout = String::from_utf8(output.stdout).expect("utf8");
     let stderr = String::from_utf8(output.stderr).expect("utf8");
     assert_eq!(stdout, "ran\n", "program output must stay on stdout");
-    // The rollback in text mode has no typed surface; the golden pins the rendered line.
-    assert!(stderr.contains(ROLLED_BACK_TEXT_GOLDEN), "{stderr}");
+    // Text mode has no typed surface; the golden pins the rendered summary line.
+    assert!(stderr.contains(NOT_COMMITTED_TEXT_GOLDEN), "{stderr}");
 }
 
 #[test]
@@ -631,10 +703,9 @@ fn dry_run_jsonl_flushes_the_plan_when_the_run_faults() {
 
 #[test]
 fn dry_run_does_not_promise_native_file_byte_stability() {
-    // The dry run guarantees logical saved-data stability, not native-file byte
-    // identity: the same records read back. The native file itself may differ
-    // because aborting the store transaction can still rewrite backend metadata.
-    // No CLI surface may promise byte-for-byte file identity.
+    // The dry-run contract is logical saved-data stability. Normal run setup may
+    // still open, fence, and stamp the configured store before entry isolation, so
+    // no CLI surface may promise byte-for-byte file identity.
     let help = marrow(&["run", "--help"]);
     let help_text = String::from_utf8(help.stdout).expect("utf8");
     assert!(
@@ -649,8 +720,8 @@ fn dry_run_does_not_promise_native_file_byte_stability() {
 
 #[test]
 fn dry_run_composes_with_trace() {
-    // `--dry-run --trace` traces the run and still discards its writes. The trace
-    // names the write; the dry-run report says it was rolled back.
+    // `--dry-run --trace` traces the run and still does not commit its writes.
+    // The trace names the write; the dry-run report says it was not committed.
     let project = native_project("dryrun-trace");
     let dir = project.to_str().unwrap().to_string();
     let output = marrow(&["run", "--dry-run", "--trace", &dir]);
@@ -659,8 +730,11 @@ fn dry_run_composes_with_trace() {
     let stderr = String::from_utf8(output.stderr).expect("utf8");
     // The trace names the write path it traced; that path presence is structural.
     assert!(stderr.contains("^books(1).title"), "trace: {stderr}");
-    // The rollback in text mode has no typed surface; the golden pins the rendered line.
-    assert!(stderr.contains(ROLLED_BACK_TEXT_GOLDEN), "report: {stderr}");
+    // Text mode has no typed surface; the golden pins the rendered summary line.
+    assert!(
+        stderr.contains(NOT_COMMITTED_TEXT_GOLDEN),
+        "report: {stderr}"
+    );
 
     // The store is still empty after the composed dry run: the typed dump envelope holds
     // no records, asserted on the parsed `records` array rather than the empty-store text.

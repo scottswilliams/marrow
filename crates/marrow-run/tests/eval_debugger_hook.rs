@@ -55,6 +55,7 @@ impl StepHook for Recorder {
                 span,
                 throw: None,
                 catchable: false,
+                transaction_escape: false,
                 origin: None,
             });
         }
