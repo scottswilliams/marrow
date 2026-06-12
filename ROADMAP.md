@@ -850,17 +850,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 Parser/checker/runtime files overlap heavily: the cut series is sequenced; additions follow.
 Listing order is execution order. Store crate is quiet this wave except where noted.
 
-**W4.2 → Control-flow + parameter-mode cuts.** Carries: loop labels, finally, `out`, inout
-(gates 18-19). Owns: parser label/finally/mode plumbing, AST + executable IR fields, formatter,
-walk_finally/walk_loop_control_flow collapse, runtime statement.rs finally execution +
-call_args.rs write-back + Place type, error-codes rows (`check.finally_control_flow` deleted;
-`check.try_handler` reworded), ~80 inout + label/finally test rewrites, spec sections. The inout
-deletion area is 28 .rs files incl. marrow-run read.rs, path.rs, entry.rs, local_collection.rs,
-write_dispatch/local.rs, and stdlib/index_lookup.rs. Seed:
-parse errors for `finally`/labels/`inout` with pointers to the replacement idiom. Review: the
-grammar tightening (try must have catch) asserted; no orphaned diagnostics. Done: absence scan
-across code, tests, docs, error-codes — covering marrow-run/src broadly, not just call_args.rs.
-
 **W4.3 → Small cuts.** Carries: decimal range steppables, quoted-segment Phase 1, map[K,V]
 Change B (gates 20-22). Owns: checker ranges.rs decimal arms, runtime RangeIter::Decimal,
 parse_expr field_segment rejection + presence-key quoted flag, schema map-sugar path +
