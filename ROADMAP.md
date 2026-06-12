@@ -831,15 +831,6 @@ the named owner of the #24/#27 subtractions. The remaining tail lane sequences a
 series.
 
 Catalog/evolution series (sequenced; live-refactor coordination):
-**W3.10 → Transform sparse reads.** Carries: presence checking for evolve transform bodies after
-W2.7, treating `old.sparse_member` as maybe-present and requiring `??`, an `if const` guard, or
-`exists()` resolution. Owns: marrow-check presence walking over lowered transform bodies,
-evolution discharge transform diagnostics, and the `evolve.transform_faulted` prose row if the
-message is improved. Seed: a transform reading `old.sparse_member` without resolution checks
-today and must fail with `check.bare_maybe_present_read`. Review: no preview-time per-record
-transform execution, no `return absent` transform surface, and no new error code. Done:
-transform-body sparse reads obey the same presence law as the rest of checked Marrow.
-
 **W3.11 → Rename-first diagnostic.** Carries: the populated-member-drop diagnostic repair and
 data-evolution.md severity fix; the richer scaffold output rides W6.11. Owns:
 marrow-check evolution/discharge/absent_source.rs and docs/data-evolution.md: the diagnostic
