@@ -827,21 +827,11 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 ## Wave 3 — Store, evolution, and catalog machinery
 
 The catalog/evolution series coordinates with the live engine-resident-catalog refactor — it is
-the named owner of the #24/#27 subtractions. An independent integrity lane (W3.7) can run after
-W2.8, and two tail lanes (W3.8, W3.9) sequence after the catalog series.
+the named owner of the #24/#27 subtractions. Two tail lanes (W3.8, W3.9) sequence after the
+catalog series.
 docs/backend-contract.md remaining integration: W3.9.
 
 Catalog/evolution series (sequenced; live-refactor coordination):
-**W3.7 ∥ (after W2.8) Integrity completeness pass (II.D1, gate 5).** Owns: marrow data integrity
-completeness pass over `CheckedSavedMemberKind::Field { required }` facts — completeness is
-asserted per existing record and per existing keyed-layer entry, and defaulted members carry no
-obligation — typed `data.incomplete` keyed by catalog ids, data-tools.md/cli.md/error-codes.md
-lockstep (ADR landed
-W1.1). Seed: failing conformance fixture — maintenance-delete a required field; integrity exits 1
-with `data.incomplete`; repair; passes. Review: one requiredness owner (facts), no source
-spelling in findings; the oracle matches language/02 exactly. Done: the cli.md blind-spot caveat
-deleted.
-
 **W3.8 → Multi-epoch lifecycle coverage (IV.B3) + Deprecated-variant removal (removal #28).**
 Owns: evolution_apply fixture family (two chained applies; retire-then-reuse through production
 lifecycle; rename chains; mid-chain drift; epoch-N backup restored at N+1 refusing with
