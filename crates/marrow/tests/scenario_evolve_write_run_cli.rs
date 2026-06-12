@@ -6,16 +6,16 @@
 //!
 //! Oracles are typed: process exit codes, parsed `data get --format json` presence and
 //! decoded value bytes, the structured `evolve preview` JSON witness, and the accepted
-//! catalog epoch the engine-resident store publishes — never a substring of human-rendered
-//! prose.
+//! catalog epoch the store snapshot publishes as the local crash bridge — never a
+//! substring of human-rendered prose.
 
 mod support;
 
 use marrow_store::tree::TreeStore;
 use support::{TempProject, marrow, marrow_sub, write};
 
-/// The accepted catalog epoch a project has committed, read from its engine-resident
-/// store. A run that auto-applies an evolution advances this exactly as an explicit
+/// The accepted catalog epoch a project has committed, read from its store snapshot. A
+/// run that auto-applies an evolution advances this exactly as an explicit
 /// `evolve apply` does, so the epoch is the typed oracle for "the activation advanced".
 fn accepted_epoch(root: &TempProject) -> u64 {
     let path = root.join(".data").join("marrow.redb");

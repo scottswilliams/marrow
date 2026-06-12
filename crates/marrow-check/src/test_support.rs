@@ -34,10 +34,10 @@ pub fn test_config() -> ProjectConfig {
 
 /// Check the project already written under `root`, binding any accepted catalog the
 /// fixture wrote to `marrow.catalog.json`, asserting it is clean, and return the checked
-/// program. The catalog file is a test fixture spelling of the accepted snapshot the
-/// engine-resident store holds in production; reading it through the migration parser
-/// lets a suite pin a hand-built accepted catalog the source has moved away from. The
-/// caller owns the project directory, so this helper carries no filesystem setup.
+/// program. The file is the same committed source-tree artifact the CLI binds in
+/// production; reading it through the migration parser lets a suite pin a hand-built
+/// accepted catalog the source has moved away from. The caller owns the project
+/// directory, so this helper carries no filesystem setup.
 pub fn checked(root: &Path) -> CheckedProgram {
     let accepted = read_fixture_catalog(root);
     let (report, program) =
@@ -51,7 +51,8 @@ pub fn checked(root: &Path) -> CheckedProgram {
 /// is fully committed, so its bound catalog ids address the store, exactly as a
 /// state-establishing run leaves them after freezing the baseline. The accepted catalog
 /// is also written to the fixture file so a later [`checked`] over a changed source binds
-/// it, mirroring the engine-resident snapshot a real project would carry forward.
+/// it, mirroring the committed `marrow.catalog.json` artifact a real project would carry
+/// forward.
 pub fn commit_then_check(root: &Path) -> CheckedProgram {
     let (report, program) =
         check_project_with_catalog(root, &test_config(), None).expect("check for commit");

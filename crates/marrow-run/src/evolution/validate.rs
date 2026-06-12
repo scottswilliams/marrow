@@ -32,16 +32,26 @@ pub(super) fn assert_accepted_catalog_pin(
     witness: &EvolutionWitness,
     store: &TreeStore,
 ) -> Result<(), ApplyError> {
-    let Some(found) = store.catalog_snapshot_digest()? else {
+    let Some(snapshot) = store.read_catalog_snapshot()? else {
         return Ok(());
     };
-    if found != witness.accepted_catalog.digest {
-        return Err(ApplyError::CatalogDrift {
-            pinned: witness.accepted_catalog.digest.clone(),
-            found: Some(found),
-        });
+    if snapshot.digest == witness.accepted_catalog.digest {
+        return Ok(());
     }
-    Ok(())
+    let found = marrow_check::evolution::CatalogFingerprint {
+        epoch: snapshot.epoch,
+        digest: snapshot.digest,
+    };
+    if witness.proposal_catalog.is_none()
+        && witness.store_catalog.as_ref() == Some(&found)
+        && found.epoch < witness.accepted_catalog.epoch
+    {
+        return Ok(());
+    }
+    Err(ApplyError::CatalogDrift {
+        pinned: witness.accepted_catalog.digest.clone(),
+        found: Some(found.digest),
+    })
 }
 
 pub(super) fn assert_commit_pin(

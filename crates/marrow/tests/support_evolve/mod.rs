@@ -23,10 +23,9 @@ fn config(root: impl AsRef<Path>) -> ProjectConfig {
     marrow_project::parse_config(&text).expect("parse config")
 }
 
-/// Freeze a project's baseline durable identity into its engine-resident store, the way
-/// a state-establishing run does, and return the program re-bound against the accepted
-/// store snapshot. The store snapshot is the source of truth the production read paths
-/// bind.
+/// Freeze a project's baseline durable identity into its store, the way a
+/// state-establishing run does, and return the program re-bound against the accepted
+/// store snapshot that mirrors the committed catalog artifact.
 #[allow(dead_code)]
 pub(crate) fn commit_catalog(root: impl AsRef<Path>) -> CheckedProgram {
     let root = root.as_ref();
@@ -146,9 +145,8 @@ pub(crate) fn native_books_project(name: &str, source: &str) -> TempProject {
     })
 }
 
-/// The accepted catalog a project's engine-resident store publishes. The store is the
-/// source of truth a run or an evolution apply advances; reading it here is the typed
-/// oracle for the project's committed durable identity.
+/// The accepted catalog snapshot a project's store holds as the crash bridge. Reading
+/// it here is the typed oracle for tests that inspect the committed durable identity.
 #[allow(dead_code)]
 pub(crate) fn accepted_catalog(root: impl AsRef<Path>) -> marrow_catalog::CatalogMetadata {
     let store = TreeStore::open_read_only(&native_store_path(root)).expect("open store read-only");

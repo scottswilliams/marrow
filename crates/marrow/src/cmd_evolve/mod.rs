@@ -120,6 +120,11 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
         input.approval.as_ref(),
     ) {
         Ok(outcome) => {
+            if let Err(code) =
+                crate::render_accepted_catalog_file_from_store(&input.dir, &store, input.format)
+            {
+                return code;
+            }
             render::apply_success(&outcome, input.format);
             ExitCode::SUCCESS
         }

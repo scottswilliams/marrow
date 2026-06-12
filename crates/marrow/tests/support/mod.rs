@@ -261,11 +261,10 @@ pub(crate) fn temp_project_uncommitted(name: &str, build: impl FnOnce(&Path)) ->
     project
 }
 
-/// Freeze a fixture project's pending durable identity into its engine-resident store,
-/// the way a state-establishing run does, so read-only data commands and
-/// store-backed runs see a committed catalog without re-running the binary. A
-/// project that does not check cleanly, proposes no catalog change, or configures
-/// no durable store is left untouched.
+/// Freeze a fixture project's pending durable identity through the store transaction,
+/// then render the committed catalog file the way a state-establishing run does. A
+/// project that does not check cleanly, proposes no catalog change, or configures no
+/// durable store is left untouched.
 #[allow(dead_code)]
 pub(crate) fn commit_catalog_if_clean(root: impl AsRef<Path>) {
     let root = root.as_ref();

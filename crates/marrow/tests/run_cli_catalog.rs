@@ -1,10 +1,14 @@
-//! `marrow run` establishes durable identity in the engine-resident store: the first
-//! run over a native store freezes the pending catalog into the store (never a
-//! `marrow.catalog.json` file), and a second run over the now-accepted catalog churns
-//! nothing — the same catalog rows, epoch, and commit stamp.
+//! `marrow run` establishes durable identity by committing the pending catalog into the
+//! store transaction, then rendering `marrow.catalog.json` from that committed snapshot.
+//! The file is the source-tree artifact; the store copy is the crash bridge. A second run
+//! over the now-accepted catalog churns nothing: the same catalog rows, file bytes, epoch,
+//! and commit stamp.
 
 mod support;
 
+use std::fs;
+
+use marrow_catalog::CatalogMetadata;
 use marrow_store::tree::TreeStore;
 use support::{TempProject, find_code_segment, marrow_sub, write};
 
@@ -35,10 +39,25 @@ fn store_path(root: &std::path::Path) -> std::path::PathBuf {
     root.join(".data").join("marrow.redb")
 }
 
+fn catalog_file(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("marrow.catalog.json")
+}
+
+fn store_snapshot(root: &std::path::Path) -> CatalogMetadata {
+    let store = TreeStore::open(&store_path(root)).expect("open store");
+    store
+        .read_catalog_snapshot()
+        .expect("read store catalog snapshot")
+        .expect("project has an accepted catalog")
+}
+
+fn rendered_catalog(root: &std::path::Path) -> String {
+    fs::read_to_string(catalog_file(root)).expect("read rendered catalog")
+}
+
 #[test]
-fn run_commits_the_pending_catalog_into_the_store_not_a_file() {
+fn run_commits_the_pending_catalog_into_the_store_and_renders_the_file() {
     let root = pending_native_project("run-pending-commit");
-    let catalog_file = root.join("marrow.catalog.json");
 
     let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
@@ -46,14 +65,9 @@ fn run_commits_the_pending_catalog_into_the_store_not_a_file() {
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
     assert_eq!(stdout, "ran\n");
 
-    // No production write to the accepted-catalog file: identity is engine-resident.
-    assert!(
-        !catalog_file.exists(),
-        "run must not write a marrow.catalog.json file"
-    );
-
-    // The store now publishes the accepted catalog at the baseline epoch, with an entry
-    // for the saved `^books` root.
+    // The store publishes the accepted catalog at the baseline epoch, with an entry for
+    // the saved `^books` root; the source-tree artifact is a render of those committed
+    // rows, not an independently generated proposal.
     let store = TreeStore::open(&store_path(&root)).expect("open store after run");
     let snapshot = store
         .read_catalog_snapshot()
@@ -76,6 +90,11 @@ fn run_commits_the_pending_catalog_into_the_store_not_a_file() {
         Some(1),
         "the store is stamped at the baseline catalog epoch"
     );
+    assert_eq!(
+        rendered_catalog(&root),
+        snapshot.to_json_pretty(),
+        "marrow.catalog.json is rendered from the committed store snapshot"
+    );
 }
 
 #[test]
@@ -84,21 +103,23 @@ fn a_second_run_does_not_churn_the_accepted_catalog() {
 
     let first = marrow_sub("run", &[root.to_str().unwrap()]);
     assert_eq!(first.status.code(), Some(0), "{first:?}");
-    let (digest_one, commit_one) = {
+    let (digest_one, commit_one, file_one) = {
         let store = TreeStore::open(&store_path(&root)).expect("open store after first run");
         (
             store.catalog_snapshot_digest().expect("snapshot digest"),
             store.read_commit_metadata().expect("commit metadata"),
+            rendered_catalog(&root),
         )
     };
 
     let second = marrow_sub("run", &[root.to_str().unwrap()]);
     assert_eq!(second.status.code(), Some(0), "{second:?}");
-    let (digest_two, commit_two) = {
+    let (digest_two, commit_two, file_two) = {
         let store = TreeStore::open(&store_path(&root)).expect("open store after second run");
         (
             store.catalog_snapshot_digest().expect("snapshot digest"),
             store.read_commit_metadata().expect("commit metadata"),
+            rendered_catalog(&root),
         )
     };
 
@@ -109,6 +130,61 @@ fn a_second_run_does_not_churn_the_accepted_catalog() {
     assert_eq!(
         commit_one, commit_two,
         "the commit metadata must not advance on a second run over an accepted catalog"
+    );
+    assert_eq!(
+        file_one, file_two,
+        "the rendered catalog file must stay idempotent on a second run"
+    );
+}
+
+#[test]
+fn check_repairs_a_missing_catalog_file_from_the_committed_store_snapshot() {
+    let root = pending_native_project("run-repair-missing-catalog-file");
+
+    let first = marrow_sub("run", &[root.to_str().unwrap()]);
+    assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    let snapshot = store_snapshot(&root);
+    fs::remove_file(catalog_file(&root)).expect("simulate kill before file render");
+
+    let check = marrow_sub("check", &[root.to_str().unwrap()]);
+    assert_eq!(
+        check.status.code(),
+        Some(0),
+        "check repairs the catalog file and proceeds: {check:?}"
+    );
+
+    assert_eq!(
+        rendered_catalog(&root),
+        snapshot.to_json_pretty(),
+        "the repair renders the exact committed store snapshot"
+    );
+}
+
+#[test]
+fn run_recreates_the_store_catalog_from_the_committed_file_when_the_store_is_missing() {
+    let root = pending_native_project("run-recreate-store-catalog-from-file");
+
+    let first = marrow_sub("run", &[root.to_str().unwrap()]);
+    assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    let committed_file = rendered_catalog(&root);
+    fs::remove_dir_all(root.join(".data")).expect("simulate checkout without local store");
+
+    let second = marrow_sub("run", &[root.to_str().unwrap()]);
+    assert_eq!(
+        second.status.code(),
+        Some(0),
+        "run recreates the store catalog from the committed file: {second:?}"
+    );
+
+    assert_eq!(
+        store_snapshot(&root).to_json_pretty(),
+        committed_file,
+        "the recreated store catalog matches the committed source-tree artifact"
+    );
+    assert_eq!(
+        rendered_catalog(&root),
+        committed_file,
+        "the file render stays idempotent"
     );
 }
 

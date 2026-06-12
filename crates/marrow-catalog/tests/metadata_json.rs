@@ -200,6 +200,31 @@ fn removed_lifecycle_is_rejected() {
 }
 
 #[test]
+fn git_conflict_markers_report_a_typed_merge_conflict() {
+    let metadata = catalog(vec![entry(
+        CatalogEntryKind::Resource,
+        "books::Book",
+        "res-book",
+        &[],
+    )]);
+    let conflicted = format!(
+        "<<<<<<< HEAD\n{}\n=======\n{}\n>>>>>>> branch\n",
+        metadata.to_json_pretty(),
+        metadata.to_json_pretty()
+    );
+
+    let error = CatalogMetadata::from_json(&conflicted).expect_err("conflict markers are rejected");
+
+    assert_eq!(error.code, "catalog.merge_conflict");
+    assert!(
+        error.message.contains("resolve the conflict")
+            && error.message.contains("rerun the command"),
+        "the merge-conflict error gives an actionable next step: {}",
+        error.message
+    );
+}
+
+#[test]
 fn parallel_additions_merge_without_regenerating_ids() {
     let branch_a_id = "cat_11111111111111111111111111111111";
     let branch_b_id = "cat_22222222222222222222222222222222";

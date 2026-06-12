@@ -270,18 +270,20 @@ pub(super) fn apply_error(error: ApplyError, labels: &SourceLabels, format: Chec
         ),
         ApplyError::Drift => report_simple_error(
             "evolve.drift",
-            "the live source, catalog, store snapshot, or counts no longer match the preview witness",
+            "the live source, catalog, store snapshot, or counts no longer match the preview witness; rerun `marrow evolve preview`, then rerun `marrow evolve apply`",
             format,
         ),
         ApplyError::StoreCommitDrift { pinned, found } => report_simple_error(
             "evolve.store_commit_drift",
-            &format!("store commit changed after preview (pinned {pinned:?}, found {found:?})"),
+            &format!(
+                "store commit changed after preview (pinned {pinned:?}, found {found:?}); rerun `marrow evolve preview`, then rerun `marrow evolve apply`"
+            ),
             format,
         ),
         ApplyError::CatalogDrift { pinned, found } => report_simple_error(
             "evolve.catalog_drift",
             &format!(
-                "store accepted catalog changed after preview (pinned {pinned}, found {found:?})"
+                "store accepted catalog changed after preview (pinned {pinned}, found {found:?}); rerun `marrow evolve preview`, then rerun `marrow evolve apply`"
             ),
             format,
         ),

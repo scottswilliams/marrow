@@ -158,20 +158,25 @@ commit metadata in one transaction. Replay suppression uses the slim stamp
 facts (catalog epoch, source digest, engine profile, and catalog snapshot
 digest) plus a recomputed witness gate; the store byte surface does not carry
 per-effect default, transform, retire, or index counts or digests. A failure
-before commit rolls every effect back together.
+before commit rolls every effect back together. After a successful CLI apply,
+`marrow.catalog.json` is rendered from the committed catalog rows; if that render
+is interrupted and leaves the file missing or torn, a later command can repair it
+from the store snapshot.
 
-The catalog family is private engine metadata, not language data. No source
-declaration, runtime expression, standard-library call, data CLI operation, or
-user transaction can address, scan, or mutate catalog rows; they are reached only
-through the typed snapshot read/replace operations. A read rebuilds the snapshot
-from its rows and verifies the stored header against the decoded entries. The
-canonical catalog digest sorts entries by declaration kind tag, canonical path,
-stable ID, aliases, lifecycle tag, accepted store-key shape, and accepted
-structural signature before hashing, so declaration order does not change the
-digest. Reads also accept a legacy order-sensitive row-order header digest when
-it matches the decoded rows, then return the snapshot with the canonical digest.
-A tampered catalog row — even one that decodes into a structurally valid entry —
-fails closed as `store.corruption`.
+The catalog family is private engine metadata, not language data. The
+project-root `marrow.catalog.json` file is the committed artifact; the catalog
+family is the store-local crash bridge and the write transaction participant. No
+source declaration, runtime expression, standard-library call, data CLI
+operation, or user transaction can address, scan, or mutate catalog rows; they
+are reached only through the typed snapshot read/replace operations. A read
+rebuilds the snapshot from its rows and verifies the stored header against the
+decoded entries. The canonical catalog digest sorts entries by declaration kind
+tag, canonical path, stable ID, aliases, lifecycle tag, accepted store-key shape,
+and accepted structural signature before hashing, so declaration order does not
+change the digest. Reads also accept a legacy order-sensitive row-order header
+digest when it matches the decoded rows, then return the snapshot with the
+canonical digest. A tampered catalog row — even one that decodes into a
+structurally valid entry — fails closed as `store.corruption`.
 
 Malformed tree-cell metadata, malformed node markers, malformed tree-cell
 reference/enum values, malformed index identity suffixes, and a catalog snapshot
@@ -324,6 +329,7 @@ to interpret it, not a raw engine byte stream. A backup manifest carries
 `commit`, `record_count`, and `archive_checksum`; generated indexes are derived
 and rebuilt on restore rather than trusted as bytes. Restore reconstructs the
 data, metadata, and catalog rows in one transaction with a fresh store UID, so a
-restored store opens at its accepted catalog with no file-publish step to
-resume. Backups are portable across conforming backends at the same layout and
+restored store opens at its accepted catalog and a later CLI command can render
+or repair a missing, stale, or torn `marrow.catalog.json` from that snapshot.
+Backups are portable across conforming backends at the same layout and
 value-codec version.

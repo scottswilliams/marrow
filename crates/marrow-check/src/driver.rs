@@ -75,9 +75,8 @@ pub fn check_project(
 }
 
 /// Like [`check_project`], but binding durable identity against the caller-supplied
-/// `accepted` snapshot. The accepted catalog is engine-resident: the CLI opens the
-/// project's store, reads its accepted snapshot, and threads it here, so the checker
-/// never reads a catalog file.
+/// `accepted` snapshot. The CLI owns catalog file/store recovery and threads the
+/// selected snapshot here, so the checker never reads durable identity from disk.
 pub fn check_project_with_catalog(
     project_root: &Path,
     config: &ProjectConfig,

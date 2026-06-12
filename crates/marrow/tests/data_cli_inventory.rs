@@ -96,9 +96,9 @@ fn data_inventory_ignores_overlong_nodes_under_composite_roots() {
 
 #[test]
 fn inspecting_an_unseeded_project_reports_no_data_and_writes_no_records() {
-    // The project's identity is committed (its catalog lives in the engine-resident
-    // store), but no run has seeded a record. `data roots` reports an empty store and
-    // writes none of its own.
+    // The project's identity is committed to marrow.catalog.json, with the store snapshot
+    // present as the local crash bridge, but no run has seeded a record. `data roots`
+    // reports an empty store and writes none of its own.
     let project = native_project("data-empty");
     let dir = project.to_str().unwrap().to_string();
     let output = marrow(&["data", "roots", &dir]);
@@ -127,8 +127,8 @@ fn data_dump_prints_each_record_as_path_and_value() {
 
 #[test]
 fn data_dump_of_an_unseeded_project_prints_empty_and_writes_no_records() {
-    // A committed-but-unseeded project: its catalog is engine-resident, but no record has
-    // been saved. The dump prints the empty placeholder and writes no record of its own.
+    // A committed-but-unseeded project: its catalog artifact is committed, but no record
+    // has been saved. The dump prints the empty placeholder and writes no record of its own.
     let project = native_project("data-dump-empty");
     let dir = project.to_str().unwrap().to_string();
     let output = marrow(&["data", "dump", &dir]);

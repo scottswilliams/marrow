@@ -2,7 +2,7 @@
 //! its catalog rows and data cells into an empty store in one transaction so the
 //! target either gains the whole backup or is left unchanged. The restored
 //! catalog re-establishes accepted identity, so a restored store runs immediately
-//! with no resume step.
+//! without re-running evolution.
 
 use std::io::Read;
 

@@ -12,6 +12,8 @@ use sha2::{Digest, Sha256};
 
 /// Stable error code for an invalid accepted catalog metadata file.
 pub const CATALOG_INVALID: &str = "catalog.invalid";
+/// Stable error code for an accepted catalog metadata file with Git conflict markers.
+pub const CATALOG_MERGE_CONFLICT: &str = "catalog.merge_conflict";
 
 /// A committed accepted catalog snapshot. Source checks may read it and propose
 /// replacement contents, but they never write it.
@@ -56,6 +58,9 @@ impl CatalogMetadata {
     }
 
     pub fn from_json(json: &str) -> Result<Self, CatalogError> {
+        if contains_conflict_marker(json) {
+            return Err(CatalogError::merge_conflict());
+        }
         let catalog: Self =
             serde_json::from_str(json).map_err(|error| CatalogError::new(error.to_string()))?;
         Self::from_stored_parts(catalog.epoch, catalog.digest, catalog.entries)
@@ -438,6 +443,13 @@ impl CatalogError {
             message: message.into(),
         }
     }
+
+    fn merge_conflict() -> Self {
+        Self {
+            code: CATALOG_MERGE_CONFLICT,
+            message: "catalog metadata contains Git conflict markers; resolve the conflict in marrow.catalog.json and rerun the command".to_string(),
+        }
+    }
 }
 
 impl fmt::Display for CatalogError {
@@ -529,6 +541,13 @@ fn reject_nul(label: &str, value: &str) -> Result<(), CatalogError> {
         )));
     }
     Ok(())
+}
+
+fn contains_conflict_marker(json: &str) -> bool {
+    json.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("<<<<<<<") || line.starts_with("=======") || line.starts_with(">>>>>>>")
+    })
 }
 
 fn insert_catalog_path<'a>(

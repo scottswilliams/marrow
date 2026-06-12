@@ -1,5 +1,6 @@
 //! Witness-validated evolution apply.
 
+use marrow_catalog::CatalogMetadata;
 use marrow_check::evolution::{EvolutionWitness, Verdict};
 use marrow_check::{
     CatalogEntryKind, CheckedProgram, CheckedRuntimeProgram, CheckedSavedPlace,
@@ -133,7 +134,7 @@ pub fn apply(
     // shape before advancing it, or it would fence itself as drift.
     let expected_digest = witness.store_source_digest.clone().unwrap_or_default();
     fence(
-        Some(accepted_epoch),
+        Some(pre_apply_catalog_epoch(witness).unwrap_or(accepted_epoch)),
         &expected_digest,
         &current_engine_profile(),
         store,
@@ -281,13 +282,9 @@ fn activation_stamp(
     witness: &EvolutionWitness,
     program: &CheckedProgram,
     target_epoch: u64,
-) -> PlanStep {
-    let catalog_snapshot = witness
-        .proposal_catalog
-        .as_ref()
-        .and(program.catalog.proposal.clone())
-        .map(Box::new);
-    metadata_stamp(StampFacts {
+) -> Result<PlanStep, ApplyError> {
+    let catalog_snapshot = activated_catalog_snapshot(witness, program)?.map(Box::new);
+    Ok(metadata_stamp(StampFacts {
         catalog_epoch: target_epoch,
         catalog_snapshot,
         commit_id: CommitIdAllocation::PinnedNext {
@@ -296,7 +293,55 @@ fn activation_stamp(
         source_digest: witness.source_digest.clone(),
         changed_root_catalog_ids: witness.changed_root_catalog_ids.clone(),
         changed_index_catalog_ids: witness.changed_index_catalog_ids.clone(),
+    }))
+}
+
+fn activated_catalog_snapshot(
+    witness: &EvolutionWitness,
+    program: &CheckedProgram,
+) -> Result<Option<CatalogMetadata>, ApplyError> {
+    if witness.proposal_catalog.is_some() {
+        return program
+            .catalog
+            .proposal
+            .clone()
+            .map(Some)
+            .ok_or(ApplyError::Drift);
+    }
+    if store_catalog_is_behind_accepted(witness) {
+        return accepted_catalog_snapshot(witness, program).map(Some);
+    }
+    Ok(None)
+}
+
+fn store_catalog_is_behind_accepted(witness: &EvolutionWitness) -> bool {
+    witness.store_catalog.as_ref().is_some_and(|store| {
+        store.digest != witness.accepted_catalog.digest
+            && store.epoch < witness.accepted_catalog.epoch
     })
+}
+
+fn pre_apply_catalog_epoch(witness: &EvolutionWitness) -> Option<u64> {
+    store_catalog_is_behind_accepted(witness)
+        .then(|| witness.store_catalog.as_ref().map(|catalog| catalog.epoch))
+        .flatten()
+}
+
+fn accepted_catalog_snapshot(
+    witness: &EvolutionWitness,
+    program: &CheckedProgram,
+) -> Result<CatalogMetadata, ApplyError> {
+    let epoch = program.catalog.accepted_epoch.ok_or(ApplyError::Drift)?;
+    let digest = program
+        .catalog
+        .accepted_digest
+        .clone()
+        .ok_or(ApplyError::Drift)?;
+    if epoch != witness.accepted_catalog.epoch || digest != witness.accepted_catalog.digest {
+        return Err(ApplyError::Drift);
+    }
+    CatalogMetadata::from_stored_parts(epoch, digest, program.catalog.accepted_entries.clone())
+        .map_err(|_| ApplyError::Drift)
 }
 
 fn build_outcome(
@@ -437,7 +482,7 @@ fn commit_apply_transaction(
         let commit_id = allocation.resolve(previous.as_ref())?;
         let parts = receipt_parts(program, destructive_retire_counts)?;
         WritePlan {
-            steps: vec![activation_stamp(witness, program, target_epoch)],
+            steps: vec![activation_stamp(witness, program, target_epoch)?],
         }
         .commit(store, true)?;
         Ok((commit_id, parts, staged))

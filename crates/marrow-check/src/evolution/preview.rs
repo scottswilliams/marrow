@@ -27,6 +27,12 @@ pub fn preview(
     let store_source_digest = commit.as_ref().map(|commit| commit.source_digest.clone());
     let engine_profile_digest = commit.as_ref().map(|commit| commit.engine_profile_digest);
     let layout_epoch = commit.as_ref().map(|commit| commit.layout_epoch);
+    let store_catalog = store
+        .read_catalog_snapshot()?
+        .map(|snapshot| CatalogFingerprint {
+            epoch: snapshot.epoch,
+            digest: snapshot.digest,
+        });
     let (source_digest, evolution_digest) = crate::catalog::source_and_evolution_digests(program);
     let witness =
         EvolutionWitness {
@@ -42,6 +48,7 @@ pub fn preview(
                     digest: proposal.digest.clone(),
                 }
             }),
+            store_catalog,
             store_source_digest,
             engine_profile_digest,
             layout_epoch,

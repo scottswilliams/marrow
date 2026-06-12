@@ -8,12 +8,14 @@ Two crates: `marrow-project` owns the `marrow.json` schema, source/test discover
 
 `main::main` installs a broken-pipe panic hook (a `Broken pipe` payload exits 0, every other panic defers to the default hook), then dispatches `argv[1]` to one command on a worker thread with a large stack (`run_on_worker_stack`). The parser and runtime recurse over untrusted source on that stack, sized so their fixed depth limits (`check.nesting_limit`, `run.recursion_limit`) always trip before it overflows. Each command's first lines call the shared loaders in `main.rs`:
 
-- `load_config` / `load_checked_project` — dir to `ProjectConfig`, then to a `CheckedProgram` bound against the accepted catalog the store publishes.
+- `load_config` / `load_checked_project` — dir to `ProjectConfig`, then to a `CheckedProgram` bound against the accepted catalog from `marrow.catalog.json`, repaired from the committed store snapshot when that local crash bridge exists.
 - `native_store_path` / `resolve_store_path` / `open_store_for_inspection` — locate and open the configured store; inspection uses `open_read_only`, while write-capable commands opt into the write-open path.
-- `read_accepted_store_catalog` — the one owner of "open the store read-only
-  and read its accepted snapshot"; absent store or in-memory backend binds no
-  catalog (a first run), a decode error surfaces a typed `store.*` code.
-  `check` and `data` read durable identity only through this, never a file.
+- `read_accepted_store_catalog` — the one owner of reading the fixed catalog
+  artifact and, when present, opening the store read-only as a crash bridge.
+  Absent file plus absent store binds no catalog (a first run); conflict markers
+  surface `catalog.merge_conflict`, and store decode errors surface typed
+  `store.*` codes. `check` and `data` read durable identity only through this
+  boundary.
 - `establish_store_baseline` — freeze a project's first proposed identity into a write-capable store in one transaction (catalog rows, epoch, engine profile, commit metadata via `marrow_run::evolution::commit_catalog_baseline`), then rebind the program against the now-accepted snapshot. Runs only over an empty store with a pending non-empty proposal; a project past its baseline never churns.
 
 Stream separation is load-bearing: a program's own `print`/`write` output owns stdout; run tooling reports such as trace and dry-run plans go to stderr, so a stdout JSON consumer never sees interleaving. `marrow test --format json|jsonl` owns stdout for its structured test-result report, with trace output kept on stderr. Exit codes are 0 success, 1 failure, 2 usage.
@@ -27,8 +29,8 @@ Stream separation is load-bearing: a program's own `print`/`write` output owns s
 | `test` | `cmd_test.rs` | Collects public zero-param fns in test modules, runs each over a fresh in-memory store; assert fault is FAIL, any other is ERROR, rendered as text/json/jsonl test-result reports. |
 | `fmt` | `cmd_fmt.rs` | Formats one file to stdout, or `--check`/`--write` over source roots; refuses stdin and a bare dir with no mode. |
 | `data <roots\|stats\|dump\|integrity\|recover\|get>` | `cmd_data.rs`, `cmd_data/` | Store inspection plus explicit recovery; read-only views pin one `ReadSnapshot` so multi-pass output describes one store version, while `recover` performs only a write-capable store open. |
-| `evolve <preview\|apply>` | `cmd_evolve/` | Read-only preview vs managed-write apply; apply gates destructive obligations and recovers half-applied evolutions. |
-| `backup` / `restore` | `cmd_backup.rs`, `cmd_restore.rs`, `backup/` | Read-only archive write over a pinned snapshot, carrying the accepted-catalog rows in a typed section; transactional all-or-nothing replay of catalog rows and data into an empty native store, which then runs with no resume step. |
+| `evolve <preview\|apply>` | `cmd_evolve/` | Read-only preview vs managed-write apply; apply gates destructive obligations and commits data plus catalog rows atomically. |
+| `backup` / `restore` | `cmd_backup.rs`, `cmd_restore.rs`, `backup/` | Read-only archive write over a pinned snapshot, carrying the accepted-catalog rows in a typed section; transactional all-or-nothing replay of catalog rows and data into an empty native store, which then runs without re-running evolution. |
 
 ## Module map
 
@@ -58,7 +60,7 @@ Stream separation is load-bearing: a program's own `print`/`write` output owns s
 | `crates/marrow/src/cmd_data.rs` | `data` dispatch, `roots`/`stats`/`dump`, snapshot pinning, the streaming JSON-array envelope. |
 | `crates/marrow/src/cmd_data/get.rs` | `data get`: one path query, present/absent/children-only rendering. |
 | `crates/marrow/src/cmd_data/integrity.rs` | `data integrity`: stream decode problems per record, FAILURE when any exist. |
-| `crates/marrow/src/cmd_evolve/mod.rs` | `evolve` dispatch, `check_data`, and `apply_cmd` (the apply publishes the catalog atomically, so there is no post-apply publish or resume step here). |
+| `crates/marrow/src/cmd_evolve/mod.rs` | `evolve` dispatch, `check_data`, and `apply_cmd` (the apply publishes the catalog atomically, then renders the project-root catalog file from the committed snapshot). |
 | `crates/marrow/src/cmd_evolve/args.rs` | apply grammar: `--maintenance`, repeated `--approve-retire <id>:<count>` folded into one `Approval`. |
 | `crates/marrow/src/cmd_evolve/render.rs` | all evolve output, including the `ApplyError` to code/message map. |
 | `crates/marrow/src/cmd_evolve/store.rs` | `preview_store` (read-only) / `apply_store` (writable native). |
@@ -73,7 +75,7 @@ Stream separation is load-bearing: a program's own `print`/`write` output owns s
 - **Path containment.** Every project-relative path (source roots, `dataDir`, tests) is rejected if empty, absolute, or containing `..`, because each is later `Path::join`ed onto the project root. `parse_config` double-parses (raw `Value` then typed `RawConfig`) to catch non-object roots and unknown-key spans.
 - **Run baseline and auto-apply.** A clean project with a pending durable identity has its baseline frozen into the store the first time `run` opens it write-capable; a memory-backed project with a durable surface refuses with `run.durable_store_required` rather than running an identity nothing stamps, and a plain script runs over memory. On native schema-drift a zero-record-mutation change is auto-applied through the production apply path, which publishes the advanced catalog snapshot in the apply transaction; the run then re-checks and re-fences. Any backfill/transform/destructive change fences naming `evolve apply` instead. The redb file lock forces `auto_apply_then_reopen` to drop its first handle before reopening. A store holding records under no accepted catalog is refused as populated-but-unstamped.
 - **Restore is all-or-nothing.** The whole replay runs in one transaction; any checksum/framing/verify failure rolls the target back to empty. Restore refuses a non-empty target, carries data cells only (indexes are rebuilt), replays bytes verbatim only when `EngineDescriptor` matches exactly, and proves the data compiles against the schema via the `verify` closure before commit. Raw byte validity is never enough.
-- **Evolve apply.** `evolve apply` reads accepted identity from the store, freezes a pending baseline into it, then applies the witness's durable work. The apply publishes the activated catalog snapshot, advances the epoch, and commits the data in one transaction, so the accepted catalog the read paths bind is the store snapshot itself — there is no separate publish step and no crash window to resume.
+- **Evolve apply.** `evolve apply` reads accepted identity from `marrow.catalog.json`, with the store snapshot repairing that file when it is missing, stale, or a torn non-conflict render. It freezes a pending baseline into the store, then applies the witness's durable work. The apply publishes the activated catalog snapshot, advances the epoch, and commits the data in one transaction; after commit, the CLI renders the project-root file from the committed store snapshot, and a later command can repair that render if the process stops between commit and file write.
 - **Render-only prose.** Integrity, evolve, and restore code assert stable dotted codes and typed verdicts/problems; diagnostic prose is never matched semantically.
 
 ## Read next

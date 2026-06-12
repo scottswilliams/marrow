@@ -182,20 +182,21 @@ value, or the type of the field. In the example above, code still reads and writ
 ^books(id).title = "Small Gods"
 ```
 
-Durable identity is owned by an invisible catalog, not by source spelling. The
-catalog is engine-resident: its accepted entries live in the store alongside the
-data they identify, not in a committed file, and there is no JSON ABI, no
-`^catalog` root, no catalog resource, query, standard-library, or data-CLI
+Durable identity is owned by the accepted catalog, not by source spelling. The
+committed artifact is `marrow.catalog.json`; the store keeps a private copy
+beside the data it identifies so state-establishing commands can commit catalog
+rows and data together and repair interrupted file renders. There is no JSON ABI,
+no `^catalog` root, no catalog resource, query, standard-library, or data-CLI
 surface, and no stable-id annotations in source. Each resource, store, field,
-keyed layer, index, enum, and enum member gets an opaque stable id, recorded into
-the store the first time the project runs against a durable store. The accepted
-catalog advances on `run` for changes that mutate no stored record, and through
-`evolve apply` for record work and data-loss decisions; every advance writes
-through one store transaction, and `check` reads the accepted snapshot back
-read-only without ever writing it. Because identity lives in the catalog,
-renaming a field in source does not change its durable identity or move stored
-data — the rename carries identity forward through `evolve rename` or an alias
-the accepted catalog already records (see Evolution below).
+keyed layer, index, enum, and enum member gets an opaque stable id, recorded when
+the project first runs against a durable store. The accepted catalog advances on
+`run` for changes that mutate no stored record, and through `evolve apply` for
+record work and data-loss decisions; every advance writes through one store
+transaction, then renders `marrow.catalog.json` from the committed snapshot.
+Because identity lives in the catalog, renaming a field in source does not change
+its durable identity or move stored data — the rename carries identity forward
+through `evolve rename` or an alias the accepted catalog already records (see
+Evolution below).
 
 Adding a sparse field is a source change. Adding a required field requires
 explicit data-evolution work that populates existing saved resources before code

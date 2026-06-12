@@ -1,6 +1,7 @@
 //! The checker consumes the accepted catalog as a caller-supplied provider input: the
-//! CLI reads the snapshot from the engine-resident store and threads it through the
-//! `analyze_project` parameter. These tests inject the snapshot directly and prove that
+//! CLI loads the committed `marrow.catalog.json` artifact and threads it through the
+//! `analyze_project` parameter, repairing that file from the store crash bridge when the
+//! render was interrupted. These tests inject the snapshot directly and prove that
 //! identity binds against it: the accepted ids carry forward onto live facts, and a
 //! source-only check proposes a first epoch while writing nothing.
 

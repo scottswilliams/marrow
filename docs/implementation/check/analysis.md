@@ -60,7 +60,7 @@ Path resolution is the single chokepoint: `resolve_query_steps` validates source
   `crates/marrow-store/tests/tree_store.rs`. Cursor and snapshot facts are
   covered in `crates/marrow-check/tests` (`analysis_api.rs`,
   `project_analysis_overlay_snapshot.rs`, `project_analysis_test_resolution.rs`).
-- `analyze_source_project` is crate-internal (`pub(crate)`); the public entry is `analyze_project`. Both take the accepted catalog as an `Option<&CatalogMetadata>` input the caller supplies. The convenience `check_project` binds no accepted catalog (the first-run shape); `check_project_with_catalog` takes the snapshot the CLI reads from the engine-resident store.
+- `analyze_source_project` is crate-internal (`pub(crate)`); the public entry is `analyze_project`. Both take the accepted catalog as an `Option<&CatalogMetadata>` input the caller supplies. The convenience `check_project` binds no accepted catalog (the first-run shape); `check_project_with_catalog` takes the committed `marrow.catalog.json` artifact, with the store snapshot used only as the local crash bridge.
 
 ## Read next
 

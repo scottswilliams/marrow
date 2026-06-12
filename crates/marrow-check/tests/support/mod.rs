@@ -173,9 +173,9 @@ pub mod catalog {
     }
 
     /// Read the accepted-catalog fixture file at the project root, if one was written. A
-    /// missing file is a first-run project. This is the test-fixture spelling of the
-    /// engine-resident accepted snapshot the production CLI reads from the store; suites
-    /// bind it through [`super::check_with_accepted`].
+    /// missing file is a first-run project. Suites bind this caller-supplied analysis
+    /// input through [`super::check_with_accepted`], matching the production CLI after it
+    /// has loaded the committed `marrow.catalog.json` artifact.
     pub fn read_catalog(root: &Path) -> Option<CatalogMetadata> {
         let json = std::fs::read_to_string(catalog_path(root)).ok()?;
         Some(CatalogMetadata::from_json(&json).expect("fixture catalog parses"))
@@ -221,10 +221,10 @@ pub mod catalog {
     }
 }
 
-/// Check the project under `root`, binding any accepted catalog the fixture wrote, the
-/// way the production CLI binds the engine-resident snapshot. This is the catalog-aware
-/// replacement for a bare `check_project` in suites that pin a hand-built accepted
-/// catalog the source has moved away from.
+/// Check the project under `root`, binding any accepted catalog fixture the suite wrote
+/// as caller-supplied analysis input. This is the catalog-aware replacement for a bare
+/// `check_project` in suites that pin a hand-built accepted catalog the source has moved
+/// away from.
 pub fn check_with_accepted(root: &Path) -> (CheckReport, marrow_check::CheckedProgram) {
     let accepted = catalog::read_catalog(root);
     check_project_with_catalog(root, &config(), accepted.as_ref()).expect("check")

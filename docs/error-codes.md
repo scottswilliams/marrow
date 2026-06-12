@@ -92,7 +92,7 @@ code is stable and predictable:
 | `run`, `value` | `runtime` |
 | `store` | `storage` |
 | `io` | `io` |
-| everything else (`config`, `project`, `data`, `evolve`, `write`, `test`, `restore`) | `tooling` |
+| everything else (`config`, `project`, `catalog`, `data`, `evolve`, `write`, `test`, `restore`) | `tooling` |
 
 A `run.capability` error is the runtime form of a missing host capability; it
 carries `kind` `runtime` (the `capability` kind named in the envelope section is
@@ -195,6 +195,12 @@ Resource-schema rules. Reported during a project check alongside `check.*`.
 | `schema.index_requires_keyed_root` | An index is declared on a store with no keyed root. |
 | `schema.nested_index_arg` | An index argument names a field nested through an unkeyed group (not yet resolved by the write planner). |
 
+### `catalog.*` — kind `tooling`
+
+| Code | Meaning |
+|---|---|
+| `catalog.merge_conflict` | `marrow.catalog.json` or another accepted-catalog metadata section contains Git conflict marker lines. Resolve the conflict and rerun the command. |
+
 ### `run.*` — kind `runtime`
 
 Runtime faults from the evaluator, surfaced by `run` and `test`. Deterministic
@@ -230,8 +236,8 @@ code, except `run.uncaught_error` — see "Typed Errors In Running Programs".
 | `run.recursion_limit` | Function-call nesting exceeded the fixed call-depth budget (256). Located at the offending call site and reports the budget plus observed attempted depth, so runaway or unbounded recursion fails closed rather than overflowing the stack; see the [cost model](language/cost-model.md). |
 | `run.no_entry` | `marrow run` found no entry: no `--entry` was given and `marrow.json` sets no `run.defaultEntry`. |
 | `run.store_evolved` | The store was stamped at a catalog epoch newer than this program accepted, so a newer binary evolved it. Recompile or upgrade against the current accepted catalog. Fenced before any execution; the store is unchanged. |
-| `run.store_behind` | The store was stamped at a catalog epoch older than this program accepted, so its data predates the catalog. Activate the store with an evolution apply first. Fenced before any execution; the store is unchanged. |
-| `run.schema_drift` | The store was stamped under a different schema at the same catalog epoch: its recorded source digest does not match the durable shape this binary expects. Fenced before any execution; the store is unchanged. |
+| `run.store_behind` | The store was stamped at a catalog epoch older than this program accepted, so its data predates the catalog. Run `marrow evolve apply` to activate the store first. Fenced before any execution; the store is unchanged. |
+| `run.schema_drift` | The store was stamped under a different schema at the same catalog epoch: its recorded source digest does not match the durable shape this binary expects. Run `marrow evolve preview` to inspect the required repair or `marrow evolve apply` to activate it. Fenced before any execution; the store is unchanged. |
 | `run.engine_profile` | The store's engine profile does not match this binary's storage layout. Fenced before any execution; the store is unchanged. |
 | `run.store_unstamped` | The store holds saved records but carries no catalog activation stamp. Run `marrow check --data` and `marrow evolve apply` to activate the accepted catalog before running. Fenced before any execution; the store is unchanged. |
 
@@ -329,10 +335,10 @@ Source-native data-evolution preview/apply faults.
 | Code | Meaning |
 |---|---|
 | `evolve.no_accepted_catalog` | Apply was run on a project that declares no saved data, so there is no baseline catalog epoch to advance from. |
-| `evolve.repair_required` | The attached data snapshot cannot discharge a required obligation. Repair the data through explicit maintenance/admin code, then preview again. |
-| `evolve.drift` | The live source, catalog, store snapshot, engine metadata, affected IDs, or counts no longer match the preview witness. Preview again. |
-| `evolve.store_commit_drift` | The store commit changed after preview. Preview again against the current store. |
-| `evolve.catalog_drift` | The store's accepted catalog snapshot changed after preview, so the witness was discharged against a catalog the store no longer holds. Apply refuses before writing. Preview again. |
+| `evolve.repair_required` | The attached data snapshot cannot discharge a required obligation. Repair the data through explicit maintenance/admin code, then run `marrow evolve preview` again. |
+| `evolve.drift` | The live source, catalog, store snapshot, engine metadata, affected IDs, or counts no longer match the preview witness. Rerun `marrow evolve preview`, then rerun `marrow evolve apply`. |
+| `evolve.store_commit_drift` | The store commit changed after preview. Rerun `marrow evolve preview`, then rerun `marrow evolve apply`. |
+| `evolve.catalog_drift` | The store's accepted catalog snapshot changed after preview, so the witness was discharged against a catalog the store no longer holds. Apply refuses before writing; rerun `marrow evolve preview`, then rerun `marrow evolve apply`. |
 | `evolve.maintenance_required` | A destructive retire was reached without the maintenance gate. |
 | `evolve.approval_required` | A destructive retire needs an approval naming the catalog ID and populated count from preview. |
 | `evolve.approval_mismatch` | The supplied destructive approval did not match the exact preview witness. |

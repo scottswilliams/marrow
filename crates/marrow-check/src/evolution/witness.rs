@@ -253,6 +253,11 @@ pub struct EvolutionWitness {
     pub accepted_catalog: CatalogFingerprint,
     /// The catalog proposal to activate, or `None` when source proposed no change.
     pub proposal_catalog: Option<CatalogFingerprint>,
+    /// The accepted catalog snapshot the store held when preview discharged the
+    /// witness. Apply permits a file-ahead activation only when this exact older
+    /// snapshot is still present, so a stale local store can catch up to the committed
+    /// file artifact without accepting concurrent catalog drift.
+    pub store_catalog: Option<CatalogFingerprint>,
     /// The store's stamped shape digest at preview time, or `None` for an unstamped
     /// store. Apply fences the store against this so an evolution that changes shape
     /// verifies the store still holds the pre-apply shape before stamping the new one,

@@ -21,7 +21,7 @@ One apply path serves two callers:
 | --- | --- |
 | `evolution/mod.rs` | Module tree and public surface; re-exports `apply`/`try_auto_apply`/`fence`/`rebuild_store_indexes`/`commit_catalog_baseline`. |
 | `evolution/apply.rs` | Apply orchestrator; defines `Approval`, `ApplyOutcome`, `ActivationReceipt`, `ApplyError`, bounded receipt counters, direct transaction-write helpers, `reconcile_counts`, and `commit_apply_transaction`. |
-| `evolution/baseline.rs` | `commit_catalog_baseline`: freeze a project's first proposed catalog into an empty store as one `StampMetadata` step through `WritePlan` (catalog rows and commit metadata via the shared `metadata_stamp`); a no-op when the store already holds a catalog or any saved data. |
+| `evolution/baseline.rs` | `commit_catalog_baseline`: freeze a project's first proposed catalog, or republish an already accepted catalog from `marrow.catalog.json`, into an empty store as one `StampMetadata` step through `WritePlan` (catalog rows and commit metadata via the shared `metadata_stamp`); a no-op when the store already holds a catalog or any saved data. The CLI renders `marrow.catalog.json` only after reading the committed snapshot back. |
 | `evolution/validate.rs` | `validate_witness` (re-preview, byte equality, `Drift`), `assert_commit_pin` (`StoreCommitDrift`), and `assert_accepted_catalog_pin` (the store's published catalog digest must match the witness's accepted catalog, else `CatalogDrift`). |
 | `evolution/window.rs` | Activation-window `fence` (engine profile, catalog epoch, schema-bearing source digest) and the `metadata_stamp` / `current_engine_profile` shared with managed writes; stamp facts are the commit id, epochs, source digest, engine profile, and touched root/index IDs. |
 | `evolution/admission.rs` | Gates `RepairRequired` (`NotActivatable`) and destructive retires; requires maintenance plus an exact per-id scoped `Approval`. |
@@ -40,7 +40,7 @@ One apply path serves two callers:
 - Stamp and fence read the same facts by construction, so a store this binary just wrote passes its own fence.
 - Index rebuilds are deferred to a second pass so they see same-apply defaults/transforms through transaction-visible store writes.
 - `ActivationReceipt` is render-only state returned to the caller; commit metadata and backup descriptors do not persist per-effect counts.
-- The activated catalog snapshot, epoch, and data commit in one transaction, so the accepted catalog never advances without the data it describes and there is no post-commit publish window.
+- The activated catalog snapshot, epoch, and data commit in one transaction, so the accepted catalog never advances without the data it describes. The project-root file is a post-commit render of the committed snapshot, and a later command repairs it from the store if that render is interrupted before the file is written completely.
 
 ## Read next
 

@@ -17,9 +17,8 @@ use crate::StoreLeafKind;
 /// The single owner of the const-default rule applied to a member leaf: a non-scalar leaf
 /// (an enum, an identity, or a non-tokenizable position with no leaf kind) cannot take a
 /// constant default, because a computed fill is a transform, not a default; a scalar leaf
-/// evaluates its value through [`eval_const_default`]. Both the discharge accumulator and
-/// the resume verifier route through here so the gate and the eval never drift. A rejected
-/// default returns its typed cause so the verdict names which way the default failed.
+/// evaluates its value through [`eval_const_default`]. A rejected default returns its
+/// typed cause so the verdict names which way the default failed.
 pub(crate) fn default_value_for_leaf(
     value: &Expression,
     leaf: Option<&StoreLeafKind>,

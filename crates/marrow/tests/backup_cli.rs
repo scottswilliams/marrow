@@ -103,10 +103,10 @@ fn seeded_project(name: &str) -> (TempProject, PathBuf) {
     (root, data_dir)
 }
 
-/// Empty a project's saved data before a restore, leaving a truly empty store. The
-/// accepted catalog is engine-resident, so removing the store data dir removes the
-/// accepted snapshot too; restore replays the catalog rows the backup carries, so the
-/// target needs no re-established baseline and binds the backup's own accepted identity.
+/// Empty a project's saved data before a restore, leaving a truly empty store. Removing
+/// the store data dir removes the crash-bridge catalog rows too; restore replays the
+/// catalog rows the backup carries, so the target needs no re-established baseline and
+/// binds the backup's own accepted identity.
 fn empty_store_data(_root: &Path, data_dir: &Path) {
     fs::remove_dir_all(data_dir).expect("remove store data");
 }
@@ -492,13 +492,12 @@ fn backup_succeeds_after_write_capable_run_seeds_store_uid() {
     );
 }
 
-/// With engine-resident atomic publish there is no activation window: an `evolve apply`
-/// advances the store's catalog and data together, so a backup taken after it carries the
-/// evolved accepted catalog. A restore replays those rows, so the restored store is
-/// self-contained and runs immediately — no resume or re-evolve step, and a fresh `evolve
-/// apply` finds nothing to do.
+/// An `evolve apply` advances the store's catalog and data together, so a backup taken
+/// after it carries the evolved accepted catalog. A restore replays those rows, so the
+/// restored store is self-contained and runs immediately; a fresh `evolve apply` finds
+/// nothing to do.
 #[test]
-fn restore_of_an_evolved_store_runs_immediately_with_no_resume() {
+fn restore_of_an_evolved_store_runs_without_reapplying_evolution() {
     let (root, data_dir) = evolution_default_project("backup-evolved-restore");
     let dir = root.to_str().unwrap().to_string();
     let archive = root.join("evolved.mwbackup");
@@ -526,22 +525,21 @@ fn restore_of_an_evolved_store_runs_immediately_with_no_resume() {
     );
 
     // The restored store runs immediately: the evolved data and backfilled default are
-    // readable with no resume step.
+    // readable without re-running evolution.
     assert_eq!(
         data_get_value(&root, "^books(1).title"),
         Some(b"Mort".to_vec()),
-        "the restored book is readable with no resume"
+        "the restored book is readable without re-running evolution"
     );
     assert_eq!(
         data_get_value(&root, "^books(1).pages"),
         Some(b"0".to_vec()),
-        "the backfilled default is readable with no resume"
+        "the backfilled default is readable without re-running evolution"
     );
 
     // A fresh apply against the restored store finds nothing new to evolve: the source
     // already matches the restored accepted catalog, so the apply is idempotent and leaves
-    // the accepted identity exactly where the restore put it — there is no activation
-    // window to resume.
+    // the accepted identity exactly where the restore put it.
     let reapply = marrow(&["evolve", "apply", "--format", "json", &dir]);
     assert_eq!(reapply.status.code(), Some(0), "reapply: {reapply:?}");
     assert_eq!(
@@ -917,8 +915,8 @@ fn checked_books_place(root: impl AsRef<Path>) -> marrow_check::CheckedSavedPlac
     support::commit_catalog_if_clean(root);
     let config_text = fs::read_to_string(root.join("marrow.json")).expect("read config");
     let config = marrow_project::parse_config(&config_text).expect("parse config");
-    // Bind the program against the engine-resident accepted catalog so its saved roots
-    // carry the same catalog ids the live store keys cells under.
+    // Bind the program against the accepted catalog snapshot so its saved roots carry
+    // the same catalog ids the live store keys cells under.
     let accepted = support::native_store_path(root, &config)
         .filter(|path| path.exists())
         .and_then(|path| {

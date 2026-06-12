@@ -156,6 +156,7 @@ mod tests {
                 digest: "sha256:0".to_string(),
             },
             proposal_catalog: None,
+            store_catalog: None,
             store_source_digest: None,
             engine_profile_digest: None,
             layout_epoch: None,

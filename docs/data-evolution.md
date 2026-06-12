@@ -115,8 +115,9 @@ marrow evolve apply ./project
 ## Renames
 
 A field's source name is how code spells it. Its durable identity is owned by the
-engine-resident accepted catalog, not by source annotations, source order, or a
-best-effort source diff. A rename is an explicit catalog decision:
+accepted catalog in `marrow.catalog.json`, with the store copy acting as the
+transaction participant and crash bridge, not by source annotations, source
+order, or a best-effort source diff. A rename is an explicit catalog decision:
 
 ```mw
 evolve
@@ -132,10 +133,11 @@ intent.
 
 ## Accepted Catalog Metadata
 
-The accepted catalog is engine-resident: it lives in the store as a private
-catalog table, not as a committed file, and it has no `marrow.json` input. It is
-not Marrow language data — there is no `^catalog` root, resource, query,
-standard-library, or data-CLI surface that can read, scan, or mutate it.
+The accepted catalog is the fixed `marrow.catalog.json` artifact in the project
+root, with a private copy in the store as the crash bridge for state-establishing
+commands. It has no `marrow.json` input and is not Marrow language data — there
+is no `^catalog` root, resource, query, standard-library, or data-CLI surface
+that can read, scan, or mutate it.
 
 The snapshot records its catalog epoch and digest. Each entry records:
 
@@ -153,22 +155,26 @@ must not be reused after a retire; a later source declaration at the same catalo
 path is rejected rather than minted as a fresh identity. `reserved` is the
 durable inactive spelling for a retired catalog path.
 
-Source-only checks read the accepted snapshot from the store through a read-only
-handle when one exists. They propose replacement metadata when no snapshot is
-recorded or it is stale, but never write it, so `marrow check` stays read-only
-and CI-safe; a project whose durable identity is not yet recorded is reported
-informationally, not as a failure. Checked facts expose catalog-backed IDs for
-resources, stores, store indexes, resource members, enums, and enum members.
-Runtime value encoding remains a separate storage concern; the catalog is the
-durable schema identity exposed to tools, evolution, and checked facts.
+Source-only checks read `marrow.catalog.json` when it exists. If the native store
+already holds a committed catalog and the file is missing, stale, or a torn
+non-conflict render, the command repairs the file from the committed store
+snapshot and proceeds; it never creates a store for that repair. Git conflict
+markers remain `catalog.merge_conflict`: resolve the source-tree conflict and
+rerun the command. A project whose durable identity is not yet recorded is
+reported informationally, not as a failure. Checked facts expose catalog-backed
+IDs for resources, stores, store indexes, resource members, enums, and enum
+members. Runtime value encoding remains a separate storage concern; the catalog
+is the durable schema identity exposed to tools, evolution, and checked facts.
 
 The accepted snapshot is advanced only by the flows that establish durable
 state — running the program and `marrow evolve apply` — each writing the catalog
 rows in the same store transaction as the data and metadata they commit. The
 first such command on a project with a durable surface freezes the proposed
-identity into the store; once a baseline exists, later identity changes flow
-through `evolve apply` rather than being written from a check. There is no
-separate command to inspect or accept a proposal.
+identity into the store, or republishes an already committed `marrow.catalog.json`
+into an empty local store, then renders the file from the committed snapshot;
+once a baseline exists, later identity changes flow through `evolve apply`
+rather than being written from a check. There is no separate command to inspect
+or accept a proposal.
 
 A stable ID is a random opaque 128-bit value in the `cat_<32 lowercase hex>`
 shape. It is allocated independently of the source path, so it never changes
@@ -205,9 +211,9 @@ against a different one.
 | Empty (no saved records, no stamp) | Adopted: the run or apply proceeds and the first commit stamps the program's epoch, profile, and digest. |
 | Populated but unstamped (saved records, no activation stamp) | `run.store_unstamped`: run `marrow check --data` and `marrow evolve apply` to activate the accepted catalog first. |
 | Stamped epoch equals the program's, and the source digest matches | Proceeds. An apply advances the store to the proposal epoch; a run executes normally. |
-| Stamped epoch equals the program's, but the source digest differs | `run.schema_drift`: the store was stamped under a structurally different schema at this epoch. |
+| Stamped epoch equals the program's, but the source digest differs | `run.schema_drift`: the store was stamped under a structurally different schema at this epoch; run `marrow evolve preview` or `marrow evolve apply`. |
 | Stamped epoch newer than the program | `run.store_evolved`: a newer binary evolved the store. Recompile or upgrade against the current accepted catalog. |
-| Stamped epoch older than the program | `run.store_behind`: the store predates this catalog. Activate it to the program's epoch with an evolution apply first. |
+| Stamped epoch older than the program | `run.store_behind`: the store predates this catalog. Run `marrow evolve apply` to activate it to the program's epoch first. |
 | Engine profile differs from the binary's layout | `run.engine_profile`: the physical storage layout has drifted. |
 
 The catalog epoch is a coarse version number; two structurally different schemas
@@ -234,8 +240,12 @@ suppression uses the target identity facts plus the recomputed witness gate, not
 per-effect counts or digests. The accepted catalog rows, the catalog epoch, the
 commit metadata, and the data and index cells all advance in that one store
 transaction, so a reader sees either the whole activation or none of it. There
-is no separate file-publish step and no crash-resume window to reconcile: a
-failure before commit rolls every effect back to the prior accepted snapshot.
+is no separate post-commit acceptance step: after the transaction commits, the
+CLI renders `marrow.catalog.json` from the committed store snapshot. If the
+process stops between the store commit and file render, leaving the file missing
+or partially written, the next command repairs the file from the store snapshot
+and proceeds. A failure before commit rolls every effect back to the prior
+accepted snapshot.
 
 A program with no accepted catalog has no durable activation context, so there is
 nothing to fence against. A run records the baseline catalog before it reaches the

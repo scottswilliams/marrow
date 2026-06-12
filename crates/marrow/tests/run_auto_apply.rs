@@ -259,9 +259,9 @@ fn a_drop_against_an_empty_target_auto_applies_but_a_populated_drop_fences() {
 
 #[test]
 fn an_auto_applied_binary_passes_its_own_fence_on_a_re_run() {
-    // The crash-resume invariant: a binary that auto-applies an evolution writes the new
-    // shape it expects, so running the same binary again finds the store at the matching
-    // epoch and digest and proceeds with no spurious drift and no second epoch advance.
+    // The same-binary rerun invariant: a binary that auto-applies an evolution writes the
+    // new shape it expects, so running it again finds the store at the matching epoch and
+    // digest and proceeds with no spurious drift and no second epoch advance.
     let root = books_and_log_project("run-autoapply-resume", BASELINE);
     let first = marrow_sub("run", &[dir(&root)]);
     assert_eq!(first.status.code(), Some(0), "first run: {first:?}");

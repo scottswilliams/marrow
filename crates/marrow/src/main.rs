@@ -372,26 +372,138 @@ pub(crate) fn load_config_with_format(
     })
 }
 
-/// Read the project's accepted-catalog snapshot from its engine-resident store, the
-/// input the analysis core binds durable identity against. The store is opened
-/// read-only and never created: a project on the in-memory backend, or one whose
-/// native store file does not exist yet, has no accepted catalog (a first run). A
-/// store-open or decode error surfaces as a typed exit code rather than a silent
-/// `None`, so a corrupt store fails the check instead of being mistaken for a first
-/// run. This is the one owner of "open the store read-only and read its accepted
-/// snapshot", shared by every read path.
+/// Read the project's accepted-catalog snapshot from its committed source-tree file
+/// or its store crash bridge. The store is opened read-only and never created: a
+/// project on the in-memory backend, or one whose native store file does not exist
+/// yet, has no store-side crash bridge. A committed store snapshot repairs missing,
+/// stale, or torn file renders, while conflict markers remain source-tree conflicts
+/// the user must resolve.
 pub(crate) fn read_accepted_store_catalog(
     dir: &str,
     config: &marrow_project::ProjectConfig,
     format: CheckFormat,
 ) -> Result<Option<marrow_catalog::CatalogMetadata>, ExitCode> {
+    let file_accepted = read_accepted_catalog_file(dir);
+    if let AcceptedCatalogFile::Invalid(error) = &file_accepted
+        && error.code == marrow_catalog::CATALOG_MERGE_CONFLICT
+    {
+        report_simple_error(error.code, &error.message, format);
+        return Err(ExitCode::FAILURE);
+    }
     let Some(store) = open_store_for_inspection(dir, config, format)? else {
-        return Ok(None);
+        return accepted_catalog_file_result(file_accepted, None, format);
     };
-    store.read_catalog_snapshot().map_err(|error| {
+    let accepted = store.read_catalog_snapshot().map_err(|error| {
         report_simple_error(error.code(), &error.to_string(), format);
         ExitCode::FAILURE
+    })?;
+    if let Some(snapshot) = &accepted
+        && store_snapshot_repairs_file(&file_accepted, snapshot)
+    {
+        render_accepted_catalog_file(dir, snapshot, format)?;
+        return Ok(accepted);
+    }
+    accepted_catalog_file_result(file_accepted, accepted, format)
+}
+
+enum AcceptedCatalogFile {
+    Missing,
+    Snapshot(marrow_catalog::CatalogMetadata),
+    Invalid(marrow_catalog::CatalogError),
+    ReadError {
+        path: PathBuf,
+        error: std::io::Error,
+    },
+}
+
+fn read_accepted_catalog_file(dir: &str) -> AcceptedCatalogFile {
+    let path = accepted_catalog_file_path(dir);
+    let json = match std::fs::read_to_string(&path) {
+        Ok(json) => json,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return AcceptedCatalogFile::Missing;
+        }
+        Err(error) => return AcceptedCatalogFile::ReadError { path, error },
+    };
+    match marrow_catalog::CatalogMetadata::from_json(&json) {
+        Ok(snapshot) => AcceptedCatalogFile::Snapshot(snapshot),
+        Err(error) => AcceptedCatalogFile::Invalid(error),
+    }
+}
+
+fn accepted_catalog_file_result(
+    file_accepted: AcceptedCatalogFile,
+    fallback: Option<marrow_catalog::CatalogMetadata>,
+    format: CheckFormat,
+) -> Result<Option<marrow_catalog::CatalogMetadata>, ExitCode> {
+    match file_accepted {
+        AcceptedCatalogFile::Missing => Ok(fallback),
+        AcceptedCatalogFile::Snapshot(snapshot) => Ok(Some(snapshot)),
+        AcceptedCatalogFile::Invalid(error) => {
+            report_simple_error(error.code, &error.message, format);
+            Err(ExitCode::FAILURE)
+        }
+        AcceptedCatalogFile::ReadError { path, error } => {
+            report_io_error(&path.display().to_string(), &error, format);
+            Err(ExitCode::FAILURE)
+        }
+    }
+}
+
+fn store_snapshot_repairs_file(
+    file_accepted: &AcceptedCatalogFile,
+    store_snapshot: &marrow_catalog::CatalogMetadata,
+) -> bool {
+    match file_accepted {
+        AcceptedCatalogFile::Missing | AcceptedCatalogFile::Invalid(_) => true,
+        AcceptedCatalogFile::ReadError { error, .. } => {
+            error.kind() == std::io::ErrorKind::InvalidData
+        }
+        AcceptedCatalogFile::Snapshot(file) => {
+            file != store_snapshot && store_snapshot.epoch >= file.epoch
+        }
+    }
+}
+
+pub(crate) fn render_accepted_catalog_file_from_store(
+    dir: &str,
+    store: &marrow_store::tree::TreeStore,
+    format: CheckFormat,
+) -> Result<(), ExitCode> {
+    let Some(snapshot) = store.read_catalog_snapshot().map_err(|error| {
+        report_simple_error(error.code(), &error.to_string(), format);
+        ExitCode::FAILURE
+    })?
+    else {
+        return Ok(());
+    };
+    render_accepted_catalog_file(dir, &snapshot, format)
+}
+
+fn render_accepted_catalog_file(
+    dir: &str,
+    snapshot: &marrow_catalog::CatalogMetadata,
+    format: CheckFormat,
+) -> Result<(), ExitCode> {
+    let path = accepted_catalog_file_path(dir);
+    let desired = snapshot.to_json_pretty();
+    match std::fs::read_to_string(&path) {
+        Ok(current) if current == desired => return Ok(()),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            report_io_error(&path.display().to_string(), &error, format);
+            return Err(ExitCode::FAILURE);
+        }
+    }
+    std::fs::write(&path, desired).map_err(|error| {
+        report_io_error(&path.display().to_string(), &error, format);
+        ExitCode::FAILURE
     })
+}
+
+fn accepted_catalog_file_path(dir: &str) -> PathBuf {
+    Path::new(dir).join("marrow.catalog.json")
 }
 
 /// Load the config and check the project. On any failure (config, unreadable
@@ -462,6 +574,9 @@ pub(crate) fn recheck_against_store_catalog(
         report_simple_error(error.code(), &error.to_string(), format);
         ExitCode::FAILURE
     })?;
+    if let Some(snapshot) = &accepted {
+        render_accepted_catalog_file(dir, snapshot, format)?;
+    }
     let (report, program) =
         marrow_check::check_project_with_catalog(Path::new(dir), config, accepted.as_ref())
             .map_err(|error| {

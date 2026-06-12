@@ -1,3 +1,5 @@
+use std::fs;
+
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{CommitMetadata, TreeStore};
 use marrow_store::value::{Scalar, ScalarType};
@@ -11,6 +13,7 @@ use support_evolve::{
     REQUIRED_NO_DEFAULT_SOURCE, accepted_catalog, accepted_catalog_entry_id, commit_catalog,
     native_books_project, native_store_path, open_native_store, read_scalar,
     read_scalar_by_catalog_id, root_place, seed_member, seed_title_only, store_catalog_id,
+    store_epoch,
 };
 
 #[test]
@@ -91,6 +94,112 @@ fn evolve_apply_backfills_proposal_required_default_before_accepting_catalog() {
 
     assert_eq!(catalog_epoch, baseline_epoch + 1);
     assert_eq!(commit.catalog_epoch, baseline_epoch + 1);
+}
+
+#[test]
+fn evolve_apply_activates_a_local_store_behind_the_committed_catalog_file() {
+    const BASELINE_WITH_SEED: &str = "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         store ^books(id: int): Book\n\
+         pub fn seed()\n\
+         \x20   var b: Book\n\
+         \x20   b.title = \"Dune\"\n\
+         \x20   transaction\n\
+         \x20       ^books(1) = b\n";
+    const EVOLVED_WITH_DEFAULT: &str = "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required pages: int\n\
+         store ^books(id: int): Book\n\
+         evolve\n\
+         \x20   default Book.pages = 0\n\
+         pub fn seed()\n\
+         \x20   var b: Book\n\
+         \x20   b.title = \"Hyperion\"\n\
+         \x20   b.pages = 1\n\
+         \x20   transaction\n\
+         \x20       ^books(2) = b\n\
+         pub fn noop()\n\
+         \x20   print(\"ok\")\n";
+
+    let root = native_books_project("evolve-apply-file-ahead-store-behind", BASELINE_WITH_SEED);
+    let dir = root.to_str().unwrap();
+
+    let baseline_run = marrow(&["run", "--entry", "books::seed", dir]);
+    assert_eq!(baseline_run.status.code(), Some(0), "{baseline_run:?}");
+    assert_eq!(store_epoch(&root), Some(1));
+    let store_epoch_one_bytes = fs::read(native_store_path(&root)).expect("read epoch-1 store");
+
+    write(&root, "src/books.mw", EVOLVED_WITH_DEFAULT);
+    let first_apply = marrow(&["evolve", "apply", "--format", "json", dir]);
+    assert_eq!(first_apply.status.code(), Some(0), "{first_apply:?}");
+    let first_record = support::json(first_apply.stdout);
+    assert_eq!(first_record["status"], serde_json::json!("applied"));
+    let committed_file = fs::read_to_string(root.join("marrow.catalog.json"))
+        .expect("read committed epoch-2 catalog file");
+    let file_catalog = marrow_catalog::CatalogMetadata::from_json(&committed_file)
+        .expect("parse committed catalog file");
+    assert_eq!(file_catalog.epoch, 2);
+    assert_eq!(store_epoch(&root), Some(2));
+
+    fs::write(native_store_path(&root), store_epoch_one_bytes).expect("restore epoch-1 store");
+    assert_eq!(store_epoch(&root), Some(1));
+
+    let fenced_run = marrow(&["run", "--entry", "books::noop", dir]);
+    assert_eq!(
+        fenced_run.status.code(),
+        Some(1),
+        "run should fence the local store behind the committed catalog file: {fenced_run:?}"
+    );
+    let stderr = String::from_utf8(fenced_run.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("run.store_behind") && stderr.contains("marrow evolve apply"),
+        "store-behind fence must name the actionable apply command: {stderr}"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("read file after fence"),
+        committed_file,
+        "run.store_behind must not rewind the committed file artifact"
+    );
+
+    let preview = marrow(&["evolve", "preview", "--format", "json", dir]);
+    assert_eq!(preview.status.code(), Some(0), "{preview:?}");
+    let preview_record = support::json(preview.stdout);
+    assert_eq!(preview_record["status"], serde_json::json!("activatable"));
+    assert_eq!(preview_record["accepted_epoch"], serde_json::json!(2));
+
+    let second_apply = marrow(&["evolve", "apply", "--format", "json", dir]);
+    assert_eq!(
+        second_apply.status.code(),
+        Some(0),
+        "the advised apply path must activate the older local store: {second_apply:?}"
+    );
+    let second_record = support::json(second_apply.stdout);
+    assert_eq!(second_record["status"], serde_json::json!("applied"));
+    assert_eq!(second_record["catalog_epoch"], serde_json::json!(2));
+    assert_eq!(store_epoch(&root), Some(2));
+    assert_eq!(
+        accepted_catalog(&root).to_json_pretty(),
+        committed_file,
+        "apply republishes the committed file catalog into the local store"
+    );
+
+    let run_after_apply = marrow(&["run", "--entry", "books::noop", dir]);
+    assert_eq!(
+        run_after_apply.status.code(),
+        Some(0),
+        "run succeeds after the advised apply path: {run_after_apply:?}"
+    );
+    assert_eq!(
+        String::from_utf8(run_after_apply.stdout).expect("stdout utf8"),
+        "ok\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("read file after apply"),
+        committed_file,
+        "the successful apply does not rewrite the committed file artifact"
+    );
 }
 
 #[test]

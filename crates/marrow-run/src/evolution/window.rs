@@ -92,11 +92,11 @@ impl FenceError {
             ),
             FenceError::StoreBehind { stored, accepted } => format!(
                 "store catalog epoch {stored} is older than this program's accepted epoch {accepted}; \
-                 the store predates this catalog. Activate the store to epoch {accepted} with an evolution apply first."
+                 the store predates this catalog. Run `marrow evolve apply` to activate the store to epoch {accepted} before running."
             ),
             FenceError::SchemaDrift => {
                 "store was stamped under a different schema at this catalog epoch; \
-                 the durable shape this binary expects does not match the one the store holds"
+                 the durable shape this binary expects does not match the one the store holds. Run `marrow evolve preview` to inspect the required repair or `marrow evolve apply` to activate it."
                     .to_string()
             }
             FenceError::EngineProfileDrift => {

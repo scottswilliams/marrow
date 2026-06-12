@@ -6,10 +6,10 @@
 //! its source digest, accepted catalog epoch and digest, engine profile,
 //! value-codec version, and one integrity checksum — so a restore refuses data
 //! outside this binary's checked contract. The catalog section carries the
-//! engine-resident accepted catalog rows so a restored store is self-contained
-//! and runs immediately; the data stream carries the store's data cells only,
-//! never catalog rows. Generated indexes are derived, so a restore rebuilds them
-//! rather than replaying them.
+//! committed accepted catalog rows so a restored store is self-contained and
+//! runs immediately; the data stream carries the store's data cells only, never
+//! catalog rows. Generated indexes are derived, so a restore rebuilds them rather
+//! than replaying them.
 //!
 //! The integrity checksum is one bounded streaming fold over the manifest bytes,
 //! the catalog section, and the data cells, so a tampered manifest or catalog row
@@ -463,8 +463,9 @@ pub(super) mod test_support {
         std::fs::write(&path, source).expect("write source");
         let (report, program) = check_project(&root, &config()).expect("check project");
         assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-        // Freeze the baseline into an engine-resident store and re-bind against the
-        // accepted snapshot, the way a state-establishing run does.
+        // Commit the baseline through the store transaction and re-bind against the
+        // accepted snapshot, the way a state-establishing run does before rendering the
+        // catalog file.
         let store = marrow_store::tree::TreeStore::memory();
         marrow_run::evolution::commit_catalog_baseline(&store, &program)
             .expect("commit catalog baseline");

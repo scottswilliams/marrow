@@ -87,9 +87,9 @@ fn data_get_distinguishes_a_children_only_path_from_absent() {
 
 #[test]
 fn data_get_and_integrity_on_an_unseeded_project_write_no_records() {
-    // The project's identity is committed (its catalog lives in the engine-resident
-    // store), but no run has seeded a record. The data inspection commands report a clean
-    // empty store and never write a record of their own.
+    // The project's identity is committed to marrow.catalog.json, with the store snapshot
+    // present as the local crash bridge, but no run has seeded a record. The data
+    // inspection commands report a clean empty store and never write a record of their own.
     let project = native_project("data-readonly");
     let dir = project.to_str().unwrap().to_string();
     let get = marrow(&["data", "get", "--format", "json", &dir, "^counter(1).value"]);

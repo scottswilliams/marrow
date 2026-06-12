@@ -68,9 +68,10 @@ diagnostics.
   lone file. Only rules that need other project files are out of reach.
 - Given a project directory, it loads `marrow.json` and runs the project checker
   over every source root plus configured test files: parse, type, effect, and
-  durable-place checks. When a durable store exists, it reads the accepted catalog
-  snapshot from the store read-only to bind durable identity; it never writes the
-  store or freezes identity.
+  durable-place checks. It binds durable identity from the committed
+  `marrow.catalog.json` artifact, repairing that file from a committed store
+  snapshot when the local store already has one; it never creates the store or
+  freezes identity.
 - `--data` is project-only. It opens the configured store read-only and runs the
   same data-attached evolution preview that `marrow evolve preview` uses. A
   repair-required or approval-required witness exits `1`.
@@ -118,11 +119,12 @@ plus metadata stamp in one transaction. Like `run`, it records a project's
 baseline durable identity first when the project has none yet, then applies the
 evolution against the accepted catalog. The advanced accepted catalog rows commit
 in that same store transaction as the data work and the slim commit stamp, so
-the catalog never advances without the data behind it. The command output still
-renders receipt counts for defaults, transforms, retires, and rebuilt indexes,
-but those counts are not persisted in commit metadata. Destructive retire needs
-`--maintenance` and an approval whose catalog ID and populated count match the
-preview.
+the catalog never advances without the data behind it; after that commit, the
+CLI renders `marrow.catalog.json` from the committed store snapshot. The command
+output still renders receipt counts for defaults, transforms, retires, and
+rebuilt indexes, but those counts are not persisted in commit metadata.
+Destructive retire needs `--maintenance` and an approval whose catalog ID and
+populated count match the preview.
 
 ---
 
@@ -177,9 +179,13 @@ fails with `run.durable_store_required`.
 
 A clean run records the project's baseline durable identity if it has none yet:
 the first run of a project with a durable surface freezes the accepted catalog
-into the store transactionally as it commits. A project already past its baseline
-proposes no change and the store's catalog rows are left untouched. There is no
-separate acceptance step. See [data-evolution.md](data-evolution.md).
+into the store transactionally as it commits, or republishes an already
+committed `marrow.catalog.json` into an empty local store, then renders the file
+from that committed snapshot. A project already past its baseline proposes no
+change and the store's catalog rows are left untouched; if the store snapshot is
+ahead of the file, or the file contains a torn non-conflict render, the command
+repairs the file from the store and proceeds.
+There is no separate acceptance step. See [data-evolution.md](data-evolution.md).
 
 Opening a native store is fenced against its catalog activation stamp. A store
 that holds saved records but no activation stamp is refused
@@ -460,11 +466,12 @@ marrow backup [--format text|json|jsonl] <projectdir> <output-file>
 Write a typed portable backup of a project's saved data. The backup is a Marrow
 artifact, not a raw engine-file copy: a small header, a typed manifest, the
 accepted-catalog section, and the project's canonical ordered data-cell stream.
-The catalog section carries the engine-resident accepted catalog rows, so a
-restored store is self-contained. The manifest binds the data to the program
-that wrote it — its source digest, accepted catalog epoch and digest, engine
-profile, value-codec version, data-stream digest, store UID, and one integrity
-checksum over the manifest, catalog section, and data cells — so a later restore
+The catalog section carries the accepted catalog rows, so a restored store is
+self-contained and can render the committed `marrow.catalog.json` artifact. The
+manifest binds the data to the program that wrote it — its source digest,
+accepted catalog epoch and digest, engine profile, value-codec version,
+data-stream digest, store UID, and one integrity checksum over the manifest,
+catalog section, and data cells — so a later restore
 can refuse data it cannot faithfully reproduce. The manifest fields are
 `source_digest`, `catalog_epoch`, `catalog_digest`, `state_digest`, `store_uid`,
 reserved-empty `parent_snapshot_digest`, `engine`, `commit`, `record_count`, and
