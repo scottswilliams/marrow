@@ -23,7 +23,8 @@ pub(crate) use calls::{CallCheck, check_call};
 pub(crate) use collections::{for_frame, is_saved_index_branch_path};
 pub(crate) use diagnostics::key_type_diagnostic;
 pub(crate) use driver::{
-    FilePrelude, ModuleNamePolicy, ResolvedFileCheck, check_resolved_files, file_prelude,
+    FilePrelude, ModuleNamePolicy, ResolvedFileCheck, annotation_type_known, check_resolved_files,
+    file_prelude,
 };
 pub(crate) use operators::{CoalesceCheck, check_binary, check_coalesce, check_unary};
 pub(crate) use ranges::check_range_value;

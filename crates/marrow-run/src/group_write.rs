@@ -12,7 +12,10 @@ use crate::expr::eval_expr;
 use crate::path::{lower, lower_keys};
 use crate::store::{DataAddress, LayerAddress};
 use crate::value::{Value, identity_keys_of, value_to_leaf};
-use crate::write::{plan_layer_group_write, plan_layer_identity_leaf_write, plan_layer_leaf_write};
+use crate::write::{
+    plan_layer_group_write, plan_layer_identity_leaf_write, plan_layer_leaf_write,
+    validate_required_fields_after_group_write,
+};
 use crate::write_dispatch::{created_required_paths_for_value, resource_value_of};
 
 pub(crate) fn eval_group_entry_write(
@@ -38,7 +41,6 @@ pub(crate) fn eval_group_entry_write(
     };
     let record_path = lower(record, env)?;
     let identity = record_path.identity.clone();
-    let nested_parent = !record_path.layers.is_empty();
     let parent_addresses = record_path.layer_addresses.clone();
     let mut traversed_layers = parent_addresses.clone();
     traversed_layers.push(LayerAddress::from_checked(layer_facts, Vec::new()));
@@ -58,10 +60,7 @@ pub(crate) fn eval_group_entry_write(
         );
     }
 
-    if nested_parent {
-        return Err(unsupported("assigning a nested group entry", span));
-    }
-    write_direct_group_entry(place, &identity, keys, value, span, env)
+    write_direct_group_entry(place, &identity, &parent_addresses, keys, value, span, env)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -103,6 +102,7 @@ fn write_layer_leaf(
 fn write_direct_group_entry(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
+    parent_addresses: &[LayerAddress],
     keys: &[ExecArg],
     value: &ExecExpr,
     span: SourceSpan,
@@ -121,26 +121,30 @@ fn write_direct_group_entry(
     let layer_keys = lower_keys(keys, span, false, None, expected, env)?;
     let value = resource_value_of(&layer_facts.members, fields, span)?;
     let layer_address = LayerAddress::from_checked(layer_facts, layer_keys.clone());
+    let mut layers = parent_addresses.to_vec();
+    layers.push(layer_address);
     let created_required_paths = created_required_paths_for_value(
         place,
         identity,
-        std::slice::from_ref(&layer_address),
+        &layers,
         &layer_facts.members,
         &value,
         span,
         env,
     )?;
-    let plan = plan_layer_group_write(
-        place,
-        identity,
-        std::slice::from_ref(&layer_address),
-        &value,
-        span,
-    );
+    let plan = plan_layer_group_write(place, identity, &layers, &value, span);
+    let plan = if env.transaction_depth() == 0 {
+        plan.and_then(|plan| {
+            validate_required_fields_after_group_write(place, identity, &layers, env.store, span)?;
+            Ok(plan)
+        })
+    } else {
+        plan
+    };
     env.apply_plan(plan, span)?;
     for path in created_required_paths {
         env.note_created_required_path(path);
     }
-    env.defer_required_entry_check(place, identity, &[layer_address]);
+    env.defer_required_entry_check(place, identity, &layers);
     Ok(())
 }

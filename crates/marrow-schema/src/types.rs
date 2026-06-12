@@ -253,6 +253,8 @@ pub struct Node {
     pub docs: Vec<String>,
     /// Empty for a top-level field; non-empty for any keyed leaf or keyed group.
     pub key_params: Vec<KeyDef>,
+    /// The declared resource entry type for an explicit typed keyed-field layer.
+    pub entry_type: Option<Type>,
     /// Empty for any [`NodeKind::Slot`]; the nested nodes for an [`NodeKind::Group`].
     pub members: Vec<Node>,
     pub kind: NodeKind,

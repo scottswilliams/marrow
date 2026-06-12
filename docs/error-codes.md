@@ -131,6 +131,7 @@ over every configured source and test file.
 | `check.duplicate_declaration` | A name is declared or imported more than once within a single file. |
 | `check.unresolved_import` | A `use` names a module that is neither a project module nor a standard-library module. |
 | `check.unknown_type` | A type annotation names a type the checker does not recognize. |
+| `check.recursive_keyed_entry` | A typed keyed-entry layer names a resource whose typed keyed-entry layers recursively name the original resource. v0.1 expands typed entries to a finite saved member shape, so recursive entry shapes fail closed. |
 | `check.return_value` | A `return` carries a value in a function with no return type, or omits one in a value-returning function. |
 | `check.missing_return` | A value-returning function can reach the end of its body without returning. |
 | `check.operator_type` | An operator is applied to operands whose types it does not accept. |
@@ -191,7 +192,7 @@ Resource-schema rules. Reported during a project check alongside `check.*`.
 | `schema.unknown_index_arg` | An index argument does not resolve to an identity key or a top-level field. |
 | `schema.unorderable_key` | A saved key has a type with no order-preserving key encoding (currently `decimal`). |
 | `schema.nonscalar_key` | A saved key (an identity key, a keyed-layer key parameter, or an index argument) is typed as an identity, a name, or a sequence; a key must be an orderable scalar. |
-| `schema.non_enum_named_field` | A saved field has a named type that is not a declared enum; saved fields store scalars or declared enum values. |
+| `schema.non_enum_named_field` | A saved field or explicit keyed leaf has a named value type that is not a declared enum; these members store scalars, identities, or declared enum values. Direct resource names on keyed fields are typed keyed entries instead. |
 | `schema.index_missing_identity_keys` | A non-unique index does not end with all identity keys in declaration order. |
 | `schema.index_requires_keyed_root` | An index is declared on a store with no keyed root. |
 | `schema.nested_index_arg` | An index argument names a field nested through an unkeyed group (not yet resolved by the write planner). |
@@ -260,7 +261,7 @@ one is reported under its own `write.*` code.
 
 | Code | Meaning |
 |---|---|
-| `write.required_absent` | A required field was absent in a whole-resource write. |
+| `write.required_absent` | A required field was absent in a whole-resource or whole-entry write. |
 | `write.type_mismatch` | A field value's type does not match the resource schema. |
 | `write.identity_mismatch` | The supplied identity keys do not match the store root's identity shape. |
 | `write.store` | The store reported an error during a write. |

@@ -24,6 +24,8 @@ pub const CHECK_DUPLICATE_DECLARATION: &str = "check.duplicate_declaration";
 pub const CHECK_UNRESOLVED_IMPORT: &str = "check.unresolved_import";
 /// A type annotation names a type the checker does not recognize.
 pub const CHECK_UNKNOWN_TYPE: &str = "check.unknown_type";
+/// A typed keyed-entry layer recursively names its own resource shape.
+pub const CHECK_RECURSIVE_KEYED_ENTRY: &str = "check.recursive_keyed_entry";
 /// A `return` carries a value in a function with no return type, or omits one in a
 /// value-returning function.
 pub const CHECK_RETURN_VALUE: &str = "check.return_value";

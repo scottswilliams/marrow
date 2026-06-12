@@ -6,7 +6,7 @@ Every `compile_*` entry returns the schema **and** a `Vec<SchemaError>` together
 
 ## The shapes
 
-- **Resource** — `compile_resource` / `compile_stored_resource` build a `ResourceSchema`: a source-ordered flat `Vec<Node>`. A `Node` is either a `Slot` (plain field or keyed leaf) or a `Group` (nested members). Keyed-ness is structural, not a flag — empty `key_params` means plain, non-empty means a keyed leaf. Sequence sugar desugars to the canonical keyed leaf: `name: sequence[T]` becomes `name(pos: int): T`.
+- **Resource** — `compile_resource` / `compile_stored_resource` build a `ResourceSchema`: a source-ordered flat `Vec<Node>`. A `Node` is either a `Slot` (plain field or keyed leaf) or a `Group` (nested members). Keyed-ness is structural, not a flag — empty `key_params` means plain, non-empty means a keyed layer. Sequence sugar desugars to the canonical keyed leaf: `name: sequence[T]` becomes `name(pos: int): T`. The checker later resolves an explicit keyed field whose value type names a resource into a keyed `Group` carrying that resource as its entry type; other named keyed leaf values must resolve to enum leaves.
 - **Store** — `compile_store` builds a `StoreSchema` (durable root, identity keys, indexes) over a compiled `ResourceSchema`. `StoreSchema::single_int_root` is the single-int-root `nextId` policy gate the checker types `nextId(^root)` against; the runtime re-checks the same contract on the lowered place via its own `single_int_identity`. `next_id_shape` is the shared rejection-message wording — single-sourced in the checker and reused verbatim by the runtime, so both report the same shape.
 - **Enum** — `compile_enum` builds an `EnumSchema`: members flattened pre-order DFS with parent links. Traversal indices are source-order positions, **not** durable value identity — identity lives in the parent-link tree shape.
 
@@ -17,6 +17,7 @@ Every `compile_*` entry returns the schema **and** a `Vec<SchemaError>` together
 | Saved key must be an orderable scalar (every scalar but `decimal`) | `SCHEMA_UNORDERABLE_KEY` |
 | Identity/named/sequence/unknown can't be a key | `SCHEMA_NONSCALAR_KEY` |
 | `unknown` forbidden anywhere inside a managed saved schema | (rejected; local resources exempt) |
+| Saved field and explicit keyed leaf named values must be enums unless the keyed field names a resource entry | `SCHEMA_NON_ENUM_NAMED_FIELD` |
 | Enum category must have children | `SCHEMA_CATEGORY_LEAF` |
 | Non-category enum parent forbidden | `SCHEMA_PARENT_NOT_CATEGORY` |
 | Index requires a keyed root; non-unique index must end with all identity keys in declaration order | `SCHEMA_INDEX_REQUIRES_KEYED_ROOT` |

@@ -97,6 +97,55 @@ pub fn visit_first(): string
     return ^patients(\"p1\").visits(1).name.first ?? \"\"
 ";
 
+const POST_TYPED_KEYED_COMMENTS: &str = "\
+module test
+resource Reply
+    required body: string
+resource Comment
+    required body: string
+    meta
+        author: string
+    replies(seq: int): Reply
+store ^comments(id: int): Comment
+resource Post
+    comments(seq: int): Comment
+store ^posts(id: int): Post
+
+pub fn save_missing_body()
+    var comment: Comment
+    ^posts(1).comments(1) = comment
+
+pub fn save_complete()
+    ^comments(1).body = \"hello\"
+    ^comments(1).meta.author = \"Ann\"
+    if exists(^comments(1))
+        ^posts(1).comments(1) = ^comments(1)
+
+pub fn read_comment(): Comment
+    var fallback: Comment
+    fallback.body = \"missing\"
+    return ^posts(1).comments(1) ?? fallback
+
+pub fn save_nested_reply()
+    ^comments(1).body = \"root\"
+    ^comments(1).meta.author = \"Ann\"
+    if exists(^comments(1))
+        ^posts(1).comments(1) = ^comments(1)
+    var reply: Reply
+    reply.body = \"hi\"
+    ^posts(1).comments(1).replies(1) = reply
+
+pub fn save_nested_reply_without_parent_body()
+    var reply: Reply
+    reply.body = \"hi\"
+    ^posts(1).comments(1).replies(1) = reply
+
+pub fn read_nested_reply(): Reply
+    var fallback: Reply
+    fallback.body = \"missing\"
+    return ^posts(1).comments(1).replies(1) ?? fallback
+";
+
 #[test]
 fn deleting_a_sparse_field_inside_an_unkeyed_group_is_allowed() {
     // Field delete descends unkeyed-group layers. Sparse descendants may still be
@@ -178,4 +227,70 @@ fn keyed_group_entry_read_materializes_unkeyed_group_descendants() {
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
     let outcome = run_entry(&store, checked_entry!(&program, "test::visit_first")).expect("read");
     assert_eq!(outcome.value, Some(Value::Str("Sam".into())));
+}
+
+#[test]
+fn typed_keyed_resource_entry_write_requires_required_fields() {
+    let program = checked_program(POST_TYPED_KEYED_COMMENTS);
+    let store = TreeStore::memory();
+    assert_run_error(
+        run_entry(&store, checked_entry!(&program, "test::save_missing_body")),
+        "write.required_absent",
+    );
+}
+
+#[test]
+fn typed_keyed_resource_entry_write_read_materializes_value() {
+    let program = checked_program(POST_TYPED_KEYED_COMMENTS);
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::save_complete")).expect("save");
+    let outcome = run_entry(&store, checked_entry!(&program, "test::read_comment")).expect("read");
+    assert_eq!(
+        outcome.value,
+        Some(Value::Resource(vec![
+            ("body".into(), Value::Str("hello".into())),
+            (
+                "meta".into(),
+                Value::Resource(vec![("author".into(), Value::Str("Ann".into()))])
+            ),
+        ]))
+    );
+}
+
+#[test]
+fn nested_typed_keyed_resource_entry_write_read_materializes_value() {
+    let program = checked_program(POST_TYPED_KEYED_COMMENTS);
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::save_nested_reply")).expect("save");
+    let outcome =
+        run_entry(&store, checked_entry!(&program, "test::read_nested_reply")).expect("read");
+    assert_eq!(
+        outcome.value,
+        Some(Value::Resource(vec![(
+            "body".into(),
+            Value::Str("hi".into())
+        )]))
+    );
+}
+
+#[test]
+fn nested_typed_keyed_resource_entry_write_requires_parent_required_fields() {
+    let program = checked_program(POST_TYPED_KEYED_COMMENTS);
+    let store = TreeStore::memory();
+    assert_run_error(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::save_nested_reply_without_parent_body"),
+        ),
+        "write.required_absent",
+    );
+    let outcome =
+        run_entry(&store, checked_entry!(&program, "test::read_nested_reply")).expect("read");
+    assert_eq!(
+        outcome.value,
+        Some(Value::Resource(vec![(
+            "body".into(),
+            Value::Str("missing".into())
+        )]))
+    );
 }

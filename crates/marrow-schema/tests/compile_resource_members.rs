@@ -1,8 +1,8 @@
 //! Member resolution and named saved fields. `field_type`/`leaf_type` resolve
 //! plain fields and keyed leaves at every depth and refuse to cross the
 //! field/leaf/group boundary or an unknown chain. `check_saved_named_member_fields`
-//! requires a bare-named saved field or keyed-leaf value to be a declared enum,
-//! and stays silent on qualified names it cannot judge locally.
+//! requires a bare-named plain saved field to be a declared enum, and stays
+//! silent on qualified names or keyed values it cannot judge locally.
 
 use marrow_schema::{
     ResourceSchema, SCHEMA_NON_ENUM_NAMED_FIELD, ScalarType, SchemaError, SchemaErrorKind, Type,
@@ -239,7 +239,7 @@ store ^orders(id: int): Order
 }
 
 #[test]
-fn a_bare_named_keyed_leaf_value_must_be_a_declared_enum() {
+fn a_bare_named_keyed_value_is_deferred_to_project_checking() {
     assert!(
         compile_saved_resource_errors(
             "\
@@ -261,13 +261,9 @@ resource Order
 store ^orders(id: int): Order
 ",
     );
-    assert_eq!(codes(&errors), [SCHEMA_NON_ENUM_NAMED_FIELD]);
-    assert_kind(
-        &errors[0],
-        SchemaErrorKind::NonEnumNamedField {
-            field: "scores".to_string(),
-            ty: "Status".to_string(),
-        },
+    assert!(
+        errors.is_empty(),
+        "project checking resolves keyed names as enum, resource, or unknown type: {errors:#?}"
     );
 }
 

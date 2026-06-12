@@ -1,7 +1,7 @@
 mod support;
 
 use marrow_check::{CheckDiagnostic, DiagnosticPayload, RejectedSurface, check_project};
-use marrow_schema::{SchemaErrorKind, SchemaKeyTarget, Type};
+use marrow_schema::{NodeKind, ScalarType, SchemaErrorKind, SchemaKeyTarget, Type};
 
 use support::{
     assert_clean, check_module, check_module_report, config, temp_project, with_code, write,
@@ -35,6 +35,197 @@ fn split_store_applies_saved_field_schema_rules() {
             ty: "Author".to_string(),
         },
     );
+}
+
+#[test]
+fn typed_keyed_resource_layer_compiles_as_group_entry() {
+    let root = temp_project("keyed-resource-field-schema", |root| {
+        write(
+            root,
+            "src/blog.mw",
+            "module blog\n\
+             resource Comment\n\
+             \x20   required body: string\n\
+             \x20   meta\n\
+             \x20       author: string\n\
+             resource Post\n\
+             \x20   required title: string\n\
+             \x20   comments(seq: int): Comment\n\
+             store ^posts(id: int): Post\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    assert_clean(&report);
+
+    let post = program.modules[0]
+        .resources
+        .iter()
+        .find(|resource| resource.name == "Post")
+        .expect("Post resource");
+    let comments = post
+        .members
+        .iter()
+        .find(|member| member.name == "comments")
+        .expect("comments member");
+
+    assert!(matches!(comments.kind, NodeKind::Group), "{comments:#?}");
+    assert_eq!(comments.key_params.len(), 1, "{comments:#?}");
+    assert_eq!(comments.key_params[0].name, "seq");
+    assert_eq!(
+        comments.key_params[0].ty,
+        Type::Scalar(ScalarType::Int),
+        "{comments:#?}"
+    );
+    assert!(
+        comments.members.iter().any(|member| {
+            member.name == "body" && matches!(member.kind, NodeKind::Slot { required: true, .. })
+        }),
+        "{comments:#?}"
+    );
+    let meta = comments
+        .members
+        .iter()
+        .find(|member| member.name == "meta")
+        .expect("meta group");
+    assert!(matches!(meta.kind, NodeKind::Group), "{meta:#?}");
+    assert!(
+        meta.members.iter().any(|member| {
+            member.name == "author" && matches!(member.kind, NodeKind::Slot { .. })
+        }),
+        "{meta:#?}"
+    );
+}
+
+#[test]
+fn typed_keyed_resource_layer_normalizes_nested_typed_layers() {
+    let root = temp_project("keyed-resource-field-nested-schema", |root| {
+        write(
+            root,
+            "src/blog.mw",
+            "module blog\n\
+             resource Reply\n\
+             \x20   required body: string\n\
+             resource Comment\n\
+             \x20   required body: string\n\
+             \x20   replies(seq: int): Reply\n\
+             resource Post\n\
+             \x20   comments(seq: int): Comment\n\
+             store ^posts(id: int): Post\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    assert_clean(&report);
+
+    let post = program.modules[0]
+        .resources
+        .iter()
+        .find(|resource| resource.name == "Post")
+        .expect("Post resource");
+    let comments = post
+        .members
+        .iter()
+        .find(|member| member.name == "comments")
+        .expect("comments member");
+    let replies = comments
+        .members
+        .iter()
+        .find(|member| member.name == "replies")
+        .expect("replies member");
+
+    assert!(matches!(replies.kind, NodeKind::Group), "{replies:#?}");
+    assert!(
+        replies.members.iter().any(|member| {
+            member.name == "body" && matches!(member.kind, NodeKind::Slot { required: true, .. })
+        }),
+        "{replies:#?}"
+    );
+}
+
+#[test]
+fn typed_keyed_resource_layer_resolves_import_alias() {
+    let root = temp_project("keyed-resource-field-import-alias", |root| {
+        write(
+            root,
+            "src/blog/comments.mw",
+            "module blog::comments\n\
+             resource Comment\n\
+             \x20   required body: string\n",
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             use blog::comments\n\
+             resource Post\n\
+             \x20   comments(seq: int): comments::Comment\n\
+             store ^posts(id: int): Post\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    assert_clean(&report);
+
+    let post = program
+        .modules
+        .iter()
+        .find(|module| module.name == "app")
+        .and_then(|module| {
+            module
+                .resources
+                .iter()
+                .find(|resource| resource.name == "Post")
+        })
+        .expect("Post resource");
+    let comments = post
+        .members
+        .iter()
+        .find(|member| member.name == "comments")
+        .expect("comments member");
+
+    assert!(matches!(comments.kind, NodeKind::Group), "{comments:#?}");
+    assert_eq!(
+        comments.entry_type,
+        Some(Type::Named("blog::comments::Comment".into()))
+    );
+}
+
+#[test]
+fn typed_keyed_resource_layer_validates_entry_resource_plain_fields() {
+    let errors = check_module(
+        "keyed-resource-field-validates-entry-resource",
+        "module m\n\
+         resource Author\n\
+         \x20   required name: string\n\
+         resource Comment\n\
+         \x20   author: Author\n\
+         resource Post\n\
+         \x20   comments(seq: int): Comment\n\
+         store ^posts(id: int): Post\n",
+        "schema.non_enum_named_field",
+    );
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert_schema_payload(
+        &errors[0],
+        SchemaErrorKind::NonEnumNamedField {
+            field: "author".to_string(),
+            ty: "Author".to_string(),
+        },
+    );
+}
+
+#[test]
+fn typed_keyed_resource_layer_rejects_recursive_entry_resource_once() {
+    let errors = check_module(
+        "keyed-resource-field-recursive-entry",
+        "module m\n\
+         resource Comment\n\
+         \x20   required body: string\n\
+         \x20   replies(seq: int): Comment\n\
+         resource Post\n\
+         \x20   comments(seq: int): Comment\n\
+         store ^posts(id: int): Post\n",
+        "check.recursive_keyed_entry",
+    );
+    assert_eq!(errors.len(), 1, "{errors:#?}");
 }
 
 /// A key must be an orderable scalar; any named type in a key position is rejected
@@ -114,6 +305,125 @@ fn rejects_a_named_type_in_a_key_position() {
             SchemaErrorKind::NonScalarKey {
                 target: target.clone(),
                 ty: Type::Named(ty_name.to_string()),
+            },
+        );
+    }
+}
+
+#[test]
+fn typed_keyed_resource_layer_rejects_unknown_resource_type() {
+    let errors = check_module(
+        "keyed-resource-field-typo",
+        "module m\n\
+         resource Comment\n\
+         \x20   required body: string\n\
+         resource Post\n\
+         \x20   comments(seq: int): Commet\n\
+         store ^posts(id: int): Post\n",
+        "check.unknown_type",
+    );
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert_eq!(
+        errors[0].payload,
+        DiagnosticPayload::UnknownType(Type::Named("Commet".into())),
+        "{errors:#?}"
+    );
+}
+
+#[test]
+fn typed_keyed_enum_leaf_rejects_private_cross_module_enum() {
+    let root = temp_project("keyed-enum-leaf-private-cross-module", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "module a\n\
+             enum Hidden\n\
+             \x20   one\n\
+             \x20   two\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\n\
+             use a\n\
+             resource Post\n\
+             \x20   statuses(seq: int): a::Hidden\n\
+             store ^posts(id: int): Post\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    let found = with_code(&report, "check.private_enum");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::PrivateEnum("a::Hidden".into())
+    );
+    assert!(
+        with_code(&report, "check.unknown_type").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn typed_keyed_leaf_rejects_unknown_named_type_inside_sequence_value() {
+    let errors = check_module(
+        "keyed-leaf-sequence-unknown-type",
+        "module m\n\
+         resource Post\n\
+         \x20   tags(seq: int): sequence[Missing]\n\
+         store ^posts(id: int): Post\n",
+        "check.unknown_type",
+    );
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert_eq!(
+        errors[0].payload,
+        DiagnosticPayload::UnknownType(Type::Sequence(Box::new(Type::Named("Missing".into())))),
+        "{errors:#?}"
+    );
+}
+
+#[test]
+fn typed_keyed_leaf_rejects_checker_only_error_value_type() {
+    let cases = [
+        (
+            "keyed-leaf-error-value-type",
+            "failures(seq: int): Error",
+            "failures",
+            "Error",
+        ),
+        (
+            "keyed-leaf-sequence-error-value-type",
+            "failures(seq: int): sequence[Error]",
+            "failures",
+            "Error",
+        ),
+        (
+            "keyed-leaf-sequence-resource-value-type",
+            "comments(seq: int): sequence[Comment]",
+            "comments",
+            "Comment",
+        ),
+    ];
+    for (name, member, field, ty) in cases {
+        let errors = check_module(
+            name,
+            &format!(
+                "module m\n\
+                 resource Comment\n\
+                 \x20   required body: string\n\
+                 resource Post\n\
+                 \x20   {member}\n\
+                 store ^posts(id: int): Post\n"
+            ),
+            "schema.non_enum_named_field",
+        );
+        assert_eq!(errors.len(), 1, "{name}: {errors:#?}");
+        assert_schema_payload(
+            &errors[0],
+            SchemaErrorKind::NonEnumNamedField {
+                field: field.to_string(),
+                ty: ty.to_string(),
             },
         );
     }

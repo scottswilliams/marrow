@@ -569,6 +569,11 @@ pub(crate) fn check_tests_with_sources_analysis(
     // signatures already.
     let resolver = combined.clone();
     enums::normalize_program_named_types_against(&mut combined, &resolver, &parsed_files);
+    crate::keyed_entries::normalize_resource_layers(
+        &mut combined,
+        &parsed_files,
+        &mut report.diagnostics,
+    );
     // Passes 2-3 plus targeted unresolved-call suppression are shared with check_project.
     // A read failure drops a file from `parsed_files` so a call into it would look
     // unresolved; the shared suppression handles that qualified-call case.

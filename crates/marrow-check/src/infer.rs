@@ -708,14 +708,20 @@ pub(crate) fn saved_group_entry_type(
     let store = resolve_store_by_root(program, root)?;
     // Only a keyed group (a layer holding members) is a whole-entry record; a keyed
     // leaf is a scalar/identity value already typed through `saved_leaf_type`.
-    store
+    let node = store
         .resource
         .descend_layers(&layers)
-        .filter(|node| matches!(node.kind, marrow_schema::NodeKind::Group))
-        .map(|_| MarrowType::GroupEntry {
-            resource: resource_type_name(&store.module.name, &store.resource.name),
-            layers: layers.iter().map(|layer| (*layer).to_string()).collect(),
-        })
+        .filter(|node| matches!(node.kind, marrow_schema::NodeKind::Group))?;
+    if let Some(entry_type) = &node.entry_type
+        && let Some(resource_type) =
+            resolve_resource_schema_type(program, &store.module.name, entry_type)
+    {
+        return Some(resource_type);
+    }
+    Some(MarrowType::GroupEntry {
+        resource: resource_type_name(&store.module.name, &store.resource.name),
+        layers: layers.iter().map(|layer| (*layer).to_string()).collect(),
+    })
 }
 
 /// The identity type of a unique-index lookup `^root.uniqueIndex(args)`: the
@@ -753,6 +759,7 @@ fn local_field_type(
         MarrowType::Resource(name) => {
             let (resource, module) = resolve_resource_type(program, name)?;
             field_member_type(program, resource, &[field], module)
+                .or_else(|| group_entry_unkeyed_group_type(resource, name, &[field], &[], field))
         }
         MarrowType::GroupEntry {
             resource: name,
@@ -762,10 +769,30 @@ fn local_field_type(
             let mut chain: Vec<&str> = layers.iter().map(String::as_str).collect();
             chain.push(field);
             field_member_type(program, resource, &chain, module)
+                .or_else(|| group_entry_unkeyed_group_type(resource, name, &chain, layers, field))
         }
         MarrowType::Error => error_field_type(field),
         _ => None,
     }
+}
+
+fn group_entry_unkeyed_group_type(
+    resource: &marrow_schema::ResourceSchema,
+    resource_name: &str,
+    chain: &[&str],
+    layers: &[String],
+    field: &str,
+) -> Option<MarrowType> {
+    let node = resource.descend_layers(chain)?;
+    if !node.key_params.is_empty() || !matches!(node.kind, marrow_schema::NodeKind::Group) {
+        return None;
+    }
+    let mut nested = layers.to_vec();
+    nested.push(field.to_string());
+    Some(MarrowType::GroupEntry {
+        resource: resource_name.to_string(),
+        layers: nested,
+    })
 }
 
 fn error_field_type(field: &str) -> Option<MarrowType> {

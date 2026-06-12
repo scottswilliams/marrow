@@ -251,6 +251,7 @@ fn materialize_resource_members(
                 name: member.name.clone(),
                 catalog_id: member.catalog_id.clone(),
                 keys: Vec::new(),
+                typed_entry: member.typed_entry,
             });
             let nested = materialize_resource_members(
                 program,

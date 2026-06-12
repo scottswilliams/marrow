@@ -248,6 +248,7 @@ fn member_node(member: &ResourceMember, errors: &mut Vec<SchemaError>) -> Node {
                 name: group.name.clone(),
                 docs: group.docs.clone(),
                 key_params: group.keys.iter().map(key_def).collect(),
+                entry_type: None,
                 members: group_members(group, errors),
                 kind: NodeKind::Group,
             }
@@ -262,6 +263,7 @@ fn slot_node(field: &FieldDecl, ty: Type, key_params: Vec<KeyDef>, required: boo
         name: field.name.clone(),
         docs: field.docs.clone(),
         key_params,
+        entry_type: None,
         members: Vec::new(),
         kind: NodeKind::Slot { ty, required },
     }

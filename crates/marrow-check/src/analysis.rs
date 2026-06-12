@@ -337,6 +337,11 @@ pub(crate) fn analyze_source_project(
     // Stamp each cross-module named-type signature slot with its true owner, now
     // that the whole program is known, before any pass reads parameter types.
     normalize_program_named_types(&mut program, &parsed_files);
+    crate::keyed_entries::normalize_resource_layers(
+        &mut program,
+        &parsed_files,
+        &mut report.diagnostics,
+    );
 
     // Passes 2-3 plus unresolved-call suppression are shared with check_tests.
     check_resolved_files(

@@ -208,6 +208,7 @@ pub(super) fn checked_field_place(
         args: Vec::new(),
         key_params: member.key_params.clone(),
         leaf: member.leaf.clone(),
+        typed_entry: member.typed_entry,
         members: member.group_members.clone(),
         span,
     });
@@ -280,6 +281,7 @@ fn checked_saved_members(
                     NodeKind::Slot { ty, .. } => checked_store_leaf_kind(program, module, ty),
                     NodeKind::Group => None,
                 },
+                typed_entry: node.entry_type.is_some(),
                 group_members: match node.kind {
                     NodeKind::Group => {
                         checked_saved_members(program, module, resource_id, &path, &node.members)

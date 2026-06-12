@@ -87,6 +87,7 @@ pub(crate) struct LayerAddress {
     pub(crate) name: String,
     pub(crate) catalog_id: Option<String>,
     pub(crate) keys: Vec<SavedKey>,
+    pub(crate) typed_entry: bool,
 }
 
 impl LayerAddress {
@@ -95,6 +96,7 @@ impl LayerAddress {
             name: layer.name.clone(),
             catalog_id: layer.catalog_id.clone(),
             keys,
+            typed_entry: layer.typed_entry,
         }
     }
 }

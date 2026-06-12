@@ -1,0 +1,359 @@
+//! Project-aware normalization for explicit keyed fields whose entry type is a resource.
+
+use std::path::{Path, PathBuf};
+
+use marrow_syntax::{FieldDecl, ResourceDecl};
+
+use crate::checks::annotation_type_known;
+use crate::enums::private_enum_type_reference;
+use crate::resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
+use crate::{
+    CHECK_PRIVATE_ENUM, CHECK_RECURSIVE_KEYED_ENTRY, CHECK_UNKNOWN_TYPE, CheckDiagnostic,
+    CheckedModule, CheckedProgram, DiagnosticPayload, MarrowType, build_alias_map, expand_alias,
+    resource_type_name, split_type_path,
+};
+
+pub(crate) fn normalize_resource_layers(
+    program: &mut CheckedProgram,
+    parsed_files: &[(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)],
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let resolver = program.clone();
+    let mut normalizer = Normalizer {
+        resolver: &resolver,
+        parsed_files,
+        diagnostics,
+    };
+    for module in &mut program.modules {
+        let Some((_, parsed)) = parsed_files
+            .iter()
+            .find(|(file, _)| file.path == module.source_file)
+        else {
+            continue;
+        };
+        for resource in &mut module.resources {
+            let Some(decl) = parsed_resource_decl(parsed, &resource.name) else {
+                continue;
+            };
+            let mut stack = vec![(module.name.clone(), resource.name.clone())];
+            normalizer.normalize_members(
+                MemberScope {
+                    file: &module.source_file,
+                    module_name: &module.name,
+                },
+                &decl.members,
+                &mut resource.members,
+                &mut stack,
+            );
+        }
+    }
+}
+
+struct Normalizer<'a, 'd> {
+    resolver: &'a CheckedProgram,
+    parsed_files: &'a [(&'a marrow_project::ModuleFile, marrow_syntax::ParsedSource)],
+    diagnostics: &'d mut Vec<CheckDiagnostic>,
+}
+
+#[derive(Clone, Copy)]
+struct MemberScope<'a> {
+    file: &'a Path,
+    module_name: &'a str,
+}
+
+impl Normalizer<'_, '_> {
+    fn normalize_members(
+        &mut self,
+        scope: MemberScope<'_>,
+        syntax_members: &[marrow_syntax::ResourceMember],
+        nodes: &mut [marrow_schema::Node],
+        stack: &mut Vec<(String, String)>,
+    ) {
+        for (syntax_member, node) in syntax_members.iter().zip(nodes) {
+            match syntax_member {
+                marrow_syntax::ResourceMember::Field(field) if !field.keys.is_empty() => {
+                    self.normalize_keyed_field(scope, field, node, stack);
+                }
+                marrow_syntax::ResourceMember::Group(group) => {
+                    self.normalize_members(scope, &group.members, &mut node.members, stack);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn normalize_keyed_field(
+        &mut self,
+        scope: MemberScope<'_>,
+        field: &FieldDecl,
+        node: &mut marrow_schema::Node,
+        stack: &mut Vec<(String, String)>,
+    ) {
+        match self.resolve_keyed_field_type(scope, field) {
+            KeyedFieldType::Resource(target) => {
+                if let Some(decl) = &target.decl {
+                    self.validate_entry_resource(&target, decl);
+                }
+                let stack_key = (target.module_name.clone(), target.resource_name.clone());
+                if stack.contains(&stack_key) {
+                    self.push_recursive_keyed_entry(scope.file, field, &target.resource_name);
+                    return;
+                }
+                let mut members = target.members;
+                if let Some(decl) = &target.decl {
+                    stack.push(stack_key);
+                    self.normalize_members(
+                        MemberScope {
+                            file: &target.source_file,
+                            module_name: &target.module_name,
+                        },
+                        &decl.members,
+                        &mut members,
+                        stack,
+                    );
+                    stack.pop();
+                }
+                node.kind = marrow_schema::NodeKind::Group;
+                node.entry_type = Some(marrow_schema::Type::Named(resource_type_name(
+                    &target.module_name,
+                    &target.resource_name,
+                )));
+                node.members = members;
+            }
+            KeyedFieldType::Other => {}
+            KeyedFieldType::PrivateEnum(name) => {
+                self.push_private_enum(scope.file, field.span, name);
+            }
+            KeyedFieldType::Unknown(ty) => {
+                self.push_unknown_type(scope.file, field, ty);
+            }
+            KeyedFieldType::NonEnumNamedLeaf(name) => {
+                self.push_non_enum_named_leaf(scope.file, field, name);
+            }
+        }
+    }
+
+    fn resolve_keyed_field_type(
+        &self,
+        scope: MemberScope<'_>,
+        field: &FieldDecl,
+    ) -> KeyedFieldType {
+        let schema_type = marrow_schema::Type::resolve(&field.ty);
+        let aliases = module_aliases(self.resolver, scope.module_name);
+        if let marrow_schema::Type::Named(name) = &schema_type {
+            let segments = expand_alias(&split_type_path(name), &aliases);
+            if let Resolution::Found(Def {
+                module,
+                item: DefItem::Resource(resource),
+                ..
+            }) = resolve(
+                self.resolver,
+                scope.module_name,
+                &segments,
+                ResolvableKind::Resource,
+            ) {
+                return KeyedFieldType::Resource(Box::new(ResourceTarget {
+                    module_name: module.name.clone(),
+                    source_file: module.source_file.clone(),
+                    imports: module.imports.clone(),
+                    enum_names: module
+                        .enums
+                        .iter()
+                        .map(|enum_| enum_.name.clone())
+                        .collect(),
+                    resource_name: resource.name.clone(),
+                    members: resource.members.clone(),
+                    decl: resource_decl(self.parsed_files, module, &resource.name).cloned(),
+                }));
+            }
+        }
+
+        if let Some(private) =
+            private_enum_type_reference(&field.ty, self.resolver, &aliases, scope.file)
+        {
+            return KeyedFieldType::PrivateEnum(private);
+        }
+        let resolved = crate::enums::resolve_type(&field.ty, self.resolver, &aliases, scope.file);
+        if !annotation_type_known(&schema_type, &resolved) {
+            return KeyedFieldType::Unknown(schema_type);
+        }
+        if let Some(name) = non_enum_named_leaf_type(&schema_type, &resolved) {
+            return KeyedFieldType::NonEnumNamedLeaf(name);
+        }
+        KeyedFieldType::Other
+    }
+
+    fn validate_entry_resource(&mut self, target: &ResourceTarget, decl: &ResourceDecl) {
+        for error in marrow_schema::check_saved_member_rules(&decl.members) {
+            self.push_schema_error(&target.source_file, error);
+        }
+
+        let aliases = build_alias_map(&target.imports);
+        for error in marrow_schema::check_saved_named_member_fields_with(&decl.members, |name| {
+            if !name.contains("::") {
+                return target.enum_names.iter().any(|enum_name| enum_name == name);
+            }
+            matches!(
+                crate::enums::resolve_enum_type(
+                    &marrow_schema::Type::Named(name.to_string()),
+                    self.resolver,
+                    &aliases,
+                    &target.source_file,
+                ),
+                Some(MarrowType::Enum { .. })
+            )
+        }) {
+            self.push_schema_error(&target.source_file, error);
+        }
+    }
+
+    fn push_schema_error(&mut self, file: &Path, error: marrow_schema::SchemaError) {
+        let marrow_schema::SchemaError {
+            kind,
+            code,
+            message,
+            span,
+        } = error;
+        self.push_diagnostic(
+            CheckDiagnostic::error(code, file, span, message)
+                .with_payload(DiagnosticPayload::Schema(kind)),
+        );
+    }
+
+    fn push_recursive_keyed_entry(&mut self, file: &Path, field: &FieldDecl, resource_name: &str) {
+        self.push_diagnostic(CheckDiagnostic::error(
+            CHECK_RECURSIVE_KEYED_ENTRY,
+            file,
+            field.span,
+            format!(
+                "typed keyed-entry layer `{}` recursively names resource `{}`",
+                field.name, resource_name
+            ),
+        ));
+    }
+
+    fn push_private_enum(&mut self, file: &Path, span: marrow_syntax::SourceSpan, name: String) {
+        self.push_diagnostic(
+            CheckDiagnostic::error(
+                CHECK_PRIVATE_ENUM,
+                file,
+                span,
+                format!("enum `{name}` is private to its module; mark it `pub` to use it from another module"),
+            )
+            .with_payload(DiagnosticPayload::PrivateEnum(name)),
+        );
+    }
+
+    fn push_unknown_type(&mut self, file: &Path, field: &FieldDecl, ty: marrow_schema::Type) {
+        self.push_diagnostic(
+            CheckDiagnostic::error(
+                CHECK_UNKNOWN_TYPE,
+                file,
+                field.span,
+                format!("unknown type `{}`", field.ty.text.trim()),
+            )
+            .with_payload(DiagnosticPayload::UnknownType(ty)),
+        );
+    }
+
+    fn push_non_enum_named_leaf(&mut self, file: &Path, field: &FieldDecl, ty: String) {
+        self.push_schema_error(
+            file,
+            marrow_schema::SchemaError {
+                kind: marrow_schema::SchemaErrorKind::NonEnumNamedField {
+                    field: field.name.clone(),
+                    ty: ty.clone(),
+                },
+                code: marrow_schema::SCHEMA_NON_ENUM_NAMED_FIELD,
+                message: format!(
+                    "saved member `{}` has type `{ty}`, which is not a declared enum; \
+                     a saved member stores a scalar, identity, or checked enum value",
+                    field.name
+                ),
+                span: field.span,
+            },
+        );
+    }
+
+    fn push_diagnostic(&mut self, diagnostic: CheckDiagnostic) {
+        if self.diagnostics.iter().any(|existing| {
+            existing.code == diagnostic.code
+                && existing.file == diagnostic.file
+                && existing.payload == diagnostic.payload
+                && existing.span == diagnostic.span
+        }) {
+            return;
+        }
+        self.diagnostics.push(diagnostic);
+    }
+}
+
+enum KeyedFieldType {
+    Resource(Box<ResourceTarget>),
+    PrivateEnum(String),
+    Unknown(marrow_schema::Type),
+    NonEnumNamedLeaf(String),
+    Other,
+}
+
+struct ResourceTarget {
+    module_name: String,
+    source_file: PathBuf,
+    imports: Vec<String>,
+    enum_names: Vec<String>,
+    resource_name: String,
+    members: Vec<marrow_schema::Node>,
+    decl: Option<ResourceDecl>,
+}
+
+fn parsed_resource_decl<'a>(
+    parsed: &'a marrow_syntax::ParsedSource,
+    resource_name: &str,
+) -> Option<&'a ResourceDecl> {
+    parsed
+        .file
+        .declarations
+        .iter()
+        .find_map(|declaration| match declaration {
+            marrow_syntax::Declaration::Resource(decl) if decl.name == resource_name => Some(decl),
+            _ => None,
+        })
+}
+
+fn resource_decl<'a>(
+    parsed_files: &'a [(&'a marrow_project::ModuleFile, marrow_syntax::ParsedSource)],
+    module: &CheckedModule,
+    resource_name: &str,
+) -> Option<&'a ResourceDecl> {
+    let (_, parsed) = parsed_files
+        .iter()
+        .find(|(file, _)| file.path == module.source_file)?;
+    parsed_resource_decl(parsed, resource_name)
+}
+
+fn module_aliases(
+    program: &CheckedProgram,
+    module_name: &str,
+) -> std::collections::HashMap<String, Vec<String>> {
+    program
+        .modules
+        .iter()
+        .find(|module| module.name == module_name)
+        .map(|module| build_alias_map(&module.imports))
+        .unwrap_or_default()
+}
+
+fn non_enum_named_leaf_type(
+    schema_type: &marrow_schema::Type,
+    resolved_type: &MarrowType,
+) -> Option<String> {
+    match (schema_type, resolved_type) {
+        (marrow_schema::Type::Named(_), MarrowType::Enum { .. }) => None,
+        (marrow_schema::Type::Named(_), MarrowType::Unknown | MarrowType::Invalid) => None,
+        (marrow_schema::Type::Named(name), _) => Some(name.clone()),
+        (marrow_schema::Type::Sequence(schema_element), MarrowType::Sequence(resolved_element)) => {
+            non_enum_named_leaf_type(schema_element, resolved_element)
+        }
+        _ => None,
+    }
+}

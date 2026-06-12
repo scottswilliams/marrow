@@ -280,6 +280,7 @@ mod tests {
                 kind: CheckedSavedMemberKind::Field { required: true },
                 catalog_id: Some("cat_000000000000000000000000000000bb".to_string()),
                 leaf: Some(StoreLeafKind::Scalar(ScalarType::Str)),
+                typed_entry: false,
                 group_members: Vec::new(),
             }],
             members: Vec::new(),

@@ -261,6 +261,34 @@ pub(crate) fn validate_required_fields_after_field_write(
     )
 }
 
+pub(crate) fn validate_required_fields_after_group_write(
+    place: &CheckedSavedPlace,
+    identity: &[SavedKey],
+    layers: &[LayerAddress],
+    store: &TreeStore,
+    span: SourceSpan,
+) -> Result<(), WriteError> {
+    group_layer(place, layers)?;
+    for parent_len in 1..layers.len() {
+        if !layers[parent_len - 1].typed_entry {
+            continue;
+        }
+        let parent = &layers[..parent_len];
+        let parent_members = checked_members_for_layers(place, parent)?;
+        let supplied = supplied_layer_path_from_parent(layers, parent_len);
+        ensure_required_fields_present(
+            place,
+            identity,
+            parent,
+            parent_members,
+            Some(&supplied),
+            store,
+            span,
+        )?;
+    }
+    Ok(())
+}
+
 fn supplied_path_from_parent(
     layers: &[LayerAddress],
     parent_len: usize,
@@ -272,6 +300,13 @@ fn supplied_path_from_parent(
         .collect();
     path.push(field.to_string());
     path
+}
+
+fn supplied_layer_path_from_parent(layers: &[LayerAddress], parent_len: usize) -> Vec<String> {
+    layers[parent_len..]
+        .iter()
+        .map(|layer| layer.name.clone())
+        .collect()
 }
 
 pub(crate) fn validate_required_fields_for_entry(

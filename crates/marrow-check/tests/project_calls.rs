@@ -375,6 +375,27 @@ fn a_keyed_group_layer_loop_binds_group_entry_values() {
 }
 
 #[test]
+fn a_typed_keyed_resource_layer_loop_binds_key_and_entry_value() {
+    let report = check_module_report(
+        "typed-keyed-resource-layer-loop",
+        "module m\n\
+         resource Comment\n\
+         \x20   required body: string\n\
+         \x20   meta\n\
+         \x20       author: string\n\
+         resource Post\n\
+         \x20   comments(seq: int): Comment\n\
+         store ^posts(id: int): Post\n\n\
+         fn comments(id: Id(^posts))\n\
+         \x20   for seq, comment in ^posts(id).comments\n\
+         \x20       var typed_seq: int = seq\n\
+         \x20       var body: string = comment.body\n\
+         \x20       var author: string = comment.meta.author\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
 fn single_name_entries_loops_are_rejected() {
     let found = check_module(
         "single-name-entries",

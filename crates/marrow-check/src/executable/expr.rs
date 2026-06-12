@@ -61,6 +61,7 @@ pub struct CheckedSavedLayer {
     pub args: Vec<CheckedArg>,
     pub key_params: Vec<CheckedSavedKeyParam>,
     pub leaf: Option<crate::StoreLeafKind>,
+    pub typed_entry: bool,
     pub members: Vec<CheckedSavedMember>,
     pub span: SourceSpan,
 }
@@ -73,6 +74,7 @@ pub struct CheckedSavedMember {
     pub kind: CheckedSavedMemberKind,
     pub catalog_id: Option<String>,
     pub leaf: Option<crate::StoreLeafKind>,
+    pub typed_entry: bool,
     pub group_members: Vec<CheckedSavedMember>,
 }
 

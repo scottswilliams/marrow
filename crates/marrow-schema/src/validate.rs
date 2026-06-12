@@ -153,8 +153,8 @@ fn check_member_unknown(member: &ResourceMember, errors: &mut Vec<SchemaError>) 
     }
 }
 
-/// Apply the saved named-field rule directly to resource members. Split store
-/// declarations use this after resolving the resource they attach.
+/// Apply the saved plain-field named-type rule directly to resource members.
+/// Split store declarations use this after resolving the resource they attach.
 pub fn check_saved_named_member_fields(
     members: &[ResourceMember],
     enums: &[String],
@@ -164,9 +164,10 @@ pub fn check_saved_named_member_fields(
     })
 }
 
-/// Apply the saved named-field rule with a project-aware enum resolver. Schema
-/// compilation only knows same-file enum names; the checker supplies a resolver
-/// for qualified names after imports and module visibility are known.
+/// Apply the saved plain-field named-type rule with a project-aware enum
+/// resolver. Schema compilation only knows same-file enum names; the checker
+/// supplies a resolver for qualified names after imports and module visibility
+/// are known.
 pub fn check_saved_named_member_fields_with(
     members: &[ResourceMember],
     mut is_declared_enum_name: impl FnMut(&str) -> bool,
@@ -186,7 +187,9 @@ fn check_named_field(
     match member {
         ResourceMember::Field(field) => {
             let ty = Type::resolve(&field.ty);
-            check_named_field_type(&ty, field, is_declared_enum_name, errors);
+            if field.keys.is_empty() {
+                check_named_field_type(&ty, field, is_declared_enum_name, errors);
+            }
         }
         ResourceMember::Group(group) => {
             for nested in &group.members {

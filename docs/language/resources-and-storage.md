@@ -461,6 +461,28 @@ Keyed trees are for named or sparse layers:
 scores(playerId: string): int
 ```
 
+An explicit keyed field may name a resource as its entry type:
+
+```mw
+resource Comment
+    required body: string
+    meta
+        author: string
+
+resource Post
+    comments(seq: int): Comment
+```
+
+Each `comments(seq)` entry is stored as a keyed group with `Comment`'s fields.
+Whole-entry reads and writes use `Comment` values, required `Comment` fields are
+checked for entries that exist, and unkeyed groups inside `Comment` materialize
+with the entry. Keyed child layers inside `Comment` remain child layers and are
+read, written, and traversed through their own saved addresses.
+Entry resources must expand to a finite saved member shape; a typed keyed-entry
+cycle is rejected. A named explicit keyed value that is not a resource entry must
+resolve to an enum value; checker-only names such as `Error` have no saved leaf
+encoding.
+
 Use sequences when integer order is the important access pattern. Use keyed
 trees when the keys have meaning, may be sparse, or are iterated in sorted key
 order.
@@ -775,7 +797,10 @@ evolve
 ```
 
 The target must be a top-level member of the resource; a nested member under a group
-or keyed layer is rejected.
+or keyed layer is rejected. The same v0.1 fence applies inside typed keyed-entry
+layers such as `Post.comments(seq): Comment`: nested retire, default, and
+transform work below that layer fails closed rather than freezing an entry
+evolution contract.
 
 Inside the body, `old` is the record before this evolution, read-only and typed
 against the current schema; `old.<member>` reads that member's value. The body is a
