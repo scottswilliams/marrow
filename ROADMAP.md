@@ -843,16 +843,6 @@ series.
 
 Catalog/evolution series (sequenced; live-refactor coordination):
 
-**W3.14 → Evolve apply honesty.** Carries: four discharge/apply text and behavior fixes:
-DerivedRebuild only for indexes changed by the proposal, honest "nothing to apply" output for
-zero-work applies, a preview "nothing to discharge" qualifier plus JSON boolean, and one
-auto-apply stderr line naming the epoch transition. Owns: marrow-check evolution discharge index
-classification, cmd_evolve/render.rs preview/apply rendering, cmd_run.rs auto-apply notice, and
-their fixtures. Seed: pure rename/default/no-op evolution currently stages unnecessary rebuild
-work or prints zero-count apply output. Review: no witness-format change, no per-record listing,
-no new flags, and stdout remains clean for program output. Done: apply and preview output match
-the actual witness work.
-
 **W3.15 → Dangling-ref audit.** Carries: a report-only `marrow data integrity` pass after W3.7
 that checks stored `Id(^store)` leaves for referent existence. Owns: integrity traversal over
 identity-typed leaves, `data.dangling_ref` finding and error-code row, data-tools.md integrity
