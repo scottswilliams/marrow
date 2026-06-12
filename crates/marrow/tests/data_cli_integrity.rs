@@ -7,7 +7,8 @@ use std::fs;
 use std::path::Path;
 
 use marrow_check::tooling::{
-    DataQuerySegment, QueryError, ToolingError, count_integrity_problems, data_children,
+    DataQuerySegment, QueryError, ToolingError, count_activation_integrity_problems,
+    count_integrity_problems, data_children,
 };
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
@@ -703,6 +704,109 @@ fn data_integrity_reports_a_wrong_typed_identity_leaf_as_data_key_type() {
     assert_eq!(
         problem["source_span"]["path"],
         serde_json::json!("^books(1).authorId")
+    );
+}
+
+#[test]
+fn data_integrity_reports_a_dangling_identity_leaf_reference() {
+    let project = support::temp_dir("data-integrity-dangling-ref");
+    write(&project, "marrow.json", NATIVE_STORE_CONFIG);
+    write(
+        &project,
+        "src/app.mw",
+        "module app\n\n\
+         resource Author\n\
+         \x20\x20\x20\x20name: string\n\
+         store ^authors(id: int): Author\n\n\
+         resource Book\n\
+         \x20\x20\x20\x20authorId: Id(^authors)\n\
+         store ^books(id: int): Book\n",
+    );
+    let dir = project.to_str().unwrap().to_string();
+    let book_place = checked_place(&project, "books");
+    let author_id = member_path_catalog_id(&book_place, &["authorId"]);
+    write_tree_value(
+        &project,
+        "books",
+        &[SavedKey::Int(1)],
+        &field_path(&book_place, "authorId"),
+        encode_identity_keys(&[SavedKey::Int(7)]),
+    );
+
+    let output = marrow(&["data", "integrity", "--format", "json", &dir]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let value = json(output);
+    let problem = integrity_problem(&value, "data.dangling_ref");
+    assert_eq!(problem["kind"], serde_json::json!("tooling"), "{value}");
+    assert_eq!(
+        problem["source_span"]["path"],
+        serde_json::json!("^books(1).authorId"),
+        "{value}"
+    );
+    assert_eq!(
+        problem["containing_identity"],
+        serde_json::json!([int_key_json(1)]),
+        "{value}"
+    );
+    assert_eq!(
+        problem["field_catalog_id"],
+        serde_json::json!(author_id.as_str()),
+        "{value}"
+    );
+    assert_eq!(
+        problem["referenced_root"],
+        serde_json::json!("authors"),
+        "{value}"
+    );
+    assert_eq!(
+        problem["referenced_identity"],
+        serde_json::json!([int_key_json(7)]),
+        "{value}"
+    );
+
+    write_record_node(&project, "authors", &[SavedKey::Int(7)]);
+    let repaired = marrow(&["data", "integrity", "--format", "json", &dir]);
+
+    assert_eq!(repaired.status.code(), Some(0), "{repaired:?}");
+    assert_eq!(json(repaired)["problems"], serde_json::json!([]));
+}
+
+#[test]
+fn activation_integrity_count_excludes_dangling_identity_leaf_reference() {
+    let project = support::temp_dir("activation-integrity-dangling-ref-report-only");
+    write(&project, "marrow.json", NATIVE_STORE_CONFIG);
+    write(
+        &project,
+        "src/app.mw",
+        "module app\n\n\
+         resource Author\n\
+         \x20\x20\x20\x20name: string\n\
+         store ^authors(id: int): Author\n\n\
+         resource Book\n\
+         \x20\x20\x20\x20authorId: Id(^authors)\n\
+         store ^books(id: int): Book\n",
+    );
+    let book_place = checked_place(&project, "books");
+    write_tree_value(
+        &project,
+        "books",
+        &[SavedKey::Int(1)],
+        &field_path(&book_place, "authorId"),
+        encode_identity_keys(&[SavedKey::Int(7)]),
+    );
+    let program = checked_program(&project);
+    let store = TreeStore::open_read_only(&project.join(".data").join("marrow.redb"))
+        .expect("open store read-only");
+
+    assert_eq!(
+        count_integrity_problems(&store, &program).expect("count data integrity problems"),
+        (1, 1)
+    );
+    assert_eq!(
+        count_activation_integrity_problems(&store, &program)
+            .expect("count activation integrity problems"),
+        (1, 0)
     );
 }
 

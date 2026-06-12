@@ -16,7 +16,7 @@ The v0.1 tooling contract is:
   engine keys into source-shaped paths;
 - keep operator/admin full-store scans explicit;
 - report typed data findings such as `data.decode`, `data.key_type`,
-  `data.incomplete`, and `data.orphan`;
+  `data.dangling_ref`, `data.incomplete`, and `data.orphan`;
 - surface tree-cell store faults through the `store.*` family;
 - keep repair as explicit maintenance code over modeled data.
 
@@ -27,7 +27,8 @@ preview API.
 Typed backup/restore is a tooling and backup-format contract, not a raw
 archive replay: the archive carries a typed manifest, the accepted-catalog
 rows, and the canonical data-cell stream, and a restore validates the manifest
-binding plus full data integrity — including orphaned managed cells — before it
+binding plus the schema checks required for activation — including orphaned
+managed cells — before it
 activates. It is a separate command pair, not a `data` subcommand — see
 [`marrow backup` and `marrow restore`](cli.md#marrow-backup).
 Within `data`, `recover` is the explicit write-capable native-store repair/open
@@ -196,7 +197,8 @@ emits the same single object as `json`.
 ## `marrow data integrity`
 
 Verifies that each checked, reachable stored value decodes against its declared
-schema type, that each existing record or keyed-layer entry carries its accepted
+schema type, that each canonical identity leaf points to an existing saved
+record node, that each existing record or keyed-layer entry carries its accepted
 required fields, that no stored cell is left under a root or member the schema no
 longer declares, and that typed store traversal does not report corruption. It
 is read-only and typed: it needs the checked project to know each path's type.
@@ -218,7 +220,7 @@ $ marrow data integrity ./project
 ok: ./project integrity verified (1 records)
 ```
 
-It surfaces four data findings plus typed store corruption:
+It surfaces five data findings plus typed store corruption:
 
 - `data.decode` — a stored value is not a canonical form of its declared
   scalar type (e.g. a non-int byte sequence stored under an `int` field).
@@ -232,6 +234,13 @@ It surfaces four data findings plus typed store corruption:
 
   ```
   ^counter("one").value: data.key_type: stored key is a string where the schema declares int
+  ```
+
+- `data.dangling_ref` — a stored `Id(^root)` leaf is canonical and key-typed
+  but points to no saved record node in the referenced root.
+
+  ```
+  ^books(7).authorId: data.dangling_ref: stored `Id(^authors)` reference points to no saved record
   ```
 
 - `data.incomplete` — an existing record or keyed-layer entry is missing an
@@ -279,14 +288,18 @@ These findings have no source line, so the location is a `path` field rather
 than a span. Every finding carries a `help` key, `null` when there is no hint.
 The `data.*` codes carry kind `tooling`. `data.incomplete` findings also carry
 `store_catalog_id`, `record_identity`, `parent_path`, and
-`missing_member_catalog_id`; these are typed catalog/key fields for automation,
-while `source_span.path` is only the operator display path. See
+`missing_member_catalog_id`; `data.dangling_ref` findings carry
+`containing_identity`, `field_catalog_id`, `referenced_root`, and
+`referenced_identity`. These are typed catalog/key fields for automation, while
+`source_span.path` is only the operator display path. See
 [error-codes.md](error-codes.md) for the full code list.
 
 When integrity reports incomplete records or orphaned managed cells, correct the
 schema, run source-native `evolve preview`/`evolve apply`, or repair modeled data
 through explicit maintenance code, then run `marrow data integrity` again. There
 is no `data` command for modeled-data fixes.
+When it reports a dangling reference, create the referenced record or rewrite the
+stored identity value through modeled maintenance code, then run integrity again.
 
 ## `marrow data recover`
 

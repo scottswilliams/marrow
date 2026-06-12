@@ -423,9 +423,10 @@ name.
 
 Other inspection commands: `marrow data roots` (list saved roots), `marrow data
 stats` (count roots and records), `marrow data get <projectdir> <path>` (one
-path's value), and `marrow data integrity` (verify stored values decode, existing
-records and keyed entries carry accepted required fields, and actual stored cells
-are still declared).
+path's value), and `marrow data integrity` (verify stored values decode,
+canonical identity leaves point to existing saved records, existing records and
+keyed entries carry accepted required fields, and actual stored cells are still
+declared).
 
 ## What Is Deferred
 

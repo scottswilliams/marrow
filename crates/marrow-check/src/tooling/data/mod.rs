@@ -8,6 +8,7 @@ mod shape;
 mod traversal;
 mod walk;
 
+use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 
 use crate::{ScalarType, StoreLeafKind};
@@ -159,6 +160,8 @@ pub struct DataWalkPage {
 pub struct DataRecord {
     pub path: String,
     pub payload: DebugDataPayload,
+    pub(crate) identity: Vec<SavedKey>,
+    pub(crate) field_catalog_id: CatalogId,
     pub(crate) leaf: StoreLeafKind,
     pub(crate) key_mismatch: Option<KeyMismatch>,
 }

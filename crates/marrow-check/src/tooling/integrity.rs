@@ -22,12 +22,24 @@ use super::data::{
 const ORPHAN_INTEGRITY_HELP: &str =
     "run `marrow data integrity` after source-native evolution or maintenance repair";
 
+#[derive(Clone, Copy)]
+enum IntegrityProfile {
+    Report,
+    Activation,
+}
+
+impl IntegrityProfile {
+    fn checks_dangling_refs(self) -> bool {
+        matches!(self, Self::Report)
+    }
+}
+
 pub fn count_integrity_problems(
     store: &TreeStore,
     program: &CheckedProgram,
 ) -> Result<(usize, usize), StoreError> {
     let places = checked_places(program);
-    count_integrity_problems_in_places(store, program, &places)
+    count_integrity_problems_in_places(store, program, &places, IntegrityProfile::Report)
 }
 
 pub fn count_activation_integrity_problems(
@@ -35,17 +47,18 @@ pub fn count_activation_integrity_problems(
     program: &CheckedProgram,
 ) -> Result<(usize, usize), StoreError> {
     let places = checked_activation_root_places(program);
-    count_integrity_problems_in_places(store, program, &places)
+    count_integrity_problems_in_places(store, program, &places, IntegrityProfile::Activation)
 }
 
 fn count_integrity_problems_in_places(
     store: &TreeStore,
     program: &CheckedProgram,
     places: &[CheckedSavedPlace],
+    profile: IntegrityProfile,
 ) -> Result<(usize, usize), StoreError> {
     let mut problems = 0usize;
     let mut records = 0usize;
-    visit_integrity_problems_in_places(store, program, places, |outcome| {
+    visit_integrity_problems_in_places(store, program, places, profile, |outcome| {
         if outcome.is_record {
             records += 1;
         }
@@ -73,19 +86,26 @@ pub fn visit_integrity_problems(
     mut visit: impl FnMut(IntegrityOutcome) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
     let places = checked_places(program);
-    visit_integrity_problems_in_places(store, program, &places, &mut visit)
+    visit_integrity_problems_in_places(
+        store,
+        program,
+        &places,
+        IntegrityProfile::Report,
+        &mut visit,
+    )
 }
 
 fn visit_integrity_problems_in_places(
     store: &TreeStore,
     program: &CheckedProgram,
     places: &[CheckedSavedPlace],
+    profile: IntegrityProfile,
     mut visit: impl FnMut(IntegrityOutcome) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
     visit_data_records_in_places(places, store, |record| {
         visit(IntegrityOutcome {
             is_record: true,
-            problem: check_record(program, &record),
+            problem: check_record(store, program, &record, profile)?,
         })
     })?;
     visit_incomplete_records_in_places(store, program, places, |problem| {
@@ -109,6 +129,7 @@ pub struct IntegrityProblem {
     pub message: String,
     pub help: Option<&'static str>,
     pub incomplete: Option<IncompleteIntegrityProblem>,
+    pub dangling_ref: Option<DanglingRefIntegrityProblem>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,6 +138,14 @@ pub struct IncompleteIntegrityProblem {
     pub record_identity: Vec<SavedKey>,
     pub parent_path: Vec<DataPathSegment>,
     pub missing_member_catalog_id: CatalogId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DanglingRefIntegrityProblem {
+    pub containing_identity: Vec<SavedKey>,
+    pub field_catalog_id: CatalogId,
+    pub referenced_root: String,
+    pub referenced_identity: Vec<SavedKey>,
 }
 
 impl Diagnose for IntegrityProblem {
@@ -140,12 +169,18 @@ fn data_problem(
         message,
         help,
         incomplete: None,
+        dangling_ref: None,
     }
 }
 
-fn check_record(program: &CheckedProgram, record: &DataRecord) -> Option<IntegrityProblem> {
+fn check_record(
+    store: &TreeStore,
+    program: &CheckedProgram,
+    record: &DataRecord,
+    profile: IntegrityProfile,
+) -> Result<Option<IntegrityProblem>, StoreError> {
     if let Some(mismatch) = &record.key_mismatch {
-        return Some(data_problem(
+        return Ok(Some(data_problem(
             "data.key_type",
             record.path.clone(),
             format!(
@@ -154,44 +189,44 @@ fn check_record(program: &CheckedProgram, record: &DataRecord) -> Option<Integri
                 mismatch.expected.name()
             ),
             None,
-        ));
+        )));
     }
     match &record.leaf {
-        StoreLeafKind::Scalar(ty) => {
-            decode_value(record.payload.as_bytes(), *ty)
-                .is_none()
-                .then(|| {
-                    data_problem(
-                        "data.decode",
-                        record.path.clone(),
-                        format!("stored value is not a canonical {} form", ty.name()),
-                        None,
-                    )
-                })
-        }
+        StoreLeafKind::Scalar(ty) => Ok(decode_value(record.payload.as_bytes(), *ty)
+            .is_none()
+            .then(|| {
+                data_problem(
+                    "data.decode",
+                    record.path.clone(),
+                    format!("stored value is not a canonical {} form", ty.name()),
+                    None,
+                )
+            })),
         StoreLeafKind::Identity { store_root, arity } => {
-            check_identity_leaf(program, record, store_root, *arity)
+            check_identity_leaf(store, program, record, store_root, *arity, profile)
         }
-        StoreLeafKind::Enum { enum_id } => check_enum_leaf(program, record, *enum_id),
+        StoreLeafKind::Enum { enum_id } => Ok(check_enum_leaf(program, record, *enum_id)),
     }
 }
 
 fn check_identity_leaf(
+    store: &TreeStore,
     program: &CheckedProgram,
     record: &DataRecord,
     store_root: &str,
     arity: usize,
-) -> Option<IntegrityProblem> {
+    profile: IntegrityProfile,
+) -> Result<Option<IntegrityProblem>, StoreError> {
     let Some(keys) = decode_identity_payload_arity(record.payload.as_bytes(), arity) else {
-        return Some(data_problem(
+        return Ok(Some(data_problem(
             "data.decode",
             record.path.clone(),
             format!("stored value is not a canonical `Id(^{store_root})` encoding"),
             None,
-        ));
+        )));
     };
-    identity_leaf_key_mismatch(program, store_root, &keys).map(|(expected, found)| {
-        data_problem(
+    if let Some((expected, found)) = identity_leaf_key_mismatch(program, store_root, &keys) {
+        return Ok(Some(data_problem(
             "data.key_type",
             record.path.clone(),
             format!(
@@ -200,8 +235,41 @@ fn check_identity_leaf(
                 expected.name()
             ),
             None,
-        )
-    })
+        )));
+    }
+    if !profile.checks_dangling_refs() {
+        return Ok(None);
+    }
+    let Some(target_store) = program.facts.store_by_root(store_root) else {
+        return Ok(None);
+    };
+    let Some(target_store_id) = tooling_catalog_id(&target_store.catalog_id, "store")? else {
+        return Ok(None);
+    };
+    if store.data_subtree_exists(&target_store_id, &keys, &[])? {
+        return Ok(None);
+    }
+    Ok(Some(dangling_ref_problem(record, store_root, keys)))
+}
+
+fn dangling_ref_problem(
+    record: &DataRecord,
+    referenced_root: &str,
+    referenced_identity: Vec<SavedKey>,
+) -> IntegrityProblem {
+    IntegrityProblem {
+        code: "data.dangling_ref",
+        path: record.path.clone(),
+        message: format!("stored `Id(^{referenced_root})` reference points to no saved record"),
+        help: None,
+        incomplete: None,
+        dangling_ref: Some(DanglingRefIntegrityProblem {
+            containing_identity: record.identity.clone(),
+            field_catalog_id: record.field_catalog_id.clone(),
+            referenced_root: referenced_root.to_string(),
+            referenced_identity,
+        }),
+    }
 }
 
 fn check_enum_leaf(
@@ -426,6 +494,7 @@ fn incomplete_problem(
             parent_path,
             missing_member_catalog_id,
         }),
+        dangling_ref: None,
     }
 }
 

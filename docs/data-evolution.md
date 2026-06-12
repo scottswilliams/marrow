@@ -96,7 +96,8 @@ What Marrow does with an under-populated record:
   error, never a catchable branch.
 - A bare (maybe-present) field reads as maybe-present and is resolved at the read
   site; an unresolved read is a compile error.
-- `marrow data integrity` verifies stored value encodings and orphaned paths.
+- `marrow data integrity` verifies stored value encodings, identity referents,
+  required fields, and orphaned paths.
 
 Backfill with source-native intent:
 
@@ -367,7 +368,8 @@ discharged by rename/default/transform/rebuild/retire. A repair-required witness
 blocks `check --data`, `evolve preview`, and `evolve apply`.
 
 - typed data integrity reports `data.decode`, `data.key_type`,
-  `data.incomplete`, and `data.orphan` problems. It is read-only.
+  `data.dangling_ref`, `data.incomplete`, and `data.orphan` problems. It is
+  read-only.
 - typed data inspection renders durable places from checked/catalog facts.
 - A repair function run with `--maintenance` rewrites or deletes modeled data
   through managed paths, then `check --data` or `evolve preview` must prove the
@@ -386,12 +388,12 @@ targets. The manifest binds the data to `source_digest`, `catalog_epoch`,
 `parent_snapshot_digest` sentinel, `engine`, `commit`, `record_count`, and
 `archive_checksum`. Generated indexes are derived, so the stream omits them and
 restore rebuilds them from the data. Restore validates that binding and the data
-against the schema, rejects managed cells the current source/catalog does not
-declare, and replays the catalog rows and data cells into an empty store by
-default, or into a counted replace target with `restore --replace --count`, in
-one transaction with a fresh store UID. A rejected replay rolls back to the
-target's prior state, so the restored store re-establishes its accepted identity
-and runs immediately. Backups are
+conditions required for activation, rejects managed cells the current
+source/catalog does not declare, and replays the catalog rows and data cells into
+an empty store by default, or into a counted replace target with
+`restore --replace --count`, in one transaction with a fresh store UID. A
+rejected replay rolls back to the target's prior state, so the restored store
+re-establishes its accepted identity and runs immediately. Backups are
 deterministic and portable across conforming backends at the same layout and
 codec, but byte identity requires matching accepted catalog facts, engine
 profile, value codec, and stored data. Stable IDs are random opaque values that

@@ -259,46 +259,60 @@ fn visit_member(
         return Ok(0);
     };
     let prior_len = push_member(path, &member.name);
-    data_path.push(DataPathSegment::Member(catalog_id));
+    data_path.push(DataPathSegment::Member(catalog_id.clone()));
+    let cursor = MemberCursor {
+        context: MemberVisit {
+            store_id: context.store_id,
+            store: context.store,
+            identity: context.identity,
+        },
+        member,
+        field_catalog_id: &catalog_id,
+    };
     let records = if member.key_params.is_empty() {
-        visit_member_terminal(context, member, data_path, path, mismatch, visit)
+        visit_member_terminal(&cursor, data_path, path, mismatch, visit)
     } else {
-        visit_member_keys(context, member, data_path, path, 0, mismatch, visit)
+        visit_member_keys(&cursor, data_path, path, 0, mismatch, visit)
     };
     data_path.pop();
     path.truncate(prior_len);
     records
 }
 
+struct MemberCursor<'a> {
+    context: MemberVisit<'a>,
+    member: &'a CheckedSavedMember,
+    field_catalog_id: &'a CatalogId,
+}
+
 fn visit_member_keys(
-    context: &MemberVisit<'_>,
-    member: &CheckedSavedMember,
+    cursor: &MemberCursor<'_>,
     data_path: &mut Vec<DataPathSegment>,
     path: &mut String,
     key_index: usize,
     mismatch: Option<KeyMismatch>,
     visit: &mut impl FnMut(DataRecord) -> Result<(), StoreError>,
 ) -> Result<usize, StoreError> {
-    if key_index == member.key_params.len() {
-        return visit_member_terminal(context, member, data_path, path, mismatch, visit);
+    if key_index == cursor.member.key_params.len() {
+        return visit_member_terminal(cursor, data_path, path, mismatch, visit);
     }
 
     let mut records = 0usize;
-    let mut child =
-        context
-            .store
-            .data_first_child(context.store_id, context.identity, data_path)?;
+    let mut child = cursor.context.store.data_first_child(
+        cursor.context.store_id,
+        cursor.context.identity,
+        data_path,
+    )?;
     while let Some(key) = child {
         let next_after = key.clone();
         let prior_len = push_key(path, &key);
         let next_mismatch = mismatch
             .clone()
-            .or_else(|| key_mismatch(member.key_params[key_index].scalar, &key));
+            .or_else(|| key_mismatch(cursor.member.key_params[key_index].scalar, &key));
         data_path.push(DataPathSegment::Key(key));
         records = records
             .checked_add(visit_member_keys(
-                context,
-                member,
+                cursor,
                 data_path,
                 path,
                 key_index + 1,
@@ -310,9 +324,9 @@ fn visit_member_keys(
             })?;
         data_path.pop();
         path.truncate(prior_len);
-        child = context.store.data_next_child(
-            context.store_id,
-            context.identity,
+        child = cursor.context.store.data_next_child(
+            cursor.context.store_id,
+            cursor.context.identity,
             data_path,
             &next_after,
         )?;
@@ -321,36 +335,38 @@ fn visit_member_keys(
 }
 
 fn visit_member_terminal(
-    context: &MemberVisit<'_>,
-    member: &CheckedSavedMember,
+    cursor: &MemberCursor<'_>,
     data_path: &mut Vec<DataPathSegment>,
     path: &mut String,
     mismatch: Option<KeyMismatch>,
     visit: &mut impl FnMut(DataRecord) -> Result<(), StoreError>,
 ) -> Result<usize, StoreError> {
-    match &member.kind {
+    match &cursor.member.kind {
         CheckedSavedMemberKind::Field { .. } => {
-            let Some(leaf) = member.leaf.clone() else {
+            let Some(leaf) = cursor.member.leaf.clone() else {
                 return Ok(0);
             };
-            let Some(value) =
-                context
-                    .store
-                    .read_data_value(context.store_id, context.identity, data_path)?
+            let Some(value) = cursor.context.store.read_data_value(
+                cursor.context.store_id,
+                cursor.context.identity,
+                data_path,
+            )?
             else {
                 return Ok(0);
             };
             visit(DataRecord {
                 path: path.clone(),
                 payload: DebugDataPayload::new(value),
+                identity: cursor.context.identity.to_vec(),
+                field_catalog_id: cursor.field_catalog_id.clone(),
                 leaf,
                 key_mismatch: mismatch,
             })?;
             Ok(1)
         }
         CheckedSavedMemberKind::Group => visit_members(
-            context,
-            &member.group_members,
+            &cursor.context,
+            &cursor.member.group_members,
             data_path,
             path,
             mismatch,

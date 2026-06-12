@@ -401,12 +401,14 @@ $ marrow data dump --format jsonl ./proj
 
 Verify each checked, reachable stored value decodes against its declared schema
 type, verify required-field completeness for existing records and keyed-layer
-entries, and verify that no actual stored data cell is left under a root or
-member the schema no longer declares. It needs the checked project, so it loads
-and checks the source first. It reports decode mismatches (`data.decode`), key
-type mismatches (`data.key_type`), missing required fields (`data.incomplete`),
-orphaned managed cells (`data.orphan`), and corrupt typed tree-cell keys
-(`store.corruption`). Exits `0` on a clean store, `1` when any problem is found.
+entries, verify that canonical identity leaves point to existing saved record
+nodes, and verify that no actual stored data cell is left under a root or member
+the schema no longer declares. It needs the checked project, so it loads and
+checks the source first. It reports decode mismatches (`data.decode`), key type
+mismatches (`data.key_type`), dangling identity leaves (`data.dangling_ref`),
+missing required fields (`data.incomplete`), orphaned managed cells
+(`data.orphan`), and corrupt typed tree-cell keys (`store.corruption`). Exits
+`0` on a clean store, `1` when any problem is found.
 Pending or defaulted members without an accepted catalog id create no stored-data
 completeness obligation.
 

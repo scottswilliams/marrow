@@ -186,6 +186,37 @@ fn integrity_record(problem: &IntegrityProblem) -> serde_json::Value {
             json!(incomplete.missing_member_catalog_id.as_str()),
         );
     }
+    if let Some(dangling_ref) = &problem.dangling_ref {
+        let object = record.as_object_mut().expect("integrity record object");
+        object.insert(
+            "containing_identity".into(),
+            json!(
+                dangling_ref
+                    .containing_identity
+                    .iter()
+                    .map(saved_key_json)
+                    .collect::<Vec<_>>()
+            ),
+        );
+        object.insert(
+            "field_catalog_id".into(),
+            json!(dangling_ref.field_catalog_id.as_str()),
+        );
+        object.insert(
+            "referenced_root".into(),
+            json!(dangling_ref.referenced_root),
+        );
+        object.insert(
+            "referenced_identity".into(),
+            json!(
+                dangling_ref
+                    .referenced_identity
+                    .iter()
+                    .map(saved_key_json)
+                    .collect::<Vec<_>>()
+            ),
+        );
+    }
     record
 }
 
