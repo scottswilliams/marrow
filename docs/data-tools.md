@@ -15,8 +15,8 @@ The v0.1 tooling contract is:
 - render durable places from checked/catalog facts, not by decoding physical
   engine keys into source-shaped paths;
 - keep operator/admin full-store scans explicit;
-- report typed data findings such as `data.decode`, `data.key_type`, and
-  `data.orphan`;
+- report typed data findings such as `data.decode`, `data.key_type`,
+  `data.incomplete`, and `data.orphan`;
 - surface tree-cell store faults through the `store.*` family;
 - keep repair as explicit maintenance code over modeled data.
 
@@ -196,18 +196,20 @@ emits the same single object as `json`.
 ## `marrow data integrity`
 
 Verifies that each checked, reachable stored value decodes against its declared
-schema type, that no stored cell is left under a root or member the schema no
-longer declares, and that typed store traversal does not report corruption. It is
-read-only and typed: it needs the checked project to know each path's type. The
-whole verdict reads one stable store snapshot, so it describes a single coherent
-version of the data.
+schema type, that each existing record or keyed-layer entry carries its accepted
+required fields, that no stored cell is left under a root or member the schema no
+longer declares, and that typed store traversal does not report corruption. It
+is read-only and typed: it needs the checked project to know each path's type.
+The whole verdict reads one stable store snapshot, so it describes a single
+coherent version of the data.
 
 Catalog state is not store corruption. A saved root or member whose durable
 identity is still pending is treated as absent until a run or evolution apply
-records it. If source carries an in-flight catalog-intent diagnostic, data
-commands report that original `check.*` diagnostic in the requested format
-before inspecting the store. Only malformed tree-cell bytes, malformed catalog
-rows, or backend damage report `store.corruption`.
+records it, and an in-flight `evolve default` does not create a stored-data
+completeness obligation. If source carries an in-flight catalog-intent
+diagnostic, data commands report that original `check.*` diagnostic in the
+requested format before inspecting the store. Only malformed tree-cell bytes,
+malformed catalog rows, or backend damage report `store.corruption`.
 
 It exits `0` on a clean store and `1` when it finds any problem.
 
@@ -216,7 +218,7 @@ $ marrow data integrity ./project
 ok: ./project integrity verified (1 records)
 ```
 
-It surfaces three data findings plus typed store corruption:
+It surfaces four data findings plus typed store corruption:
 
 - `data.decode` — a stored value is not a canonical form of its declared
   scalar type (e.g. a non-int byte sequence stored under an `int` field).
@@ -230,6 +232,14 @@ It surfaces three data findings plus typed store corruption:
 
   ```
   ^counter("one").value: data.key_type: stored key is a string where the schema declares int
+  ```
+
+- `data.incomplete` — an existing record or keyed-layer entry is missing an
+  accepted required field. A completely absent record or absent keyed-layer entry
+  is not incomplete.
+
+  ```
+  ^books(7).title: data.incomplete: required saved member is absent
   ```
 
 - `data.orphan` — an actual stored data cell is under a saved root or member the
@@ -267,13 +277,16 @@ envelope; `--format jsonl` streams one envelope per finding plus a summary:
 
 These findings have no source line, so the location is a `path` field rather
 than a span. Every finding carries a `help` key, `null` when there is no hint.
-The `data.*` codes carry kind `tooling`. See
+The `data.*` codes carry kind `tooling`. `data.incomplete` findings also carry
+`store_catalog_id`, `record_identity`, `parent_path`, and
+`missing_member_catalog_id`; these are typed catalog/key fields for automation,
+while `source_span.path` is only the operator display path. See
 [error-codes.md](error-codes.md) for the full code list.
 
-When integrity reports orphaned managed cells, correct the schema, run
-source-native `evolve preview`/`evolve apply`, or repair modeled data through
-explicit maintenance code, then run `marrow data integrity` again. There is no
-`data` command for modeled-data fixes.
+When integrity reports incomplete records or orphaned managed cells, correct the
+schema, run source-native `evolve preview`/`evolve apply`, or repair modeled data
+through explicit maintenance code, then run `marrow data integrity` again. There
+is no `data` command for modeled-data fixes.
 
 ## `marrow data recover`
 

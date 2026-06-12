@@ -1,6 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use marrow_catalog::{CatalogEntryKind, CatalogLifecycle};
 use marrow_store::StoreError;
+use marrow_store::cell::CatalogId;
 use marrow_store::cell::{DataCellKey, DataCellKind};
 use marrow_store::key::{SavedKey, decode_identity_payload_arity};
 use marrow_store::tree::{DataPathSegment, TreeStore, decode_tree_enum_member};
@@ -8,13 +10,13 @@ use marrow_store::value::decode_value;
 use marrow_syntax::Diagnose;
 
 use crate::{
-    CheckedProgram, CheckedSavedMember, CheckedSavedPlace, StoreLeafKind,
+    CheckedProgram, CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace, StoreLeafKind,
     checked_activation_root_places, identity_leaf_key_mismatch,
 };
 
 use super::data::{
-    DataRecord, checked_places, push_key, render_data_path, validate_member_value_path,
-    visit_data_records_in_places,
+    DataRecord, checked_places, key_mismatch, push_key, render_data_path, tooling_catalog_id,
+    validate_member_value_path, visit_data_records_in_places, visit_place_record_identities,
 };
 
 const ORPHAN_INTEGRITY_HELP: &str =
@@ -59,8 +61,8 @@ fn count_integrity_problems_in_places(
 
 #[derive(Debug, Clone)]
 pub struct IntegrityOutcome {
-    /// True when this outcome counts a declared record, false when it reports a
-    /// stored cell the schema no longer declares.
+    /// True when this outcome counts a stored declared value, false for findings
+    /// that come from structure-only checks or undeclared stored cells.
     pub is_record: bool,
     pub problem: Option<IntegrityProblem>,
 }
@@ -86,6 +88,12 @@ fn visit_integrity_problems_in_places(
             problem: check_record(program, &record),
         })
     })?;
+    visit_incomplete_records_in_places(store, program, places, |problem| {
+        visit(IntegrityOutcome {
+            is_record: false,
+            problem: Some(problem),
+        })
+    })?;
     visit_orphans_in_places(store, places, |orphan| {
         visit(IntegrityOutcome {
             is_record: false,
@@ -100,6 +108,15 @@ pub struct IntegrityProblem {
     pub path: String,
     pub message: String,
     pub help: Option<&'static str>,
+    pub incomplete: Option<IncompleteIntegrityProblem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncompleteIntegrityProblem {
+    pub store_catalog_id: CatalogId,
+    pub record_identity: Vec<SavedKey>,
+    pub parent_path: Vec<DataPathSegment>,
+    pub missing_member_catalog_id: CatalogId,
 }
 
 impl Diagnose for IntegrityProblem {
@@ -111,28 +128,45 @@ impl Diagnose for IntegrityProblem {
     }
 }
 
+fn data_problem(
+    code: &'static str,
+    path: String,
+    message: String,
+    help: Option<&'static str>,
+) -> IntegrityProblem {
+    IntegrityProblem {
+        code,
+        path,
+        message,
+        help,
+        incomplete: None,
+    }
+}
+
 fn check_record(program: &CheckedProgram, record: &DataRecord) -> Option<IntegrityProblem> {
     if let Some(mismatch) = &record.key_mismatch {
-        return Some(IntegrityProblem {
-            code: "data.key_type",
-            path: record.path.clone(),
-            message: format!(
+        return Some(data_problem(
+            "data.key_type",
+            record.path.clone(),
+            format!(
                 "stored key is a {} where the schema declares {}",
                 mismatch.found.name(),
                 mismatch.expected.name()
             ),
-            help: None,
-        });
+            None,
+        ));
     }
     match &record.leaf {
         StoreLeafKind::Scalar(ty) => {
             decode_value(record.payload.as_bytes(), *ty)
                 .is_none()
-                .then(|| IntegrityProblem {
-                    code: "data.decode",
-                    path: record.path.clone(),
-                    message: format!("stored value is not a canonical {} form", ty.name()),
-                    help: None,
+                .then(|| {
+                    data_problem(
+                        "data.decode",
+                        record.path.clone(),
+                        format!("stored value is not a canonical {} form", ty.name()),
+                        None,
+                    )
                 })
         }
         StoreLeafKind::Identity { store_root, arity } => {
@@ -149,24 +183,24 @@ fn check_identity_leaf(
     arity: usize,
 ) -> Option<IntegrityProblem> {
     let Some(keys) = decode_identity_payload_arity(record.payload.as_bytes(), arity) else {
-        return Some(IntegrityProblem {
-            code: "data.decode",
-            path: record.path.clone(),
-            message: format!("stored value is not a canonical `Id(^{store_root})` encoding"),
-            help: None,
-        });
+        return Some(data_problem(
+            "data.decode",
+            record.path.clone(),
+            format!("stored value is not a canonical `Id(^{store_root})` encoding"),
+            None,
+        ));
     };
     identity_leaf_key_mismatch(program, store_root, &keys).map(|(expected, found)| {
-        IntegrityProblem {
-            code: "data.key_type",
-            path: record.path.clone(),
-            message: format!(
+        data_problem(
+            "data.key_type",
+            record.path.clone(),
+            format!(
                 "stored `Id(^{store_root})` reference has a {} key where the schema declares {}",
                 found.name(),
                 expected.name()
             ),
-            help: None,
-        }
+            None,
+        )
     })
 }
 
@@ -192,12 +226,221 @@ fn check_enum_leaf(
 }
 
 fn enum_decode_problem(record: &DataRecord, enum_name: &str) -> IntegrityProblem {
-    IntegrityProblem {
-        code: "data.decode",
-        path: record.path.clone(),
-        message: format!("stored value is not a catalog-backed `{enum_name}` member"),
-        help: None,
+    data_problem(
+        "data.decode",
+        record.path.clone(),
+        format!("stored value is not a catalog-backed `{enum_name}` member"),
+        None,
+    )
+}
+
+fn visit_incomplete_records_in_places(
+    store: &TreeStore,
+    program: &CheckedProgram,
+    places: &[CheckedSavedPlace],
+    mut report: impl FnMut(IntegrityProblem) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    let accepted_members = accepted_member_ids(program);
+    for place in places {
+        let names = member_names(&place.root_members);
+        visit_place_record_identities(place, store, &mut |place, store_id, identity| {
+            if identity_has_key_mismatch(place, identity) {
+                return Ok(());
+            }
+            let context = CompletenessContext {
+                store,
+                store_id,
+                root: &place.root,
+                names: &names,
+                accepted_members: &accepted_members,
+            };
+            let mut parent_path = Vec::new();
+            check_members_complete(
+                &context,
+                identity,
+                &place.root_members,
+                &mut parent_path,
+                &mut report,
+            )
+        })?;
     }
+    Ok(())
+}
+
+fn accepted_member_ids(program: &CheckedProgram) -> HashSet<&str> {
+    program
+        .catalog
+        .accepted_entries
+        .iter()
+        .filter(|entry| {
+            entry.kind == CatalogEntryKind::ResourceMember
+                && entry.lifecycle == CatalogLifecycle::Active
+        })
+        .map(|entry| entry.stable_id.as_str())
+        .collect()
+}
+
+fn identity_has_key_mismatch(place: &CheckedSavedPlace, identity: &[SavedKey]) -> bool {
+    identity
+        .iter()
+        .enumerate()
+        .any(|(index, key)| key_mismatch(place.identity_keys[index].scalar, key).is_some())
+}
+
+struct CompletenessContext<'a> {
+    store: &'a TreeStore,
+    store_id: &'a CatalogId,
+    root: &'a str,
+    names: &'a HashMap<String, String>,
+    accepted_members: &'a HashSet<&'a str>,
+}
+
+fn check_members_complete(
+    context: &CompletenessContext<'_>,
+    identity: &[SavedKey],
+    members: &[CheckedSavedMember],
+    parent_path: &mut Vec<DataPathSegment>,
+    report: &mut impl FnMut(IntegrityProblem) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    for member in members {
+        let Some(member_id) = tooling_catalog_id(&member.catalog_id, "resource member")? else {
+            continue;
+        };
+        parent_path.push(DataPathSegment::Member(member_id.clone()));
+        if member.key_params.is_empty() {
+            match &member.kind {
+                CheckedSavedMemberKind::Field { required } => check_field_complete(
+                    context,
+                    identity,
+                    member,
+                    &member_id,
+                    *required,
+                    parent_path,
+                    report,
+                )?,
+                CheckedSavedMemberKind::Group => check_members_complete(
+                    context,
+                    identity,
+                    &member.group_members,
+                    parent_path,
+                    report,
+                )?,
+            }
+        } else if matches!(member.kind, CheckedSavedMemberKind::Group) {
+            check_keyed_group_entries(context, identity, member, 0, parent_path, report)?;
+        }
+        parent_path.pop();
+    }
+    Ok(())
+}
+
+fn check_field_complete(
+    context: &CompletenessContext<'_>,
+    identity: &[SavedKey],
+    member: &CheckedSavedMember,
+    member_id: &CatalogId,
+    required: bool,
+    field_path: &[DataPathSegment],
+    report: &mut impl FnMut(IntegrityProblem) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    if !required || member.leaf.is_none() || !context.accepted_members.contains(member_id.as_str())
+    {
+        return Ok(());
+    }
+    if context
+        .store
+        .read_data_value(context.store_id, identity, field_path)?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let parent_path = field_path[..field_path.len() - 1].to_vec();
+    report(incomplete_problem(
+        context,
+        identity,
+        parent_path,
+        member_id.clone(),
+    ))?;
+    Ok(())
+}
+
+fn check_keyed_group_entries(
+    context: &CompletenessContext<'_>,
+    identity: &[SavedKey],
+    member: &CheckedSavedMember,
+    key_index: usize,
+    parent_path: &mut Vec<DataPathSegment>,
+    report: &mut impl FnMut(IntegrityProblem) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    if key_index == member.key_params.len() {
+        return check_members_complete(
+            context,
+            identity,
+            &member.group_members,
+            parent_path,
+            report,
+        );
+    }
+
+    let mut child = context
+        .store
+        .data_first_child(context.store_id, identity, parent_path)?;
+    while let Some(key) = child {
+        let next_after = key.clone();
+        if key_mismatch(member.key_params[key_index].scalar, &key).is_none() {
+            parent_path.push(DataPathSegment::Key(key));
+            check_keyed_group_entries(
+                context,
+                identity,
+                member,
+                key_index + 1,
+                parent_path,
+                report,
+            )?;
+            parent_path.pop();
+        }
+        child =
+            context
+                .store
+                .data_next_child(context.store_id, identity, parent_path, &next_after)?;
+    }
+    Ok(())
+}
+
+fn incomplete_problem(
+    context: &CompletenessContext<'_>,
+    identity: &[SavedKey],
+    parent_path: Vec<DataPathSegment>,
+    missing_member_catalog_id: CatalogId,
+) -> IntegrityProblem {
+    let mut full_path = parent_path.clone();
+    full_path.push(DataPathSegment::Member(missing_member_catalog_id.clone()));
+    IntegrityProblem {
+        code: "data.incomplete",
+        path: render_problem_path(context.root, identity, &full_path, context.names),
+        message: "required saved member is absent".to_string(),
+        help: None,
+        incomplete: Some(IncompleteIntegrityProblem {
+            store_catalog_id: context.store_id.clone(),
+            record_identity: identity.to_vec(),
+            parent_path,
+            missing_member_catalog_id,
+        }),
+    }
+}
+
+fn render_problem_path(
+    root: &str,
+    identity: &[SavedKey],
+    path: &[DataPathSegment],
+    names: &HashMap<String, String>,
+) -> String {
+    let mut text = format!("^{root}");
+    for key in identity {
+        push_key(&mut text, key);
+    }
+    render_data_path(&mut text, path, names);
+    text
 }
 
 fn visit_orphans_in_places(
@@ -225,15 +468,13 @@ impl DeclaredSchema {
             let Some(store_catalog_id) = place.store_catalog_id.clone() else {
                 continue;
             };
-            let mut names = HashMap::new();
-            collect_member_names(&place.root_members, &mut names);
             roots.insert(
                 store_catalog_id,
                 DeclaredRoot {
                     root: place.root.clone(),
                     identity_arity: place.identity_keys.len(),
                     members: place.root_members.clone(),
-                    names,
+                    names: member_names(&place.root_members),
                 },
             );
         }
@@ -313,16 +554,22 @@ impl DeclaredRoot {
 }
 
 fn orphan_problem(path: String, reason: &'static str) -> IntegrityProblem {
-    IntegrityProblem {
-        code: "data.orphan",
+    data_problem(
+        "data.orphan",
         path,
-        message: format!("stored data is under {reason}"),
-        help: Some(ORPHAN_INTEGRITY_HELP),
-    }
+        format!("stored data is under {reason}"),
+        Some(ORPHAN_INTEGRITY_HELP),
+    )
 }
 
 fn render_unknown_path() -> String {
     "<undeclared saved root>".to_string()
+}
+
+fn member_names(members: &[CheckedSavedMember]) -> HashMap<String, String> {
+    let mut names = HashMap::new();
+    collect_member_names(members, &mut names);
+    names
 }
 
 fn collect_member_names(members: &[CheckedSavedMember], names: &mut HashMap<String, String>) {

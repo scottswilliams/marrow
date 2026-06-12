@@ -107,6 +107,20 @@ pub(crate) fn field_path(place: &CheckedSavedPlace, name: &str) -> Vec<DataPathS
     ))]
 }
 
+pub(crate) fn member_path_catalog_id(place: &CheckedSavedPlace, names: &[&str]) -> CatalogId {
+    let mut members = place.root_members.as_slice();
+    let mut found = None;
+    for name in names {
+        let member = members
+            .iter()
+            .find(|member| member.name == *name)
+            .unwrap_or_else(|| panic!("checked member path {names:?}"));
+        found = Some(checked_catalog_id(&member.catalog_id));
+        members = member.group_members.as_slice();
+    }
+    found.unwrap_or_else(|| panic!("empty checked member path"))
+}
+
 pub(crate) fn keyed_field_path(
     place: &CheckedSavedPlace,
     name: &str,
@@ -136,6 +150,20 @@ pub(crate) fn write_tree_value(
     store
         .write_data_value(&store_id, identity, path, value)
         .expect("write tree-cell value");
+}
+
+pub(crate) fn delete_tree_path(
+    project: &Path,
+    root: &str,
+    identity: &[SavedKey],
+    path: &[DataPathSegment],
+) {
+    let place = checked_place(project, root);
+    let store_dir = project.join(".data");
+    let store = TreeStore::open(&store_dir.join("marrow.redb")).expect("open native store");
+    store
+        .delete_data_subtree(&checked_catalog_id(&place.store_catalog_id), identity, path)
+        .expect("delete tree-cell path");
 }
 
 pub(crate) fn write_record_node(project: &Path, root: &str, identity: &[SavedKey]) {

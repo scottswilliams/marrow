@@ -73,8 +73,10 @@ whole managed-root delete. Deleting a required field on its own raises
 it surfaces while verifying saved data against the project schema:
 `data.decode` for a stored value that is not a canonical form of its declared
 type, `data.key_type` for a stored key with a scalar type the schema does not
-declare, and `data.orphan` for a stored cell under a root or member the schema
-no longer declares (an undecodable cell key is reported as `store.corruption`).
+declare, `data.incomplete` for an existing record or keyed-layer entry missing
+an accepted required field, and `data.orphan` for a stored cell under a root or
+member the schema no longer declares (an undecodable cell key is reported as
+`store.corruption`).
 `marrow evolve` reports `evolve.*` codes when a preview witness
 cannot be applied exactly. A command run against a project whose `marrow.json`
 is unreadable reports `io.read`; an invalid `marrow.json` reports
@@ -326,6 +328,7 @@ project schema. Read-only; it never modifies the store.
 |---|---|
 | `data.decode` | A stored value is not a canonical form of its declared type. |
 | `data.key_type` | A stored record key, keyed-layer key, or identity payload key has a scalar type the schema does not declare for that key position (e.g. a string key under an `int` identity). |
+| `data.incomplete` | An existing record or keyed-layer entry is missing an accepted required field. JSON and JSONL include `store_catalog_id`, `record_identity`, `parent_path`, and `missing_member_catalog_id`; `source_span.path` is display-only. |
 | `data.orphan` | A stored data cell is under a saved root or member the schema no longer declares; integrity reports repair guidance for source-native evolution or maintenance repair. Derived index cells are never flagged. An actual stored cell whose key does not decode under the tree-cell key grammar is reported as `store.corruption`. |
 
 ### `evolve.*` — kind `tooling`

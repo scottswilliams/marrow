@@ -362,8 +362,8 @@ Repair handles checked data that no longer matches the schema and cannot be
 discharged by rename/default/transform/rebuild/retire. A repair-required witness
 blocks `check --data`, `evolve preview`, and `evolve apply`.
 
-- typed data integrity reports `data.decode`, `data.key_type`, and
-  `data.orphan` problems. It is read-only.
+- typed data integrity reports `data.decode`, `data.key_type`,
+  `data.incomplete`, and `data.orphan` problems. It is read-only.
 - typed data inspection renders durable places from checked/catalog facts.
 - A repair function run with `--maintenance` rewrites or deletes modeled data
   through managed paths, then `check --data` or `evolve preview` must prove the

@@ -423,9 +423,9 @@ name.
 
 Other inspection commands: `marrow data roots` (list saved roots), `marrow data
 stats` (count roots and records), `marrow data get <projectdir> <path>` (one
-path's value), and `marrow data integrity` (verify stored values decode against
-the schema and actual stored cells are still declared — note this does not check
-required-field completeness).
+path's value), and `marrow data integrity` (verify stored values decode, existing
+records and keyed entries carry accepted required fields, and actual stored cells
+are still declared).
 
 ## What Is Deferred
 

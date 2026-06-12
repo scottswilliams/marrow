@@ -57,6 +57,18 @@ pub(crate) fn visit_data_records_in_places(
     Ok(records)
 }
 
+pub(crate) fn visit_place_record_identities(
+    place: &CheckedSavedPlace,
+    store: &TreeStore,
+    visit: &mut impl FnMut(&CheckedSavedPlace, &CatalogId, &[SavedKey]) -> Result<(), StoreError>,
+) -> Result<usize, StoreError> {
+    let Some(store_id) = tooling_catalog_id(&place.store_catalog_id, "store")? else {
+        return Ok(0);
+    };
+    let mut identity = Vec::new();
+    visit_identity_record_nodes(place, &store_id, store, &mut identity, visit)
+}
+
 pub(crate) fn checked_places(program: &CheckedProgram) -> Vec<CheckedSavedPlace> {
     program
         .facts
@@ -152,6 +164,46 @@ fn visit_identity_records(
             })?;
         identity.pop();
         path.truncate(prior_len);
+        child = record_nav::next_record_child(
+            store,
+            store_id,
+            identity,
+            place.identity_keys.len(),
+            &next_after,
+        )?;
+    }
+    Ok(records)
+}
+
+fn visit_identity_record_nodes(
+    place: &CheckedSavedPlace,
+    store_id: &CatalogId,
+    store: &TreeStore,
+    identity: &mut Vec<SavedKey>,
+    visit: &mut impl FnMut(&CheckedSavedPlace, &CatalogId, &[SavedKey]) -> Result<(), StoreError>,
+) -> Result<usize, StoreError> {
+    if identity.len() == place.identity_keys.len() {
+        if !store.data_subtree_exists(store_id, identity, &[])? {
+            return Ok(0);
+        }
+        visit(place, store_id, identity)?;
+        return Ok(1);
+    }
+
+    let mut records = 0usize;
+    let mut child =
+        record_nav::first_record_child(store, store_id, identity, place.identity_keys.len())?;
+    while let Some(key) = child {
+        let next_after = key.clone();
+        identity.push(key);
+        records = records
+            .checked_add(visit_identity_record_nodes(
+                place, store_id, store, identity, visit,
+            )?)
+            .ok_or(StoreError::LimitExceeded {
+                limit: "data record count",
+            })?;
+        identity.pop();
         child = record_nav::next_record_child(
             store,
             store_id,

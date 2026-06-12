@@ -59,7 +59,7 @@ Stream separation is load-bearing: a program's own `print`/`write` output owns s
 |---|---|
 | `crates/marrow/src/cmd_data.rs` | `data` dispatch, `roots`/`stats`/`dump`, snapshot pinning, the streaming JSON-array envelope. |
 | `crates/marrow/src/cmd_data/get.rs` | `data get`: one path query, present/absent/children-only rendering. |
-| `crates/marrow/src/cmd_data/integrity.rs` | `data integrity`: stream decode problems per record, FAILURE when any exist. |
+| `crates/marrow/src/cmd_data/integrity.rs` | `data integrity`: render typed saved-data findings, including incomplete-record catalog/key identity fields, and exit FAILURE when any exist. |
 | `crates/marrow/src/cmd_evolve/mod.rs` | `evolve` dispatch, `check_data`, and `apply_cmd` (the apply publishes the catalog atomically, then renders the project-root catalog file from the committed snapshot). |
 | `crates/marrow/src/cmd_evolve/args.rs` | apply grammar: `--maintenance`, repeated `--approve-retire <id>:<count>` folded into one `Approval`. |
 | `crates/marrow/src/cmd_evolve/render.rs` | all evolve output, including the `ApplyError` to code/message map. |

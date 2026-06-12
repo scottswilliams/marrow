@@ -15,7 +15,7 @@ validation. CLI commands and backup/restore are renderers over those facts.
 | `marrow data roots` / `stats` | Operator/admin inspection. | Exact scans under one stable snapshot are allowed for admin commands; not a production preview API. |
 | `marrow data dump` | Operator/admin inspection. | Walks a full stable snapshot by explicit operator request and may expose canonical payload bytes; not a backup/restore format, sync format, production preview, or production data API. |
 | `marrow data get` | Operator/admin point inspection. | Presence states are typed facts; raw payload bytes are diagnostic output. |
-| `marrow data integrity` | Read-only data-integrity tooling. | Reports `data.orphan` with repair guidance; does not bless orphaned managed data. |
+| `marrow data integrity` | Read-only data-integrity tooling. | Reports incomplete records/keyed entries and orphaned managed cells with typed findings; does not bless invalid managed data. |
 | `run --trace` / `test --trace` | Debug execution rendering. | Observes runtime statement/write facts over checked source spans; does not change run semantics; not a stable external API. |
 | `run --dry-run` | Checked write preview for one operator-run entry. | Previews that run's managed writes against an isolated run store; use `evolve preview` for evolution. |
 | `--maintenance` | Explicit operator capability. | For modeled repair/evolution code, not raw store mutation; cannot be injected by project config or a default entry. |

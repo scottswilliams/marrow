@@ -20,7 +20,7 @@ Two halves live in `crates/marrow-check/src`:
 
 Path resolution is the single chokepoint: `resolve_query_steps` validates source-text or wire segments against a checked place's identity keys and member tree into a `StorageDataQuery` (physical store `CatalogId`, identity keys, data path), emitting typed `QueryError` on malformity. `ToolingError` keeps request-malformity (`Query`) distinct from store faults (`Store`); a missing or malformed checked catalog id stays `StoreError::Corruption` on purpose. Callers match variants, never prose.
 
-`shape.rs::classify_data_path` is the one member-tree shape owner, so the walk cursor's value-position test and integrity orphan detection share a single definition of "declared value path." Every walk and child listing pages with explicit limits, resume cursors, and truncated flags; counts use `checked_add` into `StoreError::LimitExceeded`. Integrity separates declared records (decode, key-type, enum-membership against schema and catalog) from orphan cells (data under a root/shape/member the schema no longer declares, or under a record identity with no node cell), each a typed `IntegrityProblem` with a stable code.
+`shape.rs::classify_data_path` is the one member-tree shape owner, so the walk cursor's value-position test and integrity orphan detection share a single definition of "declared value path." Every walk and child listing pages with explicit limits, resume cursors, and truncated flags; counts use `checked_add` into `StoreError::LimitExceeded`. Integrity separates declared values (decode, key-type, enum-membership against schema and catalog), declared-shape completeness (accepted required fields on existing records and keyed entries), and orphan cells (data under a root/shape/member the schema no longer declares, or under a record identity with no node cell), each a typed `IntegrityProblem` with a stable code.
 
 ## Modules
 
@@ -37,9 +37,9 @@ Path resolution is the single chokepoint: `resolve_query_steps` validates source
 | `crates/marrow-check/src/tooling/data/read.rs` | `read_data_query`: resolve one query to its payload and `DataPresence` (Absent/ValueOnly/ChildrenOnly). |
 | `crates/marrow-check/src/tooling/data/children.rs` | Child listing: classify a path into roots/record-children/members/key-children/leaf; page keyed scans with a resume cursor. |
 | `crates/marrow-check/src/tooling/data/walk.rs` | `walk_data`: paged, filter-prefixed, cursor-resumable depth-first walk of leaf values; emits `DataWalkPage` with a next cursor. |
-| `crates/marrow-check/src/tooling/data/traversal.rs` | Full saved-record traversal: recurse identity keys then the member tree, emit a `DataRecord` per stored leaf; backs counts, roots, and the integrity scan. |
+| `crates/marrow-check/src/tooling/data/traversal.rs` | Full saved-record traversal: recurse exact-arity identity nodes and member trees, emit a `DataRecord` per stored leaf or a record identity for declared-shape checks; backs counts, roots, and integrity. |
 | `crates/marrow-check/src/tooling/data/render.rs` | Path/key rendering helpers (catalog-id to source name, canonical `SavedKey` text). |
-| `crates/marrow-check/src/tooling/integrity.rs` | Integrity verdicts: per-record decode/key-type/enum-member checks plus orphan classification as typed `IntegrityProblem` with stable codes. |
+| `crates/marrow-check/src/tooling/integrity.rs` | Integrity verdicts: per-value decode/key-type/enum-member checks, required-field completeness for existing records/keyed entries, and orphan classification as typed `IntegrityProblem` with stable codes. |
 | `crates/marrow-check/src/tooling/metadata.rs` | `ToolingCatalogMetadata` (program digest + catalog epoch vs store epochs) and `store_is_newer_than_program` staleness predicate. |
 | `crates/marrow-check/src/test_support.rs` | Feature-gated test-only fact-lookup helpers; not in normal or release builds. |
 
@@ -49,7 +49,7 @@ Path resolution is the single chokepoint: `resolve_query_steps` validates source
 - `DataQuery` / `StorageDataQuery` (`tooling/data/mod.rs`, `query.rs`) — a resolved, schema-validated path; public display form vs crate-internal physical store form.
 - `QueryError` / `ToolingError` (`query_error.rs`, `tooling/mod.rs`) — typed request malformity vs store faults.
 - `DataRecord` / `DataPresence` / `DataWalkPage` / `DataChildrenPage` (`tooling/data/mod.rs`) — the paged data facts carrying truncation and resume cursors.
-- `IntegrityProblem` / `IntegrityOutcome` (`integrity.rs`) — a typed finding implementing `Diagnose`, tagged declared-record vs orphan-cell.
+- `IntegrityProblem` / `IntegrityOutcome` (`integrity.rs`) — a typed finding implementing `Diagnose`, tagged stored-value vs structure/orphan findings, with catalog/key identity attached to incomplete data.
 - `ToolingCatalogMetadata` (`metadata.rs`) — the version snapshot read for staleness gating.
 
 ## Notes

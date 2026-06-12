@@ -400,17 +400,15 @@ $ marrow data dump --format jsonl ./proj
 ### `data integrity`
 
 Verify each checked, reachable stored value decodes against its declared schema
-type, and verify that no actual stored data cell is left under a root or member
-the schema no longer declares. It needs the checked project, so it loads and
-checks the source first. It reports decode mismatches (`data.decode`), key type
-mismatches (`data.key_type`), orphaned managed cells (`data.orphan`), and corrupt
-typed tree-cell keys (`store.corruption`). Exits `0` on a clean store, `1` when
-any problem is found.
-
-Integrity walks the values that are actually stored. It does not verify
-required-field completeness: a record missing a required field has no stored
-cell to flag, so an incomplete record passes integrity. Completeness is enforced
-on the write path and by data evolution.
+type, verify required-field completeness for existing records and keyed-layer
+entries, and verify that no actual stored data cell is left under a root or
+member the schema no longer declares. It needs the checked project, so it loads
+and checks the source first. It reports decode mismatches (`data.decode`), key
+type mismatches (`data.key_type`), missing required fields (`data.incomplete`),
+orphaned managed cells (`data.orphan`), and corrupt typed tree-cell keys
+(`store.corruption`). Exits `0` on a clean store, `1` when any problem is found.
+Pending or defaulted members without an accepted catalog id create no stored-data
+completeness obligation.
 
 ```console
 $ marrow data integrity ./proj

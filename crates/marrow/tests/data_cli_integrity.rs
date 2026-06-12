@@ -1,24 +1,54 @@
 //! `marrow data integrity`: the saved-data integrity verdicts. Problems are asserted
-//! by their typed diagnostic code, tooling kind, and rendered path span; the healthy
-//! text verdict is a render contract pinned by explicitly-marked prose. The shared
+//! by typed diagnostic code, tooling kind, and structured payloads. Display paths
+//! are checked only where the rendered operator path is the contract. The shared
 //! child-page limit guard is asserted on its typed query error.
 
-use marrow_check::tooling::{DataQuerySegment, QueryError, ToolingError, data_children};
+use std::fs;
+use std::path::Path;
+
+use marrow_check::tooling::{
+    DataQuerySegment, QueryError, ToolingError, count_integrity_problems, data_children,
+};
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
 
 mod support;
 mod support_data;
+mod support_evolve;
 
 use support::write;
 use support_data::{
-    checked_place, checked_program, encode_identity_keys, field_path, integrity_problem, json,
-    keyed_field_path, marrow, native_project, seeded_project, write_orphan_cell, write_tree_value,
+    checked_place, checked_program, delete_tree_path, encode_identity_keys, field_path,
+    integrity_problem, json, keyed_field_path, marrow, member_path_catalog_id, native_project,
+    seeded_project, write_orphan_cell, write_record_node, write_tree_value,
     write_tree_value_without_node,
+};
+use support_evolve::{
+    REQUIRED_BASELINE_SOURCE, REQUIRED_DEFAULT_SOURCE, commit_catalog, native_books_project,
+    open_native_store, root_place, seed_title_only,
 };
 
 const NATIVE_STORE_CONFIG: &str =
     r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#;
+
+fn int_key_json(value: i64) -> serde_json::Value {
+    serde_json::json!({ "type": "int", "value": value })
+}
+
+fn check_pending_source_against_accepted_store(project: &Path) -> (usize, usize) {
+    let config_text = fs::read_to_string(project.join("marrow.json")).expect("read config");
+    let config = marrow_project::parse_config(&config_text).expect("parse config");
+    let store_path = support::native_store_path(project, &config).expect("native store path");
+    let accepted = TreeStore::open_read_only(&store_path)
+        .expect("open store read-only")
+        .read_catalog_snapshot()
+        .expect("read catalog snapshot");
+    let (_report, program) =
+        marrow_check::check_project_with_catalog(project, &config, accepted.as_ref())
+            .expect("check pending source against accepted catalog");
+    let store = TreeStore::open_read_only(&store_path).expect("open store read-only");
+    count_integrity_problems(&store, &program).expect("count integrity problems")
+}
 
 #[test]
 fn shared_data_children_rejects_zero_limit() {
@@ -52,6 +82,257 @@ fn data_integrity_passes_on_a_healthy_seeded_project() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
     assert!(stdout.contains("integrity verified"), "{stdout}");
+}
+
+#[test]
+fn data_integrity_reports_required_field_completeness_and_repair() {
+    let (project, dir) = seeded_project("data-integrity-incomplete-repair");
+    let place = checked_place(&project, "counter");
+    let store_catalog_id = place.store_catalog_id.clone().expect("accepted store id");
+    let value_id = member_path_catalog_id(&place, &["value"]);
+    let value_path = field_path(&place, "value");
+
+    delete_tree_path(&project, "counter", &[SavedKey::Int(1)], &value_path);
+
+    let output = marrow(&["data", "integrity", "--format", "json", &dir]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let value = json(output);
+    let problem = integrity_problem(&value, "data.incomplete");
+    assert_eq!(problem["kind"], serde_json::json!("tooling"), "{value}");
+    assert_eq!(
+        problem["store_catalog_id"],
+        serde_json::json!(store_catalog_id),
+        "{value}"
+    );
+    assert_eq!(
+        problem["record_identity"],
+        serde_json::json!([int_key_json(1)]),
+        "{value}"
+    );
+    assert_eq!(
+        problem["missing_member_catalog_id"],
+        serde_json::json!(value_id.as_str()),
+        "{value}"
+    );
+    assert_eq!(problem["parent_path"], serde_json::json!([]), "{value}");
+    assert_eq!(
+        problem["source_span"]["path"],
+        serde_json::json!("^counter(1).value"),
+        "{value}"
+    );
+
+    write_tree_value(
+        &project,
+        "counter",
+        &[SavedKey::Int(1)],
+        &value_path,
+        b"42".to_vec(),
+    );
+    let repaired = marrow(&["data", "integrity", "--format", "json", &dir]);
+
+    assert_eq!(repaired.status.code(), Some(0), "{repaired:?}");
+    assert_eq!(json(repaired)["problems"], serde_json::json!([]));
+}
+
+#[test]
+fn data_integrity_reports_missing_required_child_per_keyed_entry() {
+    let project = support::temp_dir("data-integrity-incomplete-keyed-entry");
+    write(&project, "marrow.json", NATIVE_STORE_CONFIG);
+    write(
+        &project,
+        "src/app.mw",
+        "module app\n\n\
+         resource Log\n\
+         \x20\x20\x20\x20sessions(day: int)\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20required note: string\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20mood: string\n\
+         store ^logs(id: int): Log\n",
+    );
+    let dir = project.to_str().unwrap().to_string();
+    let place = checked_place(&project, "logs");
+    let store_catalog_id = place.store_catalog_id.clone().expect("accepted store id");
+    let sessions_id = member_path_catalog_id(&place, &["sessions"]);
+    let note_id = member_path_catalog_id(&place, &["sessions", "note"]);
+    let mood_id = member_path_catalog_id(&place, &["sessions", "mood"]);
+    let mood_path = vec![
+        DataPathSegment::Member(sessions_id.clone()),
+        DataPathSegment::Key(SavedKey::Int(7)),
+        DataPathSegment::Member(mood_id),
+    ];
+    write_record_node(&project, "logs", &[SavedKey::Int(1)]);
+    write_tree_value(
+        &project,
+        "logs",
+        &[SavedKey::Int(1)],
+        &mood_path,
+        b"calm".to_vec(),
+    );
+
+    let output = marrow(&["data", "integrity", "--format", "json", &dir]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let value = json(output);
+    let problem = integrity_problem(&value, "data.incomplete");
+    assert_eq!(
+        problem["store_catalog_id"],
+        serde_json::json!(store_catalog_id),
+        "{value}"
+    );
+    assert_eq!(
+        problem["record_identity"],
+        serde_json::json!([int_key_json(1)]),
+        "{value}"
+    );
+    assert_eq!(
+        problem["parent_path"],
+        serde_json::json!([
+            { "member_catalog_id": sessions_id.as_str() },
+            { "key": int_key_json(7) }
+        ]),
+        "{value}"
+    );
+    assert_eq!(
+        problem["missing_member_catalog_id"],
+        serde_json::json!(note_id.as_str()),
+        "{value}"
+    );
+    assert_eq!(
+        problem["source_span"]["path"],
+        serde_json::json!("^logs(1).sessions(7).note"),
+        "{value}"
+    );
+}
+
+#[test]
+fn data_integrity_does_not_require_missing_optional_fields() {
+    let project = support::temp_dir("data-integrity-optional-missing");
+    write(&project, "marrow.json", NATIVE_STORE_CONFIG);
+    write(
+        &project,
+        "src/app.mw",
+        "module app\n\n\
+         resource Counter\n\
+         \x20\x20\x20\x20required value: int\n\
+         \x20\x20\x20\x20label: string\n\
+         store ^counter(id: int): Counter\n",
+    );
+    let dir = project.to_str().unwrap().to_string();
+    let place = checked_place(&project, "counter");
+    write_record_node(&project, "counter", &[SavedKey::Int(1)]);
+    write_tree_value(
+        &project,
+        "counter",
+        &[SavedKey::Int(1)],
+        &field_path(&place, "value"),
+        b"42".to_vec(),
+    );
+
+    let output = marrow(&["data", "integrity", "--format", "json", &dir]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(json(output)["problems"], serde_json::json!([]));
+}
+
+#[test]
+fn data_integrity_skips_pending_required_members_without_accepted_ids() {
+    let (project, _dir) = seeded_project("data-integrity-pending-required");
+    write(
+        &project,
+        "src/app.mw",
+        "module app\n\
+         \n\
+         resource Counter\n\
+         \x20\x20\x20\x20required value: int\n\
+         \x20\x20\x20\x20required label: string\n\
+         store ^counter(id: int): Counter\n\
+         \n\
+         pub fn seed()\n\
+         \x20\x20\x20\x20var c: Counter\n\
+         \x20\x20\x20\x20c.value = 42\n\
+         \x20\x20\x20\x20c.label = \"ok\"\n\
+         \x20\x20\x20\x20transaction\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20^counter(1) = c\n",
+    );
+
+    let (_records, problems) = check_pending_source_against_accepted_store(&project);
+
+    assert_eq!(problems, 0);
+}
+
+#[test]
+fn data_integrity_skips_defaulted_required_members_without_accepted_ids() {
+    let (project, _dir) = seeded_project("data-integrity-defaulted-required");
+    write(
+        &project,
+        "src/app.mw",
+        "module app\n\
+         \n\
+         resource Counter\n\
+         \x20\x20\x20\x20required value: int\n\
+         \x20\x20\x20\x20required label: string\n\
+         store ^counter(id: int): Counter\n\
+         \n\
+         evolve\n\
+         \x20\x20\x20\x20default Counter.label = \"unknown\"\n\
+         \n\
+         pub fn seed()\n\
+         \x20\x20\x20\x20var c: Counter\n\
+         \x20\x20\x20\x20c.value = 42\n\
+         \x20\x20\x20\x20c.label = \"ok\"\n\
+         \x20\x20\x20\x20transaction\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20^counter(1) = c\n",
+    );
+
+    let (_records, problems) = check_pending_source_against_accepted_store(&project);
+
+    assert_eq!(problems, 0);
+}
+
+#[test]
+fn data_integrity_reports_deleted_defaulted_required_field_after_apply() {
+    let project = native_books_project(
+        "data-integrity-defaulted-required-after-apply",
+        REQUIRED_BASELINE_SOURCE,
+    );
+    let baseline = commit_catalog(&project);
+    let baseline_place = root_place(&baseline, "books");
+    {
+        let store = open_native_store(&project);
+        seed_title_only(&store, &baseline_place, 1, "Dune");
+    }
+    write(&project, "src/books.mw", REQUIRED_DEFAULT_SOURCE);
+    let dir = project.to_str().unwrap().to_string();
+    let apply = support::marrow(&["evolve", "apply", "--format", "json", &dir]);
+    assert_eq!(apply.status.code(), Some(0), "{apply:?}");
+
+    let place = checked_place(&project, "books");
+    let store_catalog_id = place.store_catalog_id.clone().expect("accepted store id");
+    let pages_id = member_path_catalog_id(&place, &["pages"]);
+    let pages_path = field_path(&place, "pages");
+    delete_tree_path(&project, "books", &[SavedKey::Int(1)], &pages_path);
+
+    let output = marrow(&["data", "integrity", "--format", "json", &dir]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let value = json(output);
+    let problem = integrity_problem(&value, "data.incomplete");
+    assert_eq!(
+        problem["store_catalog_id"],
+        serde_json::json!(store_catalog_id),
+        "{value}"
+    );
+    assert_eq!(
+        problem["record_identity"],
+        serde_json::json!([int_key_json(1)]),
+        "{value}"
+    );
+    assert_eq!(
+        problem["missing_member_catalog_id"],
+        serde_json::json!(pages_id.as_str()),
+        "{value}"
+    );
+    assert_eq!(problem["parent_path"], serde_json::json!([]), "{value}");
 }
 
 #[test]
@@ -340,6 +621,11 @@ fn data_integrity_reports_a_non_canonical_value_as_data_decode() {
     assert_eq!(
         problem["source_span"]["path"],
         serde_json::json!("^counter(1).value")
+    );
+    assert_eq!(
+        value["problems"].as_array().expect("problems").len(),
+        1,
+        "{value}"
     );
 }
 

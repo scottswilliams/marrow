@@ -22,8 +22,10 @@ pub use walk::walk_data;
 
 pub(crate) use query::StorageDataQuery;
 pub(crate) use render::{push_key, render_data_path};
-pub(crate) use shape::validate_member_value_path;
-pub(crate) use traversal::{checked_places, visit_data_records_in_places};
+pub(crate) use shape::{key_mismatch, tooling_catalog_id, validate_member_value_path};
+pub(crate) use traversal::{
+    checked_places, visit_data_records_in_places, visit_place_record_identities,
+};
 
 pub const MAX_PREVIEW_ITEMS: usize = 10_000;
 
