@@ -831,16 +831,6 @@ the named owner of the #24/#27 subtractions. The remaining tail lane sequences a
 series.
 
 Catalog/evolution series (sequenced; live-refactor coordination):
-**W3.11 → Rename-first diagnostic.** Carries: the populated-member-drop diagnostic repair and
-data-evolution.md severity fix; the richer scaffold output rides W6.11. Owns:
-marrow-check evolution/discharge/absent_source.rs and docs/data-evolution.md: the diagnostic
-adds an `evolve rename` hint when one dropped populated member and one same-resource same-type
-addition share the same leaf token, while the doc says the check-time bare-rename signal is a
-warning. Seed: a fixture where a populated drop plus same-type add currently names only retire.
-Review: no automatic source edits, no cross-resource or mismatched-type shape matching, no new
-diagnostic code, and retire remains the destructive path. Done: the first diagnostic points at
-rename when rename is the plausible repair; W6.11's scaffold criteria name the sibling
-commented `evolve rename` block.
 
 **W3.12 → Restore diagnosability.** Carries: restore.source_mismatch and
 restore.catalog_mismatch messages that print both sides of the comparison, plus the roll-forward
