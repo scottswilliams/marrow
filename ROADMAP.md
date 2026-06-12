@@ -829,28 +829,10 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 Two sequenced series, concurrent with each other, plus an independent integrity lane (W3.7) and
 two tail lanes (W3.8, W3.9) that sequence after the catalog series. The catalog/evolution series
 coordinates with the live engine-resident-catalog refactor — it is the named owner of the
-#24/#27 subtractions. docs/backend-contract.md integrates in lane order: W3.1 → W3.2 → W3.3 →
-W3.4 → W3.9.
+#24/#27 subtractions. docs/backend-contract.md integrates in lane order: W3.2 → W3.3 → W3.4 →
+W3.9.
 
 Store series (sequenced):
-**W3.1 Savepoint flatten + durable-memory family (gate 8 + IV.D1(c)).** Deletes: the redb
-pre-image journal (including `mutate`'s `Vec<Undo>` return and the depth-1 case), the MemStore
-savepoint clone stack, the nesting conformance laws, and the depth-tagged TransactionState
-bookkeeping (`lower_savepoint_level`, depth-tagged required-entry checks and pending stamps
-collapse to single-level state); rewrites contract_transactions to the flat-join contract.
-Carries IV.D1(c) — fix or honestly re-document the unique-index discharge seen-set. ADR landed
-in W1.1; spec and backend-contract rewritten here in lockstep: resources-and-storage.md
-(Transactions section rewrite, lines 586-590) and backend-contract.md (savepoint section, lines
-24 and 169-178). Owns: marrow-store redb.rs/mem.rs/conformance, marrow-run env.rs, marrow-check
-discharge/index.rs + module doc, the two doc sections above. Seed: a runtime fixture pinning the
-unwind rule — a catch between a nested transaction block and the outermost boundary does not
-intercept the escaping error, and the outermost transaction's writes are rolled back. Review:
-adversarial soundness lens mandatory before integration; the discharge obligation enum and the
-integrity-finding family remain open to a rule-proof extension family via a typed extension
-point — no closed-world assumption on the current finding set (C24). Done: savepoint emulation
-gone end to end (journal, clone stack, depth-tagged state); spec and backend-contract state the
-flat-join contract.
-
 **W3.2 → Reader/writer implementation half (IV.D2 items 2-3).** Owns: env.rs commit-id
 allocation moved inside the write bracket; redb_store.rs lock tests re-asserted against the
 gate-7 contract; one conformance law asserting CommitId density over the committed sequence —
