@@ -1,4 +1,5 @@
-//! `marrow restore`: replay a typed backup into an empty native store.
+//! `marrow restore`: replay a typed backup into an empty native store by
+//! default, or into a counted replace target when requested.
 
 use std::collections::HashSet;
 use std::fs::{self, File};
@@ -12,16 +13,21 @@ use marrow_store::tree::TreeStore;
 use serde_json::json;
 
 use crate::backup::{
-    BackupError, BackupPrologue, CatalogFingerprintRef, read_backup_prologue,
-    restore_backup_with_prologue,
+    BackupError, BackupPrologue, CatalogFingerprintRef, RestoreReceipt, RestoreTargetMode,
+    read_backup_prologue, restore_backup_with_prologue,
 };
 use crate::{
-    CheckFormat, dir_and_path_args, load_config_with_format, native_store_path, report_io_error,
+    CheckFormat, load_config_with_format, native_store_path, parse_format_flag, report_io_error,
     report_project, report_simple_error, resolve_store_path, write_json,
 };
 
 pub(crate) fn restore(args: &[String]) -> ExitCode {
-    let (dir, input, format) = match dir_and_path_args("restore", "backup-file", args) {
+    let RestoreArgs {
+        dir,
+        input,
+        format,
+        target_mode,
+    } = match parse_restore_args(args) {
         Ok(parsed) => parsed,
         Err(code) => return code,
     };
@@ -105,21 +111,18 @@ pub(crate) fn restore(args: &[String]) -> ExitCode {
         &store,
         prologue,
         &mut reader,
+        target_mode,
         &mut nondeterminism,
         verify,
     ) {
         Ok(report) => {
             match format {
-                CheckFormat::Text => {
-                    println!(
-                        "ok: restored {} record(s) from {input}",
-                        report.record_count
-                    );
-                }
+                CheckFormat::Text => report_restore_text(&input, &report),
                 CheckFormat::Json | CheckFormat::Jsonl => write_json(json!({
                     "input": input,
                     "records": report.record_count,
                     "catalog_epoch": report.catalog_epoch,
+                    "receipt": restore_receipt_json(&report),
                 })),
             }
             ExitCode::SUCCESS
@@ -129,6 +132,134 @@ pub(crate) fn restore(args: &[String]) -> ExitCode {
             target_files.cleanup_created();
             report_backup_error(error, format)
         }
+    }
+}
+
+struct RestoreArgs {
+    dir: String,
+    input: String,
+    format: CheckFormat,
+    target_mode: RestoreTargetMode,
+}
+
+fn parse_restore_args(args: &[String]) -> Result<RestoreArgs, ExitCode> {
+    let mut positionals = Vec::new();
+    let mut format = CheckFormat::Text;
+    let mut saw_format = false;
+    let mut replace = false;
+    let mut expected_live_records = None;
+    let mut saw_count = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--format" => {
+                parse_format_flag(args, &mut index, &mut saw_format, &mut format)?;
+            }
+            "--replace" => {
+                if replace {
+                    eprintln!("duplicate --replace");
+                    return Err(ExitCode::from(2));
+                }
+                replace = true;
+            }
+            "--count" => {
+                if saw_count {
+                    eprintln!("duplicate --count");
+                    return Err(ExitCode::from(2));
+                }
+                saw_count = true;
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    eprintln!("missing value for --count");
+                    return Err(ExitCode::from(2));
+                };
+                expected_live_records = Some(parse_count_value(value)?);
+            }
+            "--help" | "-h" => {
+                print!(
+                    "Usage:\n  marrow restore [--format text|json|jsonl] [--replace --count N] <projectdir> <backup-file>\n"
+                );
+                return Err(ExitCode::SUCCESS);
+            }
+            value if value.starts_with('-') => return Err(crate::unknown_option("restore", value)),
+            value => positionals.push(value.to_string()),
+        }
+        index += 1;
+    }
+    if replace && expected_live_records.is_none() {
+        eprintln!("--replace requires --count");
+        return Err(ExitCode::from(2));
+    }
+    if !replace && expected_live_records.is_some() {
+        eprintln!("--count requires --replace");
+        return Err(ExitCode::from(2));
+    }
+    let target_mode = match expected_live_records {
+        Some(expected_live_records) => RestoreTargetMode::Replace {
+            expected_live_records,
+        },
+        None => RestoreTargetMode::EmptyOnly,
+    };
+    match positionals.as_slice() {
+        [dir, input] => Ok(RestoreArgs {
+            dir: dir.clone(),
+            input: input.clone(),
+            format,
+            target_mode,
+        }),
+        [] | [_] => {
+            eprintln!("marrow restore requires a project directory and a backup-file");
+            Err(ExitCode::from(2))
+        }
+        _ => {
+            eprintln!("marrow restore accepts one project directory and one backup-file");
+            Err(ExitCode::from(2))
+        }
+    }
+}
+
+fn parse_count_value(value: &str) -> Result<usize, ExitCode> {
+    value.parse::<usize>().map_err(|_| {
+        eprintln!("--count must be a nonnegative integer");
+        ExitCode::from(2)
+    })
+}
+
+fn report_restore_text(input: &str, report: &crate::backup::RestoreReport) {
+    match report.receipt {
+        RestoreReceipt::EmptyOnly => {
+            println!(
+                "ok: restored {} record(s) from {input}",
+                report.record_count
+            );
+        }
+        RestoreReceipt::Replace {
+            expected_live_records,
+            replaced_live_records,
+        } => {
+            println!(
+                "ok: restored {} record(s) from {input}; receipt: mode=replace expected_live_records={expected_live_records} replaced_live_records={replaced_live_records}",
+                report.record_count
+            );
+        }
+    }
+}
+
+fn restore_receipt_json(report: &crate::backup::RestoreReport) -> serde_json::Value {
+    match report.receipt {
+        RestoreReceipt::EmptyOnly => json!({
+            "mode": "empty",
+            "restored_records": report.record_count,
+        }),
+        RestoreReceipt::Replace {
+            expected_live_records,
+            replaced_live_records,
+        } => json!({
+            "mode": "replace",
+            "expected_live_records": expected_live_records,
+            "replaced_live_records": replaced_live_records,
+            "restored_records": report.record_count,
+        }),
     }
 }
 

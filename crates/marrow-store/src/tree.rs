@@ -812,11 +812,23 @@ impl TreeStore {
         Ok(ReadSnapshot { store: self })
     }
 
-    /// Whether the store holds no saved data: no data or index cells. A freshly
-    /// created store is empty, and restore refuses a non-empty target.
+    /// Whether the store holds no saved data: no data or index cells. Empty-only
+    /// restore rejects a non-empty target; counted replace mode checks the live
+    /// record count before clearing inside the restore transaction.
     pub fn is_empty(&self) -> Result<bool, StoreError> {
         Ok(self.family_is_empty(&CellKey::data_family())?
             && self.family_is_empty(&CellKey::index_family())?)
+    }
+
+    /// Clear the durable families a restore replay owns. Callers run this inside
+    /// their restore transaction so target data, derived indexes, accepted catalog,
+    /// and replay metadata are replaced atomically by the backup stream.
+    pub fn clear_restore_target(&self) -> Result<(), StoreError> {
+        self.delete_cells(CellKey::data_family().as_bytes())?;
+        self.delete_cells(CellKey::index_family().as_bytes())?;
+        self.delete_cells(CellKey::catalog_family().as_bytes())?;
+        self.delete_cells(CellKey::meta(MetaCell::Commit).as_bytes())?;
+        self.delete_cells(CellKey::meta(MetaCell::StoreUid).as_bytes())
     }
 
     fn family_is_empty(&self, prefix: &CellKey) -> Result<bool, StoreError> {

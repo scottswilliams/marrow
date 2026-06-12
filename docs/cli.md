@@ -13,7 +13,7 @@ marrow test [--trace] [--format text|json|jsonl] <projectdir>
 marrow data <roots|stats|dump|integrity|recover> [--format text|json|jsonl] <projectdir>
 marrow data get [--format text|json|jsonl] <projectdir> <path>
 marrow backup [--format text|json|jsonl] <projectdir> <output-file>
-marrow restore [--format text|json|jsonl] <projectdir> <backup-file>
+marrow restore [--format text|json|jsonl] [--replace --count N] <projectdir> <backup-file>
 marrow --version
 marrow --help
 ```
@@ -506,35 +506,53 @@ error.
 ## `marrow restore`
 
 ```
-marrow restore [--format text|json|jsonl] <projectdir> <backup-file>
+marrow restore [--format text|json|jsonl] [--replace --count N] <projectdir> <backup-file>
 ```
 
 Replay a backup into the project's native store. Restore checks the project
 against the accepted catalog the backup carries, validates the backup against
 it (`restore.source_mismatch`, `restore.catalog_mismatch`,
-`restore.engine_recompile_required`), and refuses a target that already holds
-saved data, generated indexes, or an accepted catalog (`restore.not_empty`) —
-v0.1 restores into an empty store only. Source mismatch reports print both the
-backup and project source digests. Catalog mismatch reports print the backup
-catalog epoch/digest and the project catalog epoch/digest. The replay writes the
-backup's catalog rows alongside its data cells and mints a fresh store UID, so
-the restored store carries its accepted identity and runs immediately. A
-non-empty `parent_snapshot_digest` is rejected; v0.1 accepts only the empty
-reserved sentinel.
+`restore.engine_recompile_required`). By default it refuses a target that
+already holds saved data, generated indexes, or an accepted catalog
+(`restore.not_empty`), so a normal restore writes into an empty store only.
+`--replace --count N` is the explicit destructive mode: restore counts the live
+target through the checked data tooling before mutation and proceeds only when
+that count equals `N`. A mismatch reports `restore.not_empty` with the expected
+and found counts and leaves the target data and catalog unchanged. `--replace`
+without `--count`, `--count` without `--replace`, negative or non-integer counts,
+and duplicate restore flags are usage errors.
+
+Source mismatch reports print both the backup and project source digests. Catalog
+mismatch reports print the backup catalog epoch/digest and the project catalog
+epoch/digest. The replay writes the backup's catalog rows alongside its data
+cells and mints a fresh store UID, so the restored store carries its accepted
+identity and runs immediately. A non-empty `parent_snapshot_digest` is rejected;
+v0.1 accepts only the empty reserved sentinel.
 The whole replay runs in one transaction: a checksum mismatch or trailing bytes
 (`restore.corrupt_chunk`), restored data that does not decode against the schema,
 or an orphaned managed cell in the restored stream (`restore.data_invalid`) rolls
-the target back to empty, so it either gains the whole backup or is left
-unchanged. Because the replay is a single transaction, its memory use is
+the target back to its prior state, so it either gains the whole backup or is
+left unchanged. Because the replay is a single transaction, its memory use is
 proportional to the backup size — a known v0.1 bound. Restore rebuilds the
-generated indexes from the restored data inside the same transaction. A different
-engine, layout, or codec reports `restore.engine_recompile_required`; applying
-that recompile is future work.
+generated indexes from the restored data inside the same transaction. In replace
+mode the transaction first clears data, generated indexes, accepted catalog rows,
+and restore-owned metadata, so a backup without a catalog cannot leave stale
+catalog rows behind. A different engine, layout, or codec reports
+`restore.engine_recompile_required`; applying that recompile is future work.
 
 ```console
 $ marrow restore ./proj ./proj-backup.mwbackup
 ok: restored 12 record(s) from ./proj-backup.mwbackup
 ```
+
+```console
+$ marrow restore --replace --count 12 ./proj ./proj-backup.mwbackup
+ok: restored 12 record(s) from ./proj-backup.mwbackup; receipt: mode=replace expected_live_records=12 replaced_live_records=12
+```
+
+JSON and JSONL success output include a `receipt` object. Empty-only restores
+report `{"mode":"empty","restored_records":...}`; replace restores report
+`{"mode":"replace","expected_live_records":...,"replaced_live_records":...,"restored_records":...}`.
 
 Exits `0` on success, `1` on any validation, checksum, store, or i/o failure, and
 `2` on a command-line usage error. See [error-codes.md](error-codes.md) for the

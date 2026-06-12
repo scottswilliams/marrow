@@ -604,13 +604,13 @@ engine profile, value codec, and stored data. Stable IDs are random opaque
 values that freeze when accepted, so divergent catalog histories may still
 freeze distinct accepted IDs for source that looks equivalent.
 
-Restore replays a backup into an empty store in one transaction and validates the
-data against the schema before activating it. Managed cells under roots or
-members the current source/catalog does not declare are rejected as data-attached
-integrity failures; restore never treats raw saved paths as the production backup
-contract.
-
-Restore targets an empty store and refuses a non-empty one.
+Restore replays a backup into an empty store by default, or into a counted
+replace target with `restore --replace --count N`, and validates the data
+against the schema before activating it. The replay is all-or-nothing: any
+checksum, framing, or verification failure rolls the target back to its prior
+state. Managed cells under roots or members the current source/catalog does not
+declare are rejected as data-attached integrity failures; restore never treats
+raw saved paths as the production backup contract.
 
 ## Transactions
 

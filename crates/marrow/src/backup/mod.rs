@@ -31,7 +31,10 @@ mod create;
 mod restore;
 
 pub(crate) use create::create_backup;
-pub(crate) use restore::{BackupPrologue, read_backup_prologue, restore_backup_with_prologue};
+pub(crate) use restore::{
+    BackupPrologue, RestoreReceipt, RestoreReport, RestoreTargetMode, read_backup_prologue,
+    restore_backup_with_prologue,
+};
 
 use marrow_run::Nondeterminism;
 use marrow_store::tree::{CommitMetadata, EngineProfile, EngineProfileDigest, StoreUid, TreeStore};
@@ -307,7 +310,7 @@ pub(crate) enum BackupError {
         message: String,
     },
     /// The restore target already holds saved data or an accepted catalog.
-    NotEmpty,
+    NotEmpty(String),
     /// Backup requires an already-stamped physical store identity.
     StoreUidMissing,
     /// The backup was written under a different engine, layout, or value codec.
@@ -390,6 +393,19 @@ impl BackupError {
         ))
     }
 
+    pub(crate) fn target_not_empty() -> Self {
+        Self::NotEmpty(
+            "the restore target already holds saved data or an accepted catalog; restore writes into an empty store unless --replace --count confirms the live record count"
+                .to_string(),
+        )
+    }
+
+    pub(crate) fn replace_count_mismatch(expected: usize, found: usize) -> Self {
+        Self::NotEmpty(format!(
+            "restore --replace expected {expected} live record(s), found {found}; target was not changed"
+        ))
+    }
+
     fn format_version(problem: BackupFormatProblem, message: String) -> Self {
         Self::FormatVersion { problem, message }
     }
@@ -408,7 +424,7 @@ impl BackupError {
             Self::Store(error) => error.code(),
             Self::FormatVersion { .. } => "restore.format_version",
             Self::CorruptChunk { .. } => "restore.corrupt_chunk",
-            Self::NotEmpty => "restore.not_empty",
+            Self::NotEmpty(_) => "restore.not_empty",
             Self::StoreUidMissing => "backup.store_uid_missing",
             Self::EngineRecompileRequired(_) => "restore.engine_recompile_required",
             Self::SourceMismatch(_) => "restore.source_mismatch",
@@ -438,11 +454,8 @@ impl std::fmt::Display for BackupError {
             Self::EngineRecompileRequired(message)
             | Self::SourceMismatch(message)
             | Self::CatalogMismatch(message)
-            | Self::DataInvalid(message) => write!(f, "{message}"),
-            Self::NotEmpty => write!(
-                f,
-                "the restore target already holds saved data or an accepted catalog; restore writes into an empty store"
-            ),
+            | Self::DataInvalid(message)
+            | Self::NotEmpty(message) => write!(f, "{message}"),
             Self::StoreUidMissing => write!(
                 f,
                 "the store has no physical store UID; run or evolve apply must stamp the store before backup"

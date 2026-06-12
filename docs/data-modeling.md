@@ -434,7 +434,7 @@ Some maintenance operations are not yet implemented:
 - `marrow data diff` and `marrow data load` are deferred — see
   [future/data-tools.md](future/data-tools.md). (Typed backup/restore is
   implemented: `marrow backup` and `marrow restore`.)
-- Non-empty restore modes and cross-engine restore are deferred — see
-  [future/cli.md](future/cli.md).
+- Restore `--replace --count` is implemented. Restore merge/repair modes and
+  cross-engine restore remain deferred.
 - Store-aware identity fields are canonical; relationship behavior remains
   explicit application logic, not implicit foreign-key enforcement.

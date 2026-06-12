@@ -28,7 +28,7 @@ Usage:
   marrow data <roots|stats|dump|integrity|recover> <projectdir>
   marrow data get <projectdir> <path>
   marrow backup [--format text|json|jsonl] <projectdir> <output-file>
-  marrow restore [--format text|json|jsonl] <projectdir> <backup-file>
+  marrow restore [--format text|json|jsonl] [--replace --count N] <projectdir> <backup-file>
   marrow --version
   marrow --help
 ";

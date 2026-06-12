@@ -387,9 +387,11 @@ targets. The manifest binds the data to `source_digest`, `catalog_epoch`,
 `archive_checksum`. Generated indexes are derived, so the stream omits them and
 restore rebuilds them from the data. Restore validates that binding and the data
 against the schema, rejects managed cells the current source/catalog does not
-declare, and replays the catalog rows and data cells into an empty store in one
-transaction with a fresh store UID, so the restored store re-establishes its
-accepted identity and runs immediately. Backups are
+declare, and replays the catalog rows and data cells into an empty store by
+default, or into a counted replace target with `restore --replace --count`, in
+one transaction with a fresh store UID. A rejected replay rolls back to the
+target's prior state, so the restored store re-establishes its accepted identity
+and runs immediately. Backups are
 deterministic and portable across conforming backends at the same layout and
 codec, but byte identity requires matching accepted catalog facts, engine
 profile, value codec, and stored data. Stable IDs are random opaque values that
@@ -411,7 +413,9 @@ These do not exist yet:
   reshape that crosses records is not;
 - `marrow data diff` and `marrow data load` (see
   [future/data-tools.md](future/data-tools.md));
-- non-empty restore modes.
+- restore merge/repair modes and cross-engine restore. Counted
+  `restore --replace --count` is implemented for replacing an existing target
+  whose live record count matches the supplied count.
 
 CLI commands follow the standard contract from
 [`error-codes.md`](error-codes.md): `0` on success, `1` for a recoverable check,

@@ -4,6 +4,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 use marrow_check::checked_saved_root_place;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
@@ -302,6 +303,327 @@ fn data_get_value(root: impl AsRef<Path>, path: &str) -> Option<Vec<u8>> {
     support::json(out.stdout)["value_b64"]
         .as_str()
         .map(|b64| marrow_run::base64::decode(b64).expect("decode value"))
+}
+
+fn restore_replace_project(name: &str) -> (TempProject, PathBuf) {
+    let root = temp_project(name, |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "shelf::seed" } }"#,
+        );
+        write(
+            root,
+            "src/shelf.mw",
+            "module shelf\n\
+             \n\
+             resource Book\n\
+             \x20\x20\x20\x20required title: string\n\
+             \x20\x20\x20\x20shelf: string\n\
+             \x20\x20\x20\x20isbn: string\n\
+             store ^books(id: int): Book\n\
+             \n\
+             \x20\x20\x20\x20index byShelf(shelf, id)\n\
+             \x20\x20\x20\x20index byIsbn(isbn) unique\n\
+             \n\
+             pub fn seed()\n\
+             \x20\x20\x20\x20transaction\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(1).title = \"Mort\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(1).shelf = \"fiction\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(1).isbn = \"978-1\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(2).title = \"Reaper\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(2).shelf = \"fiction\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(2).isbn = \"978-2\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(3).title = \"Sourcery\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(3).shelf = \"history\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(3).isbn = \"978-3\"\n\
+             \n\
+             pub fn mutate_live()\n\
+             \x20\x20\x20\x20transaction\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(1).title = \"Night Watch\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(1).shelf = \"live\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(1).isbn = \"live-1\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(2).title = \"Thud\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(2).shelf = \"live\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(2).isbn = \"live-2\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(3).title = \"Making Money\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(3).shelf = \"live\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(3).isbn = \"live-3\"\n\
+             \n\
+             pub fn find_isbn()\n\
+             \x20\x20\x20\x20for id in ^books.byIsbn(\"978-2\")\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20if const title = ^books(id).title\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20print(title)\n\
+             \n\
+             pub fn find_live_isbn()\n\
+             \x20\x20\x20\x20for id in ^books.byIsbn(\"live-2\")\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20if const title = ^books(id).title\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20print(title)\n\
+             \n\
+             pub fn count_shelf()\n\
+             \x20\x20\x20\x20var c = 0\n\
+             \x20\x20\x20\x20for id in keys(^books.byShelf(\"fiction\"))\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20c = c + 1\n\
+             \x20\x20\x20\x20print($\"{c}\")\n",
+        );
+    });
+    let data_dir = root.join(".data");
+    let seed = marrow(&["run", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed run: {seed:?}");
+    (root, data_dir)
+}
+
+fn assert_restore_replace_indexes(root: impl AsRef<Path>) {
+    let dir = root.as_ref().to_str().unwrap().to_string();
+    let unique = marrow(&["run", "--entry", "shelf::find_isbn", &dir]);
+    assert_eq!(unique.status.code(), Some(0), "find_isbn run: {unique:?}");
+    assert_eq!(
+        String::from_utf8(unique.stdout).expect("utf8"),
+        "Reaper\n",
+        "replace restore rebuilds the unique index from the backup state"
+    );
+    let stale_unique = marrow(&["run", "--entry", "shelf::find_live_isbn", &dir]);
+    assert_eq!(
+        stale_unique.status.code(),
+        Some(0),
+        "find_live_isbn run: {stale_unique:?}"
+    );
+    assert_eq!(
+        String::from_utf8(stale_unique.stdout).expect("utf8"),
+        "",
+        "replace restore clears stale live unique-index entries before rebuilding"
+    );
+    let count = marrow(&["run", "--entry", "shelf::count_shelf", &dir]);
+    assert_eq!(count.status.code(), Some(0), "count_shelf run: {count:?}");
+    assert_eq!(
+        String::from_utf8(count.stdout).expect("utf8"),
+        "2\n",
+        "replace restore rebuilds the non-unique index from the backup state"
+    );
+}
+
+#[test]
+fn restore_replace_replays_backup_after_confirmed_live_count() {
+    let (root, _data_dir) = restore_replace_project("backup-replace-success");
+    let dir = root.to_str().unwrap().to_string();
+    let archive = root.join("books.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+
+    let backup_state = dump_records(&root);
+    let backup = marrow(&["backup", "--format", "json", &dir, &archive_arg]);
+    assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
+    let backup_records = support::json(backup.stdout)["records"]
+        .as_u64()
+        .expect("backup record count");
+
+    let mutate = marrow(&["run", "--entry", "shelf::mutate_live", &dir]);
+    assert_eq!(mutate.status.code(), Some(0), "mutate live: {mutate:?}");
+    assert_ne!(
+        dump_records(&root),
+        backup_state,
+        "fixture changes the live target without changing source or catalog"
+    );
+
+    let restore = marrow(&[
+        "restore",
+        "--format",
+        "json",
+        "--replace",
+        "--count",
+        "9",
+        &dir,
+        &archive_arg,
+    ]);
+    assert_eq!(restore.status.code(), Some(0), "restore: {restore:?}");
+    let report = support::json(restore.stdout);
+    assert_eq!(
+        report["records"],
+        serde_json::json!(backup_records),
+        "restore keeps the existing restored backup-cell count"
+    );
+    assert_eq!(
+        report["receipt"],
+        serde_json::json!({
+            "mode": "replace",
+            "expected_live_records": 9,
+            "replaced_live_records": 9,
+            "restored_records": backup_records,
+        }),
+        "replace restore emits an audit receipt"
+    );
+    assert_eq!(
+        dump_records(&root),
+        backup_state,
+        "replace clears the live target and restores the backup state"
+    );
+    assert_restore_replace_indexes(&root);
+}
+
+#[test]
+fn restore_replace_wrong_count_refuses_before_changing_target() {
+    let (root, data_dir) = restore_replace_project("backup-replace-count-mismatch");
+    let dir = root.to_str().unwrap().to_string();
+    let archive = root.join("books.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+
+    let backup = marrow(&["backup", &dir, &archive_arg]);
+    assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
+    let mutate = marrow(&["run", "--entry", "shelf::mutate_live", &dir]);
+    assert_eq!(mutate.status.code(), Some(0), "mutate live: {mutate:?}");
+    let live_records = dump_records(&root);
+    let live_catalog = read_store_catalog(&data_dir).expect("live catalog before restore");
+
+    let restore = marrow(&[
+        "restore",
+        "--format",
+        "json",
+        "--replace",
+        "--count",
+        "8",
+        &dir,
+        &archive_arg,
+    ]);
+
+    assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
+    assert_eq!(json_code(&restore), "restore.not_empty");
+    let message = json_message(&restore);
+    assert!(message.contains("expected 8"), "{message}");
+    assert!(message.contains("found 9"), "{message}");
+    assert_eq!(
+        dump_records(&root),
+        live_records,
+        "count mismatch leaves the live data unchanged"
+    );
+    assert_eq!(
+        read_store_catalog(&data_dir),
+        Some(live_catalog),
+        "count mismatch leaves the live catalog unchanged"
+    );
+}
+
+#[test]
+fn restore_replace_clears_catalog_when_backup_has_none() {
+    let root = temp_project_uncommitted("backup-replace-no-catalog", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn noop()\n    print(\"ok\")\n",
+        );
+    });
+    let dir = root.to_str().unwrap().to_string();
+    let archive = root.join("empty.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+    let backup = marrow(&["backup", &dir, &archive_arg]);
+    assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
+
+    let data_dir = root.join(".data");
+    fs::create_dir_all(&data_dir).expect("create data dir");
+    let store_file = data_dir.join("marrow.redb");
+    {
+        let store = TreeStore::open(&store_file).expect("open target store");
+        store
+            .write_store_uid(
+                &marrow_store::tree::StoreUid::new(
+                    "store_11111111111111111111111111111111".to_string(),
+                )
+                .expect("store uid"),
+            )
+            .expect("write stale uid");
+        store
+            .replace_catalog_snapshot(&stale_catalog_snapshot())
+            .expect("write stale catalog");
+    }
+    assert!(
+        read_store_catalog(&data_dir).is_some(),
+        "fixture starts with catalog rows but no data"
+    );
+
+    let restore = marrow(&["restore", "--replace", "--count", "0", &dir, &archive_arg]);
+    assert_eq!(restore.status.code(), Some(0), "restore: {restore:?}");
+    assert_eq!(
+        read_store_catalog(&data_dir),
+        None,
+        "a no-catalog backup replace clears stale target catalog rows"
+    );
+}
+
+fn stale_catalog_snapshot() -> CatalogMetadata {
+    CatalogMetadata::new(
+        1,
+        vec![CatalogEntry {
+            kind: CatalogEntryKind::Store,
+            path: "old::books".to_string(),
+            stable_id: "cat_00000000000000000000000000000001".to_string(),
+            aliases: Vec::new(),
+            lifecycle: CatalogLifecycle::Active,
+            accepted_key_shape: Some("int".to_string()),
+            accepted_struct: Some("old::Book".to_string()),
+        }],
+    )
+}
+
+#[test]
+fn restore_replace_count_usage_is_explicit() {
+    let cases = [
+        (
+            vec!["restore", "--replace", "proj", "backup"],
+            "--replace requires --count",
+        ),
+        (
+            vec!["restore", "--count", "3", "proj", "backup"],
+            "--count requires --replace",
+        ),
+        (
+            vec!["restore", "--replace", "--count", "-1", "proj", "backup"],
+            "--count must be a nonnegative integer",
+        ),
+        (
+            vec!["restore", "--replace", "--count", "many", "proj", "backup"],
+            "--count must be a nonnegative integer",
+        ),
+        (
+            vec![
+                "restore",
+                "--replace",
+                "--replace",
+                "--count",
+                "3",
+                "proj",
+                "backup",
+            ],
+            "duplicate --replace",
+        ),
+        (
+            vec![
+                "restore",
+                "--replace",
+                "--count",
+                "3",
+                "--count",
+                "3",
+                "proj",
+                "backup",
+            ],
+            "duplicate --count",
+        ),
+    ];
+
+    for (args, expected) in cases {
+        let output = marrow(&args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+        assert!(
+            output.stdout.is_empty(),
+            "{args:?} unexpected stdout: {:?}",
+            output.stdout
+        );
+        let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+        assert!(stderr.contains(expected), "{args:?}: {stderr}");
+    }
 }
 
 #[test]

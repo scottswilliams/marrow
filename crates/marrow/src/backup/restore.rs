@@ -1,8 +1,9 @@
 //! Restoring a backup: validate it against the project and engine, then replay
-//! its catalog rows and data cells into an empty store in one transaction so the
-//! target either gains the whole backup or is left unchanged. The restored
-//! catalog re-establishes accepted identity, so a restored store runs immediately
-//! without re-running evolution.
+//! its catalog rows and data cells into an empty target by default, or into a
+//! counted replace target after clearing it inside the restore transaction. A
+//! failure rolls back to the target's prior state. The restored catalog
+//! re-establishes accepted identity, so a restored store runs immediately without
+//! re-running evolution.
 
 use std::io::Read;
 
@@ -27,12 +28,38 @@ use super::{
 pub(crate) struct RestoreReport {
     pub(crate) record_count: u64,
     pub(crate) catalog_epoch: Option<u64>,
+    pub(crate) receipt: RestoreReceipt,
+}
+
+/// Which live target state restore is allowed to replace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RestoreTargetMode {
+    EmptyOnly,
+    Replace { expected_live_records: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RestoreReceipt {
+    EmptyOnly,
+    Replace {
+        expected_live_records: usize,
+        replaced_live_records: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreparedRestoreTarget {
+    EmptyOnly,
+    Replace {
+        expected_live_records: usize,
+        replaced_live_records: usize,
+    },
 }
 
 /// The validated backup prologue: the manifest and the decoded catalog section. The
 /// catalog rows it carries are the accepted identity a caller re-checks the project
-/// against before replaying, so a restore into an empty store binds the backup's own
-/// catalog rather than a freshly proposed baseline.
+/// against before replaying, so a restore binds the backup's own catalog rather
+/// than a freshly proposed baseline.
 pub(crate) struct BackupPrologue {
     manifest: BackupManifest,
     section: CatalogSection,
@@ -61,45 +88,109 @@ pub(crate) fn read_backup_prologue(input: &mut impl Read) -> Result<BackupProlog
     Ok(BackupPrologue { manifest, section })
 }
 
-/// Restore the backup whose `prologue` was already read from `input` into `store`, an
-/// empty native store for `program`. `program` must be bound to the backup's catalog
-/// (see [`BackupPrologue::catalog`]). The whole replay runs in one transaction: a
-/// checksum mismatch, a short stream, or a `verify` failure rolls the target back to
-/// empty. The catalog rows replay alongside the data, so the restored store carries its
-/// own accepted identity. `verify` proves the restored data compiles against the
-/// restored catalog before the transaction commits.
+/// Restore the backup whose `prologue` was already read from `input` into `store`.
+/// The target must be empty unless counted replace mode was requested. `program`
+/// must be bound to the backup's catalog (see [`BackupPrologue::catalog`]). The
+/// whole replay runs in one transaction: a checksum mismatch, a short stream, or a
+/// `verify` failure rolls the target back to its prior state. The catalog rows
+/// replay alongside the data, so the restored store carries its own accepted
+/// identity. `verify` proves the restored data compiles against the restored
+/// catalog before the transaction commits.
 pub(crate) fn restore_backup_with_prologue(
     program: &CheckedProgram,
     store: &TreeStore,
     prologue: BackupPrologue,
     input: &mut impl Read,
+    target_mode: RestoreTargetMode,
     nondeterminism: &mut impl Nondeterminism,
     verify: impl Fn(&CheckedProgram, &TreeStore) -> Result<(), BackupError>,
 ) -> Result<RestoreReport, BackupError> {
     let BackupPrologue { manifest, section } = prologue;
     let restore_program = restore_program(program, &manifest)?;
-    if !restore_target_is_empty(store)? {
-        return Err(BackupError::NotEmpty);
-    }
+    let target = prepare_restore_target(&restore_program, store, target_mode)?;
 
     store.begin()?;
-    match replay(
-        &restore_program,
-        store,
-        &manifest,
-        &section,
-        input,
-        nondeterminism,
-        &verify,
-    ) {
-        Ok(report) => {
+    let replay_result = (|| {
+        if matches!(target, PreparedRestoreTarget::Replace { .. }) {
+            store.clear_restore_target()?;
+        }
+        replay(
+            &restore_program,
+            store,
+            &manifest,
+            &section,
+            input,
+            nondeterminism,
+            &verify,
+        )
+    })();
+    match replay_result {
+        Ok(mut report) => {
+            report.receipt = target.receipt();
             store.commit()?;
             Ok(report)
         }
         Err(error) => {
-            // Leave the target exactly as it was found: empty.
             let _ = store.rollback();
             Err(error)
+        }
+    }
+}
+
+fn prepare_restore_target(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    target_mode: RestoreTargetMode,
+) -> Result<PreparedRestoreTarget, BackupError> {
+    match target_mode {
+        RestoreTargetMode::EmptyOnly => {
+            if restore_target_is_empty(store)? {
+                Ok(PreparedRestoreTarget::EmptyOnly)
+            } else {
+                Err(BackupError::target_not_empty())
+            }
+        }
+        RestoreTargetMode::Replace {
+            expected_live_records,
+        } => prepare_replace_target(program, store, expected_live_records),
+    }
+}
+
+fn prepare_replace_target(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    expected_live_records: usize,
+) -> Result<PreparedRestoreTarget, BackupError> {
+    let (replaced_live_records, problems) =
+        marrow_check::tooling::count_activation_integrity_problems(store, program)?;
+    if problems != 0 {
+        return Err(BackupError::DataInvalid(format!(
+            "replace target has {problems} data integrity problem(s); run `marrow data integrity` before restore --replace"
+        )));
+    }
+    if replaced_live_records != expected_live_records {
+        return Err(BackupError::replace_count_mismatch(
+            expected_live_records,
+            replaced_live_records,
+        ));
+    }
+    Ok(PreparedRestoreTarget::Replace {
+        expected_live_records,
+        replaced_live_records,
+    })
+}
+
+impl PreparedRestoreTarget {
+    fn receipt(self) -> RestoreReceipt {
+        match self {
+            PreparedRestoreTarget::EmptyOnly => RestoreReceipt::EmptyOnly,
+            PreparedRestoreTarget::Replace {
+                expected_live_records,
+                replaced_live_records,
+            } => RestoreReceipt::Replace {
+                expected_live_records,
+                replaced_live_records,
+            },
         }
     }
 }
@@ -121,7 +212,15 @@ pub(crate) fn restore_backup(
     let prologue = read_backup_prologue(input)?;
     let mut nondeterminism =
         marrow_run::FixedNondeterminism::new(0, 0xfedc_ba98_7654_3210_f0e1_d2c3_b4a5_9687);
-    restore_backup_with_prologue(program, store, prologue, input, &mut nondeterminism, verify)
+    restore_backup_with_prologue(
+        program,
+        store,
+        prologue,
+        input,
+        RestoreTargetMode::EmptyOnly,
+        &mut nondeterminism,
+        verify,
+    )
 }
 
 /// The catalog section's recomputed digest and row count must equal the manifest's
@@ -263,6 +362,7 @@ fn replay(
     Ok(RestoreReport {
         record_count: manifest.record_count,
         catalog_epoch: manifest.catalog_epoch,
+        receipt: RestoreReceipt::EmptyOnly,
     })
 }
 

@@ -371,7 +371,7 @@ store predates the required physical store UID stamp.
 |---|---|
 | `restore.format_version` | The file is not a Marrow backup, or its format version is not the one this build restores. |
 | `restore.corrupt_chunk` | The backup's cell stream is truncated or its data checksum does not match the manifest. |
-| `restore.not_empty` | The target store already holds saved data, generated indexes, or an accepted catalog. v0.1 restore writes into an empty store only. |
+| `restore.not_empty` | The target store already holds saved data, generated indexes, or an accepted catalog and the command did not provide a matching `--replace --count N` confirmation. Count mismatches also use this code and leave the target unchanged. |
 | `restore.engine_recompile_required` | The backup was written under a different engine, layout, or value codec. A cross-engine restore is a future engine recompile. |
 | `restore.source_mismatch` | The backup was written from a program whose schema does not match this project. The message prints backup source digest and project source digest. |
 | `restore.catalog_mismatch` | The backup's catalog does not match this project's accepted catalog. The message prints backup catalog epoch/digest and project catalog epoch/digest. |
@@ -397,10 +397,11 @@ run.uncaught_error: uncaught error [io.read]: std::io::readText failed for `/no/
 
 ## Deferred Surfaces
 
-`marrow data diff`/`data load`, non-empty restore modes, and cross-engine restore
-are deferred — see [future/data-tools.md](future/data-tools.md) and
-[future/cli.md](future/cli.md). No active command-output code family appears for
-a deferred surface until that surface ships.
+`marrow data diff`/`data load` are deferred — see
+[future/data-tools.md](future/data-tools.md). Restore replace is part of the
+current CLI surface; restore merge/repair and cross-engine restore remain
+deferred. No active command-output code family appears for a deferred surface
+until that surface ships.
 
 The `decode.*` family is reserved for future checked decode and repair reports.
 These codes do not appear in v0.1 command output.
