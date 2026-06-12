@@ -843,15 +843,6 @@ series.
 
 Catalog/evolution series (sequenced; live-refactor coordination):
 
-**W3.13 → Restore replace.** Carries: `marrow restore --replace --count N` for atomically
-clearing and replaying a non-empty store when the confirmed live record count matches. Owns:
-cmd_restore.rs, backup/restore.rs empty-store guard plumbing, docs/cli.md, docs/future/cli.md
-placeholder deletion or migration, and backup_cli.rs coverage. Seed: a populated-store restore
-fixture that succeeds with the exact count and a wrong-count twin that refuses before touching
-data. Review: existing atomic replay, catalog replay, index rebuild, and verify-before-commit
-logic is reused; no merge mode, repair mode, cross-engine replace, partial replace, or backup
-format change. Done: replace-mode has an audit receipt and the old future placeholder is gone.
-
 **W3.14 → Evolve apply honesty.** Carries: four discharge/apply text and behavior fixes:
 DerivedRebuild only for indexes changed by the proposal, honest "nothing to apply" output for
 zero-work applies, a preview "nothing to discharge" qualifier plus JSON boolean, and one
