@@ -268,9 +268,9 @@ fn an_uncaught_throw_is_located() {
 }
 
 #[test]
-fn unbounded_recursion_surfaces_a_located_recursion_limit() {
+fn unbounded_recursion_surfaces_a_located_call_depth_fault() {
     // A clean-checking recursion that attempts the 257th call frame fails closed
-    // with a located `run.recursion_limit` fault at the recursive call site and
+    // with a located `run.depth` fault at the recursive call site and
     // exit 1. The guard trips before Rust stack exhaustion can decide behavior.
     let root = temp_project("run-recursion", |root| {
         write(
@@ -294,7 +294,7 @@ fn unbounded_recursion_surfaces_a_located_recursion_limit() {
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let fault = parse_fault(&output.stderr);
-    assert_eq!(fault.code, "run.recursion_limit");
+    assert_eq!(fault.code, "run.depth");
     assert!(
         fault
             .file

@@ -214,19 +214,23 @@ fn run_recursion_entry(entry: &'static str) -> Result<i64, RuntimeError> {
 }
 
 #[test]
-fn unbounded_recursion_faults_with_the_recursion_limit() {
-    // Recursing past the 256-frame budget raises a typed `run.recursion_limit`
+fn unbounded_recursion_faults_with_the_call_depth_budget() {
+    // Recursing past the 256-frame budget raises a typed `run.depth`
     // fault at the attempted 257th frame rather than overflowing the native stack.
-    assert_eq!(marrow_run::RECURSION_LIMIT, 256);
-    let error = run_recursion_entry("test::deep").expect_err("recursion limit");
-    assert_eq!(error.code, marrow_run::RUN_RECURSION);
+    assert_eq!(marrow_run::CALL_DEPTH_BUDGET, 256);
+    let error = run_recursion_entry("test::deep").expect_err("call-depth budget");
+    assert_eq!(error.code, marrow_run::RUN_DEPTH);
     assert!(
         error.message.contains("budget=256"),
-        "recursion-limit payload includes the budget: {error:?}"
+        "call-depth payload includes the budget: {error:?}"
     );
     assert!(
         error.message.contains("observed_depth=257"),
-        "recursion-limit payload includes the observed attempted depth: {error:?}"
+        "call-depth payload includes the observed attempted depth: {error:?}"
+    );
+    assert!(
+        error.message.contains("sumTo"),
+        "call-depth payload names the callee: {error:?}"
     );
 }
 

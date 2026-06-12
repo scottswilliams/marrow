@@ -124,7 +124,7 @@ process crash.
   source stops at the offending span with `check.nesting_limit`.
 - **Call-depth budget (256).** A running program may nest function calls up to
   256 deep. Attempting depth 257 stops at its call site with
-  `run.recursion_limit`, whose payload reports both `budget=256` and the
+  `run.depth`, whose payload reports the callee name, `budget=256`, and the
   observed attempted depth.
 
 Both ceilings are fixed in v0.1 and not configurable. The toolchain runs the

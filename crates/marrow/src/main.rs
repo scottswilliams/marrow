@@ -52,7 +52,7 @@ fn main() -> ExitCode {
     // over the source on the call stack, so dispatch on a worker thread with a
     // generous stack. The recursion guards in the parser and runtime are sized to
     // trip far inside this stack, so deeply nested source or runaway recursion
-    // surfaces a typed `check.nesting_limit` / `run.recursion_limit` diagnostic
+    // surfaces a typed `check.nesting_limit` / `run.depth` diagnostic
     // instead of aborting the process with a native stack overflow.
     let command = command.clone();
     let rest = rest.to_vec();

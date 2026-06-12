@@ -18,7 +18,8 @@ use crate::collection::{
 use crate::durable_read::{eval_index_lookup, eval_resource_read, eval_saved_layer_read};
 use crate::env::{Context, Env};
 use crate::error::{
-    CALL_DEPTH_BUDGET, RUN_ABSENT, RUN_UNKNOWN_FUNCTION, RuntimeError, recursion_limit, unsupported,
+    CALL_DEPTH_BUDGET, RUN_ABSENT, RUN_UNKNOWN_FUNCTION, RuntimeError, call_depth_exceeded,
+    unsupported,
 };
 use crate::host_effects::{eval_clock_capability, eval_env, eval_io, eval_log};
 use crate::local_collection::eval_local_collection_read;
@@ -118,8 +119,9 @@ fn eval_program_function<'p>(
 /// the nested frame and back out on return.
 ///
 /// The child runs at `env.depth + 1`; descending past [`CALL_DEPTH_BUDGET`] raises
-/// a located `run.recursion_limit` fault at the call `span` instead of recursing
-/// into a stack overflow.
+/// a located `run.depth` fault at the call `span` instead of recursing into a
+/// stack overflow. This is the one place every program-function call descends,
+/// so guarding here bounds both the plain and inout-mode call paths.
 fn invoke_function<'p>(
     env: &mut Env<'p>,
     module: &'p CheckedRuntimeModule,
@@ -129,7 +131,11 @@ fn invoke_function<'p>(
 ) -> Result<Completion, RuntimeError> {
     let child_depth = env.depth + 1;
     if child_depth > CALL_DEPTH_BUDGET {
-        return Err(recursion_limit(child_depth, span));
+        return Err(call_depth_exceeded(
+            function.name.as_str(),
+            child_depth,
+            span,
+        ));
     }
     let ctx = Context {
         program: env.program,

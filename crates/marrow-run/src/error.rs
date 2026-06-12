@@ -206,23 +206,24 @@ pub const RUN_TRAVERSAL: &str = "run.traversal";
 /// Function-call nesting exceeded [`CALL_DEPTH_BUDGET`]. Runaway or unbounded
 /// recursion stops here as a located fault rather than overflowing the native
 /// stack.
-pub const RUN_RECURSION: &str = "run.recursion_limit";
+pub const RUN_DEPTH: &str = "run.depth";
 
-/// The deepest call nesting a run will descend before raising [`RUN_RECURSION`].
+/// The deepest call nesting a run will descend before raising [`RUN_DEPTH`].
 /// The entry function runs at depth 1. Attempting depth 257 raises a typed fault
 /// instead of recursing. Fixed in v0.1, not configurable.
 pub const CALL_DEPTH_BUDGET: usize = 256;
 
-/// Back-compatible name for the fixed call-depth budget.
-pub const RECURSION_LIMIT: usize = CALL_DEPTH_BUDGET;
-
-/// A `run.recursion_limit` fault raised at the call site that would have
-/// descended past [`CALL_DEPTH_BUDGET`].
-pub(crate) fn recursion_limit(observed_depth: usize, span: SourceSpan) -> RuntimeError {
+/// A `run.depth` fault raised at the call site that would have descended past
+/// [`CALL_DEPTH_BUDGET`].
+pub(crate) fn call_depth_exceeded(
+    function_name: &str,
+    observed_depth: usize,
+    span: SourceSpan,
+) -> RuntimeError {
     RuntimeError::fault(
-        RUN_RECURSION,
+        RUN_DEPTH,
         format!(
-            "call nesting exceeded the call-depth budget \
+            "call nesting exceeded the call-depth budget while calling `{function_name}` \
              (budget={CALL_DEPTH_BUDGET}, observed_depth={observed_depth})"
         ),
         span,
