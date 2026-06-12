@@ -832,15 +832,6 @@ W2.8, and two tail lanes (W3.8, W3.9) sequence after the catalog series.
 docs/backend-contract.md remaining integration: W3.9.
 
 Catalog/evolution series (sequenced; live-refactor coordination):
-**W3.6 → Multi-store retire accounting + (kind,path) keying (IV.D3 per gate 3).** Owns:
-discharge/absent_source.rs (count across all owning roots via apply's shared enumeration helper),
-catalog source_kinds/apply_retires keying + fail-closed ambiguity assert. Seed: failing fixture —
-resource stored in two roots, populated retire in the second; approved preview applies. Review:
-frozen witness-equality tests updated deliberately as a semantic contract change; the C24
-open-extension criterion (typed extension point; no closed-world assumption on the finding set)
-applies here as on W3.1. Done: check and
-run share one place-enumeration owner.
-
 **W3.7 ∥ (after W2.8) Integrity completeness pass (II.D1, gate 5).** Owns: marrow data integrity
 completeness pass over `CheckedSavedMemberKind::Field { required }` facts — completeness is
 asserted per existing record and per existing keyed-layer entry, and defaulted members carry no
