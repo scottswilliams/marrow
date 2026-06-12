@@ -850,20 +850,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 Parser/checker/runtime files overlap heavily: the cut series is sequenced; additions follow.
 Listing order is execution order. Store crate is quiet this wave except where noted.
 
-**W4.3 → Small cuts.** Carries: decimal range steppables, quoted-segment Phase 1, map[K,V]
-Change B (gates 20-22). Owns: checker ranges.rs decimal arms, runtime RangeIter::Decimal,
-parse_expr field_segment rejection + presence-key quoted flag, schema map-sugar path +
-SCHEMA_UNSUPPORTED_TYPE constructor retirement with the error-codes.md schema.unsupported_type
-row deletion (sequence[T] retained), the token.rs map_type_parts deletion (coordinated with
-W4.11's is_type_text collapse — both sequenced Wave-4 lanes touching token.rs),
-grammar.md/types.md/syntax.md, affected tests per the corrected blast lists — incl. deleting the
-quoted-source eval_maintenance.rs tests (the quoted variants only, e.g.
-quoted_undeclared_saved_field_write_* and quoted_declared_saved_field_write_*; their sources no
-longer parse), keeping all bare-segment maintenance tests. Seed: each cut's rejection fixture
-red first. Review: sequence[T] stdlib contract intact; maintenance-mode quoted access (ADR
-language/03) preserved for Phase 2 — meaning the ADR contract and the inert AST/intents
-plumbing, not runnable quoted access. Done: per-cut absence scans.
-
 **W4.4 → entries() closure (II.E3, gate 14).** Owns: marrow-run collection.rs/loop_exec.rs (pair
 materialization deleted; local two-name loops), checks/calls.rs loop-head restriction,
 builtins.md + control-flow-and-effects.md (one docs motion with the Loops section). Seed:
