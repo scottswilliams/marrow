@@ -115,7 +115,7 @@ pub enum RepairReason {
     /// is one the collision scan can probe.
     UniqueIndexUnprobeable,
     /// A source-dropped member is still read by an active index, so it cannot be
-    /// silently deprecated: the change needs an explicit retire intent that also
+    /// silently retired: the change needs an explicit retire intent that also
     /// removes or rebinds the index. The verdict carries the index's catalog
     /// identity, not its developer-facing name; the name lives in the fail-closed
     /// diagnostic the discharge emits.

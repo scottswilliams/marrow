@@ -14,8 +14,8 @@ use crate::backup::{
     BackupError, BackupPrologue, read_backup_prologue, restore_backup_with_prologue,
 };
 use crate::{
-    CheckFormat, dir_and_path_args, load_config_with_format, native_store_path, report_project,
-    report_simple_error, resolve_store_path, write_json,
+    CheckFormat, dir_and_path_args, load_config_with_format, native_store_path, report_io_error,
+    report_project, report_simple_error, resolve_store_path, write_json,
 };
 
 pub(crate) fn restore(args: &[String]) -> ExitCode {
@@ -43,10 +43,13 @@ pub(crate) fn restore(args: &[String]) -> ExitCode {
     let prologue = match read_backup_prologue(&mut reader) {
         Ok(prologue) => prologue,
         Err(error) => {
-            report_simple_error(error.code(), &error.to_string(), format);
-            return ExitCode::FAILURE;
+            return report_backup_error(error, format);
         }
     };
+
+    if let Err(code) = reject_current_catalog_mismatch(&dir, &prologue, format) {
+        return code;
+    }
 
     // Restore binds the project against the catalog the backup carries, so the replayed
     // data validates against the same accepted identity the original store wrote it under
@@ -114,10 +117,58 @@ pub(crate) fn restore(args: &[String]) -> ExitCode {
         Err(error) => {
             drop(store);
             target_files.cleanup_created();
-            report_simple_error(error.code(), &error.to_string(), format);
-            ExitCode::FAILURE
+            report_backup_error(error, format)
         }
     }
+}
+
+fn report_backup_error(error: BackupError, format: CheckFormat) -> ExitCode {
+    report_simple_error(error.code(), &error.to_string(), format);
+    ExitCode::FAILURE
+}
+
+fn reject_current_catalog_mismatch(
+    dir: &str,
+    prologue: &BackupPrologue,
+    format: CheckFormat,
+) -> Result<(), ExitCode> {
+    let Some(current) = read_source_tree_catalog(dir, format)? else {
+        return Ok(());
+    };
+    if catalog_fingerprint(Some(&current)) == catalog_fingerprint(prologue.catalog()) {
+        return Ok(());
+    }
+    Err(report_backup_error(
+        BackupError::CatalogMismatch(
+            "backup catalog does not match this project's accepted catalog".to_string(),
+        ),
+        format,
+    ))
+}
+
+fn read_source_tree_catalog(
+    dir: &str,
+    format: CheckFormat,
+) -> Result<Option<marrow_catalog::CatalogMetadata>, ExitCode> {
+    let path = Path::new(dir).join("marrow.catalog.json");
+    let json = match fs::read_to_string(&path) {
+        Ok(json) => json,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            report_io_error(&path.display().to_string(), &error, format);
+            return Err(ExitCode::FAILURE);
+        }
+    };
+    marrow_catalog::CatalogMetadata::from_json(&json)
+        .map(Some)
+        .map_err(|error| {
+            report_simple_error(error.code, &error.message, format);
+            ExitCode::FAILURE
+        })
+}
+
+fn catalog_fingerprint(catalog: Option<&marrow_catalog::CatalogMetadata>) -> Option<(u64, &str)> {
+    catalog.map(|catalog| (catalog.epoch, catalog.digest.as_str()))
 }
 
 struct RestoreTargetFiles {
@@ -225,11 +276,9 @@ fn remove_created_store_file(path: &Path) {
     }
 }
 
-/// Check the project bound to the catalog the backup carries. A source-text mismatch is
-/// reported as `restore.source_mismatch`; a project that does not check cleanly against
-/// the backup's catalog is a `restore.catalog_mismatch` (the backup's accepted identity
-/// is not this project's). The returned program keys cells under the backup's catalog
-/// ids, so the replay and its integrity check share one identity.
+/// Check the project bound to the catalog the backup carries. Source-text and accepted-catalog
+/// mismatches are reported through their typed backup errors. The returned program keys cells
+/// under the backup's catalog ids, so the replay and its integrity check share one identity.
 fn check_against_backup_catalog(
     dir: &str,
     config: &marrow_project::ProjectConfig,
@@ -247,12 +296,13 @@ fn check_against_backup_catalog(
                 ExitCode::FAILURE
             })?;
     if prologue.source_digest() != program.source_digest() {
-        report_simple_error(
-            "restore.source_mismatch",
-            "backup was written from a program whose schema does not match this project",
+        return Err(report_backup_error(
+            BackupError::SourceMismatch(
+                "backup was written from a program whose schema does not match this project"
+                    .to_string(),
+            ),
             format,
-        );
-        return Err(ExitCode::FAILURE);
+        ));
     }
     if report.has_errors() {
         report_project(dir, &report, format);

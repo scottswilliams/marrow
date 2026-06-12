@@ -149,11 +149,12 @@ The snapshot records its catalog epoch and digest. Each entry records:
   identity-key shape, or a resource member's identity-aware structural
   signature.
 
-`active` entries bind current source to stable IDs. `deprecated` entries are old
-aliases kept for identity continuity. `reserved` entries remember spellings that
-must not be reused after a retire; a later source declaration at the same catalog
-path is rejected rather than minted as a fresh identity. `reserved` is the
-durable inactive spelling for a retired catalog path.
+`active` entries bind current source to stable IDs. `reserved` entries remember
+spellings that must not be reused after a retire; a later source declaration at
+the same catalog path is rejected rather than minted as a fresh identity.
+Renames keep identity continuity on the active entry by recording old spellings
+as aliases. `reserved` is the durable inactive spelling for a retired catalog
+path.
 
 Source-only checks read `marrow.catalog.json` when it exists. If the native store
 already holds a committed catalog and the file is missing, stale, or a torn

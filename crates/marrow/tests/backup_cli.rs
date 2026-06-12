@@ -207,6 +207,16 @@ fn no_uid_project_with_data(name: &str) -> (TempProject, PathBuf) {
     (root, data_dir)
 }
 
+const EVOLUTION_DEFAULT_BASELINE_SOURCE: &str = "module shelf\n\
+     \n\
+     resource Book\n\
+     \x20\x20\x20\x20required title: string\n\
+     store ^books(id: int): Book\n\
+     \n\
+     pub fn seed()\n\
+     \x20\x20\x20\x20transaction\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20^books(1).title = \"Mort\"\n";
+
 fn evolution_default_project(name: &str) -> (TempProject, PathBuf) {
     let root = temp_project(name, |root| {
         write(
@@ -214,19 +224,7 @@ fn evolution_default_project(name: &str) -> (TempProject, PathBuf) {
             "marrow.json",
             r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "shelf::seed" } }"#,
         );
-        write(
-            root,
-            "src/shelf.mw",
-            "module shelf\n\
-             \n\
-             resource Book\n\
-             \x20\x20\x20\x20required title: string\n\
-             store ^books(id: int): Book\n\
-             \n\
-             pub fn seed()\n\
-             \x20\x20\x20\x20transaction\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20^books(1).title = \"Mort\"\n",
-        );
+        write(root, "src/shelf.mw", EVOLUTION_DEFAULT_BASELINE_SOURCE);
     });
     let data_dir = root.join(".data");
     let seed = marrow(&["run", root.to_str().unwrap()]);
@@ -546,6 +544,91 @@ fn restore_of_an_evolved_store_runs_without_reapplying_evolution() {
         read_store_catalog(&data_dir).map(|catalog| catalog.epoch),
         applied_catalog_epoch,
         "a no-op apply does not advance the restored accepted catalog"
+    );
+}
+
+#[test]
+fn restore_of_epoch_n_backup_refuses_after_project_catalog_advances_to_n_plus_one() {
+    let (root, data_dir) = evolution_default_project("backup-epoch-catalog-mismatch");
+    let dir = root.to_str().unwrap().to_string();
+    let archive = root.join("epoch-n.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+
+    let backup = marrow(&["backup", &dir, &archive_arg]);
+    assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
+
+    add_pages_default_evolution(&root);
+    let apply = marrow(&["evolve", "apply", &dir]);
+    assert_eq!(apply.status.code(), Some(0), "evolve apply: {apply:?}");
+    let advanced_catalog = read_store_catalog(&data_dir).expect("advanced catalog");
+
+    write(&root, "src/shelf.mw", EVOLUTION_DEFAULT_BASELINE_SOURCE);
+    empty_store_data(&root, &data_dir);
+    let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
+
+    assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
+    assert_eq!(json_code(&restore), "restore.catalog_mismatch");
+    assert_store_empty(&data_dir);
+    let catalog_file = fs::read_to_string(root.join("marrow.catalog.json"))
+        .expect("advanced catalog file remains");
+    let catalog_file =
+        marrow_catalog::CatalogMetadata::from_json(&catalog_file).expect("catalog file parses");
+    assert_eq!(
+        catalog_file.epoch, advanced_catalog.epoch,
+        "a refused restore must not rewrite the advanced source-tree catalog"
+    );
+}
+
+#[test]
+fn restore_of_epoch_n_backup_refuses_after_project_source_advances_to_n_plus_one() {
+    let (root, data_dir) = evolution_default_project("backup-epoch-source-mismatch");
+    let dir = root.to_str().unwrap().to_string();
+    let archive = root.join("epoch-n-source.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+
+    let backup = marrow(&["backup", &dir, &archive_arg]);
+    assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
+
+    add_pages_default_evolution(&root);
+    let apply = marrow(&["evolve", "apply", &dir]);
+    assert_eq!(apply.status.code(), Some(0), "evolve apply: {apply:?}");
+
+    fs::remove_file(root.join("marrow.catalog.json")).expect("remove accepted catalog file");
+    empty_store_data(&root, &data_dir);
+    let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
+
+    assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
+    assert_eq!(json_code(&restore), "restore.source_mismatch");
+    assert_store_empty(&data_dir);
+}
+
+#[test]
+fn restore_source_mismatch_is_reported_before_non_empty_target() {
+    let (root, data_dir) = evolution_default_project("backup-source-mismatch-before-not-empty");
+    let dir = root.to_str().unwrap().to_string();
+    let archive = root.join("epoch-n-source-non-empty.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+
+    let backup = marrow(&["backup", &dir, &archive_arg]);
+    assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
+    let catalog_before = read_store_catalog(&data_dir).expect("baseline catalog");
+    let store_file = data_dir.join("marrow.redb");
+    let store_bytes_before = fs::read(&store_file).expect("read non-empty store before restore");
+
+    add_pages_default_evolution(&root);
+    let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
+
+    assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
+    assert_eq!(json_code(&restore), "restore.source_mismatch");
+    assert_eq!(
+        fs::read(&store_file).expect("read non-empty store after restore"),
+        store_bytes_before,
+        "a refused source-mismatched restore must not touch the non-empty target"
+    );
+    assert_eq!(
+        read_store_catalog(&data_dir),
+        Some(catalog_before),
+        "a refused source-mismatched restore leaves the accepted catalog unchanged"
     );
 }
 

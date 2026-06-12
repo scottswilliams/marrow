@@ -235,11 +235,7 @@ mod tag_tests {
 
     #[test]
     fn lifecycle_tags_round_trip_for_every_variant() {
-        for lifecycle in [
-            CatalogLifecycle::Active,
-            CatalogLifecycle::Deprecated,
-            CatalogLifecycle::Reserved,
-        ] {
+        for lifecycle in [CatalogLifecycle::Active, CatalogLifecycle::Reserved] {
             assert_eq!(CatalogLifecycle::from_tag(lifecycle.tag()), Some(lifecycle));
         }
     }
@@ -247,6 +243,7 @@ mod tag_tests {
     #[test]
     fn an_unknown_tag_decodes_to_none() {
         assert_eq!(CatalogEntryKind::from_tag(99), None);
+        assert_eq!(CatalogLifecycle::from_tag(1), None);
         assert_eq!(CatalogLifecycle::from_tag(99), None);
     }
 }
@@ -405,7 +402,6 @@ impl CatalogEntryKind {
 #[serde(rename_all = "camelCase")]
 pub enum CatalogLifecycle {
     Active,
-    Deprecated,
     Reserved,
 }
 
@@ -414,7 +410,6 @@ impl CatalogLifecycle {
     pub fn tag(self) -> u8 {
         match self {
             Self::Active => 0,
-            Self::Deprecated => 1,
             Self::Reserved => 2,
         }
     }
@@ -423,7 +418,6 @@ impl CatalogLifecycle {
     pub fn from_tag(tag: u8) -> Option<Self> {
         match tag {
             0 => Some(Self::Active),
-            1 => Some(Self::Deprecated),
             2 => Some(Self::Reserved),
             _ => None,
         }

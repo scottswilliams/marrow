@@ -252,7 +252,7 @@ fn redb_round_trips_a_catalog_digest_used_for_comparison() {
             path: "orders".to_string(),
             stable_id: stable_id(5),
             aliases: vec!["purchases".to_string()],
-            lifecycle: CatalogLifecycle::Deprecated,
+            lifecycle: CatalogLifecycle::Reserved,
             accepted_key_shape: Some("int,string".to_string()),
             accepted_struct: None,
         }],

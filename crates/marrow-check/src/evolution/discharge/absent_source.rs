@@ -74,7 +74,7 @@ pub(super) fn classify_absent_source_entries(
                 }
             }
             AbsentEntryState::Reserved => {}
-            AbsentEntryState::Active | AbsentEntryState::Deprecated => {
+            AbsentEntryState::Active => {
                 if let Some((index_name, index_id)) = index_depends_on(program, entry)? {
                     acc.diagnostic(
                         entry_id.clone(),
@@ -148,7 +148,6 @@ fn catalog_entries_for_drop_discharge(program: &CheckedProgram) -> &[CatalogEntr
 #[derive(Clone, Copy)]
 enum AbsentEntryState {
     Active,
-    Deprecated,
     Reserved,
     RetiredThisProposal,
 }
@@ -164,7 +163,6 @@ fn absent_entry_state(program: &CheckedProgram, entry: &CatalogEntry) -> AbsentE
     }
     match entry.lifecycle {
         CatalogLifecycle::Active => AbsentEntryState::Active,
-        CatalogLifecycle::Deprecated => AbsentEntryState::Deprecated,
         CatalogLifecycle::Reserved => AbsentEntryState::Reserved,
     }
 }

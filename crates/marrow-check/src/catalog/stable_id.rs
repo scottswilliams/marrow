@@ -23,7 +23,7 @@ impl StableIdAllocator<OsCatalogIdEntropy> {
     }
 
     /// Seeds the in-use set from every recorded entry regardless of lifecycle, so a
-    /// retired or deprecated id is never handed back out to a new entity.
+    /// retired id is never handed back out to a new entity.
     pub(super) fn over(entries: &[CatalogEntry]) -> Self {
         Self {
             used: entries

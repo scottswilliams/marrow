@@ -988,7 +988,6 @@ impl<'a> AcceptedCatalog<'a> {
                         push_accepted_path_candidate(&mut path_candidates, alias.as_str(), entry);
                     }
                 }
-                CatalogLifecycle::Deprecated => {}
             }
         }
         Self {
@@ -1417,13 +1416,7 @@ fn push_reserved_reuse(
     );
 }
 
-fn prepare_proposal_path(entries: &mut Vec<CatalogEntry>, kind: CatalogEntryKind, path: &str) {
-    entries.retain(|entry| {
-        !(entry.kind == kind
-            && entry.path == path
-            && entry.lifecycle != CatalogLifecycle::Active
-            && entry.lifecycle != CatalogLifecycle::Reserved)
-    });
+fn prepare_proposal_path(entries: &mut [CatalogEntry], kind: CatalogEntryKind, path: &str) {
     for entry in entries.iter_mut().filter(|entry| entry.kind == kind) {
         if entry.lifecycle != CatalogLifecycle::Reserved {
             entry.aliases.retain(|alias| alias != path);

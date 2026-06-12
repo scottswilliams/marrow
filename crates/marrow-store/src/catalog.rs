@@ -355,7 +355,7 @@ mod tests {
                     path: "books.title".to_string(),
                     stable_id: stable_id(2),
                     aliases: Vec::new(),
-                    lifecycle: CatalogLifecycle::Deprecated,
+                    lifecycle: CatalogLifecycle::Reserved,
                     accepted_key_shape: None,
                     accepted_struct: Some("leaf:string".to_string()),
                 },

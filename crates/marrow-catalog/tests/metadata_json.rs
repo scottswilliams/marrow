@@ -89,7 +89,7 @@ fn round_trips_stable_ids_aliases_lifecycle_epoch_and_digest() {
             path: "books::Status::archived".to_string(),
             stable_id: derived_id("enum-member-archived"),
             aliases: vec!["books::Status::inactive".to_string()],
-            lifecycle: CatalogLifecycle::Deprecated,
+            lifecycle: CatalogLifecycle::Reserved,
             accepted_key_shape: None,
             accepted_struct: None,
         },
@@ -196,6 +196,27 @@ fn removed_lifecycle_is_rejected() {
     let removed = json.replacen(field, "\"lifecycle\": \"removed\"", 1);
 
     let error = CatalogMetadata::from_json(&removed).expect_err("removed lifecycle rejected");
+    assert_eq!(error.code, CATALOG_INVALID);
+}
+
+#[test]
+fn deprecated_lifecycle_is_rejected() {
+    let metadata = catalog(vec![entry(
+        CatalogEntryKind::Resource,
+        "books::Book",
+        "res-book",
+        &[],
+    )]);
+    let json = metadata.to_json_pretty();
+    CatalogMetadata::from_json(&json).expect("active lifecycle parses clean");
+
+    let deprecated = json.replacen(
+        "\"lifecycle\": \"active\"",
+        "\"lifecycle\": \"deprecated\"",
+        1,
+    );
+
+    let error = CatalogMetadata::from_json(&deprecated).expect_err("deprecated lifecycle rejected");
     assert_eq!(error.code, CATALOG_INVALID);
 }
 
