@@ -829,29 +829,9 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 The catalog/evolution series coordinates with the live engine-resident-catalog refactor — it is
 the named owner of the #24/#27 subtractions. An independent integrity lane (W3.7) can run after
 W2.8, and two tail lanes (W3.8, W3.9) sequence after the catalog series.
-docs/backend-contract.md integrates in lane order: W3.5 → W3.9.
+docs/backend-contract.md remaining integration: W3.9.
 
 Catalog/evolution series (sequenced; live-refactor coordination):
-**W3.5 → Atomic accepted-catalog commit (gate 9, removal #27) + fence-message audit (III.B3
-narrowed).** Owns: apply/auto-apply commit contents (catalog bytes in the same store
-transaction), idempotent file render — III.B3's fork is resolved as self-healing, no
-guidance-only branch: any command finding the store's committed catalog ahead of the file
-rewrites the file from committed store state and proceeds (a derived render, no evidence
-re-proving); conflict-marker detection in the catalog parser (C32) —
-git marker lines reject the parse with typed `catalog.merge_conflict` and a pointed next step
-(~20 lines), this lane owning the catalog.merge_conflict error-codes.md row (single-row
-convention); deletion of completion/proposal-era resume:
-`rebind_activation_resume_program`, `resume_completion`, most of evolve_cli_resume (replaced by
-one store-to-file recovery test); StoreEvolved keeps the recompile-or-upgrade message only for a
-store stamped by a genuinely newer binary (a state the render-gap signature cannot match);
-remaining fence messages audited for actionable next commands.
-Sequenced with — never parallel to — the live refactor; this lane is its prototype-removal
-ledger. Seed: kill between store commit and file write; next command self-recovers the file from
-store state. Review: catalog-identity/02's committed-file contract preserved (file = derived
-render); the fence-message audit asserts recompile-or-upgrade guidance survives only for
-genuinely-newer-binary stores; absence scan for completion/rebind/resume. Done: the crash window
-is structurally gone.
-
 **W3.6 → Multi-store retire accounting + (kind,path) keying (IV.D3 per gate 3).** Owns:
 discharge/absent_source.rs (count across all owning roots via apply's shared enumeration helper),
 catalog source_kinds/apply_retires keying + fail-closed ambiguity assert. Seed: failing fixture —
