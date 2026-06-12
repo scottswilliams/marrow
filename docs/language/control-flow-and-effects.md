@@ -114,7 +114,7 @@ for id in ^books.byShelf("fiction")
         print($"book {id}: {title}")
 ```
 
-Use two loop variables, `entries(...)`, or `values(...)` when code needs values:
+Use two loop variables when code needs each address and value together:
 
 ```mw
 for id, book in ^books
@@ -122,7 +122,23 @@ for id, book in ^books
 
 for pos, tag in ^books(id).tags
     print($"{pos}: {tag}")
+```
 
+`entries(...)` is the explicit two-name loop-head form for the same address/value
+walk. It is not a collection value that can be assigned, returned, or passed to
+single-variable loops:
+
+```mw
+for id, book in entries(^books)
+    print($"{id}: {book.title}")
+
+for id, book in reversed(entries(^books))
+    print($"{id}: {book.title}")
+```
+
+Use `values(...)` when code needs only values:
+
+```mw
 for book in values(^books)
     print(book.title)
 ```

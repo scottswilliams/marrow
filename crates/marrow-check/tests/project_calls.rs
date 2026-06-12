@@ -375,16 +375,88 @@ fn a_keyed_group_layer_loop_binds_group_entry_values() {
 }
 
 #[test]
-fn a_single_name_entries_loop_does_not_bind_the_key_type() {
+fn single_name_entries_loops_are_rejected() {
     let found = check_module(
         "single-name-entries",
         "module m\n\
          resource Book\n    required title: string\n\
          store ^books(id: int): Book\n\n\
-         fn f()\n    for entry in entries(^books)\n        var n = entry + 1\n",
-        "check.operator_type",
+         fn f()\n    for entry in entries(^books)\n        print($\"{entry}\")\n",
+        "check.collection_unsupported",
     );
-    assert!(found.is_empty(), "{found:#?}");
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn entries_calls_are_rejected_outside_two_name_loop_heads() {
+    for (name, body) in [
+        ("entries-const", "const rows = entries(^books)\n"),
+        ("entries-return", "return entries(^books)\n"),
+        (
+            "entries-match",
+            "match entries(^books)\n        missing\n            return\n",
+        ),
+        (
+            "entries-local-const",
+            "var scores(player: string): int\n    const rows = entries(scores)\n",
+        ),
+    ] {
+        let found = check_module(
+            name,
+            &format!(
+                "module m\n\
+                 resource Book\n    required title: string\n\
+                 store ^books(id: int): Book\n\n\
+                 fn f()\n    {body}",
+            ),
+            "check.collection_unsupported",
+        );
+        assert_eq!(found.len(), 1, "{name}: {found:#?}");
+    }
+}
+
+#[test]
+fn entries_loop_heads_reject_nested_and_pass_through_wrappers() {
+    for (name, body) in [
+        (
+            "local-nested-entries",
+            "var scores(player: string): int\n    for player, score in entries(entries(scores))\n        print($\"{player}: {score}\")\n",
+        ),
+        (
+            "saved-nested-entries",
+            "for id, book in entries(entries(^books))\n        print($\"{id}: {book.title}\")\n",
+        ),
+        (
+            "saved-reversed-nested-entries",
+            "for id, book in reversed(entries(entries(^books)))\n        print($\"{id}: {book.title}\")\n",
+        ),
+        (
+            "saved-entries-values",
+            "for id, book in entries(values(^books))\n        print($\"{id}: {book.title}\")\n",
+        ),
+    ] {
+        let found = check_module(
+            name,
+            &format!(
+                "module m\n\
+                 resource Book\n    required title: string\n\
+                 store ^books(id: int): Book\n\n\
+                 fn f()\n    {body}",
+            ),
+            "check.collection_unsupported",
+        );
+        assert_eq!(found.len(), 1, "{name}: {found:#?}");
+    }
+}
+
+#[test]
+fn local_keyed_tree_two_name_loops_bind_key_and_value() {
+    let report = check_module_report(
+        "local-tree-two-name-loop",
+        "module m\n\
+         fn f(): int\n    var scores(player: string): int\n    scores(\"bob\") = 7\n    var total = 0\n    for player, score in scores\n        const key_ok: string = player\n        total = total + score\n    return total\n",
+    );
+    assert_clean(&report);
 }
 
 #[test]
@@ -533,7 +605,7 @@ fn supported_collection_wrappers_bind_their_documented_shapes() {
         "module m\n\
          resource Book\n    required title: string\n\
          store ^books(id: int): Book\n\n\
-         fn f()\n    for id in keys(^books)\n        var typed: Id(^books) = id\n    for book in values(^books)\n        var title: string = book.title\n    for id, book in entries(^books)\n        var typed: Id(^books) = id\n        var title: string = book.title\n    for book in reversed(values(^books))\n        var title: string = book.title\n",
+         fn f()\n    for id in keys(^books)\n        var typed: Id(^books) = id\n    for book in values(^books)\n        var title: string = book.title\n    for id, book in entries(^books)\n        var typed: Id(^books) = id\n        var title: string = book.title\n    for book in reversed(values(^books))\n        var title: string = book.title\n    for id, book in reversed(entries(^books))\n        var reversed_typed: Id(^books) = id\n        var reversed_title: string = book.title\n",
     );
     assert_clean(&report);
 }

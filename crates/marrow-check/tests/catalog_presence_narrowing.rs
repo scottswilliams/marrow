@@ -387,16 +387,16 @@ fn values_loop_does_not_narrow_value_as_an_entry_key() {
 }
 
 #[test]
-fn single_binding_entries_loop_does_not_narrow_entry_as_a_key() {
+fn entries_loop_does_not_narrow_value_as_an_entry_key() {
     assert_bare_present_read(
-        "presence-single-entry-loop-not-key",
+        "presence-entries-loop-value-not-key",
         "module books\n\
              resource Book\n\
              \x20   scores(pos: int): int\n\
              store ^books(id: int): Book\n\
              fn f()\n\
-             \x20   for entry in entries(^books(1).scores)\n\
-             \x20   \x20   print(^books(1).scores(entry))\n",
+             \x20   for pos, score in entries(^books(1).scores)\n\
+             \x20   \x20   print(^books(1).scores(score))\n",
     );
 }
 

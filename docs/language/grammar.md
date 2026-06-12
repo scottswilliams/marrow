@@ -519,8 +519,9 @@ These rules are part of the grammar contract:
 - Direct durable collection iteration yields addresses. For a managed store root,
   that means store identities; for a sequence or keyed layer, that means child
   keys; for a non-unique index branch, that means the identities in the branch.
-- `keys`, `values`, and `entries` expose address-only, element-only, and
-  address-plus-element traversal as expression forms.
+- `keys` and `values` expose address-only and element-only traversal forms.
+  `entries(...)` is only valid as a two-name loop-head form, including
+  `reversed(entries(...))` in that same position.
 - Documentation comments attach to the next const, resource, store, enum, or
   function declaration, or to the next resource/store element, enum member, or
   parameter.

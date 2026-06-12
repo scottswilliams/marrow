@@ -14,7 +14,10 @@ use crate::{
     CHECK_COLLECTION_UNSUPPORTED, CHECK_CONDITION_TYPE, CheckDiagnostic, CheckedProgram, MarrowType,
 };
 
-use super::collections::{check_for_collection_support, for_frame, is_saved_index_branch_path};
+use super::collections::{
+    check_entries_value_position, check_for_collection_support, check_for_entries_support,
+    for_frame, is_saved_index_branch_path,
+};
 use super::operators::{check_assignment, check_condition, check_return_type, check_throw_type};
 use super::ranges::{check_range_header, check_range_iterable_value_parts, check_range_value};
 
@@ -244,7 +247,7 @@ impl StatementCheck<'_> {
     }
 
     fn infer(&mut self, expr: &marrow_syntax::Expression) -> MarrowType {
-        infer_type_with_read_scope(
+        let ty = infer_type_with_read_scope(
             self.program,
             expr,
             self.scope,
@@ -252,7 +255,9 @@ impl StatementCheck<'_> {
             self.file,
             self.diagnostics,
             self.transform_old,
-        )
+        );
+        check_entries_value_position(self.file, expr, self.diagnostics);
+        ty
     }
 
     fn check_block(&mut self, block: &marrow_syntax::Block) {
@@ -394,6 +399,7 @@ impl StatementCheck<'_> {
             self.diagnostics,
         );
         check_range_value(self.file, condition, self.diagnostics);
+        check_entries_value_position(self.file, condition, self.diagnostics);
     }
 
     fn check_conditional(
@@ -515,10 +521,20 @@ impl StatementCheck<'_> {
         step: Option<&marrow_syntax::Expression>,
         body: &marrow_syntax::Block,
     ) {
-        self.infer(iterable);
+        infer_type_with_read_scope(
+            self.program,
+            iterable,
+            self.scope,
+            self.aliases,
+            self.file,
+            self.diagnostics,
+            self.transform_old,
+        );
+        check_for_entries_support(self.file, binding, iterable, self.diagnostics);
         check_range_iterable_value_parts(self.file, iterable, self.diagnostics);
         if let Some(step) = step {
             check_range_value(self.file, step, self.diagnostics);
+            check_entries_value_position(self.file, step, self.diagnostics);
         }
         check_range_header(
             self.program,
@@ -565,6 +581,7 @@ impl StatementCheck<'_> {
         span: SourceSpan,
     ) {
         if let Some(scrutinee) = scrutinee {
+            check_entries_value_position(self.file, scrutinee, self.diagnostics);
             check_range_value(self.file, scrutinee, self.diagnostics);
         }
         check_match(MatchCheck {

@@ -102,9 +102,8 @@ fn eval_two_name_for(
             )?)
         });
     }
-    let entries = eval_collection_entries(iterable, env)?;
-    for entry in entries {
-        let (key, value) = pair_entry(entry, span)?;
+    let entries = eval_collection_entry_rows(iterable, span, env)?;
+    for (key, value) in entries {
         match run_two_name_body(&binding.first, second, key, value, body, env)? {
             LoopStep::Iterate => {}
             LoopStep::Stop => break,
@@ -118,14 +117,19 @@ fn eval_single_name_collection_for(
     binding: &ForBinding,
     iterable: &ExecExpr,
     body: &ExecBody,
-    _span: SourceSpan,
+    span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
     if let Some(saved_loop) = SavedLoopSpec::from_iterable(iterable, false) {
         return saved_loop.run(env, &mut |row, env| {
             let value = match row {
                 SavedLoopRow::Single(value) => value,
-                SavedLoopRow::Pair(key, value) => Value::Sequence(vec![key, value]),
+                SavedLoopRow::Pair(_, _) => {
+                    return Err(unsupported(
+                        "entries(...) is only valid in a two-name loop head",
+                        span,
+                    ));
+                }
             };
             loop_step_flow(run_single_name_body(&binding.first, value, body, env)?)
         });
@@ -168,22 +172,6 @@ fn is_range_expr(iterable: &ExecExpr) -> bool {
             ..
         }
     )
-}
-
-fn pair_entry(entry: Value, span: SourceSpan) -> Result<(Value, Value), RuntimeError> {
-    let Value::Sequence(pair) = entry else {
-        return Err(unsupported(
-            "a two-name binding over a non-pair iterable (use entries(...))",
-            span,
-        ));
-    };
-    let [key, value] = <[Value; 2]>::try_from(pair).map_err(|_| {
-        unsupported(
-            "a two-name binding over a non-pair iterable (use entries(...))",
-            span,
-        )
-    })?;
-    Ok((key, value))
 }
 
 fn run_single_name_body(
@@ -472,10 +460,24 @@ pub(crate) fn eval_collection(
     }
 }
 
-fn eval_collection_entries(
+fn eval_collection_entry_rows(
     iterable: &ExecExpr,
+    span: SourceSpan,
     env: &mut Env<'_>,
-) -> Result<Vec<Value>, RuntimeError> {
+) -> Result<Vec<(Value, Value)>, RuntimeError> {
+    if let Some(inner) = reversed_argument(iterable)
+        && let Some(entries) = values_or_entries(inner)
+        && matches!(&entries.kind, crate::collection::MaterializeKind::Entries)
+    {
+        if entries.layer.saved_place().is_none() {
+            return materialize_local_collection_dir(
+                eval_expr(entries.layer, env)?,
+                Direction::Descending,
+                iterable.span(),
+            );
+        }
+        return Err(durable_collection_value(iterable.span()));
+    }
     if let Some(inner) = reversed_argument(iterable)
         && inner.saved_place().is_some()
         && keys_argument(inner).is_none()
@@ -483,23 +485,27 @@ fn eval_collection_entries(
         return Err(durable_collection_value(iterable.span()));
     }
     if let Some(inner) = values_or_entries(iterable)
-        && inner.layer.saved_place().is_none()
+        && matches!(&inner.kind, crate::collection::MaterializeKind::Entries)
     {
-        return materialize_entry_pairs(materialize_local_collection_dir(
-            eval_expr(inner.layer, env)?,
-            Direction::Ascending,
-            iterable.span(),
-        )?);
+        if inner.layer.saved_place().is_none() {
+            return materialize_local_collection_dir(
+                eval_expr(inner.layer, env)?,
+                Direction::Ascending,
+                iterable.span(),
+            );
+        }
+        return Err(durable_collection_value(iterable.span()));
     }
     if iterable.saved_place().is_some() {
         return Err(durable_collection_value(iterable.span()));
     }
-    eval_collection(iterable, env)
-}
-
-fn materialize_entry_pairs(rows: Vec<(Value, Value)>) -> Result<Vec<Value>, RuntimeError> {
-    Ok(rows
-        .into_iter()
-        .map(|(key, value)| Value::Sequence(vec![key, value]))
-        .collect())
+    match eval_expr(iterable, env)? {
+        value @ Value::LocalTree(_) => {
+            materialize_local_collection_dir(value, Direction::Ascending, span)
+        }
+        _ => Err(unsupported(
+            "a two-name binding over a non-pair iterable (use entries(...))",
+            span,
+        )),
+    }
 }

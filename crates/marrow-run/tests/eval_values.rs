@@ -356,17 +356,20 @@ fn reads_and_writes_a_local_sequence_by_position() {
 }
 
 #[test]
-fn local_keyed_trees_are_checker_rejected() {
-    checker_rejects(
-        "pub fn keyed(): int\n\
+fn two_name_loop_over_a_local_keyed_tree_binds_key_and_value() {
+    let program = checked_program(
+        "pub fn keyed(): string\n\
          \x20   var scores(playerId: string): int\n\
          \x20   scores(\"p2\") = 20\n\
          \x20   scores(\"p1\") = 10\n\
-         \x20   var total = count(scores)\n\
-         \x20   for value in values(scores)\n\
-         \x20       total = total * 10 + value\n\
-         \x20   return total + scores(\"p2\")\n",
-        "check.untyped_value",
+         \x20   var out: string = \"\"\n\
+         \x20   for playerId, score in scores\n\
+         \x20       out = $\"{out}{playerId}={score};\"\n\
+         \x20   return out\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::keyed")).unwrap(),
+        Some(Value::Str("p1=10;p2=20;".into()))
     );
 }
 

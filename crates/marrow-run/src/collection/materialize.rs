@@ -2,7 +2,7 @@ use marrow_check::{CheckedBuiltinCall, CheckedCallTarget, CheckedExpr as ExecExp
 use marrow_syntax::SourceSpan;
 
 use crate::env::Env;
-use crate::error::RuntimeError;
+use crate::error::{RuntimeError, unsupported};
 use crate::expr::eval_expr;
 use crate::local_collection::materialize_local_collection_dir;
 use crate::stdlib::check_key_collection;
@@ -51,14 +51,15 @@ pub(crate) fn reversed_materialized(
         Direction::Descending,
         span,
     )?;
-    let values = match inner.kind {
-        MaterializeKind::Values => rows.into_iter().map(|(_, value)| value).collect(),
-        MaterializeKind::Entries => rows
-            .into_iter()
-            .map(|(key, value)| Value::Sequence(vec![key, value]))
-            .collect(),
+    let MaterializeKind::Values = inner.kind else {
+        return Err(unsupported(
+            "entries(...) is only valid in a two-name loop head",
+            span,
+        ));
     };
-    Ok(Value::Sequence(values))
+    Ok(Value::Sequence(
+        rows.into_iter().map(|(_, value)| value).collect(),
+    ))
 }
 
 pub(crate) fn reversed_keys(

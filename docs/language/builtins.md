@@ -37,13 +37,13 @@ A durable collection — a store root, keyed child layer, or index branch — is
 iterable. The `for`-loop forms that walk one, including single versus two loop
 variables and the lazy-streaming guarantee, are described under Loops in
 [Control Flow And Errors](control-flow-and-effects.md). The traversal builtins
-below are the expression forms of the same walk.
+below name the common walk shapes.
 
 | Builtin | Meaning |
 |---|---|
 | `keys(collection)` | Element addresses |
 | `values(collection)` | Stored values |
-| `entries(collection)` | Address and stored-value pairs |
+| `entries(collection)` | Address and stored-value bindings in a two-name loop head |
 | `count(path)` | Populated immediate children, or scalar presence |
 | `reversed(iterable)` | The same iterable shape in reverse key order |
 | `next(element)` | The nearest stored neighbor identity in key order |
@@ -54,11 +54,14 @@ positions, map keys, or other addresses. Over a durable collection these
 builtins are loop-iterable forms only: materializing durable saved data as a
 value is rejected, so iterate the result directly. Over a local collection,
 `keys(...)` yields an address sequence that can be passed around as a value.
-`values(...)` and `entries(...)` explicitly read stored values. Sequences and keyed maps are conveniences over saved tree layers,
-not separate database features. Key-only collections such as non-unique index
-branches do not have separate values; their generated marker values are an
-inspection detail. Deep saved-data walks belong to inspection, export, repair,
-and data evolution tools.
+`values(...)` yields stored values where value materialization is available.
+`entries(...)` is not a value: use it only as `for key, value in entries(...)`,
+or inside `reversed(entries(...))` in that same two-name loop-head position.
+Sequences and keyed maps are conveniences over saved tree layers, not separate
+database features. Key-only collections such as non-unique index branches do
+not have separate values; their generated marker values are an inspection
+detail. Deep saved-data walks belong to inspection, export, repair, and data
+evolution tools.
 
 ### Stored Entries In Key Order
 
@@ -94,8 +97,8 @@ String and byte lengths use `std::text::length(text)` and
 
 `reversed(iterable)` yields the same elements as the iterable in reverse key
 order. It works over a layer or index branch directly, over `keys(...)` of either,
-over `values(...)` and `entries(...)` where those apply, and over an in-memory
-`sequence`:
+over `values(...)`, over `entries(...)` in a two-name loop head, and over an
+in-memory `sequence`:
 
 ```mw
 for id in reversed(^books)

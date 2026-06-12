@@ -195,20 +195,10 @@ pub fn titlesValue()
     for book in books
         print(book.title)
 
-pub fn titleEntriesValue()
-    const books = entries(^books)
-    for id, book in books
-        print($\"{id}: {book.title}\")
-
 pub fn tagValuesValue(id: int)
     const tags = values(^books(id).tags)
     for tag in tags
         print(tag)
-
-pub fn tagEntriesValue(id: int)
-    const tags = entries(^books(id).tags)
-    for pos, tag in tags
-        print($\"{pos}={tag}\")
 ";
 
 #[test]
@@ -287,7 +277,7 @@ fn values_and_entries_materialize_entries_over_a_keyed_layer() {
 }
 
 #[test]
-fn saved_values_and_entries_as_values_are_rejected() {
+fn saved_values_as_values_are_rejected() {
     let program = checked_program(BOOK_VALUES);
     let store = TreeStore::memory();
     run_entry(
@@ -316,22 +306,23 @@ fn saved_values_and_entries_as_values_are_rejected() {
         RUN_UNSUPPORTED,
     );
     assert_run_error(
-        run_entry(&store, checked_entry!(&program, "test::titleEntriesValue")),
-        RUN_UNSUPPORTED,
-    );
-    assert_run_error(
         run_entry(
             &store,
             checked_entry!(&program, "test::tagValuesValue", Value::Int(1)),
         ),
         RUN_UNSUPPORTED,
     );
-    assert_run_error(
-        run_entry(
-            &store,
-            checked_entry!(&program, "test::tagEntriesValue", Value::Int(1)),
-        ),
-        RUN_UNSUPPORTED,
+}
+
+#[test]
+fn saved_entries_as_values_are_checker_rejected() {
+    checker_rejects(
+        "resource Book\n    required title: string\n    tags: sequence[string]\nstore ^books(id: int): Book\n\npub fn titleEntriesValue()\n    const books = entries(^books)\n    for id, book in books\n        print($\"{id}: {book.title}\")\n",
+        "check.collection_unsupported",
+    );
+    checker_rejects(
+        "resource Book\n    required title: string\n    tags: sequence[string]\nstore ^books(id: int): Book\n\npub fn tagEntriesValue(id: int)\n    const tags = entries(^books(id).tags)\n    for pos, tag in tags\n        print($\"{pos}={tag}\")\n",
+        "check.collection_unsupported",
     );
 }
 

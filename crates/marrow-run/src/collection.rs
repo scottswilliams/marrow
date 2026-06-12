@@ -94,32 +94,25 @@ pub(crate) fn eval_values(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    eval_materialized(
-        single_path_arg(args, "values", span)?,
-        MaterializeKind::Values,
-        span,
-        env,
-    )
+    eval_values_materialized(single_path_arg(args, "values", span)?, span, env)
 }
 
 pub(crate) fn eval_entries(
     args: &[ExecArg],
     span: SourceSpan,
-    env: &mut Env<'_>,
+    _env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    eval_materialized(
-        single_path_arg(args, "entries", span)?,
-        MaterializeKind::Entries,
+    let _ = single_path_arg(args, "entries", span)?;
+    Err(unsupported(
+        "entries(...) is only valid in a two-name loop head",
         span,
-        env,
-    )
+    ))
 }
 
 /// Materialize a local keyed collection as a value sequence. Durable saved data is
 /// never materialized as a value; iterate it directly.
-fn eval_materialized(
+fn eval_values_materialized(
     path: &ExecExpr,
-    kind: MaterializeKind,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
@@ -127,14 +120,9 @@ fn eval_materialized(
         return Err(durable_collection_value(span));
     }
     let rows = materialize_local_collection_dir(eval_expr(path, env)?, Direction::Ascending, span)?;
-    let values = match kind {
-        MaterializeKind::Values => rows.into_iter().map(|(_, value)| value).collect(),
-        MaterializeKind::Entries => rows
-            .into_iter()
-            .map(|(key, value)| Value::Sequence(vec![key, value]))
-            .collect(),
-    };
-    Ok(Value::Sequence(values))
+    Ok(Value::Sequence(
+        rows.into_iter().map(|(_, value)| value).collect(),
+    ))
 }
 
 pub(crate) fn eval_reversed(

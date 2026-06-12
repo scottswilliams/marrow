@@ -45,6 +45,18 @@ pub(crate) fn for_frame(
     }
     let first_type = match (&binding.second, &iterable_type) {
         (None, MarrowType::Sequence(element)) => (**element).clone(),
+        (None, MarrowType::LocalTree { value, .. }) => (**value).clone(),
+        (Some(_), MarrowType::LocalTree { keys, value }) => {
+            let mut frame = HashMap::new();
+            frame.insert(
+                binding.first.clone(),
+                keys.first().cloned().unwrap_or(MarrowType::Unknown),
+            );
+            if let Some(second) = &binding.second {
+                frame.insert(second.clone(), (**value).clone());
+            }
+            return frame;
+        }
         // A range binds its variable to its endpoint scalar; only a same-typed
         // steppable-endpoint range types it, anything else stays unknown.
         (None, _) => range_endpoint_type(program, iterable, scope, aliases, file)
@@ -150,6 +162,119 @@ pub(super) fn check_for_collection_support(
         iterable.span(),
         "a two-name loop over an index branch must yield identity values",
     ));
+}
+
+pub(super) fn check_for_entries_support(
+    file: &Path,
+    binding: &marrow_syntax::ForBinding,
+    iterable: &marrow_syntax::Expression,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let Some(arg) = two_name_entries_loop_arg(binding, iterable) else {
+        check_entries_value_position(file, iterable, diagnostics);
+        return;
+    };
+    check_entries_loop_arg(file, arg, diagnostics);
+}
+
+pub(super) fn check_entries_value_position(
+    file: &Path,
+    expr: &marrow_syntax::Expression,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    use marrow_syntax::{Expression, InterpolationPart};
+    if is_collection_wrapper(expr, "entries")
+        && !has_collection_unsupported(diagnostics, file, expr.span())
+    {
+        diagnostics.push(entries_unsupported(
+            file,
+            expr.span(),
+            "`entries(...)` is only valid as a two-name loop iterable",
+        ));
+    }
+    match expr {
+        Expression::Call { callee, args, .. } => {
+            check_entries_value_position(file, callee, diagnostics);
+            for arg in args {
+                check_entries_value_position(file, &arg.value, diagnostics);
+            }
+        }
+        Expression::Field { base, .. }
+        | Expression::OptionalField { base, .. }
+        | Expression::Unary { operand: base, .. } => {
+            check_entries_value_position(file, base, diagnostics);
+        }
+        Expression::Binary { left, right, .. } => {
+            check_entries_value_position(file, left, diagnostics);
+            check_entries_value_position(file, right, diagnostics);
+        }
+        Expression::Interpolation { parts, .. } => {
+            for part in parts {
+                if let InterpolationPart::Expr(expr) = part {
+                    check_entries_value_position(file, expr, diagnostics);
+                }
+            }
+        }
+        Expression::Literal { .. } | Expression::Name { .. } | Expression::SavedRoot { .. } => {}
+    }
+}
+
+fn two_name_entries_loop_arg<'a>(
+    binding: &marrow_syntax::ForBinding,
+    iterable: &'a marrow_syntax::Expression,
+) -> Option<&'a marrow_syntax::Expression> {
+    binding.second.as_ref()?;
+    collection_wrapper_arg(iterable, "entries").or_else(|| {
+        let inner = collection_wrapper_arg(iterable, "reversed")?;
+        collection_wrapper_arg(inner, "entries")
+    })
+}
+
+fn check_entries_loop_arg(
+    file: &Path,
+    arg: &marrow_syntax::Expression,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if is_any_collection_wrapper(arg) && !has_collection_unsupported(diagnostics, file, arg.span())
+    {
+        diagnostics.push(entries_unsupported(
+            file,
+            arg.span(),
+            "`entries(...)` loop heads require a path or local keyed tree",
+        ));
+        return;
+    }
+    check_entries_value_position(file, arg, diagnostics);
+}
+
+fn is_any_collection_wrapper(expr: &marrow_syntax::Expression) -> bool {
+    ["keys", "values", "entries", "reversed"]
+        .into_iter()
+        .any(|name| is_collection_wrapper(expr, name))
+}
+
+fn is_collection_wrapper(expr: &marrow_syntax::Expression, wrapper: &str) -> bool {
+    collection_wrapper_arg(expr, wrapper).is_some()
+}
+
+fn entries_unsupported(
+    file: &Path,
+    span: marrow_syntax::SourceSpan,
+    message: &str,
+) -> CheckDiagnostic {
+    CheckDiagnostic::error(CHECK_COLLECTION_UNSUPPORTED, file, span, message)
+}
+
+fn has_collection_unsupported(
+    diagnostics: &[CheckDiagnostic],
+    file: &Path,
+    span: marrow_syntax::SourceSpan,
+) -> bool {
+    diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == CHECK_COLLECTION_UNSUPPORTED
+            && diagnostic.file == file
+            && diagnostic.span == span
+    })
 }
 
 fn reversed_call_arg(expr: &marrow_syntax::Expression) -> Option<&marrow_syntax::Expression> {
