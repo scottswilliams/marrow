@@ -253,8 +253,8 @@ fn parse_restore_args(args: &[String]) -> Result<RestoreArgs, ExitCode> {
     }
 }
 
-fn parse_count_value(value: &str) -> Result<usize, ExitCode> {
-    value.parse::<usize>().map_err(|_| {
+fn parse_count_value(value: &str) -> Result<u64, ExitCode> {
+    value.parse::<u64>().map_err(|_| {
         eprintln!("--count must be a nonnegative integer");
         ExitCode::from(2)
     })

@@ -403,7 +403,7 @@ impl BackupError {
         )
     }
 
-    pub(crate) fn replace_count_mismatch(expected: usize, found: usize) -> Self {
+    pub(crate) fn replace_count_mismatch(expected: u64, found: u64) -> Self {
         Self::NotEmpty(format!(
             "restore --replace expected {expected} live record(s), found {found}; target was not changed"
         ))

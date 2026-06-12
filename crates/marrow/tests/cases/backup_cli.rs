@@ -32,6 +32,13 @@ fn text_message(output: &Output) -> String {
         .expect("text error message")
 }
 
+fn text_record_count(output: &str, verb: &str) -> u64 {
+    let marker = format!("{verb} ");
+    let (_, rest) = output.split_once(&marker).expect("record-count verb");
+    let (count, _) = rest.split_once(" record(s)").expect("record-count suffix");
+    count.parse().expect("record count")
+}
+
 fn project_source_digest(root: &Path) -> String {
     let config_text = fs::read_to_string(root.join("marrow.json")).expect("read config");
     let config = marrow_project::parse_config(&config_text).expect("parse config");
@@ -414,8 +421,10 @@ fn restore_replace_replays_backup_after_confirmed_live_count() {
     let backup = marrow(&["backup", &dir, &archive_arg]);
     assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
     let backup_stdout = String::from_utf8(backup.stdout).expect("backup stdout utf8");
+    let backup_records = text_record_count(&backup_stdout, "backed up");
+    let backup_records_arg = backup_records.to_string();
     assert!(
-        backup_stdout.contains("backed up 12 record(s)"),
+        backup_stdout.contains(&format!("backed up {backup_records} record(s)")),
         "{backup_stdout}"
     );
 
@@ -427,15 +436,24 @@ fn restore_replace_replays_backup_after_confirmed_live_count() {
         "fixture changes the live target without changing source or catalog"
     );
 
-    let restore = marrow(&["restore", "--replace", "--count", "9", &dir, &archive_arg]);
+    let restore = marrow(&[
+        "restore",
+        "--replace",
+        "--count",
+        &backup_records_arg,
+        &dir,
+        &archive_arg,
+    ]);
     assert_eq!(restore.status.code(), Some(0), "restore: {restore:?}");
     let restore_stdout = String::from_utf8(restore.stdout).expect("restore stdout utf8");
     assert!(
-        restore_stdout.contains("restored 12 record(s)"),
+        restore_stdout.contains(&format!("restored {backup_records} record(s)")),
         "{restore_stdout}"
     );
     assert!(
-        restore_stdout.contains("mode=replace expected_live_records=9 replaced_live_records=9"),
+        restore_stdout.contains(&format!(
+            "mode=replace expected_live_records={backup_records} replaced_live_records={backup_records}"
+        )),
         "replace restore emits an audit receipt: {restore_stdout}"
     );
     assert_eq!(
@@ -455,18 +473,37 @@ fn restore_replace_wrong_count_refuses_before_changing_target() {
 
     let backup = marrow(&["backup", &dir, &archive_arg]);
     assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
+    let backup_stdout = String::from_utf8(backup.stdout).expect("backup stdout utf8");
+    let live_record_count = text_record_count(&backup_stdout, "backed up");
+    let wrong_count = live_record_count
+        .checked_sub(1)
+        .expect("fixture has at least one record");
+    let wrong_count_arg = wrong_count.to_string();
     let mutate = marrow(&["run", "--entry", "shelf::mutate_live", &dir]);
     assert_eq!(mutate.status.code(), Some(0), "mutate live: {mutate:?}");
     let live_records = dump_records(&root);
     let live_catalog = read_store_catalog(&data_dir).expect("live catalog before restore");
 
-    let restore = marrow(&["restore", "--replace", "--count", "8", &dir, &archive_arg]);
+    let restore = marrow(&[
+        "restore",
+        "--replace",
+        "--count",
+        &wrong_count_arg,
+        &dir,
+        &archive_arg,
+    ]);
 
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
     assert_eq!(text_code(&restore), "restore.not_empty");
     let message = text_message(&restore);
-    assert!(message.contains("expected 8"), "{message}");
-    assert!(message.contains("found 9"), "{message}");
+    assert!(
+        message.contains(&format!("expected {wrong_count}")),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!("found {live_record_count}")),
+        "{message}"
+    );
     assert_eq!(
         dump_records(&root),
         live_records,
@@ -528,6 +565,70 @@ fn restore_replace_clears_catalog_when_backup_has_none() {
         None,
         "a no-catalog backup replace clears stale target catalog rows"
     );
+}
+
+#[test]
+fn restore_replace_count_includes_node_only_records() {
+    let root = temp_project_uncommitted("backup-replace-node-only-record", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "shelf::noop" } }"#,
+        );
+        write(
+            root,
+            "src/shelf.mw",
+            "module shelf\n\
+             \n\
+             resource Book\n\
+             \x20\x20\x20\x20title: string\n\
+             store ^books(id: int): Book\n\
+             \n\
+             pub fn noop()\n\
+             \x20\x20\x20\x20print(\"ok\")\n\
+             \n\
+             pub fn make_empty()\n\
+             \x20\x20\x20\x20var b: Book\n\
+             \x20\x20\x20\x20transaction\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(1) = b\n",
+        );
+    });
+    let dir = root.to_str().unwrap().to_string();
+    let baseline = marrow(&["run", "--entry", "shelf::noop", &dir]);
+    assert_eq!(baseline.status.code(), Some(0), "baseline: {baseline:?}");
+    let archive = root.join("empty.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+    let backup = marrow(&["backup", &dir, &archive_arg]);
+    assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
+
+    let make_empty = marrow(&["run", "--entry", "shelf::make_empty", &dir]);
+    assert_eq!(
+        make_empty.status.code(),
+        Some(0),
+        "make_empty: {make_empty:?}"
+    );
+    let roots = marrow(&["data", "roots", "--format", "json", &dir]);
+    assert_eq!(roots.status.code(), Some(0), "roots: {roots:?}");
+    assert_eq!(
+        support::json(roots.stdout)["roots"],
+        serde_json::json!(["books"]),
+        "fixture has a live record identity with no value records"
+    );
+
+    let restore = marrow(&[
+        "restore",
+        "--replace",
+        "--count",
+        "0",
+        &dir,
+        &archive_arg,
+    ]);
+
+    assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
+    assert_eq!(text_code(&restore), "restore.not_empty");
+    let message = text_message(&restore);
+    assert!(message.contains("expected 0"), "{message}");
+    assert!(message.contains("found 1"), "{message}");
 }
 
 fn stale_catalog_snapshot() -> CatalogMetadata {

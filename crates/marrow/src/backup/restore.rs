@@ -34,15 +34,15 @@ pub(crate) struct RestoreReport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RestoreTargetMode {
     EmptyOnly,
-    Replace { expected_live_records: usize },
+    Replace { expected_live_records: u64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RestoreReceipt {
     EmptyOnly,
     Replace {
-        expected_live_records: usize,
-        replaced_live_records: usize,
+        expected_live_records: u64,
+        replaced_live_records: u64,
     },
 }
 
@@ -50,8 +50,8 @@ pub(crate) enum RestoreReceipt {
 enum PreparedRestoreTarget {
     EmptyOnly,
     Replace {
-        expected_live_records: usize,
-        replaced_live_records: usize,
+        expected_live_records: u64,
+        replaced_live_records: u64,
     },
 }
 
@@ -199,15 +199,15 @@ fn prepare_restore_target(
 fn prepare_replace_target(
     program: &CheckedProgram,
     store: &TreeStore,
-    expected_live_records: usize,
+    expected_live_records: u64,
 ) -> Result<PreparedRestoreTarget, BackupError> {
-    let (replaced_live_records, problems) =
-        marrow_check::tooling::count_activation_integrity_problems(store, program)?;
+    let (_, problems) = marrow_check::tooling::count_activation_integrity_problems(store, program)?;
     if problems != 0 {
         return Err(BackupError::DataInvalid(format!(
             "replace target has {problems} data integrity problem(s); run `marrow data integrity` before restore --replace"
         )));
     }
+    let replaced_live_records = count_restore_target_records(store)?;
     if replaced_live_records != expected_live_records {
         return Err(BackupError::replace_count_mismatch(
             expected_live_records,
@@ -218,6 +218,19 @@ fn prepare_replace_target(
         expected_live_records,
         replaced_live_records,
     })
+}
+
+fn count_restore_target_records(store: &TreeStore) -> Result<u64, BackupError> {
+    let mut records = 0u64;
+    store.visit_backup_cells(|_| {
+        records = records
+            .checked_add(1)
+            .ok_or(marrow_store::StoreError::LimitExceeded {
+                limit: "restore replace record count",
+            })?;
+        Ok(())
+    })?;
+    Ok(records)
 }
 
 impl PreparedRestoreTarget {
