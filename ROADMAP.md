@@ -827,19 +827,11 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 ## Wave 3 — Store, evolution, and catalog machinery
 
 The catalog/evolution series coordinates with the live engine-resident-catalog refactor — it is
-the named owner of the #24/#27 subtractions. Two tail lanes (W3.8, W3.9) sequence after the
-catalog series.
+the named owner of the #24/#27 subtractions. The remaining tail lane sequences after the catalog
+series.
 docs/backend-contract.md remaining integration: W3.9.
 
 Catalog/evolution series (sequenced; live-refactor coordination):
-**W3.8 → Multi-epoch lifecycle coverage (IV.B3) + Deprecated-variant removal (removal #28).**
-Owns: evolution_apply fixture family (two chained applies; retire-then-reuse through production
-lifecycle; rename chains; mid-chain drift; epoch-N backup restored at N+1 refusing with
-`restore.catalog_mismatch`/`restore.source_mismatch`); CatalogLifecycle::Deprecated deletion +
-data-evolution.md:170 rewording. Runs after W3.3-W3.5 so fixtures pin the final formats. Seed:
-the five named fixtures red. Review: lifecycle invariants are multi-epoch claims — no
-hand-stamped shortcuts. Done: previously-untested restore refusal codes covered.
-
 **W3.9 → Nondeterminism host seam (C50; gate 49; post-v01-seam pin).** Wave 3 tail, after the
 Backend trait quiets (W3.4). Owns: the decided trait shape — one marrow-run trait
 `Nondeterminism` with exactly two methods, `now_nanos(&self) -> i128` and
