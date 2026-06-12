@@ -832,21 +832,6 @@ series.
 docs/backend-contract.md remaining integration: W3.9.
 
 Catalog/evolution series (sequenced; live-refactor coordination):
-**W3.9 → Nondeterminism host seam (C50; gate 49; post-v01-seam pin).** Wave 3 tail, after the
-Backend trait quiets (W3.4). Owns: the decided trait shape — one marrow-run trait
-`Nondeterminism` with exactly two methods, `now_nanos(&self) -> i128` and
-`entropy_u128(&mut self) -> u128`, the single nondeterminism crossing point; production impl
-`SystemNondeterminism` delegating to SystemTime byte-identically to today's
-`Host::with_system_clock` (including its error→0 posture) and reading OS entropy from
-/dev/urandom, no new dependency; a fixed deterministic impl for tests; Host's capture-once clock
-semantics unchanged — plus one backend-contract.md paragraph naming the deterministic-sim growth
-path. Explicitly does NOT widen the Backend trait or add a conformance backend. Seed: a test
-substituting a fixed clock/entropy provider and observing identical run output across two runs.
-Review: no speculative simulation code; the two crossing-point migrations land (host.rs clock;
-W3.4's StoreUid mint site); the layering invariant holds — marrow-store and the Backend trait
-never read clock or entropy, nondeterministic values are minted above the seam and passed down.
-Done: exactly one nondeterminism crossing point in marrow-run.
-
 **W3.10 → Transform sparse reads.** Carries: presence checking for evolve transform bodies after
 W2.7, treating `old.sparse_member` as maybe-present and requiring `??`, an `if const` guard, or
 `exists()` resolution. Owns: marrow-check presence walking over lowered transform bodies,
