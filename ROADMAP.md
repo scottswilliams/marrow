@@ -850,22 +850,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 Parser/checker/runtime files overlap heavily: the cut series is sequenced; additions follow.
 Listing order is execution order. Store crate is quiet this wave except where noted.
 
-**W4.5 ∥ (after W4.1 — the descriptor table and standard-library.md shrink first) Stdlib floor
-(II.E6, gate 16).** Owns: marrow-schema stdlib.rs descriptor table (+
-sequence ParamType; the maybe ReturnType marker per the indexOf decision — built as a general
-function-signature-level fact from the start, never a builtin-descriptor special case (gate
-39/C36); the closed `Capability` enum — Clock, Environment, Log, Filesystem, Maintenance — with
-a `requires_capability: Option<Capability>` column, no Host struct change, no checker fact, no
-envelope change, the Host migration and derived authority fact named deferred follow-ons
-anchored to this seam (G3-4)), marrow-run std_pure.rs
-converged onto the table, standard-library.md, ADR amendment landed W1.1; the exact gate-16
-signatures recorded in the lane doc so the table lands without re-derivation. Seed: failing
-fixtures per op incl. round half-to-even and Unicode-scalar indexing edges, plus an
-unresolved-indexOf fixture asserting `check.bare_maybe_present_read` and its `??`/guard
-resolutions. Review: each signature against
-the no-overloading law; dispatch has one owner (the table). Done: the parallel string-matched
-dispatch is gone.
-
 **W4.6 ∥ (after W4.3 — shared syntax.md) Spec-closure bundle + visibility (II.E2 items 1,3-5;
 II.E4 a; gates 15, 39, 43-44).** Owns:
 syntax.md reserved words (+`store`, +`Id` bookkeeping from W2.6; +`journal` per gate 44;
