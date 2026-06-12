@@ -826,21 +826,10 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 
 ## Wave 3 — Store, evolution, and catalog machinery
 
-Two sequenced series, concurrent with each other, plus an independent integrity lane (W3.7) and
-two tail lanes (W3.8, W3.9) that sequence after the catalog series. The catalog/evolution series
-coordinates with the live engine-resident-catalog refactor — it is the named owner of the
-#24/#27 subtractions. docs/backend-contract.md integrates in lane order: W3.2 → W3.3 → W3.4 →
-W3.9.
-
-Store series (sequenced):
-**W3.2 → Reader/writer implementation half (IV.D2 items 2-3).** Owns: env.rs commit-id
-allocation moved inside the write bracket; redb_store.rs lock tests re-asserted against the
-gate-7 contract; one conformance law asserting CommitId density over the committed sequence —
-after N committed writes the high-water mark advanced exactly N, no gaps; rollbacks consume
-nothing (C44); the multi-reader handle model recorded as a designed-but-unbuilt contract next
-to tooling/02. Explicitly does NOT build a Sync TreeStore. Seed: a test pinning commit-id
-uniqueness enforced by the transaction, not the file lock. Review: no speculative concurrency
-code. Done: backend-contract.md states the decided semantics.
+The catalog/evolution series coordinates with the live engine-resident-catalog refactor — it is
+the named owner of the #24/#27 subtractions. An independent integrity lane (W3.7) can run after
+W2.8, and two tail lanes (W3.8, W3.9) sequence after the catalog series.
+docs/backend-contract.md integrates in lane order: W3.3 → W3.4 → W3.9.
 
 Catalog/evolution series (sequenced; live-refactor coordination):
 **W3.3 Meta-cell collapse Part A (gate 10).** Owns: marrow-store metadata.rs/tree.rs (cells
