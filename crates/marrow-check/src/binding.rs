@@ -836,12 +836,9 @@ impl UseWalker<'_, '_> {
                 ..
             } => self.walk_for(statement.span(), binding, iterable, body, scope, type_scope),
             Statement::Transaction { body, .. } => self.walk_block(body, scope, type_scope),
-            Statement::Try {
-                body,
-                catch,
-                finally,
-                ..
-            } => self.walk_try(body, catch.as_ref(), finally.as_ref(), scope, type_scope),
+            Statement::Try { body, catch, .. } => {
+                self.walk_try(body, catch.as_ref(), scope, type_scope)
+            }
             Statement::Match {
                 scrutinee, arms, ..
             } => self.walk_match(scrutinee.as_ref(), arms, scope, type_scope),
@@ -940,13 +937,11 @@ impl UseWalker<'_, '_> {
     }
 
     /// Walk a `try`: the body, then the catch block under a frame binding the
-    /// caught error, then the finally block. The catch binding is scoped to the
-    /// catch block only.
+    /// caught error. The catch binding is scoped to the catch block only.
     fn walk_try(
         &mut self,
         body: &Block,
         catch: Option<&marrow_syntax::CatchClause>,
-        finally: Option<&Block>,
         scope: &mut Vec<HashMap<String, DefId>>,
         type_scope: &mut Vec<HashMap<String, MarrowType>>,
     ) {
@@ -966,9 +961,6 @@ impl UseWalker<'_, '_> {
             }
             scope.pop();
             type_scope.pop();
-        }
-        if let Some(finally) = finally {
-            self.walk_block(finally, scope, type_scope);
         }
     }
 

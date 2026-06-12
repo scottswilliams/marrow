@@ -34,7 +34,6 @@ impl CheckedInterpolationPart {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedArg {
-    pub mode: Option<CheckedArgMode>,
     pub name: Option<String>,
     pub value: CheckedExpr,
 }
@@ -46,36 +45,9 @@ impl CheckedArg {
         scope: &mut Vec<HashMap<String, MarrowType>>,
     ) -> Option<Self> {
         Some(Self {
-            mode: arg.mode.map(CheckedArgMode::lower),
             name: arg.name.clone(),
             value: CheckedExpr::lower(&arg.value, context, scope)?,
         })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CheckedArgMode {
-    InOut,
-}
-
-impl CheckedArgMode {
-    fn lower(mode: syntax::ArgMode) -> Self {
-        match mode {
-            syntax::ArgMode::InOut => Self::InOut,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CheckedParamMode {
-    InOut,
-}
-
-impl CheckedParamMode {
-    pub(crate) fn lower(mode: syntax::ParamMode) -> Self {
-        match mode {
-            syntax::ParamMode::InOut => Self::InOut,
-        }
     }
 }
 

@@ -30,7 +30,7 @@ pub(crate) fn values_or_entries(expr: &ExecExpr) -> Option<ValuesOrEntries<'_>> 
         _ => return None,
     };
     match args.as_slice() {
-        [arg] if arg.mode.is_none() && arg.name.is_none() => Some(ValuesOrEntries {
+        [arg] if arg.name.is_none() => Some(ValuesOrEntries {
             layer: &arg.value,
             kind,
         }),

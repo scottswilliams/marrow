@@ -157,11 +157,8 @@ fn index_lookup_keys(
 ) -> Result<Vec<SavedKey>, RuntimeError> {
     let mut keys = Vec::with_capacity(args.len());
     for arg in args {
-        if arg.mode.is_some() || arg.name.is_some() {
-            return Err(unsupported(
-                "an index lookup with named or inout arguments",
-                span,
-            ));
+        if arg.name.is_some() {
+            return Err(unsupported("an index lookup with named arguments", span));
         }
         keys.push(
             value_to_key(eval_expr(&arg.value, env)?)

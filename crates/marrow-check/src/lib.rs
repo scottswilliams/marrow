@@ -57,16 +57,15 @@ pub use durable_path::{
     parse_path,
 };
 pub use executable::{
-    CheckedArg, CheckedArgMode, CheckedBinaryOp, CheckedBody, CheckedBuiltinCall,
-    CheckedCallTarget, CheckedCatchClause, CheckedElseIf, CheckedEnumMemberRef, CheckedEnumRef,
-    CheckedExpr, CheckedForBinding, CheckedFunctionRef, CheckedIdentityConstructor,
-    CheckedInterpolationPart, CheckedLiteralKind, CheckedMatchArm, CheckedParamMode,
-    CheckedResourceConstructor, CheckedResourceConstructorField, CheckedResourceRef,
-    CheckedRuntimeValueType, CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedKeyParam,
-    CheckedSavedLayer, CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace,
-    CheckedSavedTerminal, CheckedStdCall, CheckedStmt, CheckedUnaryOp,
-    checked_activation_root_places, checked_place_store_id, checked_saved_root_place,
-    for_each_place_record,
+    CheckedArg, CheckedBinaryOp, CheckedBody, CheckedBuiltinCall, CheckedCallTarget,
+    CheckedCatchClause, CheckedElseIf, CheckedEnumMemberRef, CheckedEnumRef, CheckedExpr,
+    CheckedForBinding, CheckedFunctionRef, CheckedIdentityConstructor, CheckedInterpolationPart,
+    CheckedLiteralKind, CheckedMatchArm, CheckedResourceConstructor,
+    CheckedResourceConstructorField, CheckedResourceRef, CheckedRuntimeValueType,
+    CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedKeyParam, CheckedSavedLayer,
+    CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace, CheckedSavedTerminal,
+    CheckedStdCall, CheckedStmt, CheckedUnaryOp, checked_activation_root_places,
+    checked_place_store_id, checked_saved_root_place, for_each_place_record,
 };
 pub use facts::PresenceProofRead;
 pub use facts::{

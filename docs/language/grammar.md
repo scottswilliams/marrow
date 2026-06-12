@@ -171,8 +171,7 @@ function_decl   =
 visibility      = "pub" ;
 
 param_list      = param_decl ("," param_decl)* ","? ;
-param_decl      = doc_comment* param_mode? identifier type_annotation ;
-param_mode      = "inout" ;
+param_decl      = doc_comment* identifier type_annotation ;
 
 return_type     = ":" type ;
 
@@ -310,13 +309,11 @@ if_const_stmt   =
 else_if_clause  = "else" "if" expression NEWLINE block ;
 else_clause     = "else" NEWLINE block ;
 
-while_stmt      = loop_label? "while" expression NEWLINE block ;
+while_stmt      = "while" expression NEWLINE block ;
 
 for_stmt        =
-    loop_label?
     "for" for_binding "in" expression ("by" expression)? NEWLINE block ;
 
-loop_label      = identifier ":" ;
 for_binding     = identifier | identifier "," identifier ;
 
 match_stmt      = "match" expression NEWLINE INDENT match_arm+ DEDENT ;
@@ -342,12 +339,10 @@ transaction_stmt = "transaction" NEWLINE block ;
 
 try_stmt         =
     "try" NEWLINE block
-    (catch_clause finally_clause? | finally_clause) ;
+    catch_clause ;
 
 catch_clause     =
     "catch" identifier type_annotation? NEWLINE block ;
-
-finally_clause   = "finally" NEWLINE block ;
 ```
 
 ## Expressions
@@ -478,13 +473,9 @@ assignable      = path_expr | identifier ;
 argument_list       = argument ("," argument)* ","? ;
 named_argument_list = named_argument ("," named_argument)* ","? ;
 
-argument            =
-      arg_mode? expression
-    | named_argument
-    ;
+argument            = expression | named_argument ;
 
 named_argument      = identifier ":" expression ;
-arg_mode            = "inout" ;
 ```
 
 After the first named argument, remaining arguments must be named.
@@ -525,12 +516,9 @@ These rules are part of the grammar contract:
 - `throw` requires an `Error` value.
 - `catch name` binds `name` as `Error`; if a catch annotation is present, it
   must be `Error`.
-- `finally` blocks reject `return`, `break`, and `continue`.
 - `index` declarations are checked as direct members of keyed stores.
 - Parenthesized suffixes are calls on callable values and key lookups on tree
   values; the checker resolves the value kind.
-- Local `inout` arguments must be assignable places. Saved paths are not valid
-  `inout` arguments.
 - Direct durable collection iteration yields addresses. For a managed store root,
   that means store identities; for a sequence or keyed layer, that means child
   keys; for a non-unique index branch, that means the identities in the branch.

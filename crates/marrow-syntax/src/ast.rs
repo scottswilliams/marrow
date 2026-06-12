@@ -233,17 +233,11 @@ pub enum InterpolationPart {
 }
 
 /// One argument in a call expression. `name` is set for named arguments
-/// (`title: draft`); `mode` is set for `inout` arguments.
+/// (`title: draft`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Argument {
-    pub mode: Option<ArgMode>,
     pub name: Option<String>,
     pub value: Expression,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArgMode {
-    InOut,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -460,11 +454,9 @@ pub enum Statement {
         span: SourceSpan,
     },
     Break {
-        label: Option<String>,
         span: SourceSpan,
     },
     Continue {
-        label: Option<String>,
         span: SourceSpan,
     },
     Throw {
@@ -493,13 +485,11 @@ pub enum Statement {
         span: SourceSpan,
     },
     While {
-        label: Option<String>,
         condition: Option<Expression>,
         body: Block,
         span: SourceSpan,
     },
     For {
-        label: Option<String>,
         binding: ForBinding,
         iterable: Expression,
         /// The `by` step of a range header (`for x in lo..hi by step`), if one was
@@ -516,7 +506,6 @@ pub enum Statement {
     Try {
         body: Block,
         catch: Option<CatchClause>,
-        finally: Option<Block>,
         span: SourceSpan,
     },
     /// A `match` over an enum-typed scrutinee: each arm names one member of the
@@ -596,14 +585,8 @@ pub struct ParamDecl {
     /// `;;` doc lines above this parameter; empty for single-line lists, where
     /// parameter docs are not written.
     pub docs: Vec<String>,
-    pub mode: Option<ParamMode>,
     pub name: String,
     pub ty: TypeRef,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ParamMode {
-    InOut,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -32,9 +32,8 @@ pub use runtime_value::{
 use runtime_value::{checked_resource_constructor, resource_ref};
 pub use stmt::{CheckedBody, CheckedStmt};
 pub use syntax_parts::{
-    CheckedArg, CheckedArgMode, CheckedBinaryOp, CheckedCatchClause, CheckedElseIf,
-    CheckedForBinding, CheckedInterpolationPart, CheckedLiteralKind, CheckedMatchArm,
-    CheckedParamMode, CheckedUnaryOp,
+    CheckedArg, CheckedBinaryOp, CheckedCatchClause, CheckedElseIf, CheckedForBinding,
+    CheckedInterpolationPart, CheckedLiteralKind, CheckedMatchArm, CheckedUnaryOp,
 };
 
 pub fn checked_saved_root_place(

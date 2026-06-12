@@ -513,21 +513,13 @@ fn check_statement_type_annotations(
         | Statement::Transaction { body, .. } => {
             check_block_type_annotations(body, context, diagnostics);
         }
-        Statement::Try {
-            body,
-            catch,
-            finally,
-            ..
-        } => {
+        Statement::Try { body, catch, .. } => {
             check_block_type_annotations(body, context, diagnostics);
             if let Some(catch) = catch {
                 if let Some(ty) = &catch.ty {
                     check_type_annotation(ty, catch.block.span, context, diagnostics);
                 }
                 check_block_type_annotations(&catch.block, context, diagnostics);
-            }
-            if let Some(finally) = finally {
-                check_block_type_annotations(finally, context, diagnostics);
             }
         }
         Statement::Match { arms, .. } => {

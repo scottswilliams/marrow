@@ -793,19 +793,23 @@ itself rewrite stored data. A change that backfills, transforms, or destructivel
 drops stored data is applied explicitly with `evolve apply`; a change that mutates
 no stored record is applied automatically when the project next runs.
 
-## Passing Resource Places
+## Passing Resource Values
 
-Functions can accept resource values as normal inputs. Mutating the caller's
-local resource must be explicit:
+Functions accept resource values as normal inputs. Return a replacement resource
+and assign it where the caller wants the change to land:
 
 ```mw
-fn normalize(inout book: Book)
+fn normalize(book: Book): Book
+    var next: Book = book
+    next.title = std::text::trim(next.title)
+    return next
+
 var draft: Book
 if const saved = ^books(id)
     draft = saved
-    normalize(inout draft)
+    draft = normalize(draft)
+    ^books(id) = draft
 ```
 
-`inout` at the call site makes hidden writes visible. First-class storable
-references to saved places are not part of the ordinary application model.
-Saved paths are not valid `inout` arguments.
+First-class storable references to saved places are not part of the ordinary
+application model.

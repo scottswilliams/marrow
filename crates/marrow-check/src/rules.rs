@@ -1,9 +1,9 @@
 //! Structural rules over the parsed tree.
 //!
-//! These checks read only the parsed syntax tree: control flow that escapes a
-//! `finally` block, `catch` type annotations, assignment targets, and `const`
-//! values that are not constant expressions. They do not need type or effect
-//! facts, so they run directly on each declaration.
+//! These checks read only the parsed syntax tree: try-handler presence, `catch`
+//! type annotations, assignment targets, and `const` values that are not
+//! constant expressions. They do not need type or effect facts, so they run
+//! directly on each declaration.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -15,14 +15,9 @@ use marrow_syntax::{
 
 use crate::checks::check_range_value;
 use crate::typerules::check_literal_range;
-use crate::walk::for_each_child_expr;
 use crate::{CHECK_TRY_HANDLER, CheckDiagnostic};
 
-/// A `finally` block must not let control flow escape it via `return`, `break`,
-/// or `continue`.
-pub const CHECK_FINALLY_CONTROL_FLOW: &str = "check.finally_control_flow";
-/// A `break`/`continue` is outside any loop, or its label names no enclosing
-/// loop, so it could never resolve at runtime.
+/// A `break`/`continue` is outside any loop, so it could never resolve at runtime.
 pub const CHECK_LOOP_CONTROL_FLOW: &str = "check.loop_control_flow";
 /// A `catch` annotation must be `Error`.
 pub const CHECK_CATCH_TYPE: &str = "check.catch_type";
@@ -43,7 +38,6 @@ pub(crate) fn check_function_body(
     let read_only_params: HashSet<String> = function
         .params
         .iter()
-        .filter(|param| param.mode.is_none())
         .map(|param| param.name.clone())
         .collect();
     walk_block(
@@ -53,7 +47,7 @@ pub(crate) fn check_function_body(
         &HashSet::new(),
         out,
     );
-    walk_loop_control_flow(file, &function.body, 0, &mut Vec::new(), out);
+    walk_loop_control_flow(file, &function.body, 0, out);
     walk_loop_layer_mutations(file, &function.body, &mut Vec::new(), out);
 }
 
@@ -61,7 +55,7 @@ pub(crate) fn check_function_body(
 /// function parameters and so no read-only bindings.
 pub(crate) fn check_transform_body(file: &Path, body: &Block, out: &mut Vec<CheckDiagnostic>) {
     walk_block(file, body, &HashSet::new(), &HashSet::new(), out);
-    walk_loop_control_flow(file, body, 0, &mut Vec::new(), out);
+    walk_loop_control_flow(file, body, 0, out);
     walk_loop_layer_mutations(file, body, &mut Vec::new(), out);
 }
 
@@ -108,7 +102,7 @@ fn check_literal_ranges(file: &Path, expr: &Expression, out: &mut Vec<CheckDiagn
 }
 
 /// Walk a block applying the catch and assign-target rules to each statement,
-/// recursing into nested blocks. A `try`'s `finally` block also gets the finally walk.
+/// recursing into nested blocks.
 fn walk_block(
     file: &Path,
     block: &Block,
@@ -137,7 +131,6 @@ fn walk_statement(
     local_collections: &HashSet<String>,
     out: &mut Vec<CheckDiagnostic>,
 ) {
-    check_statement_inout_argument_targets(file, statement, read_only_params, out);
     match statement {
         Statement::Assign { target, .. } => {
             check_assignment_target(file, target, read_only_params, local_collections, out);
@@ -173,28 +166,19 @@ fn walk_statement(
         | Statement::Transaction { body, .. } => {
             walk_block(file, body, read_only_params, local_collections, out)
         }
-        Statement::Try {
-            body,
-            catch,
-            finally,
-            ..
-        } => {
-            if catch.is_none() && finally.is_none() {
+        Statement::Try { body, catch, .. } => {
+            if catch.is_none() {
                 out.push(diagnostic_at(
                     CHECK_TRY_HANDLER,
                     file,
                     statement,
-                    "a `try` block must have a `catch` or `finally` clause",
+                    "a `try` block has no `catch` clause",
                 ));
             }
             walk_block(file, body, read_only_params, local_collections, out);
             if let Some(catch) = catch {
                 check_catch(file, catch, out);
                 walk_block(file, &catch.block, read_only_params, local_collections, out);
-            }
-            if let Some(finally) = finally {
-                walk_block(file, finally, read_only_params, local_collections, out);
-                walk_finally(file, finally, 0, &mut Vec::new(), out);
             }
         }
         Statement::Match { arms, .. } => {
@@ -210,126 +194,6 @@ fn walk_statement(
         | Statement::Continue { .. }
         | Statement::Throw { .. }
         | Statement::Expr { .. } => {}
-    }
-}
-
-fn check_statement_inout_argument_targets(
-    file: &Path,
-    statement: &Statement,
-    read_only_params: &HashSet<String>,
-    out: &mut Vec<CheckDiagnostic>,
-) {
-    match statement {
-        Statement::Const { value, .. }
-        | Statement::Throw { value, .. }
-        | Statement::Expr { value, .. } => {
-            check_expr_inout_argument_targets(file, value, read_only_params, out);
-        }
-        Statement::Assign { target, value, .. } => {
-            check_expr_inout_argument_targets(file, target, read_only_params, out);
-            check_expr_inout_argument_targets(file, value, read_only_params, out);
-        }
-        Statement::Var { value, .. } => {
-            if let Some(value) = value {
-                check_expr_inout_argument_targets(file, value, read_only_params, out);
-            }
-        }
-        Statement::Delete { path, .. } => {
-            check_expr_inout_argument_targets(file, path, read_only_params, out);
-        }
-        Statement::Return { value, .. } => {
-            if let Some(value) = value {
-                check_expr_inout_argument_targets(file, value, read_only_params, out);
-            }
-        }
-        Statement::If {
-            condition,
-            else_ifs,
-            ..
-        } => {
-            if let Some(condition) = condition {
-                check_expr_inout_argument_targets(file, condition, read_only_params, out);
-            }
-            for else_if in else_ifs {
-                if let Some(condition) = &else_if.condition {
-                    check_expr_inout_argument_targets(file, condition, read_only_params, out);
-                }
-            }
-        }
-        Statement::IfConst {
-            value, else_ifs, ..
-        } => {
-            check_expr_inout_argument_targets(file, value, read_only_params, out);
-            for else_if in else_ifs {
-                if let Some(condition) = &else_if.condition {
-                    check_expr_inout_argument_targets(file, condition, read_only_params, out);
-                }
-            }
-        }
-        Statement::While { condition, .. } => {
-            if let Some(condition) = condition {
-                check_expr_inout_argument_targets(file, condition, read_only_params, out);
-            }
-        }
-        Statement::For { iterable, step, .. } => {
-            check_expr_inout_argument_targets(file, iterable, read_only_params, out);
-            if let Some(step) = step {
-                check_expr_inout_argument_targets(file, step, read_only_params, out);
-            }
-        }
-        Statement::Match { scrutinee, .. } => {
-            if let Some(scrutinee) = scrutinee {
-                check_expr_inout_argument_targets(file, scrutinee, read_only_params, out);
-            }
-        }
-        Statement::Break { .. }
-        | Statement::Continue { .. }
-        | Statement::Transaction { .. }
-        | Statement::Try { .. } => {}
-    }
-}
-
-fn check_expr_inout_argument_targets(
-    file: &Path,
-    expr: &Expression,
-    read_only_params: &HashSet<String>,
-    out: &mut Vec<CheckDiagnostic>,
-) {
-    // A moded argument's read-only check must land in source position: the callee
-    // precedes the arguments in source, so its subtree is walked first, then each
-    // argument is checked and recursed in turn. Non-call expressions carry no moded
-    // arguments and defer their child shape to the shared visitor.
-    if let Expression::Call { callee, args, .. } = expr {
-        check_expr_inout_argument_targets(file, callee, read_only_params, out);
-        for arg in args {
-            if arg.mode.is_some() {
-                check_read_only_inout_argument(file, &arg.value, read_only_params, out);
-            }
-            check_expr_inout_argument_targets(file, &arg.value, read_only_params, out);
-        }
-    } else {
-        for_each_child_expr(expr, |child| {
-            check_expr_inout_argument_targets(file, child, read_only_params, out)
-        });
-    }
-}
-
-fn check_read_only_inout_argument(
-    file: &Path,
-    value: &Expression,
-    read_only_params: &HashSet<String>,
-    out: &mut Vec<CheckDiagnostic>,
-) {
-    if is_assignable(value)
-        && let Some(name) = place_root_name(value)
-        && read_only_params.contains(name)
-    {
-        out.push(diagnostic(
-            CHECK_INVALID_ASSIGN_TARGET,
-            file,
-            value,
-            &format!("parameter `{name}` is read-only"),
-        ));
     }
 }
 
@@ -424,143 +288,29 @@ fn check_catch(file: &Path, catch: &CatchClause, out: &mut Vec<CheckDiagnostic>)
     }
 }
 
-/// Walk a `finally` block reporting control flow that escapes it.
-///
-/// `return` always escapes. An unlabeled `break`/`continue` escapes only when no
-/// loop encloses it within the finally (`loop_depth == 0`). A labeled
-/// `break`/`continue` escapes unless its label names a loop introduced within
-/// the finally block (`loop_labels`). A nested `try`'s own `finally` is a fresh
-/// scope and is not walked here.
-fn walk_finally(
-    file: &Path,
-    block: &Block,
-    loop_depth: usize,
-    loop_labels: &mut Vec<String>,
-    out: &mut Vec<CheckDiagnostic>,
-) {
-    for statement in &block.statements {
-        match statement {
-            Statement::Return { .. } => out.push(diagnostic_at(
-                CHECK_FINALLY_CONTROL_FLOW,
-                file,
-                statement,
-                "`return` is not allowed in a `finally` block",
-            )),
-            Statement::Break { label, .. } | Statement::Continue { label, .. }
-                if !jump_resolves_in_scope(label.as_deref(), loop_depth, loop_labels) =>
-            {
-                out.push(diagnostic_at(
-                    CHECK_FINALLY_CONTROL_FLOW,
-                    file,
-                    statement,
-                    "control flow may not leave a `finally` block",
-                ));
-            }
-            Statement::If {
-                then_block,
-                else_ifs,
-                else_block,
-                ..
-            }
-            | Statement::IfConst {
-                then_block,
-                else_ifs,
-                else_block,
-                ..
-            } => {
-                walk_finally(file, then_block, loop_depth, loop_labels, out);
-                for else_if in else_ifs {
-                    walk_finally(file, &else_if.block, loop_depth, loop_labels, out);
-                }
-                if let Some(block) = else_block {
-                    walk_finally(file, block, loop_depth, loop_labels, out);
-                }
-            }
-            Statement::While { label, body, .. } | Statement::For { label, body, .. } => {
-                if let Some(label) = label {
-                    loop_labels.push(label.clone());
-                }
-                walk_finally(file, body, loop_depth + 1, loop_labels, out);
-                if label.is_some() {
-                    loop_labels.pop();
-                }
-            }
-            Statement::Transaction { body, .. } => {
-                walk_finally(file, body, loop_depth, loop_labels, out);
-            }
-            Statement::Try {
-                body,
-                catch,
-                finally,
-                ..
-            } => {
-                // The nested body and catch still sit inside this finally, so
-                // their escaping jumps are also illegal. The nested finally is a
-                // fresh scope handled by the ordinary walk.
-                walk_finally(file, body, loop_depth, loop_labels, out);
-                if let Some(catch) = catch {
-                    walk_finally(file, &catch.block, loop_depth, loop_labels, out);
-                }
-                if let Some(finally) = finally {
-                    walk_finally(file, finally, 0, &mut Vec::new(), out);
-                }
-            }
-            Statement::Match { arms, .. } => {
-                for arm in arms {
-                    walk_finally(file, &arm.block, loop_depth, loop_labels, out);
-                }
-            }
-            Statement::Const { .. }
-            | Statement::Var { .. }
-            | Statement::Assign { .. }
-            | Statement::Delete { .. }
-            | Statement::Break { .. }
-            | Statement::Continue { .. }
-            | Statement::Throw { .. }
-            | Statement::Expr { .. } => {}
-        }
-    }
-}
-
-/// Whether a `break`/`continue` resolves to a loop in scope. An unlabeled jump
-/// resolves when some enclosing loop is in scope (`loop_depth > 0`); a labeled jump
-/// resolves when its label names one of the enclosing loops (`loop_labels`). Both
-/// the in-scope loop rule and the finally-escape rule are this one question: a jump
-/// escapes a `finally` exactly when it does not resolve to a loop inside it.
-fn jump_resolves_in_scope(label: Option<&str>, loop_depth: usize, loop_labels: &[String]) -> bool {
-    match label {
-        None => loop_depth > 0,
-        Some(label) => loop_labels.iter().any(|known| known == label),
-    }
+/// Whether a `break`/`continue` resolves to an enclosing loop.
+fn jump_resolves_in_scope(loop_depth: usize) -> bool {
+    loop_depth > 0
 }
 
 /// Walk a block reporting a `break`/`continue` that resolves to no enclosing loop,
 /// which the runtime would otherwise only catch late with `run.no_enclosing_loop`.
-/// Descends into `finally` blocks with the surrounding loop context, since their
-/// jumps still sit inside the function's loop nesting.
 fn walk_loop_control_flow(
     file: &Path,
     block: &Block,
     loop_depth: usize,
-    loop_labels: &mut Vec<String>,
     out: &mut Vec<CheckDiagnostic>,
 ) {
     for statement in &block.statements {
         match statement {
-            Statement::Break { label, .. } | Statement::Continue { label, .. }
-                if !jump_resolves_in_scope(label.as_deref(), loop_depth, loop_labels) =>
+            Statement::Break { .. } | Statement::Continue { .. }
+                if !jump_resolves_in_scope(loop_depth) =>
             {
-                let message = match label {
-                    Some(label) => {
-                        format!("`{label}` names no enclosing loop")
-                    }
-                    None => "control flow statement is not inside a loop".to_string(),
-                };
                 out.push(diagnostic_at(
                     CHECK_LOOP_CONTROL_FLOW,
                     file,
                     statement,
-                    &message,
+                    "control flow statement is not inside a loop",
                 ));
             }
             Statement::If {
@@ -575,43 +325,29 @@ fn walk_loop_control_flow(
                 else_block,
                 ..
             } => {
-                walk_loop_control_flow(file, then_block, loop_depth, loop_labels, out);
+                walk_loop_control_flow(file, then_block, loop_depth, out);
                 for else_if in else_ifs {
-                    walk_loop_control_flow(file, &else_if.block, loop_depth, loop_labels, out);
+                    walk_loop_control_flow(file, &else_if.block, loop_depth, out);
                 }
                 if let Some(block) = else_block {
-                    walk_loop_control_flow(file, block, loop_depth, loop_labels, out);
+                    walk_loop_control_flow(file, block, loop_depth, out);
                 }
             }
-            Statement::While { label, body, .. } | Statement::For { label, body, .. } => {
-                if let Some(label) = label {
-                    loop_labels.push(label.clone());
-                }
-                walk_loop_control_flow(file, body, loop_depth + 1, loop_labels, out);
-                if label.is_some() {
-                    loop_labels.pop();
-                }
+            Statement::While { body, .. } | Statement::For { body, .. } => {
+                walk_loop_control_flow(file, body, loop_depth + 1, out);
             }
             Statement::Transaction { body, .. } => {
-                walk_loop_control_flow(file, body, loop_depth, loop_labels, out);
+                walk_loop_control_flow(file, body, loop_depth, out);
             }
-            Statement::Try {
-                body,
-                catch,
-                finally,
-                ..
-            } => {
-                walk_loop_control_flow(file, body, loop_depth, loop_labels, out);
+            Statement::Try { body, catch, .. } => {
+                walk_loop_control_flow(file, body, loop_depth, out);
                 if let Some(catch) = catch {
-                    walk_loop_control_flow(file, &catch.block, loop_depth, loop_labels, out);
-                }
-                if let Some(finally) = finally {
-                    walk_loop_control_flow(file, finally, loop_depth, loop_labels, out);
+                    walk_loop_control_flow(file, &catch.block, loop_depth, out);
                 }
             }
             Statement::Match { arms, .. } => {
                 for arm in arms {
-                    walk_loop_control_flow(file, &arm.block, loop_depth, loop_labels, out);
+                    walk_loop_control_flow(file, &arm.block, loop_depth, out);
                 }
             }
             Statement::Const { .. }
@@ -683,18 +419,10 @@ fn walk_loop_layer_mutations(
             Statement::While { body, .. } | Statement::Transaction { body, .. } => {
                 walk_loop_layer_mutations(file, body, traversed, out);
             }
-            Statement::Try {
-                body,
-                catch,
-                finally,
-                ..
-            } => {
+            Statement::Try { body, catch, .. } => {
                 walk_loop_layer_mutations(file, body, traversed, out);
                 if let Some(catch) = catch {
                     walk_loop_layer_mutations(file, &catch.block, traversed, out);
-                }
-                if let Some(finally) = finally {
-                    walk_loop_layer_mutations(file, finally, traversed, out);
                 }
             }
             Statement::Match { arms, .. } => {
@@ -750,9 +478,7 @@ fn traversal_argument(expr: &Expression) -> Option<&Expression> {
         return None;
     }
     match args.as_slice() {
-        [arg] if arg.mode.is_none() && arg.name.is_none() => {
-            Some(traversal_argument(&arg.value).unwrap_or(&arg.value))
-        }
+        [arg] if arg.name.is_none() => Some(traversal_argument(&arg.value).unwrap_or(&arg.value)),
         _ => None,
     }
 }
@@ -812,9 +538,7 @@ fn append_target<'a>(
         return None;
     }
     match args {
-        [path, _] if path.mode.is_none() && path.name.is_none() && is_saved_path(&path.value) => {
-            Some(&path.value)
-        }
+        [path, _] if path.name.is_none() && is_saved_path(&path.value) => Some(&path.value),
         _ => None,
     }
 }

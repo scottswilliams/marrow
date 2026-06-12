@@ -39,7 +39,7 @@ pub(crate) fn executable_body(
         .ok_or_else(|| unsupported("a function with no checked runtime body", function.span))
 }
 
-pub(crate) type Activation<'p> = (Completion, Vec<Option<Value>>, Option<&'p mut dyn StepHook>);
+pub(crate) type Activation<'p> = (Completion, Option<&'p mut dyn StepHook>);
 
 pub(crate) struct Invocation<'a, 'p> {
     pub(crate) ctx: Context<'p>,
@@ -49,7 +49,6 @@ pub(crate) struct Invocation<'a, 'p> {
     pub(crate) body: &'p ExecBody,
     pub(crate) span: SourceSpan,
     pub(crate) args: &'a [Value],
-    pub(crate) writeback: &'a [&'p str],
     pub(crate) traversed_layers: &'a [TraversedLayer],
     pub(crate) hook: Option<&'p mut dyn StepHook>,
     pub(crate) depth: usize,
@@ -64,7 +63,6 @@ pub(crate) fn invoke<'a, 'p>(input: Invocation<'a, 'p>) -> Result<Activation<'p>
         body,
         span,
         args,
-        writeback,
         traversed_layers,
         hook,
         depth,
@@ -79,12 +77,11 @@ pub(crate) fn invoke<'a, 'p>(input: Invocation<'a, 'p>) -> Result<Activation<'p>
         traversed_layers,
     });
     bind_module_constants(module, &mut env)?;
-    bind_activation_params(param_names, args, writeback, &mut env);
+    bind_activation_params(param_names, args, &mut env);
     let outcome = eval_block(body, &mut env);
-    let finals = activation_finals(&outcome, param_names, writeback, &env);
     env.pop_scope();
     let completion = activation_completion(outcome, span, module, &env)?;
-    Ok((completion, finals, env.hook.take()))
+    Ok((completion, env.hook.take()))
 }
 
 pub(crate) fn check_argument_count(
@@ -143,34 +140,9 @@ fn bind_module_constants(
     Ok(())
 }
 
-fn bind_activation_params(
-    param_names: &[&str],
-    args: &[Value],
-    writeback: &[&str],
-    env: &mut Env<'_>,
-) {
+fn bind_activation_params(param_names: &[&str], args: &[Value], env: &mut Env<'_>) {
     for (name, arg) in param_names.iter().zip(args) {
-        env.bind((*name).to_string(), arg.clone(), writeback.contains(name));
-    }
-}
-
-fn activation_finals(
-    outcome: &Result<Flow, RuntimeError>,
-    param_names: &[&str],
-    writeback: &[&str],
-    env: &Env<'_>,
-) -> Vec<Option<Value>> {
-    match outcome {
-        Ok(Flow::Return(_)) | Ok(Flow::Normal) => param_names
-            .iter()
-            .map(|&name| {
-                writeback
-                    .contains(&name)
-                    .then(|| env.lookup(name).cloned())
-                    .flatten()
-            })
-            .collect(),
-        _ => vec![None; param_names.len()],
+        env.bind((*name).to_string(), arg.clone(), false);
     }
 }
 
@@ -218,7 +190,7 @@ fn activation_completion(
             }
         }
         Err(fatal) => return Err(fatal.with_origin_from(env.program, module)),
-        Ok(Flow::Break(_)) | Ok(Flow::Continue(_)) => {
+        Ok(Flow::Break) | Ok(Flow::Continue) => {
             return Err(RuntimeError::fault(
                 RUN_NO_ENCLOSING_LOOP,
                 "`break` or `continue` outside a loop".into(),

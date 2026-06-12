@@ -109,12 +109,12 @@ pub enum ExpectedSyntax {
 pub enum ReservedSyntax {
     LockStatement,
     MergeStatement,
-    OutArgument,
-    OutParameter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnsupportedSyntax {
+    LoopLabels,
+    ParameterModes,
     ParameterDefaults,
     TypeAliases,
     UserDefinedGenerics,

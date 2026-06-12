@@ -17,11 +17,11 @@ mod parse_expr;
 mod token;
 
 pub use ast::{
-    ArgMode, Argument, BinaryOp, Block, CatchClause, Comment, CommentMarker, CommentPlacement,
-    ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression,
-    FieldDecl, ForBinding, FunctionDecl, GroupDecl, IndexDecl, InterpolationPart, KeyParam,
-    LiteralKind, MatchArm, ModuleDecl, ParamDecl, ParamMode, ParsedSource, ResourceDecl,
-    ResourceMember, SavedRoot, SourceFile, Statement, StoreDecl, TypeRef, UnaryOp, UseDecl,
+    Argument, BinaryOp, Block, CatchClause, Comment, CommentMarker, CommentPlacement, ConstDecl,
+    Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression, FieldDecl,
+    ForBinding, FunctionDecl, GroupDecl, IndexDecl, InterpolationPart, KeyParam, LiteralKind,
+    MatchArm, ModuleDecl, ParamDecl, ParsedSource, ResourceDecl, ResourceMember, SavedRoot,
+    SourceFile, Statement, StoreDecl, TypeRef, UnaryOp, UseDecl,
 };
 pub use diagnostic::{
     Diagnose, Diagnostic, DiagnosticReason, ExpectedSyntax, LexerDiagnosticReason,
@@ -170,7 +170,7 @@ mod decl_parser_corpus {
             "fn f(x: int = 5)\n    return\n",
             "fn main(value:)\n    return\n",
             "pub fn empty()\n",
-            "fn weird(inout b: string)\n    return\n",
+            "fn weird(value:)\n    return\n",
             // top-level dispatch errors and stray indentation
             "type Foo = int\n",
             "wat\n",

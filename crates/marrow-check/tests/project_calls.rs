@@ -446,19 +446,6 @@ fn named_saved_root_key_arguments_are_rejected() {
 }
 
 #[test]
-fn inout_saved_root_key_arguments_are_rejected() {
-    let found = check_module(
-        "inout-saved-root-key-args",
-        "module m\n\
-         resource Book\n    required title: string\n\
-         store ^books(id: int): Book\n\n\
-         fn f()\n    var id = 1\n    const title = ^books(inout id).title\n",
-        "check.call_argument",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
-}
-
-#[test]
 fn named_saved_layer_key_arguments_are_rejected() {
     let found = check_module(
         "named-saved-layer-key-args",

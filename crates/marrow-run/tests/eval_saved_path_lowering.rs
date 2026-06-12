@@ -132,14 +132,3 @@ fn an_unkeyed_group_hop_lowers_to_a_child_layer() {
         Some(SavedValue::Str("Sam".into()))
     );
 }
-
-/// rejected, the same unsupported-path classification the lowering gives it.
-#[test]
-fn an_index_branch_is_not_an_assignable_place() {
-    checker_rejects(
-        "resource Book\n    required title: string\n    shelf: string\nstore ^books(id: int): Book\n\n    index byShelf(shelf, id)\n\n\
-         pub fn give(inout s: string)\n    s = \"x\"\n\n\
-         pub fn run_it()\n    give(inout ^books.byShelf(\"a\"))\n",
-        "check.untyped_value",
-    );
-}

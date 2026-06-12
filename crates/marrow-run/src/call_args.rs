@@ -1,6 +1,5 @@
 use marrow_check::{
-    CheckedArg as ExecArg, CheckedArgMode as ArgMode, CheckedExpr as ExecExpr,
-    CheckedIdentityConstructor, CheckedParam, CheckedParamMode as ParamMode,
+    CheckedArg as ExecArg, CheckedExpr as ExecExpr, CheckedIdentityConstructor, CheckedParam,
     CheckedResourceConstructor, CheckedRuntimeValueType,
 };
 use marrow_schema::{KeyDef, Type};
@@ -10,15 +9,11 @@ use marrow_store::value::ScalarType;
 use marrow_syntax::SourceSpan;
 
 use crate::env::Env;
-use crate::error::{
-    RUN_TYPE, RUN_UNBOUND_NAME, RuntimeError, assign_error, type_error, unsupported,
-};
+use crate::error::{RUN_TYPE, RuntimeError, type_error, unsupported};
 use crate::expr::eval_expr;
 use crate::path::lower_keys;
-use crate::read::read_local_field;
 use crate::value::identity_value;
 use crate::value::{Value, value_scalar_type};
-use crate::write_dispatch::write_local_field;
 
 pub(crate) fn bind_arguments(
     params: &[CheckedParam],
@@ -35,40 +30,6 @@ pub(crate) fn bind_arguments(
         place_argument(&mut slots, index, value, params, span)?;
     }
     collect_arguments(slots, params, span)
-}
-
-pub(crate) fn bind_arguments_with_modes(
-    params: &[CheckedParam],
-    args: &[ExecArg],
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<(Vec<Value>, Vec<Option<Place>>), RuntimeError> {
-    let mut slots: Vec<Option<(Value, Option<Place>)>> = (0..params.len()).map(|_| None).collect();
-    let mut next_positional = 0;
-    let mut seen_named = false;
-    for arg in args {
-        let index = arg_param_index(arg, params, &mut next_positional, &mut seen_named, span)?;
-        let param = params
-            .get(index)
-            .ok_or_else(|| type_error("call has more arguments than parameters", span))?;
-        if !modes_match(arg.mode, param.mode) {
-            return Err(type_error(
-                &format!("argument mode does not match parameter `{}`", param.name),
-                span,
-            ));
-        }
-        let entry = match arg.mode {
-            None => (eval_expr(&arg.value, env)?, None),
-            Some(ArgMode::InOut) => {
-                let place = Place::from_expr(&arg.value, span)?;
-                let current = place.read(span, env)?;
-                (current, Some(place))
-            }
-        };
-        place_argument(&mut slots, index, entry, params, span)?;
-    }
-    let entries = collect_arguments(slots, params, span)?;
-    Ok(entries.into_iter().unzip())
 }
 
 fn arg_param_index(
@@ -146,15 +107,6 @@ pub(crate) fn eval_resource_constructor(
     let mut slots: Vec<Option<Value>> = vec![None; constructor.fields.len()];
 
     for arg in args {
-        if arg.mode.is_some() {
-            return Err(type_error(
-                &format!(
-                    "`{}(...)` fields cannot be inout arguments",
-                    constructor.name
-                ),
-                span,
-            ));
-        }
         let Some(name) = &arg.name else {
             return Err(type_error(
                 &format!("`{}(...)` takes named fields", constructor.name),
@@ -212,11 +164,8 @@ pub(crate) fn eval_identity_constructor(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    if args
-        .iter()
-        .any(|arg| arg.mode.is_some() || arg.name.is_some())
-    {
-        return Err(unsupported("`Id` with named or inout arguments", span));
+    if args.iter().any(|arg| arg.name.is_some()) {
+        return Err(unsupported("`Id` with named arguments", span));
     }
     let Some((root_arg, key_args)) = args.split_first() else {
         return Err(RuntimeError::fault(
@@ -302,67 +251,6 @@ fn identity_keys_match(declared: &[KeyDef], keys: &[SavedKey]) -> bool {
                 Some(expected) => expected == key.scalar_type(),
                 None => true,
             })
-}
-
-fn modes_match(arg: Option<ArgMode>, param: Option<ParamMode>) -> bool {
-    matches!(
-        (arg, param),
-        (None, None) | (Some(ArgMode::InOut), Some(ParamMode::InOut))
-    )
-}
-
-/// An assignable local an `inout` argument reads from and writes back to. Names
-/// come from a single-segment `ExecExpr::Name`, so they are bare strings rather
-/// than checked identifiers.
-pub(crate) enum Place {
-    Local(String),
-    LocalField { base: String, field: String },
-}
-
-impl Place {
-    fn from_expr(expr: &ExecExpr, span: SourceSpan) -> Result<Place, RuntimeError> {
-        if let ExecExpr::Name { segments, .. } = expr
-            && segments.len() == 1
-        {
-            return Ok(Place::Local(segments[0].clone()));
-        }
-        if let ExecExpr::Field { base, name, .. } = expr
-            && let ExecExpr::Name { segments, .. } = base.as_ref()
-            && segments.len() == 1
-        {
-            return Ok(Place::LocalField {
-                base: segments[0].clone(),
-                field: name.clone(),
-            });
-        }
-        Err(unsupported(
-            "an inout argument that is not a local assignable place",
-            span,
-        ))
-    }
-
-    fn read(&self, span: SourceSpan, env: &mut Env<'_>) -> Result<Value, RuntimeError> {
-        match self {
-            Place::Local(name) => env.lookup(name).cloned().ok_or_else(|| {
-                RuntimeError::fault(RUN_UNBOUND_NAME, format!("`{name}` is not bound"), span)
-            }),
-            Place::LocalField { base, field } => read_local_field(base, field, span, env),
-        }
-    }
-
-    pub(crate) fn write(
-        self,
-        value: Value,
-        span: SourceSpan,
-        env: &mut Env<'_>,
-    ) -> Result<(), RuntimeError> {
-        match self {
-            Place::Local(name) => env
-                .assign(&name, value)
-                .map_err(|error| assign_error(&name, error, span)),
-            Place::LocalField { base, field } => write_local_field(&base, &field, value, span, env),
-        }
-    }
 }
 
 pub(crate) fn default_value(ty: &Type) -> Option<Value> {

@@ -17,7 +17,7 @@ use marrow_store::cell::CatalogId;
 use marrow_syntax::{Declaration, Expression, ParsedSource, SourceSpan, TypeRef};
 
 use crate::executable::{
-    CheckedBody, CheckedExecutableContext, CheckedExpr, CheckedFunctionRef, CheckedParamMode,
+    CheckedBody, CheckedExecutableContext, CheckedExpr, CheckedFunctionRef,
     CheckedRuntimeValueType, checked_runtime_value_type,
 };
 use crate::facts::CheckedFacts;
@@ -373,7 +373,6 @@ impl CheckedFunction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedParam {
     pub name: String,
-    pub mode: Option<CheckedParamMode>,
     pub ty: MarrowType,
 }
 
@@ -610,7 +609,6 @@ impl CheckedRuntimeFunction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedRuntimeParam {
     pub name: String,
-    pub mode: Option<CheckedParamMode>,
     pub ty: CheckedRuntimeValueType,
 }
 
@@ -618,7 +616,6 @@ impl CheckedRuntimeParam {
     fn from_checked(program: &CheckedProgram, param: &CheckedParam) -> Self {
         Self {
             name: param.name.clone(),
-            mode: param.mode,
             ty: checked_runtime_value_type(program, param.ty.clone()),
         }
     }

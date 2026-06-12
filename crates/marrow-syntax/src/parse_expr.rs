@@ -4,9 +4,9 @@
 
 use crate::token::is_trivia;
 use crate::{
-    ArgMode, Argument, BinaryOp, Diagnostic, DiagnosticReason, Expression, InterpolationPart,
-    Keyword, LiteralKind, NESTING_DEPTH_LIMIT, NESTING_LIMIT, PARSE_SYNTAX, ParseDiagnosticReason,
-    ReservedSyntax, Severity, SourceSpan, Token, TokenKind, UnaryOp,
+    Argument, BinaryOp, Diagnostic, DiagnosticReason, Expression, InterpolationPart, Keyword,
+    LiteralKind, NESTING_DEPTH_LIMIT, NESTING_LIMIT, PARSE_SYNTAX, ParseDiagnosticReason, Severity,
+    SourceSpan, Token, TokenKind, UnaryOp, UnsupportedSyntax,
 };
 
 /// A value the parser does not fully structure yields `None`, which the caller
@@ -359,10 +359,9 @@ impl<'a> ExprParser<'a> {
         loop {
             let arg = self.argument()?;
             // After the first named argument, every remaining argument must be
-            // named: a plain positional one (no name and no `inout` mode)
-            // would silently back-fill an earlier parameter. Mode arguments keep
-            // their own rules and are not plain positionals.
-            if seen_named && arg.name.is_none() && arg.mode.is_none() {
+            // named: a plain positional one would silently back-fill an earlier
+            // parameter.
+            if seen_named && arg.name.is_none() {
                 let span = arg.value.span();
                 self.error(
                     span,
@@ -389,23 +388,8 @@ impl<'a> ExprParser<'a> {
     }
 
     fn argument(&mut self) -> Option<Argument> {
-        if matches!(self.peek(), Some(TokenKind::Keyword(Keyword::Out))) {
-            let token = self.advance();
-            self.error(
-                token.span,
-                ParseDiagnosticReason::Reserved(ReservedSyntax::OutArgument),
-                "`out` is reserved; return a value or use `inout` for local mutation".to_string(),
-                None,
-            );
-        }
-        let mode = if matches!(self.peek(), Some(TokenKind::Keyword(Keyword::InOut))) {
-            self.advance();
-            Some(ArgMode::InOut)
-        } else {
-            None
-        };
-        let name = if mode.is_none()
-            && matches!(self.peek(), Some(TokenKind::Identifier))
+        self.recover_removed_argument_mode();
+        let name = if matches!(self.peek(), Some(TokenKind::Identifier))
             && matches!(self.peek_at(1), Some(TokenKind::Colon))
         {
             let identifier = self.advance();
@@ -415,7 +399,31 @@ impl<'a> ExprParser<'a> {
             None
         };
         let value = self.expression()?;
-        Some(Argument { mode, name, value })
+        Some(Argument { name, value })
+    }
+
+    fn recover_removed_argument_mode(&mut self) {
+        let Some(token) = self.tokens.get(self.pos).copied() else {
+            return;
+        };
+        if token.kind != TokenKind::Identifier
+            || !self
+                .peek_at(1)
+                .is_some_and(starts_unambiguous_removed_mode_target)
+        {
+            return;
+        }
+        let text = token.text(self.source);
+        if text != "inout" && text != "out" {
+            return;
+        }
+        self.error(
+            token.span,
+            ParseDiagnosticReason::Unsupported(UnsupportedSyntax::ParameterModes),
+            "parameter modes were removed; call arguments are ordinary values".to_string(),
+            Some("return the new value and assign the returned value at the call site".to_string()),
+        );
+        self.advance();
     }
 
     fn primary_expr(&mut self) -> Option<Expression> {
@@ -591,6 +599,10 @@ fn is_callable_keyword(keyword: Keyword) -> bool {
             | Keyword::ErrorCode
             | Keyword::Error
     )
+}
+
+fn starts_unambiguous_removed_mode_target(kind: TokenKind) -> bool {
+    matches!(kind, TokenKind::Identifier | TokenKind::Caret)
 }
 
 fn binary_expr(op: BinaryOp, left: Expression, right: Expression) -> Expression {

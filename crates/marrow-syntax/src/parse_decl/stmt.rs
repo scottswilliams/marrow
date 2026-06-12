@@ -14,7 +14,7 @@ use crate::ast::{
 };
 use crate::diagnostic::{
     Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, ReservedSyntax, Severity,
-    SourceSpan,
+    SourceSpan, UnsupportedSyntax,
 };
 use crate::parse_expr::join_spans;
 use crate::token::{Keyword, Token, TokenKind};
@@ -26,13 +26,13 @@ enum IfHead {
 }
 
 /// A block-introducing keyword that has no statement of its own and only ever
-/// appears as a clause of one (`else`, `catch`, `finally`). Standing alone it
+/// appears as a clause of one (`else`, `catch`). Standing alone it
 /// cannot be structured, so the statement parser swallows it and its nested
 /// block, reporting the stray keyword so the following statements still parse.
 /// The keywords with dedicated statement parsers (`if`, `while`, …) are matched
 /// before this guard and never reach it.
 fn is_stray_block_clause_keyword(keyword: Keyword) -> bool {
-    matches!(keyword, Keyword::Else | Keyword::Catch | Keyword::Finally)
+    matches!(keyword, Keyword::Else | Keyword::Catch)
 }
 
 /// Parses the statements of a function body over the file-wide token stream.
@@ -131,22 +131,12 @@ impl<'a> StmtParser<'a> {
     /// A line the grammar cannot structure raises a diagnostic and is dropped,
     /// so the following statements still parse.
     fn statement(&mut self) -> Option<Statement> {
-        // A loop label (`outer:`) precedes a `while` or `for`. `try_loop_label`
-        // only consumes the label when one of those keywords follows, so the
-        // `_` arm is necessarily `while`.
-        if let Some((label, label_span)) = self.try_loop_label() {
-            return match self.peek() {
-                Some(TokenKind::Keyword(Keyword::For)) => {
-                    self.for_stmt(Some(label), Some(label_span))
-                }
-                _ => Some(self.while_stmt(Some(label), Some(label_span))),
-            };
-        }
+        self.recover_removed_loop_label();
 
         match self.tokens[self.pos].kind {
             TokenKind::Keyword(Keyword::If) => return Some(self.if_stmt()),
-            TokenKind::Keyword(Keyword::While) => return Some(self.while_stmt(None, None)),
-            TokenKind::Keyword(Keyword::For) => return self.for_stmt(None, None),
+            TokenKind::Keyword(Keyword::While) => return Some(self.while_stmt()),
+            TokenKind::Keyword(Keyword::For) => return self.for_stmt(),
             TokenKind::Keyword(Keyword::Transaction) => return Some(self.transaction_stmt()),
             TokenKind::Keyword(Keyword::Lock) => {
                 self.skip_reserved_compound("lock");
@@ -198,10 +188,10 @@ impl<'a> StmtParser<'a> {
         }
     }
 
-    /// If the upcoming tokens are `identifier ":" ("while" | "for")`, consume
-    /// the label and colon and return the label name and its span.
-    fn try_loop_label(&mut self) -> Option<(String, SourceSpan)> {
-        let name = self.tokens.get(self.pos)?;
+    fn recover_removed_loop_label(&mut self) {
+        let Some(name) = self.tokens.get(self.pos).copied() else {
+            return;
+        };
         if name.kind != TokenKind::Identifier
             || self.peek_at(1) != Some(TokenKind::Colon)
             || !matches!(
@@ -209,39 +199,39 @@ impl<'a> StmtParser<'a> {
                 Some(TokenKind::Keyword(Keyword::While | Keyword::For))
             )
         {
-            return None;
+            return;
         }
-        let label = name.text(self.source).to_string();
-        let span = name.span;
-        self.advance(); // label identifier
-        self.advance(); // `:`
-        Some((label, span))
+        let colon = self.tokens[self.pos + 1];
+        self.error_span_reason(
+            join_spans(name.span, colon.span),
+            ParseDiagnosticReason::Unsupported(UnsupportedSyntax::LoopLabels),
+            "loop labels were removed",
+        );
+        if let Some(diagnostic) = self.diagnostics.last_mut() {
+            diagnostic.help =
+                Some("extract a function and use return to leave nested loops".to_string());
+        }
+        self.advance();
+        self.advance();
     }
 
     fn peek_at(&self, offset: usize) -> Option<TokenKind> {
         self.tokens.get(self.pos + offset).map(|token| token.kind)
     }
 
-    fn while_stmt(&mut self, label: Option<String>, label_span: Option<SourceSpan>) -> Statement {
+    fn while_stmt(&mut self) -> Statement {
         let keyword = self.advance(); // `while`
-        let start = label_span.unwrap_or(keyword.span);
         let condition = self.header_expression();
         let body = self.block_body();
         Statement::While {
-            label,
             condition,
-            span: join_spans(start, body.span),
+            span: join_spans(keyword.span, body.span),
             body,
         }
     }
 
-    fn for_stmt(
-        &mut self,
-        label: Option<String>,
-        label_span: Option<SourceSpan>,
-    ) -> Option<Statement> {
+    fn for_stmt(&mut self) -> Option<Statement> {
         let keyword = self.advance(); // `for`
-        let start = label_span.unwrap_or(keyword.span);
         let newline = self.find_line_end();
         let content_end = self.split_trailing_comment(newline);
         let header = &self.tokens[self.pos..content_end];
@@ -252,11 +242,10 @@ impl<'a> StmtParser<'a> {
 
         match parsed {
             Some((binding, iterable, step)) => Some(Statement::For {
-                label,
                 binding,
                 iterable,
                 step,
-                span: join_spans(start, body.span),
+                span: join_spans(keyword.span, body.span),
                 body,
             }),
             None => {
@@ -270,10 +259,8 @@ impl<'a> StmtParser<'a> {
         }
     }
 
-    /// Parse `try ... [catch ...] [finally ...]`. The grammar requires at least
-    /// one of catch/finally, and `return`/`break`/`continue` are forbidden
-    /// inside `finally`; both are semantic rules left to the checker, which has
-    /// the loop/label scope needed to apply the `finally` rule correctly.
+    /// Parse `try ... catch ...`. A try block without a catch is retained for
+    /// recovery but receives a parser diagnostic.
     fn try_stmt(&mut self) -> Statement {
         let start = self.advance().span; // `try`
         self.consume_header_line();
@@ -288,20 +275,21 @@ impl<'a> StmtParser<'a> {
             None
         };
 
-        let finally = if matches!(self.peek(), Some(TokenKind::Keyword(Keyword::Finally))) {
-            self.advance(); // `finally`
-            self.consume_header_line();
-            let block = self.block_body();
-            end = block.span;
-            Some(block)
-        } else {
-            None
-        };
+        if catch.is_none() {
+            self.error_span_reason(
+                start,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::Statement),
+                "`try` requires a `catch` clause",
+            );
+            if let Some(diagnostic) = self.diagnostics.last_mut() {
+                diagnostic.help =
+                    Some("catch, clean up, then rethrow when cleanup is needed".to_string());
+            }
+        }
 
         Statement::Try {
             body,
             catch,
-            finally,
             span: join_spans(start, end),
         }
     }

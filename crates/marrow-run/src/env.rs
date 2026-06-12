@@ -25,10 +25,10 @@ pub(crate) enum Flow {
     Normal,
     /// A `return`, carrying its value if it had one.
     Return(Option<Value>),
-    /// A `break`, targeting the named loop, or the innermost when unlabeled.
-    Break(Option<String>),
-    /// A `continue`, targeting the named loop, or the innermost when unlabeled.
-    Continue(Option<String>),
+    /// A `break`, targeting the innermost loop.
+    Break,
+    /// A `continue`, targeting the innermost loop.
+    Continue,
     /// A `throw`, carrying the thrown `Error` value, unwinding until a `catch`
     /// handles it or it leaves the function as an uncaught-error fault.
     Throw {

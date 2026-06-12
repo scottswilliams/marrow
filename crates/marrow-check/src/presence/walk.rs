@@ -1,8 +1,8 @@
 use super::calls::std_path_arg_mask;
 use super::effects::{
     condition_narrowings, invalidate_key_bindings, invalidate_removed_narrowings,
-    invalidate_saved_narrowings, invalidate_written_target, mutating_arg_bindings,
-    negated_exists_narrowings, traversal_narrowing,
+    invalidate_saved_narrowings, invalidate_written_target, negated_exists_narrowings,
+    traversal_narrowing,
 };
 use super::keys::saved_path_parts;
 use super::proofs::{ReadContext, read_proof, record_read};
@@ -11,7 +11,7 @@ use super::target::{ReadTarget, read_target_with_scope};
 use super::writes::call_writes_saved_data;
 use crate::executable::CheckedExecutableContext;
 use crate::{
-    CheckDiagnostic, CheckedArg, CheckedArgMode, CheckedBinaryOp, CheckedBody, CheckedBuiltinCall,
+    CheckDiagnostic, CheckedArg, CheckedBinaryOp, CheckedBody, CheckedBuiltinCall,
     CheckedCallTarget, CheckedCatchClause, CheckedElseIf, CheckedExpr, CheckedForBinding,
     CheckedInterpolationPart, CheckedMatchArm, CheckedProgram, CheckedStmt,
 };
@@ -178,20 +178,9 @@ fn collect_statement(
         CheckedStmt::Transaction { body, .. } => {
             collect_block(program, body, narrowed, scope, diagnostics);
         }
-        CheckedStmt::Try {
-            body,
-            catch,
-            finally,
-            ..
-        } => collect_try_statement(
-            program,
-            body,
-            catch.as_ref(),
-            finally.as_ref(),
-            narrowed,
-            scope,
-            diagnostics,
-        ),
+        CheckedStmt::Try { body, catch, .. } => {
+            collect_try_statement(program, body, catch.as_ref(), narrowed, scope, diagnostics)
+        }
         CheckedStmt::Match {
             scrutinee, arms, ..
         } => {
@@ -435,17 +424,11 @@ fn statement_prevents_fallthrough(statement: &CheckedStmt) -> bool {
                 && block_prevents_fallthrough(else_block)
         }),
         CheckedStmt::Transaction { body, .. } => block_prevents_fallthrough(body),
-        CheckedStmt::Try {
-            body,
-            catch,
-            finally,
-            ..
-        } => {
-            finally.as_ref().is_some_and(block_prevents_fallthrough)
-                || (block_prevents_fallthrough(body)
-                    && catch
-                        .as_ref()
-                        .is_none_or(|clause| block_prevents_fallthrough(&clause.block)))
+        CheckedStmt::Try { body, catch, .. } => {
+            block_prevents_fallthrough(body)
+                && catch
+                    .as_ref()
+                    .is_none_or(|clause| block_prevents_fallthrough(&clause.block))
         }
         CheckedStmt::Match { arms, .. } => {
             !arms.is_empty()
@@ -507,7 +490,6 @@ fn collect_try_statement(
     program: &mut CheckedProgram,
     body: &CheckedBody,
     catch: Option<&CheckedCatchClause>,
-    finally: Option<&CheckedBody>,
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -520,9 +502,6 @@ fn collect_try_statement(
             collect_statement(program, statement, narrowed, scope, diagnostics);
         }
         scope.pop_frame();
-    }
-    if let Some(finally) = finally {
-        collect_block(program, finally, narrowed, scope, diagnostics);
     }
 }
 
@@ -732,17 +711,9 @@ fn collect_call_args(
     scope: &mut NameScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    let mutated = mutating_arg_bindings(args, scope);
     for arg in args {
-        match arg.mode {
-            Some(CheckedArgMode::InOut) => {
-                collect_bare_expr(program, &arg.value, narrowed, scope, diagnostics);
-                collect_write_target(program, &arg.value, narrowed, scope, diagnostics);
-            }
-            None => collect_bare_expr(program, &arg.value, narrowed, scope, diagnostics),
-        }
+        collect_bare_expr(program, &arg.value, narrowed, scope, diagnostics);
     }
-    invalidate_key_bindings(narrowed, mutated);
 }
 
 fn collect_args(
@@ -753,11 +724,9 @@ fn collect_args(
     scope: &mut NameScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    let mutated = mutating_arg_bindings(args, scope);
     for arg in args {
         collect_expr(program, &arg.value, context, narrowed, scope, diagnostics);
     }
-    invalidate_key_bindings(narrowed, mutated);
 }
 
 fn collect_binary_expr(

@@ -41,7 +41,7 @@ pub(super) fn wrapper_arg(expr: &CheckedExpr, wrapper: CheckedBuiltinCall) -> Op
         return None;
     }
     match args.as_slice() {
-        [arg] if arg.mode.is_none() && arg.name.is_none() => Some(&arg.value),
+        [arg] if arg.name.is_none() => Some(&arg.value),
         _ => None,
     }
 }

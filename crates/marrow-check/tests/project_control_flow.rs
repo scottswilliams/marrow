@@ -117,59 +117,6 @@ fn check_tests_catches_a_wrong_enum_to_a_qualified_project_parameter() {
 }
 
 #[test]
-fn finally_return_is_rejected() {
-    let found = check_script(
-        "fin-return",
-        "fn f()\n    try\n        x = 1\n    finally\n        return\n",
-        "check.finally_control_flow",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
-    assert_eq!(found[0].span.line, 5, "{:#?}", found[0]);
-}
-
-#[test]
-fn finally_break_inside_nested_loop_is_allowed() {
-    let found = check_script(
-        "fin-break-loop",
-        "fn f()\n    try\n        x = 1\n    finally\n        while c\n            break\n",
-        "check.finally_control_flow",
-    );
-    assert!(found.is_empty(), "{found:#?}");
-}
-
-#[test]
-fn finally_unlabeled_break_that_escapes_is_rejected() {
-    let found = check_script(
-        "fin-break-escape",
-        "fn f()\n    try\n        x = 1\n    finally\n        break\n",
-        "check.finally_control_flow",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
-}
-
-#[test]
-fn finally_labeled_break_to_outer_loop_is_rejected() {
-    // The label names a loop outside the finally block, so the break escapes it.
-    let found = check_script(
-        "fin-break-label",
-        "fn f()\n    outer: while a\n        try\n            x = 1\n        finally\n            break outer\n",
-        "check.finally_control_flow",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
-}
-
-#[test]
-fn finally_labeled_break_to_inner_loop_is_allowed() {
-    // The label names a loop nested within the finally block.
-    let found = check_script(
-        "fin-break-inner-label",
-        "fn f()\n    try\n        x = 1\n    finally\n        inner: while c\n            break inner\n",
-        "check.finally_control_flow",
-    );
-    assert!(found.is_empty(), "{found:#?}");
-}
-
-#[test]
 fn break_outside_any_loop_is_rejected() {
     // A `break` with no enclosing loop only fails late at runtime
     // (RUN_NO_ENCLOSING_LOOP); the checker must reject it statically.
@@ -193,31 +140,10 @@ fn continue_outside_any_loop_is_rejected() {
 }
 
 #[test]
-fn labeled_break_naming_no_enclosing_loop_is_rejected() {
-    // The label names no enclosing loop, so the break can never resolve.
-    let found = check_script(
-        "break-bad-label",
-        "fn f()\n    while c\n        break outer\n",
-        "check.loop_control_flow",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
-}
-
-#[test]
 fn break_and_continue_inside_a_loop_are_allowed() {
     let found = check_script(
         "break-in-loop",
         "fn f()\n    while c\n        break\n        continue\n",
-        "check.loop_control_flow",
-    );
-    assert!(found.is_empty(), "{found:#?}");
-}
-
-#[test]
-fn labeled_break_to_an_enclosing_loop_is_allowed() {
-    let found = check_script(
-        "break-good-label",
-        "fn f()\n    outer: while a\n        while b\n            break outer\n",
         "check.loop_control_flow",
     );
     assert!(found.is_empty(), "{found:#?}");
@@ -271,7 +197,7 @@ fn throwing_an_error_value_is_allowed() {
 }
 
 #[test]
-fn try_requires_a_catch_or_finally_clause() {
+fn try_requires_a_catch_clause() {
     let found = check_script(
         "bare-try",
         "fn f()\n    try\n        print(\"x\")\n",
@@ -281,20 +207,13 @@ fn try_requires_a_catch_or_finally_clause() {
 }
 
 #[test]
-fn try_with_catch_or_finally_is_allowed() {
+fn try_with_catch_is_allowed() {
     let with_catch = check_script(
         "try-catch",
         "fn f()\n    try\n        print(\"x\")\n    catch e\n        return\n",
         "check.try_handler",
     );
     assert!(with_catch.is_empty(), "{with_catch:#?}");
-
-    let with_finally = check_script(
-        "try-finally",
-        "fn f()\n    try\n        print(\"x\")\n    finally\n        print(\"done\")\n",
-        "check.try_handler",
-    );
-    assert!(with_finally.is_empty(), "{with_finally:#?}");
 }
 
 #[test]

@@ -1,6 +1,6 @@
 # check/catalog — stable durable identity
 
-After type analysis builds a `CheckedProgram`, this layer gives every durable declaration (resource, store, store index, enum, enum member, resource member) an opaque stable id that survives renames and reshapes, and derives the source digests the store stamps and the activation fence enforces. The accepted catalog is a caller-supplied input: `bind_catalog` takes an `Option<&CatalogMetadata>` snapshot the analysis API threads in (the CLI reads the fixed `marrow.catalog.json` artifact, repaired from the store snapshot when the file is missing, stale, or a torn non-conflict render), reconciles source against it, and *proposes* an advanced catalog. It is read-only — the checker neither reads nor writes durable identity. A separate `rejected_surface` pass rejects v0.1-forbidden saved-traversal calls and saved `inout`.
+After type analysis builds a `CheckedProgram`, this layer gives every durable declaration (resource, store, store index, enum, enum member, resource member) an opaque stable id that survives renames and reshapes, and derives the source digests the store stamps and the activation fence enforces. The accepted catalog is a caller-supplied input: `bind_catalog` takes an `Option<&CatalogMetadata>` snapshot the analysis API threads in (the CLI reads the fixed `marrow.catalog.json` artifact, repaired from the store snapshot when the file is missing, stale, or a torn non-conflict render), reconciles source against it, and *proposes* an advanced catalog. It is read-only — the checker neither reads nor writes durable identity. A separate `rejected_surface` pass rejects v0.1-forbidden saved-traversal calls.
 
 ## The big idea
 
@@ -12,7 +12,7 @@ Identity is path-independent. A stable id is a random 128-bit `cat_<32hex>` mint
 - **Binding** (`catalog/mod.rs`): `bind_catalog` orchestrates carry-forward, rename relocation, retire reservation, and fresh-id mint, then records store-key, store-index, and member signatures, builds the proposal, and binds accepted-only ids onto facts.
 - **Source digest** (`catalog/source_digest.rs`): two sha256 digests over re-read, re-parsed, canonically-formatted durable declarations. The shape digest excludes the `evolve` block (a consumed block is deletable); the evolution digest includes it.
 - **Id allocator** (`catalog/stable_id.rs`): opaque random id minting, re-rolling against every recorded id of any lifecycle so retired ids are never reissued.
-- **Rejected surface** (`rejected_surface.rs`): walks function/const/transform bodies and rejects forbidden saved-traversal methods and saved `inout`.
+- **Rejected surface** (`rejected_surface.rs`): walks function/const/transform bodies and rejects forbidden saved-traversal methods.
 
 ## Modules
 
@@ -22,7 +22,7 @@ Identity is path-independent. A stable id is a random 128-bit `cat_<32hex>` mint
 | `crates/marrow-check/src/catalog/mod.rs` | Reconcile source vs accepted catalog; carry-forward, rename, retire, mint; record store-key, store-index, and member signatures; build and bind the proposal. |
 | `crates/marrow-check/src/catalog/source_digest.rs` | Compute shape and shape-plus-evolve sha256 digests by rendering durable declarations through the canonical formatter. |
 | `crates/marrow-check/src/catalog/stable_id.rs` | `StableIdAllocator`: random `cat_<32hex>` ids from OS entropy, collision-retried against recorded ids. |
-| `crates/marrow-check/src/rejected_surface.rs` | Reject v0.1-forbidden saved-traversal method calls and saved `inout`, emitting `check.rejected_surface`. |
+| `crates/marrow-check/src/rejected_surface.rs` | Reject v0.1-forbidden saved-traversal method calls, emitting `check.rejected_surface`. |
 
 ## Contracts that bite
 

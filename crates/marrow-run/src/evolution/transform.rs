@@ -215,7 +215,6 @@ fn run_transform(
         body,
         span: body.span(),
         args: &[old],
-        writeback: &[],
         traversed_layers: &[],
         hook: None,
         depth: 1,

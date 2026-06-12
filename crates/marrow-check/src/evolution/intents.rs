@@ -726,18 +726,10 @@ fn walk_statement_expressions(statement: &Statement, visit: &mut impl FnMut(&Exp
             walk_block_expressions(body, visit);
         }
         Statement::Transaction { body, .. } => walk_block_expressions(body, visit),
-        Statement::Try {
-            body,
-            catch,
-            finally,
-            ..
-        } => {
+        Statement::Try { body, catch, .. } => {
             walk_block_expressions(body, visit);
             if let Some(catch) = catch {
                 walk_block_expressions(&catch.block, visit);
-            }
-            if let Some(finally) = finally {
-                walk_block_expressions(finally, visit);
             }
         }
         Statement::Match {

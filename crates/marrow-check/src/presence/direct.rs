@@ -123,18 +123,10 @@ fn collect_statement_effects(
             effects.transactions = true;
             collect_block_effects(facts, body, effects);
         }
-        CheckedStmt::Try {
-            body,
-            catch,
-            finally,
-            ..
-        } => {
+        CheckedStmt::Try { body, catch, .. } => {
             collect_block_effects(facts, body, effects);
             if let Some(catch) = catch {
                 collect_block_effects(facts, &catch.block, effects);
-            }
-            if let Some(finally) = finally {
-                collect_block_effects(facts, finally, effects);
             }
         }
         CheckedStmt::Match {

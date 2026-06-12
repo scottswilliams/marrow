@@ -2,8 +2,8 @@
 //! parser builds postfix chains and enforces the named/positional argument order.
 
 use marrow_syntax::{
-    ArgMode, Declaration, Diagnose, Expression, InterpolationPart, LexerDiagnosticReason,
-    ParseDiagnosticReason, ReservedSyntax, parse_source,
+    BinaryOp, Declaration, Diagnose, Expression, InterpolationPart, LexerDiagnosticReason,
+    ParseDiagnosticReason, parse_source,
 };
 
 mod common;
@@ -277,8 +277,8 @@ fn if_condition_keyword_field_reports_once_not_also_expected_an_expression() {
 }
 
 #[test]
-fn parses_named_and_inout_call_arguments() {
-    let parsed = parse_source("const Made = save(book: draft, inout total)\n");
+fn parses_named_call_arguments() {
+    let parsed = parse_source("const Made = save(book: draft, total: 1)\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
@@ -288,23 +288,65 @@ fn parses_named_and_inout_call_arguments() {
     };
     assert_eq!(args.len(), 2);
     assert_eq!(args[0].name.as_deref(), Some("book"));
-    assert_eq!(args[0].mode, None);
-    assert_eq!(args[1].mode, Some(ArgMode::InOut));
-    assert_eq!(args[1].name, None);
+    assert_eq!(args[1].name.as_deref(), Some("total"));
 }
 
 #[test]
-fn rejects_out_call_argument_as_reserved_surface() {
-    let parsed = parse_source("const Made = save(book: draft, out result)\n");
-    assert!(parsed.has_errors(), "expected out call-argument rejection");
-    assert!(
-        has_reason(
-            &parsed.diagnostics,
-            parse_reason(ParseDiagnosticReason::Reserved(ReservedSyntax::OutArgument))
-        ),
-        "{:#?}",
-        parsed.diagnostics
-    );
+fn removed_call_argument_modes_are_rejected() {
+    for source in [
+        "const Made = save(book: draft, inout total)\n",
+        "const Made = save(book: draft, out result)\n",
+        "const Made = normalize(inout ^books(id))\n",
+    ] {
+        let parsed = parse_source(source);
+        assert!(parsed.has_errors(), "expected removed mode rejection");
+        assert!(
+            parsed.diagnostics.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("parameter modes were removed")
+                && diagnostic.help.as_deref().is_some_and(|help| {
+                    help.contains("assign the returned value at the call site")
+                })),
+            "{:#?}",
+            parsed.diagnostics
+        );
+    }
+}
+
+#[test]
+fn out_and_inout_parse_as_ordinary_names() {
+    let parsed = parse_source("const Made = save(out, inout)\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected const declaration");
+    };
+    let Some(Expression::Call { args, .. }) = &decl.value else {
+        panic!("expected call, got {:?}", decl.value);
+    };
+    assert_eq!(args.len(), 2);
+    assert!(matches!(&args[0].value, Expression::Name { segments, .. } if segments == &["out"]));
+    assert!(matches!(&args[1].value, Expression::Name { segments, .. } if segments == &["inout"]));
+}
+
+#[test]
+fn out_and_inout_can_head_ordinary_call_argument_expressions() {
+    let parsed = parse_source("const Made = save(out(1), inout - 1)\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected const declaration");
+    };
+    let Some(Expression::Call { args, .. }) = &decl.value else {
+        panic!("expected call, got {:?}", decl.value);
+    };
+    assert_eq!(args.len(), 2);
+    assert!(matches!(&args[0].value, Expression::Call { .. }));
+    assert!(matches!(
+        &args[1].value,
+        Expression::Binary {
+            op: BinaryOp::Subtract,
+            ..
+        }
+    ));
 }
 
 #[test]

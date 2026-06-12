@@ -4,8 +4,8 @@
 
 use super::tokens::{doc_comment_text, type_ref_from_tokens};
 use super::{FunctionHead, ParseError, ParseResult};
-use crate::ast::{ParamDecl, ParamMode};
-use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, ReservedSyntax, UnsupportedSyntax};
+use crate::ast::ParamDecl;
+use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, UnsupportedSyntax};
 use crate::token::{Keyword, Token, TokenKind, is_type_text};
 
 /// Parse a function header's tokens: `pub? fn name(params) (: return)?`.
@@ -112,7 +112,7 @@ pub(super) fn parse_function_head(source: &str, tokens: &[Token]) -> ParseResult
     })
 }
 
-/// Parse an `inout? name: type` parameter list. Parameters are separated by
+/// Parse a `name: type` parameter list. Parameters are separated by
 /// commas, and in a multi-line list a line break separates one from the next just
 /// as a comma does, so the list reads cleanly written with commas, without them,
 /// or mixed. A run of `;;` doc lines directly above a parameter is its
@@ -136,16 +136,8 @@ fn parse_params_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<ParamDe
             .iter()
             .map(|token| doc_comment_text(token.text(source)))
             .collect();
-        let (mode, rest) = match group.body.first().map(|token| token.kind) {
-            Some(TokenKind::Keyword(Keyword::Out)) => {
-                return Err(ParseError::new(
-                    ParseDiagnosticReason::Reserved(ReservedSyntax::OutParameter),
-                    "`out` is reserved; return a value or use `inout` for local mutation",
-                ));
-            }
-            Some(TokenKind::Keyword(Keyword::InOut)) => (Some(ParamMode::InOut), &group.body[1..]),
-            _ => (None, group.body),
-        };
+        reject_removed_parameter_mode(source, group.body)?;
+        let rest = group.body;
         let name = match rest.first() {
             Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
             _ => {
@@ -177,18 +169,33 @@ fn parse_params_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<ParamDe
                 "expected parameter type annotation",
             ));
         }
-        params.push(ParamDecl {
-            docs,
-            mode,
-            name,
-            ty,
-        });
+        params.push(ParamDecl { docs, name, ty });
     }
     Ok(params)
 }
 
+fn reject_removed_parameter_mode(source: &str, tokens: &[Token]) -> ParseResult<()> {
+    let [mode, name, colon, ..] = tokens else {
+        return Ok(());
+    };
+    if mode.kind != TokenKind::Identifier
+        || name.kind != TokenKind::Identifier
+        || colon.kind != TokenKind::Colon
+    {
+        return Ok(());
+    }
+    let text = mode.text(source);
+    if text != "inout" && text != "out" {
+        return Ok(());
+    }
+    Err(ParseError::new(
+        ParseDiagnosticReason::Unsupported(UnsupportedSyntax::ParameterModes),
+        "parameter modes were removed; parameters are read-only by value; return the new value",
+    ))
+}
+
 /// One parameter's tokens: its leading `;;` doc-comment run and the body tokens
-/// that spell `inout? name: type`.
+/// that spell `name: type`.
 struct ParamGroup<'a> {
     docs: Vec<&'a Token>,
     body: &'a [Token],

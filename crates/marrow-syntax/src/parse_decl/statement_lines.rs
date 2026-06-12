@@ -14,6 +14,7 @@ use crate::PARSE_SYNTAX;
 use crate::ast::{Expression, ForBinding, KeyParam, Statement, TypeRef};
 use crate::diagnostic::{
     Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, ReservedSyntax, Severity,
+    UnsupportedSyntax,
 };
 use crate::parse_expr::join_spans;
 use crate::token::{Keyword, Token, TokenKind};
@@ -55,8 +56,8 @@ pub(super) fn parse_simple_statement(
             });
             None
         }
-        TokenKind::Keyword(Keyword::Break) => parse_break_or_continue(source, line, true),
-        TokenKind::Keyword(Keyword::Continue) => parse_break_or_continue(source, line, false),
+        TokenKind::Keyword(Keyword::Break) => parse_break_or_continue(line, true, diagnostics),
+        TokenKind::Keyword(Keyword::Continue) => parse_break_or_continue(line, false, diagnostics),
         _ => parse_assign_or_expr(source, line, diagnostics),
     }
 }
@@ -195,20 +196,33 @@ fn parse_return(
     })
 }
 
-fn parse_break_or_continue(source: &str, line: &[Token], is_break: bool) -> Option<Statement> {
+fn parse_break_or_continue(
+    line: &[Token],
+    is_break: bool,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Statement> {
     let keyword = line[0];
-    let (label, span) = match line.get(1) {
-        None => (None, keyword.span),
-        Some(token) if token.kind == TokenKind::Identifier && line.len() == 2 => (
-            Some(token.text(source).to_string()),
-            join_spans(keyword.span, token.span),
-        ),
+    let span = match line.get(1) {
+        None => keyword.span,
+        Some(token) if token.kind == TokenKind::Identifier && line.len() == 2 => {
+            diagnostics.push(Diagnostic {
+                code: PARSE_SYNTAX,
+                reason: DiagnosticReason::Parser(ParseDiagnosticReason::Unsupported(
+                    UnsupportedSyntax::LoopLabels,
+                )),
+                severity: Severity::Error,
+                message: "loop labels were removed".to_string(),
+                help: Some("extract a function and use return to leave nested loops".to_string()),
+                span: token.span,
+            });
+            join_spans(keyword.span, token.span)
+        }
         _ => return None,
     };
     Some(if is_break {
-        Statement::Break { label, span }
+        Statement::Break { span }
     } else {
-        Statement::Continue { label, span }
+        Statement::Continue { span }
     })
 }
 

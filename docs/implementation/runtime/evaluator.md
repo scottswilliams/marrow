@@ -6,9 +6,9 @@ One run is a tree of activations. `run_entry` resolves the entry, builds an `Env
 
 ## Parts
 
-- **Entry and activation.** `run_entry*` unwraps one top-level invocation into a `RunOutput`. `invoke` binds module constants and params, evaluates the body, computes `inout` finals, and classifies the outcome into `Completion` (Returned/Threw/Faulted).
+- **Entry and activation.** `run_entry*` unwraps one top-level invocation into a `RunOutput`. `invoke` binds module constants and read-only params, evaluates the body, and classifies the outcome into `Completion` (Returned/Threw/Faulted).
 - **Dispatch.** `eval_call` routes every `CheckedCallTarget` variant — saved reads, constructors, builtins, std capabilities, local collections, program functions. `eval_expr` and `eval_statement` are the two recursive walkers everything flows through; sibling modules re-enter `eval_expr` for argument and key evaluation.
-- **Control flow.** `Flow` (Normal/Return/Break/Continue/Throw) is the result of a statement or block. `eval_block` pushes/pops a scope balanced on every exit including faults; `loop_exec` maps Break/Continue (labeled or innermost) to a `LoopStep`.
+- **Control flow.** `Flow` (Normal/Return/Break/Continue/Throw) is the result of a statement or block. `eval_block` pushes/pops a scope balanced on every exit including faults; `loop_exec` maps innermost-loop Break/Continue to a `LoopStep`.
 - **Values and saved data.** `Value` is the one owner of value-to-saved/key/leaf conversion and scalar-type classification. `SavedPath` (root, identity keys, layer chain, `Terminal`) is lowered once and is the consumption point for every saved read, write, delete, and exists.
 - **Errors and host.** `error` defines catchable-vs-fatal throw semantics and the stable `run.*` codes. `Host` is the capability gate (clock/env/log/filesystem/maintenance); `StepHook` is the opt-in debugger observer over a read-only `Frame`.
 
@@ -17,10 +17,10 @@ One run is a tree of activations. `run_entry` resolves the entry, builds an `Env
 | File | Responsibility |
 | --- | --- |
 | `crates/marrow-run/src/lib.rs` | Crate root: declares submodules, re-exports the public surface (`run_entry*`, `RuntimeError` + `RUN_*` codes, `Host`/`Frame`/`StepHook`, `Value`/`RunOutput`/`IdentityValue`, `WriteOp`/`WriteTarget`). |
-| `crates/marrow-run/src/entry.rs` | Public entry API: `CheckedEntryCall::new` resolves and type-checks entry args (rejects `inout`); `run_entry` / `run_entry_with_host` / `run_entry_with_debugger` drive one top-level call into a `RunOutput`. |
-| `crates/marrow-run/src/activation.rs` | One call frame: `invoke` builds the `Env`, binds constants/params, runs the body, computes `inout` finals, classifies into `Completion`; `complete_call` re-raises that at the caller. |
+| `crates/marrow-run/src/entry.rs` | Public entry API: `CheckedEntryCall::new` resolves and type-checks entry args; `run_entry` / `run_entry_with_host` / `run_entry_with_debugger` drive one top-level call into a `RunOutput`. |
+| `crates/marrow-run/src/activation.rs` | One call frame: `invoke` builds the `Env`, binds constants/params, runs the body, and classifies into `Completion`; `complete_call` re-raises that at the caller. |
 | `crates/marrow-run/src/call.rs` | `eval_call` dispatches `CheckedCallTarget` variants; `function_by_ref` resolves module/function by index; `invoke_function` runs a child activation inheriting traversed layers and moving the debugger hook in and out. |
-| `crates/marrow-run/src/call_args.rs` | Argument binding (positional/named/duplicate/missing) for plain and moded calls, the `inout` `Place`, resource-constructor evaluation, `checked_value_accepts` type matcher, `default_value` for uninitialized `var`. |
+| `crates/marrow-run/src/call_args.rs` | Argument binding (positional/named/duplicate/missing), resource-constructor evaluation, `checked_value_accepts` type matcher, `default_value` for uninitialized `var`. |
 | `crates/marrow-run/src/expr.rs` | Pure-expression evaluation: literals, names/enum members, unary/binary operators with checked-overflow numeric and temporal arithmetic, string concatenation, comparison/equality, `is`, `??`, interpolation, field and optional-field dispatch. |
 | `crates/marrow-run/src/statement.rs` | Statement execution: const/var binding, assignment dispatch, delete/return/throw/expr, control statements (if/match/break/continue/while/for/transaction/try); fires the before-statement hook. |
 | `crates/marrow-run/src/exec.rs` | Block and match primitives: `eval_block` (balanced scope), `eval_statements` (stop at first non-Normal `Flow`), `eval_match` (enum-fact-driven, descendant matching), `local_target`. |

@@ -390,7 +390,7 @@ module use pub fn resource store at index unique
 required
 enum evolve match is
 const var if else while for in break continue return delete merge
-transaction lock try catch finally throw out inout true false
+transaction lock try catch throw true false
 not and or
 int decimal bool string bytes date instant duration
 sequence

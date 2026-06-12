@@ -1,4 +1,4 @@
-//! Control-flow statements: conditionals, loops (range, keyed, labeled), error
+//! Control-flow statements: conditionals, loops, error
 //! handling, and match arms, with the body and indentation rules each enforces.
 
 use marrow_syntax::{BinaryOp, Expression, ParseDiagnosticReason, Statement, parse_source};
@@ -193,10 +193,7 @@ fn parses_while_and_for_loops() {
     assert_eq!(statements.len(), 3, "{statements:#?}");
 
     let Statement::While {
-        label: None,
-        condition,
-        body,
-        ..
+        condition, body, ..
     } = &statements[0]
     else {
         panic!("expected while, got {:?}", statements[0]);
@@ -211,10 +208,7 @@ fn parses_while_and_for_loops() {
     assert_eq!(body.statements.len(), 1);
 
     let Statement::For {
-        label: None,
-        binding,
-        iterable,
-        ..
+        binding, iterable, ..
     } = &statements[1]
     else {
         panic!("expected for, got {:?}", statements[1]);
@@ -231,7 +225,7 @@ fn parses_while_and_for_loops() {
 }
 
 #[test]
-fn parses_labeled_loops() {
+fn loop_labels_are_rejected_as_removed_syntax() {
     let parsed = parse_source(
         "module app\n\
          fn run()\n\
@@ -239,35 +233,44 @@ fn parses_labeled_loops() {
          \x20       inner: while ready\n\
          \x20           break outer\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
-    let run = parsed.file.function("run").expect("run function");
-    let Statement::For {
-        label: Some(outer),
-        body,
-        ..
-    } = &run.body.statements[0]
-    else {
-        panic!("expected labeled for, got {:?}", run.body.statements[0]);
-    };
-    assert_eq!(outer, "outer");
-    let Statement::While {
-        label: Some(inner),
-        body: while_body,
-        ..
-    } = &body.statements[0]
-    else {
-        panic!("expected labeled while, got {:?}", body.statements[0]);
-    };
-    assert_eq!(inner, "inner");
+    assert!(parsed.has_errors(), "expected loop-label rejection");
     assert!(
-        matches!(&while_body.statements[0], Statement::Break { label: Some(target), .. } if target == "outer"),
-        "expected `break outer`, got {:?}",
-        while_body.statements[0]
+        parsed.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("loop labels were removed")
+            && diagnostic
+                .help
+                .as_deref()
+                .is_some_and(|help| help.contains("extract a function"))),
+        "{:#?}",
+        parsed.diagnostics
     );
 }
 
 #[test]
-fn parses_try_catch_finally() {
+fn labeled_break_and_continue_are_rejected_as_removed_syntax() {
+    for source in [
+        "module app\nfn run()\n    while ready\n        break outer\n",
+        "module app\nfn run()\n    while ready\n        continue outer\n",
+    ] {
+        let parsed = parse_source(source);
+        assert!(parsed.has_errors(), "expected labeled jump rejection");
+        assert!(
+            parsed.diagnostics.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("loop labels were removed")
+                && diagnostic
+                    .help
+                    .as_deref()
+                    .is_some_and(|help| help.contains("extract a function"))),
+            "{:#?}",
+            parsed.diagnostics
+        );
+    }
+}
+
+#[test]
+fn parses_try_catch() {
     let parsed = parse_source(
         "module app\n\
          fn run()\n\
@@ -275,21 +278,13 @@ fn parses_try_catch_finally() {
          \x20       risky()\n\
          \x20   catch err: Error\n\
          \x20       print(err.message)\n\
-         \x20   finally\n\
-         \x20       cleanup()\n\
          \x20   return\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let run = parsed.file.function("run").expect("run function");
     let statements = &run.body.statements;
     assert_eq!(statements.len(), 2, "{statements:#?}");
-    let Statement::Try {
-        body,
-        catch,
-        finally,
-        ..
-    } = &statements[0]
-    else {
+    let Statement::Try { body, catch, .. } = &statements[0] else {
         panic!("expected try statement, got {:?}", statements[0]);
     };
     assert_eq!(body.statements.len(), 1);
@@ -297,8 +292,6 @@ fn parses_try_catch_finally() {
     assert_eq!(catch.name, "err");
     assert_eq!(catch.ty.as_ref().map(|ty| ty.text.as_str()), Some("Error"));
     assert_eq!(catch.block.statements.len(), 1);
-    let finally = finally.as_ref().expect("finally block");
-    assert_eq!(finally.statements.len(), 1);
     assert!(
         matches!(&statements[1], Statement::Return { value: None, .. }),
         "sibling return should still parse: {:?}",
@@ -307,7 +300,7 @@ fn parses_try_catch_finally() {
 }
 
 #[test]
-fn parses_try_with_only_finally() {
+fn try_finally_is_rejected_as_removed_syntax() {
     let parsed = parse_source(
         "module app\n\
          fn run()\n\
@@ -316,13 +309,37 @@ fn parses_try_with_only_finally() {
          \x20   finally\n\
          \x20       cleanup()\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
-    let run = parsed.file.function("run").expect("run function");
-    let Statement::Try { catch, finally, .. } = &run.body.statements[0] else {
-        panic!("expected try, got {:?}", run.body.statements[0]);
-    };
-    assert!(catch.is_none(), "expected no catch clause");
-    assert!(finally.is_some(), "expected finally block");
+    assert!(parsed.has_errors(), "expected finally rejection");
+    assert!(
+        parsed.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("`try` requires a `catch` clause")
+            && diagnostic
+                .help
+                .as_deref()
+                .is_some_and(|help| help.contains("catch, clean up, then rethrow"))),
+        "{:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
+fn try_without_catch_is_rejected() {
+    let parsed = parse_source(
+        "module app\n\
+         fn run()\n\
+         \x20   try\n\
+         \x20       risky()\n\
+         \x20   return\n",
+    );
+    assert!(parsed.has_errors(), "expected no-catch try rejection");
+    assert!(
+        parsed.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("`try` requires a `catch` clause")),
+        "{:#?}",
+        parsed.diagnostics
+    );
 }
 
 #[test]

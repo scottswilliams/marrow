@@ -232,12 +232,7 @@ impl StatementCheck<'_> {
             Statement::Transaction { body, .. } => {
                 self.check_block(body);
             }
-            Statement::Try {
-                body,
-                catch,
-                finally,
-                ..
-            } => self.check_try(body, catch.as_ref(), finally.as_ref()),
+            Statement::Try { body, catch, .. } => self.check_try(body, catch.as_ref()),
             Statement::Match {
                 scrutinee,
                 arms,
@@ -552,7 +547,6 @@ impl StatementCheck<'_> {
         &mut self,
         body: &marrow_syntax::Block,
         catch: Option<&marrow_syntax::CatchClause>,
-        finally: Option<&marrow_syntax::Block>,
     ) {
         self.check_block(body);
         if let Some(clause) = catch {
@@ -561,9 +555,6 @@ impl StatementCheck<'_> {
             self.scope.push(frame);
             self.check_block(&clause.block);
             self.scope.pop();
-        }
-        if let Some(finally) = finally {
-            self.check_block(finally);
         }
     }
 

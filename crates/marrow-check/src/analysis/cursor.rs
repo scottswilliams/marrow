@@ -235,12 +235,7 @@ fn descend_target<'b>(
             scope.push(frame);
             Some(body)
         }
-        Statement::Try {
-            body,
-            catch,
-            finally,
-            ..
-        } => {
+        Statement::Try { body, catch, .. } => {
             if span_covers(body.span, offset) {
                 return Some(body);
             }
@@ -252,9 +247,7 @@ fn descend_target<'b>(
                 scope.push(frame);
                 return Some(&clause.block);
             }
-            finally
-                .as_ref()
-                .filter(|block| span_covers(block.span, offset))
+            None
         }
         _ => None,
     }
@@ -360,18 +353,10 @@ fn collect_block_expression<'b>(
                 collect_block_expression(body, offset, best);
             }
             Statement::Transaction { body, .. } => collect_block_expression(body, offset, best),
-            Statement::Try {
-                body,
-                catch,
-                finally,
-                ..
-            } => {
+            Statement::Try { body, catch, .. } => {
                 collect_block_expression(body, offset, best);
                 if let Some(clause) = catch {
                     collect_block_expression(&clause.block, offset, best);
-                }
-                if let Some(finally) = finally {
-                    collect_block_expression(finally, offset, best);
                 }
             }
             Statement::Match {

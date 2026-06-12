@@ -1,6 +1,6 @@
 //! Call checking: dispatch in runtime order (special builtins, general builtins,
-//! resource constructors, then user functions), each branch's argument and mode
-//! rules, and the special-form builtins `nextId`/`next`/`prev`/`append`. Returns
+//! resource constructors, then user functions), each branch's argument rules,
+//! and the special-form builtins `nextId`/`next`/`prev`/`append`. Returns
 //! the call's declared return type when known.
 
 use std::collections::HashMap;
@@ -79,7 +79,6 @@ pub(crate) fn check_call(input: CallCheck<'_>) -> MarrowType {
         diagnostics,
     };
     let marrow_syntax::Expression::Name { segments, .. } = callee else {
-        check_plain_call_modes("call", args, env.span, env.file, env.diagnostics);
         return MarrowType::Unknown;
     };
     let expanded = crate::expand_alias(segments, aliases);
@@ -114,7 +113,6 @@ fn check_special_single_name_call(
     if let [name] = segments
         && name == "nextId"
     {
-        check_plain_call_modes(name, args, env.span, env.file, env.diagnostics);
         return Some(check_next_id(
             env.program,
             args,
@@ -126,7 +124,6 @@ fn check_special_single_name_call(
     if let [name] = segments
         && name == "Id"
     {
-        check_plain_call_modes(name, args, env.span, env.file, env.diagnostics);
         return Some(check_identity_constructor(
             env.program,
             args,
@@ -139,12 +136,10 @@ fn check_special_single_name_call(
     if let [name] = segments {
         match name.as_str() {
             "reversed" => {
-                check_plain_call_modes(name, args, env.span, env.file, env.diagnostics);
                 check_arity(name, 1, args, env.span, env.file, env.diagnostics);
                 return Some(reversed_type(env.program, args, arg_types));
             }
             "next" | "prev" => {
-                check_plain_call_modes(name, args, env.span, env.file, env.diagnostics);
                 check_arity(name, 1, args, env.span, env.file, env.diagnostics);
                 return Some(check_neighbor(
                     env.program,
@@ -157,7 +152,6 @@ fn check_special_single_name_call(
                 ));
             }
             "values" | "entries" => {
-                check_plain_call_modes(name, args, env.span, env.file, env.diagnostics);
                 check_arity(name, 1, args, env.span, env.file, env.diagnostics);
                 check_value_materialization_args(
                     env.program,
@@ -170,7 +164,6 @@ fn check_special_single_name_call(
                 return Some(MarrowType::Unknown);
             }
             "append" => {
-                check_plain_call_modes(name, args, env.span, env.file, env.diagnostics);
                 check_arity(name, 2, args, env.span, env.file, env.diagnostics);
                 check_append_args(env.program, args, env.span, env.file, env.diagnostics);
                 check_append(env.program, args, env.span, env.file, env.diagnostics);
@@ -189,7 +182,6 @@ fn check_builtin_call(
     arg_types: &[MarrowType],
 ) -> MarrowType {
     let label = segments.join("::");
-    check_plain_call_modes(&label, args, env.span, env.file, env.diagnostics);
     if segments == ["Error"] {
         check_error_constructor_args(args, arg_types, env.span, env.file, env.diagnostics);
         return MarrowType::Error;
@@ -239,13 +231,6 @@ fn check_resource_constructor_call(
     else {
         return None;
     };
-    check_plain_call_modes(
-        &segments.join("::"),
-        args,
-        env.span,
-        env.file,
-        env.diagnostics,
-    );
     let enum_names: Vec<String> = module
         .enums
         .iter()
@@ -377,14 +362,6 @@ fn check_user_function_call(
                 continue;
             }
             supplied[param_index] = true;
-            check_call_mode(
-                &callee,
-                arg,
-                param.mode,
-                env.span,
-                env.file,
-                env.diagnostics,
-            );
             check_one_arg(
                 &callee,
                 &param.ty,
@@ -635,8 +612,7 @@ fn check_value_materialization_args(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let [arg] = args else { return };
-    if arg.mode.is_some() || arg.name.is_some() || !is_saved_index_branch_path(program, &arg.value)
-    {
+    if arg.name.is_some() || !is_saved_index_branch_path(program, &arg.value) {
         return;
     }
     diagnostics.push(CheckDiagnostic::error(
@@ -716,89 +692,12 @@ fn check_conversion_arg(
     );
 }
 
-fn check_plain_call_modes(
-    label: &str,
-    args: &[marrow_syntax::Argument],
-    span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) {
-    for arg in args {
-        if let Some(mode) = arg.mode {
-            diagnostics.push(call_diagnostic(
-                file,
-                span,
-                format!(
-                    "argument to `{label}` cannot be passed as {}",
-                    arg_mode_name(mode)
-                ),
-            ));
-        }
-    }
-}
-
-fn check_call_mode(
-    label: &str,
-    arg: &marrow_syntax::Argument,
-    param_mode: Option<crate::CheckedParamMode>,
-    span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) {
-    if !call_modes_match(arg.mode, param_mode) {
-        diagnostics.push(call_diagnostic(
-            file,
-            span,
-            format!(
-                "argument to `{label}` must be passed as {}",
-                call_mode_expectation(param_mode)
-            ),
-        ));
-    }
-    if arg.mode.is_some() && !crate::rules::is_assignable(&arg.value) {
-        diagnostics.push(CheckDiagnostic::error(
-            crate::rules::CHECK_INVALID_ASSIGN_TARGET,
-            file,
-            arg.value.span(),
-            "inout argument is not a writable place",
-        ));
-    }
-}
-
-fn arg_mode_name(mode: marrow_syntax::ArgMode) -> &'static str {
-    match mode {
-        marrow_syntax::ArgMode::InOut => "`inout`",
-    }
-}
-
-fn call_modes_match(
-    arg: Option<marrow_syntax::ArgMode>,
-    param: Option<crate::CheckedParamMode>,
-) -> bool {
-    matches!(
-        (arg, param),
-        (None, None)
-            | (
-                Some(marrow_syntax::ArgMode::InOut),
-                Some(crate::CheckedParamMode::InOut)
-            )
-    )
-}
-
-fn call_mode_expectation(mode: Option<crate::CheckedParamMode>) -> &'static str {
-    match mode {
-        Some(crate::CheckedParamMode::InOut) => "`inout`",
-        None => "a plain argument",
-    }
-}
-
 fn reversed_type(
     program: &CheckedProgram,
     args: &[marrow_syntax::Argument],
     arg_types: &[MarrowType],
 ) -> MarrowType {
     if let [arg] = args
-        && arg.mode.is_none()
         && arg.name.is_none()
         && let Some((element, None)) = collection_loop_binding_types(program, false, &arg.value)
     {
@@ -1140,7 +1039,7 @@ pub(crate) fn check_append(
     let [target, _] = args else {
         return;
     };
-    if target.mode.is_some() || target.name.is_some() {
+    if target.name.is_some() {
         return;
     }
     let Some(key_type) = saved_path_key_type(program, &target.value) else {

@@ -375,9 +375,8 @@ fn continue_skips_to_the_next_iteration() {
 }
 
 #[test]
-fn a_labeled_break_exits_the_outer_loop() {
-    let source = "pub fn f(): int\n    var count = 0\n    outer: for i in 1..=3\n        for j in 1..=3\n            if j == 2\n                break outer\n            count = count + 1\n    return count\n";
-    // i=1: j=1 counts (1), j=2 breaks the outer loop entirely.
+fn function_extraction_replaces_labeled_outer_loop_exit() {
+    let source = "pub fn count_until(): int\n    var count = 0\n    for i in 1..=3\n        for j in 1..=3\n            if j == 2\n                return count\n            count = count + 1\n    return count\n\npub fn f(): int\n    return count_until()\n";
     assert_eq!(
         eval_source(source, "f", Vec::new()),
         Ok(Some(Value::Int(1)))

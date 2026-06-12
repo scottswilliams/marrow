@@ -1,15 +1,14 @@
 //! Function signatures: parameter lists across comma, newline, and mixed
 //! surfaces, parameter docs, type annotations, and the surfaces a v0.1 function
-//! signature rejects (defaults, generics, out parameters, type aliases).
+//! signature rejects (defaults, generics, removed parameter modes, type aliases).
 
 use marrow_syntax::{
-    Diagnose, ExpectedSyntax, ParseDiagnosticReason, ReservedSyntax, UnsupportedSyntax,
-    parse_source,
+    Diagnose, ExpectedSyntax, ParseDiagnosticReason, UnsupportedSyntax, parse_source,
 };
 
 mod common;
 
-use common::{has_reason, parse_reason};
+use common::parse_reason;
 
 #[test]
 fn rejects_parameter_defaults() {
@@ -40,23 +39,35 @@ fn rejects_parameter_defaults() {
 }
 
 #[test]
-fn rejects_out_parameter_as_reserved_surface() {
-    let parsed = parse_source(
-        "module app\n\
-         fn parseInt(text: string, out value: int): bool\n\
-         \x20   return true\n",
-    );
+fn removed_parameter_modes_are_rejected() {
+    for source in [
+        "module app\nfn parseInt(text: string, out value: int): bool\n    return true\n",
+        "module app\nfn parseInt(text: string, inout value: int): bool\n    return true\n",
+    ] {
+        let parsed = parse_source(source);
+        assert!(
+            parsed.has_errors(),
+            "expected removed parameter mode rejection"
+        );
+        assert!(
+            parsed.diagnostics.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("parameter modes were removed")
+                && diagnostic.message.contains("return the new value")),
+            "{:#?}",
+            parsed.diagnostics
+        );
+    }
+}
 
-    assert!(parsed.has_errors(), "expected out parameter rejection");
-    assert!(
-        has_reason(
-            &parsed.diagnostics,
-            parse_reason(ParseDiagnosticReason::Reserved(
-                ReservedSyntax::OutParameter
-            ))
-        ),
-        "{:#?}",
-        parsed.diagnostics
+#[test]
+fn out_and_inout_parse_as_ordinary_parameter_names() {
+    assert_eq!(
+        param_shape("module app\nfn f(out: int, inout: string)\n    return\n"),
+        vec![
+            ("out".to_string(), "int".to_string(), Vec::new()),
+            ("inout".to_string(), "string".to_string(), Vec::new()),
+        ]
     );
 }
 

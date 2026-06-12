@@ -111,7 +111,6 @@ fn run_entry_impl<'p>(
         body: executable_body(function)?,
         span: function.span,
         args,
-        writeback: &[],
         traversed_layers: &[],
         hook,
         depth: 1,
@@ -182,10 +181,7 @@ fn canonicalize_entry_args(
         .entry_params()
         .iter()
         .zip(args)
-        .map(|(param, value)| {
-            reject_entry_mode(param.mode, &param.name)?;
-            canonical_entry_value(program, &param.ty, value, &param.name)
-        })
+        .map(|(param, value)| canonical_entry_value(program, &param.ty, value, &param.name))
         .collect()
 }
 
@@ -245,17 +241,4 @@ fn canonical_entry_value_impl(
         | CheckedRuntimeValueType::Invalid
         | CheckedRuntimeValueType::Unknown => None,
     }
-}
-
-fn reject_entry_mode(
-    mode: Option<marrow_check::CheckedParamMode>,
-    name: &str,
-) -> Result<(), RuntimeError> {
-    if mode.is_none() {
-        return Ok(());
-    }
-    Err(type_error(
-        &format!("entry parameter `{name}` is inout and must be called from checked source"),
-        SourceSpan::default(),
-    ))
 }

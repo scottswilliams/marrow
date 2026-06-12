@@ -81,8 +81,8 @@ fn check_reports_parse_diagnostics() {
 }
 
 #[test]
-fn check_reserved_word_binding_reports_parse_errors_without_control_flow_cascade() {
-    let dir = temp_project_dir("reserved-binding");
+fn check_allows_out_as_an_ordinary_binding_name() {
+    let dir = temp_project_dir("out-binding");
     fs::write(dir.join("marrow.json"), r#"{ "sourceRoots": ["src"] }"#).expect("write config");
     fs::write(
         dir.join("src/m.mw"),
@@ -92,27 +92,9 @@ fn check_reserved_word_binding_reports_parse_errors_without_control_flow_cascade
 
     let output = check_jsonl(dir.path());
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(0));
     let records = diagnostic_records(output);
-    // No control-flow cascade: the reserved word is rejected exactly where it is
-    // written — once as the binding name (line 4) and once as the expression use
-    // (line 5) — and nowhere else. Both rejections are parse errors, so the binding
-    // never reaches the checker as a spurious missing-return, and the parser does not
-    // drop into recovery and emit a third "expected a statement" diagnostic. Asserting
-    // the exact code/span pair, rather than the rendered prose, pins the cascade-free
-    // shape reword-proof.
-    let spans: Vec<(i64, i64)> = records
-        .iter()
-        .map(|record| {
-            assert_eq!(record["code"], "parse.syntax", "{record}");
-            (
-                record["source_span"]["line"].as_i64().expect("line"),
-                record["source_span"]["column"].as_i64().expect("column"),
-            )
-        })
-        .collect();
-    assert_eq!(spans, vec![(4, 9), (5, 12)], "{records:#?}");
-    assert!(!has_code(&records, "check.missing_return"), "{records:#?}");
+    assert!(records.is_empty(), "{records:#?}");
 }
 
 #[test]
@@ -228,15 +210,15 @@ fn check_reports_reserved_merge_and_lock_as_parse_errors() {
 }
 
 #[test]
-fn check_rejects_saved_inout_for_a_project_directory() {
-    let dir = temp_project_dir("saved-inout");
+fn check_rejects_removed_inout_syntax_for_a_project_directory() {
+    let dir = temp_project_dir("removed-argument-mode");
     fs::write(dir.join("marrow.json"), r#"{ "sourceRoots": ["src"] }"#).expect("write config");
     fs::write(
         dir.join("src/shelf.mw"),
         "module shelf\n\
          resource Book\n    required title: string\n\
          store ^books(id: int): Book\n\n\
-         fn normalize(inout book: Book)\n    return\n\n\
+         fn normalize(book: Book)\n    return\n\n\
          fn f(id: int)\n    normalize(inout ^books(id))\n",
     )
     .expect("write source");
@@ -245,7 +227,17 @@ fn check_rejects_saved_inout_for_a_project_directory() {
 
     assert_eq!(output.status.code(), Some(1));
     let report = support::json(output.stdout);
-    assert_has_code(&report, "check.rejected_surface");
+    assert_has_code(&report, "parse.syntax");
+    assert!(
+        report["diagnostics"]
+            .as_array()
+            .expect("diagnostics")
+            .iter()
+            .any(|diagnostic| diagnostic["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("parameter modes were removed"))),
+        "{report:#?}"
+    );
 }
 
 #[test]

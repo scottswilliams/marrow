@@ -7,8 +7,7 @@ use std::path::Path;
 use crate::{CHECK_RETURN_VALUE, CheckDiagnostic};
 
 /// Flag each `return` whose value presence does not match the declared return
-/// type. Recurses into nested blocks; `finally` is left to
-/// `check.finally_control_flow`.
+/// type. Recurses into nested blocks.
 pub(crate) fn check_return_values(
     file: &Path,
     body: &marrow_syntax::Block,
@@ -61,7 +60,6 @@ pub(crate) fn check_return_values(
                 if let Some(clause) = catch {
                     check_return_values(file, &clause.block, returns_value, diagnostics);
                 }
-                // `finally` cannot contain `return` (check.finally_control_flow).
             }
             Statement::Match { arms, .. } => {
                 for arm in arms {

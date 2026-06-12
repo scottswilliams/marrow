@@ -1,6 +1,6 @@
-//! The throw / catch / try / finally error model: the Error constructor shape,
-//! catchable faults, propagation across calls, pending-throw hygiene, and
-//! transaction commit and rollback under throws.
+//! The throw / catch / try error model: the Error constructor shape, catchable
+//! faults, propagation across calls, pending-throw hygiene, and transaction
+//! commit and rollback under throws.
 
 #[macro_use]
 mod support;
@@ -110,17 +110,13 @@ fn a_try_that_succeeds_skips_catch() {
 }
 
 #[test]
-fn finally_runs_on_success_and_on_throw() {
+fn catch_cleanup_can_rethrow_to_an_outer_handler() {
     let program = checked_program(
-        "pub fn run_it(do_throw: bool)\n    try\n        if do_throw\n            throw Error(code: \"x.y\", message: \"b\")\n    catch err: Error\n        print(\"caught\")\n    finally\n        print(\"cleanup\")\n",
+        "pub fn run_it(): string\n    try\n        try\n            throw Error(code: \"x.y\", message: \"b\")\n        catch err: Error\n            print(\"cleanup\")\n            throw err\n    catch err: Error\n        return err.code\n    return \"none\"\n",
     );
-    let out = |b| {
-        run_full(checked_entry!(&program, "test::run_it", Value::Bool(b)))
-            .unwrap()
-            .output
-    };
-    assert_eq!(out(false), "cleanup\n");
-    assert_eq!(out(true), "caught\ncleanup\n");
+    let outcome = run_full(checked_entry!(&program, "test::run_it")).expect("outer catch");
+    assert_eq!(outcome.value, Some(Value::Str("x.y".into())));
+    assert_eq!(outcome.output, "cleanup\n");
 }
 
 #[test]
@@ -284,91 +280,6 @@ fn a_caught_callee_throw_does_not_leak_into_a_later_fault() {
     assert_eq!(
         run(checked_entry!(&program, "test::check")),
         Ok(Some(Value::Int(99)))
-    );
-}
-
-#[test]
-fn a_throwing_finally_does_not_leak_a_pending_throw() {
-    // A `finally` throwing over a call-propagated throw must not leave that throw
-    // stashed: after an outer `catch` swallows the finally throw, a later fault is
-    // caught with its own Error value rather than the stale throw.
-    let program = checked_program(
-        "pub fn callee()\n    throw Error(code: \"test.e1\", message: \"from call\")\npub fn leak(): int\n    try\n        try\n            callee()\n        finally\n            throw Error(code: \"test.e2\", message: \"from finally\")\n    catch err: Error\n        print(\"swallowed\")\n    try\n        const boom = 1 / 0\n    catch err: Error\n        return 99\n    return 0\n",
-    );
-    assert_eq!(
-        run(checked_entry!(&program, "test::leak")),
-        Ok(Some(Value::Int(99)))
-    );
-}
-
-#[test]
-fn a_throw_from_a_call_in_finally_propagates() {
-    // A `finally` whose own called function throws: that throw replaces the
-    // outcome and is caught by an outer handler.
-    let program = checked_program(
-        "pub fn boom()\n    throw Error(code: \"deep.fail\", message: \"x\")\npub fn run_it(): string\n    try\n        try\n            print(\"body\")\n        finally\n            boom()\n    catch err: Error\n        return err.code\n    return \"none\"\n",
-    );
-    assert_eq!(
-        run(checked_entry!(&program, "test::run_it")),
-        Ok(Some(Value::Str("deep.fail".into())))
-    );
-}
-
-#[test]
-fn a_clean_finally_preserves_a_propagated_call_throw() {
-    // A clean `finally` (no throw of its own) over a call-propagated throw must
-    // restore the pending throw so an outer `catch` still sees it.
-    let program = checked_program(
-        "pub fn boom()\n    throw Error(code: \"deep.fail\", message: \"x\")\npub fn run_it(): string\n    try\n        try\n            boom()\n        finally\n            print(\"cleanup\")\n    catch err: Error\n        return err.code\n    return \"none\"\n",
-    );
-    let outcome = run_full(checked_entry!(&program, "test::run_it")).expect("caught");
-    assert_eq!(outcome.value, Some(Value::Str("deep.fail".into())));
-    assert_eq!(outcome.output, "cleanup\n");
-}
-
-#[test]
-fn finally_runs_after_a_fault_and_can_replace_it() {
-    // The try body faults (not catchable); finally still runs and its throw
-    // replaces the fault, proving finally ran.
-    let program = checked_program(
-        "pub fn f(): int\n    try\n        const boom = 1 / 0\n    finally\n        throw Error(code: \"cleanup.failed\", message: \"x\")\n    return 0\n",
-    );
-    let error = run_expecting_error(checked_entry!(&program, "test::f"));
-    assert_eq!(error.code, RUN_UNCAUGHT_THROW);
-    let (code, message) = error_throw_fields(&error);
-    assert_eq!(code, "cleanup.failed");
-    assert_eq!(message, "x");
-}
-
-#[test]
-fn an_uncaught_throw_without_a_catch_propagates_through_finally() {
-    let program = checked_program(
-        "pub fn f()\n    try\n        throw Error(code: \"x.y\", message: \"boom\")\n    finally\n        print(\"cleanup\")\n",
-    );
-    assert_run_error(run(checked_entry!(&program, "test::f")), RUN_UNCAUGHT_THROW);
-}
-
-#[test]
-fn a_throw_in_finally_replaces_the_outcome() {
-    let program = checked_program(
-        "pub fn f(): int\n    try\n        return 1\n    finally\n        throw Error(code: \"from.finally\", message: \"x\")\n",
-    );
-    let error = run_expecting_error(checked_entry!(&program, "test::f"));
-    assert_eq!(error.code, RUN_UNCAUGHT_THROW);
-    let (code, message) = error_throw_fields(&error);
-    assert_eq!(code, "from.finally");
-    assert_eq!(message, "x");
-}
-
-#[test]
-fn a_clean_finally_preserves_a_return() {
-    // A finally that completes normally lets the try's `return` through.
-    let program = checked_program(
-        "pub fn f(): int\n    try\n        return 7\n    finally\n        print(\"cleanup\")\n",
-    );
-    assert_eq!(
-        run(checked_entry!(&program, "test::f")),
-        Ok(Some(Value::Int(7)))
     );
 }
 

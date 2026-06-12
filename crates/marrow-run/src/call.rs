@@ -10,9 +10,7 @@ use marrow_schema::stdlib::Capability;
 use marrow_syntax::SourceSpan;
 
 use crate::activation::{Completion, Invocation, complete_call, executable_body, invoke};
-use crate::call_args::{
-    bind_arguments, bind_arguments_with_modes, eval_identity_constructor, eval_resource_constructor,
-};
+use crate::call_args::{bind_arguments, eval_identity_constructor, eval_resource_constructor};
 use crate::collection::{
     Direction, eval_append, eval_entries, eval_keys, eval_next_id, eval_reversed, eval_values,
 };
@@ -58,11 +56,7 @@ pub(crate) fn eval_call(
         }
         CheckedCallTarget::Function(target) => {
             let (module, function) = function_by_ref(env.program, *target, span)?;
-            if args.iter().any(|arg| arg.mode.is_some()) {
-                eval_call_with_modes(module, function, args, span, env)
-            } else {
-                eval_program_function(module, function, args, span, env)
-            }
+            eval_program_function(module, function, args, span, env)
         }
     }
 }
@@ -75,26 +69,23 @@ fn eval_program_function<'p>(
     env: &mut Env<'p>,
 ) -> Result<Option<Value>, RuntimeError> {
     let values = bind_arguments(&function.params, args, span, env)?;
-    let (completion, _) = invoke_function(env, module, function, &values, &[], span)?;
+    let completion = invoke_function(env, module, function, &values, span)?;
     complete_call(completion)
 }
 
 /// Runs `function` as a child activation of `env`, moving the debugger hook into
-/// the nested frame and back out on return. Callers differ only in how they bind
-/// arguments and what they do with the writeback finals.
+/// the nested frame and back out on return.
 ///
 /// The child runs at `env.depth + 1`; descending past [`CALL_DEPTH_BUDGET`] raises
 /// a located `run.recursion_limit` fault at the call `span` instead of recursing
-/// into a stack overflow. This is the one place every program-function call
-/// descends, so guarding here bounds both the plain and inout-mode call paths.
+/// into a stack overflow.
 fn invoke_function<'p>(
     env: &mut Env<'p>,
     module: &'p CheckedRuntimeModule,
     function: &'p CheckedRuntimeFunction,
     values: &[Value],
-    writeback: &[&'p str],
     span: SourceSpan,
-) -> Result<(Completion, Vec<Option<Value>>), RuntimeError> {
+) -> Result<Completion, RuntimeError> {
     let child_depth = env.depth + 1;
     if child_depth > CALL_DEPTH_BUDGET {
         return Err(recursion_limit(child_depth, span));
@@ -111,7 +102,7 @@ fn invoke_function<'p>(
         .map(|param| param.name.as_str())
         .collect();
     let traversed_layers = env.traversed_layers.clone();
-    let (completion, finals, hook) = invoke(Invocation {
+    let (completion, hook) = invoke(Invocation {
         ctx,
         output: Rc::clone(&env.output),
         module: Some(module),
@@ -119,13 +110,12 @@ fn invoke_function<'p>(
         body: executable_body(function)?,
         span: function.span,
         args: values,
-        writeback,
         traversed_layers: &traversed_layers,
         hook: env.hook.take(),
         depth: child_depth,
     })?;
     env.hook = hook;
-    Ok((completion, finals))
+    Ok(completion)
 }
 
 pub(crate) fn function_by_ref(
@@ -205,27 +195,4 @@ fn eval_std_call(
         Capability::Assert => eval_assert(target.op, args, span, env),
         Capability::Pure => eval_std(target.module, target.op, args, span, env).map(Some),
     }
-}
-
-pub(crate) fn eval_call_with_modes<'p>(
-    module: &'p CheckedRuntimeModule,
-    function: &'p CheckedRuntimeFunction,
-    args: &[ExecArg],
-    span: SourceSpan,
-    env: &mut Env<'p>,
-) -> Result<Option<Value>, RuntimeError> {
-    let (values, places) = bind_arguments_with_modes(&function.params, args, span, env)?;
-    let writeback: Vec<&str> = function
-        .params
-        .iter()
-        .filter(|param| param.mode.is_some())
-        .map(|param| param.name.as_str())
-        .collect();
-    let (completion, finals) = invoke_function(env, module, function, &values, &writeback, span)?;
-    for (place, final_value) in places.into_iter().zip(finals) {
-        if let (Some(place), Some(value)) = (place, final_value) {
-            place.write(value, span, env)?;
-        }
-    }
-    complete_call(completion)
 }

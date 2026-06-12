@@ -13,7 +13,6 @@ use marrow_syntax::{ParsedSource, ResourceMember, SourceSpan, TypeRef};
 use crate::catalog::{
     CatalogKey, enum_path, resource_member_path, resource_path, store_index_path, store_path,
 };
-use crate::executable::CheckedParamMode;
 use crate::program::{CheckedModule, MarrowType};
 use crate::{build_alias_map, expand_alias, split_type_path};
 
@@ -505,7 +504,7 @@ impl CheckedFacts {
                     .map(|param| &param.ty);
                 let ty =
                     self.checked_type_for_signature(module_id, &param.ty, annotation, &aliases)?;
-                Some((param.name.clone(), param.mode, ty))
+                Some((param.name.clone(), ty))
             })
             .collect::<Option<Vec<_>>>()?;
         let return_type = match function.return_type.as_ref() {
@@ -520,12 +519,11 @@ impl CheckedFacts {
         let id = FunctionId(self.functions.len() as u32);
         let params = params
             .into_iter()
-            .map(|(name, mode, ty)| {
+            .map(|(name, ty)| {
                 let local = LocalFact {
                     id: LocalId(self.locals.len() as u32),
                     function: id,
                     name,
-                    mode,
                     ty,
                 };
                 self.locals.push(local.clone());
@@ -1224,7 +1222,6 @@ pub struct LocalFact {
     pub id: LocalId,
     pub function: FunctionId,
     pub name: String,
-    pub mode: Option<CheckedParamMode>,
     pub ty: CheckedType,
 }
 

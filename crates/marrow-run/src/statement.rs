@@ -128,29 +128,22 @@ fn eval_control_statement(statement: &ExecStmt, env: &mut Env<'_>) -> Result<Flo
             enum_ref,
             span,
         } => eval_match(scrutinee.as_ref(), arms, *enum_ref, *span, env),
-        ExecStmt::Break { label, .. } => Ok(Flow::Break(label.clone())),
-        ExecStmt::Continue { label, .. } => Ok(Flow::Continue(label.clone())),
+        ExecStmt::Break { .. } => Ok(Flow::Break),
+        ExecStmt::Continue { .. } => Ok(Flow::Continue),
         ExecStmt::While {
-            label,
             condition,
             body,
             span,
-        } => eval_while(label, condition.as_ref(), body, *span, env),
+        } => eval_while(condition.as_ref(), body, *span, env),
         ExecStmt::For {
-            label,
             binding,
             iterable,
             step,
             body,
             span,
-        } => eval_for(label, binding, iterable, step.as_ref(), body, *span, env),
+        } => eval_for(binding, iterable, step.as_ref(), body, *span, env),
         ExecStmt::Transaction { body, span, .. } => eval_transaction(body, *span, env),
-        ExecStmt::Try {
-            body,
-            catch,
-            finally,
-            ..
-        } => eval_try(body, catch.as_ref(), finally.as_ref(), env),
+        ExecStmt::Try { body, catch, .. } => eval_try(body, catch.as_ref(), env),
         _ => unreachable!("binding/write statements are handled before control dispatch"),
     }
 }
@@ -324,11 +317,10 @@ fn eval_throw(value: &ExecExpr, span: SourceSpan, env: &mut Env<'_>) -> Result<F
 fn eval_try(
     body: &ExecBody,
     catch: Option<&CheckedCatchClause>,
-    finally: Option<&ExecBody>,
     env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
     let outcome = eval_block(body, env);
-    let handled = match (outcome, catch) {
+    match (outcome, catch) {
         (
             Ok(Flow::Throw {
                 value,
@@ -344,22 +336,6 @@ fn eval_try(
             eval_catch(clause, error, env)
         }
         (outcome, _) => outcome,
-    };
-    match finally {
-        Some(block) => match eval_block(block, env) {
-            Ok(Flow::Throw {
-                value,
-                span,
-                transaction_escape,
-            }) => Ok(Flow::Throw {
-                value,
-                span,
-                transaction_escape,
-            }),
-            Err(error) => Err(error),
-            Ok(_) => handled,
-        },
-        None => handled,
     }
 }
 

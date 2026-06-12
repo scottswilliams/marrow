@@ -27,31 +27,23 @@ pub(crate) enum LoopStep {
     Propagate(Flow),
 }
 
-pub(crate) fn classify(flow: Flow, label: &Option<String>) -> LoopStep {
+pub(crate) fn classify(flow: Flow) -> LoopStep {
     match flow {
         Flow::Normal => LoopStep::Iterate,
-        Flow::Continue(ref target) if targets_this_loop(target, label) => LoopStep::Iterate,
-        Flow::Break(ref target) if targets_this_loop(target, label) => LoopStep::Stop,
+        Flow::Continue => LoopStep::Iterate,
+        Flow::Break => LoopStep::Stop,
         other => LoopStep::Propagate(other),
     }
 }
 
-pub(crate) fn targets_this_loop(jump_label: &Option<String>, loop_label: &Option<String>) -> bool {
-    match jump_label {
-        None => true,
-        Some(name) => loop_label.as_deref() == Some(name.as_str()),
-    }
-}
-
 pub(crate) fn eval_while(
-    label: &Option<String>,
     condition: Option<&ExecExpr>,
     body: &ExecBody,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
     while eval_condition(condition, span, env)? {
-        match classify(eval_block(body, env)?, label) {
+        match classify(eval_block(body, env)?) {
             LoopStep::Iterate => {}
             LoopStep::Stop => break,
             LoopStep::Propagate(flow) => return Ok(flow),
@@ -61,7 +53,6 @@ pub(crate) fn eval_while(
 }
 
 pub(crate) fn eval_for(
-    label: &Option<String>,
     binding: &ForBinding,
     iterable: &ExecExpr,
     step: Option<&ExecExpr>,
@@ -70,18 +61,17 @@ pub(crate) fn eval_for(
     env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
     if binding.second.is_some() {
-        return eval_two_name_for(label, binding, iterable, body, span, env);
+        return eval_two_name_for(binding, iterable, body, span, env);
     }
 
     if is_range_expr(iterable) {
-        return eval_range_for(label, binding, iterable, step, body, span, env);
+        return eval_range_for(binding, iterable, step, body, span, env);
     }
 
-    eval_single_name_collection_for(label, binding, iterable, body, span, env)
+    eval_single_name_collection_for(binding, iterable, body, span, env)
 }
 
 fn eval_two_name_for(
-    label: &Option<String>,
     binding: &ForBinding,
     iterable: &ExecExpr,
     body: &ExecBody,
@@ -104,7 +94,6 @@ fn eval_two_name_for(
                 ));
             };
             loop_step_flow(run_two_name_body(
-                label,
                 &binding.first,
                 second,
                 key,
@@ -117,7 +106,7 @@ fn eval_two_name_for(
     let entries = eval_collection_entries(iterable, env)?;
     for entry in entries {
         let (key, value) = pair_entry(entry, span)?;
-        match run_two_name_body(label, &binding.first, second, key, value, body, env)? {
+        match run_two_name_body(&binding.first, second, key, value, body, env)? {
             LoopStep::Iterate => {}
             LoopStep::Stop => break,
             LoopStep::Propagate(flow) => return Ok(flow),
@@ -127,7 +116,6 @@ fn eval_two_name_for(
 }
 
 fn eval_single_name_collection_for(
-    label: &Option<String>,
     binding: &ForBinding,
     iterable: &ExecExpr,
     body: &ExecBody,
@@ -140,18 +128,12 @@ fn eval_single_name_collection_for(
                 SavedLoopRow::Single(value) => value,
                 SavedLoopRow::Pair(key, value) => Value::Sequence(vec![key, value]),
             };
-            loop_step_flow(run_single_name_body(
-                label,
-                &binding.first,
-                value,
-                body,
-                env,
-            )?)
+            loop_step_flow(run_single_name_body(&binding.first, value, body, env)?)
         });
     }
     let values = eval_collection(iterable, env)?;
     for value in values {
-        match run_single_name_body(label, &binding.first, value, body, env)? {
+        match run_single_name_body(&binding.first, value, body, env)? {
             LoopStep::Iterate => {}
             LoopStep::Stop => break,
             LoopStep::Propagate(flow) => return Ok(flow),
@@ -161,7 +143,6 @@ fn eval_single_name_collection_for(
 }
 
 fn eval_range_for(
-    label: &Option<String>,
     binding: &ForBinding,
     iterable: &ExecExpr,
     step: Option<&ExecExpr>,
@@ -171,7 +152,7 @@ fn eval_range_for(
 ) -> Result<Flow, RuntimeError> {
     let mut range = range_iter(iterable, step, span, env)?;
     while let Some(value) = range.next_value(span)? {
-        match run_single_name_body(label, &binding.first, value, body, env)? {
+        match run_single_name_body(&binding.first, value, body, env)? {
             LoopStep::Iterate => {}
             LoopStep::Stop => break,
             LoopStep::Propagate(flow) => return Ok(flow),
@@ -207,7 +188,6 @@ fn pair_entry(entry: Value, span: SourceSpan) -> Result<(Value, Value), RuntimeE
 }
 
 fn run_single_name_body(
-    label: &Option<String>,
     first: &str,
     value: Value,
     body: &ExecBody,
@@ -217,11 +197,10 @@ fn run_single_name_body(
     env.bind(first.to_string(), value, false);
     let flow = eval_block(body, env);
     env.pop_scope();
-    Ok(classify(flow?, label))
+    Ok(classify(flow?))
 }
 
 fn run_two_name_body(
-    label: &Option<String>,
     first: &str,
     second: &str,
     key: Value,
@@ -234,7 +213,7 @@ fn run_two_name_body(
     env.bind(second.to_string(), value, false);
     let flow = eval_block(body, env);
     env.pop_scope();
-    Ok(classify(flow?, label))
+    Ok(classify(flow?))
 }
 
 fn loop_step_flow(step: LoopStep) -> Result<ControlFlow<Flow>, RuntimeError> {

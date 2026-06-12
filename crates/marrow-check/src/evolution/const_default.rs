@@ -107,7 +107,7 @@ fn constructor_scalar(callee: &Expression, args: &[Argument]) -> Result<Scalar, 
     let [arg] = args else {
         return Err(RejectedDefault::NotConstant);
     };
-    if arg.mode.is_some() || arg.name.is_some() {
+    if arg.name.is_some() {
         return Err(RejectedDefault::NotConstant);
     }
     let Expression::Literal {

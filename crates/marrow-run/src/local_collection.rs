@@ -190,7 +190,7 @@ fn eval_local_sequence_index(
     let [arg] = args else {
         return Err(type_error("a local sequence lookup takes one key", span));
     };
-    reject_named_or_inout(arg, span)?;
+    reject_named_lookup_arg(arg, span)?;
     let Value::Int(pos) = eval_expr(&arg.value, env)? else {
         return Err(type_error("a local sequence key must be an int", span));
     };
@@ -207,19 +207,18 @@ fn eval_local_keys(
 ) -> Result<Vec<SavedKey>, RuntimeError> {
     args.iter()
         .map(|arg| {
-            reject_named_or_inout(arg, span)?;
+            reject_named_lookup_arg(arg, span)?;
             value_to_key(eval_expr(&arg.value, env)?)
                 .ok_or_else(|| unsupported("a key of this type", span))
         })
         .collect()
 }
 
-/// A local-collection lookup takes only positional value keys; a named or inout
-/// argument has no meaning addressing an in-memory sequence or tree.
-fn reject_named_or_inout(arg: &ExecArg, span: SourceSpan) -> Result<(), RuntimeError> {
-    if arg.mode.is_some() || arg.name.is_some() {
+/// A local-collection lookup takes only positional value keys.
+fn reject_named_lookup_arg(arg: &ExecArg, span: SourceSpan) -> Result<(), RuntimeError> {
+    if arg.name.is_some() {
         return Err(unsupported(
-            "named or inout arguments in a local collection lookup",
+            "named arguments in a local collection lookup",
             span,
         ));
     }

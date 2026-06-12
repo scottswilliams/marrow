@@ -1,12 +1,12 @@
 use super::calls::wrapper_arg;
-use super::keys::{assigned_bindings, binding_key};
+use super::keys::binding_key;
 use super::scope::NameScope;
 use super::target::{ReadPlace, ReadTarget, read_target_with_scope};
 use super::util::extend_unique;
 use super::writes::expr_calls_saved_writer;
 use crate::{
-    CheckedArg, CheckedArgMode, CheckedBinaryOp, CheckedBuiltinCall, CheckedCallTarget,
-    CheckedExpr, CheckedForBinding, CheckedInterpolationPart, CheckedProgram, CheckedUnaryOp,
+    CheckedBinaryOp, CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedForBinding,
+    CheckedProgram, CheckedUnaryOp,
 };
 
 pub(super) fn condition_narrowings(
@@ -14,8 +14,7 @@ pub(super) fn condition_narrowings(
     expr: &CheckedExpr,
     scope: &NameScope,
 ) -> Vec<ReadTarget> {
-    let mutations = mutating_bindings_in_expr(expr, scope);
-    condition_effects_after_mutations(program, expr, scope, &mutations).narrowings
+    condition_effects(program, expr, scope).narrowings
 }
 
 pub(super) fn negated_exists_narrowings(
@@ -31,10 +30,7 @@ pub(super) fn negated_exists_narrowings(
     else {
         return Vec::new();
     };
-    let mutations = mutating_bindings_in_expr(expr, scope);
-    exists_target_after_mutations(program, operand, scope, &mutations)
-        .into_iter()
-        .collect()
+    exists_target(program, operand, scope).into_iter().collect()
 }
 
 struct ConditionEffects {
@@ -42,20 +38,17 @@ struct ConditionEffects {
     writes_saved: bool,
 }
 
-fn condition_effects_after_mutations(
+fn condition_effects(
     program: &CheckedProgram,
     expr: &CheckedExpr,
     scope: &NameScope,
-    mutations: &[u32],
 ) -> ConditionEffects {
     match expr {
         CheckedExpr::Call { target, .. }
             if *target == CheckedCallTarget::Builtin(CheckedBuiltinCall::Exists) =>
         {
             ConditionEffects {
-                narrowings: exists_target_after_mutations(program, expr, scope, mutations)
-                    .into_iter()
-                    .collect(),
+                narrowings: exists_target(program, expr, scope).into_iter().collect(),
                 writes_saved: expr_calls_saved_writer(program, expr, &mut Vec::new()),
             }
         }
@@ -65,8 +58,8 @@ fn condition_effects_after_mutations(
             right,
             ..
         } => {
-            let left = condition_effects_after_mutations(program, left, scope, mutations);
-            let right = condition_effects_after_mutations(program, right, scope, mutations);
+            let left = condition_effects(program, left, scope);
+            let right = condition_effects(program, right, scope);
             let mut narrowings = left.narrowings;
             if right.writes_saved {
                 invalidate_saved_narrowings(&mut narrowings);
@@ -84,11 +77,10 @@ fn condition_effects_after_mutations(
     }
 }
 
-fn exists_target_after_mutations(
+fn exists_target(
     program: &CheckedProgram,
     expr: &CheckedExpr,
     scope: &NameScope,
-    mutations: &[u32],
 ) -> Option<ReadTarget> {
     let CheckedExpr::Call { target, args, .. } = expr else {
         return None;
@@ -98,12 +90,6 @@ fn exists_target_after_mutations(
     }
     args.first()
         .and_then(|arg| read_target_with_scope(program, &arg.value, scope))
-        .filter(|target| {
-            !target
-                .key_bindings
-                .iter()
-                .any(|binding| mutations.contains(binding))
-        })
 }
 
 pub(super) fn traversal_narrowing(
@@ -239,48 +225,4 @@ fn slice_prefix<T: PartialEq>(prefix: &[T], full: &[T]) -> bool {
 
 fn related_prefix<T: PartialEq>(left: &[T], right: &[T]) -> bool {
     slice_prefix(left, right) || slice_prefix(right, left)
-}
-
-pub(super) fn mutating_arg_bindings(args: &[CheckedArg], scope: &NameScope) -> Vec<u32> {
-    let mut bindings = Vec::new();
-    for arg in args {
-        if matches!(arg.mode, Some(CheckedArgMode::InOut)) {
-            extend_unique(&mut bindings, assigned_bindings(&arg.value, scope));
-        }
-    }
-    bindings
-}
-
-fn mutating_bindings_in_expr(expr: &CheckedExpr, scope: &NameScope) -> Vec<u32> {
-    match expr {
-        CheckedExpr::Call { callee, args, .. } => {
-            let mut bindings = mutating_arg_bindings(args, scope);
-            extend_unique(&mut bindings, mutating_bindings_in_expr(callee, scope));
-            for arg in args {
-                extend_unique(&mut bindings, mutating_bindings_in_expr(&arg.value, scope));
-            }
-            bindings
-        }
-        CheckedExpr::Field { base, .. } | CheckedExpr::OptionalField { base, .. } => {
-            mutating_bindings_in_expr(base, scope)
-        }
-        CheckedExpr::Unary { operand, .. } => mutating_bindings_in_expr(operand, scope),
-        CheckedExpr::Binary { left, right, .. } => {
-            let mut bindings = mutating_bindings_in_expr(left, scope);
-            extend_unique(&mut bindings, mutating_bindings_in_expr(right, scope));
-            bindings
-        }
-        CheckedExpr::Interpolation { parts, .. } => {
-            let mut bindings = Vec::new();
-            for part in parts {
-                if let CheckedInterpolationPart::Expr(expr) = part {
-                    extend_unique(&mut bindings, mutating_bindings_in_expr(expr, scope));
-                }
-            }
-            bindings
-        }
-        CheckedExpr::Literal { .. } | CheckedExpr::Name { .. } | CheckedExpr::SavedRoot { .. } => {
-            Vec::new()
-        }
-    }
 }

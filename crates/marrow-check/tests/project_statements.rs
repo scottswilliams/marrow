@@ -465,13 +465,13 @@ fn correct_calls_are_not_flagged() {
 }
 
 #[test]
-fn inout_calls_keep_their_declared_return_types() {
+fn calls_keep_their_declared_return_types() {
     let report = check_module_report(
-        "inout-return-types",
+        "call-return-types",
         "module m\n\
-         fn parse(inout value: int): bool\n    value = 7\n    return true\n\
-         fn take(inout remaining: int, unit: int): string\n    remaining = remaining - unit\n    return \"ok\"\n\n\
-         fn caller(): string\n    var n: int = 0\n    if parse(inout n)\n        const piece: string = take(inout n, 1)\n        return piece\n    return \"no\"\n",
+         fn parse(value: int): bool\n    return value == 0\n\
+         fn take(remaining: int, unit: int): string\n    const next: int = remaining - unit\n    return \"ok\"\n\n\
+         fn caller(): string\n    var n: int = 0\n    if parse(n)\n        const piece: string = take(n, 1)\n        return piece\n    return \"no\"\n",
     );
     assert_clean(&report);
 }
@@ -492,75 +492,8 @@ fn read_only_parameter_checks_respect_local_shadowing() {
     let report = check_module_report(
         "readonly-param-shadow",
         "module m\n\
-         fn set_to(inout value: int)\n    value = 1\n\
-         fn caller(value: int): int\n    if true\n        var value: int = 0\n        value = value + 1\n        set_to(inout value)\n        return value\n    return value\n",
+         fn set_to(value: int): int\n    return 1\n\
+         fn caller(value: int): int\n    if true\n        var value: int = 0\n        value = value + 1\n        value = set_to(value)\n        return value\n    return value\n",
     );
     assert_clean(&report);
-}
-
-#[test]
-fn read_only_parameters_are_not_inout_arguments() {
-    let found = check_module(
-        "readonly-param-inout-arg",
-        "module m\n\
-         fn set_to(inout value: int)\n    value = 1\n\
-         fn caller(value: int): int\n    set_to(inout value)\n    return value\n",
-        "check.invalid_assign_target",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
-}
-
-#[test]
-fn inout_parameters_can_be_relayed_by_inout_calls() {
-    let report = check_module_report(
-        "inout-call-relay",
-        "module m\n\
-         fn set_to(inout value: int)\n    value = 1\n\
-         fn relay(inout value: int)\n    set_to(inout value)\n",
-    );
-    assert_clean(&report);
-}
-
-#[test]
-fn inout_call_markers_must_match_parameters() {
-    let missing = check_module(
-        "inout-marker-missing",
-        "module m\n\
-         fn set_to(inout value: int, src: int)\n    value = src\n\
-         fn caller(src: int): int\n    var n: int = 0\n    set_to(n, src)\n    return n\n",
-        "check.call_argument",
-    );
-    assert_eq!(missing.len(), 1, "{missing:#?}");
-
-    let wrong = check_module(
-        "inout-marker-wrong",
-        "module m\n\
-         fn add(value: int, src: int): int\n    return value + src\n\
-         fn caller(src: int): int\n    var n: int = 0\n    n = add(inout n, src)\n    return n\n",
-        "check.call_argument",
-    );
-    assert_eq!(wrong.len(), 1, "{wrong:#?}");
-}
-
-#[test]
-fn inout_arguments_must_be_writable_places() {
-    let found = check_module(
-        "inout-literal",
-        "module m\n\
-         fn set_to(inout value: int, src: int)\n    value = src\n\
-         fn caller(src: int): int\n    set_to(inout 5, src)\n    return src\n",
-        "check.invalid_assign_target",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
-}
-
-#[test]
-fn inout_markers_are_rejected_on_plain_call_targets() {
-    let found = check_module(
-        "inout-marker-plain-calls",
-        "module m\n\
-         fn caller()\n    var s: string = \"abc\"\n    var id: int = 1\n    print(inout 5)\n    const len: int = std::text::length(inout s)\n    const converted: int = int(inout id)\n",
-        "check.call_argument",
-    );
-    assert_eq!(found.len(), 3, "{found:#?}");
 }

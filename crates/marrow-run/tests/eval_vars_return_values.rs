@@ -1,5 +1,5 @@
-//! Uninitialized typed vars starting at their zero, and `inout` parameter
-//! read/write-back across calls, including the no-write-back-on-throw rule.
+//! Uninitialized typed vars starting at their zero, plus return-value updates
+//! after parameter modes were removed.
 
 #[macro_use]
 mod support;
@@ -7,6 +7,7 @@ mod support;
 use support::*;
 
 use marrow_run::Value;
+use marrow_syntax::parse_source;
 
 #[test]
 fn an_uninitialized_scalar_var_starts_at_its_zero() {
@@ -20,10 +21,9 @@ fn an_uninitialized_scalar_var_starts_at_its_zero() {
 }
 
 #[test]
-fn an_inout_parameter_reads_then_writes_a_local() {
-    // `inout` seeds the parameter from the caller's value, then writes back.
+fn a_return_value_updates_a_local() {
     let program = checked_program(
-        "pub fn bump(inout n: int)\n    n = n + 1\npub fn main(): int\n    var n: int = 41\n    bump(inout n)\n    return n\n",
+        "pub fn bump(n: int): int\n    return n + 1\npub fn main(): int\n    var n: int = 41\n    n = bump(n)\n    return n\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::main")),
@@ -32,11 +32,9 @@ fn an_inout_parameter_reads_then_writes_a_local() {
 }
 
 #[test]
-fn an_inout_parameter_mutates_a_local_resource() {
-    // Mutating a field of a local resource passed `inout` is visible to the
-    // caller.
+fn a_returned_resource_updates_a_local_resource() {
     let program = checked_program(
-        "resource Book\n    title: string\nstore ^books(id: int): Book\n\npub fn setTitle(inout book: Book)\n    book.title = \"Small Gods\"\n\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    setTitle(inout book)\n    return book.title\n",
+        "resource Book\n    title: string\nstore ^books(id: int): Book\n\npub fn withTitle(book: Book): Book\n    var updated: Book = book\n    updated.title = \"Small Gods\"\n    return updated\n\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    book = withTitle(book)\n    return book.title\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::main")),
@@ -68,11 +66,9 @@ fn uninitialized_bare_foreign_resource_var_is_not_project_wide() {
 }
 
 #[test]
-fn an_inout_parameter_writes_back_to_a_local_resource_field() {
-    // A field of a local resource, `book.title`, is an assignable place; passing it
-    // `inout` reads it to seed the parameter and writes the result back.
+fn a_return_value_updates_a_local_resource_field() {
     let program = checked_program(
-        "resource Book\n    title: string\nstore ^books(id: int): Book\n\npub fn upper(inout s: string)\n    s = \"UPPER\"\n\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    upper(inout book.title)\n    return book.title\n",
+        "resource Book\n    title: string\nstore ^books(id: int): Book\n\npub fn upper(s: string): string\n    return \"UPPER\"\n\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    book.title = upper(book.title)\n    return book.title\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::main")),
@@ -81,11 +77,9 @@ fn an_inout_parameter_writes_back_to_a_local_resource_field() {
 }
 
 #[test]
-fn write_back_is_skipped_when_the_callee_throws() {
-    // A callee that mutates an `inout` parameter then throws must not write back:
-    // the caller's local keeps its pre-call value.
+fn a_throw_before_assignment_leaves_the_local_unchanged() {
     let program = checked_program(
-        "pub fn bad(inout n: int)\n    n = 99\n    throw Error(code: \"test.error\", message: \"boom\")\npub fn main(): int\n    var n: int = 1\n    try\n        bad(inout n)\n    catch err: Error\n        print(\"caught\")\n    return n\n",
+        "pub fn bad(n: int): int\n    throw Error(code: \"test.error\", message: \"boom\")\npub fn main(): int\n    var n: int = 1\n    try\n        n = bad(n)\n    catch err: Error\n        print(\"caught\")\n    return n\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::main")),
@@ -94,9 +88,23 @@ fn write_back_is_skipped_when_the_callee_throws() {
 }
 
 #[test]
-fn an_argument_mode_must_match_the_parameter_mode() {
-    checker_rejects(
+fn inout_parameter_and_argument_syntax_is_rejected_before_runtime() {
+    for source in [
+        "pub fn bump(inout n: int)\n    return\n",
         "pub fn plain(n: int): int\n    return n\npub fn main(): int\n    var n: int = 1\n    return plain(inout n)\n",
-        "check.call_argument",
-    );
+    ] {
+        let parsed = parse_source(source);
+        assert!(
+            parsed.has_errors(),
+            "expected parse rejection for:\n{source}"
+        );
+        assert!(
+            parsed
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("parameter modes were removed")),
+            "{:#?}",
+            parsed.diagnostics
+        );
+    }
 }

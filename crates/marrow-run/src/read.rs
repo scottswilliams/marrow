@@ -35,7 +35,7 @@ pub(crate) fn reversed_argument(expr: &ExecExpr) -> Option<&ExecExpr> {
         return None;
     }
     match args.as_slice() {
-        [arg] if arg.mode.is_none() && arg.name.is_none() => Some(&arg.value),
+        [arg] if arg.name.is_none() => Some(&arg.value),
         _ => None,
     }
 }
@@ -50,7 +50,7 @@ pub(crate) fn keys_argument(expr: &ExecExpr) -> Option<&ExecExpr> {
         return None;
     }
     match args.as_slice() {
-        [arg] if arg.mode.is_none() && arg.name.is_none() => Some(&arg.value),
+        [arg] if arg.name.is_none() => Some(&arg.value),
         _ => None,
     }
 }
@@ -106,11 +106,8 @@ fn iterable_index_branch(
     }
     let mut arg_keys = Vec::new();
     for arg in args {
-        if arg.mode.is_some() || arg.name.is_some() {
-            return Err(unsupported(
-                "an index lookup with named or inout arguments",
-                span,
-            ));
+        if arg.name.is_some() {
+            return Err(unsupported("an index lookup with named arguments", span));
         }
         let key = value_to_key(eval_expr(&arg.value, env)?)
             .ok_or_else(|| unsupported("an index key of this type", span))?;
@@ -425,22 +422,4 @@ pub(crate) fn eval_local_field_get(
             span,
         )),
     }
-}
-
-/// Read a field of the local resource bound to `base`, from a pre-resolved base
-/// name. Shared by `inout` place reads.
-pub(crate) fn read_local_field(
-    base: &str,
-    field: &str,
-    span: SourceSpan,
-    env: &Env<'_>,
-) -> Result<Value, RuntimeError> {
-    let Some(Value::Resource(fields)) = env.lookup(base) else {
-        return Err(unsupported("a field of a non-resource local", span));
-    };
-    fields
-        .iter()
-        .find(|(name, _)| name == field)
-        .map(|(_, value)| value.clone())
-        .ok_or_else(|| RuntimeError::fault(RUN_ABSENT, format!("`{field}` is absent"), span))
 }

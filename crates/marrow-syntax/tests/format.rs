@@ -109,7 +109,7 @@ fn formats_expressions_to_canonical_source() {
         "^books(id).\"old-title\"",
         "nextId(^books)",
         "shelf::make(17)",
-        "save(book: draft, inout total)",
+        "save(book: draft, total: total)",
         "60 * 60 + 1",
         "a and b or c",
         "not ready",
@@ -183,16 +183,16 @@ fn formats_statement_blocks_with_indentation() {
 }
 
 #[test]
-fn formats_labeled_loops_and_break_label() {
+fn formats_loops_and_unlabeled_break() {
     let source = "module app\n\
          fn run()\n\
-         \x20   outer: for id in keys(^books)\n\
-         \x20       inner: while ready\n\
-         \x20           break outer\n";
+         \x20   for id in keys(^books)\n\
+         \x20       while ready\n\
+         \x20           break\n";
     let expected = "\
-         \x20   outer: for id in keys(^books)\n\
-         \x20       inner: while ready\n\
-         \x20           break outer";
+         \x20   for id in keys(^books)\n\
+         \x20       while ready\n\
+         \x20           break";
     assert_eq!(format_function_body(source), expected);
 }
 
@@ -218,18 +218,14 @@ fn formats_transaction_and_try_blocks() {
          \x20   try\n\
          \x20       risky()\n\
          \x20   catch err: Error\n\
-         \x20       print(err.message)\n\
-         \x20   finally\n\
-         \x20       cleanup()\n";
+         \x20       print(err.message)\n";
     let expected = "\
          \x20   transaction\n\
          \x20       ^books(id).title = title\n\
          \x20   try\n\
          \x20       risky()\n\
          \x20   catch err: Error\n\
-         \x20       print(err.message)\n\
-         \x20   finally\n\
-         \x20       cleanup()";
+         \x20       print(err.message)";
     assert_eq!(format_function_body(source), expected);
 }
 
@@ -337,11 +333,9 @@ fn formats_resource_declaration_with_members() {
 #[test]
 fn formats_function_declaration_with_params() {
     let source = "module app\n\
-         pub fn add(title: string, inout total: int): int\n\
-         \x20   total = total + 1\n\
+         pub fn add(title: string, total: int): int\n\
          \x20   return total\n";
-    let expected = "pub fn add(title: string, inout total: int): int\n\
-         \x20   total = total + 1\n\
+    let expected = "pub fn add(title: string, total: int): int\n\
          \x20   return total";
     assert_eq!(format_decl(source), expected);
 }

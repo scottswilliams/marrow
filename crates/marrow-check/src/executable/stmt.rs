@@ -106,11 +106,9 @@ pub enum CheckedStmt {
         span: SourceSpan,
     },
     Break {
-        label: Option<String>,
         span: SourceSpan,
     },
     Continue {
-        label: Option<String>,
         span: SourceSpan,
     },
     Throw {
@@ -137,13 +135,11 @@ pub enum CheckedStmt {
         span: SourceSpan,
     },
     While {
-        label: Option<String>,
         condition: Option<CheckedExpr>,
         body: CheckedBody,
         span: SourceSpan,
     },
     For {
-        label: Option<String>,
         binding: CheckedForBinding,
         iterable: CheckedExpr,
         step: Option<CheckedExpr>,
@@ -157,7 +153,6 @@ pub enum CheckedStmt {
     Try {
         body: CheckedBody,
         catch: Option<super::CheckedCatchClause>,
-        finally: Option<CheckedBody>,
         span: SourceSpan,
     },
     Match {
@@ -227,14 +222,8 @@ impl CheckedStmt {
                 value: lower_optional_expr(value.as_ref(), context, scope)?,
                 span: *span,
             },
-            syntax::Statement::Break { label, span } => Self::Break {
-                label: label.clone(),
-                span: *span,
-            },
-            syntax::Statement::Continue { label, span } => Self::Continue {
-                label: label.clone(),
-                span: *span,
-            },
+            syntax::Statement::Break { span } => Self::Break { span: *span },
+            syntax::Statement::Continue { span } => Self::Continue { span: *span },
             syntax::Statement::Throw { value, span } => Self::Throw {
                 value: CheckedExpr::lower(value, context, scope)?,
                 span: *span,
@@ -330,25 +319,21 @@ impl CheckedStmt {
     ) -> Option<Self> {
         Some(match statement {
             syntax::Statement::While {
-                label,
                 condition,
                 body,
                 span,
             } => Self::While {
-                label: label.clone(),
                 condition: lower_optional_expr(condition.as_ref(), context, scope)?,
                 body: CheckedBody::lower_scoped(body, context, scope)?,
                 span: *span,
             },
             syntax::Statement::For {
-                label,
                 binding,
                 iterable,
                 step,
                 body,
                 span,
             } => Self::For {
-                label: label.clone(),
                 binding: CheckedForBinding::lower(binding),
                 iterable: CheckedExpr::lower(iterable, context, scope)?,
                 step: lower_optional_expr(step.as_ref(), context, scope)?,
@@ -380,19 +365,10 @@ impl CheckedStmt {
                 body: CheckedBody::lower_scoped(body, context, scope)?,
                 span: *span,
             },
-            syntax::Statement::Try {
-                body,
-                catch,
-                finally,
-                span,
-            } => Self::Try {
+            syntax::Statement::Try { body, catch, span } => Self::Try {
                 body: CheckedBody::lower_scoped(body, context, scope)?,
                 catch: match catch {
                     Some(catch) => Some(super::CheckedCatchClause::lower(catch, context, scope)?),
-                    None => None,
-                },
-                finally: match finally {
-                    Some(finally) => Some(CheckedBody::lower_scoped(finally, context, scope)?),
                     None => None,
                 },
                 span: *span,

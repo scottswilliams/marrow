@@ -147,27 +147,29 @@ typed parameters and typed returns.
 
 ## Parameters
 
-Parameters are input/read-only by default:
+Parameters are read-only by-value inputs:
 
 ```mw
 fn format(book: Book): string
     return $"{book.title} by {book.author}"
 ```
 
-Use `inout` when the callee reads and mutates the caller's local value:
+Return a replacement value when a helper needs to transform a caller-local
+value:
 
 ```mw
-fn normalize(inout book: Book)
+fn normalize(book: Book): Book
+    var next: Book = book
+    next.title = std::text::trim(next.title)
+    return next
+
 var draft: Book
 if const saved = ^books(id)
     draft = saved
-    normalize(inout draft)
+    draft = normalize(draft)
 ```
 
-The `inout` marker at the call site makes caller-visible writes explicit.
-An `inout` argument is a writable local place, not a hidden reference value.
-Saved paths are not valid `inout` arguments. Use explicit saved assignments at
-the call site when saved data must change.
+Use explicit saved assignments at the call site when saved data must change.
 
 ## Passing Resources
 
@@ -178,11 +180,13 @@ fn save(id: Id(^books), book: Book)
     ^books(id) = book
 ```
 
-Mutation of the caller's local resource requires `inout`:
+Transforming a caller's local resource is a return-value pattern:
 
 ```mw
-fn trimTitle(inout book: Book)
-    book.title = std::text::trim(book.title)
+fn trimTitle(book: Book): Book
+    var next: Book = book
+    next.title = std::text::trim(next.title)
+    return next
 ```
 
 ## Named Arguments

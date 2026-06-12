@@ -14,7 +14,7 @@
 
 use super::scope::NameScope;
 use super::util::extend_unique;
-use crate::{CheckedArg, CheckedArgMode, CheckedExpr, CheckedInterpolationPart};
+use crate::{CheckedArg, CheckedExpr, CheckedInterpolationPart};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SavedPathParts {
@@ -77,11 +77,6 @@ pub(super) fn assigned_bindings(expr: &CheckedExpr, scope: &NameScope) -> Vec<u3
 
 pub(super) fn argument_key(arg: &CheckedArg, scope: &NameScope) -> ExprKey {
     let mut text = String::new();
-    if let Some(mode) = arg.mode {
-        text.push_str(match mode {
-            CheckedArgMode::InOut => "inout:",
-        });
-    }
     if let Some(name) = &arg.name {
         text.push_str(name);
         text.push('=');

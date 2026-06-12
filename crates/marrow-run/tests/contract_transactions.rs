@@ -97,16 +97,14 @@ pub fn run_cleanup(): string
     try
         transaction
             ^books(1).title = \"outer\"
-            try
-                transaction
-                    ^books(1).title = \"inner\"
-                    const boom = 1 / 0
-            finally
-                try
-                    throw Error(code: \"cleanup.local\", message: \"cleanup\")
-                catch err: Error
-                    cleanup = err.code
+            transaction
+                ^books(1).title = \"inner\"
+                const boom = 1 / 0
     catch err: Error
+        try
+            throw Error(code: \"cleanup.local\", message: \"cleanup\")
+        catch cleanup_err: Error
+            cleanup = cleanup_err.code
         return $\"{cleanup}:{err.code}\"
     return \"committed\"
 
@@ -242,7 +240,7 @@ fn a_nested_transaction_fault_skips_handlers_inside_the_outer_transaction() {
 }
 
 #[test]
-fn transaction_unwind_does_not_suppress_unrelated_catches_in_finally() {
+fn transaction_catch_cleanup_does_not_suppress_the_transaction_error() {
     let program = checked_program(TRANSACTION_UNWIND_WITH_LOCAL_CLEANUP);
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed old value");
@@ -252,7 +250,7 @@ fn transaction_unwind_does_not_suppress_unrelated_catches_in_finally() {
             .expect("outer handler catches escaped transaction fault")
             .value,
         Some(Value::Str("cleanup.local:run.divide_by_zero".into())),
-        "finally-local cleanup errors must remain catchable while the transaction error unwinds"
+        "catch-local cleanup errors must remain catchable while handling the transaction error"
     );
 
     assert_eq!(

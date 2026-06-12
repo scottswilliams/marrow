@@ -130,7 +130,7 @@ pub const CHECK_RANGE: &str = "check.range";
 pub const CHECK_RANGE_VALUE: &str = "check.range_value";
 /// A `throw` operand is known not to be an `Error` value.
 pub const CHECK_THROW_TYPE: &str = "check.throw_type";
-/// A `try` block has neither a `catch` nor a `finally` clause.
+/// A `try` block has no `catch` clause.
 pub const CHECK_TRY_HANDLER: &str = "check.try_handler";
 /// A qualified name `Enum::member` names a known enum but not one of its members.
 pub const CHECK_UNKNOWN_ENUM_MEMBER: &str = "check.unknown_enum_member";
@@ -173,8 +173,6 @@ pub const SCHEMA_DUPLICATE_ROOT_OWNER: &str = "schema.duplicate_root_owner";
 /// diagnostic.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RejectedSurface {
-    /// A saved place was passed through an `inout` argument.
-    SavedInout,
     /// An old saved traversal method shaper was called.
     SavedTraversalMethod { method: String },
 }

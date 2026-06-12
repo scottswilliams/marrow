@@ -23,7 +23,7 @@ use crate::program::{
 };
 use crate::resolve::{self, Def, DefItem, Resolution, ResolvableKind, resolve};
 use crate::rules;
-use crate::{CheckedParamMode, MarrowType, ScalarType};
+use crate::{MarrowType, ScalarType};
 
 /// An overlay of in-memory source text keyed by file path. Editor tooling fills
 /// it with unsaved buffer contents so analysis sees what the user is typing; a
@@ -954,7 +954,6 @@ fn checked_function(
             .iter()
             .map(|param| CheckedParam {
                 name: param.name.clone(),
-                mode: param.mode.map(CheckedParamMode::lower),
                 ty: MarrowType::resolve(&param.ty, names),
             })
             .collect(),

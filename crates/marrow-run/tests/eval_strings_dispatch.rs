@@ -193,20 +193,6 @@ fn run_entry_rejects_ambiguous_bare_entries() {
 }
 
 #[test]
-fn run_entry_rejects_host_values_for_moded_parameters() {
-    let program = checked_program("pub fn fill(inout n: int)\n    n = 1\n");
-    let error = rejected_entry_call(&program, "test::fill", vec![Value::Int(0)]);
-
-    assert_eq!(error.code, RUN_TYPE);
-    let (code, message) = error_throw_fields(&error);
-    assert_eq!(code, RUN_TYPE);
-    assert_eq!(
-        message,
-        "entry parameter `n` is inout and must be called from checked source"
-    );
-}
-
-#[test]
 fn run_entry_rejects_host_values_for_identity_parameters() {
     let program = checked_program(
         "resource Book\n    required title: string\nstore ^books(id: int): Book\n\n\

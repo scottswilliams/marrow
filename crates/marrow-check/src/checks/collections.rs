@@ -170,7 +170,7 @@ fn collection_wrapper_arg<'a>(
         return None;
     }
     match args.as_slice() {
-        [arg] if arg.mode.is_none() && arg.name.is_none() => Some(&arg.value),
+        [arg] if arg.name.is_none() => Some(&arg.value),
         _ => None,
     }
 }
@@ -287,10 +287,7 @@ fn saved_index_branch<'p>(
 )> {
     match path {
         marrow_syntax::Expression::Call { callee, args, .. } => {
-            if args
-                .iter()
-                .any(|arg| arg.mode.is_some() || arg.name.is_some())
-            {
+            if args.iter().any(|arg| arg.name.is_some()) {
                 return None;
             }
             let (store, resource, index, module) = saved_index_schema(program, callee)?;

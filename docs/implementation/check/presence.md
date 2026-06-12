@@ -6,7 +6,7 @@ The pass runs near the end of `analyze_source_project` (`analysis.rs`, after low
 
 ## The big idea
 
-Narrowing identity is by **span-stripped canonical key**, never by structural `CheckedExpr` equality. Two textually equal reads carry different spans, so `keys.rs` folds each read to a tagged string plus the scope binding ids it reads. A narrowing keyed on binding ids expires when any read binding is reassigned (or an `inout` arg is mutated), when an overlapping saved write occurs (overlap is by key/member prefix in either direction), or when a branch it lived in joins back. Branch narrowings work on a cloned narrowed set and never escape to the join point. Effect identity always uses stable schema ids (`SavedPlaceEffect` = `ResourceId` + `ResourceMemberId` path); an unresolvable path yields no proof rather than a string-keyed one.
+Narrowing identity is by **span-stripped canonical key**, never by structural `CheckedExpr` equality. Two textually equal reads carry different spans, so `keys.rs` folds each read to a tagged string plus the scope binding ids it reads. A narrowing keyed on binding ids expires when any read binding is reassigned, when an overlapping saved write occurs (overlap is by key/member prefix in either direction), or when a branch it lived in joins back. Branch narrowings work on a cloned narrowed set and never escape to the join point. Effect identity always uses stable schema ids (`SavedPlaceEffect` = `ResourceId` + `ResourceMemberId` path); an unresolvable path yields no proof rather than a string-keyed one.
 
 ## Parts
 

@@ -8,10 +8,10 @@
 //! the minimum needed to preserve operator precedence and associativity.
 
 use crate::{
-    ArgMode, Argument, BinaryOp, Block, CatchClause, Comment, CommentMarker, CommentPlacement,
-    ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression,
-    ForBinding, FunctionDecl, InterpolationPart, KeyParam, MatchArm, ParamDecl, ParamMode,
-    ResourceDecl, ResourceMember, Statement, StoreDecl, TypeRef, UnaryOp,
+    Argument, BinaryOp, Block, CatchClause, Comment, CommentMarker, CommentPlacement, ConstDecl,
+    Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression, ForBinding,
+    FunctionDecl, InterpolationPart, KeyParam, MatchArm, ParamDecl, ResourceDecl, ResourceMember,
+    Statement, StoreDecl, TypeRef, UnaryOp,
 };
 
 /// Precedence used to decide where parentheses are required, tightest-binding
@@ -378,11 +378,7 @@ fn format_params(params: &[ParamDecl]) -> String {
 }
 
 fn format_param(param: &ParamDecl) -> String {
-    let mode = match param.mode {
-        Some(ParamMode::InOut) => "inout ",
-        None => "",
-    };
-    format!("{mode}{}: {}", param.name, param.ty)
+    format!("{}: {}", param.name, param.ty)
 }
 
 fn format_docs(docs: &[String], level: usize) -> String {
@@ -526,8 +522,8 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
             Some(value) => format!("{pad}return {}", format_expression_at(value, level)),
             None => format!("{pad}return"),
         },
-        Statement::Break { label, .. } => format!("{pad}break{}", format_label_suffix(label)),
-        Statement::Continue { label, .. } => format!("{pad}continue{}", format_label_suffix(label)),
+        Statement::Break { .. } => format!("{pad}break"),
+        Statement::Continue { .. } => format!("{pad}continue"),
         Statement::Throw { value, .. } => {
             format!("{pad}throw {}", format_expression_at(value, level))
         }
@@ -563,36 +559,26 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
             level,
         ),
         Statement::While {
-            label,
-            condition,
-            body,
-            ..
+            condition, body, ..
         } => format!(
-            "{pad}{}while {}\n{}",
-            format_label_prefix(label),
+            "{pad}while {}\n{}",
             format_opt_expression_at(condition.as_ref(), level),
             format_block(source, body, level + 1)
         ),
         Statement::For {
-            label,
             binding,
             iterable,
             step,
             body,
             ..
-        } => format_for(source, label, binding, iterable, step.as_ref(), body, level),
+        } => format_for(source, binding, iterable, step.as_ref(), body, level),
         Statement::Transaction { body, .. } => {
             format!(
                 "{pad}transaction\n{}",
                 format_block(source, body, level + 1)
             )
         }
-        Statement::Try {
-            body,
-            catch,
-            finally,
-            ..
-        } => format_try(source, body, catch.as_ref(), finally.as_ref(), level),
+        Statement::Try { body, catch, .. } => format_try(source, body, catch.as_ref(), level),
         Statement::Match {
             scrutinee, arms, ..
         } => format_match(source, scrutinee.as_ref(), arms, level),
@@ -662,7 +648,6 @@ fn format_if_const(
 
 fn format_for(
     source: &str,
-    label: &Option<String>,
     binding: &ForBinding,
     iterable: &Expression,
     step: Option<&Expression>,
@@ -679,20 +664,13 @@ fn format_for(
         None => String::new(),
     };
     format!(
-        "{pad}{}for {binding} in {}{step}\n{}",
-        format_label_prefix(label),
+        "{pad}for {binding} in {}{step}\n{}",
         format_expression_at(iterable, level),
         format_block(source, body, level + 1)
     )
 }
 
-fn format_try(
-    source: &str,
-    body: &Block,
-    catch: Option<&CatchClause>,
-    finally: Option<&Block>,
-    level: usize,
-) -> String {
+fn format_try(source: &str, body: &Block, catch: Option<&CatchClause>, level: usize) -> String {
     let pad = INDENT.repeat(level);
     let mut out = format!("{pad}try\n{}", format_block(source, body, level + 1));
     if let Some(catch) = catch {
@@ -701,12 +679,6 @@ fn format_try(
             catch.name,
             format_type_annotation(&catch.ty),
             format_block(source, &catch.block, level + 1)
-        ));
-    }
-    if let Some(finally) = finally {
-        out.push_str(&format!(
-            "\n{pad}finally\n{}",
-            format_block(source, finally, level + 1)
         ));
     }
     out
@@ -748,20 +720,6 @@ fn format_key_params(keys: &[KeyParam]) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!("({keys})")
-}
-
-fn format_label_prefix(label: &Option<String>) -> String {
-    match label {
-        Some(label) => format!("{label}: "),
-        None => String::new(),
-    }
-}
-
-fn format_label_suffix(label: &Option<String>) -> String {
-    match label {
-        Some(label) => format!(" {label}"),
-        None => String::new(),
-    }
 }
 
 /// Format a single expression as canonical Marrow source.
@@ -884,9 +842,6 @@ fn format_argument(argument: &Argument) -> String {
 
 fn format_argument_at(argument: &Argument, level: usize) -> String {
     let mut out = String::new();
-    if let Some(ArgMode::InOut) = argument.mode {
-        out.push_str("inout ");
-    }
     if let Some(name) = &argument.name {
         out.push_str(name);
         out.push_str(": ");

@@ -1029,7 +1029,6 @@ fn count_builtin_type(
         return None;
     };
     if segments.as_slice() == ["count"]
-        && arg.mode.is_none()
         && arg.name.is_none()
         && is_saved_path_expression(program, &arg.value)
     {

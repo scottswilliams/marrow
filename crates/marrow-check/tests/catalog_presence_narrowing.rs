@@ -110,25 +110,6 @@ fn if_exists_narrowing_expires_when_a_key_binding_is_assigned() {
 }
 
 #[test]
-fn if_exists_narrowing_expires_when_a_key_binding_is_passed_inout() {
-    assert_bare_present_read(
-        "presence-if-exists-inout-key",
-        "module books\n\
-             resource Book\n\
-             \x20   subtitle: string\n\
-             store ^books(id: int): Book\n\
-             fn setTo(inout value: int)\n\
-             \x20   value = 2\n\
-             fn guarded(id: int): string\n\
-             \x20   var k: int = id\n\
-             \x20   if exists(^books(k).subtitle)\n\
-             \x20       setTo(inout k)\n\
-             \x20       return ^books(k).subtitle\n\
-             \x20   return \"untitled\"\n",
-    );
-}
-
-#[test]
 fn if_exists_narrowing_expires_when_a_key_field_is_assigned() {
     assert_bare_present_read(
         "presence-if-exists-mutated-key-field",
@@ -143,66 +124,6 @@ fn if_exists_narrowing_expires_when_a_key_field_is_assigned() {
              \x20   if exists(^books(holder.id).subtitle)\n\
              \x20       holder.id = 2\n\
              \x20       return ^books(holder.id).subtitle\n\
-             \x20   return \"untitled\"\n",
-    );
-}
-
-#[test]
-fn if_exists_narrowing_expires_when_a_key_field_is_passed_inout() {
-    assert_bare_present_read(
-        "presence-if-exists-inout-key-field",
-        "module books\n\
-             resource Holder\n\
-             \x20   required id: int\n\
-             resource Book\n\
-             \x20   subtitle: string\n\
-             store ^books(id: int): Book\n\
-             fn setTo(inout value: int)\n\
-             \x20   value = 2\n\
-             fn guarded(id: int): string\n\
-             \x20   var holder = Holder(id: id)\n\
-             \x20   if exists(^books(holder.id).subtitle)\n\
-             \x20       setTo(inout holder.id)\n\
-             \x20       return ^books(holder.id).subtitle\n\
-             \x20   return \"untitled\"\n",
-    );
-}
-
-#[test]
-fn if_exists_narrowing_expires_when_nested_condition_mutates_key() {
-    assert_bare_present_read(
-        "presence-if-exists-nested-condition-mutates-key",
-        "module books\n\
-             resource Book\n\
-             \x20   subtitle: string\n\
-             store ^books(id: int): Book\n\
-             fn setTo(inout value: int): bool\n\
-             \x20   value = 2\n\
-             \x20   return true\n\
-             fn guarded(id: int): string\n\
-             \x20   var k: int = id\n\
-             \x20   if exists(^books(k).subtitle)\n\
-             \x20       if setTo(inout k)\n\
-             \x20           return ^books(k).subtitle\n\
-             \x20   return \"untitled\"\n",
-    );
-}
-
-#[test]
-fn if_exists_narrowing_ignores_condition_proofs_after_key_mutation() {
-    assert_bare_present_read(
-        "presence-if-exists-condition-mutates-key",
-        "module books\n\
-             resource Book\n\
-             \x20   subtitle: string\n\
-             store ^books(id: int): Book\n\
-             fn setTo(inout value: int): bool\n\
-             \x20   value = 2\n\
-             \x20   return true\n\
-             fn guarded(id: int): string\n\
-             \x20   var k: int = id\n\
-             \x20   if exists(^books(k).subtitle) and setTo(inout k)\n\
-             \x20       return ^books(k).subtitle\n\
              \x20   return \"untitled\"\n",
     );
 }

@@ -133,18 +133,22 @@ while loanCount < limit
     loanCount = loanCount + 1
 ```
 
-## Loop Labels
+## Exiting Nested Loops
 
-Labels let `break` and `continue` target an outer loop:
+`break` exits the innermost loop. `continue` skips to the next iteration of the
+innermost loop. To exit nested loops, extract the loop into a function and
+`return`:
 
 ```mw
-outer: for shelf in ^books.byShelf
-    for id in ^books.byShelf(shelf)
-        if wanted(id)
-            break outer
-```
+fn findWanted(): Id(^books)
+    for shelf in ^books.byShelf
+        for id in ^books.byShelf(shelf)
+            if wanted(id)
+                return id
+    throw Error(code: "book.not_found", message: "No matching book.")
 
-`break` exits a loop. `continue` skips to the next iteration.
+const id = findWanted()
+```
 
 ## Errors
 
@@ -171,27 +175,29 @@ throw Error(
 
 `throw` requires an `Error` value.
 
-Catch errors with `try` / `catch` / `finally`:
+Catch errors with `try` / `catch`:
 
 ```mw
 try
     loan(id, borrower)
 catch err: Error
     print($"loan failed: {err.message}")
-finally
-    print("attempt finished")
 ```
 
-A `try` statement requires a `catch` clause, a `finally` clause, or both.
-`catch err: Error` binds a typed error value. If the type annotation is
-omitted, `Error` is used. Applications can store errors in their own saved
-resources when they want persistent audit or diagnostics; those saved
-resources model persistent fields concretely.
+A `try` statement requires a `catch` clause. `catch err: Error` binds a typed
+error value. If the type annotation is omitted, `Error` is used. Applications
+can store errors in their own saved resources when they want persistent audit or
+diagnostics; those saved resources model persistent fields concretely.
 
-`finally` runs before the `try` statement exits, whether the block succeeds,
-throws, returns, breaks, or continues. If `finally` throws, that error leaves
-the statement.
-`finally` is cleanup code; it cannot `return`, `break`, or `continue`.
+Use catch-cleanup-rethrow when cleanup must run after a caught error:
+
+```mw
+try
+    loan(id, borrower)
+catch err: Error
+    cleanupLoanAttempt(id)
+    throw err
+```
 
 ## Transactions
 

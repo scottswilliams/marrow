@@ -172,19 +172,11 @@ fn statement_calls_saved_writer(
                 || block_calls_saved_writer(program, body, visiting)
         }
         CheckedStmt::Transaction { body, .. } => block_calls_saved_writer(program, body, visiting),
-        CheckedStmt::Try {
-            body,
-            catch,
-            finally,
-            ..
-        } => {
+        CheckedStmt::Try { body, catch, .. } => {
             block_calls_saved_writer(program, body, visiting)
                 || catch
                     .as_ref()
                     .is_some_and(|catch| block_calls_saved_writer(program, &catch.block, visiting))
-                || finally
-                    .as_ref()
-                    .is_some_and(|finally| block_calls_saved_writer(program, finally, visiting))
         }
         CheckedStmt::Match {
             scrutinee, arms, ..

@@ -428,31 +428,17 @@ fn surfaces_lexer_diagnostics_for_function_body_tokens() {
 }
 
 #[test]
-fn reserved_word_as_var_name_reports_variable_name_diagnostic() {
-    // `out` is reserved as a parameter-mode keyword. In a binding position the
-    // parser should diagnose the binding name itself, not drop the statement and
-    // cascade through the rest of the body.
+fn out_is_an_ordinary_variable_name() {
     let parsed = parse_source("module app\nfn f(): int\n    var out: int = 0\n    return out\n");
 
-    assert_eq!(parsed.diagnostics.len(), 2, "{:#?}", parsed.diagnostics);
-    assert!(
-        parsed.diagnostics[0].reason
-            == parse_reason(ParseDiagnosticReason::Expected(
-                ExpectedSyntax::VariableName
-            )),
-        "{:#?}",
-        parsed.diagnostics[0]
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+}
+
+#[test]
+fn finally_is_an_ordinary_variable_name() {
+    let parsed = parse_source(
+        "module app\nfn f(): string\n    var finally: string = \"done\"\n    return finally\n",
     );
-    assert_eq!(parsed.diagnostics[0].span.line, 3);
-    assert!(
-        parsed.diagnostics[1].reason == parse_reason(ParseDiagnosticReason::KeywordExpression),
-        "{:#?}",
-        parsed.diagnostics[1]
-    );
-    assert!(
-        parsed.diagnostics.iter().all(|diagnostic| diagnostic.reason
-            != parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement))),
-        "{:#?}",
-        parsed.diagnostics
-    );
+
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
 }

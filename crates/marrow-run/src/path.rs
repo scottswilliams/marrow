@@ -248,8 +248,8 @@ pub(crate) fn saved_path_present(
     data_exists(env.store, &address, span)
 }
 
-/// Evaluate a keyed lookup's arguments to saved key segments, rejecting named or
-/// mode arguments. In the record-identity position (`allow_identity_splice`), a sole
+/// Evaluate a keyed lookup's arguments to saved key segments, rejecting named
+/// arguments. In the record-identity position (`allow_identity_splice`), a sole
 /// identity-valued argument splices its lowered keys in as the full key vector;
 /// otherwise each argument is one raw key.
 pub(crate) fn lower_keys(
@@ -260,14 +260,8 @@ pub(crate) fn lower_keys(
     expected: &[CheckedSavedKeyParam],
     env: &mut Env<'_>,
 ) -> Result<Vec<SavedKey>, RuntimeError> {
-    if args
-        .iter()
-        .any(|arg| arg.mode.is_some() || arg.name.is_some())
-    {
-        return Err(unsupported(
-            "a keyed lookup with named or inout arguments",
-            span,
-        ));
+    if args.iter().any(|arg| arg.name.is_some()) {
+        return Err(unsupported("a keyed lookup with named arguments", span));
     }
     let mut keys = Vec::with_capacity(args.len());
     for (position, arg) in args.iter().enumerate() {

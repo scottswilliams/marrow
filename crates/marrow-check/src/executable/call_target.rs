@@ -132,8 +132,7 @@ impl CheckedCallTarget {
 
     fn pure_call_target(expanded: &[String], args: &[CheckedArg]) -> Option<Self> {
         let has_named = args.iter().any(|arg| arg.name.is_some());
-        let has_moded = args.iter().any(|arg| arg.mode.is_some());
-        if !has_named && !has_moded {
+        if !has_named {
             if let [name] = expanded
                 && let Some(builtin) = CheckedBuiltinCall::from_name(name)
             {

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use marrow_syntax::{ArgMode, Block, Declaration, EvolveStep, Expression, SourceSpan, Statement};
+use marrow_syntax::{Block, Declaration, EvolveStep, Expression, SourceSpan, Statement};
 
 use crate::infer::saved_layer_chain;
 use crate::resolve::resolve_store_by_root;
@@ -142,18 +142,10 @@ fn check_statement(
         Statement::Transaction { body, .. } => {
             check_block(program, file, body, diagnostics);
         }
-        Statement::Try {
-            body,
-            catch,
-            finally,
-            ..
-        } => {
+        Statement::Try { body, catch, .. } => {
             check_block(program, file, body, diagnostics);
             if let Some(catch) = catch {
                 check_block(program, file, &catch.block, diagnostics);
-            }
-            if let Some(finally) = finally {
-                check_block(program, file, finally, diagnostics);
             }
         }
         Statement::Match {
@@ -199,15 +191,6 @@ fn check_expr(
         }
         check_expr(program, file, callee, diagnostics);
         for arg in args {
-            if matches!(arg.mode, Some(ArgMode::InOut)) && saved_path_like_syntax(&arg.value) {
-                push(
-                    file,
-                    arg.value.span(),
-                    "saved `inout` is not a v0.1 source surface; saved writes must be explicit checked effects",
-                    DiagnosticPayload::RejectedSurface(RejectedSurface::SavedInout),
-                    diagnostics,
-                );
-            }
             check_expr(program, file, &arg.value, diagnostics);
         }
     } else {

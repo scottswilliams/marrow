@@ -435,7 +435,8 @@ var loanCount = 0
 loanCount = loanCount + 1
 ```
 
-Function parameters are read-only unless declared `inout`.
+Function parameters are read-only by-value inputs. Return a new value and assign
+it at the call site when a caller-local value must change.
 
 ## Type Inference
 
