@@ -119,11 +119,10 @@ pub const CHECK_LITERAL_RANGE: &str = "check.literal_range";
 /// runtime would.
 pub const CHECK_STRING_ESCAPE: &str = "check.string_escape";
 /// A range-for header is malformed: its endpoints are not the same steppable type
-/// (int, decimal, date, instant), its `by` step does not match the endpoints
-/// (a number for int/decimal, a duration for date/instant), a decimal or instant
-/// range omits its required `by` step, the step is a zero or a literal
-/// wrong-direction step that would never run, or a step appears on a non-range
-/// iterable.
+/// (int, date, instant), its `by` step does not match the endpoints (a number
+/// for int, a duration for date/instant), an instant range omits its required
+/// `by` step, the step is a zero or a literal wrong-direction step that would
+/// never run, or a step appears on a non-range iterable.
 pub const CHECK_RANGE: &str = "check.range";
 /// A range expression is used as an ordinary value. Ranges only exist as `for`
 /// iterables.

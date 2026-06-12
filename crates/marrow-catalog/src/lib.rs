@@ -174,7 +174,7 @@ impl CatalogEntry {
 
 /// The structural shape a resource member's durable data occupies, decoded from its identity-aware
 /// structural signature. The signature is a discriminated union over a member's shape: a leaf (a
-/// plain field or a keyed-leaf map) carries its value-by-identity leaf token, an unkeyed group
+/// plain field or a keyed leaf) carries its value-by-identity leaf token, an unkeyed group
 /// carries nothing, and a keyed group carries the key shape its entries are addressed under. This
 /// enum is the single owner of that convention's decode: every consumer — the durable accepted
 /// side ([`CatalogEntry::accepted_leaf_token`]) and the live declared side in the evolution

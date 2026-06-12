@@ -6,14 +6,12 @@ use std::collections::HashSet;
 
 use marrow_syntax::{FieldDecl, IndexDecl, KeyParam, ResourceMember, SourceSpan, StoreDecl};
 
-use crate::compile::{MapLeaf, contains_map_type};
 use crate::errors::{
     SCHEMA_DUPLICATE_MEMBER, SCHEMA_INDEX_MISSING_IDENTITY_KEYS, SCHEMA_NESTED_INDEX_ARG,
     SCHEMA_NON_ENUM_NAMED_FIELD, SCHEMA_NONSCALAR_KEY, SCHEMA_UNKNOWN_INDEX_ARG,
     SCHEMA_UNORDERABLE_KEY, SchemaDuplicateTarget, SchemaError, SchemaErrorKind, SchemaKeyTarget,
     SchemaSavedUnknownTarget, index_requires_keyed_root_error, key_index_collision_error,
-    key_member_collision_error, unknown_error, unsupported_map_field_error,
-    unsupported_map_key_error, unsupported_map_key_param_error,
+    key_member_collision_error, unknown_error,
 };
 use crate::{Node, NodeKind, ResourceSchema, ScalarType, Type};
 
@@ -40,10 +38,6 @@ pub(crate) fn check_identity_key(
     span: SourceSpan,
     errors: &mut Vec<SchemaError>,
 ) {
-    if let Some(error) = unsupported_map_key_param_error(key, span) {
-        errors.push(error);
-        return;
-    }
     let ty = Type::resolve(&key.ty);
     if ty.embeds_unknown() {
         errors.push(unknown_error(
@@ -97,9 +91,6 @@ pub(crate) fn check_store_index(
 fn check_member_keys(member: &ResourceMember, errors: &mut Vec<SchemaError>) {
     match member {
         ResourceMember::Field(field) => {
-            if let Some(map) = MapLeaf::resolve(field) {
-                check_synthetic_map_key(&map, field.span, errors);
-            }
             check_key_params(&field.keys, field.span, errors);
         }
         ResourceMember::Group(group) => {
@@ -115,10 +106,6 @@ fn check_member_keys(member: &ResourceMember, errors: &mut Vec<SchemaError>) {
 /// no span of their own, so errors point at the keyed layer's `span`.
 fn check_key_params(keys: &[KeyParam], span: SourceSpan, errors: &mut Vec<SchemaError>) {
     for key in keys {
-        if let Some(error) = unsupported_map_key_param_error(key, span) {
-            errors.push(error);
-            continue;
-        }
         let ty = Type::resolve(&key.ty);
         if ty.embeds_unknown() {
             errors.push(unknown_error(
@@ -138,27 +125,6 @@ fn check_key_params(keys: &[KeyParam], span: SourceSpan, errors: &mut Vec<Schema
     }
 }
 
-/// Validate the synthetic `key: K` of a `map[K, V]` member from its resolved
-/// decomposition: a nested-map key is unsupported, and otherwise the key obeys the
-/// saved-key rules just as a written key parameter does.
-fn check_synthetic_map_key(map: &MapLeaf, span: SourceSpan, errors: &mut Vec<SchemaError>) {
-    if map.key_is_map {
-        errors.push(unsupported_map_key_error("key", span));
-        return;
-    }
-    if map.key.embeds_unknown() {
-        errors.push(unknown_error(SchemaSavedUnknownTarget::Key, "key", span));
-    } else if let Some(error) = key_type_error(
-        SchemaKeyTarget::KeyParam {
-            name: "key".to_string(),
-        },
-        &map.key,
-        span,
-    ) {
-        errors.push(error);
-    }
-}
-
 /// Reject `unknown` on the value type of a field or keyed leaf, descending into
 /// groups. A keyed layer's own key parameters are validated separately in
 /// [`check_member_keys`].
@@ -167,9 +133,7 @@ fn check_member_unknown(member: &ResourceMember, errors: &mut Vec<SchemaError>) 
         ResourceMember::Field(field) => {
             // A keyed leaf carries its value type the same way a plain field
             // does; both reject `unknown`.
-            let (target, ty) = if let Some(map) = MapLeaf::resolve(field) {
-                (SchemaSavedUnknownTarget::KeyedLeaf, map.value)
-            } else if field.keys.is_empty() {
+            let (target, ty) = if field.keys.is_empty() {
                 (SchemaSavedUnknownTarget::Field, Type::resolve(&field.ty))
             } else {
                 (
@@ -185,60 +149,6 @@ fn check_member_unknown(member: &ResourceMember, errors: &mut Vec<SchemaError>) 
             for nested in &group.members {
                 check_member_unknown(nested, errors);
             }
-        }
-    }
-}
-
-pub(crate) fn check_unsupported_map_types(
-    members: &[ResourceMember],
-    saved_map_sugar: bool,
-    errors: &mut Vec<SchemaError>,
-) {
-    for member in members {
-        match member {
-            ResourceMember::Field(field) => {
-                if !saved_map_sugar {
-                    check_unsupported_map_key_params(&field.keys, field.span, errors);
-                }
-                errors.extend(unsupported_map_field(field, saved_map_sugar));
-            }
-            ResourceMember::Group(group) => {
-                if !saved_map_sugar {
-                    check_unsupported_map_key_params(&group.keys, group.span, errors);
-                }
-                check_unsupported_map_types(&group.members, saved_map_sugar, errors);
-            }
-        }
-    }
-}
-
-/// The field-level `map[...]` rejection a field earns, or `None` when its type is
-/// not a `map[...]` or is an accepted saved keyed-leaf member.
-///
-/// A top-level `map[K, V]` field under `saved_map_sugar` is accepted exactly when
-/// [`MapLeaf::is_supported_member`] holds. A required member or a nested value is
-/// rejected here; a nested *key* is left to [`check_synthetic_map_key`], which
-/// owns the key position, so it is not reported twice. Any other `map[...]`
-/// spelling — a local resource, a keyed leaf whose value is a map, or a map under
-/// a `sequence[...]` — is unsupported.
-fn unsupported_map_field(field: &FieldDecl, saved_map_sugar: bool) -> Option<SchemaError> {
-    if saved_map_sugar && let Some(map) = MapLeaf::resolve(field) {
-        if map.is_supported_member(field) {
-            return None;
-        }
-        return (field.required || map.value_is_map).then(|| unsupported_map_field_error(field));
-    }
-    contains_map_type(&field.ty.text).then(|| unsupported_map_field_error(field))
-}
-
-fn check_unsupported_map_key_params(
-    keys: &[KeyParam],
-    span: SourceSpan,
-    errors: &mut Vec<SchemaError>,
-) {
-    for key in keys {
-        if let Some(error) = unsupported_map_key_param_error(key, span) {
-            errors.push(error);
         }
     }
 }
@@ -275,14 +185,7 @@ fn check_named_field(
 ) {
     match member {
         ResourceMember::Field(field) => {
-            // Only an accepted keyed-leaf member exposes a saved value type to
-            // check; any other `map[...]` spelling is rejected elsewhere.
-            let ty = match MapLeaf::resolve(field) {
-                Some(map) if map.is_supported_member(field) => map.value,
-                Some(_) => return,
-                None if contains_map_type(&field.ty.text) => return,
-                None => Type::resolve(&field.ty),
-            };
+            let ty = Type::resolve(&field.ty);
             check_named_field_type(&ty, field, is_declared_enum_name, errors);
         }
         ResourceMember::Group(group) => {

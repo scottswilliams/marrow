@@ -293,9 +293,9 @@ or for an identity key and a field. Encoded record keys are distinct from
 structural names: a record key such as `"byShelf"` does not collide with an
 index named `byShelf`.
 
-Managed resource members use declared identifiers. Quoted field spelling is an
-ordinary managed field access; it does not create undeclared fields or bypass
-write planning in a managed resource.
+Managed resource members use declared identifiers. Ordinary code cannot use
+quoted field segments; quoted maintenance paths belong to future operator
+maintenance syntax rather than ordinary expression grammar.
 
 Ordinary code may read declared index trees. Ordinary code does not write them;
 repair and derived rebuild are explicit data-evolution tooling work.

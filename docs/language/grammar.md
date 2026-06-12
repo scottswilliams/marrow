@@ -104,11 +104,9 @@ store_member =
 
 field_decl      =
       required_marker? identifier type_annotation NEWLINE
-    | identifier ":" map_member_type NEWLINE
     ;
 keyed_field_decl =
     identifier key_params type_annotation NEWLINE ;
-map_member_type = "map" "[" type "," type "]" ;
 required_marker = "required" ;
 
 group_decl      =
@@ -249,8 +247,7 @@ resource-shaped error type.
 The checker restricts where some parsed types are valid. A missing return type
 means the function produces no value. Managed saved fields and keys reject
 `unknown`; use `bytes`, `string`, or an explicit resource shape for persisted
-dynamic payloads. `map[K, V]` is accepted only as saved keyed-leaf member sugar,
-not as a local runtime map value or nested type.
+dynamic payloads.
 
 ## Statements
 
@@ -385,7 +382,7 @@ paren_suffix    = "(" argument_list? ")" ;
 field_suffix    = "." field_name ;
 optional_field_suffix = "?." field_name ;
 
-field_name      = identifier | string_lit ;
+field_name      = identifier ;
 ```
 
 `??` is deliberately non-associative: `a ?? b ?? c` is rejected. Layer defaults

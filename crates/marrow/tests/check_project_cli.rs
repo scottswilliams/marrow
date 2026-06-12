@@ -593,8 +593,8 @@ fn suppresses_unknown_types_from_broken_configured_test_declarations() {
 }
 
 #[test]
-fn keeps_configured_test_local_type_syntax_diagnostics_when_hidden_type_names_match() {
-    let root = temp_project("proj-test-local-type-syntax-incomplete-source", |root| {
+fn keeps_configured_test_local_unknown_type_diagnostics_when_hidden_type_names_match() {
+    let root = temp_project("proj-test-local-unknown-type-incomplete-source", |root| {
         write(
             root,
             "marrow.json",
@@ -612,7 +612,7 @@ fn keeps_configured_test_local_type_syntax_diagnostics_when_hidden_type_names_ma
         write(
             root,
             "tests/smoke_test.mw",
-            "fn smoke()\n    var n: map[Book,int]\n    var y: int = \"str\"\n",
+            "fn smoke()\n    var n: Nope\n    var y: int = \"str\"\n",
         );
     });
     let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);

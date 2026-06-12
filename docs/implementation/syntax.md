@@ -48,7 +48,7 @@ A value the grammar cannot structure yields `None` plus a `parse.syntax` diagnos
 - `format_source` re-parses rather than consuming a caller-held AST, so a caller already holding a `ParsedSource` pays for a second parse.
 - `StoreDecl` is produced only by explicit `store ^root: Resource` declarations. `resource` declarations describe shapes and never synthesize saved roots.
 - `EnumDecl.public` is parsed and round-tripped but visibility is not enforced here; the flag is inert until a later crate.
-- `is_type_text` recognizes `map[...]` and `Id(^root)` spellings that no current production emits; that part of the guard is unexercised by the front end.
+- `is_type_text` recognizes `Id(^root)` spellings that no current production emits; that part of the guard is unexercised by the front end.
 
 ## Read next
 

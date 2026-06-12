@@ -71,69 +71,10 @@ explicit ambiguity rule before it could become part of the language.
 
 ## Collection spellings
 
-A designed surface adds the `map`/`set` collection family as one whole
-unbuilt future surface: local map/set values, `map[K, V]` saved-member
-spelling, `set[K]`, and the `insert(path)` populate verb. Ordered sequences
-already have a spelling, `sequence[T]`, the 1-based integer-keyed tree. None
-of these add a second object model; they name ordinary Marrow access patterns
-over typed trees.
-
-| Spelling | Tree shape | Use |
-|---|---|---|
-| `map[K, V]` | keyed tree with values | lookup by a typed key |
-| `set[K]` | presence-only keyed tree | membership by a typed key |
-
-A `map[K, V]` is the developer-facing spelling for a single keyed layer when
-lookup is the point; its key follows the same rules as any keyed tree. For more
-than one key, use a native multi-layer keyed tree rather than a nested `map`:
-`counts(day: date, category: string): int` is flatter and more expressive than
-`map[date, map[string, int]]`. Use a declared index when a saved store needs
-a maintained alternate lookup path.
-
-Local map iteration follows the collection rule: one loop variable walks values,
-two loop variables walk key/value entries, and `keys(...)` walks keys only.
-Durable keyed layers stream keys with one loop variable and read values through
-two-name loops, `values(...)`, or `entries(...)`.
-
-A `set[K]` stores membership, not a user-visible `bool`; a member is present or
-absent. Because a set member has no value, there is no right-hand side to
-assign: `insert(path)` populates a member, much as appending allocates the next
-key in a sequence. `delete path` removes a member and `exists(path)` tests one.
-
-```mw
-var counts: map[string, int]
-counts(word) = (counts(word) ?? 0) + 1
-
-for count in counts
-    print($"{count}")
-
-for word, count in counts
-    print($"{word}: {count}")
-
-for word in keys(counts)
-    print(word)
-
-var seen: set[string]
-insert(seen(word))
-
-if exists(seen(word))
-    print(word)
-
-for word in seen
-    print(word)
-
-delete seen(word)
-```
-
-If this surface is built, `map[K, V]` and `set[K]` would be built-in spellings
-like `sequence[T]`, not user-instantiable generic types. A collection element
-accepts no undeclared children: if an element needs child fields, model it as a
-named resource or an explicit keyed group, and if set membership must carry
-metadata, it is no longer a set — use `map[K, V]`, for example
-`map[string, Flag]`.
-
-Saved collection data is typed tree data: ordered, inspectable, portable, and
-reached through paths. A local or future ephemeral `map` or `set` has no
-portable saved form, so an implementation may choose memory-optimized
-structures for it; code still depends on Marrow's typed tree behavior, not on a
-particular in-memory data structure.
+Future collection spellings are a map/set collection family, not a v0.1
+feature. The unbuilt future surface covers local map/set values,
+`insert(path)`, `set[K]`, and a `map[K, V]` saved-member spelling returning
+with the rest of the family. Ordered sequences already have a spelling,
+`sequence[T]`, for the 1-based integer-keyed tree. Current code spells saved
+keyed leaves explicitly, such as `scores(key: K): V`, until the whole
+collection family is designed.

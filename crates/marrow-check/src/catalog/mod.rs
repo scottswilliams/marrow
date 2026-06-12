@@ -1392,7 +1392,7 @@ fn span_for(
 }
 
 /// The declaring module and value type a resource member stores its durable bytes as, or `None`
-/// for a group. A plain field records its own type; a keyed-leaf layer (`map[K, V]`) records its
+/// for a group. A plain field records its own type; a keyed-leaf layer records its
 /// value type V, since the map field is itself the leaf its entries' values are stored under.
 fn member_leaf(module: &crate::CheckedModule, node: &marrow_schema::Node) -> Option<MemberLeaf> {
     node.leaf_value_type().map(|ty| MemberLeaf {

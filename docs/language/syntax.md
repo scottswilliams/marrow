@@ -261,9 +261,9 @@ resolution — is a compile error, not a runtime fault; resolve it with `??` or
 an `if exists(...)` branch or an `if const name = place` binding guard. Only
 absence is short-circuited — schema and decoding errors still surface.
 
-Range endpoints must be a steppable type — `int`, `decimal`, `date`, or
-`instant` — and both endpoints share that type. The checker accepts ranges for
-`for` loops, not as saved values. See
+Range endpoints must be a steppable type — `int`, `date`, or `instant` — and
+both endpoints share that type. The checker accepts ranges for `for` loops, not
+as saved values. See
 [Control Flow And Errors](control-flow-and-effects.md) for step rules.
 
 Operands and call arguments evaluate left to right. `and` and `or`
@@ -332,20 +332,8 @@ and a name, not a literal.
 | `^books(id).title` | saved field |
 | `module::name` | code namespace |
 
-Dots are data fields. `::` is for code namespaces.
-
-Quoted field segments preserve field spellings that are not identifiers:
-
-```mw
-^books(id)."old-title"
-```
-
-The runtime treats a quoted saved field as an ordinary managed field name. It
-does not bypass the resource schema, write planning, or generated index
-maintenance; an unmodeled quoted saved field is still an unknown field.
-
-A bare keyword after `.` is a parse error; quoted spelling is still subject to
-the same managed-name checks described above.
+Dots are data fields. `::` is for code namespaces. A field segment after `.`
+or `?.` is an identifier; a bare keyword after `.` is a parse error.
 
 ## Named Arguments And Resource Literals
 

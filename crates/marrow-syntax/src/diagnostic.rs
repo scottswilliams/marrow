@@ -116,6 +116,7 @@ pub enum UnsupportedSyntax {
     LoopLabels,
     ParameterModes,
     ParameterDefaults,
+    QuotedFieldSegments,
     TypeAliases,
     UserDefinedGenerics,
 }

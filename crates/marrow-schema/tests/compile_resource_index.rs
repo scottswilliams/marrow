@@ -1,6 +1,6 @@
 //! Index resolution and uniqueness rules: an index argument must resolve to an
-//! identity key or a top-level scalar field (not a keyed leaf, map member,
-//! sequence, or nested field), index names are distinct and may not collide with
+//! identity key or a top-level scalar field (not a keyed leaf, sequence, or
+//! nested field), index names are distinct and may not collide with
 //! identity keys, a non-unique index must end with all identity keys in order, a
 //! unique index may omit them, and an index requires a keyed root.
 
@@ -146,25 +146,6 @@ store ^books(id: int): Book
         SchemaErrorKind::UnknownIndexArg {
             index: "byTag".to_string(),
             arg: "tags".to_string(),
-        },
-    );
-}
-
-#[test]
-fn index_arg_naming_map_member_is_an_error() {
-    let source = "\
-resource Book
-    scores: map[string, int]
-store ^books(id: int): Book
-    index byScore(scores, id)
-";
-    let errors = compile_store_errors(source);
-    assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_INDEX_ARG]);
-    assert_kind(
-        &errors[0],
-        SchemaErrorKind::UnknownIndexArg {
-            index: "byScore".to_string(),
-            arg: "scores".to_string(),
         },
     );
 }

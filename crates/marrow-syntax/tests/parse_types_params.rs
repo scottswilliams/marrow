@@ -144,6 +144,26 @@ fn rejects_malformed_type_annotations() {
 }
 
 #[test]
+fn map_type_spelling_is_rejected_in_type_position() {
+    for source in [
+        "module app\nfn f(rows: map[string, int])\n    return\n",
+        "module app\nfn f(): map[string, int]\n    return 1\n",
+        "module app\nresource Book\n    scores: map[string, int]\n",
+        "module app\nresource Book\n    scores(k: map[string, int]): int\n",
+    ] {
+        let parsed = parse_source(source);
+        assert!(parsed.has_errors(), "expected parse error for:\n{source}");
+    }
+
+    let parsed = parse_source("module app\nresource Book\n    tags: sequence[string]\n");
+    assert!(
+        !parsed.has_errors(),
+        "sequence[T] should remain valid type syntax: {:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
 fn reserved_word_as_parameter_name_is_rejected() {
     let parsed = parse_source("fn f(at: int)\n    return\n");
     assert_eq!(parsed.diagnostics.len(), 1, "{:#?}", parsed.diagnostics);

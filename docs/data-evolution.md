@@ -41,20 +41,19 @@ The type-change check is total over leaf positions, required and sparse alike,
 and compares the identity of the type the stored bytes were accepted under, so
 every retype is caught: scalar to scalar, scalar to an enum or a reference, or
 one named type to another — even when the new type's decoder would accept the
-old bytes. A `map[K, V]` keyed-leaf layer is a leaf position whose accepted
-token folds in both its key shape and its value type, so a change to its value
-type, key arity, or key type is detected the same way. A value Marrow cannot
-reduce to a single comparable leaf — a `sequence` value or an `unknown` —
-records a stable untokenizable marker, so a change into, out of, or between
-such values also fails closed rather than being silently reinterpreted. A
-transform may not read the member it replaces, so an in-place reinterpret is
-never the resolution.
+old bytes. A keyed-leaf layer's accepted token folds in both its key shape and
+its value type, so a change to its value type, key arity, or key type is
+detected the same way. A value Marrow cannot reduce to a single comparable leaf
+— a `sequence` value or an `unknown` — records a stable untokenizable marker, so
+a change into, out of, or between such values also fails closed rather than
+being silently reinterpreted. A transform may not read the member it replaces,
+so an in-place reinterpret is never the resolution.
 
 Key and group shapes fail closed the same way. A store's identity keys live in
 the saved path itself, so changing the key arity or any key type leaves every
 existing record unaddressable — v0.1 has no graceful key migration. A
 keyed-group layer's key change, and a reshape between a plain group and a keyed
-layer, are caught as structural divergences; a keyed-leaf map's key change is
+layer, are caught as structural divergences; a keyed leaf's key change is
 caught through its leaf token. Beyond the named cases, a default-deny backstop
 fails closed any member whose recorded identity-aware shape diverges from
 current source while it still holds data, descending through existing keyed

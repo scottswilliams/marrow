@@ -62,16 +62,16 @@ fn assert_leaf_reshape_fails_closed(name: &str, value_decl: &str, expected_reaso
     assert_fails_closed(&result, &diagnostics, &reshaped_id, expected_reason);
 }
 
-/// A keyed-leaf-layer (`map[K, V]`) VALUE type change over a populated map fails closed,
-/// exactly as a top-level leaf retype does: the stored bytes were written under the old V
-/// type, so the new type's decoder would silently reinterpret them. The map field is the
-/// leaf, so its V type carries an identity-aware accepted leaf token the discharge compares
-/// against; a populated re-typed map value is steered to a transform rather than activated.
+/// A keyed-leaf value type change over populated entries fails closed, exactly as a
+/// top-level leaf retype does: the stored bytes were written under the old value type,
+/// so the new type's decoder would silently reinterpret them. The keyed leaf carries an
+/// identity-aware accepted leaf token the discharge compares against; a populated retyped
+/// value is steered to a transform rather than activated.
 #[test]
-fn keyed_leaf_map_value_retype_over_populated_map_fails_closed() {
-    let map_stable = hex_id(3);
-    let root = temp_project("discharge-map-value-retype", |root| {
-        // The map value type changes `string` -> `int`; its entries were written as strings.
+fn keyed_leaf_value_retype_over_populated_entries_fails_closed() {
+    let leaf_stable = hex_id(3);
+    let root = temp_project("discharge-keyed-leaf-value-retype", |root| {
+        // The keyed-leaf value type changes `string` -> `int`; its entries were written as strings.
         write(
             root,
             "src/books.mw",
@@ -89,7 +89,7 @@ fn keyed_leaf_map_value_retype_over_populated_map_fails_closed() {
             Some("int"),
             vec![member_entry(
                 "books::Book::tags",
-                &map_stable,
+                &leaf_stable,
                 "[int]string",
             )],
         );
@@ -99,7 +99,7 @@ fn keyed_leaf_map_value_retype_over_populated_map_fails_closed() {
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
-    // One record with a map entry whose value was stored as a `string`.
+    // One record with a keyed-leaf entry whose value was stored as a `string`.
     seed.record(1);
     seed.keyed_leaf(
         1,
@@ -108,39 +108,39 @@ fn keyed_leaf_map_value_retype_over_populated_map_fails_closed() {
         encode_value(&Scalar::Str("draft".into())).unwrap(),
     );
 
-    let map_id = keyed_leaf_catalog_id(&place, "tags");
+    let leaf_id = keyed_leaf_catalog_id(&place, "tags");
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
     assert!(
         !result.is_activatable(),
-        "a populated map value-type change must block activation: {:#?}",
+        "a populated keyed-leaf value-type change must block activation: {:#?}",
         result.verdicts
     );
     assert!(
         matches!(
-            verdict_for(&result, &map_id),
+            verdict_for(&result, &leaf_id),
             Verdict::RepairRequired {
                 reason: RepairReason::TypeChangeRequiresTransform
             }
         ),
-        "the map value retype must steer to a transform, got {:#?}",
-        verdict_for(&result, &map_id)
+        "the keyed-leaf value retype must steer to a transform, got {:#?}",
+        verdict_for(&result, &leaf_id)
     );
     assert!(
         diagnostics
             .iter()
-            .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == map_id),
-        "a fail-closed diagnostic must name the map value, got {diagnostics:#?}"
+            .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == leaf_id),
+        "a fail-closed diagnostic must name the keyed leaf, got {diagnostics:#?}"
     );
 }
 
-/// A keyed-leaf-layer (`map[K, V]`) whose value type is unchanged proves cleanly over a
-/// populated map: the stored value decodes under the current V type, so there is no
-/// reinterpretation hazard and the change is activatable. This pins that recording an
-/// accepted leaf token for map values does not block an honest no-change map.
+/// A keyed leaf whose value type is unchanged proves cleanly over populated entries: the
+/// stored value decodes under the current value type, so there is no reinterpretation
+/// hazard and the change is activatable. This pins that recording an accepted leaf token
+/// for keyed leaves does not block an honest no-change case.
 #[test]
-fn keyed_leaf_map_value_unchanged_proves() {
-    let root = temp_project("discharge-map-value-unchanged", |root| {
+fn keyed_leaf_value_unchanged_proves() {
+    let root = temp_project("discharge-keyed-leaf-value-unchanged", |root| {
         write(
             root,
             "src/books.mw",
@@ -170,7 +170,7 @@ fn keyed_leaf_map_value_unchanged_proves() {
 
     assert!(
         result.is_activatable(),
-        "an unchanged map value must stay activatable: {:#?}",
+        "an unchanged keyed-leaf value must stay activatable: {:#?}",
         result.verdicts
     );
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");

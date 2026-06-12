@@ -27,15 +27,14 @@ use crate::catalog::{CatalogKey, enum_path, store_path};
 use crate::resolve::resolve_store_by_root;
 
 /// The value-type token recorded for a leaf-position member whose declared value type
-/// produces no identity token: an `unknown`, or a value cell that resolves to a `sequence`
-/// (`map[K, sequence[V]]`), or any future leaf type the saved model cannot tokenize. A leaf
-/// position always carries a comparable value token so a retype across the
+/// produces no identity token: an `unknown`, a `sequence`, or any future leaf type
+/// the saved model cannot tokenize. A leaf position always carries a comparable value token so a retype across the
 /// tokenizable/non-tokenizable boundary is detected like any other.
 const UNTOKENIZABLE_VALUE: &str = "untokenizable";
 
 /// The identity-aware leaf token of a leaf-position member: its key-param shape and its
 /// value-type token together, so a member that holds a single value cell — a plain field or
-/// a keyed-leaf layer (a desugared `sequence`/`map`) — always yields a comparable token. A
+/// a keyed-leaf layer — always yields a comparable token. A
 /// plain `string` (`string`) and a `string(pos: int)` keyed leaf (`[int]string`) carry
 /// different tokens, so a plain field becoming a keyed leaf, or a keyed leaf's key arity or
 /// key type changing, is a retype the same way a value-type change is. The value token names
@@ -114,9 +113,9 @@ pub(crate) fn store_key_shape_token(identity_keys: &[KeyDef]) -> String {
 /// occupies, by kind and identity, not source spelling. It is the comparison the default-deny
 /// backstop fails closed on, so it must distinguish every structural shape a member can take:
 ///
-/// - a leaf (a plain field or a keyed-leaf `map[K, V]`) records `leaf:<member-leaf-token>`,
+/// - a leaf (a plain field or a keyed leaf) records `leaf:<member-leaf-token>`,
 ///   where the leaf token already carries the value type by referent identity and the key
-///   shape of a keyed-leaf map, so a value retype or a keyed-leaf re-key reads as a different
+///   shape of a keyed leaf, so a value retype or a keyed-leaf re-key reads as a different
 ///   signature;
 /// - an unkeyed group records `group`;
 /// - a keyed group records `keyed-group:[<key-shape>]`, so a keyed-layer re-key (key type or

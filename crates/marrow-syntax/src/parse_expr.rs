@@ -309,34 +309,34 @@ impl<'a> ExprParser<'a> {
         Some(expr)
     }
 
-    /// Parse the name segment after `.` or `?.`, consuming both tokens. Returns
-    /// the field name, whether it was a quoted data name, and the name's span.
+    /// Parse the identifier segment after `.` or `?.`, consuming both tokens.
+    /// The returned boolean keeps the AST shape aligned with maintenance-only
+    /// paths that can still carry quoted field metadata.
     fn field_segment(&mut self) -> Option<(String, bool, SourceSpan)> {
         let op = self.advance();
         let segment = *self.tokens.get(self.pos)?;
         let text = segment.text(self.source);
         let (name, quoted) = match segment.kind {
             TokenKind::Identifier => (text.to_string(), false),
-            // Store a quoted segment's raw inner text, escapes unresolved like
-            // other string literals. An unterminated string (already a lexer
-            // error) lacks a closing quote, so fall back to empty over panic.
             TokenKind::String => {
-                let inner = text
-                    .strip_prefix('"')
-                    .and_then(|rest| rest.strip_suffix('"'))
-                    .unwrap_or("");
-                (inner.to_string(), true)
+                self.error(
+                    join_spans(op.span, segment.span),
+                    ParseDiagnosticReason::Unsupported(UnsupportedSyntax::QuotedFieldSegments),
+                    "quoted field segments are not part of ordinary expression grammar; operator maintenance mode is their decided home".to_string(),
+                    None,
+                );
+                return None;
             }
             // A reserved word is never a valid field name; report it with both
-            // tokens in view so the help can suggest quoting it.
+            // tokens in view.
             TokenKind::Keyword(_) => {
                 self.error(
                     join_spans(op.span, segment.span),
                     ParseDiagnosticReason::KeywordFieldName,
                     format!("`{text}` is a keyword and cannot be used as a field name"),
-                    Some(format!(
-                        "quote the reserved word to use it as a data name: .\"{text}\""
-                    )),
+                    Some(
+                        "operator maintenance mode owns non-ordinary saved field names".to_string(),
+                    ),
                 );
                 return None;
             }

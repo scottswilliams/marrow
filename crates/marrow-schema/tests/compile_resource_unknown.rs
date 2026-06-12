@@ -1,7 +1,6 @@
 //! Rejection of `unknown` anywhere inside a saved type: fields, identity keys,
-//! keyed-leaf values, nested fields, sequence elements, map values, and key
-//! parameters at every depth. Local (store-free) resources may still use
-//! `unknown`.
+//! keyed-leaf values, nested fields, sequence elements, and key parameters at
+//! every depth. Local (store-free) resources may still use `unknown`.
 
 use marrow_schema::{
     ResourceSchema, SCHEMA_UNKNOWN_IN_SAVED, SchemaError, SchemaErrorKind,
@@ -121,21 +120,6 @@ store ^books(id: int): Book
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
     assert_kind(&errors[0], unknown(SchemaSavedUnknownTarget::Field, "tags"));
-}
-
-#[test]
-fn saved_map_member_value_typed_unknown_is_an_error() {
-    let source = "\
-resource Book
-    scores: map[string, unknown]
-store ^books(id: int): Book
-";
-    let errors = compile_source_errors(source);
-    assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
-    assert_kind(
-        &errors[0],
-        unknown(SchemaSavedUnknownTarget::KeyedLeaf, "scores"),
-    );
 }
 
 #[test]

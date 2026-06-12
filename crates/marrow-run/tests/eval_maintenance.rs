@@ -1,6 +1,6 @@
 //! Maintenance mode and managed-root protection: gated whole-root and required
-//! deletes, the maintenance required-delete exemption, and quoted/unquoted
-//! undeclared saved-field rules.
+//! deletes, the maintenance required-delete exemption, and undeclared saved-field
+//! rules.
 
 #[macro_use]
 mod support;
@@ -490,49 +490,6 @@ fn maintenance_required_delete_exemption_crosses_nested_transaction_commit() {
 }
 
 #[test]
-fn quoted_undeclared_saved_field_write_is_unknown_field_without_maintenance() {
-    let program = checked_program(&format!(
-        "{BOOK_PRIMARY_SCHEMA}pub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n\npub fn quoted_write(id: int)\n    ^books(id).\"old-title\" = \"legacy\"\n"
-    ));
-    let store = TreeStore::memory();
-    run_entry(
-        &store,
-        checked_entry!(&program, "test::seed", Value::Int(1)),
-    )
-    .expect("seed");
-    let result = run_entry(
-        &store,
-        checked_entry!(&program, "test::quoted_write", Value::Int(1)),
-    );
-    assert_run_error(result, "write.unknown_field");
-}
-
-#[test]
-fn quoted_undeclared_saved_field_write_is_unknown_field_under_maintenance() {
-    checker_rejects(
-        &format!(
-            "{BOOK_PRIMARY_SCHEMA}pub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n\npub fn quoted_write(id: int, v: string)\n    ^books(id).\"old-title\" = v\n\npub fn quoted_read(id: int): string\n    return ^books(id).\"old-title\"\n"
-        ),
-        "check.untyped_value",
-    );
-}
-
-#[test]
-fn quoted_undeclared_saved_field_write_does_not_get_raw_type_rules() {
-    let program = checked_program(&format!(
-        "{BOOK_PRIMARY_SCHEMA}pub fn quoted_write(id: int, n: int)\n    ^books(id).\"count\" = n\n"
-    ));
-    let store = TreeStore::memory();
-    let host = Host::new().with_maintenance();
-    let result = run_entry_with_host(
-        &store,
-        &host,
-        checked_entry!(&program, "test::quoted_write", Value::Int(1), Value::Int(5)),
-    );
-    assert_run_error(result, "write.unknown_field");
-}
-
-#[test]
 fn unquoted_undeclared_field_stays_unknown_field_even_under_maintenance() {
     let program = checked_program(&format!(
         "{BOOK_PRIMARY_SCHEMA}pub fn typo(id: int)\n    ^books(id).nope = \"x\"\n"
@@ -545,59 +502,6 @@ fn unquoted_undeclared_field_stays_unknown_field_even_under_maintenance() {
         checked_entry!(&program, "test::typo", Value::Int(1)),
     );
     assert_run_error(result, "write.unknown_field");
-}
-
-#[test]
-fn quoted_declared_saved_field_write_uses_managed_path_under_maintenance() {
-    let program = checked_program(&format!(
-        "{BOOK_SHELF_INDEX_SCHEMA}pub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).shelf = \"fiction\"\n\npub fn quoted_update(id: int)\n    ^books(id).\"shelf\" = \"history\"\n\npub fn shelf_at(s: string): int\n    var c = 0\n    for id in keys(^books.byShelf(s))\n        c = c + 1\n    return c\n"
-    ));
-    let store = TreeStore::memory();
-    let host = Host::new().with_maintenance();
-    run_entry_with_host(
-        &store,
-        &host,
-        checked_entry!(&program, "test::seed", Value::Int(1)),
-    )
-    .expect("seed");
-    run_entry_with_host(
-        &store,
-        &host,
-        checked_entry!(&program, "test::quoted_update", Value::Int(1)),
-    )
-    .expect("quoted declared field write uses the managed path");
-    assert_eq!(
-        run_entry_with_host(
-            &store,
-            &host,
-            checked_entry!(&program, "test::shelf_at", Value::Str("fiction".into()))
-        )
-        .expect("count")
-        .value,
-        Some(Value::Int(0)),
-        "the managed write moved the record off the old shelf index entry"
-    );
-    assert_eq!(
-        run_entry_with_host(
-            &store,
-            &host,
-            checked_entry!(&program, "test::shelf_at", Value::Str("history".into()))
-        )
-        .expect("count")
-        .value,
-        Some(Value::Int(1)),
-        "the managed write added the new shelf index entry"
-    );
-}
-
-#[test]
-fn quoted_undeclared_saved_field_read_is_managed_field_error_under_maintenance() {
-    checker_rejects(
-        &format!(
-            "{BOOK_PRIMARY_SCHEMA}pub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n\npub fn quoted_read(id: int): string\n    return ^books(id).\"old-title\"\n"
-        ),
-        "check.untyped_value",
-    );
 }
 
 #[test]
@@ -645,27 +549,5 @@ fn managed_write_to_a_declared_field_is_unaffected() {
         .value,
         Some(Value::Int(0)),
         "no stale entry remains on the old shelf"
-    );
-}
-
-#[test]
-fn quoted_declared_saved_field_write_uses_managed_path_without_maintenance() {
-    let program = checked_program(&format!(
-        "{BOOK_SHELF_SCHEMA}pub fn quoted_update(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).\"shelf\" = \"history\"\n\npub fn shelf(id: int): string\n    return ^books(id).shelf ?? \"\"\n"
-    ));
-    let store = TreeStore::memory();
-    run_entry(
-        &store,
-        checked_entry!(&program, "test::quoted_update", Value::Int(1)),
-    )
-    .expect("quoted declared field write uses the managed path");
-    assert_eq!(
-        run_entry(
-            &store,
-            checked_entry!(&program, "test::shelf", Value::Int(1))
-        )
-        .expect("read")
-        .value,
-        Some(Value::Str("history".into()))
     );
 }

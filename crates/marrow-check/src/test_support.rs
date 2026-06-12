@@ -131,7 +131,7 @@ pub fn group_member_catalog_id(place: &CheckedSavedPlace, group: &str) -> String
     accepted_catalog_id(&group_member(place, group).catalog_id, group)
 }
 
-/// The catalog id of a top-level keyed-leaf-layer (`map[K, V]`) member: a `Field` that
+/// The catalog id of a top-level keyed-leaf member: a `Field` that
 /// carries key params, so it is the leaf its entries' values are stored under.
 pub fn keyed_leaf_catalog_id(place: &CheckedSavedPlace, map: &str) -> String {
     let member = place

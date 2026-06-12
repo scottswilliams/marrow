@@ -6,7 +6,7 @@ Every `compile_*` entry returns the schema **and** a `Vec<SchemaError>` together
 
 ## The shapes
 
-- **Resource** — `compile_resource` / `compile_stored_resource` build a `ResourceSchema`: a source-ordered flat `Vec<Node>`. A `Node` is either a `Slot` (plain field or keyed leaf) or a `Group` (nested members). Keyed-ness is structural, not a flag — empty `key_params` means plain, non-empty means a keyed leaf. Sugar desugars to canonical keyed leaves so downstream paths are identical: `name: sequence[T]` becomes `name(pos: int): T`, `name: map[K,V]` becomes `name(key: K): V`.
+- **Resource** — `compile_resource` / `compile_stored_resource` build a `ResourceSchema`: a source-ordered flat `Vec<Node>`. A `Node` is either a `Slot` (plain field or keyed leaf) or a `Group` (nested members). Keyed-ness is structural, not a flag — empty `key_params` means plain, non-empty means a keyed leaf. Sequence sugar desugars to the canonical keyed leaf: `name: sequence[T]` becomes `name(pos: int): T`.
 - **Store** — `compile_store` builds a `StoreSchema` (durable root, identity keys, indexes) over a compiled `ResourceSchema`. `StoreSchema::single_int_root` is the single-int-root `nextId` policy gate the checker types `nextId(^root)` against; the runtime re-checks the same contract on the lowered place via its own `single_int_identity`. `next_id_shape` is the shared rejection-message wording — single-sourced in the checker and reused verbatim by the runtime, so both report the same shape.
 - **Enum** — `compile_enum` builds an `EnumSchema`: members flattened pre-order DFS with parent links. Traversal indices are source-order positions, **not** durable value identity — identity lives in the parent-link tree shape.
 
@@ -17,7 +17,6 @@ Every `compile_*` entry returns the schema **and** a `Vec<SchemaError>` together
 | Saved key must be an orderable scalar (every scalar but `decimal`) | `SCHEMA_UNORDERABLE_KEY` |
 | Identity/named/sequence/unknown can't be a key | `SCHEMA_NONSCALAR_KEY` |
 | `unknown` forbidden anywhere inside a managed saved schema | (rejected; local resources exempt) |
-| `map[K,V]` only as unkeyed, unrequired field; any other `map[...]` rejected | `SCHEMA_UNSUPPORTED_TYPE` |
 | Enum category must have children | `SCHEMA_CATEGORY_LEAF` |
 | Non-category enum parent forbidden | `SCHEMA_PARENT_NOT_CATEGORY` |
 | Index requires a keyed root; non-unique index must end with all identity keys in declaration order | `SCHEMA_INDEX_REQUIRES_KEYED_ROOT` |
@@ -42,7 +41,7 @@ Two single-source tables live here so checker and runtime never grow parallel co
 | `crates/marrow-schema/src/types.rs` | `Type` resolution and the `ResourceSchema`/`StoreSchema`/`Node`/`NodeKind`/`KeyDef`/`IndexSchema` tree shapes with their query impls |
 | `crates/marrow-schema/src/enums.rs` | `EnumSchema`/`EnumMemberSchema`/`MemberPathResolution` and the value/`is`/`match` member-path queries |
 | `crates/marrow-schema/src/errors.rs` | The `SchemaError` vocabulary: `SchemaErrorKind`, the typed target enums, the `schema.*` codes, and the message constructors |
-| `crates/marrow-schema/src/compile.rs` | The `compile_*` entries, member→`Node` lowering with sequence/map desugaring (`MapLeaf`), enum flattening, and `map`/`sequence` type-spelling parsing |
+| `crates/marrow-schema/src/compile.rs` | The `compile_*` entries, member→`Node` lowering with sequence desugaring, enum flattening, and `sequence` type-spelling parsing |
 | `crates/marrow-schema/src/validate.rs` | Single-declaration validation: duplicate-name tracking, the orderable-scalar key allowlist, store identity-key/index checks, and the saved-member rules |
 | `crates/marrow-schema/src/stdlib.rs` | The `std::<module>::<op>` descriptor table (`StdOp`, `Capability`) with `lookup` and `all` |
 | `crates/marrow-schema/src/error.rs` | The builtin `Error` shape (`ErrorField`, `FIELDS`) with `fields`, `field`, and `is_error_code_text` |
@@ -53,8 +52,8 @@ Two single-source tables live here so checker and runtime never grow parallel co
 
 ## Read next
 
-- `compile_resource` / `compile_stored_resource` (`compile.rs`) — the resource lowering split and why two entries exist (saved-`unknown` rejection, `map` sugar).
-- `member_node` / `sequence_leaf` / `map_leaf` / `MapLeaf` (`compile.rs`) — the single owner of member→`Node` lowering and collection desugaring.
+- `compile_resource` / `compile_stored_resource` (`compile.rs`) — the resource lowering split and why two entries exist (saved-`unknown` rejection).
+- `member_node` / `sequence_leaf` (`compile.rs`) — the single owner of member→`Node` lowering and sequence desugaring.
 - `classify_key_type` / `index_arg_type_key_error` (`validate.rs`) — the orderable-scalar allowlist and the one index-arg divergence.
 - `compile_store` (`compile.rs`) / `check_store_index` (`validate.rs`) — keyed-root requirement and the trailing-identity-key rule for non-unique indexes.
 - `EnumSchema::walk_member_path` (`enums.rs`) / `flatten_enum_members` (`compile.rs`) — the shared value/`is`/`match` path walk and category⟺has-children enforcement.

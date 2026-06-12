@@ -1,8 +1,8 @@
 //! Member resolution and named saved fields. `field_type`/`leaf_type` resolve
 //! plain fields and keyed leaves at every depth and refuse to cross the
 //! field/leaf/group boundary or an unknown chain. `check_saved_named_member_fields`
-//! requires a bare-named saved field or map value to be a declared enum, and
-//! stays silent on unsupported or qualified names it cannot judge locally.
+//! requires a bare-named saved field or keyed-leaf value to be a declared enum,
+//! and stays silent on qualified names it cannot judge locally.
 
 use marrow_schema::{
     ResourceSchema, SCHEMA_NON_ENUM_NAMED_FIELD, ScalarType, SchemaError, SchemaErrorKind, Type,
@@ -239,7 +239,7 @@ store ^orders(id: int): Order
 }
 
 #[test]
-fn a_bare_named_map_value_must_be_a_declared_enum() {
+fn a_bare_named_keyed_leaf_value_must_be_a_declared_enum() {
     assert!(
         compile_saved_resource_errors(
             "\
@@ -247,17 +247,17 @@ enum Status
     active
     archived
 resource Order
-    scores: map[string, Status]
+    scores(key: string): Status
 store ^orders(id: int): Order
 ",
         )
         .is_empty(),
-        "an enum-typed map value is allowed"
+        "an enum-typed keyed leaf is allowed"
     );
     let errors = compile_saved_resource_errors(
         "\
 resource Order
-    scores: map[string, Status]
+    scores(key: string): Status
 store ^orders(id: int): Order
 ",
     );
@@ -269,45 +269,6 @@ store ^orders(id: int): Order
             ty: "Status".to_string(),
         },
     );
-}
-
-#[test]
-fn unsupported_map_value_is_not_checked_as_bare_named_saved_field() {
-    let decl = resource(
-        "\
-resource Order
-    scores: map[string, map[string, int]]
-store ^orders(id: int): Order
-",
-    );
-    let errors = check_saved_named_member_fields(&decl.members, &[]);
-    assert!(errors.is_empty(), "{errors:#?}");
-}
-
-#[test]
-fn unsupported_map_key_does_not_check_map_value_as_bare_named_saved_field() {
-    let decl = resource(
-        "\
-resource Order
-    scores: map[map[string, int], Missing]
-store ^orders(id: int): Order
-",
-    );
-    let errors = check_saved_named_member_fields(&decl.members, &[]);
-    assert!(errors.is_empty(), "{errors:#?}");
-}
-
-#[test]
-fn required_map_member_does_not_check_value_as_bare_named_saved_field() {
-    let decl = resource(
-        "\
-resource Order
-    required scores: map[string, Missing]
-store ^orders(id: int): Order
-",
-    );
-    let errors = check_saved_named_member_fields(&decl.members, &[]);
-    assert!(errors.is_empty(), "{errors:#?}");
 }
 
 #[test]

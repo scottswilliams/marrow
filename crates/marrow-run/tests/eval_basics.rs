@@ -305,15 +305,14 @@ fn a_runtime_zero_step_faults() {
 }
 
 #[test]
-fn a_decimal_range_steps_by_a_decimal() {
-    // `0.0..1.0 by 0.25` yields 0.0, 0.25, 0.50, 0.75 (exclusive end): four values.
+fn an_int_range_can_drive_decimal_work() {
     assert_eq!(
         eval_source(
-            "pub fn f(): int\n    var count = 0\n    for x in 0.0..1.0 by 0.25\n        count = count + 1\n    return count\n",
+            "pub fn f(): string\n    var total: decimal = 0.0\n    for i in 0..4\n        var x: decimal = decimal(i) * 0.25\n        total = total + x\n    return string(total)\n",
             "f",
             Vec::new()
         ),
-        Ok(Some(Value::Int(4)))
+        Ok(Some(Value::Str("1.5".into())))
     );
 }
 

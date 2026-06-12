@@ -1,6 +1,6 @@
 //! Lowering parsed declarations into schema shapes: the `compile_*` entries,
-//! resource member → [`Node`] building with sequence/map desugaring, enum
-//! flattening, and the shared `map`/`sequence` type-spelling parsing.
+//! resource member → [`Node`] building with sequence desugaring, enum
+//! flattening, and the shared `sequence` type-spelling parsing.
 
 use std::collections::HashSet;
 
@@ -16,7 +16,6 @@ use crate::errors::{
 };
 use crate::validate::{
     Namespace, check_duplicate_key_params, check_identity_key, check_store_index,
-    check_unsupported_map_types,
 };
 use crate::{IndexSchema, KeyDef, Node, NodeKind, ResourceSchema, ScalarType, StoreSchema, Type};
 
@@ -30,18 +29,15 @@ use crate::{IndexSchema, KeyDef, Node, NodeKind, ResourceSchema, ScalarType, Sto
 ///
 /// Deferred: full type validation and one-owner-per-root.
 pub fn compile_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError>) {
-    compile_resource_shape(decl, false)
+    compile_resource_shape(decl)
 }
 
 /// Compile a resource shape that is attached to at least one store declaration.
 pub fn compile_stored_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError>) {
-    compile_resource_shape(decl, true)
+    compile_resource_shape(decl)
 }
 
-fn compile_resource_shape(
-    decl: &ResourceDecl,
-    saved_map_sugar: bool,
-) -> (ResourceSchema, Vec<SchemaError>) {
+fn compile_resource_shape(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError>) {
     let mut errors = Vec::new();
 
     let mut members = Vec::new();
@@ -49,7 +45,7 @@ fn compile_resource_shape(
 
     for member in &decl.members {
         names.check(member_name(member), member_span(member), &mut errors);
-        members.push(member_node(member, &mut errors, saved_map_sugar));
+        members.push(member_node(member, &mut errors));
     }
 
     let schema = ResourceSchema {
@@ -58,7 +54,6 @@ fn compile_resource_shape(
         members,
     };
 
-    check_unsupported_map_types(&decl.members, saved_map_sugar, &mut errors);
     (schema, errors)
 }
 
@@ -194,92 +189,14 @@ pub(crate) fn sequence_element(text: &str) -> Option<&str> {
         .map(str::trim)
 }
 
-/// The key and value type spellings of a `map[K, V]`, split at the top-level
-/// comma, or `None` for a non-map type.
-fn map_entry(text: &str) -> Option<(&str, &str)> {
-    let inner = text
-        .trim()
-        .strip_prefix("map[")
-        .and_then(|rest| rest.strip_suffix(']'))?;
-    split_top_level_comma(inner).map(|(key, value)| (key.trim(), value.trim()))
-}
-
-/// An unkeyed field whose declared type is `map[K, V]`, resolved once: its key and
-/// value [`Type`]s, plus whether either spelling is itself a nested `map[...]`. The
-/// single owner of the `map[K, V]` member decomposition — every saved-member rule
-/// (unknown, key, named, unsupported) and the node builder read shape from this
-/// rather than re-parsing `field.ty.text`.
-pub(crate) struct MapLeaf {
-    pub(crate) key: Type,
-    pub(crate) value: Type,
-    pub(crate) key_is_map: bool,
-    pub(crate) value_is_map: bool,
-}
-
-impl MapLeaf {
-    /// Resolve `field`'s `map[K, V]` type, or `None` when the field is keyed or its
-    /// type is not a `map[...]`. A keyed field carries its own key parameters, so
-    /// the `map[...]` member sugar applies only to unkeyed fields.
-    pub(crate) fn resolve(field: &FieldDecl) -> Option<Self> {
-        if !field.keys.is_empty() {
-            return None;
-        }
-        let (key, value) = map_entry(&field.ty.text)?;
-        Some(Self {
-            key: Type::resolve_text(key),
-            value: Type::resolve_text(value),
-            key_is_map: contains_map_type(key),
-            value_is_map: contains_map_type(value),
-        })
-    }
-
-    /// Whether this map is an accepted saved keyed-leaf member: an unrequired field
-    /// whose key and value are themselves not nested `map[...]` types.
-    pub(crate) fn is_supported_member(&self, field: &FieldDecl) -> bool {
-        !field.required && !self.key_is_map && !self.value_is_map
-    }
-}
-
-/// Whether a type spelling contains the unsupported `map[...]` type form. The
-/// public boundary export for the checker; interior schema code calls the
-/// private [`contains_map_type`].
-pub fn contains_map_type_syntax(text: &str) -> bool {
-    contains_map_type(text)
-}
-
-pub(crate) fn contains_map_type(text: &str) -> bool {
-    let text = text.trim();
-    map_entry(text).is_some()
-        || sequence_element(text)
-            .map(contains_map_type)
-            .unwrap_or(false)
-}
-
-fn split_top_level_comma(text: &str) -> Option<(&str, &str)> {
-    let mut depth = 0usize;
-    for (index, ch) in text.char_indices() {
-        match ch {
-            '[' => depth = depth.checked_add(1)?,
-            ']' => depth = depth.checked_sub(1)?,
-            ',' if depth == 0 => {
-                let key = &text[..index];
-                let value = &text[index + ch.len_utf8()..];
-                return (!key.is_empty() && !value.is_empty()).then_some((key, value));
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
 /// Compile the members nested inside a group into nodes.
-fn group_members(group: &GroupDecl, errors: &mut Vec<SchemaError>, map_sugar: bool) -> Vec<Node> {
+fn group_members(group: &GroupDecl, errors: &mut Vec<SchemaError>) -> Vec<Node> {
     let mut members = Vec::new();
     let mut names = Namespace::new(SchemaDuplicateTarget::ResourceMember);
 
     for member in &group.members {
         names.check(member_name(member), member_span(member), errors);
-        members.push(member_node(member, errors, map_sugar));
+        members.push(member_node(member, errors));
     }
 
     members
@@ -302,20 +219,16 @@ fn member_span(member: &ResourceMember) -> SourceSpan {
 }
 
 /// Compile one resource member into a [`Node`]:
-/// an unkeyed plain field is a top-level `Slot`; `sequence[T]`, `map[K, V]`,
-/// and keyed fields are keyed-leaf `Slot`s; a group is a `Group` with recursed
-/// members.
-fn member_node(member: &ResourceMember, errors: &mut Vec<SchemaError>, map_sugar: bool) -> Node {
+/// an unkeyed plain field is a top-level `Slot`; `sequence[T]` and keyed fields
+/// are keyed-leaf `Slot`s; a group is a `Group` with recursed members.
+fn member_node(member: &ResourceMember, errors: &mut Vec<SchemaError>) -> Node {
     match member {
         ResourceMember::Field(field) if field.keys.is_empty() => {
             // Collection member sugar becomes a keyed `Slot` rather than a
             // plain top-level field.
             match Type::resolve(&field.ty) {
                 Type::Sequence(element) => sequence_leaf(field, *element),
-                ty => match MapLeaf::resolve(field) {
-                    Some(map) if map_sugar => map_leaf(field, map),
-                    _ => slot_node(field, ty, vec![], field.required),
-                },
+                ty => slot_node(field, ty, vec![], field.required),
             }
         }
         // A keyed field is a keyed-leaf layer; its declared type is the leaf type
@@ -335,7 +248,7 @@ fn member_node(member: &ResourceMember, errors: &mut Vec<SchemaError>, map_sugar
                 name: group.name.clone(),
                 docs: group.docs.clone(),
                 key_params: group.keys.iter().map(key_def).collect(),
-                members: group_members(group, errors, map_sugar),
+                members: group_members(group, errors),
                 kind: NodeKind::Group,
             }
         }
@@ -365,20 +278,6 @@ fn sequence_leaf(field: &FieldDecl, element: Type) -> Node {
         vec![KeyDef {
             name: "pos".to_string(),
             ty: Type::Scalar(ScalarType::Int),
-        }],
-        false,
-    )
-}
-
-/// Desugar `name: map[K, V]` into the keyed leaf `name(key: K): V` from the
-/// already-resolved key and value types.
-fn map_leaf(field: &FieldDecl, map: MapLeaf) -> Node {
-    slot_node(
-        field,
-        map.value,
-        vec![KeyDef {
-            name: "key".to_string(),
-            ty: map.key,
         }],
         false,
     )

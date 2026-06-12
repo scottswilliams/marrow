@@ -93,23 +93,14 @@ fn a_non_steppable_endpoint_is_a_check_error() {
 }
 
 #[test]
-fn a_decimal_range_without_by_is_a_check_error() {
-    let codes = codes(&module("    for x in 0.0..1.0\n        var y = x\n"));
-    assert!(codes.iter().any(|c| c == "check.range"), "{codes:?}");
-}
-
-#[test]
-fn a_decimal_range_with_a_decimal_by_checks_clean() {
+fn a_decimal_range_is_not_steppable() {
     let codes = codes(&module(
         "    for x in 0.0..1.0 by 0.25\n        var y: decimal = x\n",
     ));
-    assert!(codes.is_empty(), "{codes:?}");
-}
-
-#[test]
-fn a_decimal_range_with_an_int_step_is_a_check_error() {
-    let codes = codes(&module("    for x in 0.0..2.0 by 1\n        var y = x\n"));
-    assert!(codes.iter().any(|c| c == "check.range"), "{codes:?}");
+    assert!(
+        codes.iter().any(|c| c == "check.operator_type"),
+        "{codes:?}"
+    );
 }
 
 #[test]
@@ -243,37 +234,6 @@ fn a_sub_day_literal_step_on_an_instant_range_checks_clean() {
     // restricted to whole days.
     let codes = codes(&module(
         "    for t in std::clock::now()..std::clock::now() by 1.hour\n        var x: instant = t\n",
-    ));
-    assert!(codes.is_empty(), "{codes:?}");
-}
-
-#[test]
-fn a_literal_decimal_wrong_direction_range_is_a_dead_loop_error() {
-    // A statically-dead decimal loop is as provably empty as an integer one.
-    let codes = codes(&module(
-        "    for x in 0.0..1.0 by -0.5\n        var y = x\n",
-    ));
-    assert!(codes.iter().any(|c| c == "check.range"), "{codes:?}");
-}
-
-#[test]
-fn a_literal_decimal_descending_wrong_direction_range_is_a_dead_loop_error() {
-    let codes = codes(&module("    for x in 1.0..0.0 by 0.5\n        var y = x\n"));
-    assert!(codes.iter().any(|c| c == "check.range"), "{codes:?}");
-}
-
-#[test]
-fn a_valid_descending_decimal_range_checks_clean() {
-    let codes = codes(&module(
-        "    for x in 1.0..0.0 by -0.5\n        var y: decimal = x\n",
-    ));
-    assert!(codes.is_empty(), "{codes:?}");
-}
-
-#[test]
-fn a_valid_ascending_decimal_range_checks_clean() {
-    let codes = codes(&module(
-        "    for x in 0.0..1.0 by 0.5\n        var y: decimal = x\n",
     ));
     assert!(codes.is_empty(), "{codes:?}");
 }

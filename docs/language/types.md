@@ -255,23 +255,6 @@ tags: sequence[string]
 `sequence[T]` is built-in type syntax. It does not introduce user-defined
 generic types or generic functions.
 
-Saved resource members also accept `map[K, V]` as sugar for a keyed leaf with
-the implicit key name `key`:
-
-```mw
-scores: map[string, int]
-```
-
-This is equivalent to:
-
-```mw
-scores(key: string): int
-```
-
-This is declaration sugar for saved resources; it does not introduce local map
-values or map operations. Map member sugar is a keyed leaf, so it is not
-combined with `required`.
-
 Sequences are ordered by key. Holes can exist because they are trees
 underneath; use `count(path)` for the number of populated immediate children,
 not for the highest numeric key.

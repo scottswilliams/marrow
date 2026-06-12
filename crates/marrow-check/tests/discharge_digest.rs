@@ -64,7 +64,7 @@ impl Default for DurableFixture {
 
 /// Render the durable baseline (or a single-edit variant) as one `.mw` source. The
 /// resource carries a scalar member, a keyed group with a required leaf, a top-level
-/// keyed-leaf map, and a unique index; the evolve block defaults the scalar member and
+/// keyed leaf, and a unique index; the evolve block defaults the scalar member and
 /// transforms `isbn`, so one fixture exercises every digest dimension.
 fn durable_fixture(f: DurableFixture) -> String {
     let count_required = if f.count_required { "required " } else { "" };

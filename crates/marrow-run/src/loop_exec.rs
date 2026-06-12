@@ -7,7 +7,6 @@ use marrow_check::{
     CheckedBinaryOp as BinaryOp, CheckedBody as ExecBody, CheckedExpr as ExecExpr,
     CheckedForBinding as ForBinding,
 };
-use marrow_store::Decimal;
 use marrow_store::value::NANOS_PER_DAY;
 use marrow_syntax::SourceSpan;
 
@@ -232,12 +231,6 @@ enum RangeIter {
         step: i64,
         make: fn(i64) -> Value,
     },
-    Decimal {
-        current: Decimal,
-        end: Decimal,
-        inclusive: bool,
-        step: Decimal,
-    },
     Instant {
         current: i128,
         end: i128,
@@ -264,20 +257,6 @@ impl RangeIter {
                     Some(next) => *current = next,
                     None => *step = 0,
                 }
-                Ok(Some(value))
-            }
-            RangeIter::Decimal {
-                current,
-                end,
-                inclusive,
-                step,
-            } => {
-                let direction = step_direction(step.coefficient().cmp(&0));
-                if !in_range(*current, *end, *inclusive, direction) {
-                    return Ok(None);
-                }
-                let value = Value::Decimal(*current);
-                *current = current.checked_add(*step).ok_or_else(|| overflow(span))?;
                 Ok(Some(value))
             }
             RangeIter::Instant {
@@ -334,9 +313,6 @@ fn range_iter(
     let step = step.map(|expr| eval_expr(expr, env)).transpose()?;
     match (start, end) {
         (Value::Int(start), Value::Int(end)) => int_range_iter(start, end, step, inclusive, span),
-        (Value::Decimal(start), Value::Decimal(end)) => {
-            decimal_range_iter(start, end, step, inclusive, span)
-        }
         (Value::Date(start), Value::Date(end)) => {
             date_range_iter(start, end, step, inclusive, span)
         }
@@ -387,34 +363,6 @@ fn int_range_iter(
         inclusive,
         step,
         make: Value::Int,
-    })
-}
-
-fn decimal_range_iter(
-    start: Decimal,
-    end: Decimal,
-    step: Option<Value>,
-    inclusive: bool,
-    span: SourceSpan,
-) -> Result<RangeIter, RuntimeError> {
-    let step = match step {
-        Some(Value::Decimal(d)) => d,
-        Some(_) => return Err(type_error("a decimal range steps by a decimal", span)),
-        None => {
-            return Err(type_error(
-                "a decimal range needs an explicit `by` step",
-                span,
-            ));
-        }
-    };
-    if step.is_zero() {
-        return Err(type_error("a range step cannot be zero", span));
-    }
-    Ok(RangeIter::Decimal {
-        current: start,
-        end,
-        inclusive,
-        step,
     })
 }
 

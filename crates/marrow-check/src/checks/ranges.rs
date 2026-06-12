@@ -7,7 +7,6 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::Path;
 
-use marrow_store::Decimal;
 use marrow_store::value::ScalarType;
 use marrow_syntax::SourceSpan;
 
@@ -88,8 +87,8 @@ pub(super) fn check_range_iterable_value_parts(
 }
 
 /// Validate a range-for header's step and direction rules: the `by` step must
-/// match the endpoint type (a number for int/decimal, a duration for
-/// date/instant), decimal and instant require an explicit step, and a step that
+/// match the endpoint type (`int` endpoints step by `int`, temporal endpoints
+/// step by `duration`), instant requires an explicit step, and a step that
 /// statically cannot run (wrong-direction or zero) is a dead loop. A step on a
 /// non-range iterable is rejected. Endpoint typing is owned by the type pass, so a
 /// non-steppable or mismatched endpoint pair is left to it.
@@ -138,8 +137,8 @@ pub(crate) fn check_range_header(
 
 /// Reject a negated duration step on a `date`/`instant` range. A duration is
 /// always non-negative, so a descending temporal range can only fault at runtime;
-/// the check reports that guaranteed fault now. Int/decimal ranges still descend
-/// by a negative step.
+/// the check reports that guaranteed fault now. Int ranges still descend by a
+/// negative step.
 fn check_temporal_step_sign(
     file: &Path,
     endpoint: ScalarType,
@@ -214,10 +213,10 @@ fn literal_duration_seconds(expr: &marrow_syntax::Expression) -> Option<i64> {
     }
 }
 
-/// The step-type rule: int/decimal endpoints step by a same-typed number;
-/// date/instant endpoints step by a duration. Decimal and instant have no safe
-/// default step, so omitting `by` there is an error; int defaults to 1 and date to
-/// one calendar day. An untyped (`unknown`) step defers.
+/// The step-type rule: `int` endpoints step by `int`; date/instant endpoints
+/// step by a duration. Instant has no safe default step, so omitting `by` there
+/// is an error; int defaults to 1 and date to one calendar day. An untyped
+/// (`unknown`) step defers.
 fn check_step_type(
     file: &Path,
     range_span: SourceSpan,
@@ -227,7 +226,7 @@ fn check_step_type(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let expected = match endpoint {
-        ScalarType::Int | ScalarType::Decimal => endpoint,
+        ScalarType::Int => endpoint,
         // date and instant step by a duration span.
         _ => ScalarType::Duration,
     };
@@ -245,9 +244,9 @@ fn check_step_type(
             ));
         }
         (Some(_), _) => {}
-        // No `by`: decimal and instant require one; int and date have a default.
+        // No `by`: instant requires one; int and date have a default.
         (None, _) => {
-            if matches!(endpoint, ScalarType::Decimal | ScalarType::Instant) {
+            if endpoint == ScalarType::Instant {
                 diagnostics.push(range_diagnostic(
                     file,
                     range_span,
@@ -274,9 +273,9 @@ fn article_for(scalar: ScalarType) -> String {
 }
 
 /// Reject a step that statically can never run. A zero step never progresses; a
-/// literal wrong-direction step over literal endpoints (`1..10 by -1`,
-/// `0.0..1.0 by -0.5`) is a dead loop. A variable endpoint or step is left to the
-/// runtime, where a wrong direction is simply an empty loop and a zero step faults.
+/// literal wrong-direction step over literal endpoints (`1..10 by -1`) is a dead
+/// loop. A variable endpoint or step is left to the runtime, where a wrong
+/// direction is simply an empty loop and a zero step faults.
 fn check_dead_loop(
     file: &Path,
     iterable: &marrow_syntax::Expression,
@@ -296,17 +295,11 @@ fn check_dead_loop(
         ));
         return;
     }
-    // The endpoints' relative order: integer endpoints compare as integers, decimal
-    // endpoints as decimals. A mismatched or non-literal pair yields `None` and is
-    // left to the runtime.
+    // The endpoints' relative order. A mismatched or non-literal pair yields
+    // `None` and is left to the runtime.
     let endpoints = literal_int_value(left)
         .zip(literal_int_value(right))
-        .map(|(lo, hi)| lo.cmp(&hi))
-        .or_else(|| {
-            literal_decimal_value(left)
-                .zip(literal_decimal_value(right))
-                .map(|(lo, hi)| lo.cmp(&hi))
-        });
+        .map(|(lo, hi)| lo.cmp(&hi));
     let Some(endpoints) = endpoints else {
         return;
     };
@@ -326,34 +319,12 @@ fn check_dead_loop(
 
 /// The direction of a literal step against zero — `Greater` ascending, `Less`
 /// descending, `Equal` for a zero step — or `None` for a non-literal step (or an
-/// omitted one, which defaults to the ascending unit step). Reads both the
-/// int/duration sign and a decimal literal's sign so a dead decimal loop is caught.
+/// omitted one, which defaults to the ascending unit step).
 fn literal_step_sign(step: Option<&marrow_syntax::Expression>) -> Option<Ordering> {
     let Some(step) = step else {
         return Some(Ordering::Greater);
     };
-    literal_int_sign(step)
-        .map(|sign| sign.cmp(&0))
-        .or_else(|| literal_decimal_value(step).map(|value| value.cmp(&Decimal::ZERO)))
-}
-
-/// The value of a literal decimal expression (`0.5`, `-0.5`), or `None` for a
-/// non-literal or non-decimal literal.
-fn literal_decimal_value(expr: &marrow_syntax::Expression) -> Option<Decimal> {
-    use marrow_syntax::{Expression, LiteralKind, UnaryOp};
-    match expr {
-        Expression::Literal {
-            kind: LiteralKind::Decimal,
-            text,
-            ..
-        } => Decimal::parse(text),
-        Expression::Unary {
-            op: UnaryOp::Neg,
-            operand,
-            ..
-        } => literal_decimal_value(operand).and_then(|value| Decimal::ZERO.checked_sub(value)),
-        _ => None,
-    }
+    literal_int_sign(step).map(|sign| sign.cmp(&0))
 }
 
 /// The signed value of a literal integer expression (`5`, `-1`), or `None` for a

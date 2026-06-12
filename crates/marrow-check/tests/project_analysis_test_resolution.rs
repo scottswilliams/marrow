@@ -520,7 +520,7 @@ fn analyze_project_suppresses_unknown_types_from_broken_configured_test_declarat
 }
 
 #[test]
-fn analyze_project_keeps_test_local_type_syntax_diagnostics_when_hidden_type_names_match() {
+fn analyze_project_keeps_test_local_unknown_type_diagnostics_when_hidden_type_names_match() {
     use marrow_check::{ProjectSources, analyze_project};
 
     let root = temp_project(
@@ -542,7 +542,7 @@ fn analyze_project_keeps_test_local_type_syntax_diagnostics_when_hidden_type_nam
     let path = root.join("tests/smoke_test.mw");
     let sources = ProjectSources::new().with(
         &path,
-        "fn smoke()\n    var n: map[Book,int]\n    var y: int = \"str\"\n",
+        "fn smoke()\n    var n: Nope\n    var y: int = \"str\"\n",
     );
 
     let snapshot = analyze_project(&root, &cfg, &sources, None).expect("analyze");

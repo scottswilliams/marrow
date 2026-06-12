@@ -167,7 +167,7 @@ over every configured source and test file.
 | `check.non_constant_const` | A `const` initializer is not a constant expression. |
 | `check.loop_mutates_traversed_layer` | A loop over a saved layer mutates that same layer. The static counterpart of `run.traversal`. |
 | `check.neighbor_unsupported` | `next`/`prev` targets a shape with no single key level to seek: a composite-identity record or an index branch. |
-| `check.range` | A range-for header is ill-formed: the endpoints are not the same steppable type, or the `by` step does not match them (a number for `int`/`decimal`, a positive duration for `date`/`instant`). `decimal` and `instant` require an explicit step; a zero step, a literal step pointing away from literal endpoints (a dead loop), a negated duration on a temporal range, or a `by` on a non-range iterable is rejected. |
+| `check.range` | A range-for header is ill-formed: the endpoints are not the same steppable type, or the `by` step does not match them (an `int` for `int`, a positive duration for `date`/`instant`). `instant` requires an explicit step; a zero step, a literal step pointing away from literal endpoints (a dead loop), a negated duration on a temporal range, or a `by` on a non-range iterable is rejected. |
 | `check.range_value` | A range expression appears outside a `for` iterable. Ranges are loop shapes, not values. |
 | `check.collection_unsupported` | `values` or `entries` is applied to an address-only collection, such as a non-unique index branch, that has no materialized values distinct from its keys. |
 | `check.private_enum` | A cross-module enum reference names an enum that exists but is not `pub`; the enum resolves, the visibility does not. |
@@ -187,7 +187,6 @@ Resource-schema rules. Reported during a project check alongside `check.*`.
 | `schema.parent_not_category` | An enum member has nested members but is not a `category`; a grouping node must be marked `category`, since a value selects a concrete member under it. |
 | `schema.duplicate_root_owner` | Two stores declare the same saved root (a cross-declaration rule the project checker reports). |
 | `schema.unknown_in_saved` | A managed saved field or key is typed `unknown`; saved schemas use concrete types. |
-| `schema.unsupported_type` | A parsed type spelling is only supported in a narrower declaration context, such as `map[K, V]` saved keyed-leaf member sugar. |
 | `schema.key_member_collision` | A top-level field or layer shares a name with an identity key. |
 | `schema.unknown_index_arg` | An index argument does not resolve to an identity key or a top-level field. |
 | `schema.unorderable_key` | A saved key has a type with no order-preserving key encoding (currently `decimal`). |

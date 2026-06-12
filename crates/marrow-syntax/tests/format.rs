@@ -106,7 +106,6 @@ fn formats_expressions_to_canonical_source() {
         "std::math::PI",
         "^books",
         "^books(id).title",
-        "^books(id).\"old-title\"",
         "nextId(^books)",
         "shelf::make(17)",
         "save(book: draft, total: total)",

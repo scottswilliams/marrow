@@ -359,9 +359,9 @@ struct KeyedScan<'a> {
 
 impl KeyedScan<'_> {
     /// Descend the member tree of a record or keyed entry, collecting per-entry presence of
-    /// each keyed-layer leaf and keyed-leaf-map value. A keyed group pages every entry and
-    /// recurses with its key appended; a keyed-leaf-map records the value cell under each entry
-    /// key; an unkeyed group descends in place; a top-level leaf records directly.
+    /// each keyed leaf. A keyed group pages every entry and recurses with its key appended;
+    /// a keyed leaf records the value cell under each entry key; an unkeyed group descends
+    /// in place; a top-level leaf records directly.
     fn descend(
         &mut self,
         identity: &[SavedKey],
@@ -377,8 +377,8 @@ impl KeyedScan<'_> {
             member_path.push(DataPathSegment::Member(member_id.clone()));
             if !member.key_params.is_empty() {
                 // A keyed layer: page each existing entry under the layer path. A keyed group
-                // recurses into each entry; a keyed-leaf-map (`map[K, V]`) holds its value
-                // directly under the entry key, recorded against the map member's obligation.
+                // recurses into each entry; a keyed leaf holds its value directly under the
+                // entry key, recorded against the member's obligation.
                 let (store, store_id) = (self.store, self.store_id);
                 for_each_entry_key(store, store_id, identity, &member_path, |entry_key| {
                     let mut entry_path = member_path.clone();
@@ -450,8 +450,7 @@ fn keyed_leaf_obligations(
 }
 
 /// Walk the member tree, emitting a keyed-leaf obligation per required or retyped leaf reached
-/// through a keyed layer. `in_keyed` becomes true once the walk crosses a keyed layer; a
-/// `map[K, V]` member is itself keyed by its own key params. The obligation `path` is the
+/// through a keyed layer. `in_keyed` becomes true once the walk crosses a keyed layer. The obligation `path` is the
 /// static member path only above the first keyed layer, where a retype probe can find old data
 /// of a different shape; a leaf below a keyed ancestor carries none and relies on the per-entry
 /// scan, which knows each entry's key.

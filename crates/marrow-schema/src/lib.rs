@@ -19,18 +19,15 @@ pub mod stdlib;
 // and downstream crates share one import path for the storable scalars.
 pub use marrow_store::value::ScalarType;
 
-pub use compile::{
-    compile_enum, compile_resource, compile_store, compile_stored_resource,
-    contains_map_type_syntax,
-};
+pub use compile::{compile_enum, compile_resource, compile_store, compile_stored_resource};
 pub use enums::{EnumMemberSchema, EnumSchema, MemberPathResolution};
 pub use errors::{
     SCHEMA_CATEGORY_LEAF, SCHEMA_DUPLICATE_MEMBER, SCHEMA_INDEX_MISSING_IDENTITY_KEYS,
     SCHEMA_INDEX_REQUIRES_KEYED_ROOT, SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_NESTED_INDEX_ARG,
     SCHEMA_NON_ENUM_NAMED_FIELD, SCHEMA_NONSCALAR_KEY, SCHEMA_PARENT_NOT_CATEGORY,
     SCHEMA_UNKNOWN_IN_SAVED, SCHEMA_UNKNOWN_INDEX_ARG, SCHEMA_UNORDERABLE_KEY,
-    SCHEMA_UNSUPPORTED_TYPE, SchemaDuplicateTarget, SchemaError, SchemaErrorKind, SchemaKeyTarget,
-    SchemaNameCollision, SchemaSavedUnknownTarget, SchemaUnsupportedTypeTarget,
+    SchemaDuplicateTarget, SchemaError, SchemaErrorKind, SchemaKeyTarget, SchemaNameCollision,
+    SchemaSavedUnknownTarget,
 };
 pub use types::{IndexSchema, KeyDef, Node, NodeKind, ResourceSchema, StoreSchema, Type};
 pub use validate::{

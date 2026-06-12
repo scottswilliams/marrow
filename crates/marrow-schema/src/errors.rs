@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-use marrow_syntax::{FieldDecl, KeyParam, SourceSpan};
+use marrow_syntax::SourceSpan;
 
 use crate::Type;
 
@@ -36,10 +36,6 @@ pub enum SchemaErrorKind {
     },
     UnknownInSaved {
         target: SchemaSavedUnknownTarget,
-        name: String,
-    },
-    UnsupportedType {
-        target: SchemaUnsupportedTypeTarget,
         name: String,
     },
     KeyMemberCollision {
@@ -111,12 +107,6 @@ impl SchemaSavedUnknownTarget {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SchemaUnsupportedTypeTarget {
-    Field,
-    Key,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SchemaNameCollision {
     IdentityKeyWithMember { key: String },
@@ -168,11 +158,6 @@ pub const SCHEMA_PARENT_NOT_CATEGORY: &str = "schema.parent_not_category";
 /// boundary value; saved schemas use concrete field and key types. Local-only
 /// resources may use `unknown`.
 pub const SCHEMA_UNKNOWN_IN_SAVED: &str = "schema.unknown_in_saved";
-
-/// A parsed type spelling is only supported in a narrower declaration context.
-/// Currently `map[K, V]` is declaration sugar for saved keyed-leaf members
-/// only; it is not a general local or nested map type.
-pub const SCHEMA_UNSUPPORTED_TYPE: &str = "schema.unsupported_type";
 
 /// A top-level field or layer shares a name with an identity key. Identity keys
 /// live in the saved path, so a stored member of the same name is ambiguous.
@@ -275,46 +260,6 @@ pub(crate) fn key_index_collision_error(index: &str, span: SourceSpan) -> Schema
              and indexes share the store namespace"
         ),
         span,
-    }
-}
-
-pub(crate) fn unsupported_map_key_param_error(
-    key: &KeyParam,
-    span: SourceSpan,
-) -> Option<SchemaError> {
-    crate::compile::contains_map_type(&key.ty.text)
-        .then(|| unsupported_map_key_error(&key.name, span))
-}
-
-pub(crate) fn unsupported_map_key_error(name: &str, span: SourceSpan) -> SchemaError {
-    SchemaError {
-        kind: SchemaErrorKind::UnsupportedType {
-            target: SchemaUnsupportedTypeTarget::Key,
-            name: name.to_string(),
-        },
-        code: SCHEMA_UNSUPPORTED_TYPE,
-        message: format!(
-            "key `{}` uses `map[...]`, which is only supported as saved \
-             keyed-leaf member sugar",
-            name
-        ),
-        span,
-    }
-}
-
-pub(crate) fn unsupported_map_field_error(field: &FieldDecl) -> SchemaError {
-    SchemaError {
-        kind: SchemaErrorKind::UnsupportedType {
-            target: SchemaUnsupportedTypeTarget::Field,
-            name: field.name.clone(),
-        },
-        code: SCHEMA_UNSUPPORTED_TYPE,
-        message: format!(
-            "field `{}` uses `map[...]`, which is only supported as unrequired \
-             saved keyed-leaf member sugar",
-            field.name
-        ),
-        span: field.span,
     }
 }
 

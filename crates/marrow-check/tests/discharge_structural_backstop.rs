@@ -13,7 +13,7 @@ use support_discharge::*;
 /// NEGATIVE GUARD: the structural backstop must not over-fire. An identity-preserving rename of
 /// a keyed layer (same stable id, same key shape, only the source spelling moved) keeps its
 /// structural signature unchanged, so it stays activatable — the rename is a catalog-only move,
-/// not a structural divergence. A keyed-leaf map carries the rename cleanly: its stable id and
+/// not a structural divergence. A keyed leaf carries the rename cleanly: its stable id and
 /// `[int]string` signature are preserved, so the backstop sees no divergence.
 #[test]
 fn renamed_keyed_layer_with_unchanged_shape_does_not_overfire() {
@@ -66,7 +66,7 @@ fn renamed_keyed_layer_with_unchanged_shape_does_not_overfire() {
     );
     assert!(
         matches!(verdict_for(&result, &layer_id), Verdict::CatalogOnly),
-        "a renamed keyed-leaf map with an unchanged shape is a catalog-only move, got {:#?}",
+        "a renamed keyed leaf with an unchanged shape is a catalog-only move, got {:#?}",
         verdict_for(&result, &layer_id)
     );
 }

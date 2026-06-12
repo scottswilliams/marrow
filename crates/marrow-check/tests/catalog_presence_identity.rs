@@ -258,12 +258,12 @@ fn committed_leaf_member_records_its_token_in_the_structural_signature_only() {
 }
 
 #[test]
-fn committed_keyed_leaf_map_member_folds_its_key_shape_into_the_signature() {
-    // A keyed-leaf `map[K, V]` member is a leaf position whose accepted signature folds its key
+fn committed_keyed_leaf_member_folds_its_key_shape_into_the_signature() {
+    // A keyed leaf is a leaf position whose accepted signature folds its key
     // shape onto the value type, so a change to its key arity, key type, or value type is caught
     // as one leaf type change. The committed baseline records `leaf:[<key>]<value>`, proving the
     // production mint carries the key prefix, not only a hand-built fixture.
-    let root = temp_project("catalog-keyed-leaf-map-token", |root| {
+    let root = temp_project("catalog-keyed-leaf-token", |root| {
         write(
             root,
             "src/books.mw",
@@ -282,7 +282,7 @@ fn committed_keyed_leaf_map_member_folds_its_key_shape_into_the_signature() {
     assert_eq!(
         tags.accepted_struct.as_deref(),
         Some("leaf:[int]string"),
-        "a keyed-leaf map member folds its [key] shape onto the value in its leaf signature"
+        "a keyed leaf folds its [key] shape onto the value in its leaf signature"
     );
 }
 

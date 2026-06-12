@@ -1,17 +1,13 @@
-//! Member sugar: `sequence[T]` and `map[K, V]` desugar to keyed-leaf layers
-//! identical to their canonical spellings, top-level and nested. Also pins where
-//! a `map` is rejected as an unsupported saved type (local resources, nested in a
-//! sequence, in identity/key positions, and as a `required` member).
+//! Member sugar: `sequence[T]` desugars to a keyed-leaf layer identical to its
+//! canonical spelling, top-level and nested.
 
 use marrow_schema::{
-    Node, NodeKind, ResourceSchema, SCHEMA_UNSUPPORTED_TYPE, ScalarType, SchemaError,
-    SchemaErrorKind, SchemaUnsupportedTypeTarget, Type, check_saved_member_rules, compile_resource,
-    compile_store, compile_stored_resource,
+    Node, NodeKind, ResourceSchema, ScalarType, SchemaError, Type, check_saved_member_rules,
+    compile_resource, compile_store, compile_stored_resource,
 };
 use marrow_syntax::{Declaration, parse_source};
 
 mod common;
-use common::{assert_kind, codes};
 
 /// Compile `source`'s resource, asserting it produced no schema errors.
 fn compile_ok(source: &str) -> ResourceSchema {
@@ -48,11 +44,6 @@ fn compile_source(source: &str) -> (ResourceSchema, Vec<SchemaError>) {
     }
 }
 
-fn compile_source_errors(source: &str) -> Vec<SchemaError> {
-    let (_, errors) = compile_source(source);
-    errors
-}
-
 /// The top-level node named `name` (a keyed leaf or a group).
 fn layer<'a>(schema: &'a ResourceSchema, name: &str) -> &'a Node {
     schema
@@ -65,13 +56,6 @@ fn layer<'a>(schema: &'a ResourceSchema, name: &str) -> &'a Node {
 /// The top-level nodes classified by the production schema API as plain fields.
 fn top_level_fields(schema: &ResourceSchema) -> impl Iterator<Item = &Node> {
     schema.members.iter().filter(|node| node.is_plain_field())
-}
-
-fn unsupported(target: SchemaUnsupportedTypeTarget, name: &str) -> SchemaErrorKind {
-    SchemaErrorKind::UnsupportedType {
-        target,
-        name: name.to_string(),
-    }
 }
 
 #[test]
@@ -113,22 +97,6 @@ fn sequence_member_matches_the_canonical_keyed_leaf() {
 }
 
 #[test]
-fn map_member_matches_the_canonical_keyed_leaf() {
-    // `scores: map[string, int]` is sugar for `scores(key: string): int`.
-    let sugar = layer(
-        &compile_ok("resource Book\n    scores: map[string, int]\nstore ^books(id: int): Book\n"),
-        "scores",
-    )
-    .clone();
-    let canonical = layer(
-        &compile_ok("resource Book\n    scores(key: string): int\nstore ^books(id: int): Book\n"),
-        "scores",
-    )
-    .clone();
-    assert_eq!(sugar, canonical);
-}
-
-#[test]
 fn nested_sequence_member_desugars_inside_a_group() {
     // A sequence nested inside a group desugars the same way.
     let source = "\
@@ -148,113 +116,4 @@ store ^books(id: int): Book
     assert_eq!(notes.key_params.len(), 1);
     assert_eq!(notes.key_params[0].name, "pos");
     assert_eq!(notes.key_params[0].ty, Type::Scalar(ScalarType::Int));
-}
-
-#[test]
-fn nested_map_member_desugars_inside_a_group() {
-    let source = "\
-resource Book
-    versions(version: int)
-        scores: map[string, int]
-store ^books(id: int): Book
-";
-    let schema = compile_ok(source);
-    let versions = layer(&schema, "versions");
-    let scores = &versions.members[0];
-    assert!(
-        matches!(&scores.kind, NodeKind::Slot { ty, .. } if *ty == Type::Scalar(ScalarType::Int)),
-        "scores should desugar to a nested keyed-leaf layer"
-    );
-    assert_eq!(scores.name, "scores");
-    assert_eq!(scores.key_params.len(), 1);
-    assert_eq!(scores.key_params[0].name, "key");
-    assert_eq!(scores.key_params[0].ty, Type::Scalar(ScalarType::Str));
-}
-
-#[test]
-fn map_member_sugar_is_rejected_on_local_resources() {
-    let source = "\
-resource Draft
-    scores: map[string, int]
-";
-    let errors = compile_source_errors(source);
-    assert_eq!(codes(&errors), [SCHEMA_UNSUPPORTED_TYPE]);
-    assert_kind(
-        &errors[0],
-        unsupported(SchemaUnsupportedTypeTarget::Field, "scores"),
-    );
-}
-
-#[test]
-fn map_type_nested_inside_sequence_is_rejected() {
-    let source = "\
-resource Book
-    scores: sequence[map[string, int]]
-store ^books(id: int): Book
-";
-    let errors = compile_source_errors(source);
-    assert_eq!(codes(&errors), [SCHEMA_UNSUPPORTED_TYPE]);
-    assert_kind(
-        &errors[0],
-        unsupported(SchemaUnsupportedTypeTarget::Field, "scores"),
-    );
-}
-
-#[test]
-fn map_type_in_identity_key_is_rejected() {
-    let source = "\
-resource Book
-    title: string
-store ^books(id: map[string, int]): Book
-";
-    let errors = compile_source_errors(source);
-    assert_eq!(codes(&errors), [SCHEMA_UNSUPPORTED_TYPE]);
-    assert_kind(
-        &errors[0],
-        unsupported(SchemaUnsupportedTypeTarget::Key, "id"),
-    );
-}
-
-#[test]
-fn map_type_in_key_param_is_rejected() {
-    let source = "\
-resource Draft
-    scores(k: map[string, int]): int
-";
-    let errors = compile_source_errors(source);
-    assert_eq!(codes(&errors), [SCHEMA_UNSUPPORTED_TYPE]);
-    assert_kind(
-        &errors[0],
-        unsupported(SchemaUnsupportedTypeTarget::Key, "k"),
-    );
-}
-
-#[test]
-fn map_type_as_map_key_is_rejected_once() {
-    let source = "\
-resource Book
-    scores: map[map[string, int], int]
-store ^books(id: int): Book
-";
-    let errors = compile_source_errors(source);
-    assert_eq!(codes(&errors), [SCHEMA_UNSUPPORTED_TYPE]);
-    assert_kind(
-        &errors[0],
-        unsupported(SchemaUnsupportedTypeTarget::Key, "key"),
-    );
-}
-
-#[test]
-fn required_map_member_sugar_is_rejected() {
-    let source = "\
-resource Book
-    required scores: map[string, int]
-store ^books(id: int): Book
-";
-    let errors = compile_source_errors(source);
-    assert_eq!(codes(&errors), [SCHEMA_UNSUPPORTED_TYPE]);
-    assert_kind(
-        &errors[0],
-        unsupported(SchemaUnsupportedTypeTarget::Field, "scores"),
-    );
 }

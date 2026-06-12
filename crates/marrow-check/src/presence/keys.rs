@@ -130,21 +130,17 @@ pub(super) fn expression_key(expr: &CheckedExpr, scope: &NameScope) -> ExprKey {
                 bindings,
             }
         }
-        CheckedExpr::Field {
-            base, name, quoted, ..
-        } => {
+        CheckedExpr::Field { base, name, .. } => {
             let base = expression_key(base, scope);
             ExprKey {
-                text: format!("field:{}:{quoted}:{name}", base.text),
+                text: format!("field:{}:{name}", base.text),
                 bindings: base.bindings,
             }
         }
-        CheckedExpr::OptionalField {
-            base, name, quoted, ..
-        } => {
+        CheckedExpr::OptionalField { base, name, .. } => {
             let base = expression_key(base, scope);
             ExprKey {
-                text: format!("optional:{}:{quoted}:{name}", base.text),
+                text: format!("optional:{}:{name}", base.text),
                 bindings: base.bindings,
             }
         }

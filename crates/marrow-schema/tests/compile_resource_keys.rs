@@ -1,5 +1,5 @@
-//! Saved-key type rules: a key (identity, keyed-layer parameter, map key, or
-//! index argument) must be an orderable scalar. `decimal`, bare named types,
+//! Saved-key type rules: a key (identity, keyed-layer parameter, or index
+//! argument) must be an orderable scalar. `decimal`, bare named types,
 //! resources, enums, sequences, and identity values are rejected; an orderable
 //! scalar key compiles clean.
 
@@ -134,24 +134,6 @@ store ^books(id: int): Book
         &errors[0],
         SchemaErrorKind::UnorderableKey {
             target: key_param("ts"),
-            ty: Type::Scalar(ScalarType::Decimal),
-        },
-    );
-}
-
-#[test]
-fn map_member_with_a_decimal_key_type_is_an_error() {
-    let source = "\
-resource Book
-    scores: map[decimal, int]
-store ^books(id: int): Book
-";
-    let errors = compile_source_errors(source);
-    assert_eq!(codes(&errors), [SCHEMA_UNORDERABLE_KEY]);
-    assert_kind(
-        &errors[0],
-        SchemaErrorKind::UnorderableKey {
-            target: key_param("key"),
             ty: Type::Scalar(ScalarType::Decimal),
         },
     );

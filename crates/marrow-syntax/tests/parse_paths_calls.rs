@@ -126,23 +126,16 @@ fn parses_calls_paths_and_field_access() {
 }
 
 #[test]
-fn parses_quoted_field_segments() {
+fn quoted_field_segments_are_parse_errors() {
     let parsed = parse_source("const Old = ^books(id).\"old-title\"\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
-    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
-        panic!("expected const declaration");
-    };
-    let Some(Expression::Field {
-        name, quoted, base, ..
-    }) = &decl.value
-    else {
-        panic!("expected field access, got {:?}", decl.value);
-    };
-    assert_eq!(name, "old-title");
-    assert!(*quoted, "segment should be marked quoted");
+    assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
     assert!(
-        matches!(base.as_ref(), Expression::Call { .. }),
-        "base should be ^books(id): {base:?}"
+        parsed.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("quoted field segments are not part of ordinary expression grammar")
+            && diagnostic.message.contains("operator maintenance mode")),
+        "{:#?}",
+        parsed.diagnostics
     );
 
     // A plain identifier field is not quoted.
@@ -174,7 +167,7 @@ fn unterminated_quoted_field_segment_does_not_panic() {
 #[test]
 fn keyword_field_name_reports_a_parse_error() {
     // `at` remains a reserved word. Used as a bare field
-    // name it violates `field_name = identifier | string_lit`, so the parser
+    // name it violates `field_name = identifier`, so the parser
     // must report it rather than silently dropping the statement.
     let source = "fn touch(id: int)\n    ^events(id).at = now\n";
     let parsed = parse_source(source);
@@ -220,18 +213,15 @@ fn keyword_field_name_reports_once_not_also_expected_a_statement() {
 }
 
 #[test]
-fn quoted_keyword_field_name_parses() {
-    // A reserved word can name data by quoting it after the dot. `."at"` is a
-    // string-literal field segment, so it parses cleanly.
+fn quoted_keyword_field_name_reports_a_parse_error() {
     let parsed = parse_source("const At = ^events(id).\"at\"\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
-    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
-        panic!("expected const declaration");
-    };
     assert!(
-        matches!(&decl.value, Some(Expression::Field { name, quoted: true, .. }) if name == "at"),
-        "expected quoted field `at`, got {:?}",
-        decl.value
+        parsed.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("quoted field segments are not part of ordinary expression grammar")
+            && diagnostic.message.contains("operator maintenance mode")),
+        "{:#?}",
+        parsed.diagnostics
     );
 }
 

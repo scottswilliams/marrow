@@ -370,10 +370,7 @@ fn check_type_annotation(
         return;
     }
     let unknown_identity = unknown_identity_type_ref(ty, context);
-    if marrow_schema::contains_map_type_syntax(&ty.text)
-        || unknown_identity.is_some()
-        || !annotation_type_known(&schema_type, &resolved_type)
-    {
+    if unknown_identity.is_some() || !annotation_type_known(&schema_type, &resolved_type) {
         let name = unknown_identity.unwrap_or_else(|| ty.text.trim().to_string());
         diagnostics.push(
             CheckDiagnostic::error(

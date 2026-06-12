@@ -212,18 +212,21 @@ impl<'a> Seed<'a> {
             .expect("write keyed member value");
     }
 
-    /// Seed a keyed-leaf-layer (`map[K, V]`) value, at the path the runtime writes:
-    /// `[Member(map_id), Key(entry_key)]` under the record identity. The map field is
-    /// itself the leaf, so the value cell sits directly under its entry key with no
+    /// Seed a keyed-leaf value, at the path the runtime writes:
+    /// `[Member(leaf_id), Key(entry_key)]` under the record identity. The keyed leaf is
+    /// itself the value cell, so it sits directly under its entry key with no
     /// sub-member. The bytes are written exactly as the prior schema's writes did, so a
     /// retype case can seed a value of the old V type regardless of the current one.
-    pub fn keyed_leaf(&self, id: i64, map: &str, entry: SavedKey, bytes: Vec<u8>) {
-        let map_id = CatalogId::new(keyed_leaf_catalog_id(self.place, map)).expect("map id");
+    pub fn keyed_leaf(&self, id: i64, leaf: &str, entry: SavedKey, bytes: Vec<u8>) {
+        let leaf_id = CatalogId::new(keyed_leaf_catalog_id(self.place, leaf)).expect("leaf id");
         self.store
             .write_data_value(
                 &self.store_id(),
                 &[SavedKey::Int(id)],
-                &[DataPathSegment::Member(map_id), DataPathSegment::Key(entry)],
+                &[
+                    DataPathSegment::Member(leaf_id),
+                    DataPathSegment::Key(entry),
+                ],
                 bytes,
             )
             .expect("write keyed-leaf value");

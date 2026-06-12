@@ -1,7 +1,6 @@
 mod support;
 
 use marrow_check::{DiagnosticPayload, MarrowType, ScalarType, check_project};
-use marrow_schema::{SchemaErrorKind, SchemaUnsupportedTypeTarget};
 
 use support::{
     assert_clean, check_module, check_module_report, check_script, config, temp_project, with_code,
@@ -23,34 +22,6 @@ fn reports_unknown_types_in_signatures_and_consts() {
             "{name}: {found:#?}"
         );
     }
-}
-
-#[test]
-fn map_annotations_outside_resource_members_are_not_supported_types() {
-    let report = check_module_report(
-        "map-type-annotation",
-        "module m\nresource Draft\n    scores: map[string, int]\nconst X: map[string, int] = 1\nfn f(a: map[string, int]): map[string, int]\n    return 1\nfn g()\n    const c: map[string, int] = 1\n    var v: map[string, int]\n    var counts(k: map[string, int]): int\n    try\n        return\n    catch e: map[string, int]\n        return\n",
-    );
-
-    let found = with_code(&report, "check.unknown_type");
-    assert_eq!(found.len(), 7, "{:#?}", report.diagnostics);
-    assert!(
-        found.iter().all(|diagnostic| diagnostic.payload
-            == DiagnosticPayload::UnknownType(marrow_schema::Type::Named(
-                "map[string,int]".into()
-            ))),
-        "{found:#?}"
-    );
-    let schema = with_code(&report, "schema.unsupported_type");
-    assert_eq!(schema.len(), 1, "{:#?}", report.diagnostics);
-    assert_eq!(
-        schema[0].payload,
-        DiagnosticPayload::Schema(SchemaErrorKind::UnsupportedType {
-            target: SchemaUnsupportedTypeTarget::Field,
-            name: "scores".into(),
-        }),
-        "{schema:#?}"
-    );
 }
 
 #[test]
