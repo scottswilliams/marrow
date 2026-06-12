@@ -55,7 +55,10 @@ pub(super) fn classify_absent_source_entries(
         let entry_id = catalog_id(&entry.stable_id)?;
         match absent_entry_state(program, entry) {
             AbsentEntryState::RetiredThisProposal => {
-                if retired_member_is_nested(program, entry) {
+                if entry.kind == CatalogEntryKind::Store {
+                    let populated = dropped_store_record_count(store, entry)?;
+                    acc.push(entry_id, Verdict::DestructiveDecisionRequired { populated })?;
+                } else if retired_member_is_nested(program, entry) {
                     acc.diagnostic(
                         entry_id.clone(),
                         format!(
@@ -90,7 +93,7 @@ pub(super) fn classify_absent_source_entries(
                             reason: RepairReason::RetireRequired { index: index_id },
                         },
                     )?;
-                } else if dropped_store_holds_records(program, store, entry)? {
+                } else if dropped_store_holds_data(store, entry)? {
                     // Dropping a whole resource takes its store with it, so the now-absent
                     // member resolves no owning root and its own scan finds nothing — yet the
                     // store subtree still holds every record. Fence the store entry once,
@@ -295,43 +298,22 @@ fn absent_entry_state(program: &CheckedProgram, entry: &CatalogEntry) -> AbsentE
     }
 }
 
-/// Whether a source-dropped store still holds at least one record, streamed and short-circuited
-/// on the first one. A dropped store's cells were written under its own accepted stable id, so
-/// the store is addressed by `entry.stable_id`, and the record arity is read from the accepted
-/// identity-key shape (a keyless singleton or an unrecorded shape descends one level). Only a
-/// store entry holds records; every other kind returns `false`. A store with no records has no
-/// data to orphan and stays a free no-op.
-fn dropped_store_holds_records(
-    program: &CheckedProgram,
-    store: &TreeStore,
-    entry: &CatalogEntry,
-) -> Result<bool, StoreError> {
-    if entry.kind != CatalogEntryKind::Store {
-        return Ok(false);
-    }
-    let store_id = catalog_id(&entry.stable_id)?;
-    let arity = accepted_store_arity(program, &entry.stable_id);
-    let mut found = false;
-    store.for_each_record(&store_id, arity, &mut |_identity| {
-        found = true;
-        Ok(())
-    })?;
-    Ok(found)
+/// Whether a source-dropped store still holds data. A dropped store's cells were written under
+/// its own accepted stable id, so no current source shape is needed to prove that activation
+/// would orphan them.
+fn dropped_store_holds_data(store: &TreeStore, entry: &CatalogEntry) -> Result<bool, StoreError> {
+    Ok(dropped_store_record_count(store, entry)? > 0)
 }
 
-/// The record arity of a store from its accepted identity-key shape: the count of comma-joined
-/// key types the shape records (`int` is one, `int,string` is two). A keyless singleton renders
-/// the empty shape and a store recorded before key shapes were tracked has none; both descend a
-/// single identity level, matching [`TreeStore::for_each_record`]'s floor.
-fn accepted_store_arity(program: &CheckedProgram, store_stable_id: &str) -> usize {
-    program
-        .catalog
-        .accepted_entries
-        .iter()
-        .find(|entry| entry.kind == CatalogEntryKind::Store && entry.stable_id == store_stable_id)
-        .and_then(|entry| entry.accepted_key_shape.as_deref())
-        .filter(|shape| !shape.is_empty())
-        .map_or(1, |shape| shape.split(',').count())
+fn dropped_store_record_count(
+    store: &TreeStore,
+    entry: &CatalogEntry,
+) -> Result<usize, StoreError> {
+    if entry.kind != CatalogEntryKind::Store {
+        return Ok(0);
+    }
+    let store_id = catalog_id(&entry.stable_id)?;
+    store.data_record_count(&store_id)
 }
 
 /// Count records that carry a value for the dropped member, streamed, never materialized. Only

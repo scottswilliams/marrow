@@ -155,6 +155,95 @@ fn destructive_retire_aborts_without_approval_and_deletes_with_matching_approval
     }
 }
 
+#[test]
+fn explicit_store_retire_deletes_store_data() {
+    let root = temp_project("apply-store-retire", |root| {
+        write(
+            root,
+            "src/library.mw",
+            "module library\n\
+             resource Settings\n\
+             \x20   theme: string\n\
+             resource Author\n\
+             \x20   required name: string\n\
+             store ^settings: Settings\n\
+             store ^authors(id: int): Author\n\
+             pub fn add(name: string): Id(^authors)\n\
+             \x20   return nextId(^authors)\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let settings_place = root_place(&accepted, "settings");
+    let settings_store_id = store_id_of(&settings_place);
+    let theme_id = CatalogId::new(member_catalog_id(&settings_place, "theme")).unwrap();
+
+    let store = TreeStore::memory();
+    store.write_node(&settings_store_id, &[]).unwrap();
+    store
+        .write_data_value(
+            &settings_store_id,
+            &[],
+            &[DataPathSegment::Member(theme_id.clone())],
+            encode_value(&Scalar::Str("dark".into())).unwrap(),
+        )
+        .unwrap();
+
+    write(
+        &root,
+        "src/library.mw",
+        "module library\n\
+         resource Author\n\
+         \x20   required name: string\n\
+         store ^authors(id: int): Author\n\
+         evolve\n\
+         \x20   retire ^settings\n\
+         pub fn add(name: string): Id(^authors)\n\
+         \x20   return nextId(^authors)\n",
+    );
+    let program = checked(&root);
+    let witness = witness(&program, &store);
+
+    assert!(!witness.is_activatable(), "{witness:#?}");
+    let result = apply(&witness, &program, &store, true, None);
+    assert!(
+        matches!(result, Err(ApplyError::ApprovalRequired { .. })),
+        "store retire must require approval, got {result:#?}"
+    );
+    assert!(
+        store
+            .data_subtree_exists(&settings_store_id, &[], &[])
+            .expect("store node exists"),
+        "store retire without approval must not drop data"
+    );
+
+    let approval = Approval {
+        retires: vec![(settings_store_id.clone(), 1)],
+    };
+    let outcome = apply(&witness, &program, &store, true, Some(&approval)).expect("apply");
+    assert_eq!(outcome.receipt.records_retired, 1);
+    assert_eq!(
+        outcome.receipt.records_retired_by_id,
+        vec![(settings_store_id.clone(), 1)]
+    );
+    assert!(
+        !store
+            .data_subtree_exists(&settings_store_id, &[], &[])
+            .expect("store node deleted"),
+        "approved store retire drops the store subtree"
+    );
+    assert!(
+        store
+            .read_data_value(
+                &settings_store_id,
+                &[],
+                &[DataPathSegment::Member(theme_id)]
+            )
+            .expect("read retired theme")
+            .is_none(),
+        "approved store retire drops member cells below the store"
+    );
+}
+
 /// A multi-retire approval is matched per id: each approved count must equal the
 /// witness count for that exact id. A single member whose approved count drifts from
 /// the witness is refused, and when two retired members hold different populated counts,

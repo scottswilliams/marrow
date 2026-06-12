@@ -16,7 +16,7 @@ derived index rebuild, or checked transform. `is_activatable` is false for the
 two blocking variants: destructive approval still needs scoped operator input,
 and repair still needs the snapshot fixed before activation.
 
-`RepairReason` is the typed fail-closed cause: missing required member, rejected default, invalid stored value, unique-index collision or unprobeability, retire required (a dropped member an index still reads, or `PopulatedDropRequiresRetire` for a populated drop with no retire intent), undecodable transform input, a type/key-shape change that needs a transform, and `StructuralDivergence` — the default-deny backstop.
+`RepairReason` is the typed fail-closed cause: missing required member, rejected default, invalid stored value, unique-index collision or unprobeability, retire required (a dropped member an index still reads, or `PopulatedDropRequiresRetire` for a populated member/store drop with no retire intent), undecodable transform input, a type/key-shape change that needs a transform, and `StructuralDivergence` — the default-deny backstop.
 
 ## Load-bearing invariants
 

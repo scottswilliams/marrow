@@ -4,7 +4,8 @@ Builtins are always available. Documentation uses their full names.
 
 ## Presence And Reads
 
-`exists(path): bool` returns true when a value or child tree exists:
+`exists(path): bool` returns true when the addressed record node, value, or
+child tree exists:
 
 ```mw
 if exists(^books(id))
@@ -44,7 +45,7 @@ below name the common walk shapes.
 | `keys(collection)` | Element addresses |
 | `values(collection)` | Stored values |
 | `entries(collection)` | Address and stored-value bindings in a two-name loop head |
-| `count(path)` | Populated immediate children, or scalar presence |
+| `count(path)` | Populated immediate children, or path presence |
 | `reversed(iterable)` | The same iterable shape in reverse key order |
 | `next(element)` | The nearest stored neighbor identity in key order |
 | `prev(element)` | The nearest stored neighbor identity, the other way |
@@ -81,11 +82,11 @@ index maintenance counts as a write to the affected index layer.
 `count(path)` returns:
 
 - `0` when the path is not populated and has no children,
-- `1` when the path is a scalar value,
+- `1` when the path is a scalar value or record node,
 - the number of immediate children when the path is a tree.
 
 If a path has both a value and children, `count` returns the number of
-immediate children. Use `exists(path)` for scalar presence.
+immediate children. Use `exists(path)` for a direct presence check.
 
 `count(...)` is a one-layer tree scan, not a maintained counter. For hot
 paths, store an explicit counter or use a declared index.

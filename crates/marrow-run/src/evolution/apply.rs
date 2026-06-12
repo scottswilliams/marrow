@@ -16,7 +16,7 @@ use crate::write_plan::{CommitIdAllocation, PlanStep, WritePlan};
 use super::admission::{catalog_id_order, expected_retire_counts, gate_obligations};
 use super::backfill::{
     stage_default_backfill, stage_default_presence_receipt, stage_index_drop, stage_index_rebuild,
-    stage_retire_deletes,
+    stage_retire_deletes, stage_store_retire_delete,
 };
 use super::lifecycle::retired_proposal_ids;
 use super::transform::{TransformVisit, visit_transform_writes};
@@ -386,7 +386,7 @@ fn retire_receipt_counts(
     destructive_counts: &[(CatalogId, usize)],
 ) -> Result<Vec<(CatalogId, usize)>, ApplyError> {
     let mut counts = Vec::new();
-    for id in retired_resource_member_ids(program)? {
+    for id in retired_destructive_ids(program)? {
         let count = destructive_counts
             .iter()
             .find_map(|(destructive_id, count)| (destructive_id == &id).then_some(*count))
@@ -398,8 +398,10 @@ fn retire_receipt_counts(
     Ok(counts)
 }
 
-fn retired_resource_member_ids(program: &CheckedProgram) -> Result<Vec<CatalogId>, ApplyError> {
-    retired_proposal_ids(program, marrow_check::CatalogEntryKind::ResourceMember)
+fn retired_destructive_ids(program: &CheckedProgram) -> Result<Vec<CatalogId>, ApplyError> {
+    let mut ids = retired_proposal_ids(program, CatalogEntryKind::ResourceMember)?;
+    ids.extend(retired_proposal_ids(program, CatalogEntryKind::Store)?);
+    Ok(ids)
 }
 
 fn stage_redundant_default_receipts(
@@ -585,7 +587,12 @@ fn stage_obligation(
         })),
         Verdict::IndexDropped => stage_index_drop(catalog_id, store),
         Verdict::DestructiveDecisionRequired { .. } => {
-            stage_retire_deletes(catalog_id, places, store, staged)
+            match accepted_catalog_kind(program, catalog_id) {
+                Some(CatalogEntryKind::Store) => {
+                    stage_store_retire_delete(catalog_id, store, staged)
+                }
+                _ => stage_retire_deletes(catalog_id, places, store, staged),
+            }
         }
         Verdict::Transform { reads } => {
             let mut count = 0usize;
@@ -618,7 +625,17 @@ fn stage_obligation(
 /// default whose target is not yet accepted is proposal-new: apply must fail closed on an
 /// existing target cell. This is the single owner of that classification.
 pub(super) fn accepted_resource_member(program: &CheckedProgram, catalog_id: &CatalogId) -> bool {
-    program.catalog.accepted_entries.iter().any(|entry| {
-        entry.kind == CatalogEntryKind::ResourceMember && entry.stable_id == catalog_id.as_str()
-    })
+    accepted_catalog_kind(program, catalog_id) == Some(CatalogEntryKind::ResourceMember)
+}
+
+fn accepted_catalog_kind(
+    program: &CheckedProgram,
+    catalog_id: &CatalogId,
+) -> Option<CatalogEntryKind> {
+    program
+        .catalog
+        .accepted_entries
+        .iter()
+        .find(|entry| entry.stable_id == catalog_id.as_str())
+        .map(|entry| entry.kind)
 }

@@ -625,6 +625,188 @@ fn dropped_populated_store_fails_closed() {
     );
 }
 
+#[test]
+fn dropped_populated_singleton_store_fails_closed() {
+    let settings_store_id = hex_id(5);
+    let settings_member_id = hex_id(6);
+    let root = temp_project("discharge-drop-populated-singleton-store", |root| {
+        write(
+            root,
+            "src/library.mw",
+            "module library\n\
+             resource Author\n\
+             \x20   required name: string\n\
+             store ^authors(id: int): Author\n\
+             pub fn add(name: string): Id(^authors)\n\
+             \x20   return nextId(^authors)\n",
+        );
+        let accepted = marrow_catalog::CatalogMetadata::new(
+            20,
+            vec![
+                entry(CatalogEntryKind::Resource, "library::Author", &hex_id(1)),
+                store_entry("library::^authors", &hex_id(2), "int"),
+                entry(
+                    CatalogEntryKind::ResourceMember,
+                    "library::Author::name",
+                    &hex_id(3),
+                ),
+                entry(CatalogEntryKind::Resource, "library::Settings", &hex_id(4)),
+                store_entry("library::^settings", &settings_store_id, ""),
+                entry(
+                    CatalogEntryKind::ResourceMember,
+                    "library::Settings::theme",
+                    &settings_member_id,
+                ),
+            ],
+        );
+        write_catalog(root, &accepted);
+    });
+    let (_report, program) = check_with_accepted(&root);
+    let store = TreeStore::memory();
+    let settings_store = CatalogId::new(settings_store_id.clone()).unwrap();
+    store.write_node(&settings_store, &[]).unwrap();
+    store
+        .write_data_value(
+            &settings_store,
+            &[],
+            &[DataPathSegment::Member(
+                CatalogId::new(settings_member_id.clone()).unwrap(),
+            )],
+            encode_value(&Scalar::Str("dark".into())).unwrap(),
+        )
+        .unwrap();
+
+    let (result, diagnostics) = preview(&program, &store).expect("preview");
+
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &settings_store_id,
+        RepairReason::PopulatedDropRequiresRetire,
+    );
+}
+
+#[test]
+fn retired_populated_singleton_store_requires_scoped_approval() {
+    let settings_store_id = hex_id(5);
+    let settings_member_id = hex_id(6);
+    let root = temp_project("discharge-retire-populated-singleton-store", |root| {
+        write(
+            root,
+            "src/library.mw",
+            "module library\n\
+             resource Author\n\
+             \x20   required name: string\n\
+             store ^authors(id: int): Author\n\
+             evolve\n\
+             \x20   retire ^settings\n\
+             pub fn add(name: string): Id(^authors)\n\
+             \x20   return nextId(^authors)\n",
+        );
+        let accepted = marrow_catalog::CatalogMetadata::new(
+            20,
+            vec![
+                entry(CatalogEntryKind::Resource, "library::Author", &hex_id(1)),
+                store_entry("library::^authors", &hex_id(2), "int"),
+                entry(
+                    CatalogEntryKind::ResourceMember,
+                    "library::Author::name",
+                    &hex_id(3),
+                ),
+                entry(CatalogEntryKind::Resource, "library::Settings", &hex_id(4)),
+                store_entry("library::^settings", &settings_store_id, ""),
+                entry(
+                    CatalogEntryKind::ResourceMember,
+                    "library::Settings::theme",
+                    &settings_member_id,
+                ),
+            ],
+        );
+        write_catalog(root, &accepted);
+    });
+    let (_report, program) = check_with_accepted(&root);
+    let store = TreeStore::memory();
+    let settings_store = CatalogId::new(settings_store_id.clone()).unwrap();
+    store.write_node(&settings_store, &[]).unwrap();
+    store
+        .write_data_value(
+            &settings_store,
+            &[],
+            &[DataPathSegment::Member(
+                CatalogId::new(settings_member_id.clone()).unwrap(),
+            )],
+            encode_value(&Scalar::Str("dark".into())).unwrap(),
+        )
+        .unwrap();
+
+    let result = witness(&program, &store);
+
+    match verdict_for(&result, &settings_store_id) {
+        Verdict::DestructiveDecisionRequired { populated } => assert_eq!(*populated, 1),
+        other => panic!("expected destructive decision for store retire, got {other:#?}"),
+    }
+    assert!(
+        matches!(verdict_for(&result, &settings_member_id), Verdict::NoOp),
+        "the retired store owns the single destructive fence: {:#?}",
+        result.verdicts
+    );
+}
+
+#[test]
+fn dropped_populated_store_without_accepted_key_shape_fails_closed() {
+    let settings_store_id = hex_id(5);
+    let settings_member_id = hex_id(6);
+    let root = temp_project("discharge-drop-populated-unknown-shape-store", |root| {
+        write(
+            root,
+            "src/library.mw",
+            "module library\n\
+             resource Author\n\
+             \x20   required name: string\n\
+             store ^authors(id: int): Author\n\
+             pub fn add(name: string): Id(^authors)\n\
+             \x20   return nextId(^authors)\n",
+        );
+        let accepted = marrow_catalog::CatalogMetadata::new(
+            20,
+            vec![
+                entry(CatalogEntryKind::Resource, "library::Author", &hex_id(1)),
+                store_entry("library::^authors", &hex_id(2), "int"),
+                entry(
+                    CatalogEntryKind::ResourceMember,
+                    "library::Author::name",
+                    &hex_id(3),
+                ),
+                entry(CatalogEntryKind::Resource, "library::Settings", &hex_id(4)),
+                entry(
+                    CatalogEntryKind::Store,
+                    "library::^settings",
+                    &settings_store_id,
+                ),
+                entry(
+                    CatalogEntryKind::ResourceMember,
+                    "library::Settings::theme",
+                    &settings_member_id,
+                ),
+            ],
+        );
+        write_catalog(root, &accepted);
+    });
+    let (_report, program) = check_with_accepted(&root);
+    let store = TreeStore::memory();
+    let settings_store = CatalogId::new(settings_store_id.clone()).unwrap();
+    store.write_node(&settings_store, &[]).unwrap();
+
+    let (result, diagnostics) = preview(&program, &store).expect("preview");
+
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &settings_store_id,
+        RepairReason::PopulatedDropRequiresRetire,
+    );
+}
+
 /// Dropping a whole resource whose store holds no records is a free no-op: there is no data
 /// to orphan, so the carve-out keeps the empty store activatable, consistent with the
 /// empty-member-drop case.

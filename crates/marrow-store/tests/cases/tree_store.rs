@@ -690,6 +690,25 @@ fn backup_round_trips_sparse_record_nodes() {
 }
 
 #[test]
+fn for_each_record_visits_singleton_record_node() {
+    let settings = catalog_id("1111111111111111");
+    let store = TreeStore::memory();
+    store
+        .write_node(&settings, &[])
+        .expect("write singleton record node");
+
+    let mut visited = Vec::new();
+    store
+        .for_each_record(&settings, 0, &mut |identity| {
+            visited.push(identity.to_vec());
+            Ok(())
+        })
+        .expect("visit singleton records");
+
+    assert_eq!(visited, vec![Vec::<SavedKey>::new()]);
+}
+
+#[test]
 fn exact_index_tuple_delete_removes_only_the_exact_identity() {
     let by_shelf = catalog_id("4444444444444444");
     let identity = [SavedKey::Int(7)];
@@ -788,6 +807,40 @@ fn visit_backup_cells_streams_data_only_in_encoded_order() {
             "backup traversal reports typed value targets, not physical keys"
         );
     }
+}
+
+#[test]
+fn data_record_count_counts_distinct_record_identities() {
+    let books = catalog_id("1111111111111111");
+    let settings = catalog_id("2222222222222222");
+    let title = catalog_id("3333333333333333");
+    let theme = catalog_id("4444444444444444");
+    let store = TreeStore::memory();
+
+    store
+        .write_node(&settings, &[])
+        .expect("write settings node");
+    store
+        .write_data_value(
+            &settings,
+            &[],
+            &[DataPathSegment::Member(theme.clone())],
+            b"dark".to_vec(),
+        )
+        .expect("write settings theme");
+    for id in [1, 2] {
+        store
+            .write_data_value(
+                &books,
+                &[SavedKey::Int(id)],
+                &[DataPathSegment::Member(title.clone())],
+                format!("title-{id}").into_bytes(),
+            )
+            .expect("write book title");
+    }
+
+    assert_eq!(store.data_record_count(&settings).unwrap(), 1);
+    assert_eq!(store.data_record_count(&books).unwrap(), 2);
 }
 
 #[test]

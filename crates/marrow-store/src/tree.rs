@@ -691,16 +691,42 @@ impl TreeStore {
 
     /// Visit every record identity under `store_id`, descending `arity` key levels and
     /// invoking `visit` with each full identity tuple. The descent is paged, so the
-    /// whole store never materializes. A store always has at least one identity level,
-    /// so an `arity` of zero is treated as one.
+    /// whole store never materializes. A singleton store has arity zero and visits the
+    /// empty identity only when its root node exists.
     pub fn for_each_record(
         &self,
         store_id: &CatalogId,
         arity: usize,
         visit: &mut dyn FnMut(&[SavedKey]) -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
+        if arity == 0 {
+            if self.data_subtree_exists(store_id, &[], &[])? {
+                visit(&[])?;
+            }
+            return Ok(());
+        }
         let mut identity = Vec::new();
-        self.descend_records(store_id, arity.max(1), &mut identity, visit)
+        self.descend_records(store_id, arity, &mut identity, visit)
+    }
+
+    /// Count distinct record identities under `store_id` that carry any data-family cell.
+    /// The backup stream is ordered by store and identity, so this keeps only the previous
+    /// identity rather than materializing the record set.
+    pub fn data_record_count(&self, store_id: &CatalogId) -> Result<usize, StoreError> {
+        let mut count = 0usize;
+        let mut previous_identity: Option<Vec<SavedKey>> = None;
+        self.visit_backup_cells(|cell| {
+            let data_key = cell.data_key();
+            if &data_key.store != store_id {
+                return Ok(());
+            }
+            if previous_identity.as_deref() != Some(data_key.identity.as_slice()) {
+                count += 1;
+                previous_identity = Some(data_key.identity.clone());
+            }
+            Ok(())
+        })?;
+        Ok(count)
     }
 
     fn descend_records(

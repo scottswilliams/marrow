@@ -607,8 +607,8 @@ Rules:
   binding guard, or optional chaining `a?.b?.c` that ends in one of those.
 - `path ?? default` returns `default` for an unpopulated sparse path. It
   does not hide schema errors.
-- `exists(path)` checks whether a value or child exists and narrows the path
-  inside the guarded block.
+- `exists(path)` checks whether the addressed record node, value, or child tree
+  exists and narrows the path inside the guarded block.
 - `if const name = path` checks the same presence as `exists(path)`. When the
   path is present, it reads the value once, binds it immutably as `name`, and
   runs the guarded block. It can bind saved value reads such as fields,

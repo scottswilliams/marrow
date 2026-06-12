@@ -247,6 +247,20 @@ pub(super) fn stage_retire_deletes(
     Ok(())
 }
 
+/// Stage deletion of every data cell under a retired whole store. The destructive
+/// witness names the store id itself, so no current source place is needed to locate
+/// its data.
+pub(super) fn stage_store_retire_delete(
+    catalog_id: &CatalogId,
+    store: &TreeStore,
+    staged: &mut StagedWork,
+) -> Result<(), ApplyError> {
+    let count = store.data_record_count(catalog_id)?;
+    store.delete_record_subtree(catalog_id, &[])?;
+    staged.records_retired += count;
+    Ok(())
+}
+
 /// Find every place and member location for `catalog_id` across the source places.
 pub(super) fn locations<'a>(
     places: &'a [CheckedSavedPlace],

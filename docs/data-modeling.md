@@ -43,9 +43,10 @@ store ^settings: Settings
 A singleton has no store identity type; the root itself is addressed directly,
 and its fields live directly at `^settings.theme` and `^settings.maxLoans`.
 
-Marrow stores no hidden existence marker. A store identity exists when its
-saved path has a value or children. If existence must be detectable for an
-otherwise-empty record, model at least one `required` field.
+A saved resource instance can exist with no populated fields. `exists(^books(id))`
+or `exists(^settings)` checks structural node presence, so an otherwise-empty
+resource does not need a `required` field just to make existence detectable. Use
+`required` only for fields whose absence makes the resource invalid.
 
 ## Child Layers
 
