@@ -13,7 +13,7 @@ The saved-data model these changes operate on is defined in
 Apply is shaped as a compiler-owned activation job created from the exact
 preview witness. V0.1 executes that job immediately in one transaction, but the
 shape is durable: verify the witness, perform catalog/data/index work, stamp the
-commit, and emit evidence. Future large rebuilds, backfills, and transforms can
+commit, and return an operator receipt. Future large rebuilds, backfills, and transforms can
 be chunked or resumed as the same job model instead of becoming migration
 scripts or hidden database history.
 
@@ -224,24 +224,14 @@ canonical formatter's rendering of every `resource`, `store`, `enum`, and
 module `const` declaration, in deterministic order, so a shape change drifts
 the digest while a whitespace reformat does not.
 
-An evolution apply stamps applied-step evidence in the same transaction as its
-data effects: proposal/evolution digests, proposal-new catalog IDs, default
-backfill counts and bounded effect digests, transform counts, exact per-id
-retire counts with a bounded evidence digest, and rebuilt-index counts. Changed
-root/index catalog IDs are separate per-commit facts: the activation commit
-records the roots and indexes it touched, but later managed writes replace those
-lists with their own changed roots and indexes rather than carrying activation
-changed IDs forward. Later managed writes carry applied-step evidence forward
-while they keep the same catalog epoch and source digest; a write that cannot
-prove the same applied-step context clears the activation fields. The carried
-fields prove only that the activation or evolve step completed at a prior commit
-under the same catalog epoch, source digest, and evolution digest. They suppress
-stale replay when an old `evolve` block remains in source; they are not proof
-that current data still matches default, transform, retire, or index completion
-after later ordinary writes. Current completion verification recomputes those
-effects from the live store. Receipts are evidence that tooling, backup, and
-support may render or verify; they store no proposal catalog bodies or
-executable migration steps. The accepted catalog rows, the catalog epoch, the
+An evolution apply writes the data/index effects and a slim commit stamp in the
+same store transaction. The durable stamp records only the commit id, catalog
+epoch, layout epoch, source digest, engine-profile digest, and the root/index
+catalog IDs touched by that commit. The CLI receipt still reports operator
+counts for defaults, transforms, retires, and rebuilt indexes, but those counts
+are not persisted in commit metadata or backup descriptors. Stale replay
+suppression uses the target identity facts plus the recomputed witness gate, not
+per-effect counts or digests. The accepted catalog rows, the catalog epoch, the
 commit metadata, and the data and index cells all advance in that one store
 transaction, so a reader sees either the whole activation or none of it. There
 is no separate file-publish step and no crash-resume window to reconcile: a
@@ -377,15 +367,15 @@ your own code, verified before and after with `marrow data integrity`.
 Typed backup/restore is a separate command pair (`marrow backup` and
 `marrow restore`), not a raw engine-byte copy. A backup carries a manifest, the
 accepted-catalog rows, and the canonical tree-cell data stream as typed cell
-targets. The manifest binds the data to the source digest, accepted catalog
-epoch and digest (which fingerprints the carried catalog rows), engine profile,
-and value-codec version it was written under, and one integrity checksum covers
-the manifest, catalog section, and data cells. Generated indexes are derived,
-so the stream omits them and restore rebuilds them from the data. Restore
-validates that binding and the data against the schema, rejects managed cells
-the current source/catalog does not declare, and replays the catalog rows and
-data cells into an empty store in one transaction, so the restored store
-re-establishes its accepted identity and runs immediately. Backups are
+targets. The manifest binds the data to `source_digest`, `catalog_epoch`,
+`catalog_digest`, `state_digest`, `store_uid`, the reserved empty
+`parent_snapshot_digest` sentinel, `engine`, `commit`, `record_count`, and
+`archive_checksum`. Generated indexes are derived, so the stream omits them and
+restore rebuilds them from the data. Restore validates that binding and the data
+against the schema, rejects managed cells the current source/catalog does not
+declare, and replays the catalog rows and data cells into an empty store in one
+transaction with a fresh store UID, so the restored store re-establishes its
+accepted identity and runs immediately. Backups are
 deterministic and portable across conforming backends at the same layout and
 codec, but byte identity requires matching accepted catalog facts, engine
 profile, value codec, and stored data. Stable IDs are random opaque values that

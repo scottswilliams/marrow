@@ -43,4 +43,4 @@ Step order is the correctness contract: within a plan, `DeleteData` (clear the o
 - `write_plan.rs` → `WritePlan::commit` / `apply_steps` — the exact begin/apply/commit-or-rollback contract and each `PlanStep` → `TreeStore` mapping.
 - `transaction.rs` → `eval_transaction` — deferred entry validation, commit-metadata stamping, store commit, discard-on-failure.
 - `index_maintenance.rs` → `stage_resource_index_rewrites` / `check_unique_conflict` — how teardown+rewrite is staged and how unique conflicts are detected ignoring self-identity.
-- `index_maintenance.rs` → `index_rebuild_entry_with_staged` — the entry reused by evolution backfill to rebuild index entries from stored-or-staged data.
+- `index_maintenance.rs` → `index_rebuild_entry_with_staged` — the entry reused by evolution backfill to rebuild index entries from transaction-visible stored data.

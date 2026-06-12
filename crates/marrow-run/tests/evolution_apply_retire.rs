@@ -1,14 +1,13 @@
 //! Apply over a checked retire: an index retire clears derived cells with no approval,
 //! while a destructive member retire requires the maintenance gate and a scoped
 //! approval whose populated count matches the witness per id. Mismatched, swapped, or
-//! ungated approvals abort without dropping data, completion rejects a per-id receipt
-//! count moved between ids, and a nested-group retire fails closed.
+//! ungated approvals abort without dropping data, and a nested-group retire fails closed.
 
 mod evolution_apply_support;
 
 use evolution_apply_support::*;
 
-use marrow_run::evolution::{ApplyError, Approval, apply, verify_activation_completion};
+use marrow_run::evolution::{ApplyError, Approval, apply};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
@@ -156,84 +155,6 @@ fn destructive_retire_aborts_without_approval_and_deletes_with_matching_approval
             "approved retire drops the member subtree"
         );
     }
-}
-
-#[test]
-fn completion_rejects_retire_receipt_count_moved_between_ids() {
-    let root = temp_project("completion-retire-per-id-drift", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   required title: string\n\
-             \x20   subtitle: string\n\
-             \x20   notes: string\n\
-             store ^books(id: int): Book\n\
-             pub fn add(title: string): Id(^books)\n\
-             \x20   return nextId(^books)\n",
-        );
-    });
-    let accepted = commit_then_check(&root);
-    let accepted_place = root_place(&accepted, "books");
-    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
-    let notes_id = member_catalog_id(&accepted_place, "notes");
-    let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &accepted_place,
-    };
-    seed.record(1);
-    seed.member(1, "title", Scalar::Str("Dune".into()));
-    seed.member_by_id(1, &subtitle_id, Scalar::Str("sub-1".into()));
-    seed.member_by_id(1, &notes_id, Scalar::Str("note-1".into()));
-    seed.record(2);
-    seed.member(2, "title", Scalar::Str("Hyperion".into()));
-    seed.member_by_id(2, &subtitle_id, Scalar::Str("sub-2".into()));
-    write(
-        &root,
-        "src/books.mw",
-        "module books\n\
-         resource Book\n\
-         \x20   required title: string\n\
-         store ^books(id: int): Book\n\
-         evolve\n\
-         \x20   retire Book.subtitle\n\
-         \x20   retire Book.notes\n\
-         pub fn add(title: string): Id(^books)\n\
-         \x20   return nextId(^books)\n",
-    );
-    let program = checked(&root);
-    let approval = Approval {
-        retires: vec![
-            (CatalogId::new(subtitle_id.clone()).unwrap(), 2),
-            (CatalogId::new(notes_id.clone()).unwrap(), 1),
-        ],
-    };
-    apply(
-        &witness(&program, &store),
-        &program,
-        &store,
-        true,
-        Some(&approval),
-    )
-    .expect("apply");
-
-    let mut commit = store
-        .read_commit_metadata()
-        .expect("read commit")
-        .expect("activation commit");
-    commit.activation_records_retired_by_id = vec![
-        (CatalogId::new(notes_id).unwrap(), 0),
-        (CatalogId::new(subtitle_id).unwrap(), 3),
-    ];
-    store
-        .write_commit_metadata(&commit)
-        .expect("forge retire receipt counts");
-    let error = verify_activation_completion(&program, &store, &commit)
-        .expect_err("forged retire receipt fails");
-
-    assert_eq!(error, ApplyError::Drift);
 }
 
 /// A multi-retire approval is matched per id: each approved count must equal the

@@ -63,10 +63,10 @@ Stream separation is load-bearing: a program's own `print`/`write` output owns s
 | `crates/marrow/src/cmd_evolve/render.rs` | all evolve output, including the `ApplyError` to code/message map. |
 | `crates/marrow/src/cmd_evolve/store.rs` | `preview_store` (read-only) / `apply_store` (writable native). |
 | `crates/marrow/src/cmd_backup.rs`, `cmd_restore.rs` | command wiring for `backup` / `restore`. |
-| `crates/marrow/src/backup/mod.rs` | `BackupManifest` (catalog digest/row-count fingerprint and one `archive_checksum`), `EngineDescriptor`, `CommitDescriptor`, `BackupError` taxonomy. |
-| `crates/marrow/src/backup/archive.rs` | on-disk framing: `MARROWBK` magic, length-prefixed JSON manifest, length-prefixed catalog section, length-prefixed cell stream, and the one integrity-checksum fold over manifest+catalog+cells. |
-| `crates/marrow/src/backup/create.rs` | `create_backup`: capture the catalog snapshot into a typed section, stream the data cells in bounded memory, fold the whole archive into the manifest checksum. |
-| `crates/marrow/src/backup/restore.rs` | `read_backup_prologue` + `restore_backup_with_prologue`: validate engine/source/catalog and the catalog-section fingerprint, replay catalog rows and cells in one transaction, rebuild indexes, restamp identity, verify before commit. |
+| `crates/marrow/src/backup/mod.rs` | backup `FORMAT_VERSION` 5, `BackupManifest` (`source_digest`, `catalog_epoch`, `catalog_digest`, `state_digest`, `store_uid`, reserved `parent_snapshot_digest`, `engine`, `commit`, `record_count`, `archive_checksum`), `EngineDescriptor`, slim `CommitDescriptor`, `BackupError` taxonomy. |
+| `crates/marrow/src/backup/archive.rs` | on-disk framing: `MARROWBK` magic, length-prefixed JSON manifest, length-prefixed catalog section, length-prefixed cell stream, and the integrity-checksum fold over manifest+catalog+cells. |
+| `crates/marrow/src/backup/create.rs` | `create_backup`: capture the catalog snapshot into a typed section, stream the data cells in bounded memory, record the state digest and store UID, fold the whole archive into the manifest checksum. |
+| `crates/marrow/src/backup/restore.rs` | `read_backup_prologue` + `restore_backup_with_prologue`: validate engine/source/catalog/state, reject non-empty `parent_snapshot_digest`, replay catalog rows and cells in one transaction, mint a fresh store UID, rebuild indexes, restamp identity, verify before commit. |
 
 ## Load-bearing invariants
 

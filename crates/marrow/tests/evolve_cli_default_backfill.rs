@@ -191,15 +191,22 @@ fn evolve_apply_does_not_rerun_an_already_applied_transform() {
          \x20       ^books(1).priceCents = 999\n",
     );
 
-    let first = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    let first = marrow(&[
+        "evolve",
+        "apply",
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
     assert_eq!(first.status.code(), Some(0), "first apply: {first:?}");
+    let first_record = support::json(first.stdout);
+    assert_eq!(
+        first_record["records_transformed"],
+        serde_json::json!(1),
+        "the CLI receipt still reports operator counts"
+    );
     let cents_id = accepted_catalog_entry_id(&root, "books::Book::priceCents");
     let first_commit = commit_metadata(&root);
-    assert_eq!(first_commit.activation_records_transformed, 1);
-    assert!(
-        !first_commit.activation_evolution_digest.is_empty(),
-        "the first apply stamps historical applied-step evidence",
-    );
     {
         let after_first = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
         assert_eq!(
@@ -225,11 +232,9 @@ fn evolve_apply_does_not_rerun_an_already_applied_transform() {
             .read_commit_metadata()
             .expect("read commit")
             .expect("post-activation commit");
-        assert_eq!(after_override_commit.activation_records_transformed, 1);
         assert_eq!(
-            after_override_commit.activation_evolution_digest,
-            first_commit.activation_evolution_digest,
-            "a normal write carries historical applied evidence for stale replay suppression",
+            after_override_commit.catalog_epoch, first_commit.catalog_epoch,
+            "a normal write preserves the accepted catalog epoch for replay suppression",
         );
         assert_eq!(
             read_scalar_by_catalog_id(
@@ -268,9 +273,9 @@ fn evolve_apply_does_not_rerun_an_already_applied_transform() {
         "the stale apply is a no-op against a matching target stamp"
     );
     assert_eq!(
-        before_second_commit.activation_records_transformed,
-        commit_metadata(&root).activation_records_transformed,
-        "the stale no-op preserves historical applied-step evidence without re-running",
+        before_second_commit,
+        commit_metadata(&root),
+        "the stale no-op preserves the slim commit stamp without re-running",
     );
 }
 

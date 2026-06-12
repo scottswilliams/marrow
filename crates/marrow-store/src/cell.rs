@@ -55,6 +55,7 @@ impl std::error::Error for CellIdError {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MetaCell {
     Commit,
+    StoreUid,
 }
 
 /// A sequence position encoded in unsigned numeric order.
@@ -86,6 +87,7 @@ impl CellKey {
     pub(crate) fn meta(cell: MetaCell) -> Self {
         let tag = match cell {
             MetaCell::Commit => 0x04,
+            MetaCell::StoreUid => 0x05,
         };
         let mut bytes = family(FAMILY_META);
         bytes.push(tag);

@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use marrow_store::tree::TreeStore;
 use serde_json::json;
 
-use crate::backup::create_backup;
+use crate::backup::{create_backup, ensure_store_uid};
 use crate::{
     CheckFormat, dir_and_path_args, load_checked_project, open_store_for_inspection,
     report_simple_error, write_json,
@@ -28,7 +28,14 @@ pub(crate) fn backup(args: &[String]) -> ExitCode {
     // A project with no saved data on disk yields a valid empty backup.
     let store = match open_store_for_inspection(&dir, &config, format) {
         Ok(Some(store)) => store,
-        Ok(None) => TreeStore::memory(),
+        Ok(None) => {
+            let store = TreeStore::memory();
+            if let Err(error) = ensure_store_uid(&store) {
+                report_simple_error(error.code(), &error.to_string(), format);
+                return ExitCode::FAILURE;
+            }
+            store
+        }
         Err(code) => return code,
     };
 

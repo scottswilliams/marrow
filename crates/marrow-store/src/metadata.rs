@@ -5,7 +5,6 @@ use crate::codec::BoundedReader;
 const ENGINE_PROFILE_KEY_VERSION_V0: u8 = 0;
 const ENGINE_PROFILE_DIGEST_BYTES: usize = 8;
 const MIN_ENCODED_CATALOG_ID_BYTES: usize = 4 + "cat_00000000000000000000000000000000".len();
-const MIN_LENGTH_PREFIX_BYTES: usize = 4;
 
 pub type EngineProfileDigest = [u8; ENGINE_PROFILE_DIGEST_BYTES];
 
@@ -61,25 +60,43 @@ pub struct CommitMetadata {
     pub engine_profile_digest: EngineProfileDigest,
     pub changed_root_catalog_ids: Vec<CatalogId>,
     pub changed_index_catalog_ids: Vec<CatalogId>,
-    pub activation_evolution_digest: String,
-    pub activation_proposal_catalog_digest: Option<String>,
-    pub activation_proposal_new_catalog_ids: Vec<CatalogId>,
-    pub activation_records_backfilled: u64,
-    pub activation_default_records_by_id: Vec<ActivationDefaultRecordCount>,
-    pub activation_indexes_rebuilt: u64,
-    pub activation_records_retired: u64,
-    pub activation_retire_evidence_digest: String,
-    pub activation_records_retired_by_id: Vec<(CatalogId, u64)>,
-    pub activation_records_transformed: u64,
+}
+
+/// Stable identity for one physical store, spelled `store_<32 lowercase hex>`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StoreUid(String);
+
+impl StoreUid {
+    pub fn new(uid: impl Into<String>) -> Result<Self, StoreUidError> {
+        let uid = uid.into();
+        let Some(hex) = uid.strip_prefix("store_") else {
+            return Err(StoreUidError);
+        };
+        if hex.len() != 32
+            || !hex
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(StoreUidError);
+        }
+        Ok(Self(uid))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActivationDefaultRecordCount {
-    pub catalog_id: CatalogId,
-    pub records_backfilled: u64,
-    pub target_records: u64,
-    pub evidence_digest: String,
+pub struct StoreUidError;
+
+impl std::fmt::Display for StoreUidError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("store UIDs must match store_<32 lowercase hex>")
+    }
 }
+
+impl std::error::Error for StoreUidError {}
 
 pub(crate) fn encode_commit_metadata(metadata: &CommitMetadata) -> Result<Vec<u8>, StoreError> {
     let mut bytes = Vec::new();
@@ -90,26 +107,6 @@ pub(crate) fn encode_commit_metadata(metadata: &CommitMetadata) -> Result<Vec<u8
     put_bytes(&metadata.engine_profile_digest, &mut bytes)?;
     put_catalog_ids(&metadata.changed_root_catalog_ids, &mut bytes)?;
     put_catalog_ids(&metadata.changed_index_catalog_ids, &mut bytes)?;
-    put_bytes(metadata.activation_evolution_digest.as_bytes(), &mut bytes)?;
-    put_bytes(
-        metadata
-            .activation_proposal_catalog_digest
-            .as_deref()
-            .unwrap_or("")
-            .as_bytes(),
-        &mut bytes,
-    )?;
-    bytes.extend_from_slice(&metadata.activation_records_backfilled.to_be_bytes());
-    bytes.extend_from_slice(&metadata.activation_indexes_rebuilt.to_be_bytes());
-    bytes.extend_from_slice(&metadata.activation_records_retired.to_be_bytes());
-    bytes.extend_from_slice(&metadata.activation_records_transformed.to_be_bytes());
-    put_bytes(
-        metadata.activation_retire_evidence_digest.as_bytes(),
-        &mut bytes,
-    )?;
-    put_retire_counts(&metadata.activation_records_retired_by_id, &mut bytes)?;
-    put_default_counts(&metadata.activation_default_records_by_id, &mut bytes)?;
-    put_catalog_ids(&metadata.activation_proposal_new_catalog_ids, &mut bytes)?;
     Ok(bytes)
 }
 
@@ -122,18 +119,6 @@ pub(crate) fn decode_commit_metadata(bytes: &[u8]) -> Result<CommitMetadata, Sto
     let engine_profile_digest = take_digest(&mut cursor)?;
     let changed_root_catalog_ids = take_catalog_ids(&mut cursor)?;
     let changed_index_catalog_ids = take_catalog_ids(&mut cursor)?;
-    let activation_evolution_digest = take_string(&mut cursor)?;
-    let proposal_digest = take_string(&mut cursor)?;
-    let activation_records_backfilled = cursor.take_u64()?;
-    let activation_indexes_rebuilt = cursor.take_u64()?;
-    let activation_records_retired = cursor.take_u64()?;
-    let activation_records_transformed = cursor.take_u64()?;
-    let activation_retire_evidence_digest = take_string(&mut cursor)?;
-    let activation_records_retired_by_id = take_retire_counts(&mut cursor)?;
-    let activation_default_records_by_id = take_default_counts(&mut cursor)?;
-    let activation_proposal_new_catalog_ids = take_catalog_ids(&mut cursor)?;
-    let activation_proposal_catalog_digest =
-        (!proposal_digest.is_empty()).then_some(proposal_digest);
     if !cursor.is_empty() {
         return Err(corrupt_metadata(bytes));
     }
@@ -145,17 +130,16 @@ pub(crate) fn decode_commit_metadata(bytes: &[u8]) -> Result<CommitMetadata, Sto
         engine_profile_digest,
         changed_root_catalog_ids,
         changed_index_catalog_ids,
-        activation_evolution_digest,
-        activation_proposal_catalog_digest,
-        activation_proposal_new_catalog_ids,
-        activation_records_backfilled,
-        activation_default_records_by_id,
-        activation_indexes_rebuilt,
-        activation_records_retired,
-        activation_retire_evidence_digest,
-        activation_records_retired_by_id,
-        activation_records_transformed,
     })
+}
+
+pub(crate) fn encode_store_uid(uid: &StoreUid) -> Vec<u8> {
+    uid.as_str().as_bytes().to_vec()
+}
+
+pub(crate) fn decode_store_uid(bytes: &[u8]) -> Result<StoreUid, StoreError> {
+    let uid = std::str::from_utf8(bytes).map_err(|_| corrupt_metadata(bytes))?;
+    StoreUid::new(uid.to_string()).map_err(|_| corrupt_metadata(bytes))
 }
 
 fn engine_profile_hash64(bytes: &[u8]) -> u64 {
@@ -183,35 +167,6 @@ fn put_catalog_ids(ids: &[CatalogId], out: &mut Vec<u8>) -> Result<(), StoreErro
     out.extend_from_slice(&len.to_be_bytes());
     for id in ids {
         put_bytes(id.as_str().as_bytes(), out)?;
-    }
-    Ok(())
-}
-
-fn put_retire_counts(counts: &[(CatalogId, u64)], out: &mut Vec<u8>) -> Result<(), StoreError> {
-    let len = u32::try_from(counts.len()).map_err(|_| StoreError::LimitExceeded {
-        limit: "tree cell metadata length",
-    })?;
-    out.extend_from_slice(&len.to_be_bytes());
-    for (id, count) in counts {
-        put_bytes(id.as_str().as_bytes(), out)?;
-        out.extend_from_slice(&count.to_be_bytes());
-    }
-    Ok(())
-}
-
-fn put_default_counts(
-    counts: &[ActivationDefaultRecordCount],
-    out: &mut Vec<u8>,
-) -> Result<(), StoreError> {
-    let len = u32::try_from(counts.len()).map_err(|_| StoreError::LimitExceeded {
-        limit: "tree cell metadata length",
-    })?;
-    out.extend_from_slice(&len.to_be_bytes());
-    for count in counts {
-        put_bytes(count.catalog_id.as_str().as_bytes(), out)?;
-        out.extend_from_slice(&count.records_backfilled.to_be_bytes());
-        out.extend_from_slice(&count.target_records.to_be_bytes());
-        put_bytes(count.evidence_digest.as_bytes(), out)?;
     }
     Ok(())
 }
@@ -244,32 +199,6 @@ fn take_catalog_ids(cursor: &mut MetadataReader<'_>) -> Result<Vec<CatalogId>, S
     (0..len).map(|_| take_catalog_id(cursor)).collect()
 }
 
-fn take_retire_counts(
-    cursor: &mut MetadataReader<'_>,
-) -> Result<Vec<(CatalogId, u64)>, StoreError> {
-    let len = cursor.take_bounded_count(MIN_ENCODED_CATALOG_ID_BYTES + 8)?;
-    (0..len)
-        .map(|_| Ok((take_catalog_id(cursor)?, cursor.take_u64()?)))
-        .collect()
-}
-
-fn take_default_counts(
-    cursor: &mut MetadataReader<'_>,
-) -> Result<Vec<ActivationDefaultRecordCount>, StoreError> {
-    let len =
-        cursor.take_bounded_count(MIN_ENCODED_CATALOG_ID_BYTES + 16 + MIN_LENGTH_PREFIX_BYTES)?;
-    (0..len)
-        .map(|_| {
-            Ok(ActivationDefaultRecordCount {
-                catalog_id: take_catalog_id(cursor)?,
-                records_backfilled: cursor.take_u64()?,
-                target_records: cursor.take_u64()?,
-                evidence_digest: take_string(cursor)?,
-            })
-        })
-        .collect()
-}
-
 fn corrupt_metadata(bytes: &[u8]) -> StoreError {
     StoreError::Corruption {
         message: format!("tree-cell metadata is malformed ({} bytes)", bytes.len()),
@@ -278,10 +207,7 @@ fn corrupt_metadata(bytes: &[u8]) -> StoreError {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ActivationDefaultRecordCount, CommitMetadata, EngineProfile, decode_commit_metadata,
-        encode_commit_metadata,
-    };
+    use super::{CommitMetadata, EngineProfile, decode_commit_metadata, encode_commit_metadata};
     use crate::StoreError;
     use crate::cell::CatalogId;
 
@@ -299,21 +225,6 @@ mod tests {
             engine_profile_digest: profile.digest_bytes(),
             changed_root_catalog_ids: vec![catalog_id("1"), catalog_id("2")],
             changed_index_catalog_ids: vec![catalog_id("3")],
-            activation_evolution_digest: "sha256:evolution".into(),
-            activation_proposal_catalog_digest: Some("sha256:proposal".into()),
-            activation_proposal_new_catalog_ids: vec![catalog_id("4")],
-            activation_records_backfilled: 11,
-            activation_default_records_by_id: vec![ActivationDefaultRecordCount {
-                catalog_id: catalog_id("5"),
-                records_backfilled: 6,
-                target_records: 7,
-                evidence_digest: "sha256:default".into(),
-            }],
-            activation_indexes_rebuilt: 12,
-            activation_records_retired: 13,
-            activation_retire_evidence_digest: "sha256:retire".into(),
-            activation_records_retired_by_id: vec![(catalog_id("6"), 8)],
-            activation_records_transformed: 14,
         }
     }
 
@@ -338,5 +249,25 @@ mod tests {
             decode_commit_metadata(&bytes),
             Err(StoreError::Corruption { .. })
         ));
+    }
+
+    #[test]
+    fn commit_metadata_codec_carries_only_the_activation_stamp() {
+        let metadata = rich_commit_metadata();
+        let bytes = encode_commit_metadata(&metadata).expect("metadata encodes");
+
+        for forbidden in [
+            b"sha256:evolution".as_slice(),
+            b"sha256:proposal".as_slice(),
+            b"sha256:default".as_slice(),
+            b"sha256:retire".as_slice(),
+        ] {
+            assert!(
+                !bytes
+                    .windows(forbidden.len())
+                    .any(|window| window == forbidden),
+                "commit metadata must not persist activation receipt payloads"
+            );
+        }
     }
 }

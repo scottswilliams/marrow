@@ -8,7 +8,7 @@ mod evolution_apply_support;
 
 use evolution_apply_support::*;
 
-use marrow_run::evolution::{ApplyError, apply, verify_activation_completion};
+use marrow_run::evolution::{ApplyError, apply};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
@@ -69,117 +69,8 @@ fn proposal_index_rebuild_writes_entries_before_catalog_acceptance() {
 }
 
 #[test]
-fn completion_rejects_stale_index_row_with_old_key_arity() {
-    let root = temp_project("completion-index-stale-row", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   required isbn: string\n\
-             store ^books(id: int): Book\n\
-             pub fn add(isbn: string): Id(^books)\n\
-             \x20   return nextId(^books)\n",
-        );
-    });
-    let accepted = commit_then_check(&root);
-    let accepted_place = root_place(&accepted, "books");
-    let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &accepted_place,
-    };
-    seed.record(1);
-    seed.member(1, "isbn", Scalar::Str("111".into()));
-    seed.record(2);
-    seed.member(2, "isbn", Scalar::Str("222".into()));
-    write(
-        &root,
-        "src/books.mw",
-        "module books\n\
-         resource Book\n\
-         \x20   required isbn: string\n\
-         store ^books(id: int): Book\n\
-         \x20   index byIsbn(isbn, id) unique\n\
-         pub fn add(isbn: string): Id(^books)\n\
-         \x20   return nextId(^books)\n",
-    );
-    let program = checked(&root);
-    let index_id =
-        CatalogId::new(proposal_catalog_id(&program, "books::^books::byIsbn")).expect("index id");
-    apply(&witness(&program, &store), &program, &store, false, None).expect("apply");
-
-    store
-        .write_index_entry(
-            &index_id,
-            &[SavedKey::Str("stale".into())],
-            &[SavedKey::Int(99)],
-            b"stale".to_vec(),
-        )
-        .expect("write stale old-arity row");
-    let commit = store
-        .read_commit_metadata()
-        .expect("read commit")
-        .expect("activation commit");
-    let error =
-        verify_activation_completion(&program, &store, &commit).expect_err("stale index row fails");
-
-    assert_eq!(error, ApplyError::Drift);
-}
-
-#[test]
-fn completion_uses_witness_rebuilds_not_per_commit_changed_index_ids() {
-    let root = temp_project("completion-index-changed-ids-cleared", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   required isbn: string\n\
-             store ^books(id: int): Book\n\
-             pub fn add(isbn: string): Id(^books)\n\
-             \x20   return nextId(^books)\n",
-        );
-    });
-    let accepted = commit_then_check(&root);
-    let accepted_place = root_place(&accepted, "books");
-    let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &accepted_place,
-    };
-    seed.record(1);
-    seed.member(1, "isbn", Scalar::Str("111".into()));
-    write(
-        &root,
-        "src/books.mw",
-        "module books\n\
-         resource Book\n\
-         \x20   required isbn: string\n\
-         store ^books(id: int): Book\n\
-         \x20   index byIsbn(isbn) unique\n\
-         pub fn add(isbn: string): Id(^books)\n\
-         \x20   return nextId(^books)\n",
-    );
-    let program = checked(&root);
-    apply(&witness(&program, &store), &program, &store, false, None).expect("apply");
-
-    let mut commit = store
-        .read_commit_metadata()
-        .expect("read commit")
-        .expect("activation commit");
-    assert!(!commit.changed_index_catalog_ids.is_empty());
-    commit.changed_index_catalog_ids.clear();
-    store
-        .write_commit_metadata(&commit)
-        .expect("clear per-commit changed index ids");
-
-    verify_activation_completion(&program, &store, &commit)
-        .expect("index rebuild completion is derived from the witness");
-}
-
-#[test]
 fn proposal_index_rebuild_reads_defaulted_member_before_catalog_acceptance() {
+    let record_count = 1_024usize;
     let root = temp_project("apply-proposal-index-default", |root| {
         write(
             root,
@@ -199,10 +90,11 @@ fn proposal_index_rebuild_reads_defaulted_member_before_catalog_acceptance() {
         store: &store,
         place: &accepted_place,
     };
-    seed.record(1);
-    seed.member(1, "title", Scalar::Str("Dune".into()));
-    seed.record(2);
-    seed.member(2, "title", Scalar::Str("Hyperion".into()));
+    for id in 1..=record_count {
+        let record_id = id as i64;
+        seed.record(record_id);
+        seed.member(record_id, "title", Scalar::Str(format!("Book {id}")));
+    }
 
     write(
         &root,
@@ -224,10 +116,19 @@ fn proposal_index_rebuild_reads_defaulted_member_before_catalog_acceptance() {
     assert!(w.is_activatable(), "{w:#?}");
 
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
-    assert_eq!(outcome.receipt.records_backfilled, 2);
+    assert_eq!(outcome.receipt.records_backfilled, record_count);
+    assert_eq!(outcome.receipt.default_records_by_id.len(), 1);
+    assert_eq!(
+        outcome.receipt.default_records_by_id[0].records_backfilled,
+        record_count as u64
+    );
+    assert_eq!(
+        outcome.receipt.default_records_by_id[0].target_records,
+        record_count as u64
+    );
     assert_eq!(outcome.receipt.indexes_rebuilt, 1);
 
-    for id in [1, 2] {
+    for id in [1, 512, 1_024] {
         let scan = store
             .scan_index_tuple(&index_id, &[SavedKey::Int(0), SavedKey::Int(id)], 2)
             .expect("scan rebuilt default index");

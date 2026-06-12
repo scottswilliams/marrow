@@ -37,30 +37,6 @@ impl StagedDataView for EmptyStagedData {
     }
 }
 
-pub(crate) struct PlanStepStagedData<'a> {
-    pub(crate) steps: &'a [PlanStep],
-}
-
-impl StagedDataView for PlanStepStagedData<'_> {
-    fn staged_data_value(
-        &self,
-        store: &CatalogId,
-        identity: &[SavedKey],
-        path: &[DataPathSegment],
-    ) -> Option<&[u8]> {
-        self.steps.iter().rev().find_map(|step| match step {
-            PlanStep::WriteData { address, value }
-                if &address.store == store
-                    && address.identity == identity
-                    && address.path.as_slice() == path =>
-            {
-                Some(value.as_slice())
-            }
-            _ => None,
-        })
-    }
-}
-
 pub(crate) fn reject_resource_unique_conflicts(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],

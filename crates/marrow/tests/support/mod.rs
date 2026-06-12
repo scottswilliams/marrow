@@ -286,6 +286,14 @@ pub(crate) fn commit_catalog_if_clean(root: impl AsRef<Path>) {
     };
     fs::create_dir_all(store_path.parent().expect("store parent")).expect("create data dir");
     let store = marrow_store::tree::TreeStore::open(&store_path).expect("open fixture store");
+    store
+        .write_store_uid(
+            &marrow_store::tree::StoreUid::new(
+                "store_00000000000000000000000000000001".to_string(),
+            )
+            .expect("valid fixture store uid"),
+        )
+        .expect("write fixture store uid");
     marrow_run::evolution::commit_catalog_baseline(&store, &program)
         .expect("commit fixture catalog baseline");
 }

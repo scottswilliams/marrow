@@ -117,11 +117,10 @@ requires an exact match, checks the activation window, and commits the data work
 plus metadata stamp in one transaction. Like `run`, it records a project's
 baseline durable identity first when the project has none yet, then applies the
 evolution against the accepted catalog. The advanced accepted catalog rows commit
-in that same store transaction as the data work and its activation evidence for
-defaults, transforms, retires, and rebuilt indexes, so the catalog never advances
-without the data behind it. That evidence is bounded receipt data: digests,
-affected IDs, counts, approvals, commit IDs, and source/catalog/engine facts, not
-proposal catalog bodies or executable migration history. Destructive retire needs
+in that same store transaction as the data work and the slim commit stamp, so
+the catalog never advances without the data behind it. The command output still
+renders receipt counts for defaults, transforms, retires, and rebuilt indexes,
+but those counts are not persisted in commit metadata. Destructive retire needs
 `--maintenance` and an approval whose catalog ID and populated count match the
 preview.
 
@@ -464,15 +463,15 @@ accepted-catalog section, and the project's canonical ordered data-cell stream.
 The catalog section carries the engine-resident accepted catalog rows, so a
 restored store is self-contained. The manifest binds the data to the program
 that wrote it — its source digest, accepted catalog epoch and digest, engine
-profile, value-codec version, and one integrity checksum over the manifest,
-catalog section, and data cells — so a later restore can refuse data it cannot
-faithfully reproduce. The data stream carries the store's data cells only; the
-generated indexes are derived, so a restore rebuilds them rather than replaying
-them.
-When the store has activation receipts, the manifest carries the receipt facts as
-evidence only. It records proposal/catalog digests, affected IDs, counts, and
-bounded effect digests, including retire receipt digests, never proposal catalog
-bodies or per-record default ledgers.
+profile, value-codec version, data-stream digest, store UID, and one integrity
+checksum over the manifest, catalog section, and data cells — so a later restore
+can refuse data it cannot faithfully reproduce. The manifest fields are
+`source_digest`, `catalog_epoch`, `catalog_digest`, `state_digest`, `store_uid`,
+reserved-empty `parent_snapshot_digest`, `engine`, `commit`, `record_count`, and
+`archive_checksum`; this shape is backup `format_version` 5. The data stream
+carries the store's data cells only; the generated indexes are derived, so a
+restore rebuilds them rather than replaying them. Commit descriptors carry only
+the slim commit stamp, not activation receipt counts or effect digests.
 
 Backup cell targets derive from catalog stable IDs, so backups are
 byte-identical only when the accepted catalog facts, engine profile, value
@@ -511,8 +510,10 @@ it (`restore.source_mismatch`, `restore.catalog_mismatch`,
 `restore.engine_recompile_required`), and refuses a target that already holds
 saved data, generated indexes, or an accepted catalog (`restore.not_empty`) —
 v0.1 restores into an empty store only. The replay
-writes the backup's catalog rows alongside its data cells, so the restored
-store carries its accepted identity and runs immediately.
+writes the backup's catalog rows alongside its data cells and mints a fresh
+store UID, so the restored store carries its accepted identity and runs
+immediately. A non-empty `parent_snapshot_digest` is rejected; v0.1 accepts only
+the empty reserved sentinel.
 The whole replay runs in one transaction: a checksum mismatch or trailing bytes
 (`restore.corrupt_chunk`), restored data that does not decode against the schema,
 or an orphaned managed cell in the restored stream (`restore.data_invalid`) rolls

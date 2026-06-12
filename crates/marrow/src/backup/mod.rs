@@ -33,11 +33,13 @@ mod restore;
 pub(crate) use create::create_backup;
 pub(crate) use restore::{BackupPrologue, read_backup_prologue, restore_backup_with_prologue};
 
-use marrow_store::tree::{CommitMetadata, EngineProfile, EngineProfileDigest};
+use std::io::Read;
+
+use marrow_store::tree::{CommitMetadata, EngineProfile, EngineProfileDigest, StoreUid, TreeStore};
 
 /// The on-disk format version. It advances only on an incompatible change to the
 /// header, manifest, or cell framing.
-pub(crate) const FORMAT_VERSION: u32 = 4;
+pub(crate) const FORMAT_VERSION: u32 = 5;
 
 /// A short name identifying the engine family a backup was taken from. v0.1 has
 /// one; the layout, key-profile, and value-codec versions distinguish revisions.
@@ -56,6 +58,12 @@ pub(crate) struct BackupManifest {
     /// carries (the digest is taken over the epoch and every entry, so it also pins
     /// their count). `None` for a store with no accepted catalog.
     pub(crate) catalog_digest: Option<String>,
+    /// Digest of the canonical ordered data-cell stream.
+    pub(crate) state_digest: String,
+    /// The physical store identity the backup was taken from.
+    pub(crate) store_uid: String,
+    /// Reserved for chained backups. v0.1 writes and accepts only the empty sentinel.
+    pub(crate) parent_snapshot_digest: Option<String>,
     /// The engine profile the data was written under, so restore refuses a layout
     /// or codec it cannot reproduce (reporting an engine recompile is required).
     pub(crate) engine: EngineDescriptor,
@@ -89,7 +97,7 @@ impl EngineDescriptor {
 
     /// The engine identity a backup records: the running binary's name, key-profile,
     /// and value-codec versions, with layout and profile digest supplied by the
-    /// store's commit receipt when the store is stamped. An unstamped store falls
+    /// store's commit metadata when the store is stamped. An unstamped store falls
     /// back to the running profile's values.
     pub(crate) fn recorded(profile: &EngineProfile, commit: Option<&CommitMetadata>) -> Self {
         Self::build(
@@ -128,30 +136,6 @@ pub(crate) struct CommitDescriptor {
     pub(crate) engine_profile_digest: EngineProfileDigest,
     pub(crate) changed_root_catalog_ids: Vec<String>,
     pub(crate) changed_index_catalog_ids: Vec<String>,
-    pub(crate) activation_evolution_digest: String,
-    pub(crate) activation_proposal_catalog_digest: Option<String>,
-    pub(crate) activation_proposal_new_catalog_ids: Vec<String>,
-    pub(crate) activation_records_backfilled: u64,
-    pub(crate) activation_default_records_by_id: Vec<DefaultCountDescriptor>,
-    pub(crate) activation_indexes_rebuilt: u64,
-    pub(crate) activation_records_retired: u64,
-    pub(crate) activation_retire_evidence_digest: String,
-    pub(crate) activation_records_retired_by_id: Vec<RetireCountDescriptor>,
-    pub(crate) activation_records_transformed: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DefaultCountDescriptor {
-    pub(crate) catalog_id: String,
-    pub(crate) records_backfilled: u64,
-    pub(crate) target_records: u64,
-    pub(crate) evidence_digest: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RetireCountDescriptor {
-    pub(crate) catalog_id: String,
-    pub(crate) records: u64,
 }
 
 fn owned_ids(ids: &[marrow_store::cell::CatalogId]) -> Vec<String> {
@@ -168,34 +152,6 @@ impl CommitDescriptor {
             engine_profile_digest: metadata.engine_profile_digest,
             changed_root_catalog_ids: owned_ids(&metadata.changed_root_catalog_ids),
             changed_index_catalog_ids: owned_ids(&metadata.changed_index_catalog_ids),
-            activation_evolution_digest: metadata.activation_evolution_digest.clone(),
-            activation_proposal_catalog_digest: metadata.activation_proposal_catalog_digest.clone(),
-            activation_proposal_new_catalog_ids: owned_ids(
-                &metadata.activation_proposal_new_catalog_ids,
-            ),
-            activation_records_backfilled: metadata.activation_records_backfilled,
-            activation_default_records_by_id: metadata
-                .activation_default_records_by_id
-                .iter()
-                .map(|count| DefaultCountDescriptor {
-                    catalog_id: count.catalog_id.as_str().to_string(),
-                    records_backfilled: count.records_backfilled,
-                    target_records: count.target_records,
-                    evidence_digest: count.evidence_digest.clone(),
-                })
-                .collect(),
-            activation_indexes_rebuilt: metadata.activation_indexes_rebuilt,
-            activation_records_retired: metadata.activation_records_retired,
-            activation_retire_evidence_digest: metadata.activation_retire_evidence_digest.clone(),
-            activation_records_retired_by_id: metadata
-                .activation_records_retired_by_id
-                .iter()
-                .map(|(catalog_id, records)| RetireCountDescriptor {
-                    catalog_id: catalog_id.as_str().to_string(),
-                    records: *records,
-                })
-                .collect(),
-            activation_records_transformed: metadata.activation_records_transformed,
         }
     }
 
@@ -210,8 +166,8 @@ impl CommitDescriptor {
             || self.engine_profile_digest != manifest.engine.profile_digest
         {
             return Err(BackupError::corrupt(
-                BackupCorruptProblem::ManifestCommitReceiptMismatch,
-                "manifest fields disagree with the embedded commit receipt",
+                BackupCorruptProblem::ManifestCommitDescriptorMismatch,
+                "manifest fields disagree with the embedded commit descriptor",
             ));
         }
         Ok(())
@@ -219,25 +175,11 @@ impl CommitDescriptor {
 
     pub(crate) fn validate_digest_shapes(&self) -> Result<(), BackupError> {
         require_sha256_digest("source_digest", &self.source_digest)?;
-        require_optional_sha256_digest(
-            "activation_evolution_digest",
-            &self.activation_evolution_digest,
-        )?;
-        if let Some(digest) = &self.activation_proposal_catalog_digest {
-            require_sha256_digest("activation_proposal_catalog_digest", digest)?;
-        }
-        for count in &self.activation_default_records_by_id {
-            require_sha256_digest("evidence_digest", &count.evidence_digest)?;
-        }
-        require_optional_sha256_digest(
-            "activation_retire_evidence_digest",
-            &self.activation_retire_evidence_digest,
-        )?;
         Ok(())
     }
 
-    /// Rebuild the engine-facing commit metadata, rejecting malformed ids or digest
-    /// evidence as a corrupt manifest.
+    /// Rebuild the engine-facing commit metadata, rejecting malformed ids or
+    /// digest spelling as a corrupt manifest.
     pub(crate) fn to_metadata(&self) -> Result<CommitMetadata, BackupError> {
         self.validate_digest_shapes()?;
         Ok(CommitMetadata {
@@ -248,31 +190,7 @@ impl CommitDescriptor {
             engine_profile_digest: self.engine_profile_digest,
             changed_root_catalog_ids: catalog_ids(&self.changed_root_catalog_ids)?,
             changed_index_catalog_ids: catalog_ids(&self.changed_index_catalog_ids)?,
-            activation_evolution_digest: self.activation_evolution_digest.clone(),
-            activation_proposal_catalog_digest: self.activation_proposal_catalog_digest.clone(),
-            activation_proposal_new_catalog_ids: catalog_ids(
-                &self.activation_proposal_new_catalog_ids,
-            )?,
-            activation_records_backfilled: self.activation_records_backfilled,
-            activation_default_records_by_id: default_counts(
-                &self.activation_default_records_by_id,
-            )?,
-            activation_indexes_rebuilt: self.activation_indexes_rebuilt,
-            activation_records_retired: self.activation_records_retired,
-            activation_retire_evidence_digest: self.activation_retire_evidence_digest.clone(),
-            activation_records_retired_by_id: retire_counts(
-                &self.activation_records_retired_by_id,
-            )?,
-            activation_records_transformed: self.activation_records_transformed,
         })
-    }
-}
-
-fn require_optional_sha256_digest(field: &'static str, digest: &str) -> Result<(), BackupError> {
-    if digest.is_empty() {
-        Ok(())
-    } else {
-        require_sha256_digest(field, digest)
     }
 }
 
@@ -312,29 +230,45 @@ fn catalog_ids(ids: &[String]) -> Result<Vec<marrow_store::cell::CatalogId>, Bac
     ids.iter().map(|id| catalog_id(id)).collect()
 }
 
-fn default_counts(
-    counts: &[DefaultCountDescriptor],
-) -> Result<Vec<marrow_store::tree::ActivationDefaultRecordCount>, BackupError> {
-    counts
-        .iter()
-        .map(|count| {
-            Ok(marrow_store::tree::ActivationDefaultRecordCount {
-                catalog_id: catalog_id(&count.catalog_id)?,
-                records_backfilled: count.records_backfilled,
-                target_records: count.target_records,
-                evidence_digest: count.evidence_digest.clone(),
-            })
-        })
-        .collect()
+pub(crate) fn ensure_store_uid(store: &TreeStore) -> Result<StoreUid, BackupError> {
+    if let Some(uid) = store.read_store_uid()? {
+        return Ok(uid);
+    }
+    let uid = mint_store_uid();
+    store.write_store_uid(&uid)?;
+    Ok(uid)
 }
 
-fn retire_counts(
-    counts: &[RetireCountDescriptor],
-) -> Result<Vec<(marrow_store::cell::CatalogId, u64)>, BackupError> {
-    counts
-        .iter()
-        .map(|count| Ok((catalog_id(&count.catalog_id)?, count.records)))
-        .collect()
+pub(crate) fn require_store_uid(store: &TreeStore) -> Result<StoreUid, BackupError> {
+    store.read_store_uid()?.ok_or(BackupError::StoreUidMissing)
+}
+
+pub(crate) fn mint_store_uid() -> StoreUid {
+    let mut bytes = [0u8; 16];
+    fill_os_entropy(&mut bytes);
+    store_uid_from_bytes(bytes)
+}
+
+fn store_uid_from_bytes(bytes: [u8; 16]) -> StoreUid {
+    let mut uid = String::with_capacity("store_".len() + 32);
+    uid.push_str("store_");
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(&mut uid, "{byte:02x}").expect("writing to a string cannot fail");
+    }
+    StoreUid::new(uid).expect("store uid encoding is valid")
+}
+
+#[cfg(unix)]
+fn fill_os_entropy(bytes: &mut [u8; 16]) {
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(bytes))
+        .expect("store uid allocation requires OS entropy");
+}
+
+#[cfg(not(unix))]
+fn fill_os_entropy(_bytes: &mut [u8; 16]) {
+    panic!("store uid allocation requires an approved OS entropy source on this platform");
 }
 
 /// A backup or restore failure, carrying a stable dotted code for tools.
@@ -361,6 +295,8 @@ pub(crate) enum BackupError {
     },
     /// The restore target already holds saved data or an accepted catalog.
     NotEmpty,
+    /// Backup requires an already-stamped physical store identity.
+    StoreUidMissing,
     /// The backup was written under a different engine, layout, or value codec.
     EngineRecompileRequired(String),
     /// The backup's schema does not match the project being restored into.
@@ -400,6 +336,9 @@ pub(crate) enum BackupFormatProblem {
     DigestSpelling {
         field: &'static str,
     },
+    ReservedFieldNonEmpty {
+        field: &'static str,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -407,12 +346,13 @@ pub(crate) enum BackupCorruptProblem {
     CellStreamEndedEarly,
     CellTooLarge,
     MalformedCell,
-    ManifestCommitReceiptMismatch,
+    ManifestCommitDescriptorMismatch,
     ManifestCatalogBindingMismatch,
     MalformedCatalogId,
     CatalogSectionTooLarge,
     CatalogSectionInvalid,
     CatalogDigestMismatch,
+    StateDigestMismatch,
     ChecksumMismatch,
     TrailingBytes,
 }
@@ -437,6 +377,7 @@ impl BackupError {
             Self::FormatVersion { .. } => "restore.format_version",
             Self::CorruptChunk { .. } => "restore.corrupt_chunk",
             Self::NotEmpty => "restore.not_empty",
+            Self::StoreUidMissing => "backup.store_uid_missing",
             Self::EngineRecompileRequired(_) => "restore.engine_recompile_required",
             Self::SourceMismatch(_) => "restore.source_mismatch",
             Self::CatalogMismatch(_) => "restore.catalog_mismatch",
@@ -465,6 +406,10 @@ impl std::fmt::Display for BackupError {
             Self::NotEmpty => write!(
                 f,
                 "the restore target already holds saved data or an accepted catalog; restore writes into an empty store"
+            ),
+            Self::StoreUidMissing => write!(
+                f,
+                "the store has no physical store UID; run or evolve apply must stamp the store before backup"
             ),
         }
     }
@@ -536,7 +481,7 @@ pub(super) mod test_support {
 #[cfg(test)]
 mod tests {
     use marrow_store::cell::CatalogId;
-    use marrow_store::tree::{ActivationDefaultRecordCount, CommitMetadata};
+    use marrow_store::tree::CommitMetadata;
 
     use super::CommitDescriptor;
 
@@ -545,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn commit_descriptor_preserves_bounded_default_evidence() {
+    fn commit_descriptor_round_trips_the_slim_stamp() {
         let metadata = CommitMetadata {
             commit_id: 12,
             catalog_epoch: 9,
@@ -556,30 +501,6 @@ mod tests {
             engine_profile_digest: [1, 3, 5, 7, 9, 11, 13, 15],
             changed_root_catalog_ids: vec![catalog("cat_00000000000000000000000000000001")],
             changed_index_catalog_ids: Vec::new(),
-            activation_evolution_digest:
-                "sha256:0000000000000000000000000000000000000000000000000000000000000002"
-                    .to_string(),
-            activation_proposal_catalog_digest: Some(
-                "sha256:0000000000000000000000000000000000000000000000000000000000000003"
-                    .to_string(),
-            ),
-            activation_proposal_new_catalog_ids: vec![catalog(
-                "cat_00000000000000000000000000000005",
-            )],
-            activation_records_backfilled: 1,
-            activation_default_records_by_id: vec![ActivationDefaultRecordCount {
-                catalog_id: catalog("cat_00000000000000000000000000000005"),
-                records_backfilled: 1,
-                target_records: 2,
-                evidence_digest:
-                    "sha256:0000000000000000000000000000000000000000000000000000000000000004"
-                        .to_string(),
-            }],
-            activation_indexes_rebuilt: 0,
-            activation_records_retired: 0,
-            activation_retire_evidence_digest: String::new(),
-            activation_records_retired_by_id: Vec::new(),
-            activation_records_transformed: 0,
         };
 
         let descriptor = CommitDescriptor::from_metadata(&metadata);

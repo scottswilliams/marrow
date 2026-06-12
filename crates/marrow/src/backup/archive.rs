@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use super::{
     BackupCorruptProblem, BackupError, BackupFormatProblem, BackupManifest, CommitDescriptor,
-    DefaultCountDescriptor, EngineDescriptor, FORMAT_VERSION, RetireCountDescriptor,
+    EngineDescriptor, FORMAT_VERSION, require_sha256_digest,
 };
 use marrow_store::tree::{
     EngineProfileDigest, TreeBackupCell, TreeBackupCellBuf, TreeBackupCellReadError,
@@ -230,6 +230,9 @@ fn manifest_to_json(manifest: &BackupManifest) -> Value {
         "source_digest": manifest.source_digest,
         "catalog_epoch": manifest.catalog_epoch,
         "catalog_digest": manifest.catalog_digest,
+        "state_digest": manifest.state_digest,
+        "store_uid": manifest.store_uid,
+        "parent_snapshot_digest": manifest.parent_snapshot_digest,
         "engine": {
             "name": manifest.engine.name,
             "layout_epoch": manifest.engine.layout_epoch,
@@ -252,34 +255,19 @@ fn commit_to_json(commit: &CommitDescriptor) -> Value {
         "engine_profile_digest": crate::hex_string(&commit.engine_profile_digest),
         "changed_root_catalog_ids": commit.changed_root_catalog_ids,
         "changed_index_catalog_ids": commit.changed_index_catalog_ids,
-        "activation_evolution_digest": commit.activation_evolution_digest,
-        "activation_proposal_catalog_digest": commit.activation_proposal_catalog_digest,
-        "activation_proposal_new_catalog_ids": commit.activation_proposal_new_catalog_ids,
-        "activation_records_backfilled": commit.activation_records_backfilled,
-        "activation_default_records_by_id": commit.activation_default_records_by_id.iter().map(|count| json!({
-            "catalog_id": &count.catalog_id,
-            "records_backfilled": count.records_backfilled,
-            "target_records": count.target_records,
-            "evidence_digest": &count.evidence_digest,
-        })).collect::<Vec<_>>(),
-        "activation_indexes_rebuilt": commit.activation_indexes_rebuilt,
-        "activation_records_retired": commit.activation_records_retired,
-        "activation_retire_evidence_digest": commit.activation_retire_evidence_digest,
-        "activation_records_retired_by_id": commit.activation_records_retired_by_id.iter().map(|count| json!({
-            "catalog_id": &count.catalog_id,
-            "records": count.records,
-        })).collect::<Vec<_>>(),
-        "activation_records_transformed": commit.activation_records_transformed,
     })
 }
 
 fn manifest_from_json(value: &Value) -> Result<BackupManifest, BackupError> {
     let engine = object_field(value, "engine")?;
-    Ok(BackupManifest {
+    let manifest = BackupManifest {
         format_version: u32_field(value, "format_version")?,
         source_digest: str_field(value, "source_digest")?.to_string(),
         catalog_epoch: opt_u64_field(value, "catalog_epoch")?,
         catalog_digest: opt_str_field(value, "catalog_digest")?,
+        state_digest: str_field(value, "state_digest")?.to_string(),
+        store_uid: store_uid_field(value, "store_uid")?,
+        parent_snapshot_digest: parent_snapshot_digest_field(value)?,
         engine: EngineDescriptor {
             name: str_field(engine, "name")?.to_string(),
             layout_epoch: u64_field(engine, "layout_epoch")?,
@@ -294,7 +282,13 @@ fn manifest_from_json(value: &Value) -> Result<BackupManifest, BackupError> {
         },
         record_count: u64_field(value, "record_count")?,
         archive_checksum: u64_field(value, "archive_checksum")?,
-    })
+    };
+    require_sha256_digest("source_digest", &manifest.source_digest)?;
+    if let Some(digest) = &manifest.catalog_digest {
+        require_sha256_digest("catalog_digest", digest)?;
+    }
+    require_sha256_digest("state_digest", &manifest.state_digest)?;
+    Ok(manifest)
 }
 
 fn commit_from_json(value: &Value) -> Result<CommitDescriptor, BackupError> {
@@ -306,33 +300,36 @@ fn commit_from_json(value: &Value) -> Result<CommitDescriptor, BackupError> {
         engine_profile_digest: digest_field(value, "engine_profile_digest")?,
         changed_root_catalog_ids: str_array_field(value, "changed_root_catalog_ids")?,
         changed_index_catalog_ids: str_array_field(value, "changed_index_catalog_ids")?,
-        activation_evolution_digest: str_field(value, "activation_evolution_digest")?.to_string(),
-        activation_proposal_catalog_digest: opt_str_field(
-            value,
-            "activation_proposal_catalog_digest",
-        )?
-        .filter(|digest| !digest.is_empty()),
-        activation_proposal_new_catalog_ids: str_array_field(
-            value,
-            "activation_proposal_new_catalog_ids",
-        )?,
-        activation_records_backfilled: u64_field(value, "activation_records_backfilled")?,
-        activation_default_records_by_id: default_counts_field(
-            value,
-            "activation_default_records_by_id",
-        )?,
-        activation_indexes_rebuilt: u64_field(value, "activation_indexes_rebuilt")?,
-        activation_records_retired: u64_field(value, "activation_records_retired")?,
-        activation_retire_evidence_digest: str_field(value, "activation_retire_evidence_digest")?
-            .to_string(),
-        activation_records_retired_by_id: retire_counts_field(
-            value,
-            "activation_records_retired_by_id",
-        )?,
-        activation_records_transformed: u64_field(value, "activation_records_transformed")?,
     };
     commit.validate_digest_shapes()?;
     Ok(commit)
+}
+
+fn store_uid_field(value: &Value, field: &'static str) -> Result<String, BackupError> {
+    let uid = str_field(value, field)?;
+    marrow_store::tree::StoreUid::new(uid.to_string()).map_err(|_| {
+        BackupError::format_version(
+            BackupFormatProblem::FieldType {
+                field,
+                expected: "store uid",
+            },
+            format!("backup manifest field `{field}` must be a store uid"),
+        )
+    })?;
+    Ok(uid.to_string())
+}
+
+fn parent_snapshot_digest_field(value: &Value) -> Result<Option<String>, BackupError> {
+    match opt_str_field(value, "parent_snapshot_digest")? {
+        None => Ok(None),
+        Some(digest) if digest.is_empty() => Ok(None),
+        Some(_) => Err(BackupError::format_version(
+            BackupFormatProblem::ReservedFieldNonEmpty {
+                field: "parent_snapshot_digest",
+            },
+            "backup parent_snapshot_digest is reserved for a later format".to_string(),
+        )),
+    }
 }
 
 fn missing(field: &'static str) -> impl Fn() -> BackupError {
@@ -447,53 +444,6 @@ fn str_array_field(value: &Value, field: &'static str) -> Result<Vec<String>, Ba
         .collect()
 }
 
-/// Decode an array-of-object manifest field, owning the shared array/object-shape
-/// validation; each caller supplies only the per-entry field extraction.
-fn object_array_field<T>(
-    value: &Value,
-    field: &'static str,
-    parse_entry: impl Fn(&Value) -> Result<T, BackupError>,
-) -> Result<Vec<T>, BackupError> {
-    match value.get(field).ok_or_else(missing(field))? {
-        Value::Array(entries) => entries
-            .iter()
-            .map(|entry| {
-                if !entry.is_object() {
-                    return Err(wrong_type(field, "object"));
-                }
-                parse_entry(entry)
-            })
-            .collect(),
-        _ => Err(wrong_type(field, "array")),
-    }
-}
-
-fn default_counts_field(
-    value: &Value,
-    field: &'static str,
-) -> Result<Vec<DefaultCountDescriptor>, BackupError> {
-    object_array_field(value, field, |entry| {
-        Ok(DefaultCountDescriptor {
-            catalog_id: str_field(entry, "catalog_id")?.to_string(),
-            records_backfilled: u64_field(entry, "records_backfilled")?,
-            target_records: u64_field(entry, "target_records")?,
-            evidence_digest: str_field(entry, "evidence_digest")?.to_string(),
-        })
-    })
-}
-
-fn retire_counts_field(
-    value: &Value,
-    field: &'static str,
-) -> Result<Vec<RetireCountDescriptor>, BackupError> {
-    object_array_field(value, field, |entry| {
-        Ok(RetireCountDescriptor {
-            catalog_id: str_field(entry, "catalog_id")?.to_string(),
-            records: u64_field(entry, "records")?,
-        })
-    })
-}
-
 fn digest_field(value: &Value, field: &'static str) -> Result<EngineProfileDigest, BackupError> {
     let text = str_field(value, field)?;
     let mut digest = EngineProfileDigest::default();
@@ -520,10 +470,9 @@ mod tests {
     use serde_json::json;
 
     use super::super::{
-        BackupError, BackupFormatProblem, BackupManifest, CommitDescriptor, DefaultCountDescriptor,
-        EngineDescriptor, RetireCountDescriptor,
+        BackupError, BackupFormatProblem, BackupManifest, CommitDescriptor, EngineDescriptor,
     };
-    use super::{commit_from_json, commit_to_json, manifest_from_json, manifest_to_json};
+    use super::{commit_to_json, manifest_from_json, manifest_to_json};
 
     fn minimal_manifest() -> serde_json::Value {
         json!({
@@ -531,6 +480,9 @@ mod tests {
             "source_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
             "catalog_epoch": null,
             "catalog_digest": null,
+            "state_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "store_uid": "store_00000000000000000000000000000001",
+            "parent_snapshot_digest": null,
             "engine": {
                 "name": super::super::ENGINE_NAME,
                 "layout_epoch": 0,
@@ -557,6 +509,9 @@ mod tests {
             source_digest: digest(1),
             catalog_epoch: Some(7),
             catalog_digest: Some(digest(6)),
+            state_digest: digest(7),
+            store_uid: "store_00000000000000000000000000000001".to_string(),
+            parent_snapshot_digest: None,
             engine: EngineDescriptor {
                 name: super::super::ENGINE_NAME.to_string(),
                 layout_epoch: 3,
@@ -572,26 +527,6 @@ mod tests {
                 engine_profile_digest: [9, 8, 7, 6, 5, 4, 3, 2],
                 changed_root_catalog_ids: vec!["cat_00000000000000000000000000000001".to_string()],
                 changed_index_catalog_ids: vec!["cat_00000000000000000000000000000002".to_string()],
-                activation_evolution_digest: digest(2),
-                activation_proposal_catalog_digest: Some(digest(3)),
-                activation_proposal_new_catalog_ids: vec![
-                    "cat_00000000000000000000000000000003".to_string(),
-                ],
-                activation_records_backfilled: 5,
-                activation_default_records_by_id: vec![DefaultCountDescriptor {
-                    catalog_id: "cat_00000000000000000000000000000003".to_string(),
-                    records_backfilled: 5,
-                    target_records: 6,
-                    evidence_digest: digest(4),
-                }],
-                activation_indexes_rebuilt: 1,
-                activation_records_retired: 2,
-                activation_retire_evidence_digest: digest(5),
-                activation_records_retired_by_id: vec![RetireCountDescriptor {
-                    catalog_id: "cat_00000000000000000000000000000004".to_string(),
-                    records: 2,
-                }],
-                activation_records_transformed: 4,
             }),
             record_count: 42,
             archive_checksum: 0xdead_beef,
@@ -601,6 +536,90 @@ mod tests {
             manifest_from_json(&manifest_to_json(&manifest)).expect("manifest round-trips");
 
         assert_eq!(restored, manifest);
+    }
+
+    #[test]
+    fn manifest_json_uses_the_incompatible_shape() {
+        let manifest = minimal_manifest();
+
+        assert_eq!(
+            manifest["format_version"],
+            json!(5),
+            "this incompatible manifest shape changes the manifest and commit descriptor byte surface"
+        );
+        for field in [
+            "source_digest",
+            "catalog_epoch",
+            "catalog_digest",
+            "state_digest",
+            "store_uid",
+            "parent_snapshot_digest",
+            "engine",
+            "commit",
+            "record_count",
+            "archive_checksum",
+        ] {
+            assert!(manifest.get(field).is_some(), "manifest missing {field}");
+        }
+    }
+
+    #[test]
+    fn commit_json_omits_activation_receipt_payloads() {
+        let digest = |seed: u8| format!("sha256:{}", format!("{seed:02x}").repeat(32));
+        let commit = CommitDescriptor {
+            commit_id: 11,
+            catalog_epoch: 7,
+            layout_epoch: 3,
+            source_digest: digest(1),
+            engine_profile_digest: [9, 8, 7, 6, 5, 4, 3, 2],
+            changed_root_catalog_ids: vec!["cat_00000000000000000000000000000001".to_string()],
+            changed_index_catalog_ids: vec!["cat_00000000000000000000000000000002".to_string()],
+        };
+        let json = commit_to_json(&commit);
+        let object = json.as_object().expect("commit json object");
+
+        for field in [
+            activation_field("_evolution_digest"),
+            activation_field("_proposal_catalog_digest"),
+            activation_field("_proposal_new_catalog_ids"),
+            activation_field("_records_backfilled"),
+            activation_field("_default_records_by_id"),
+            activation_field("_indexes_rebuilt"),
+            activation_field("_records_retired"),
+            activation_field("_retire_evidence_digest"),
+            activation_field("_records_retired_by_id"),
+            activation_field("_records_transformed"),
+        ] {
+            assert!(
+                !object.contains_key(field.as_str()),
+                "backup commit descriptor must not persist {field}"
+            );
+        }
+    }
+
+    fn activation_field(suffix: &str) -> String {
+        ["activation", suffix].concat()
+    }
+
+    #[test]
+    fn manifest_rejects_non_empty_parent_snapshot_digest() {
+        let mut manifest = minimal_manifest();
+        manifest["parent_snapshot_digest"] =
+            json!("sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+
+        let error = manifest_from_json(&manifest)
+            .expect_err("parent snapshot chains are reserved for a later format");
+
+        assert_eq!(error.code(), "restore.format_version");
+        assert!(matches!(
+            error,
+            BackupError::FormatVersion {
+                problem: BackupFormatProblem::ReservedFieldNonEmpty {
+                    field: "parent_snapshot_digest"
+                },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -621,164 +640,5 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    #[test]
-    fn commit_manifest_requires_default_count_evidence_digest() {
-        let commit = json!({
-            "commit_id": 1,
-            "catalog_epoch": 2,
-            "layout_epoch": 0,
-            "source_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
-            "engine_profile_digest": "0102030405060708",
-            "changed_root_catalog_ids": [],
-            "changed_index_catalog_ids": [],
-            "activation_evolution_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
-            "activation_proposal_catalog_digest": null,
-            "activation_proposal_new_catalog_ids": [],
-            "activation_records_backfilled": 0,
-            "activation_default_records_by_id": [{
-                "catalog_id": "cat_00000000000000000000000000000001",
-                "records_backfilled": 1,
-                "target_records": 1
-            }],
-            "activation_indexes_rebuilt": 0,
-            "activation_records_retired": 0,
-            "activation_retire_evidence_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-            "activation_records_retired_by_id": [],
-            "activation_records_transformed": 0,
-        });
-
-        let error = commit_from_json(&commit).expect_err("missing evidence is corrupt");
-
-        assert_eq!(error.code(), "restore.format_version");
-        assert!(matches!(
-            error,
-            BackupError::FormatVersion {
-                problem: BackupFormatProblem::MissingField {
-                    field: "evidence_digest"
-                },
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn commit_manifest_rejects_legacy_activation_digest_strings() {
-        let legacy = |hex: &str| ["fn", "v1a64:", hex].concat();
-        let mut commit = json!({
-            "commit_id": 1,
-            "catalog_epoch": 2,
-            "layout_epoch": 0,
-            "source_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
-            "engine_profile_digest": "0102030405060708",
-            "changed_root_catalog_ids": [],
-            "changed_index_catalog_ids": [],
-            "activation_evolution_digest": legacy("0000000000000002"),
-            "activation_proposal_catalog_digest": null,
-            "activation_proposal_new_catalog_ids": [],
-            "activation_records_backfilled": 0,
-            "activation_default_records_by_id": [{
-                "catalog_id": "cat_00000000000000000000000000000001",
-                "records_backfilled": 1,
-                "target_records": 1,
-                "evidence_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000005"
-            }],
-            "activation_indexes_rebuilt": 0,
-            "activation_records_retired": 0,
-            "activation_retire_evidence_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-            "activation_records_retired_by_id": [],
-            "activation_records_transformed": 0,
-        });
-
-        let error = commit_from_json(&commit).expect_err("legacy evolution digest is corrupt");
-        assert_eq!(error.code(), "restore.format_version");
-        assert!(matches!(
-            error,
-            BackupError::FormatVersion {
-                problem: BackupFormatProblem::DigestSpelling {
-                    field: "activation_evolution_digest"
-                },
-                ..
-            }
-        ));
-
-        commit["activation_evolution_digest"] = json!("");
-        commit["activation_default_records_by_id"][0]["evidence_digest"] =
-            json!(legacy("0000000000000005"));
-        let error = commit_from_json(&commit).expect_err("legacy default evidence is corrupt");
-        assert_eq!(error.code(), "restore.format_version");
-        assert!(matches!(
-            error,
-            BackupError::FormatVersion {
-                problem: BackupFormatProblem::DigestSpelling {
-                    field: "evidence_digest"
-                },
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn commit_manifest_serializes_activation_evidence_only() {
-        let proposal_body_field = ["activation", "_proposal", "_catalog", "_json"].concat();
-        let default_detail_field = ["activation", "_default", "_backfill", "_cells"].concat();
-        let commit = CommitDescriptor {
-            commit_id: 9,
-            catalog_epoch: 7,
-            layout_epoch: 1,
-            source_digest:
-                "sha256:0000000000000000000000000000000000000000000000000000000000000001"
-                    .to_string(),
-            engine_profile_digest: [1, 2, 3, 4, 5, 6, 7, 8],
-            changed_root_catalog_ids: vec!["cat_00000000000000000000000000000001".to_string()],
-            changed_index_catalog_ids: Vec::new(),
-            activation_evolution_digest:
-                "sha256:0000000000000000000000000000000000000000000000000000000000000002"
-                    .to_string(),
-            activation_proposal_catalog_digest: Some(
-                "sha256:0000000000000000000000000000000000000000000000000000000000000003"
-                    .to_string(),
-            ),
-            activation_proposal_new_catalog_ids: vec![
-                "cat_00000000000000000000000000000007".to_string(),
-            ],
-            activation_records_backfilled: 128,
-            activation_default_records_by_id: vec![DefaultCountDescriptor {
-                catalog_id: "cat_00000000000000000000000000000004".to_string(),
-                records_backfilled: 128,
-                target_records: 128,
-                evidence_digest:
-                    "sha256:0000000000000000000000000000000000000000000000000000000000000005"
-                        .to_string(),
-            }],
-            activation_indexes_rebuilt: 0,
-            activation_records_retired: 0,
-            activation_retire_evidence_digest:
-                "sha256:0000000000000000000000000000000000000000000000000000000000000006"
-                    .to_string(),
-            activation_records_retired_by_id: Vec::new(),
-            activation_records_transformed: 0,
-        };
-
-        let value = commit_to_json(&commit);
-        let text = serde_json::to_string(&value).expect("serialize manifest commit");
-        let counts = value["activation_default_records_by_id"]
-            .as_array()
-            .expect("default counts array");
-
-        assert!(value.get(&proposal_body_field).is_none());
-        assert!(value.get(&default_detail_field).is_none());
-        assert!(!text.contains(&proposal_body_field));
-        assert!(!text.contains(&default_detail_field));
-        assert_eq!(counts.len(), 1);
-        assert_eq!(
-            counts[0]["evidence_digest"],
-            json!("sha256:0000000000000000000000000000000000000000000000000000000000000005")
-        );
-        assert_eq!(
-            commit_from_json(&value).expect("parse evidence-only commit"),
-            commit
-        );
     }
 }

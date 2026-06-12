@@ -7,7 +7,7 @@ use marrow_check::{
 };
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
-use marrow_store::tree::{ActivationDefaultRecordCount, TreeStore};
+use marrow_store::tree::TreeStore;
 
 use crate::store::DataAddress;
 use crate::write_plan::{CommitIdAllocation, PlanStep, WritePlan};
@@ -17,14 +17,10 @@ use super::backfill::{
     stage_default_backfill, stage_default_presence_receipt, stage_index_drop, stage_index_rebuild,
     stage_retire_deletes,
 };
-use super::evidence::retire_evidence_digest;
 use super::lifecycle::retired_proposal_ids;
 use super::transform::{TransformVisit, visit_transform_writes};
 use super::validate::{assert_commit_pin, validate_witness};
-use super::window::{
-    AppliedActivationEvidence, FenceError, StampActivationEvidence, StampFacts,
-    current_engine_profile, fence, metadata_stamp,
-};
+use super::window::{FenceError, StampFacts, current_engine_profile, fence, metadata_stamp};
 
 /// The scoped developer decision a destructive retire requires. Each entry names one
 /// retired catalog id and the exact populated count the developer approved dropping for
@@ -40,8 +36,8 @@ pub struct ApplyOutcome {
     pub receipt: ActivationReceipt,
 }
 
-/// Evidence for one committed activation. It records the witness fingerprints and
-/// committed counts, not executable steps or migration history.
+/// In-memory receipt for one committed activation. It records the witness fingerprints
+/// and committed counts for rendering, not executable steps or migration history.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivationReceipt {
     pub commit_id: u64,
@@ -58,9 +54,15 @@ pub struct ActivationReceipt {
     pub default_records_by_id: Vec<ActivationDefaultRecordCount>,
     pub indexes_rebuilt: usize,
     pub records_retired: usize,
-    pub retire_evidence_digest: String,
     pub records_retired_by_id: Vec<(CatalogId, usize)>,
     pub records_transformed: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivationDefaultRecordCount {
+    pub catalog_id: CatalogId,
+    pub records_backfilled: u64,
+    pub target_records: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,7 +151,7 @@ pub fn apply(
     if store_stamped_at_target(witness, target_epoch, current_epoch, store)? {
         let commit_id = witness.store_commit_id.unwrap_or(0);
         let staged = StagedWork::default();
-        let parts = receipt_parts(program, commit_id, &staged, &[])?;
+        let parts = receipt_parts(program, &[])?;
         return Ok(build_outcome(
             witness,
             commit_id,
@@ -159,46 +161,12 @@ pub fn apply(
         ));
     }
 
-    let mut staged = StagedWork::default();
-    let mut steps = Vec::new();
-    let places = checked_activation_root_places(program);
-    let runtime = program.runtime();
-    let ctx = StageCtx {
-        places: &places,
-        store,
-        program,
-        runtime: &runtime,
-        reject_existing_proposal_defaults: current_epoch != Some(target_epoch),
-    };
-    let mut index_rebuilds = Vec::new();
-    for obligation in &witness.verdicts {
-        if matches!(obligation.verdict, Verdict::DerivedRebuild) {
-            index_rebuilds.push(obligation.catalog_id.clone());
-            continue;
-        }
-        stage_obligation(
-            &ctx,
-            &obligation.catalog_id,
-            &obligation.verdict,
-            &mut steps,
-            &mut staged,
-        )?;
-    }
-    for catalog_id in index_rebuilds {
-        stage_index_rebuild(&catalog_id, &places, store, &mut steps, &mut staged)?;
-    }
-    stage_redundant_default_receipts(program, &places, store, &mut staged)?;
-
     let destructive_retire_counts = expected_retire_counts(witness);
-    reconcile_counts(&staged, witness, &destructive_retire_counts)?;
-
-    let (commit_id, parts) = commit_apply_plan(
+    let (commit_id, parts, staged) = commit_apply_transaction(
         witness,
         program,
         store,
-        steps,
         target_epoch,
-        &staged,
         &destructive_retire_counts,
     )?;
     Ok(build_outcome(
@@ -211,18 +179,20 @@ pub fn apply(
 }
 
 /// Whether the store already carries the exact target activation stamp this apply would
-/// publish. A matching historical applied-step stamp means any remaining source `evolve`
-/// block is stale transition text; staging it again would rewrite current data. This is
-/// only a replay-suppression check. Current completion verification recomputes data and
-/// index effects from the live store. A same-epoch store with an older source digest is
-/// not a target match, so apply still writes a metadata-only restamp for
-/// identity-preserving source reorders.
+/// publish. A matching target stamp suppresses stale transition text, but only when the
+/// recomputed witness has no default backfill left to do; a baseline stamp records
+/// identity, not defaulted data. A same-epoch store with an older source digest is not a
+/// target match, so apply still writes a metadata-only restamp for identity-preserving
+/// source reorders.
 fn store_stamped_at_target(
     witness: &EvolutionWitness,
     target_epoch: u64,
     current_epoch: Option<u64>,
     store: &TreeStore,
 ) -> Result<bool, ApplyError> {
+    if witness.counts.records_to_backfill > 0 {
+        return Ok(false);
+    }
     if current_epoch != Some(target_epoch) {
         return Ok(false);
     }
@@ -230,9 +200,6 @@ fn store_stamped_at_target(
         return Ok(false);
     };
     if commit.source_digest != witness.source_digest {
-        return Ok(false);
-    }
-    if commit.activation_evolution_digest != witness.evolution_digest {
         return Ok(false);
     }
     match store.catalog_snapshot_digest()? {
@@ -283,31 +250,20 @@ fn reconcile_counts(
     Ok(())
 }
 
-/// The receipt fields a committed (or already-committed no-op) activation shares between its
-/// stamp and its outcome: the per-id retire counts, their digest at this commit, and the
-/// proposal-new catalog ids. The stamp resolves from the same witness-pinned predecessor
-/// used to compute these fields.
+/// The receipt fields a committed (or already-committed no-op) activation reports:
+/// the per-id retire counts and proposal-new catalog ids.
 struct ReceiptParts {
     retire_counts: Vec<(CatalogId, usize)>,
-    retire_counts_u64: Vec<(CatalogId, u64)>,
-    retire_digest: String,
     proposal_new_catalog_ids: Vec<CatalogId>,
 }
 
 fn receipt_parts(
     program: &CheckedProgram,
-    commit_id: u64,
-    staged: &StagedWork,
     destructive_retire_counts: &[(CatalogId, usize)],
 ) -> Result<ReceiptParts, ApplyError> {
     let retire_counts = retire_receipt_counts(program, destructive_retire_counts)?;
-    let retire_counts_u64 = retire_counts_u64(&retire_counts)?;
-    let retire_digest =
-        retire_evidence_digest(commit_id, staged.records_retired as u64, &retire_counts_u64);
     Ok(ReceiptParts {
         retire_counts,
-        retire_counts_u64,
-        retire_digest,
         proposal_new_catalog_ids: proposal_new_catalog_ids(program),
     })
 }
@@ -325,8 +281,6 @@ fn activation_stamp(
     witness: &EvolutionWitness,
     program: &CheckedProgram,
     target_epoch: u64,
-    staged: &StagedWork,
-    parts: &ReceiptParts,
 ) -> PlanStep {
     let catalog_snapshot = witness
         .proposal_catalog
@@ -342,21 +296,6 @@ fn activation_stamp(
         source_digest: witness.source_digest.clone(),
         changed_root_catalog_ids: witness.changed_root_catalog_ids.clone(),
         changed_index_catalog_ids: witness.changed_index_catalog_ids.clone(),
-        activation_evidence: StampActivationEvidence::Applied(AppliedActivationEvidence {
-            evolution_digest: witness.evolution_digest.clone(),
-            proposal_catalog_digest: witness
-                .proposal_catalog
-                .as_ref()
-                .map(|catalog| catalog.digest.clone()),
-            proposal_new_catalog_ids: parts.proposal_new_catalog_ids.clone(),
-            records_backfilled: staged.records_backfilled as u64,
-            default_records_by_id: staged.default_records_by_id.clone(),
-            indexes_rebuilt: staged.indexes_rebuilt as u64,
-            records_retired: staged.records_retired as u64,
-            retire_evidence_digest: parts.retire_digest.clone(),
-            records_retired_by_id: parts.retire_counts_u64.clone(),
-            records_transformed: staged.records_transformed as u64,
-        }),
     })
 }
 
@@ -375,7 +314,6 @@ fn build_outcome(
             staged,
             &parts.retire_counts,
             parts.proposal_new_catalog_ids,
-            parts.retire_digest,
         ),
     }
 }
@@ -415,18 +353,6 @@ fn retire_receipt_counts(
     Ok(counts)
 }
 
-fn retire_counts_u64(counts: &[(CatalogId, usize)]) -> Result<Vec<(CatalogId, u64)>, ApplyError> {
-    counts
-        .iter()
-        .map(|(id, count)| {
-            Ok((
-                id.clone(),
-                u64::try_from(*count).map_err(|_| ApplyError::Drift)?,
-            ))
-        })
-        .collect()
-}
-
 fn retired_resource_member_ids(program: &CheckedProgram) -> Result<Vec<CatalogId>, ApplyError> {
     retired_proposal_ids(program, marrow_check::CatalogEntryKind::ResourceMember)
 }
@@ -459,7 +385,6 @@ fn activation_receipt(
     staged: &StagedWork,
     retire_counts: &[(CatalogId, usize)],
     proposal_new_catalog_ids: Vec<CatalogId>,
-    retire_evidence_digest: String,
 ) -> ActivationReceipt {
     ActivationReceipt {
         commit_id,
@@ -479,39 +404,43 @@ fn activation_receipt(
         default_records_by_id: staged.default_records_by_id.clone(),
         indexes_rebuilt: staged.indexes_rebuilt,
         records_retired: staged.records_retired,
-        retire_evidence_digest,
         records_retired_by_id: retire_counts.to_vec(),
         records_transformed: staged.records_transformed,
     }
 }
 
-fn commit_apply_plan(
+fn commit_apply_transaction(
     witness: &EvolutionWitness,
     program: &CheckedProgram,
     store: &TreeStore,
-    mut steps: Vec<PlanStep>,
     target_epoch: u64,
-    staged: &StagedWork,
     destructive_retire_counts: &[(CatalogId, usize)],
-) -> Result<(u64, ReceiptParts), ApplyError> {
+) -> Result<(u64, ReceiptParts, StagedWork), ApplyError> {
     store.begin()?;
     let result = (|| {
         assert_commit_pin(witness, store)?;
         let previous = store.read_commit_metadata()?;
+        let current_epoch = previous.as_ref().map(|commit| commit.catalog_epoch);
+        let mut staged = StagedWork::default();
+        stage_apply_work(
+            witness,
+            program,
+            store,
+            target_epoch,
+            current_epoch,
+            &mut staged,
+        )?;
+        reconcile_counts(&staged, witness, destructive_retire_counts)?;
         let allocation = CommitIdAllocation::PinnedNext {
             previous: witness.store_commit_id,
         };
         let commit_id = allocation.resolve(previous.as_ref())?;
-        let parts = receipt_parts(program, commit_id, staged, destructive_retire_counts)?;
-        steps.push(activation_stamp(
-            witness,
-            program,
-            target_epoch,
-            staged,
-            &parts,
-        ));
-        WritePlan { steps }.commit(store, true)?;
-        Ok((commit_id, parts))
+        let parts = receipt_parts(program, destructive_retire_counts)?;
+        WritePlan {
+            steps: vec![activation_stamp(witness, program, target_epoch)],
+        }
+        .commit(store, true)?;
+        Ok((commit_id, parts, staged))
     })();
     match result {
         Ok(outcome) => match store.commit() {
@@ -528,6 +457,37 @@ fn commit_apply_plan(
     }
 }
 
+fn stage_apply_work(
+    witness: &EvolutionWitness,
+    program: &CheckedProgram,
+    store: &TreeStore,
+    target_epoch: u64,
+    current_epoch: Option<u64>,
+    staged: &mut StagedWork,
+) -> Result<(), ApplyError> {
+    let places = checked_activation_root_places(program);
+    let runtime = program.runtime();
+    let ctx = StageCtx {
+        places: &places,
+        store,
+        program,
+        runtime: &runtime,
+        reject_existing_proposal_defaults: current_epoch != Some(target_epoch),
+    };
+    let mut index_rebuilds = Vec::new();
+    for obligation in &witness.verdicts {
+        if matches!(obligation.verdict, Verdict::DerivedRebuild) {
+            index_rebuilds.push(obligation.catalog_id.clone());
+            continue;
+        }
+        stage_obligation(&ctx, &obligation.catalog_id, &obligation.verdict, staged)?;
+    }
+    for catalog_id in index_rebuilds {
+        stage_index_rebuild(&catalog_id, &places, store, staged)?;
+    }
+    stage_redundant_default_receipts(program, &places, store, staged)
+}
+
 #[derive(Default)]
 pub(super) struct StagedWork {
     pub(super) records_backfilled: usize,
@@ -538,9 +498,8 @@ pub(super) struct StagedWork {
 }
 
 /// The read-only context every staging helper consults: the source places to scan, the
-/// store snapshot, and the checked program and runtime a transform evaluates against.
-/// The mutable accumulators (`steps`, `staged`) stay separate so the staging walk owns
-/// them across obligations.
+/// transaction-visible store, and the checked program and runtime a transform evaluates
+/// against. `StagedWork` holds only bounded receipt counters across obligations.
 struct StageCtx<'a> {
     places: &'a [CheckedSavedPlace],
     store: &'a TreeStore,
@@ -553,7 +512,6 @@ fn stage_obligation(
     ctx: &StageCtx,
     catalog_id: &CatalogId,
     verdict: &Verdict,
-    steps: &mut Vec<PlanStep>,
     staged: &mut StagedWork,
 ) -> Result<(), ApplyError> {
     let StageCtx {
@@ -570,32 +528,25 @@ fn stage_obligation(
             *reject_existing_proposal_defaults && !accepted_resource_member(program, catalog_id),
             places,
             store,
-            steps,
             staged,
         ),
-        // Derived rebuilds are staged in a second pass after every data obligation, so a
-        // rebuilt index sees the defaults and transforms this apply also writes. The apply
-        // loop diverts them before they reach here; one arriving means the loop's deferral
-        // broke, which is a fail-closed internal divergence rather than a silent skip.
+        // Derived rebuilds run in a second pass after every data obligation, so a rebuilt
+        // index sees the defaults and transforms this apply also writes. The apply loop
+        // diverts them before they reach here; one arriving means the loop's deferral broke,
+        // which is a fail-closed internal divergence rather than a silent skip.
         Verdict::DerivedRebuild => Err(ApplyError::Store(StoreError::Corruption {
             message: "evolution apply staged a derived rebuild outside its deferred pass"
                 .to_string(),
         })),
-        Verdict::IndexDropped => stage_index_drop(catalog_id, steps),
+        Verdict::IndexDropped => stage_index_drop(catalog_id, store),
         Verdict::DestructiveDecisionRequired { .. } => {
-            stage_retire_deletes(catalog_id, places, store, steps, staged)
+            stage_retire_deletes(catalog_id, places, store, staged)
         }
         Verdict::Transform { reads } => {
             let mut count = 0usize;
             let mut stage = |address: DataAddress, value| {
-                steps.push(PlanStep::WriteNode {
-                    address: DataAddress::from_resolved_parts(
-                        address.store.clone(),
-                        address.identity.clone(),
-                        Vec::new(),
-                    ),
-                });
-                steps.push(PlanStep::WriteData { address, value });
+                store.write_node(&address.store, &address.identity)?;
+                store.write_data_value(&address.store, &address.identity, &address.path, value)?;
                 count += 1;
                 Ok(())
             };
@@ -620,8 +571,7 @@ fn stage_obligation(
 
 /// Whether `catalog_id` names a resource member the accepted catalog already owns. A
 /// default whose target is not yet accepted is proposal-new: apply must fail closed on an
-/// existing target cell, and completion verification holds it to the exact constant. The
-/// single owner of that classification so staging and completion cannot disagree.
+/// existing target cell. This is the single owner of that classification.
 pub(super) fn accepted_resource_member(program: &CheckedProgram, catalog_id: &CatalogId) -> bool {
     program.catalog.accepted_entries.iter().any(|entry| {
         entry.kind == CatalogEntryKind::ResourceMember && entry.stable_id == catalog_id.as_str()

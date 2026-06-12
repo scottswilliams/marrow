@@ -1,21 +1,16 @@
 //! Apply drift, rollback, and idempotence: the witness is the only input crossing the
 //! check->run boundary, so tampering its source digest, backfill count, or pinned store
 //! commit id aborts before any write. An optional add stamps without a data step, a
-//! failed apply rolls back and a resumed apply succeeds, a no-op re-apply does not churn
-//! the commit id, and completion re-verification fails closed when a resumed proof
-//! verdict degrades.
+//! failed apply rolls back and a resumed apply succeeds, and a no-op re-apply does not
+//! churn the commit id.
 
 mod evolution_apply_support;
 
 use evolution_apply_support::*;
 
-use marrow_run::evolution::{
-    ApplyError, apply, current_engine_profile, verify_activation_completion,
-};
+use marrow_run::evolution::{ApplyError, apply, current_engine_profile};
 use marrow_store::StoreError;
-use marrow_store::cell::CatalogId;
-use marrow_store::key::SavedKey;
-use marrow_store::tree::{CommitMetadata, DataPathSegment, TreeStore};
+use marrow_store::tree::{CommitMetadata, TreeStore};
 use marrow_store::value::Scalar;
 
 /// An optional sparse add is a no-op: apply stamps the proposal epoch with no data
@@ -82,73 +77,6 @@ fn optional_add_stamps_epoch_without_data_step() {
             Some(epoch)
         );
     }
-}
-
-#[test]
-fn completion_fails_when_no_effect_resume_recomputes_repair_required() {
-    let root = temp_project("completion-no-effect-repair-drift", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   required title: string\n\
-             store ^books(id: int): Book\n\
-             pub fn add(title: string): Id(^books)\n\
-             \x20   return nextId(^books)\n",
-        );
-    });
-    let accepted = commit_then_check(&root);
-    let accepted_place = root_place(&accepted, "books");
-    let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &accepted_place,
-    };
-    seed.record(1);
-    seed.member(1, "title", Scalar::Str("Dune".into()));
-
-    write(
-        &root,
-        "src/books.mw",
-        "module books\n\
-         resource Book\n\
-         \x20   required title: string\n\
-         \x20   subtitle: string\n\
-         store ^books(id: int): Book\n\
-         pub fn add(title: string): Id(^books)\n\
-         \x20   return nextId(^books)\n",
-    );
-    let program = checked(&root);
-    let w = witness(&program, &store);
-    assert!(w.is_activatable(), "{w:#?}");
-    assert!(w.proposal_catalog.is_some(), "{w:#?}");
-    assert_eq!(w.counts.records_to_backfill, 0);
-    assert_eq!(w.counts.records_to_transform, 0);
-
-    let outcome = apply(&w, &program, &store, false, None).expect("apply");
-    assert_eq!(outcome.receipt.records_backfilled, 0);
-    assert_eq!(outcome.receipt.records_transformed, 0);
-    assert_eq!(outcome.receipt.indexes_rebuilt, 0);
-    assert_eq!(outcome.receipt.records_retired, 0);
-
-    let store_id = store_id_of(&accepted_place);
-    let title_id = CatalogId::new(member_catalog_id(&accepted_place, "title")).unwrap();
-    store
-        .delete_data_subtree(
-            &store_id,
-            &[SavedKey::Int(1)],
-            &[DataPathSegment::Member(title_id)],
-        )
-        .expect("delete required title after activation stamp");
-    let commit = store
-        .read_commit_metadata()
-        .expect("read commit")
-        .expect("activation commit");
-
-    let error = verify_activation_completion(&program, &store, &commit)
-        .expect_err("completion fails closed when proof verdict degrades");
-    assert_eq!(error, ApplyError::NotActivatable);
 }
 
 /// Source-digest drift: the witness no longer matches what the source now discharges.
@@ -484,15 +412,5 @@ fn commit_metadata(commit_id: u64, source_digest: String) -> CommitMetadata {
         engine_profile_digest: profile.digest_bytes(),
         changed_root_catalog_ids: Vec::new(),
         changed_index_catalog_ids: Vec::new(),
-        activation_evolution_digest: String::new(),
-        activation_proposal_catalog_digest: None,
-        activation_proposal_new_catalog_ids: Vec::new(),
-        activation_records_backfilled: 0,
-        activation_default_records_by_id: Vec::new(),
-        activation_indexes_rebuilt: 0,
-        activation_records_retired: 0,
-        activation_retire_evidence_digest: String::new(),
-        activation_records_retired_by_id: Vec::new(),
-        activation_records_transformed: 0,
     }
 }

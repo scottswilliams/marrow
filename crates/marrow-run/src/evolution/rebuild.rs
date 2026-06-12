@@ -11,9 +11,6 @@
 use marrow_check::{CheckedProgram, CheckedSavedPlace, checked_activation_root_places};
 use marrow_store::tree::TreeStore;
 
-use crate::index_maintenance::EmptyStagedData;
-use crate::write_plan::{PlanStep, WritePlan};
-
 use super::apply::ApplyError;
 use super::backfill::stage_index_subtree_rebuild;
 
@@ -29,11 +26,9 @@ pub fn rebuild_store_indexes(
     program: &CheckedProgram,
     store: &TreeStore,
 ) -> Result<(), ApplyError> {
-    let mut steps = Vec::new();
     for place in indexed_places(program) {
-        stage_place_indexes(&place, store, &mut steps)?;
+        stage_place_indexes(&place, store)?;
     }
-    WritePlan { steps }.commit(store, true)?;
     Ok(())
 }
 
@@ -46,17 +41,12 @@ fn indexed_places(program: &CheckedProgram) -> Vec<CheckedSavedPlace> {
         .collect()
 }
 
-/// Stage a full rebuild of every index on `place`: clear the index subtree, then stage the
-/// entry each record contributes. Restore replays committed data only, so each index is
-/// derived against an empty staged-data view.
-fn stage_place_indexes(
-    place: &CheckedSavedPlace,
-    store: &TreeStore,
-    steps: &mut Vec<PlanStep>,
-) -> Result<(), ApplyError> {
+/// Rebuild every index on `place`: clear the index subtree, then write the entry each
+/// record contributes. Restore replays committed data only, so no same-apply data overlay
+/// is needed here.
+fn stage_place_indexes(place: &CheckedSavedPlace, store: &TreeStore) -> Result<(), ApplyError> {
     for index in &place.indexes {
-        let index_steps = stage_index_subtree_rebuild(index, place, store, &EmptyStagedData)?;
-        steps.extend(index_steps);
+        stage_index_subtree_rebuild(index, place, store)?;
     }
     Ok(())
 }

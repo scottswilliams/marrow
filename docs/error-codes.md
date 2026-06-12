@@ -332,11 +332,11 @@ Source-native data-evolution preview/apply faults.
 | `evolve.repair_required` | The attached data snapshot cannot discharge a required obligation. Repair the data through explicit maintenance/admin code, then preview again. |
 | `evolve.drift` | The live source, catalog, store snapshot, engine metadata, affected IDs, or counts no longer match the preview witness. Preview again. |
 | `evolve.store_commit_drift` | The store commit changed after preview. Preview again against the current store. |
-| `evolve.catalog_drift` | The store's accepted catalog snapshot changed after preview, so the witness was discharged against a catalog the store no longer holds. Apply refuses before staging. Preview again. |
+| `evolve.catalog_drift` | The store's accepted catalog snapshot changed after preview, so the witness was discharged against a catalog the store no longer holds. Apply refuses before writing. Preview again. |
 | `evolve.maintenance_required` | A destructive retire was reached without the maintenance gate. |
 | `evolve.approval_required` | A destructive retire needs an approval naming the catalog ID and populated count from preview. |
 | `evolve.approval_mismatch` | The supplied destructive approval did not match the exact preview witness. |
-| `evolve.plan_mismatch` | Apply could not stage the exact number of writes or deletes the witness counted. |
+| `evolve.plan_mismatch` | Apply could not write the exact number of effects the witness counted. |
 | `evolve.transform_faulted` | A checked transform body faulted while running against real data, so apply rolled back. |
 
 ### `test.*` — kind `tooling`
@@ -345,11 +345,18 @@ Source-native data-evolution preview/apply faults.
 |---|---|
 | `test.none` | `marrow test` found no tests; check the `tests` patterns in `marrow.json`. Exit code `1`. (Failing tests are reported per test with their own `run.assertion` or other `run.*` code, not a `test.*` code.)|
 
+### `backup.*` — kind `tooling`
+
+| Code | Meaning |
+| --- | --- |
+| `backup.store_uid_missing` | The existing store predates the physical store UID stamp. Run or evolve apply with this build to stamp the store before backup. |
+
 ### `restore.*` — kind `tooling`
 
 Faults from `marrow restore` when a backup cannot be replayed into the project's
-store. `marrow backup` itself reports `io.write` for a file it cannot write and a
-`store.*` code for a read fault; it has no codes of its own.
+store. `marrow backup` reports `io.write` for a file it cannot write, a
+`store.*` code for a read fault, or `backup.store_uid_missing` when an existing
+store predates the required physical store UID stamp.
 
 | Code | Meaning |
 |---|---|

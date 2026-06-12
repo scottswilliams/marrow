@@ -44,12 +44,6 @@ impl CommitIdAllocation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ActivationEvidenceMode {
-    Explicit,
-    CarryPrevious,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PlanStep {
     WriteNode {
         address: DataAddress,
@@ -87,7 +81,6 @@ pub(crate) enum PlanStep {
     StampMetadata {
         catalog_snapshot: Option<Box<marrow_catalog::CatalogMetadata>>,
         commit_id: CommitIdAllocation,
-        activation_evidence: ActivationEvidenceMode,
         commit: Box<CommitMetadata>,
     },
 }
@@ -206,18 +199,11 @@ fn apply_steps(steps: Vec<PlanStep>, store: &TreeStore) -> Result<(), StoreError
             PlanStep::StampMetadata {
                 catalog_snapshot,
                 commit_id,
-                activation_evidence,
                 commit,
             } => {
                 let previous = store.read_commit_metadata()?;
                 let mut commit = commit;
                 commit.commit_id = commit_id.resolve(previous.as_ref())?;
-                match activation_evidence {
-                    ActivationEvidenceMode::Explicit => {}
-                    ActivationEvidenceMode::CarryPrevious => {
-                        carry_activation_evidence(&mut commit, previous.as_ref());
-                    }
-                }
                 if let Some(snapshot) = catalog_snapshot {
                     store.replace_catalog_snapshot(&snapshot)?;
                 }
@@ -235,43 +221,6 @@ fn next_commit_id(previous: Option<&CommitMetadata>) -> Result<u64, StoreError> 
             .checked_add(1)
             .ok_or(StoreError::LimitExceeded { limit: "commit id" })
     })
-}
-
-fn carry_activation_evidence(commit: &mut CommitMetadata, previous: Option<&CommitMetadata>) {
-    clear_activation_evidence(commit);
-    let Some(previous) = previous else {
-        return;
-    };
-    if previous.catalog_epoch != commit.catalog_epoch
-        || previous.source_digest != commit.source_digest
-        || previous.activation_evolution_digest.is_empty()
-    {
-        return;
-    }
-    commit.activation_evolution_digest = previous.activation_evolution_digest.clone();
-    commit.activation_proposal_catalog_digest = previous.activation_proposal_catalog_digest.clone();
-    commit.activation_proposal_new_catalog_ids =
-        previous.activation_proposal_new_catalog_ids.clone();
-    commit.activation_records_backfilled = previous.activation_records_backfilled;
-    commit.activation_default_records_by_id = previous.activation_default_records_by_id.clone();
-    commit.activation_indexes_rebuilt = previous.activation_indexes_rebuilt;
-    commit.activation_records_retired = previous.activation_records_retired;
-    commit.activation_retire_evidence_digest = previous.activation_retire_evidence_digest.clone();
-    commit.activation_records_retired_by_id = previous.activation_records_retired_by_id.clone();
-    commit.activation_records_transformed = previous.activation_records_transformed;
-}
-
-fn clear_activation_evidence(commit: &mut CommitMetadata) {
-    commit.activation_evolution_digest.clear();
-    commit.activation_proposal_catalog_digest = None;
-    commit.activation_proposal_new_catalog_ids.clear();
-    commit.activation_records_backfilled = 0;
-    commit.activation_default_records_by_id.clear();
-    commit.activation_indexes_rebuilt = 0;
-    commit.activation_records_retired = 0;
-    commit.activation_retire_evidence_digest.clear();
-    commit.activation_records_retired_by_id.clear();
-    commit.activation_records_transformed = 0;
 }
 
 fn data_target(address: &DataAddress) -> WriteTarget {
@@ -301,9 +250,7 @@ fn index_target(address: &IndexAddress, identity: &[SavedKey]) -> WriteTarget {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ActivationEvidenceMode, CommitIdAllocation, PlanStep, WriteOp, WritePlan, WriteTarget,
-    };
+    use super::{CommitIdAllocation, PlanStep, WriteOp, WritePlan, WriteTarget};
     use marrow_store::tree::{CommitMetadata, EngineProfile};
 
     /// A metadata stamp projects to a write of a `Meta` target carrying the catalog
@@ -322,23 +269,12 @@ mod tests {
             engine_profile_digest: profile.digest_bytes(),
             changed_root_catalog_ids: Vec::new(),
             changed_index_catalog_ids: Vec::new(),
-            activation_evolution_digest: String::new(),
-            activation_proposal_catalog_digest: None,
-            activation_proposal_new_catalog_ids: Vec::new(),
-            activation_records_backfilled: 0,
-            activation_default_records_by_id: Vec::new(),
-            activation_indexes_rebuilt: 0,
-            activation_records_retired: 0,
-            activation_retire_evidence_digest: String::new(),
-            activation_records_retired_by_id: Vec::new(),
-            activation_records_transformed: 0,
         };
         let snapshot = marrow_catalog::CatalogMetadata::new(5, Vec::new());
         let plan = WritePlan {
             steps: vec![PlanStep::StampMetadata {
                 catalog_snapshot: Some(Box::new(snapshot)),
                 commit_id: CommitIdAllocation::Next,
-                activation_evidence: ActivationEvidenceMode::Explicit,
                 commit: Box::new(commit),
             }],
         };
@@ -361,7 +297,6 @@ mod tests {
             steps: vec![PlanStep::StampMetadata {
                 catalog_snapshot: None,
                 commit_id: CommitIdAllocation::Next,
-                activation_evidence: ActivationEvidenceMode::Explicit,
                 commit: Box::new(commit),
             }],
         };
@@ -388,16 +323,6 @@ mod tests {
             engine_profile_digest: profile.digest_bytes(),
             changed_root_catalog_ids: Vec::new(),
             changed_index_catalog_ids: Vec::new(),
-            activation_evolution_digest: String::new(),
-            activation_proposal_catalog_digest: None,
-            activation_proposal_new_catalog_ids: Vec::new(),
-            activation_records_backfilled: 0,
-            activation_default_records_by_id: Vec::new(),
-            activation_indexes_rebuilt: 0,
-            activation_records_retired: 0,
-            activation_retire_evidence_digest: String::new(),
-            activation_records_retired_by_id: Vec::new(),
-            activation_records_transformed: 0,
         }
     }
 
@@ -433,7 +358,6 @@ mod tests {
             steps: vec![PlanStep::StampMetadata {
                 catalog_snapshot: None,
                 commit_id: CommitIdAllocation::Next,
-                activation_evidence: ActivationEvidenceMode::Explicit,
                 commit: Box::new(commit),
             }],
         }

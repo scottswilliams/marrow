@@ -21,13 +21,20 @@ pub(super) fn apply_store(
     format: CheckFormat,
 ) -> Result<TreeStore, ExitCode> {
     match resolve_store_path(dir, config, format)? {
-        Some(path) => match TreeStore::open(&path) {
-            Ok(store) => Ok(store),
-            Err(error) => {
+        Some(path) => {
+            let store = match TreeStore::open(&path) {
+                Ok(store) => store,
+                Err(error) => {
+                    report_simple_error(error.code(), &error.to_string(), format);
+                    return Err(ExitCode::FAILURE);
+                }
+            };
+            if let Err(error) = crate::backup::ensure_store_uid(&store) {
                 report_simple_error(error.code(), &error.to_string(), format);
-                Err(ExitCode::FAILURE)
+                return Err(ExitCode::FAILURE);
             }
-        },
+            Ok(store)
+        }
         None => Ok(TreeStore::memory()),
     }
 }

@@ -14,8 +14,8 @@ fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
-/// A commit metadata record whose activation receipt block is the empty/zero
-/// default, parameterized on the fields the round-trip tests vary.
+/// A commit metadata record parameterized on the stamp fields the round-trip
+/// tests vary.
 fn sample_commit_metadata(
     commit_id: u64,
     catalog_epoch: u64,
@@ -33,16 +33,6 @@ fn sample_commit_metadata(
         engine_profile_digest,
         changed_root_catalog_ids: roots,
         changed_index_catalog_ids: indexes,
-        activation_evolution_digest: String::new(),
-        activation_proposal_catalog_digest: None,
-        activation_proposal_new_catalog_ids: Vec::new(),
-        activation_records_backfilled: 0,
-        activation_default_records_by_id: Vec::new(),
-        activation_indexes_rebuilt: 0,
-        activation_records_retired: 0,
-        activation_retire_evidence_digest: String::new(),
-        activation_records_retired_by_id: Vec::new(),
-        activation_records_transformed: 0,
     }
 }
 

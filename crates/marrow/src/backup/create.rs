@@ -4,9 +4,10 @@
 use std::io::Write;
 
 use marrow_check::CheckedProgram;
+use marrow_project::Sha256Digest;
 use marrow_run::evolution::current_engine_profile;
 use marrow_store::StoreError;
-use marrow_store::tree::TreeStore;
+use marrow_store::tree::{StoreUid, TreeStore};
 
 use super::archive::{
     self, CHECKSUM_SEED, catalog_section_bytes, checksum_catalog_section, checksum_cell,
@@ -14,7 +15,7 @@ use super::archive::{
 };
 use super::{
     BackupCorruptProblem, BackupError, BackupManifest, CommitDescriptor, EngineDescriptor,
-    FORMAT_VERSION,
+    FORMAT_VERSION, require_store_uid,
 };
 
 /// What a completed backup wrote.
@@ -34,18 +35,22 @@ pub(crate) fn create_backup(
     store: &TreeStore,
     out: &mut impl Write,
 ) -> Result<BackupReport, BackupError> {
+    let store_uid = require_store_uid(store)?;
     let _snapshot = store.read_snapshot()?;
 
     let catalog = store.read_catalog_snapshot()?;
     let catalog_section = catalog_section_bytes(catalog.as_ref());
 
-    let mut record_count = 0u64;
-    store.visit_backup_cells(|_cell| {
-        record_count += 1;
-        Ok(())
-    })?;
+    let (record_count, state_digest) = scan_state(store)?;
 
-    let manifest = build_manifest(program, store, catalog.as_ref(), record_count)?;
+    let manifest = build_manifest(
+        program,
+        store,
+        catalog.as_ref(),
+        record_count,
+        state_digest,
+        &store_uid,
+    )?;
     let checksum = checksum_archive(store, &manifest, &catalog_section)?;
     let manifest = BackupManifest {
         archive_checksum: checksum,
@@ -61,6 +66,31 @@ pub(crate) fn create_backup(
         record_count,
         catalog_epoch: manifest.catalog_epoch,
     })
+}
+
+fn scan_state(store: &TreeStore) -> Result<(u64, String), BackupError> {
+    let mut record_count = 0u64;
+    let mut digest = Sha256Digest::new();
+    store.visit_backup_cells(|cell| {
+        record_count += 1;
+        cell.write_framed(&mut DigestSink(&mut digest))
+            .expect("digest sink is infallible");
+        Ok(())
+    })?;
+    Ok((record_count, digest.finish()))
+}
+
+struct DigestSink<'a>(&'a mut Sha256Digest);
+
+impl Write for DigestSink<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.update(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Fold the manifest, the catalog section, and the data cells into one integrity
@@ -106,6 +136,8 @@ fn build_manifest(
     store: &TreeStore,
     snapshot: Option<&marrow_catalog::CatalogMetadata>,
     record_count: u64,
+    state_digest: String,
+    store_uid: &StoreUid,
 ) -> Result<BackupManifest, BackupError> {
     let commit_metadata = store.read_commit_metadata()?;
     validate_catalog_snapshot_commit_binding(snapshot, commit_metadata.as_ref())?;
@@ -126,6 +158,9 @@ fn build_manifest(
         source_digest,
         catalog_epoch,
         catalog_digest: snapshot.map(|snapshot| snapshot.digest.clone()),
+        state_digest,
+        store_uid: store_uid.as_str().to_string(),
+        parent_snapshot_digest: None,
         engine,
         commit,
         record_count,
@@ -179,9 +214,10 @@ mod tests {
     use marrow_catalog::CatalogMetadata;
     use marrow_store::tree::{CommitMetadata, EngineProfile, TreeStore};
 
+    use super::super::ensure_store_uid;
     use super::super::test_support::{BOOK_SOURCE, committed_program};
     use super::super::{BackupCorruptProblem, BackupError};
-    use super::build_manifest;
+    use super::{build_manifest, scan_state};
 
     #[test]
     fn backup_manifest_uses_commit_metadata_as_stamp() {
@@ -205,21 +241,20 @@ mod tests {
                 engine_profile_digest: recorded_profile.digest_bytes(),
                 changed_root_catalog_ids: Vec::new(),
                 changed_index_catalog_ids: Vec::new(),
-                activation_evolution_digest: String::new(),
-                activation_proposal_catalog_digest: None,
-                activation_proposal_new_catalog_ids: Vec::new(),
-                activation_records_backfilled: 0,
-                activation_default_records_by_id: Vec::new(),
-                activation_indexes_rebuilt: 0,
-                activation_records_retired: 0,
-                activation_retire_evidence_digest: String::new(),
-                activation_records_retired_by_id: Vec::new(),
-                activation_records_transformed: 0,
             })
             .expect("stamp commit");
 
-        let manifest =
-            build_manifest(&program, &store, Some(&snapshot), 0).expect("build manifest");
+        let (record_count, state_digest) = scan_state(&store).expect("scan state");
+        let store_uid = ensure_store_uid(&store).expect("store uid");
+        let manifest = build_manifest(
+            &program,
+            &store,
+            Some(&snapshot),
+            record_count,
+            state_digest,
+            &store_uid,
+        )
+        .expect("build manifest");
         std::fs::remove_dir_all(&root).ok();
 
         assert_eq!(manifest.catalog_epoch, Some(epoch));
@@ -235,6 +270,8 @@ mod tests {
             manifest.commit.as_ref().map(|commit| commit.catalog_epoch),
             Some(epoch)
         );
+        assert_eq!(manifest.store_uid, store_uid.as_str());
+        assert!(manifest.parent_snapshot_digest.is_none());
     }
 
     #[test]
@@ -256,21 +293,20 @@ mod tests {
                 engine_profile_digest: profile.digest_bytes(),
                 changed_root_catalog_ids: Vec::new(),
                 changed_index_catalog_ids: Vec::new(),
-                activation_evolution_digest: String::new(),
-                activation_proposal_catalog_digest: None,
-                activation_proposal_new_catalog_ids: Vec::new(),
-                activation_records_backfilled: 0,
-                activation_default_records_by_id: Vec::new(),
-                activation_indexes_rebuilt: 0,
-                activation_records_retired: 0,
-                activation_retire_evidence_digest: String::new(),
-                activation_records_retired_by_id: Vec::new(),
-                activation_records_transformed: 0,
             })
             .expect("stamp commit");
 
-        let error = build_manifest(&program, &store, Some(&snapshot), 0)
-            .expect_err("commit and snapshot epoch mismatch is rejected");
+        let (record_count, state_digest) = scan_state(&store).expect("scan state");
+        let store_uid = ensure_store_uid(&store).expect("store uid");
+        let error = build_manifest(
+            &program,
+            &store,
+            Some(&snapshot),
+            record_count,
+            state_digest,
+            &store_uid,
+        )
+        .expect_err("commit and snapshot epoch mismatch is rejected");
         std::fs::remove_dir_all(&root).ok();
 
         assert_eq!(error.code(), "restore.corrupt_chunk");

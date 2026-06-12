@@ -12,7 +12,7 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 - **Key grammar** — `cell` defines the v0 physical key layout (placement prefix, profile, family, store id, identity, segments); `key` defines the order-preserving scalar codec used in every record-key and index-key position.
 - **Value forms** — `value` (canonical scalar codec, calendar years 0001–9999) and `decimal` (exact base-10, 34-digit/34-place envelope, half-to-even division).
 - **Public facade** — `TreeStore` wraps a boxed `Backend` and exposes every typed write/read/navigation/transaction/snapshot/backup call other crates use.
-- **Durable receipts** — `metadata` (`CommitMetadata`, `EngineProfile`, the source digest the activation fence binds).
+- **Durable stamp metadata** — `metadata` (`CommitMetadata`, `EngineProfile`, `StoreUid`, and the source digest the activation fence binds).
 - **Catalog table** — `catalog` persists the accepted `marrow_catalog::CatalogMetadata` as a header row plus one row per entry in its own physical family (`FAMILY_CATALOG`), written in the caller's transaction and invisible to data/index/meta access; a read verifies the stored header against the decoded rows, accepts the canonical order-insensitive digest or the legacy order-sensitive row-order digest, and returns a snapshot normalized to the canonical digest.
 - **Backup** — `backup` streams data-family node and value cells; index cells are rebuilt and commit metadata is restamped from the manifest on restore, never archived.
 
@@ -28,7 +28,7 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 | `crates/marrow-store/src/cell.rs` | The v0 physical key grammar: `CatalogId` validation, `CellKey` constructors per family, `DataPathSegment`, `MetaCell` tags, key decoders, `CellRange`. |
 | `crates/marrow-store/src/codec.rs` | Shared bounds-checked reader for private length-prefixed store codecs. |
 | `crates/marrow-store/src/tree.rs` | `TreeStore` facade over a boxed `Backend`: metadata, the catalog-table read/replace surface, typed writes/reads, node-backed record navigation, child/index navigation, paged index scans, backup streaming, snapshots. |
-| `crates/marrow-store/src/metadata.rs` | `EngineProfile`, `CommitMetadata`, and their length-prefixed binary codec with bounded-count guards. |
+| `crates/marrow-store/src/metadata.rs` | `EngineProfile`, `CommitMetadata`, `StoreUid`, and their length-prefixed binary codecs with bounded-count guards. |
 | `crates/marrow-store/src/catalog.rs` | The accepted-catalog table codec: header/entry rows under `FAMILY_CATALOG`, bounded paged scan, ordinal-contiguity, canonical digest normalization, legacy order-sensitive digest compatibility, and read/replace through `TreeStore`. |
 | `crates/marrow-store/src/mem.rs` | `MemStore`: in-memory `Backend` with one full-map clone for the open flat transaction and a frozen pinned-read snapshot. |
 | `crates/marrow-store/src/redb.rs` | `RedbStore`: persistent `Backend` with explicit immediate-durability redb transactions, format-version stamp plus parent-directory sync on fresh creation, joined transaction depth, batched prefix delete, pinned read snapshots. |
@@ -48,13 +48,6 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 - On-disk format is version-gated with no auto-migration: a mismatched `FORMAT_VERSION` is refused, a non-empty redb file with no `marrow.meta` table is corruption, and a read/write lock conflict is `store.locked`.
 - Native open fails closed, never crashes: `RedbStore::open`/`open_read_only` run the redb open and its structural probe under a panic backstop (`catch_open`), so a truncated or torn body that drives redb into a layout assertion or btree `unreachable!()` becomes `store.corruption` instead of aborting the process. Redb open errors map by damage (`map_open_error`): a torn body to corruption, an unclean-shutdown repair-needed file to the typed `store.recovery_required` (a write-capable open attempts the replay and reports whether the store opened), a read/write holder conflict to `store.locked`, everything else to `store.io`.
 - Diagnostics are render-only: tests assert codes and typed payloads, not prose.
-
-## Code-reality notes
-
-- Every key carries an empty placement-prefix byte (`EMPTY_PLACEMENT_PREFIX`, `0x00`) — a reserved slot with no current variation, undocumented in the module prose.
-- `decode_digest` exists in both `metadata.rs` and `tree.rs` as duplicate 8-byte try-into-or-corrupt helpers.
-- `value.rs` maps `ErrorCode` and `string` both to `ScalarType::Str`; `from_scalar_name("ErrorCode")` resolves to `Str` but `name(Str)` returns `string`, so `ErrorCode` is a one-way alias.
-- `TreeStore::open_read_only` is redb-only. The in-memory engine has no read-only mode, and the `Backend` trait does not express the capability — read-only is enforced at the redb layer.
 
 ## Read next
 

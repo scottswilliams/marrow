@@ -377,12 +377,15 @@ fn open_store_file(
     let Some(path) = resolve_store_path(dir, config, format)? else {
         return Ok(None);
     };
-    marrow_store::tree::TreeStore::open(&path)
-        .map(|store| Some(NativeRunStore { path, store }))
-        .map_err(|error| {
-            report_simple_error(error.code(), &error.to_string(), format);
-            ExitCode::FAILURE
-        })
+    let store = marrow_store::tree::TreeStore::open(&path).map_err(|error| {
+        report_simple_error(error.code(), &error.to_string(), format);
+        ExitCode::FAILURE
+    })?;
+    if let Err(error) = crate::backup::ensure_store_uid(&store) {
+        report_simple_error(error.code(), &error.to_string(), format);
+        return Err(ExitCode::FAILURE);
+    }
+    Ok(Some(NativeRunStore { path, store }))
 }
 
 /// Fence a run's program against the store's stamped activation context.

@@ -3,7 +3,7 @@
 //! Locate a catalog id within a place's checked member tree, recording the path of keyed
 //! layers and plain members to reach it, and iterate every stored record of a place.
 
-use marrow_check::{CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace, StoreLeafKind};
+use marrow_check::{CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace};
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
@@ -30,13 +30,12 @@ pub(super) fn locate_member(
     catalog_id: &CatalogId,
 ) -> Option<MemberLocation> {
     let mut steps = Vec::new();
-    let leaf = locate_in(&place.root_members, &mut steps, catalog_id)?;
-    Some(MemberLocation { steps, leaf })
+    locate_in(&place.root_members, &mut steps, catalog_id)?;
+    Some(MemberLocation { steps })
 }
 
 pub(super) struct MemberLocation {
     pub(super) steps: Vec<PathStep>,
-    pub(super) leaf: Option<StoreLeafKind>,
 }
 
 pub(super) enum PathStep {
@@ -48,7 +47,7 @@ fn locate_in(
     members: &[CheckedSavedMember],
     steps: &mut Vec<PathStep>,
     target: &CatalogId,
-) -> Option<Option<StoreLeafKind>> {
+) -> Option<()> {
     for member in members {
         let Some(raw_id) = &member.catalog_id else {
             continue;
@@ -64,7 +63,7 @@ fn locate_in(
         };
         steps.push(step);
         if member_id == *target {
-            return Some(member.leaf.clone());
+            return Some(());
         }
         if matches!(member.kind, CheckedSavedMemberKind::Group)
             && let Some(leaf) = locate_in(&member.group_members, steps, target)

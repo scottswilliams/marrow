@@ -11,7 +11,9 @@ use marrow_store::tree::{DataPathSegment, TreeStore};
 
 mod support;
 
-use support::{TempProject, marrow, member_catalog_id, temp_project, write};
+use support::{
+    TempProject, marrow, member_catalog_id, temp_project, temp_project_uncommitted, write,
+};
 
 /// The `code` field of a single JSON error record printed to stdout.
 fn json_code(output: &Output) -> String {
@@ -140,6 +142,69 @@ fn read_store_catalog(data_dir: &Path) -> Option<marrow_catalog::CatalogMetadata
         .expect("open store read-only")
         .read_catalog_snapshot()
         .expect("read store catalog snapshot")
+}
+
+fn no_uid_project_with_data(name: &str) -> (TempProject, PathBuf) {
+    let root = temp_project_uncommitted(name, |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+        );
+        write(
+            root,
+            "src/shelf.mw",
+            "module shelf\n\nresource Book\n\x20\x20\x20\x20required title: string\nstore ^books(id: int): Book\n",
+        );
+    });
+    let config_text = fs::read_to_string(root.join("marrow.json")).expect("read config");
+    let config = marrow_project::parse_config(&config_text).expect("parse config");
+    let (report, pending) = marrow_check::check_project(&root, &config).expect("check project");
+    assert!(!report.has_errors(), "project checks cleanly: {report:#?}");
+    let data_dir = root.join(".data");
+    let store_file = data_dir.join("marrow.redb");
+    fs::create_dir_all(&data_dir).expect("create data dir");
+    let store = TreeStore::open(&store_file).expect("open native store");
+    marrow_run::evolution::commit_catalog_baseline(&store, &pending).expect("commit baseline");
+    let accepted = store
+        .read_catalog_snapshot()
+        .expect("read accepted catalog");
+    let (report, accepted_program) =
+        marrow_check::check_project_with_catalog(&root, &config, accepted.as_ref())
+            .expect("check accepted project");
+    assert!(
+        !report.has_errors(),
+        "accepted project checks cleanly: {report:#?}"
+    );
+    let place = checked_saved_root_place(
+        &accepted_program,
+        "books",
+        marrow_syntax::SourceSpan::default(),
+    )
+    .expect("checked saved root place");
+    let store_id = CatalogId::new(place.store_catalog_id.expect("accepted store id"))
+        .expect("store catalog id");
+    let title_id = member_catalog_id(&place.root_members, "title");
+    store
+        .write_node(&store_id, &[SavedKey::Int(1)])
+        .expect("write record node");
+    store
+        .write_data_value(
+            &store_id,
+            &[SavedKey::Int(1)],
+            &[DataPathSegment::Member(title_id)],
+            marrow_store::value::encode_value(&marrow_store::value::SavedValue::Str(
+                "Mort".to_string(),
+            ))
+            .expect("encode title"),
+        )
+        .expect("write title");
+    assert_eq!(
+        store.read_store_uid().expect("read uid"),
+        None,
+        "fixture intentionally predates store UID metadata"
+    );
+    (root, data_dir)
 }
 
 fn evolution_default_project(name: &str) -> (TempProject, PathBuf) {
@@ -361,6 +426,70 @@ fn native_store_symlink_target_is_owner_only_under_permissive_umask() {
         "store path remains the configured symlink"
     );
     assert_owner_only_file(&symlink_target);
+}
+
+#[test]
+fn backup_refuses_an_existing_store_without_a_uid_without_writing() {
+    let (root, data_dir) = no_uid_project_with_data("backup-missing-store-uid");
+    let dir = root.to_str().unwrap().to_string();
+    let archive = root.join("missing-uid.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+
+    let backup = marrow(&["backup", "--format", "json", &dir, &archive_arg]);
+
+    assert_eq!(backup.status.code(), Some(1), "backup: {backup:?}");
+    assert_eq!(json_code(&backup), "backup.store_uid_missing");
+    assert!(
+        !String::from_utf8(backup.stderr)
+            .expect("stderr utf8")
+            .contains("store.read_only"),
+        "backup must fail on its own UID gate, not by attempting a write"
+    );
+    assert!(
+        !archive.exists(),
+        "failed backup does not publish an archive"
+    );
+    assert!(temp_artifacts_for(&archive).is_empty());
+    let store = TreeStore::open_read_only(&data_dir.join("marrow.redb")).expect("open store");
+    assert_eq!(
+        store.read_store_uid().expect("read uid"),
+        None,
+        "backup does not modify the existing store"
+    );
+}
+
+#[test]
+fn backup_succeeds_after_write_capable_run_seeds_store_uid() {
+    let root = temp_project_uncommitted("backup-run-seeds-store-uid", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::seed" } }"#,
+        );
+        write(root, "src/app.mw", support::counter_source());
+    });
+    let dir = root.to_str().unwrap().to_string();
+    let run = marrow(&["run", &dir]);
+    assert_eq!(run.status.code(), Some(0), "run: {run:?}");
+    let data_dir = root.join(".data");
+    let store = TreeStore::open_read_only(&data_dir.join("marrow.redb")).expect("open store");
+    assert!(
+        store.read_store_uid().expect("read uid").is_some(),
+        "write-capable run seeds the store UID"
+    );
+    let archive = root.join("seeded.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+
+    let backup = marrow(&["backup", "--format", "json", &dir, &archive_arg]);
+
+    assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
+    let backup_json = support::json(backup.stdout);
+    assert!(
+        backup_json["records"]
+            .as_u64()
+            .is_some_and(|records| records > 0),
+        "backup carries the seeded store cells: {backup_json:?}"
+    );
 }
 
 /// With engine-resident atomic publish there is no activation window: an `evolve apply`

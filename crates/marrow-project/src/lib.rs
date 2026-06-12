@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 mod digest;
-pub use digest::sha256_digest;
+pub use digest::{Sha256Digest, sha256_digest};
 
 /// Stable error code for an invalid `marrow.json`.
 pub const CONFIG_INVALID: &str = "config.invalid";

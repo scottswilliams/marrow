@@ -10,13 +10,13 @@ use crate::cell::{
 };
 use crate::codec::BoundedReader;
 use crate::key::{KEY_INT_EXCLUSIVE_END, SavedKey, encode_key_value};
-use crate::metadata::{decode_commit_metadata, encode_commit_metadata};
+use crate::metadata::{
+    decode_commit_metadata, decode_store_uid, encode_commit_metadata, encode_store_uid,
+};
 
 pub use crate::backup::{TreeBackupCell, TreeBackupCellBuf, TreeBackupCellReadError};
 pub use crate::cell::DataPathSegment;
-pub use crate::metadata::{
-    ActivationDefaultRecordCount, CommitMetadata, EngineProfile, EngineProfileDigest,
-};
+pub use crate::metadata::{CommitMetadata, EngineProfile, EngineProfileDigest, StoreUid};
 
 /// How many cells a backup traversal pages at a time, so the whole store is
 /// streamed in bounded chunks rather than materialized at once.
@@ -141,6 +141,19 @@ impl TreeStore {
     pub fn read_commit_metadata(&self) -> Result<Option<CommitMetadata>, StoreError> {
         self.read_cell(CellKey::meta(MetaCell::Commit).as_bytes())?
             .map(|bytes| decode_commit_metadata(&bytes))
+            .transpose()
+    }
+
+    pub fn write_store_uid(&self, uid: &StoreUid) -> Result<(), StoreError> {
+        self.write_cell(
+            CellKey::meta(MetaCell::StoreUid).as_bytes(),
+            encode_store_uid(uid),
+        )
+    }
+
+    pub fn read_store_uid(&self) -> Result<Option<StoreUid>, StoreError> {
+        self.read_cell(CellKey::meta(MetaCell::StoreUid).as_bytes())?
+            .map(|bytes| decode_store_uid(&bytes))
             .transpose()
     }
 
@@ -1420,8 +1433,7 @@ mod tests {
     use std::cell::Cell;
 
     use super::{
-        ActivationDefaultRecordCount, CellKey, CommitMetadata, DataPathSegment, NODE_MARKER,
-        TreeBackupCellBuf, TreeStore,
+        CellKey, CommitMetadata, DataPathSegment, NODE_MARKER, TreeBackupCellBuf, TreeStore,
     };
     use crate::StoreError;
     use crate::backend::counting::{BackendCounts, CountingBackend};
@@ -1461,16 +1473,6 @@ mod tests {
             engine_profile_digest: [0; 8],
             changed_root_catalog_ids: Vec::new(),
             changed_index_catalog_ids: Vec::new(),
-            activation_evolution_digest: String::new(),
-            activation_proposal_catalog_digest: None,
-            activation_proposal_new_catalog_ids: Vec::new(),
-            activation_records_backfilled: 0,
-            activation_default_records_by_id: Vec::new(),
-            activation_indexes_rebuilt: 0,
-            activation_records_retired: 0,
-            activation_retire_evidence_digest: String::new(),
-            activation_records_retired_by_id: Vec::new(),
-            activation_records_transformed: 0,
         }
     }
 
@@ -1629,36 +1631,6 @@ mod tests {
             engine_profile_digest: [1, 2, 3, 4, 5, 6, 7, 8],
             changed_root_catalog_ids: vec![catalog("cat_00000000000000000000000000000001")],
             changed_index_catalog_ids: vec![catalog("cat_00000000000000000000000000000002")],
-            activation_evolution_digest:
-                "sha256:00000000000000000000000000000000000000000000000000000000feedface"
-                    .to_string(),
-            activation_proposal_catalog_digest: Some(
-                "sha256:00000000000000000000000000000000000000000000000000000000c001d00d"
-                    .to_string(),
-            ),
-            activation_proposal_new_catalog_ids: vec![
-                catalog("cat_00000000000000000000000000000005"),
-                catalog("cat_00000000000000000000000000000006"),
-            ],
-            activation_records_backfilled: 2,
-            activation_default_records_by_id: vec![ActivationDefaultRecordCount {
-                catalog_id: catalog("cat_00000000000000000000000000000005"),
-                records_backfilled: 2,
-                target_records: 3,
-                evidence_digest:
-                    "sha256:0000000000000000000000000000000000000000000000000000000000000005"
-                        .to_string(),
-            }],
-            activation_indexes_rebuilt: 1,
-            activation_records_retired: 4,
-            activation_retire_evidence_digest:
-                "sha256:0000000000000000000000000000000000000000000000000000000000000006"
-                    .to_string(),
-            activation_records_retired_by_id: vec![
-                (catalog("cat_00000000000000000000000000000003"), 3),
-                (catalog("cat_00000000000000000000000000000004"), 1),
-            ],
-            activation_records_transformed: 3,
         };
 
         let store = TreeStore::memory();
@@ -1681,7 +1653,7 @@ mod tests {
     }
 
     #[test]
-    fn commit_metadata_rejects_truncated_activation_receipt_lists() {
+    fn commit_metadata_rejects_truncated_stamp_lists() {
         let metadata = CommitMetadata {
             commit_id: 7,
             catalog_epoch: 3,
@@ -1692,25 +1664,6 @@ mod tests {
             engine_profile_digest: [1, 2, 3, 4, 5, 6, 7, 8],
             changed_root_catalog_ids: Vec::new(),
             changed_index_catalog_ids: Vec::new(),
-            activation_evolution_digest:
-                "sha256:00000000000000000000000000000000000000000000000000000000feedface"
-                    .to_string(),
-            activation_proposal_catalog_digest: Some(
-                "sha256:00000000000000000000000000000000000000000000000000000000c001d00d"
-                    .to_string(),
-            ),
-            activation_proposal_new_catalog_ids: vec![catalog(
-                "cat_00000000000000000000000000000005",
-            )],
-            activation_records_backfilled: 0,
-            activation_default_records_by_id: Vec::new(),
-            activation_indexes_rebuilt: 0,
-            activation_records_retired: 0,
-            activation_retire_evidence_digest:
-                "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-                    .to_string(),
-            activation_records_retired_by_id: Vec::new(),
-            activation_records_transformed: 0,
         };
         let encoded = encode_commit_metadata(&metadata).expect("encode metadata");
 

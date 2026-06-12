@@ -757,7 +757,6 @@ fn build_commit_metadata_stamp(
             source_digest: source_digest.to_string(),
             changed_root_catalog_ids,
             changed_index_catalog_ids,
-            activation_evidence: crate::evolution::StampActivationEvidence::CarryPrevious,
         },
     )))
 }

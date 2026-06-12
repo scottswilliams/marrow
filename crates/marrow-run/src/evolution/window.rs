@@ -9,9 +9,9 @@
 use marrow_catalog::CatalogMetadata;
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
-use marrow_store::tree::{ActivationDefaultRecordCount, CommitMetadata, EngineProfile, TreeStore};
+use marrow_store::tree::{CommitMetadata, EngineProfile, TreeStore};
 
-use crate::write_plan::{ActivationEvidenceMode, CommitIdAllocation, PlanStep};
+use crate::write_plan::{CommitIdAllocation, PlanStep};
 
 /// The canonical layout epoch the current binary writes. The apply stamp and the open
 /// fence both derive their engine profile from this one constant, so a freshly applied
@@ -26,8 +26,7 @@ pub fn current_engine_profile() -> EngineProfile {
 /// The durable context a managed write or evolution apply records for the commit it
 /// stamps. `catalog_snapshot` is the accepted catalog to publish atomically with the
 /// stamp. `changed_root_catalog_ids` and `changed_index_catalog_ids` describe this
-/// commit's own writes. Activation evidence is either explicit for an apply, carried
-/// from the predecessor commit for an ordinary managed write, or empty.
+/// commit's own writes.
 pub(crate) struct StampFacts {
     pub(crate) catalog_epoch: u64,
     pub(crate) catalog_snapshot: Option<Box<CatalogMetadata>>,
@@ -35,27 +34,6 @@ pub(crate) struct StampFacts {
     pub(crate) source_digest: String,
     pub(crate) changed_root_catalog_ids: Vec<CatalogId>,
     pub(crate) changed_index_catalog_ids: Vec<CatalogId>,
-    pub(crate) activation_evidence: StampActivationEvidence,
-}
-
-pub(crate) enum StampActivationEvidence {
-    Empty,
-    CarryPrevious,
-    Applied(AppliedActivationEvidence),
-}
-
-#[derive(Default)]
-pub(crate) struct AppliedActivationEvidence {
-    pub(crate) evolution_digest: String,
-    pub(crate) proposal_catalog_digest: Option<String>,
-    pub(crate) proposal_new_catalog_ids: Vec<CatalogId>,
-    pub(crate) records_backfilled: u64,
-    pub(crate) default_records_by_id: Vec<ActivationDefaultRecordCount>,
-    pub(crate) indexes_rebuilt: u64,
-    pub(crate) records_retired: u64,
-    pub(crate) retire_evidence_digest: String,
-    pub(crate) records_retired_by_id: Vec<(CatalogId, u64)>,
-    pub(crate) records_transformed: u64,
 }
 
 /// Build the metadata stamp both the runtime managed-write path and evolution apply
@@ -64,17 +42,6 @@ pub(crate) struct AppliedActivationEvidence {
 /// construction: the fence reads exactly the layout and digest this stamp wrote.
 pub(crate) fn metadata_stamp(facts: StampFacts) -> PlanStep {
     let profile = current_engine_profile();
-    let (activation_evidence, applied_activation_evidence) = match facts.activation_evidence {
-        StampActivationEvidence::Empty => (
-            ActivationEvidenceMode::Explicit,
-            AppliedActivationEvidence::default(),
-        ),
-        StampActivationEvidence::CarryPrevious => (
-            ActivationEvidenceMode::CarryPrevious,
-            AppliedActivationEvidence::default(),
-        ),
-        StampActivationEvidence::Applied(evidence) => (ActivationEvidenceMode::Explicit, evidence),
-    };
     let commit = CommitMetadata {
         commit_id: 0,
         catalog_epoch: facts.catalog_epoch,
@@ -83,21 +50,10 @@ pub(crate) fn metadata_stamp(facts: StampFacts) -> PlanStep {
         engine_profile_digest: profile.digest_bytes(),
         changed_root_catalog_ids: facts.changed_root_catalog_ids,
         changed_index_catalog_ids: facts.changed_index_catalog_ids,
-        activation_evolution_digest: applied_activation_evidence.evolution_digest,
-        activation_proposal_catalog_digest: applied_activation_evidence.proposal_catalog_digest,
-        activation_proposal_new_catalog_ids: applied_activation_evidence.proposal_new_catalog_ids,
-        activation_records_backfilled: applied_activation_evidence.records_backfilled,
-        activation_default_records_by_id: applied_activation_evidence.default_records_by_id,
-        activation_indexes_rebuilt: applied_activation_evidence.indexes_rebuilt,
-        activation_records_retired: applied_activation_evidence.records_retired,
-        activation_retire_evidence_digest: applied_activation_evidence.retire_evidence_digest,
-        activation_records_retired_by_id: applied_activation_evidence.records_retired_by_id,
-        activation_records_transformed: applied_activation_evidence.records_transformed,
     };
     PlanStep::StampMetadata {
         catalog_snapshot: facts.catalog_snapshot,
         commit_id: facts.commit_id,
-        activation_evidence,
         commit: Box::new(commit),
     }
 }
@@ -215,16 +171,6 @@ mod tests {
             engine_profile_digest: profile.digest_bytes(),
             changed_root_catalog_ids: Vec::new(),
             changed_index_catalog_ids: Vec::new(),
-            activation_evolution_digest: String::new(),
-            activation_proposal_catalog_digest: None,
-            activation_proposal_new_catalog_ids: Vec::new(),
-            activation_records_backfilled: 0,
-            activation_default_records_by_id: Vec::new(),
-            activation_indexes_rebuilt: 0,
-            activation_records_retired: 0,
-            activation_retire_evidence_digest: String::new(),
-            activation_records_retired_by_id: Vec::new(),
-            activation_records_transformed: 0,
         }
     }
 
@@ -307,11 +253,11 @@ mod tests {
     }
 
     #[test]
-    fn epoch_stamped_receipt_with_empty_digest_is_schema_drift() {
+    fn epoch_stamped_commit_metadata_with_empty_digest_is_schema_drift() {
         let store = TreeStore::memory();
         stamp_with_digest(&store, 7, "");
         let error = fence(Some(7), DIGEST, &current_engine_profile(), &store)
-            .expect_err("an empty stamped digest is a schema drift receipt");
+            .expect_err("empty stamped source digest is schema drift in commit metadata");
         assert_eq!(error, FenceError::SchemaDrift);
         assert_eq!(error.code(), "run.schema_drift");
     }

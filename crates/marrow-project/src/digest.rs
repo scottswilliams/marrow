@@ -5,7 +5,39 @@ use std::fmt::Write as _;
 use sha2::{Digest, Sha256};
 
 pub fn sha256_digest(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
+    let mut digest = Sha256Digest::new();
+    digest.update(bytes);
+    digest.finish()
+}
+
+pub struct Sha256Digest {
+    hash: Sha256,
+}
+
+impl Sha256Digest {
+    pub fn new() -> Self {
+        Self {
+            hash: Sha256::new(),
+        }
+    }
+
+    pub fn update(&mut self, bytes: &[u8]) {
+        self.hash.update(bytes);
+    }
+
+    pub fn finish(self) -> String {
+        let digest = self.hash.finalize();
+        sha256_hex(digest.as_slice())
+    }
+}
+
+impl Default for Sha256Digest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn sha256_hex(digest: &[u8]) -> String {
     let mut out = String::with_capacity("sha256:".len() + digest.len() * 2);
     out.push_str("sha256:");
     for byte in digest {

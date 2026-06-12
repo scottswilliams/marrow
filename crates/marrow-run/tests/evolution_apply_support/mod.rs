@@ -3,10 +3,10 @@
 //! Each case checks a source-driven fixture through the production pipeline, seeds a
 //! store at the member catalog ids the checked saved place names, runs the read-only
 //! `preview` to produce the witness apply consumes, then drives the production `apply`
-//! entry and asserts the staged data, the metadata stamp, and the drift/rollback
+//! entry and asserts the written data, the metadata stamp, and the drift/rollback
 //! contracts. The witness is the only input that crosses the check->run boundary, so
 //! every drift dimension is exercised by mutating the witness or the store and proving
-//! apply aborts before staging a write.
+//! apply aborts before committing a write.
 //!
 //! Each invariant-focused split file includes this module, so not every binary
 //! exercises every helper; the crate-wide `dead_code` allowance keeps the shared
@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 use marrow_check::evolution::{EvolutionWitness, preview};
 use marrow_check::{CheckedProgram, CheckedSavedPlace};
-use marrow_run::evolution::apply;
+use marrow_run::evolution::{ApplyOutcome, apply};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
@@ -150,6 +150,7 @@ pub fn applied_proposal_default_fixture(
     CheckedSavedPlace,
     TreeStore,
     String,
+    ApplyOutcome,
 ) {
     let root = temp_project(name, |root| {
         write(root, "src/books.mw", BOOKS_BASELINE);
@@ -169,8 +170,8 @@ pub fn applied_proposal_default_fixture(
     let program = checked(&root);
     let pages_id = proposal_catalog_id(&program, "books::Book::pages");
     let w = witness(&program, &store);
-    apply(&w, &program, &store, false, None).expect("apply proposal default");
-    (root, program, accepted_place, store, pages_id)
+    let outcome = apply(&w, &program, &store, false, None).expect("apply proposal default");
+    (root, program, accepted_place, store, pages_id, outcome)
 }
 
 /// Read a member cell value as a scalar for backfill assertions.

@@ -8,12 +8,10 @@ mod evolution_apply_support;
 
 use evolution_apply_support::*;
 
-use marrow_run::evolution::{
-    ApplyError, apply, current_engine_profile, verify_activation_completion,
-};
+use marrow_run::evolution::{ApplyError, apply};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{DataPathSegment, EngineProfile, TreeStore};
+use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_store::value::{Scalar, encode_value};
 
 /// A required member added to source is proposal-only until the activation commits.
@@ -123,123 +121,16 @@ fn proposal_required_default_backfills_before_catalog_acceptance() {
 }
 
 #[test]
-fn default_receipt_is_bounded_for_many_records() {
-    let (_root, _program, _place, store, _pages_id) =
-        applied_proposal_default_fixture("completion-default-bounded", 128);
-    let commit = store
-        .read_commit_metadata()
-        .expect("read commit")
-        .expect("activation commit");
+fn apply_receipt_counts_many_defaulted_records_without_persisting_evidence() {
+    let (root, _program, _place, _store, _pages_id, outcome) =
+        applied_proposal_default_fixture("apply-default-receipt-counts", 128);
 
-    assert_eq!(commit.activation_records_backfilled, 128);
-    assert_eq!(commit.activation_default_records_by_id.len(), 1);
-    let evidence = &commit.activation_default_records_by_id[0];
-    assert_eq!(evidence.records_backfilled, 128);
-    assert_eq!(evidence.target_records, 128);
-    assert!(evidence.evidence_digest.starts_with("sha256:"));
-    assert_eq!(
-        evidence.evidence_digest.len(),
-        "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".len()
-    );
-}
-
-#[test]
-fn completion_rejects_forged_default_receipt_digest() {
-    let (_root, program, _place, store, _pages_id) =
-        applied_proposal_default_fixture("completion-default-forged-digest", 2);
-    let mut commit = store
-        .read_commit_metadata()
-        .expect("read commit")
-        .expect("activation commit");
-    commit.activation_default_records_by_id[0].evidence_digest =
-        "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string();
-    store
-        .write_commit_metadata(&commit)
-        .expect("forge default evidence");
-
-    let error = verify_activation_completion(&program, &store, &commit)
-        .expect_err("forged default receipt fails");
-
-    assert_eq!(error, ApplyError::Drift);
-}
-
-#[test]
-fn completion_rejects_missing_default_backfill_cell() {
-    let (_root, program, place, store, pages_id) =
-        applied_proposal_default_fixture("completion-default-missing-cell", 2);
-    let store_id = store_id_of(&place);
-    store
-        .delete_data_subtree(
-            &store_id,
-            &[SavedKey::Int(1)],
-            &[DataPathSegment::Member(CatalogId::new(pages_id).unwrap())],
-        )
-        .expect("delete defaulted cell");
-    let commit = store
-        .read_commit_metadata()
-        .expect("read commit")
-        .expect("activation commit");
-
-    let error = verify_activation_completion(&program, &store, &commit)
-        .expect_err("missing default cell fails");
-
-    assert_eq!(error, ApplyError::Drift);
-}
-
-#[test]
-fn completion_rejects_engine_profile_drift() {
-    let (_root, program, _place, store, _pages_id) =
-        applied_proposal_default_fixture("completion-engine-profile-drift", 1);
-    let mut commit = store
-        .read_commit_metadata()
-        .expect("read commit")
-        .expect("activation commit");
-    let drifted = EngineProfile::new(current_engine_profile().layout_epoch() + 1);
-    commit.layout_epoch = drifted.layout_epoch();
-    commit.engine_profile_digest = drifted.digest_bytes();
-
-    let error = verify_activation_completion(&program, &store, &commit)
-        .expect_err("engine profile drift fails");
-
-    assert_eq!(error, ApplyError::Drift);
-}
-
-#[test]
-fn completion_rejects_erased_commit_source_digest() {
-    let (_root, program, _place, store, _pages_id) =
-        applied_proposal_default_fixture("completion-source-digest-erased", 1);
-    let mut commit = store
-        .read_commit_metadata()
-        .expect("read commit")
-        .expect("activation commit");
-    commit.source_digest.clear();
-    store
-        .write_commit_metadata(&commit)
-        .expect("erase source digest");
-
-    let error = verify_activation_completion(&program, &store, &commit)
-        .expect_err("erased source digest fails");
-
-    assert_eq!(error, ApplyError::Drift);
-}
-
-#[test]
-fn completion_uses_applied_step_evidence_not_per_commit_changed_ids() {
-    let (_root, program, _place, store, _pages_id) =
-        applied_proposal_default_fixture("completion-changed-ids-cleared", 1);
-    let mut commit = store
-        .read_commit_metadata()
-        .expect("read commit")
-        .expect("activation commit");
-    assert!(!commit.changed_root_catalog_ids.is_empty());
-    commit.changed_root_catalog_ids.clear();
-    commit.changed_index_catalog_ids.clear();
-    store
-        .write_commit_metadata(&commit)
-        .expect("clear per-commit changed ids");
-
-    verify_activation_completion(&program, &store, &commit)
-        .expect("carried applied-step evidence does not include per-commit changed ids");
+    assert_eq!(outcome.receipt.records_backfilled, 128);
+    assert_eq!(outcome.receipt.default_records_by_id.len(), 1);
+    let count = &outcome.receipt.default_records_by_id[0];
+    assert_eq!(count.records_backfilled, 128);
+    assert_eq!(count.target_records, 128);
+    drop(root);
 }
 
 #[test]

@@ -37,10 +37,9 @@ use crate::value::{RunOutputSink, Value, decode_leaf, value_to_leaf};
 use super::apply::ApplyError;
 use super::locate::{for_each_place_record, store_id};
 
-/// The read-only inputs a transform staging or verification pass resolves against: the
-/// target member, the witness-proven read members, the checked program and runtime the
-/// body evaluates under, the source places to scan, the live store, and the per-record
-/// effect each recomputed write feeds (a stage in apply, a byte check in completion).
+/// The read-only inputs a transform pass resolves against: the target member, the
+/// witness-proven read members, the checked program and runtime the body evaluates
+/// under, the source places to scan, the live store, and the per-record write sink.
 pub(super) struct TransformVisit<'a> {
     pub(super) target_id: &'a CatalogId,
     pub(super) witness_reads: &'a [CatalogId],
@@ -61,9 +60,9 @@ impl RunOutputSink for DiscardTransformOutput {
 ///
 /// For each record the read members' decoded values bind `old`, the pure body runs
 /// through the runtime evaluator, and the returned value encodes to the target's leaf
-/// type before `visit` consumes the address and bytes. Apply stages each recomputed write
-/// and counts it; completion re-runs the same recompute and checks the stored bytes match.
-/// The body never writes, so the only durable effect flows through `visit`; a body that
+/// type before `visit` consumes the address and bytes. Apply writes each recomputed
+/// value through `visit` and counts it. The body never writes, so the only durable
+/// effect flows through `visit`; a body that
 /// raises, returns no value, or yields a value the target cannot encode aborts with a
 /// typed body fault before any record commits.
 pub(super) fn visit_transform_writes(ctx: TransformVisit<'_>) -> Result<(), ApplyError> {

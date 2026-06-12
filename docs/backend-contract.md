@@ -66,7 +66,8 @@ names, member names, index names, enum member spelling, or declaration order.
 | Leaf cell | node prefix + `10` + member ID | A typed leaf under a node. |
 | Sequence cell | node prefix + `20` + member ID + `u64_be(position)` | A sequence element under a node/member, ordered by position. |
 | Index cell | index family + index ID + index-key tuple + `00` + record-key tuple + `00` | Sorts by exact index tuple, then record identity. |
-| Meta cell | meta family + `04` | Latest commit metadata. A store is stamped when `read_commit_metadata()` returns `Some`. |
+| Commit metadata cell | meta family + `04` | Latest commit metadata. A store is stamped when `read_commit_metadata()` returns `Some`. |
+| Store UID cell | meta family + `05` | `store_<32 lowercase hex>` physical store identity. |
 | Catalog cells | catalog family + `00` header row, then `10` + stable catalog ID per entry | The accepted catalog snapshot: one header row (epoch and digest), one row per entry; the entry value carries its catalog ordinal. |
 | Prefix ranges | `[prefix, successor(prefix))` | A prefix range includes exactly keys beginning with the prefix. Empty/all-`ff` prefixes have no upper bound. |
 
@@ -114,14 +115,15 @@ there is no public physical-cell replay method.
 
 ## Metadata
 
-Store-level metadata is written through one typed meta cell:
+Store-level metadata is written through typed meta cells:
 
 | Meta cell | Tag | Value |
 |---|---|---|
-| Commit metadata | `04` | Commit id, catalog epoch, layout epoch, source digest, profile digest, changed root/index catalog IDs, and historical applied-step evidence |
+| Commit metadata | `04` | Commit id, catalog epoch, layout epoch, source digest, profile digest, changed root/index catalog IDs |
+| Store UID | `05` | `store_<32 lowercase hex>` physical store identity |
 
 A store is stamped exactly when `TreeStore::read_commit_metadata()` returns `Some`.
-The commit receipt is the single durable owner of the stamped catalog epoch,
+The commit stamp is the single durable owner of the stamped catalog epoch,
 layout epoch, source digest, and engine-profile digest. The accepted catalog
 snapshot remains in the catalog family; its epoch and digest must agree with a
 stamped commit when both are present.
@@ -131,11 +133,12 @@ profile fingerprint is deterministic, non-cryptographic, and scoped only to
 engine-profile equality; catalog, source, evolution, and commit fences use
 `sha256:<hex>` digests instead.
 
-Commit metadata stores the commit id, catalog epoch, layout epoch, activation
-counts, and target counts as big-endian `u64` values. Strings, the engine
-profile digest, catalog ID lists, per-default activation counts, and per-retire
-approval counts are length-prefixed with big-endian `u32` counts or byte
-lengths. Catalog IDs remain opaque storage IDs inside metadata values.
+Commit metadata stores the commit id, catalog epoch, and layout epoch as
+big-endian `u64` values. Strings, the engine profile digest, and catalog ID
+lists are length-prefixed with big-endian `u32` counts or byte lengths. Catalog
+IDs remain opaque storage IDs inside metadata values. Operator receipt counts
+from an evolution apply are rendered from the in-memory apply result and are not
+persisted in this meta cell.
 
 Commit IDs are dense over the committed sequence. The catalog baseline is
 commit `0` on an unstamped store; every later stamped write reads the
@@ -150,22 +153,11 @@ managed write replaces them with that write's own changed IDs and does not carry
 the activation commit's changed IDs forward. If a stamped commit has no changed
 roots or indexes, the lists are empty.
 
-Applied-step evidence records that an activation or evolve step completed at a
-prior commit under the same catalog epoch, source digest, and evolution digest:
-proposal catalog digest, proposal-new catalog IDs, per-default bounded effect
-digests plus counts, rebuilt-index count, retire count digest plus per-id
-counts, and transform count. An evolution apply writes new applied-step
-evidence. A later managed write carries that evidence forward only when the
-previous commit has an activation evolution digest and its catalog epoch and
-source digest match the new commit. If either fact differs, or no applied step
-is recorded, the activation fields are cleared to their default empty/zero
-values. These fields are historical replay-suppression evidence, not executable
-migration history, not proposal catalog bodies, and not proof that current data
-still matches default, transform, retire, or index completion. Current
-completion verification recomputes the witness effects from the live store and
-may report drift after later ordinary writes. The accepted catalog rows advance
-in the same transaction as the activation metadata and the data and index cells
-they describe, so there is no post-commit publish step to resume: a failure
+An evolution apply advances the accepted catalog rows, data/index effects, and
+commit metadata in one transaction. Replay suppression uses the slim stamp
+facts (catalog epoch, source digest, engine profile, and catalog snapshot
+digest) plus a recomputed witness gate; the store byte surface does not carry
+per-effect default, transform, retire, or index counts or digests. A failure
 before commit rolls every effect back together.
 
 The catalog family is private engine metadata, not language data. No source
@@ -326,10 +318,12 @@ as import/export or host bridges ship as separate packages, never in the default
 install.
 
 Portability is the typed tree-cell data plus the source and catalog facts needed
-to interpret it, not a raw engine byte stream. A backup carries the accepted
-catalog rows, catalog IDs, typed values, sequence state, and engine-profile
-metadata; generated indexes are derived and rebuilt on restore rather than
-trusted as bytes. Restore reconstructs the data, metadata, and catalog rows in
-one transaction, so a restored store opens at its accepted catalog with no
-file-publish step to resume. Backups are portable across conforming backends at
-the same layout and value-codec version.
+to interpret it, not a raw engine byte stream. A backup manifest carries
+`source_digest`, `catalog_epoch`, `catalog_digest`, `state_digest`,
+`store_uid`, the reserved empty `parent_snapshot_digest` sentinel, `engine`,
+`commit`, `record_count`, and `archive_checksum`; generated indexes are derived
+and rebuilt on restore rather than trusted as bytes. Restore reconstructs the
+data, metadata, and catalog rows in one transaction with a fresh store UID, so a
+restored store opens at its accepted catalog with no file-publish step to
+resume. Backups are portable across conforming backends at the same layout and
+value-codec version.

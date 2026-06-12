@@ -15,7 +15,7 @@ use crate::write_plan::WritePlan;
 
 use crate::write_plan::CommitIdAllocation;
 
-use super::window::{StampActivationEvidence, StampFacts, metadata_stamp};
+use super::window::{StampFacts, metadata_stamp};
 
 /// Commit `proposal` as the store's baseline accepted catalog, stamping the activation
 /// context in the same transaction. Returns `Ok(true)` when the baseline was written, and
@@ -50,7 +50,6 @@ pub fn commit_catalog_baseline(
         source_digest: program.source_digest(),
         changed_root_catalog_ids: Vec::new(),
         changed_index_catalog_ids: Vec::new(),
-        activation_evidence: StampActivationEvidence::Empty,
     });
 
     WritePlan { steps: vec![stamp] }

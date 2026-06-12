@@ -7,6 +7,7 @@
 use std::io::Read;
 
 use marrow_check::CheckedProgram;
+use marrow_project::Sha256Digest;
 use marrow_run::evolution::{ApplyError, current_engine_profile, rebuild_store_indexes};
 use marrow_store::cell::DataCellKind;
 use marrow_store::tree::{TreeBackupCellBuf, TreeStore};
@@ -15,7 +16,7 @@ use super::archive::{
     self, CHECKSUM_SEED, CatalogSection, checksum_catalog_section, checksum_cell, checksum_manifest,
 };
 use super::create::validate_catalog_manifest_binding;
-use super::{BackupCorruptProblem, BackupError, BackupManifest, EngineDescriptor};
+use super::{BackupCorruptProblem, BackupError, BackupManifest, EngineDescriptor, mint_store_uid};
 
 /// What a completed restore replayed.
 #[derive(Debug)]
@@ -181,16 +182,27 @@ fn replay(
     input: &mut impl Read,
     verify: &impl Fn(&CheckedProgram, &TreeStore) -> Result<(), BackupError>,
 ) -> Result<RestoreReport, BackupError> {
+    store.write_store_uid(&mint_store_uid())?;
     if let Some(snapshot) = &section.snapshot {
         store.replace_catalog_snapshot(snapshot)?;
     }
 
     let mut checksum = checksum_manifest(CHECKSUM_SEED, manifest);
     checksum = checksum_catalog_section(checksum, &section.bytes);
+    let mut state_digest = Sha256Digest::new();
     for _ in 0..manifest.record_count {
         let cell = archive::read_cell(input)?;
         checksum = checksum_cell(checksum, cell.as_ref());
+        cell.as_ref()
+            .write_framed(&mut DigestSink(&mut state_digest))
+            .expect("digest sink is infallible");
         restore_cell(store, &cell)?;
+    }
+    if state_digest.finish() != manifest.state_digest {
+        return Err(BackupError::corrupt(
+            BackupCorruptProblem::StateDigestMismatch,
+            "backup state digest does not match its data stream".to_string(),
+        ));
     }
     if checksum != manifest.archive_checksum {
         return Err(BackupError::corrupt(
@@ -228,6 +240,19 @@ fn replay(
         record_count: manifest.record_count,
         catalog_epoch: manifest.catalog_epoch,
     })
+}
+
+struct DigestSink<'a>(&'a mut Sha256Digest);
+
+impl std::io::Write for DigestSink<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.update(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 fn restore_cell(store: &TreeStore, cell: &TreeBackupCellBuf) -> Result<(), BackupError> {
@@ -283,9 +308,9 @@ mod tests {
     use marrow_store::tree::{CommitMetadata, DataPathSegment, TreeStore};
 
     use super::super::test_support::{BOOK_SOURCE, committed_program};
-    use super::super::{BackupCorruptProblem, archive};
+    use super::super::{BackupCorruptProblem, BackupFormatProblem, archive};
     use super::{BackupError, CHECKSUM_SEED, RestoreReport, read_backup_prologue, restore_backup};
-    use crate::backup::create_backup;
+    use crate::backup::{create_backup, ensure_store_uid};
 
     /// Restore that verifies nothing: the restore.* codes under test fail in
     /// validation or replay, before a schema check would run.
@@ -350,20 +375,11 @@ mod tests {
                 engine_profile_digest: profile.digest_bytes(),
                 changed_root_catalog_ids: Vec::new(),
                 changed_index_catalog_ids: Vec::new(),
-                activation_evolution_digest: String::new(),
-                activation_proposal_catalog_digest: None,
-                activation_proposal_new_catalog_ids: Vec::new(),
-                activation_records_backfilled: 0,
-                activation_default_records_by_id: Vec::new(),
-                activation_indexes_rebuilt: 0,
-                activation_records_retired: 0,
-                activation_retire_evidence_digest: String::new(),
-                activation_records_retired_by_id: Vec::new(),
-                activation_records_transformed: 0,
             })
             .expect("stamp commit");
 
         let mut archive = Vec::new();
+        ensure_store_uid(&store).expect("store uid");
         create_backup(program, &store, &mut archive).expect("create backup");
         archive
     }
@@ -430,6 +446,32 @@ mod tests {
         let error = restore_into_empty(&other, &archive)
             .expect_err("a different accepted epoch is rejected");
         assert_eq!(error.code(), "restore.catalog_mismatch");
+        cleanup(&root);
+    }
+
+    #[test]
+    fn rejects_a_non_empty_parent_snapshot_digest() {
+        let (root, program) = committed_program("restore-parent-snapshot", BOOK_SOURCE);
+        let archive = seeded_backup(&program);
+        let archive = rewrite_manifest(&archive, |manifest| {
+            manifest["parent_snapshot_digest"] = serde_json::json!(
+                "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+            );
+        });
+
+        let error = restore_into_empty(&program, &archive)
+            .expect_err("parent snapshot chains are reserved for a later format");
+
+        assert_eq!(error.code(), "restore.format_version");
+        assert!(matches!(
+            error,
+            BackupError::FormatVersion {
+                problem: BackupFormatProblem::ReservedFieldNonEmpty {
+                    field: "parent_snapshot_digest"
+                },
+                ..
+            }
+        ));
         cleanup(&root);
     }
 
@@ -536,6 +578,26 @@ mod tests {
             accepted_catalog(&program),
             "restore replays the accepted catalog rows verbatim"
         );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn restore_mints_a_fresh_store_uid() {
+        let (root, program) = committed_program("restore-store-uid", BOOK_SOURCE);
+        let archive = seeded_backup(&program);
+        let source_uid = split_archive(&archive).manifest["store_uid"]
+            .as_str()
+            .expect("manifest store uid")
+            .to_string();
+        let target = TreeStore::memory();
+
+        restore_backup(&program, &target, &mut &archive[..], accept).expect("restore");
+
+        let restored_uid = target
+            .read_store_uid()
+            .expect("read restored uid")
+            .expect("restored uid");
+        assert_ne!(restored_uid.as_str(), source_uid);
         cleanup(&root);
     }
 
@@ -810,6 +872,7 @@ mod tests {
         catalog: Vec<u8>,
         data: Vec<u8>,
     ) -> Vec<u8> {
+        manifest["state_digest"] = serde_json::json!(marrow_project::sha256_digest(&data));
         manifest["archive_checksum"] = serde_json::json!(0u64);
         let checksum = archive_checksum(&manifest, &catalog, &data);
         manifest["archive_checksum"] = serde_json::json!(checksum);
