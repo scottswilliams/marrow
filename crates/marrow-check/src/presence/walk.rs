@@ -1,4 +1,4 @@
-use super::calls::std_path_arg_mask;
+use super::calls::{maybe_present_result, std_path_arg_mask};
 use super::effects::{
     condition_narrowings, invalidate_key_bindings, invalidate_removed_narrowings,
     invalidate_saved_narrowings, invalidate_written_target, negated_exists_narrowings,
@@ -20,7 +20,7 @@ pub(crate) fn check_presence(program: &mut CheckedProgram, diagnostics: &mut Vec
     let modules = program.modules.clone();
     for (module_index, module) in modules.iter().enumerate() {
         for function in &module.functions {
-            let mut scope = NameScope::for_function(function);
+            let mut scope = NameScope::for_function(function, &module.source_file);
             let mut narrowed = Vec::new();
             if let Some(body) = function.runtime_body() {
                 collect_block(program, body, &mut narrowed, &mut scope, diagnostics);
@@ -547,6 +547,26 @@ fn collect_expr(
     }
     if saved_path_parts(expr, scope).is_some() {
         collect_path_key_exprs(program, expr, narrowed, scope, diagnostics);
+        return;
+    }
+    if let CheckedExpr::Call {
+        callee,
+        args,
+        target,
+        span,
+        ..
+    } = expr
+        && maybe_present_result(target)
+    {
+        if context == ReadContext::Bare {
+            diagnostics.push(CheckDiagnostic::error(
+                crate::CHECK_BARE_MAYBE_PRESENT_READ,
+                scope.source_file(),
+                *span,
+                "maybe-present value must be resolved at the read site",
+            ));
+        }
+        collect_call_expr(program, callee, args, target, narrowed, scope, diagnostics);
         return;
     }
 

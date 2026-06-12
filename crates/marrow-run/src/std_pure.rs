@@ -1,10 +1,13 @@
 //! Pure `std::` helpers with no host capability.
 
 use marrow_check::CheckedArg as ExecArg;
+use marrow_schema::stdlib;
+use marrow_store::Decimal;
 use marrow_store::value::{SavedValue, ScalarType, decode_value};
 use marrow_syntax::SourceSpan;
 
 use crate::base64;
+use crate::collection::{ReadPosition, absent_read};
 use crate::env::Env;
 use crate::error::{RuntimeError, overflow, std_arity, type_error, unsupported};
 use crate::expr::eval_int;
@@ -21,7 +24,13 @@ pub(crate) fn eval_std(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    match module {
+    let Some(entry) = stdlib::lookup(module, op) else {
+        return Err(unsupported(&format!("std::{module}::{op}"), span));
+    };
+    if entry.requires_capability.is_some() || entry.module == "assert" {
+        return Err(unsupported(&format!("std::{module}::{op}"), span));
+    }
+    match entry.module {
         "text" => eval_text_std(op, args, span, env),
         "math" => eval_math_std(op, args, span, env),
         "bytes" => eval_bytes_std(op, args, span, env),
@@ -37,41 +46,240 @@ fn eval_text_std(
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     match op {
-        "length" => {
-            let [text] = args else {
-                return Err(std_arity("text", op, span));
-            };
-            Ok(Value::Int(
-                eval_text(text, env, span)?.chars().count() as i64
-            ))
-        }
-        "trim" => {
-            let [text] = args else {
-                return Err(std_arity("text", op, span));
-            };
-            Ok(Value::Str(eval_text(text, env, span)?.trim().to_string()))
-        }
-        "contains" => {
-            let [text, needle] = args else {
-                return Err(std_arity("text", op, span));
-            };
-            let text = eval_text(text, env, span)?;
-            let needle = eval_text(needle, env, span)?;
-            Ok(Value::Bool(text.contains(&needle)))
-        }
-        "split" => {
-            let [text, separator] = args else {
-                return Err(std_arity("text", op, span));
-            };
-            let text = eval_text(text, env, span)?;
-            let separator = eval_text(separator, env, span)?;
-            Ok(Value::Sequence(
-                text.split(separator.as_str())
-                    .map(|part| Value::Str(part.to_string()))
-                    .collect(),
-            ))
-        }
+        "length" => eval_text_length(args, span, env),
+        "trim" => eval_text_trim(args, span, env),
+        "contains" => eval_text_contains(args, span, env),
+        "split" => eval_text_split(args, span, env),
+        "slice" => eval_text_slice(args, span, env),
+        "startsWith" => eval_text_starts_with(args, span, env),
+        "endsWith" => eval_text_ends_with(args, span, env),
+        "indexOf" => eval_text_index_of(args, span, env),
+        "replace" => eval_text_replace(args, span, env),
+        "join" => eval_text_join(args, span, env),
+        "toUpper" => eval_text_to_upper(args, span, env),
+        "toLower" => eval_text_to_lower(args, span, env),
         other => Err(unsupported(&format!("std::text::{other}"), span)),
+    }
+}
+
+fn eval_text_length(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [text] = args else {
+        return Err(std_arity("text", "length", span));
+    };
+    Ok(Value::Int(
+        eval_text(text, env, span)?.chars().count() as i64
+    ))
+}
+
+fn eval_text_trim(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [text] = args else {
+        return Err(std_arity("text", "trim", span));
+    };
+    Ok(Value::Str(eval_text(text, env, span)?.trim().to_string()))
+}
+
+fn eval_text_contains(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [text, needle] = args else {
+        return Err(std_arity("text", "contains", span));
+    };
+    let text = eval_text(text, env, span)?;
+    let needle = eval_text(needle, env, span)?;
+    Ok(Value::Bool(text.contains(&needle)))
+}
+
+fn eval_text_split(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [text, separator] = args else {
+        return Err(std_arity("text", "split", span));
+    };
+    let text = eval_text(text, env, span)?;
+    let separator = eval_text(separator, env, span)?;
+    Ok(Value::Sequence(
+        text.split(separator.as_str())
+            .map(|part| Value::Str(part.to_string()))
+            .collect(),
+    ))
+}
+
+fn eval_text_slice(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [text, start, end] = args else {
+        return Err(std_arity("text", "slice", span));
+    };
+    let text = eval_text(text, env, span)?;
+    let start = eval_text_index(start, env, span)?;
+    let end = eval_text_index(end, env, span)?;
+    if start > end {
+        return Err(type_error(
+            "slice start must be less than or equal to end",
+            span,
+        ));
+    }
+    let len = text.chars().count();
+    if end > len {
+        return Err(type_error("slice index is outside the text", span));
+    }
+    Ok(Value::Str(
+        text.chars().skip(start).take(end - start).collect(),
+    ))
+}
+
+fn eval_text_starts_with(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [text, prefix] = args else {
+        return Err(std_arity("text", "startsWith", span));
+    };
+    Ok(Value::Bool(
+        eval_text(text, env, span)?.starts_with(&eval_text(prefix, env, span)?),
+    ))
+}
+
+fn eval_text_ends_with(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [text, suffix] = args else {
+        return Err(std_arity("text", "endsWith", span));
+    };
+    Ok(Value::Bool(
+        eval_text(text, env, span)?.ends_with(&eval_text(suffix, env, span)?),
+    ))
+}
+
+fn eval_text_index_of(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [text, needle] = args else {
+        return Err(std_arity("text", "indexOf", span));
+    };
+    let text = eval_text(text, env, span)?;
+    let needle = eval_text(needle, env, span)?;
+    let Some(byte_index) = text.find(&needle) else {
+        return Err(absent_read(
+            ReadPosition::Value,
+            "`std::text::indexOf` found no match".into(),
+            span,
+        ));
+    };
+    Ok(Value::Int(text[..byte_index].chars().count() as i64))
+}
+
+fn eval_text_replace(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [text, from, to] = args else {
+        return Err(std_arity("text", "replace", span));
+    };
+    Ok(Value::Str(eval_text(text, env, span)?.replace(
+        &eval_text(from, env, span)?,
+        &eval_text(to, env, span)?,
+    )))
+}
+
+fn eval_text_join(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [parts, separator] = args else {
+        return Err(std_arity("text", "join", span));
+    };
+    let parts = eval_string_sequence(parts, env, span)?;
+    let separator = eval_text(separator, env, span)?;
+    Ok(Value::Str(parts.join(&separator)))
+}
+
+fn eval_text_to_upper(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [text] = args else {
+        return Err(std_arity("text", "toUpper", span));
+    };
+    Ok(Value::Str(
+        eval_text(text, env, span)?
+            .chars()
+            .map(simple_uppercase)
+            .collect(),
+    ))
+}
+
+fn eval_text_to_lower(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [text] = args else {
+        return Err(std_arity("text", "toLower", span));
+    };
+    Ok(Value::Str(
+        eval_text(text, env, span)?
+            .chars()
+            .map(simple_lowercase)
+            .collect(),
+    ))
+}
+
+fn simple_uppercase(value: char) -> char {
+    match value {
+        '\u{1F80}'..='\u{1F87}' | '\u{1F90}'..='\u{1F97}' | '\u{1FA0}'..='\u{1FA7}' => {
+            return char::from_u32(value as u32 + 8).unwrap_or(value);
+        }
+        '\u{1FB3}' => return '\u{1FBC}',
+        '\u{1FC3}' => return '\u{1FCC}',
+        '\u{1FF3}' => return '\u{1FFC}',
+        _ => {}
+    }
+    let mut mapped = value.to_uppercase();
+    let Some(first) = mapped.next() else {
+        return value;
+    };
+    if mapped.next().is_some() {
+        value
+    } else {
+        first
+    }
+}
+
+fn simple_lowercase(value: char) -> char {
+    if value == '\u{0130}' {
+        return 'i';
+    }
+    let mut mapped = value.to_lowercase();
+    let Some(first) = mapped.next() else {
+        return value;
+    };
+    if mapped.next().is_some() {
+        value
+    } else {
+        first
     }
 }
 
@@ -82,48 +290,242 @@ fn eval_math_std(
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     match op {
-        "absInt" => {
-            let [value] = args else {
-                return Err(std_arity("math", op, span));
-            };
-            Ok(Value::Int(
-                eval_int(&value.value, env)?
-                    .checked_abs()
-                    .ok_or_else(|| overflow(span))?,
-            ))
-        }
-        "remainder" => {
-            let [a, b] = args else {
-                return Err(std_arity("math", op, span));
-            };
-            let remainder =
-                int_remainder(eval_int(&a.value, env)?, eval_int(&b.value, env)?, span)?;
-            Ok(Value::Int(remainder))
-        }
-        "modulo" => {
-            let [a, b] = args else {
-                return Err(std_arity("math", op, span));
-            };
-            let modulo = int_modulo(eval_int(&a.value, env)?, eval_int(&b.value, env)?, span)?;
-            Ok(Value::Int(modulo))
-        }
-        "absDecimal" => {
-            let [value] = args else {
-                return Err(std_arity("math", op, span));
-            };
-            Ok(Value::Decimal(eval_decimal_arg(value, env, span)?.abs()))
-        }
-        "floor" => {
-            let [value] = args else {
-                return Err(std_arity("math", op, span));
-            };
-            let floored = eval_decimal_arg(value, env, span)?.floor();
-            i64::try_from(floored)
-                .map(Value::Int)
-                .map_err(|_| overflow(span))
-        }
+        "absInt" => eval_math_abs_int(args, span, env),
+        "remainder" => eval_math_remainder(args, span, env),
+        "modulo" => eval_math_modulo(args, span, env),
+        "absDecimal" => eval_math_abs_decimal(args, span, env),
+        "floor" => eval_math_floor(args, span, env),
+        "minInt" => eval_math_min_int(args, span, env),
+        "maxInt" => eval_math_max_int(args, span, env),
+        "minDecimal" => eval_math_min_decimal(args, span, env),
+        "maxDecimal" => eval_math_max_decimal(args, span, env),
+        "round" => eval_math_round(args, span, env),
+        "ceiling" => eval_math_ceiling(args, span, env),
+        "powInt" => eval_math_pow_int(args, span, env),
         other => Err(unsupported(&format!("std::math::{other}"), span)),
     }
+}
+
+fn eval_math_abs_int(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [value] = args else {
+        return Err(std_arity("math", "absInt", span));
+    };
+    Ok(Value::Int(
+        eval_int(&value.value, env)?
+            .checked_abs()
+            .ok_or_else(|| overflow(span))?,
+    ))
+}
+
+fn eval_math_remainder(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [a, b] = args else {
+        return Err(std_arity("math", "remainder", span));
+    };
+    let remainder = int_remainder(eval_int(&a.value, env)?, eval_int(&b.value, env)?, span)?;
+    Ok(Value::Int(remainder))
+}
+
+fn eval_math_modulo(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [a, b] = args else {
+        return Err(std_arity("math", "modulo", span));
+    };
+    let modulo = int_modulo(eval_int(&a.value, env)?, eval_int(&b.value, env)?, span)?;
+    Ok(Value::Int(modulo))
+}
+
+fn eval_math_abs_decimal(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [value] = args else {
+        return Err(std_arity("math", "absDecimal", span));
+    };
+    Ok(Value::Decimal(eval_decimal_arg(value, env, span)?.abs()))
+}
+
+fn eval_math_floor(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [value] = args else {
+        return Err(std_arity("math", "floor", span));
+    };
+    decimal_to_i64(eval_decimal_arg(value, env, span)?.floor(), span).map(Value::Int)
+}
+
+fn eval_math_min_int(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [a, b] = args else {
+        return Err(std_arity("math", "minInt", span));
+    };
+    Ok(Value::Int(
+        eval_int(&a.value, env)?.min(eval_int(&b.value, env)?),
+    ))
+}
+
+fn eval_math_max_int(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [a, b] = args else {
+        return Err(std_arity("math", "maxInt", span));
+    };
+    Ok(Value::Int(
+        eval_int(&a.value, env)?.max(eval_int(&b.value, env)?),
+    ))
+}
+
+fn eval_math_min_decimal(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [a, b] = args else {
+        return Err(std_arity("math", "minDecimal", span));
+    };
+    Ok(Value::Decimal(
+        eval_decimal_arg(a, env, span)?.min(eval_decimal_arg(b, env, span)?),
+    ))
+}
+
+fn eval_math_max_decimal(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [a, b] = args else {
+        return Err(std_arity("math", "maxDecimal", span));
+    };
+    Ok(Value::Decimal(
+        eval_decimal_arg(a, env, span)?.max(eval_decimal_arg(b, env, span)?),
+    ))
+}
+
+fn eval_math_round(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [value] = args else {
+        return Err(std_arity("math", "round", span));
+    };
+    decimal_to_i64(
+        round_decimal_half_even(eval_decimal_arg(value, env, span)?),
+        span,
+    )
+    .map(Value::Int)
+}
+
+fn eval_math_ceiling(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [value] = args else {
+        return Err(std_arity("math", "ceiling", span));
+    };
+    decimal_to_i64(ceiling_decimal(eval_decimal_arg(value, env, span)?), span).map(Value::Int)
+}
+
+fn eval_math_pow_int(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [base, exp] = args else {
+        return Err(std_arity("math", "powInt", span));
+    };
+    let exp = eval_int(&exp.value, env)?;
+    if exp < 0 {
+        return Err(type_error("powInt exponent must be non-negative", span));
+    }
+    Ok(Value::Int(
+        eval_int(&base.value, env)?
+            .checked_pow(exp as u32)
+            .ok_or_else(|| overflow(span))?,
+    ))
+}
+
+fn eval_text_index(
+    arg: &ExecArg,
+    env: &mut Env<'_>,
+    span: SourceSpan,
+) -> Result<usize, RuntimeError> {
+    let value = eval_int(&arg.value, env)?;
+    usize::try_from(value).map_err(|_| type_error("text index must be non-negative", span))
+}
+
+fn eval_string_sequence(
+    arg: &ExecArg,
+    env: &mut Env<'_>,
+    span: SourceSpan,
+) -> Result<Vec<String>, RuntimeError> {
+    match crate::expr::eval_expr(&arg.value, env)? {
+        Value::Sequence(items) => items
+            .into_iter()
+            .map(|value| match value {
+                Value::Str(text) => Ok(text),
+                _ => Err(type_error("join parts must be strings", span)),
+            })
+            .collect(),
+        _ => Err(type_error("join parts must be a string sequence", span)),
+    }
+}
+
+fn round_decimal_half_even(value: Decimal) -> i128 {
+    let scale = value.scale();
+    if scale == 0 {
+        return value.coefficient();
+    }
+    let divisor = 10u128.pow(scale);
+    let magnitude = value.coefficient().unsigned_abs();
+    let quotient = magnitude / divisor;
+    let remainder = magnitude % divisor;
+    let twice = remainder.saturating_mul(2);
+    let round_up = twice > divisor || (twice == divisor && quotient % 2 == 1);
+    let rounded = quotient + u128::from(round_up);
+    let signed = i128::try_from(rounded).unwrap_or(i128::MAX);
+    if value.coefficient() < 0 {
+        -signed
+    } else {
+        signed
+    }
+}
+
+fn ceiling_decimal(value: Decimal) -> i128 {
+    if value.scale() == 0 {
+        return value.coefficient();
+    }
+    let divisor = 10i128.pow(value.scale());
+    let quotient = value.coefficient() / divisor;
+    let remainder = value.coefficient() % divisor;
+    if value.coefficient() > 0 && remainder != 0 {
+        quotient + 1
+    } else {
+        quotient
+    }
+}
+
+fn decimal_to_i64(value: i128, span: SourceSpan) -> Result<i64, RuntimeError> {
+    i64::try_from(value).map_err(|_| overflow(span))
 }
 
 fn eval_bytes_std(

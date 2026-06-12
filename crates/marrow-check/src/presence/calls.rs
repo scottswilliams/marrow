@@ -1,4 +1,4 @@
-use marrow_schema::stdlib::{self, ParamType};
+use marrow_schema::stdlib::{self, ParamType, ReturnPresence};
 
 use crate::facts::PresenceProofRead;
 use crate::{CheckedBuiltinCall, CheckedCallTarget, CheckedExpr};
@@ -17,6 +17,13 @@ pub(super) fn std_path_arg_mask(target: &CheckedCallTarget) -> Option<Vec<bool>>
             .iter()
             .map(|param| matches!(param, ParamType::Path))
             .collect(),
+    )
+}
+
+pub(super) fn maybe_present_result(target: &CheckedCallTarget) -> bool {
+    matches!(
+        target,
+        CheckedCallTarget::Std(std) if std.presence == ReturnPresence::MaybePresent
     )
 }
 

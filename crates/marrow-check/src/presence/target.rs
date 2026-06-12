@@ -1,4 +1,4 @@
-use super::calls::neighbor_read;
+use super::calls::{maybe_present_result, neighbor_read};
 use super::keys::{SavedPathParts, expression_key, saved_path_parts};
 use super::scope::NameScope;
 use crate::CheckedExpr;
@@ -59,6 +59,11 @@ fn read_resolution_in_type_scope(
     type_scope: &[std::collections::HashMap<String, MarrowType>],
     transform_old: Option<super::TransformOldReadScope<'_>>,
 ) -> Option<PresenceProofRead> {
+    if let CheckedExpr::Call { target, .. } = expr
+        && maybe_present_result(target)
+    {
+        return Some(PresenceProofRead::Direct);
+    }
     let scope = NameScope::from_type_scope(type_scope, transform_old);
     read_target_with_scope(program, expr, &scope).map(|target| target.read)
 }

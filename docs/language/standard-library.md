@@ -127,6 +127,14 @@ std::text::length(value: string): int
 std::text::trim(value: string): string
 std::text::contains(value: string, needle: string): bool
 std::text::split(value: string, separator: string): sequence[string]
+std::text::slice(value: string, start: int, end: int): string
+std::text::startsWith(value: string, prefix: string): bool
+std::text::endsWith(value: string, suffix: string): bool
+std::text::indexOf(value: string, needle: string): maybe-present int
+std::text::replace(value: string, from: string, to: string): string
+std::text::join(parts: sequence[string], separator: string): string
+std::text::toUpper(value: string): string
+std::text::toLower(value: string): string
 
 std::bytes::length(value: bytes): int
 std::bytes::base64Encode(value: bytes): string
@@ -134,8 +142,15 @@ std::bytes::base64Decode(value: string): bytes
 ```
 
 `std::text::length` counts Unicode scalar values. It does not count terminal
-columns or locale-specific grapheme clusters. `std::bytes::length` counts
-bytes.
+columns or locale-specific grapheme clusters. `std::text::slice` uses the same
+zero-based scalar indexes with an exclusive `end`. `std::text::indexOf` returns
+the zero-based scalar index of the first match, and is maybe-present: use `??`
+or `if const` to handle no match. There is no `-1` sentinel.
+
+Case conversion uses simple Unicode case mapping without locale-specific rules:
+each input scalar maps to at most one output scalar, so mappings such as
+`ß` to `SS` or `İ` to `i` plus a combining mark are not used.
+`std::bytes::length` counts bytes.
 
 ## `std::math`
 
@@ -145,13 +160,22 @@ Numeric helpers that stay out of syntax:
 std::math::absInt(value: int): int
 std::math::absDecimal(value: decimal): decimal
 std::math::floor(value: decimal): int
+std::math::minInt(a: int, b: int): int
+std::math::maxInt(a: int, b: int): int
+std::math::minDecimal(a: decimal, b: decimal): decimal
+std::math::maxDecimal(a: decimal, b: decimal): decimal
+std::math::round(value: decimal): int
+std::math::ceiling(value: decimal): int
+std::math::powInt(base: int, exp: int): int
 std::math::modulo(a: int, b: int): int
 std::math::remainder(a: int, b: int): int
 ```
 
 The `%` operator is remainder. Named functions make negative-number behavior
 explicit in code that needs clarity. Separate integer and decimal names avoid a
-numeric overloading rule in the language.
+numeric overloading rule in the language. `round` uses half-to-even. `powInt`
+requires a non-negative exponent and raises the existing integer overflow fault
+when the result does not fit in `int`.
 
 ## `std::assert` And Testing
 

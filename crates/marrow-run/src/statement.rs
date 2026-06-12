@@ -5,12 +5,13 @@ use marrow_check::{
     CheckedExpr as ExecExpr, CheckedStmt as ExecStmt,
 };
 use marrow_schema::Type;
+use marrow_schema::stdlib::ReturnPresence;
 use marrow_syntax::SourceSpan;
 
 use crate::call::eval_call;
 use crate::call_args::default_value;
 use crate::env::{Env, Flow};
-use crate::error::{RuntimeError, assign_error, type_error, unsupported};
+use crate::error::{RUN_ABSENT, RuntimeError, assign_error, type_error, unsupported};
 use crate::exec::{eval_block, eval_match, local_target};
 use crate::expr::{eval_condition, eval_expr};
 use crate::group_write::eval_group_entry_write;
@@ -283,14 +284,41 @@ fn eval_if_const(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
+    if maybe_present_result(value) {
+        return match eval_expr(value, env) {
+            Ok(value) => eval_bound_if_const(name, value, then_block, env),
+            Err(error) if error.code == RUN_ABSENT && error.is_catchable() => {
+                eval_if_const_fallback(else_ifs, else_block, span, env)
+            }
+            Err(error) => Err(error),
+        };
+    }
     if saved_path_present(value, value.span(), env)? {
         let value = eval_expr(value, env)?;
-        env.push_scope();
-        env.bind(name.to_string(), value, false);
-        let result = eval_block(then_block, env);
-        env.pop_scope();
-        return result;
+        return eval_bound_if_const(name, value, then_block, env);
     }
+    eval_if_const_fallback(else_ifs, else_block, span, env)
+}
+
+fn eval_bound_if_const(
+    name: &str,
+    value: Value,
+    then_block: &ExecBody,
+    env: &mut Env<'_>,
+) -> Result<Flow, RuntimeError> {
+    env.push_scope();
+    env.bind(name.to_string(), value, false);
+    let result = eval_block(then_block, env);
+    env.pop_scope();
+    result
+}
+
+fn eval_if_const_fallback(
+    else_ifs: &[CheckedElseIf],
+    else_block: Option<&ExecBody>,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Flow, RuntimeError> {
     for else_if in else_ifs {
         if eval_condition(else_if.condition.as_ref(), span, env)? {
             return eval_block(&else_if.block, env);
@@ -300,6 +328,16 @@ fn eval_if_const(
         Some(block) => eval_block(block, env),
         None => Ok(Flow::Normal),
     }
+}
+
+fn maybe_present_result(expr: &ExecExpr) -> bool {
+    matches!(
+        expr,
+        ExecExpr::Call {
+            target: CheckedCallTarget::Std(std),
+            ..
+        } if std.presence == ReturnPresence::MaybePresent
+    )
 }
 
 fn eval_throw(value: &ExecExpr, span: SourceSpan, env: &mut Env<'_>) -> Result<Flow, RuntimeError> {

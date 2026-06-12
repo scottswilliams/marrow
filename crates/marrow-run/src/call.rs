@@ -187,12 +187,13 @@ fn eval_std_call(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Option<Value>, RuntimeError> {
-    match target.capability {
-        Capability::Clock => eval_clock_capability(target.op, args, span, env).map(Some),
-        Capability::Env => eval_env(target.op, args, span, env).map(Some),
-        Capability::Log => eval_log(target.op, args, span, env),
-        Capability::Io => eval_io(target.op, args, span, env),
-        Capability::Assert => eval_assert(target.op, args, span, env),
-        Capability::Pure => eval_std(target.module, target.op, args, span, env).map(Some),
+    match target.requires_capability {
+        Some(Capability::Clock) => eval_clock_capability(target.op, args, span, env).map(Some),
+        Some(Capability::Environment) => eval_env(target.op, args, span, env).map(Some),
+        Some(Capability::Log) => eval_log(target.op, args, span, env),
+        Some(Capability::Filesystem) => eval_io(target.op, args, span, env),
+        Some(Capability::Maintenance) => Err(unsupported("a maintenance std call", span)),
+        None if target.module == "assert" => eval_assert(target.op, args, span, env),
+        None => eval_std(target.module, target.op, args, span, env).map(Some),
     }
 }

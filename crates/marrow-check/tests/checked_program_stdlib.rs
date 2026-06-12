@@ -125,6 +125,48 @@ fn std_call_with_wrong_arity_is_flagged() {
 }
 
 #[test]
+fn std_text_join_requires_a_string_sequence() {
+    let root = temp_project("program-std-join-sequence", |root| {
+        write(
+            root,
+            "src/shelf/t.mw",
+            "module shelf::t\n\
+             pub fn ok(): string\n\
+             \x20   return std::text::join(std::text::split(\"a,b\", \",\"), \"|\")\n\
+             pub fn bad(): string\n\
+             \x20   return std::text::join(\"a,b\", \"|\")\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+
+    let found = with_code(&report, "check.call_argument");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn std_text_index_of_is_maybe_present() {
+    let root = temp_project("program-std-indexof-maybe", |root| {
+        write(
+            root,
+            "src/shelf/t.mw",
+            "module shelf::t\n\
+             pub fn unresolved(): int\n\
+             \x20   return std::text::indexOf(\"abc\", \"b\")\n\
+             pub fn coalesced(): int\n\
+             \x20   return std::text::indexOf(\"abc\", \"x\") ?? -1\n\
+             pub fn guarded(): int\n\
+             \x20   if const pos = std::text::indexOf(\"abc\", \"b\")\n\
+             \x20       return pos\n\
+             \x20   return -1\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+
+    let found = with_code(&report, "check.bare_maybe_present_read");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+}
+
+#[test]
 fn write_is_not_a_language_builtin() {
     let root = temp_project("program-write-removed", |root| {
         let removed = "write";

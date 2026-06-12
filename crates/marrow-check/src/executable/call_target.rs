@@ -145,7 +145,8 @@ impl CheckedCallTarget {
                 return Some(Self::Std(CheckedStdCall {
                     module: entry.module,
                     op: entry.op,
-                    capability: entry.capability,
+                    presence: entry.presence,
+                    requires_capability: entry.requires_capability,
                 }));
             }
         }

@@ -1,5 +1,3 @@
-use marrow_schema::stdlib::Capability;
-
 use super::target::saved_place;
 use super::util::push_unique;
 use crate::facts::{CheckedFacts, DirectEffectFacts, HostEffect};
@@ -258,10 +256,7 @@ fn host_effect(expr: &CheckedExpr) -> Option<HostEffect> {
     };
     match target {
         CheckedCallTarget::Builtin(CheckedBuiltinCall::Print) => Some(HostEffect::Output),
-        CheckedCallTarget::Std(target) => match target.capability {
-            Capability::Pure => None,
-            capability => Some(HostEffect::Capability(capability)),
-        },
+        CheckedCallTarget::Std(target) => target.requires_capability.map(HostEffect::Capability),
         _ => None,
     }
 }

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use super::TransformOldReadScope;
 
@@ -7,6 +8,7 @@ pub(super) struct NameScope {
     frames: Vec<HashMap<String, u32>>,
     next_binding: u32,
     transform_old: Option<TransformOldBinding>,
+    source_file: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -16,8 +18,11 @@ struct TransformOldBinding {
 }
 
 impl NameScope {
-    pub(super) fn for_function(function: &crate::CheckedFunction) -> Self {
-        let mut scope = Self::default();
+    pub(super) fn for_function(function: &crate::CheckedFunction, source_file: &Path) -> Self {
+        let mut scope = Self {
+            source_file: Some(source_file.to_path_buf()),
+            ..Self::default()
+        };
         scope.push_frame();
         for param in &function.params {
             scope.bind(&param.name);
@@ -88,5 +93,9 @@ impl NameScope {
     pub(super) fn transform_old_resource(&self) -> Option<&str> {
         let old = self.transform_old.as_ref()?;
         (self.lookup("old")? == old.binding).then_some(old.resource.as_str())
+    }
+
+    pub(super) fn source_file(&self) -> &Path {
+        self.source_file.as_deref().unwrap_or_else(|| Path::new(""))
     }
 }

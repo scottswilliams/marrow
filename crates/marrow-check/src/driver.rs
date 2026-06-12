@@ -313,6 +313,9 @@ pub(crate) fn std_call_params(segments: &[String]) -> Option<Vec<Option<MarrowTy
             .iter()
             .map(|param| match param {
                 ParamType::Scalar(scalar) => Some(MarrowType::Primitive(*scalar)),
+                ParamType::Sequence(element) => Some(MarrowType::Sequence(Box::new(
+                    MarrowType::Primitive(*element),
+                ))),
                 ParamType::Error => Some(MarrowType::Error),
                 ParamType::Path => None,
             })

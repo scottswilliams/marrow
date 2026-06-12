@@ -1,10 +1,9 @@
 //! The one descriptor table for the `std::<module>::<op>` helpers.
 //!
-//! Each row states a helper's positional parameter types, its result type, and
-//! which runtime capability family evaluates it. The checker derives a std call's
-//! arity, argument, and return checks from these rows; the runtime derives which
-//! handler a recognized op routes to. A new std helper is one row here, not a
-//! parallel entry in the checker's signature tables and the runtime's dispatch.
+//! Each row states a helper's positional parameter types, its result type, result
+//! presence, and required host capability. The checker derives a std call's
+//! arity, argument, return, and maybe-present checks from these rows; the runtime
+//! derives which recognized ops it must handle from the same table.
 
 use crate::ScalarType;
 
@@ -13,6 +12,8 @@ use crate::ScalarType;
 pub enum ParamType {
     /// A concrete storable scalar argument.
     Scalar(ScalarType),
+    /// A `sequence[T]` of scalar values.
+    Sequence(ScalarType),
     /// An `Error` value (`std::log::error`), the one checker-only argument type.
     Error,
     /// A path expression rather than a scalar (`std::assert::absent`); the checker
@@ -31,17 +32,23 @@ pub enum ReturnType {
     Void,
 }
 
-/// The runtime handler family a recognized op routes to. The capability families
-/// each read a host capability (clock/env/log/filesystem) or raise an assertion;
-/// `Pure` helpers compute in place and need no capability.
+/// Whether a value-returning helper always yields a value or can be absent at the
+/// read site. Maybe-present results must be resolved with the same language forms
+/// as maybe-present saved reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReturnPresence {
+    Always,
+    MaybePresent,
+}
+
+/// Host capabilities a std helper may require.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Capability {
-    Pure,
     Clock,
-    Env,
+    Environment,
     Log,
-    Io,
-    Assert,
+    Filesystem,
+    Maintenance,
 }
 
 /// One `std::<module>::<op>` descriptor.
@@ -51,11 +58,13 @@ pub struct StdOp {
     pub op: &'static str,
     pub params: &'static [ParamType],
     pub ret: ReturnType,
-    pub capability: Capability,
+    pub presence: ReturnPresence,
+    pub requires_capability: Option<Capability>,
 }
 
-use Capability::{Assert, Clock, Env, Io, Log, Pure};
-use ParamType::{Error as ErrorArg, Path, Scalar};
+use Capability::{Clock, Environment, Filesystem, Log};
+use ParamType::{Error as ErrorArg, Path, Scalar, Sequence as SequenceArg};
+use ReturnPresence::{Always, MaybePresent};
 use ReturnType::{Sequence, Void};
 use ScalarType::{Bool, Bytes, Date, Decimal, Duration, Instant, Int, Str};
 
@@ -65,14 +74,16 @@ const fn row(
     op: &'static str,
     params: &'static [ParamType],
     ret: ReturnType,
-    capability: Capability,
+    presence: ReturnPresence,
+    requires_capability: Option<Capability>,
 ) -> StdOp {
     StdOp {
         module,
         op,
         params,
         ret,
-        capability,
+        presence,
+        requires_capability,
     }
 }
 
@@ -85,40 +96,55 @@ const fn scalar(scalar: ScalarType) -> ReturnType {
 /// not runtime extension hooks.
 #[rustfmt::skip]
 const TABLE: &[StdOp] = &[
-    row("text", "length", &[Scalar(Str)], scalar(Int), Pure),
-    row("text", "trim", &[Scalar(Str)], scalar(Str), Pure),
-    row("text", "contains", &[Scalar(Str), Scalar(Str)], scalar(Bool), Pure),
-    row("text", "split", &[Scalar(Str), Scalar(Str)], Sequence(Str), Pure),
-    row("bytes", "length", &[Scalar(Bytes)], scalar(Int), Pure),
-    row("bytes", "base64Encode", &[Scalar(Bytes)], scalar(Str), Pure),
-    row("bytes", "base64Decode", &[Scalar(Str)], scalar(Bytes), Pure),
-    row("math", "absInt", &[Scalar(Int)], scalar(Int), Pure),
-    row("math", "absDecimal", &[Scalar(Decimal)], scalar(Decimal), Pure),
-    row("math", "floor", &[Scalar(Decimal)], scalar(Int), Pure),
-    row("math", "modulo", &[Scalar(Int), Scalar(Int)], scalar(Int), Pure),
-    row("math", "remainder", &[Scalar(Int), Scalar(Int)], scalar(Int), Pure),
-    row("clock", "now", &[], scalar(Instant), Clock),
-    row("clock", "today", &[], scalar(Date), Clock),
-    row("clock", "parseInstant", &[Scalar(Str)], scalar(Instant), Pure),
-    row("clock", "parseDate", &[Scalar(Str)], scalar(Date), Pure),
-    row("clock", "parseDuration", &[Scalar(Str)], scalar(Duration), Pure),
-    row("clock", "formatInstant", &[Scalar(Instant)], scalar(Str), Pure),
-    row("clock", "formatDate", &[Scalar(Date)], scalar(Str), Pure),
-    row("clock", "formatDuration", &[Scalar(Duration)], scalar(Str), Pure),
-    row("env", "exists", &[Scalar(Str)], scalar(Bool), Env),
-    row("env", "get", &[Scalar(Str), Scalar(Str)], scalar(Str), Env),
-    row("env", "require", &[Scalar(Str)], scalar(Str), Env),
-    row("io", "readText", &[Scalar(Str)], scalar(Str), Io),
-    row("io", "readBytes", &[Scalar(Str)], scalar(Bytes), Io),
-    row("io", "writeText", &[Scalar(Str), Scalar(Str)], Void, Io),
-    row("io", "writeBytes", &[Scalar(Str), Scalar(Bytes)], Void, Io),
-    row("assert", "isTrue", &[Scalar(Bool)], Void, Assert),
-    row("assert", "isFalse", &[Scalar(Bool)], Void, Assert),
-    row("assert", "absent", &[Path], Void, Assert),
-    row("assert", "fail", &[Scalar(Str)], Void, Assert),
-    row("log", "info", &[Scalar(Str)], Void, Log),
-    row("log", "warn", &[Scalar(Str)], Void, Log),
-    row("log", "error", &[ErrorArg], Void, Log),
+    row("text", "length", &[Scalar(Str)], scalar(Int), Always, None),
+    row("text", "trim", &[Scalar(Str)], scalar(Str), Always, None),
+    row("text", "contains", &[Scalar(Str), Scalar(Str)], scalar(Bool), Always, None),
+    row("text", "split", &[Scalar(Str), Scalar(Str)], Sequence(Str), Always, None),
+    row("text", "slice", &[Scalar(Str), Scalar(Int), Scalar(Int)], scalar(Str), Always, None),
+    row("text", "startsWith", &[Scalar(Str), Scalar(Str)], scalar(Bool), Always, None),
+    row("text", "endsWith", &[Scalar(Str), Scalar(Str)], scalar(Bool), Always, None),
+    row("text", "indexOf", &[Scalar(Str), Scalar(Str)], scalar(Int), MaybePresent, None),
+    row("text", "replace", &[Scalar(Str), Scalar(Str), Scalar(Str)], scalar(Str), Always, None),
+    row("text", "join", &[SequenceArg(Str), Scalar(Str)], scalar(Str), Always, None),
+    row("text", "toUpper", &[Scalar(Str)], scalar(Str), Always, None),
+    row("text", "toLower", &[Scalar(Str)], scalar(Str), Always, None),
+    row("bytes", "length", &[Scalar(Bytes)], scalar(Int), Always, None),
+    row("bytes", "base64Encode", &[Scalar(Bytes)], scalar(Str), Always, None),
+    row("bytes", "base64Decode", &[Scalar(Str)], scalar(Bytes), Always, None),
+    row("math", "absInt", &[Scalar(Int)], scalar(Int), Always, None),
+    row("math", "absDecimal", &[Scalar(Decimal)], scalar(Decimal), Always, None),
+    row("math", "floor", &[Scalar(Decimal)], scalar(Int), Always, None),
+    row("math", "minInt", &[Scalar(Int), Scalar(Int)], scalar(Int), Always, None),
+    row("math", "maxInt", &[Scalar(Int), Scalar(Int)], scalar(Int), Always, None),
+    row("math", "minDecimal", &[Scalar(Decimal), Scalar(Decimal)], scalar(Decimal), Always, None),
+    row("math", "maxDecimal", &[Scalar(Decimal), Scalar(Decimal)], scalar(Decimal), Always, None),
+    row("math", "round", &[Scalar(Decimal)], scalar(Int), Always, None),
+    row("math", "ceiling", &[Scalar(Decimal)], scalar(Int), Always, None),
+    row("math", "powInt", &[Scalar(Int), Scalar(Int)], scalar(Int), Always, None),
+    row("math", "modulo", &[Scalar(Int), Scalar(Int)], scalar(Int), Always, None),
+    row("math", "remainder", &[Scalar(Int), Scalar(Int)], scalar(Int), Always, None),
+    row("clock", "now", &[], scalar(Instant), Always, Some(Clock)),
+    row("clock", "today", &[], scalar(Date), Always, Some(Clock)),
+    row("clock", "parseInstant", &[Scalar(Str)], scalar(Instant), Always, None),
+    row("clock", "parseDate", &[Scalar(Str)], scalar(Date), Always, None),
+    row("clock", "parseDuration", &[Scalar(Str)], scalar(Duration), Always, None),
+    row("clock", "formatInstant", &[Scalar(Instant)], scalar(Str), Always, None),
+    row("clock", "formatDate", &[Scalar(Date)], scalar(Str), Always, None),
+    row("clock", "formatDuration", &[Scalar(Duration)], scalar(Str), Always, None),
+    row("env", "exists", &[Scalar(Str)], scalar(Bool), Always, Some(Environment)),
+    row("env", "get", &[Scalar(Str), Scalar(Str)], scalar(Str), Always, Some(Environment)),
+    row("env", "require", &[Scalar(Str)], scalar(Str), Always, Some(Environment)),
+    row("io", "readText", &[Scalar(Str)], scalar(Str), Always, Some(Filesystem)),
+    row("io", "readBytes", &[Scalar(Str)], scalar(Bytes), Always, Some(Filesystem)),
+    row("io", "writeText", &[Scalar(Str), Scalar(Str)], Void, Always, Some(Filesystem)),
+    row("io", "writeBytes", &[Scalar(Str), Scalar(Bytes)], Void, Always, Some(Filesystem)),
+    row("assert", "isTrue", &[Scalar(Bool)], Void, Always, None),
+    row("assert", "isFalse", &[Scalar(Bool)], Void, Always, None),
+    row("assert", "absent", &[Path], Void, Always, None),
+    row("assert", "fail", &[Scalar(Str)], Void, Always, None),
+    row("log", "info", &[Scalar(Str)], Void, Always, Some(Log)),
+    row("log", "warn", &[Scalar(Str)], Void, Always, Some(Log)),
+    row("log", "error", &[ErrorArg], Void, Always, Some(Log)),
 ];
 
 /// The descriptor for `std::<module>::<op>`, or `None` for an unrecognized op.

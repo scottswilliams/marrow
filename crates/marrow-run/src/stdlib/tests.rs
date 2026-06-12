@@ -41,13 +41,18 @@ fn every_table_row_reaches_a_live_handler() {
             transaction: Rc::new(RefCell::new(TransactionState::default())),
         };
         let mut env = Env::new(ctx, Rc::new(RefCell::new(NoProgramOutput)), None, None, 1);
-        let result = match entry.capability {
-            Capability::Clock => eval_clock_capability(entry.op, no_args, span, &mut env).map(Some),
-            Capability::Env => eval_env(entry.op, no_args, span, &mut env).map(Some),
-            Capability::Log => eval_log(entry.op, no_args, span, &mut env),
-            Capability::Io => eval_io(entry.op, no_args, span, &mut env),
-            Capability::Assert => eval_assert(entry.op, no_args, span, &mut env),
-            Capability::Pure => eval_std(entry.module, entry.op, no_args, span, &mut env).map(Some),
+        let result = match entry.requires_capability {
+            Some(Capability::Clock) => {
+                eval_clock_capability(entry.op, no_args, span, &mut env).map(Some)
+            }
+            Some(Capability::Environment) => eval_env(entry.op, no_args, span, &mut env).map(Some),
+            Some(Capability::Log) => eval_log(entry.op, no_args, span, &mut env),
+            Some(Capability::Filesystem) => eval_io(entry.op, no_args, span, &mut env),
+            Some(Capability::Maintenance) => {
+                unreachable!("the stdlib table has no maintenance helper")
+            }
+            None if entry.module == "assert" => eval_assert(entry.op, no_args, span, &mut env),
+            None => eval_std(entry.module, entry.op, no_args, span, &mut env).map(Some),
         };
         if let Err(error) = result {
             assert_ne!(
