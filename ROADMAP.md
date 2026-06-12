@@ -829,28 +829,9 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 The catalog/evolution series coordinates with the live engine-resident-catalog refactor — it is
 the named owner of the #24/#27 subtractions. An independent integrity lane (W3.7) can run after
 W2.8, and two tail lanes (W3.8, W3.9) sequence after the catalog series.
-docs/backend-contract.md integrates in lane order: W3.4 → W3.9.
+docs/backend-contract.md integrates in lane order: W3.5 → W3.9.
 
 Catalog/evolution series (sequenced; live-refactor coordination):
-**W3.4 → Activation-receipt collapse (gate 9, removal #24) + apply staging (IV.D1(a)).** Owns:
-CommitMetadata seven-field removal + codec arms,
-completion/{default,index,retire,transform,receipt}.rs deletion (~400 lines), window.rs/apply.rs
-staging — IV.D1(a): stream evolution-apply staging into the open transaction, delete
-`PlanStepStagedData` outright — backup CommitDescriptor + FORMAT_VERSION bump — riding that
-same bump: the C12 state_digest manifest field (sha256 fold over the canonical cell stream the
-existing traversal already walks), the C43 StoreUid (random content-independent u128 minted at
-store creation via the catalog-id entropy path, the mint placed above the Backend trait so W3.9
-absorbs it into the seam; one meta cell; one manifest field; restore mints a fresh uid), and the
-gate-45 reserved `parent_snapshot_digest` sentinel (always-empty typed field; manifest
-validation rejects an artifact carrying a non-empty value; the stability.md note lands in
-W7.2) — backend-contract.md + data-evolution.md lockstep. Seed: slim-gate resume test red; a
-thousands-of-records fixture asserting staging memory bounds (IV.B2 oracle). Review: streaming
-reorders when steps reach the store — byte-equal results for ordering-sensitive cases (transform
-reading a same-apply default); the transform-reproof tradeoff acknowledged in the lane doc;
-in-memory ActivationReceipt still renders operator counts; the manifest field list matches the
-gate-52-amended storage-engine/02/05 text exactly. Done: store byte surface carries no
-per-effect evidence; no unbounded materialization on the apply path; must land before gate 35.
-
 **W3.5 → Atomic accepted-catalog commit (gate 9, removal #27) + fence-message audit (III.B3
 narrowed).** Owns: apply/auto-apply commit contents (catalog bytes in the same store
 transaction), idempotent file render — III.B3's fork is resolved as self-healing, no
