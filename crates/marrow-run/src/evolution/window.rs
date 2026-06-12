@@ -11,7 +11,7 @@ use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::tree::{ActivationDefaultRecordCount, CommitMetadata, EngineProfile, TreeStore};
 
-use crate::write_plan::PlanStep;
+use crate::write_plan::{ActivationEvidenceMode, CommitIdAllocation, PlanStep};
 
 /// The canonical layout epoch the current binary writes. The apply stamp and the open
 /// fence both derive their engine profile from this one constant, so a freshly applied
@@ -26,18 +26,22 @@ pub fn current_engine_profile() -> EngineProfile {
 /// The durable context a managed write or evolution apply records for the commit it
 /// stamps. `catalog_snapshot` is the accepted catalog to publish atomically with the
 /// stamp. `changed_root_catalog_ids` and `changed_index_catalog_ids` describe this
-/// commit's own writes. `applied_activation_evidence` is historical evidence that an
-/// activation step was already applied under this catalog epoch and source digest. It
-/// may be carried by later writes to suppress stale replay, but it is not proof that
-/// the current data still matches the step's derived effects.
+/// commit's own writes. Activation evidence is either explicit for an apply, carried
+/// from the predecessor commit for an ordinary managed write, or empty.
 pub(crate) struct StampFacts {
     pub(crate) catalog_epoch: u64,
     pub(crate) catalog_snapshot: Option<Box<CatalogMetadata>>,
-    pub(crate) commit_id: u64,
+    pub(crate) commit_id: CommitIdAllocation,
     pub(crate) source_digest: String,
     pub(crate) changed_root_catalog_ids: Vec<CatalogId>,
     pub(crate) changed_index_catalog_ids: Vec<CatalogId>,
-    pub(crate) applied_activation_evidence: Option<AppliedActivationEvidence>,
+    pub(crate) activation_evidence: StampActivationEvidence,
+}
+
+pub(crate) enum StampActivationEvidence {
+    Empty,
+    CarryPrevious,
+    Applied(AppliedActivationEvidence),
 }
 
 #[derive(Default)]
@@ -60,11 +64,19 @@ pub(crate) struct AppliedActivationEvidence {
 /// construction: the fence reads exactly the layout and digest this stamp wrote.
 pub(crate) fn metadata_stamp(facts: StampFacts) -> PlanStep {
     let profile = current_engine_profile();
-    // Absence is expressed once as all-default evidence rather than per field, so the
-    // activation columns stamp the same zero/empty values an unstamped activation would.
-    let applied_activation_evidence = facts.applied_activation_evidence.unwrap_or_default();
+    let (activation_evidence, applied_activation_evidence) = match facts.activation_evidence {
+        StampActivationEvidence::Empty => (
+            ActivationEvidenceMode::Explicit,
+            AppliedActivationEvidence::default(),
+        ),
+        StampActivationEvidence::CarryPrevious => (
+            ActivationEvidenceMode::CarryPrevious,
+            AppliedActivationEvidence::default(),
+        ),
+        StampActivationEvidence::Applied(evidence) => (ActivationEvidenceMode::Explicit, evidence),
+    };
     let commit = CommitMetadata {
-        commit_id: facts.commit_id,
+        commit_id: 0,
         catalog_epoch: facts.catalog_epoch,
         layout_epoch: profile.layout_epoch(),
         source_digest: facts.source_digest,
@@ -86,6 +98,8 @@ pub(crate) fn metadata_stamp(facts: StampFacts) -> PlanStep {
         catalog_epoch: facts.catalog_epoch,
         catalog_snapshot: facts.catalog_snapshot,
         profile,
+        commit_id: facts.commit_id,
+        activation_evidence,
         commit: Box::new(commit),
     }
 }
@@ -192,8 +206,11 @@ pub fn fence(
 
 #[cfg(test)]
 mod tests {
-    use super::{FenceError, StampFacts, current_engine_profile, fence, metadata_stamp};
-    use crate::write_plan::PlanStep;
+    use super::{
+        FenceError, StampActivationEvidence, StampFacts, current_engine_profile, fence,
+        metadata_stamp,
+    };
+    use crate::write_plan::{CommitIdAllocation, WritePlan};
     use marrow_store::tree::{EngineProfile, TreeStore};
 
     const DIGEST: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000001";
@@ -210,17 +227,14 @@ mod tests {
         let step = metadata_stamp(StampFacts {
             catalog_epoch: epoch,
             catalog_snapshot: None,
-            commit_id: 1,
+            commit_id: CommitIdAllocation::Next,
             source_digest: digest.to_string(),
             changed_root_catalog_ids: Vec::new(),
             changed_index_catalog_ids: Vec::new(),
-            applied_activation_evidence: None,
+            activation_evidence: StampActivationEvidence::Empty,
         });
-        let PlanStep::StampMetadata { commit, .. } = step else {
-            panic!("metadata_stamp builds a StampMetadata step");
-        };
-        store
-            .write_commit_metadata(&commit)
+        WritePlan { steps: vec![step] }
+            .commit(store, false)
             .expect("write commit metadata");
     }
 

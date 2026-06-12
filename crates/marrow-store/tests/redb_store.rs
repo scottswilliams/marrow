@@ -119,6 +119,64 @@ fn native_writer_is_locked_out_while_read_only_handle_lives() {
 }
 
 #[test]
+fn native_read_only_is_locked_out_while_writer_handle_lives() {
+    let dir = common::TempDir::new("marrow-store-test").expect("create temp dir");
+    let path = dir.path().join("store.redb");
+    let writer = TreeStore::open(&path).expect("open writer");
+
+    match TreeStore::open_read_only(&path) {
+        Err(StoreError::Locked { data_dir }) => assert_eq!(data_dir, path),
+        Ok(_) => panic!("expected store.locked while writer handle is open, got Ok"),
+        Err(error) => panic!("expected store.locked while writer handle is open, got {error:?}"),
+    }
+    drop(writer);
+
+    TreeStore::open_read_only(&path).expect("reopen read-only after dropping writer");
+}
+
+#[test]
+fn native_same_handle_snapshot_write_conflicts_are_transaction_errors() {
+    let dir = common::TempDir::new("marrow-store-test").expect("create temp dir");
+    let path = dir.path().join("store.redb");
+    let books = catalog_id("1111111111111111");
+    let title = catalog_id("2222222222222222");
+    let store = TreeStore::open(&path).expect("open writer");
+    store
+        .write_data_value(
+            &books,
+            &[SavedKey::Int(1)],
+            &title_path(&title),
+            b"Dune".to_vec(),
+        )
+        .expect("write");
+
+    let snapshot = store.read_snapshot().expect("pin read snapshot");
+    let write = store
+        .write_data_value(
+            &books,
+            &[SavedKey::Int(2)],
+            &title_path(&title),
+            b"Other".to_vec(),
+        )
+        .expect_err("same-handle write must reject a pinned snapshot");
+    assert_eq!(write.code(), "store.transaction");
+    let begin = store
+        .begin()
+        .expect_err("same-handle transaction must reject a pinned snapshot");
+    assert_eq!(begin.code(), "store.transaction");
+    drop(snapshot);
+
+    store
+        .write_data_value(
+            &books,
+            &[SavedKey::Int(2)],
+            &title_path(&title),
+            b"Other".to_vec(),
+        )
+        .expect("write after snapshot drops");
+}
+
+#[test]
 fn native_read_only_rejects_write_capability_operations() {
     let dir = common::TempDir::new("marrow-store-test").expect("create temp dir");
     let path = dir.path().join("store.redb");

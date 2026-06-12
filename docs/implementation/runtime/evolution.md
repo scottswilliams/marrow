@@ -15,7 +15,7 @@ One staging engine serves two callers:
 
 ## Apply control flow
 
-`apply` is the spine: validate witness → fence → gate repair/destructive obligations → stage each obligation into the plan → deferred index-rebuild pass → reconcile counts → atomic commit with stamp → return `ActivationReceipt`. Staging appends typed `PlanStep`s (`WriteData`/`DeleteData`/`WriteIndex`/`DeleteIndexSubtree`/`StampMetadata`); `commit_apply_plan` re-asserts the store commit pin inside the transaction and commits once.
+`apply` is the spine: validate witness → fence → gate repair/destructive obligations → stage each obligation into the plan → deferred index-rebuild pass → reconcile counts → atomic commit with stamp → return `ActivationReceipt`. Staging appends typed `PlanStep`s (`WriteData`/`DeleteData`/`WriteIndex`/`DeleteIndexSubtree`/`StampMetadata`); the stamp carries the witness-pinned predecessor, and `commit_apply_plan` re-asserts that pin inside the transaction before committing once.
 
 ## Modules
 
@@ -25,7 +25,7 @@ One staging engine serves two callers:
 | `evolution/apply.rs` | Apply orchestrator; defines `Approval`, `ApplyOutcome`, `ActivationReceipt`, `ApplyError`, `StagedWork`, `stage_obligation`, `reconcile_counts`, `commit_apply_plan`. |
 | `evolution/baseline.rs` | `commit_catalog_baseline`: freeze a project's first proposed catalog into an empty store as one `StampMetadata` step through `WritePlan` (catalog rows, epoch, engine profile, commit metadata via the shared `metadata_stamp`); a no-op when the store already holds a catalog or any saved data. |
 | `evolution/validate.rs` | `validate_witness` (re-preview, byte equality, `Drift`), `assert_commit_pin` (`StoreCommitDrift`), and `assert_accepted_catalog_pin` (the store's published catalog digest must match the witness's accepted catalog, else `CatalogDrift`). |
-| `evolution/window.rs` | Activation-window `fence` (engine profile, catalog epoch, schema-bearing source digest) and the `metadata_stamp` / `current_engine_profile` shared with managed writes. |
+| `evolution/window.rs` | Activation-window `fence` (engine profile, catalog epoch, schema-bearing source digest) and the `metadata_stamp` / `current_engine_profile` shared with managed writes; stamp facts choose empty, carried, or explicit activation evidence. |
 | `evolution/admission.rs` | Gates `RepairRequired` (`NotActivatable`) and destructive retires; requires maintenance plus an exact per-id scoped `Approval`. |
 | `evolution/auto_apply.rs` | Classifies the witness's heaviest record obligation (`RunObligation`) and applies only `ZeroMutation` via the production path, else `MustFence`. |
 | `evolution/backfill.rs` | Stages non-transform verdicts: default backfills, index subtree rebuilds, index drops, retire deletes; re-scans each root from the live store. |
@@ -40,7 +40,7 @@ One staging engine serves two callers:
 ## Invariants worth knowing before editing
 
 - Witness byte equality is the consistency proof; staging never trusts a witness identity list.
-- Two concurrency guards: `validate_witness` checks the commit pin once, `commit_apply_plan` re-asserts it inside the transaction.
+- Two concurrency guards: `validate_witness` checks the commit pin once, `commit_apply_plan` re-asserts it inside the transaction, and the stamp resolves only from that pinned predecessor.
 - The fence checks the store's *pre-apply* shape (the digest the witness recorded), so a shape-changing apply does not fence itself.
 - Stamp and fence read the same facts by construction, so a store this binary just wrote passes its own fence.
 - Index rebuilds are deferred to a second pass so they see same-apply defaults/transforms via the staged-data view.

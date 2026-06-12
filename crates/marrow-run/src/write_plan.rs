@@ -7,6 +7,49 @@ use marrow_store::tree::{CommitMetadata, DataPathSegment, EngineProfile, TreeSto
 use crate::store::{DataAddress, IndexAddress};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CommitIdAllocation {
+    /// The one catalog-baseline stamp for an unstamped store.
+    Baseline,
+    /// The next dense id after the predecessor visible inside this write bracket.
+    Next,
+    /// The next dense id only if the bracket still sees the witness-pinned predecessor.
+    PinnedNext { previous: Option<u64> },
+}
+
+impl CommitIdAllocation {
+    pub(crate) fn resolve(&self, previous: Option<&CommitMetadata>) -> Result<u64, StoreError> {
+        match self {
+            CommitIdAllocation::Baseline => {
+                if previous.is_some() {
+                    return Err(StoreError::InvalidTransaction {
+                        message: "baseline commit metadata requires an unstamped store".to_string(),
+                    });
+                }
+                Ok(0)
+            }
+            CommitIdAllocation::Next => next_commit_id(previous),
+            CommitIdAllocation::PinnedNext { previous: pinned } => {
+                let found = previous.map(|commit| commit.commit_id);
+                if found != *pinned {
+                    return Err(StoreError::InvalidTransaction {
+                        message: format!(
+                            "commit metadata pin drift: expected {pinned:?}, found {found:?}"
+                        ),
+                    });
+                }
+                next_commit_id(previous)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ActivationEvidenceMode {
+    Explicit,
+    CarryPrevious,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PlanStep {
     WriteNode {
         address: DataAddress,
@@ -34,18 +77,20 @@ pub(crate) enum PlanStep {
         address: IndexAddress,
     },
     /// Stamp the catalog epoch, engine profile, and commit metadata, and publish the
-    /// activated catalog snapshot when one is present. This commits in the same
-    /// transaction as the data steps so the store's epoch never advances without the
-    /// data the new epoch describes, and the activated catalog rows land atomically with
-    /// the epoch they belong to. The snapshot publish is a store-internal activation
-    /// write, not a data or index write, so the read-only projection reports the step as
-    /// a [`WriteTarget::Meta`] keyed by the catalog epoch alone and never exposes the
-    /// rows as a data write. A `None` snapshot is an apply that does not advance the
-    /// accepted catalog (a pure backfill), so the published catalog is left untouched.
+    /// activated catalog snapshot when one is present. The commit id resolves when this
+    /// step is applied, so the predecessor metadata is read inside the same write
+    /// bracket that writes the stamp. The snapshot publish is a store-internal
+    /// activation write, not a data or index write, so the read-only projection reports
+    /// the step as a [`WriteTarget::Meta`] keyed by the catalog epoch alone and never
+    /// exposes the rows as a data write. A `None` snapshot is an apply that does not
+    /// advance the accepted catalog (a pure backfill), so the published catalog is left
+    /// untouched.
     StampMetadata {
         catalog_epoch: u64,
         catalog_snapshot: Option<Box<marrow_catalog::CatalogMetadata>>,
         profile: EngineProfile,
+        commit_id: CommitIdAllocation,
+        activation_evidence: ActivationEvidenceMode,
         commit: Box<CommitMetadata>,
     },
 }
@@ -165,8 +210,19 @@ fn apply_steps(steps: Vec<PlanStep>, store: &TreeStore) -> Result<(), StoreError
                 catalog_epoch,
                 catalog_snapshot,
                 profile,
+                commit_id,
+                activation_evidence,
                 commit,
             } => {
+                let previous = store.read_commit_metadata()?;
+                let mut commit = commit;
+                commit.commit_id = commit_id.resolve(previous.as_ref())?;
+                match activation_evidence {
+                    ActivationEvidenceMode::Explicit => {}
+                    ActivationEvidenceMode::CarryPrevious => {
+                        carry_activation_evidence(&mut commit, previous.as_ref());
+                    }
+                }
                 if let Some(snapshot) = catalog_snapshot {
                     store.replace_catalog_snapshot(&snapshot)?;
                 }
@@ -177,6 +233,52 @@ fn apply_steps(steps: Vec<PlanStep>, store: &TreeStore) -> Result<(), StoreError
         }
     }
     Ok(())
+}
+
+fn next_commit_id(previous: Option<&CommitMetadata>) -> Result<u64, StoreError> {
+    previous.map_or(Ok(1), |commit| {
+        commit
+            .commit_id
+            .checked_add(1)
+            .ok_or(StoreError::LimitExceeded { limit: "commit id" })
+    })
+}
+
+fn carry_activation_evidence(commit: &mut CommitMetadata, previous: Option<&CommitMetadata>) {
+    clear_activation_evidence(commit);
+    let Some(previous) = previous else {
+        return;
+    };
+    if previous.catalog_epoch != commit.catalog_epoch
+        || previous.source_digest != commit.source_digest
+        || previous.activation_evolution_digest.is_empty()
+    {
+        return;
+    }
+    commit.activation_evolution_digest = previous.activation_evolution_digest.clone();
+    commit.activation_proposal_catalog_digest = previous.activation_proposal_catalog_digest.clone();
+    commit.activation_proposal_new_catalog_ids =
+        previous.activation_proposal_new_catalog_ids.clone();
+    commit.activation_records_backfilled = previous.activation_records_backfilled;
+    commit.activation_default_records_by_id = previous.activation_default_records_by_id.clone();
+    commit.activation_indexes_rebuilt = previous.activation_indexes_rebuilt;
+    commit.activation_records_retired = previous.activation_records_retired;
+    commit.activation_retire_evidence_digest = previous.activation_retire_evidence_digest.clone();
+    commit.activation_records_retired_by_id = previous.activation_records_retired_by_id.clone();
+    commit.activation_records_transformed = previous.activation_records_transformed;
+}
+
+fn clear_activation_evidence(commit: &mut CommitMetadata) {
+    commit.activation_evolution_digest.clear();
+    commit.activation_proposal_catalog_digest = None;
+    commit.activation_proposal_new_catalog_ids.clear();
+    commit.activation_records_backfilled = 0;
+    commit.activation_default_records_by_id.clear();
+    commit.activation_indexes_rebuilt = 0;
+    commit.activation_records_retired = 0;
+    commit.activation_retire_evidence_digest.clear();
+    commit.activation_records_retired_by_id.clear();
+    commit.activation_records_transformed = 0;
 }
 
 fn data_target(address: &DataAddress) -> WriteTarget {
@@ -206,7 +308,9 @@ fn index_target(address: &IndexAddress, identity: &[SavedKey]) -> WriteTarget {
 
 #[cfg(test)]
 mod tests {
-    use super::{PlanStep, WriteOp, WritePlan, WriteTarget};
+    use super::{
+        ActivationEvidenceMode, CommitIdAllocation, PlanStep, WriteOp, WritePlan, WriteTarget,
+    };
     use marrow_store::tree::{CommitMetadata, EngineProfile};
 
     /// A metadata stamp projects to a write of a `Meta` target carrying the catalog
@@ -242,6 +346,8 @@ mod tests {
                 catalog_epoch: 5,
                 catalog_snapshot: Some(Box::new(snapshot)),
                 profile,
+                commit_id: CommitIdAllocation::Next,
+                activation_evidence: ActivationEvidenceMode::Explicit,
                 commit: Box::new(commit),
             }],
         };
@@ -317,6 +423,8 @@ mod tests {
                 catalog_epoch: 5,
                 catalog_snapshot: None,
                 profile,
+                commit_id: CommitIdAllocation::Next,
+                activation_evidence: ActivationEvidenceMode::Explicit,
                 commit: Box::new(commit),
             }],
         }

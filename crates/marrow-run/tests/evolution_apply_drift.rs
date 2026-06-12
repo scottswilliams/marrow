@@ -10,9 +10,10 @@ mod evolution_apply_support;
 use evolution_apply_support::*;
 
 use marrow_run::evolution::{ApplyError, apply, verify_activation_completion};
+use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::tree::{CommitMetadata, DataPathSegment, TreeStore};
 use marrow_store::value::Scalar;
 
 /// An optional sparse add is a no-op: apply stamps the proposal epoch with no data
@@ -266,6 +267,66 @@ fn store_commit_drift_aborts() {
     assert_eq!(store.read_commit_metadata().expect("read"), None);
 }
 
+#[test]
+fn commit_id_overflow_aborts_without_staging_apply_writes() {
+    let root = temp_project("apply-commit-overflow", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   required pages: int\n\
+             store ^books(id: int): Book\n\
+             evolve\n\
+             \x20   default Book.pages = 0\n\
+             pub fn add(title: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let program = commit_then_check(&root);
+    let place = root_place(&program, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &place,
+    };
+    seed.record(1);
+    seed.member(1, "title", Scalar::Str("Dune".into()));
+    store
+        .write_commit_metadata(&commit_metadata(u64::MAX, program.source_digest()))
+        .expect("stamp predecessor at the commit-id limit");
+
+    let witness = witness(&program, &store);
+    assert_eq!(witness.store_commit_id, Some(u64::MAX));
+    let result = apply(&witness, &program, &store, false, None);
+    assert!(
+        matches!(
+            result,
+            Err(ApplyError::Store(StoreError::LimitExceeded {
+                limit: "commit id"
+            }))
+        ),
+        "expected checked commit-id overflow, got {result:#?}"
+    );
+
+    let store_id = store_id_of(&place);
+    let pages_id = member_catalog_id(&place, "pages");
+    assert_eq!(
+        read_scalar(&store, &store_id, 1, &pages_id, INT),
+        None,
+        "the failed apply must not stage the default backfill"
+    );
+    assert_eq!(
+        store
+            .read_commit_metadata()
+            .expect("read commit")
+            .expect("predecessor stamp remains")
+            .commit_id,
+        u64::MAX
+    );
+}
+
 /// A failed apply leaves no stamp and a resumed apply re-previews and succeeds
 /// (idempotent). A read-only store handle fails the apply, so nothing lands; re-opening
 /// the same file read-write and re-applying lands the change, proving the apply wiring
@@ -401,4 +462,26 @@ fn no_op_apply_does_not_churn_the_commit_id() {
     let third =
         apply(&witness(&program, &store), &program, &store, false, None).expect("third apply");
     assert_eq!(third.receipt.commit_id, stamped_commit);
+}
+
+fn commit_metadata(commit_id: u64, source_digest: String) -> CommitMetadata {
+    CommitMetadata {
+        commit_id,
+        catalog_epoch: 0,
+        layout_epoch: 0,
+        source_digest,
+        engine_profile_digest: [0; 8],
+        changed_root_catalog_ids: Vec::new(),
+        changed_index_catalog_ids: Vec::new(),
+        activation_evolution_digest: String::new(),
+        activation_proposal_catalog_digest: None,
+        activation_proposal_new_catalog_ids: Vec::new(),
+        activation_records_backfilled: 0,
+        activation_default_records_by_id: Vec::new(),
+        activation_indexes_rebuilt: 0,
+        activation_records_retired: 0,
+        activation_retire_evidence_digest: String::new(),
+        activation_records_retired_by_id: Vec::new(),
+        activation_records_transformed: 0,
+    }
 }

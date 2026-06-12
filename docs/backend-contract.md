@@ -136,6 +136,12 @@ profile digest, catalog ID lists, per-default activation counts, and per-retire
 approval counts are length-prefixed with big-endian `u32` counts or byte
 lengths. Catalog IDs remain opaque storage IDs inside metadata values.
 
+Commit IDs are dense over the committed sequence. The catalog baseline is
+commit `0` on an unstamped store; every later stamped write reads the
+predecessor commit metadata inside the same write transaction that writes the
+new stamp and records `prior + 1`. A rollback consumes no commit ID, so after
+`N` post-baseline committed writes the high-water mark has advanced exactly `N`.
+
 The top-level changed root/index catalog ID lists are per-commit stamp facts:
 they describe the data roots and indexes this commit itself touched. An
 evolution apply stamps the activation commit's changed IDs there, but a later
@@ -238,6 +244,10 @@ transaction are also mutually exclusive, but that is an invalid handle state
 reported as `store.transaction`. `store.locked` is reserved for the
 cross-process file-open contract.
 
+A read-only native handle is an inspection handle: read calls work, while
+write-capability operations fail with `store.read_only`. Same-handle
+snapshot/write conflicts remain `store.transaction`, not `store.locked`.
+
 Marrow v0.1 does not include a built-in durable outbox engine. When application
 code needs an external side effect to follow saved-data changes, write an
 ordinary saved outbox record in the same Marrow transaction as the state change,
@@ -300,8 +310,9 @@ The private substrate conformance suite keeps memory and redb aligned on:
 
 Public tree-cell tests assert the production contract: stable catalog-ID
 physical keys, typed leaves, sequence cells, exact index entries and scans,
-metadata round trips, read-only native behavior, rollback, corruption handling,
-catalog-backed references, and catalog-backed enum member values.
+metadata round trips, read-only native behavior, the native reader/writer lock
+matrix, rollback, corruption handling, catalog-backed references, and
+catalog-backed enum member values.
 
 ## Adapters And Portability
 

@@ -10,7 +10,7 @@ use marrow_store::cell::CatalogId;
 use marrow_store::tree::{ActivationDefaultRecordCount, TreeStore};
 
 use crate::store::DataAddress;
-use crate::write_plan::{PlanStep, WritePlan};
+use crate::write_plan::{CommitIdAllocation, PlanStep, WritePlan};
 
 use super::admission::{catalog_id_order, expected_retire_counts, gate_obligations};
 use super::backfill::{
@@ -22,8 +22,8 @@ use super::lifecycle::retired_proposal_ids;
 use super::transform::{TransformVisit, visit_transform_writes};
 use super::validate::{assert_commit_pin, validate_witness};
 use super::window::{
-    AppliedActivationEvidence, FenceError, StampFacts, current_engine_profile, fence,
-    metadata_stamp,
+    AppliedActivationEvidence, FenceError, StampActivationEvidence, StampFacts,
+    current_engine_profile, fence, metadata_stamp,
 };
 
 /// The scoped developer decision a destructive retire requires. Each entry names one
@@ -190,17 +190,15 @@ pub fn apply(
     let destructive_retire_counts = expected_retire_counts(witness);
     reconcile_counts(&staged, witness, &destructive_retire_counts)?;
 
-    let commit_id = witness.store_commit_id.unwrap_or(0) + 1;
-    let parts = receipt_parts(program, commit_id, &staged, &destructive_retire_counts)?;
-    steps.push(activation_stamp(
+    let (commit_id, parts) = commit_apply_plan(
         witness,
         program,
-        commit_id,
+        store,
+        steps,
         target_epoch,
         &staged,
-        &parts,
-    ));
-    commit_apply_plan(witness, store, steps)?;
+        &destructive_retire_counts,
+    )?;
     Ok(build_outcome(
         witness,
         commit_id,
@@ -285,8 +283,8 @@ fn reconcile_counts(
 
 /// The receipt fields a committed (or already-committed no-op) activation shares between its
 /// stamp and its outcome: the per-id retire counts, their digest at this commit, and the
-/// proposal-new catalog ids. Computed once so the stamp and the returned receipt agree by
-/// construction on the same commit id.
+/// proposal-new catalog ids. The stamp resolves from the same witness-pinned predecessor
+/// used to compute these fields.
 struct ReceiptParts {
     retire_counts: Vec<(CatalogId, usize)>,
     retire_counts_u64: Vec<(CatalogId, u64)>,
@@ -313,7 +311,7 @@ fn receipt_parts(
 }
 
 /// The metadata stamp a committing activation appends to its plan, carrying the activation
-/// facts the commit records at `commit_id` and the activated catalog snapshot it publishes.
+/// facts the commit records and the activated catalog snapshot it publishes.
 ///
 /// The snapshot is the proposal catalog the witness activates: present exactly when the
 /// witness carries a `proposal_catalog`, so it publishes atomically with the epoch it
@@ -324,7 +322,6 @@ fn receipt_parts(
 fn activation_stamp(
     witness: &EvolutionWitness,
     program: &CheckedProgram,
-    commit_id: u64,
     target_epoch: u64,
     staged: &StagedWork,
     parts: &ReceiptParts,
@@ -337,11 +334,13 @@ fn activation_stamp(
     metadata_stamp(StampFacts {
         catalog_epoch: target_epoch,
         catalog_snapshot,
-        commit_id,
+        commit_id: CommitIdAllocation::PinnedNext {
+            previous: witness.store_commit_id,
+        },
         source_digest: witness.source_digest.clone(),
         changed_root_catalog_ids: witness.changed_root_catalog_ids.clone(),
         changed_index_catalog_ids: witness.changed_index_catalog_ids.clone(),
-        applied_activation_evidence: Some(AppliedActivationEvidence {
+        activation_evidence: StampActivationEvidence::Applied(AppliedActivationEvidence {
             evolution_digest: witness.evolution_digest.clone(),
             proposal_catalog_digest: witness
                 .proposal_catalog
@@ -486,18 +485,35 @@ fn activation_receipt(
 
 fn commit_apply_plan(
     witness: &EvolutionWitness,
+    program: &CheckedProgram,
     store: &TreeStore,
-    steps: Vec<PlanStep>,
-) -> Result<(), ApplyError> {
+    mut steps: Vec<PlanStep>,
+    target_epoch: u64,
+    staged: &StagedWork,
+    destructive_retire_counts: &[(CatalogId, usize)],
+) -> Result<(u64, ReceiptParts), ApplyError> {
     store.begin()?;
     let result = (|| {
         assert_commit_pin(witness, store)?;
+        let previous = store.read_commit_metadata()?;
+        let allocation = CommitIdAllocation::PinnedNext {
+            previous: witness.store_commit_id,
+        };
+        let commit_id = allocation.resolve(previous.as_ref())?;
+        let parts = receipt_parts(program, commit_id, staged, destructive_retire_counts)?;
+        steps.push(activation_stamp(
+            witness,
+            program,
+            target_epoch,
+            staged,
+            &parts,
+        ));
         WritePlan { steps }.commit(store, true)?;
-        Ok(())
+        Ok((commit_id, parts))
     })();
     match result {
-        Ok(()) => match store.commit() {
-            Ok(()) => Ok(()),
+        Ok(outcome) => match store.commit() {
+            Ok(()) => Ok(outcome),
             Err(error) => {
                 let _ = store.rollback();
                 Err(ApplyError::Store(error))

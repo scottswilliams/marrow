@@ -6,14 +6,14 @@ The write half of the runtime: every managed mutation is planned in full, then c
 
 `plan → commit`, never write-as-you-go. `write.rs` is the planning core for all write kinds; `write_plan.rs` defines the committable unit and the begin/apply/commit-or-rollback contract. The five per-kind modules under `write_dispatch/` plus `group_write.rs` are thin: lower the target, hand checked facts and a value to the planner, apply, defer the required-entry check. `transaction.rs` wraps multi-statement atomicity around that. `index_maintenance.rs` stages index steps into each plan. `store.rs` is the only place checked names become physical store keys.
 
-Step order is the correctness contract: within a plan, `DeleteData` (clear the old subtree) precedes `WriteNode` and per-field `WriteData`, and stale `DeleteIndex` precedes fresh `WriteIndex`, so a replace never leaves a stale field or index branch. Required-field enforcement is mode-split: outside a transaction the check rejects an incompletion before it lands; inside one it defers to the outermost commit, so an intermediate incomplete record is legal mid-transaction. The catalog-epoch stamp rides the same transaction as the data, so the epoch never advances without the data it describes.
+Step order is the correctness contract: within a plan, `DeleteData` (clear the old subtree) precedes `WriteNode` and per-field `WriteData`, and stale `DeleteIndex` precedes fresh `WriteIndex`, so a replace never leaves a stale field or index branch. Required-field enforcement is mode-split: outside a transaction the check rejects an incompletion before it lands; inside one it defers to the outermost commit, so an intermediate incomplete record is legal mid-transaction. The catalog-epoch stamp rides the same transaction as the data, and `WritePlan` resolves the stamp's commit ID against the predecessor metadata visible in that transaction.
 
 ## Modules
 
 | File | Responsibility |
 | --- | --- |
 | `crates/marrow-run/src/write.rs` | Planning core: checked facts + value → `WritePlan` for every kind (resource, field, identity field, layer leaf/group, nested field, delete, root-drop); `nextId`/`nextLayerPos` allocation, type/identity/arity/required checks, field flattening. |
-| `crates/marrow-run/src/write_plan.rs` | `PlanStep`, `WritePlan`, and `commit()` against `TreeStore`; read-only `WriteOp`/`WriteTarget` projection for dry-run/debug. |
+| `crates/marrow-run/src/write_plan.rs` | `PlanStep`, commit-id allocation policies, `WritePlan::commit()` against `TreeStore`, and read-only `WriteOp`/`WriteTarget` projection for dry-run/debug. |
 | `crates/marrow-run/src/write_dispatch.rs` | Facade: declares the five per-kind submodules and re-exports their `eval_*`/`write_*` entry points. |
 | `crates/marrow-run/src/write_dispatch/resource.rs` | Whole-record assign: flatten a `Resource` value into a `ResourceValue`, plan, apply, defer the entry check. |
 | `crates/marrow-run/src/write_dispatch/field.rs` | Single saved-field write (top-level/nested, scalar/identity): plan, immediate out-of-txn required check, apply, note created-required paths. |
@@ -27,7 +27,7 @@ Step order is the correctness contract: within a plan, `DeleteData` (clear the o
 
 ## Key types
 
-- `WritePlan` / `PlanStep` (`write_plan.rs`) — ordered steps as the single committable unit. `PlanStep` covers `WriteNode`/`WriteData`/`DeleteData`/`DeleteRecordSubtree`, `WriteIndex`/`DeleteIndex`/`DeleteIndexSubtree`, and `StampMetadata`; it carries resolved addresses, never source spelling.
+- `WritePlan` / `PlanStep` (`write_plan.rs`) — ordered steps as the single committable unit. `PlanStep` covers `WriteNode`/`WriteData`/`DeleteData`/`DeleteRecordSubtree`, `WriteIndex`/`DeleteIndex`/`DeleteIndexSubtree`, and `StampMetadata`; it carries resolved addresses and commit-id allocation state, never source spelling.
 - `ResourceValue` / `SuppliedIdentity` (`write.rs`) — flattened, type-resolved record value ready for planning.
 - `DataAddress` / `LayerAddress` / `IndexAddress` (`store.rs`) — the boundary between checked names and physical store keys.
 - `WriteError` (`write.rs`) — planning-stage failure with a stable `write.*` code; `env.apply_plan` turns it into a runtime fault. Codes are the contract, not the prose.
@@ -35,7 +35,7 @@ Step order is the correctness contract: within a plan, `DeleteData` (clear the o
 ## Two things to know
 
 - The rollback contract spans two files: `WritePlan::commit` owns single-statement atomicity; `transaction.rs` owns multi-statement atomicity plus deferred-check and metadata-stamp sequencing. Hold both to reason about ordering.
-- `PlanStep::StampMetadata` is defined here, but the stamp is *computed* in `env.rs` (`stamp_managed_write` / `build_commit_metadata_stamp` via `crate::evolution::metadata_stamp`) and folded in by `Env::apply_plan` / `Env::stamp_transaction_commit`, not by these files.
+- `PlanStep::StampMetadata` is defined here. `env.rs` decides whether a managed write owes a stamp, while `write_plan.rs` reads predecessor commit metadata inside the active bracket and resolves `Baseline`, `Next`, or witness-pinned commit IDs at the stamp step.
 
 ## Read next
 

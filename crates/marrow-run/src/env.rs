@@ -13,12 +13,11 @@ use marrow_syntax::SourceSpan;
 use crate::error::{
     Located, RUN_CAPABILITY, RUN_TRAVERSAL, RuntimeError, raise_fault, write_fault,
 };
-use crate::evolution::AppliedActivationEvidence;
 use crate::host::{Host, StepHook};
 use crate::store::{DataAddress, IndexAddress, LayerAddress, catalog_id};
 use crate::value::{RunOutputSink, Value};
 use crate::write::{WriteError, validate_required_fields_for_entry};
-use crate::write_plan::{PlanStep, WritePlan};
+use crate::write_plan::{CommitIdAllocation, PlanStep, WritePlan};
 
 /// Where control flow stands after a statement or block.
 pub(crate) enum Flow {
@@ -268,7 +267,6 @@ impl<'p> Env<'p> {
                 &mut plan,
                 self.program.accepted_catalog_epoch(),
                 self.program.source_digest(),
-                self.store,
             )
             .map_err(|error| error.located(span))?;
         }
@@ -428,7 +426,6 @@ impl<'p> Env<'p> {
             self.program.source_digest(),
             pending_roots,
             pending_indexes,
-            self.store,
         )
         .map_err(|error| error.located(span))?;
         let Some(stamp) = stamp else {
@@ -717,7 +714,6 @@ fn stamp_managed_write(
     plan: &mut WritePlan,
     accepted_epoch: Option<u64>,
     source_digest: &str,
-    store: &TreeStore,
 ) -> Result<(), marrow_store::StoreError> {
     let Some(catalog_epoch) = accepted_epoch else {
         return Ok(());
@@ -735,7 +731,6 @@ fn stamp_managed_write(
         source_digest,
         changed_root_catalog_ids,
         changed_index_catalog_ids,
-        store,
     )? {
         plan.steps.push(stamp);
     }
@@ -744,61 +739,27 @@ fn stamp_managed_write(
 
 /// Build the metadata-stamp step that records a commit against the accepted
 /// catalog epoch, or `None` when nothing changed (so no stamp is owed). The
-/// commit id is the next id after the last recorded commit.
+/// commit id is allocated when the stamp step is applied inside the transaction.
 fn build_commit_metadata_stamp(
     catalog_epoch: u64,
     source_digest: &str,
     changed_root_catalog_ids: Vec<CatalogId>,
     changed_index_catalog_ids: Vec<CatalogId>,
-    store: &TreeStore,
 ) -> Result<Option<PlanStep>, marrow_store::StoreError> {
     if changed_root_catalog_ids.is_empty() && changed_index_catalog_ids.is_empty() {
         return Ok(None);
     }
-    let previous = store.read_commit_metadata()?;
-    let commit_id = previous
-        .as_ref()
-        .map(|commit| commit.commit_id + 1)
-        .unwrap_or(1);
-    let applied_activation_evidence = previous.as_ref().and_then(|commit| {
-        carried_applied_activation_evidence(catalog_epoch, source_digest, commit)
-    });
     Ok(Some(crate::evolution::metadata_stamp(
         crate::evolution::StampFacts {
             catalog_epoch,
             catalog_snapshot: None,
-            commit_id,
+            commit_id: CommitIdAllocation::Next,
             source_digest: source_digest.to_string(),
             changed_root_catalog_ids,
             changed_index_catalog_ids,
-            applied_activation_evidence,
+            activation_evidence: crate::evolution::StampActivationEvidence::CarryPrevious,
         },
     )))
-}
-
-fn carried_applied_activation_evidence(
-    catalog_epoch: u64,
-    source_digest: &str,
-    commit: &marrow_store::tree::CommitMetadata,
-) -> Option<AppliedActivationEvidence> {
-    if commit.catalog_epoch != catalog_epoch
-        || commit.source_digest != source_digest
-        || commit.activation_evolution_digest.is_empty()
-    {
-        return None;
-    }
-    Some(AppliedActivationEvidence {
-        evolution_digest: commit.activation_evolution_digest.clone(),
-        proposal_catalog_digest: commit.activation_proposal_catalog_digest.clone(),
-        proposal_new_catalog_ids: commit.activation_proposal_new_catalog_ids.clone(),
-        records_backfilled: commit.activation_records_backfilled,
-        default_records_by_id: commit.activation_default_records_by_id.clone(),
-        indexes_rebuilt: commit.activation_indexes_rebuilt,
-        records_retired: commit.activation_records_retired,
-        retire_evidence_digest: commit.activation_retire_evidence_digest.clone(),
-        records_retired_by_id: commit.activation_records_retired_by_id.clone(),
-        records_transformed: commit.activation_records_transformed,
-    })
 }
 
 fn changed_catalog_ids(steps: &[PlanStep]) -> (Vec<CatalogId>, Vec<CatalogId>) {
@@ -843,4 +804,92 @@ fn traversal_fault(span: SourceSpan) -> RuntimeError {
             .into(),
         span,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use marrow_store::cell::CatalogId;
+    use marrow_store::key::SavedKey;
+    use marrow_store::tree::{DataPathSegment, TreeStore};
+
+    use crate::env::build_commit_metadata_stamp;
+    use crate::store::DataAddress;
+    use crate::write_plan::{PlanStep, WritePlan};
+
+    const SOURCE_DIGEST: &str =
+        "sha256:0000000000000000000000000000000000000000000000000000000000000001";
+
+    fn catalog(raw: &str) -> CatalogId {
+        CatalogId::new(raw.to_string()).expect("valid test catalog id")
+    }
+
+    fn plan_for(root: &CatalogId, member: &CatalogId, id: i64, value: &[u8]) -> WritePlan {
+        let address = DataAddress::from_resolved_parts(
+            root.clone(),
+            vec![SavedKey::Int(id)],
+            vec![DataPathSegment::Member(member.clone())],
+        );
+        let stamp = build_commit_metadata_stamp(1, SOURCE_DIGEST, vec![root.clone()], Vec::new())
+            .expect("build stamp")
+            .expect("changed root stamps metadata");
+        WritePlan {
+            steps: vec![
+                PlanStep::WriteData {
+                    address,
+                    value: value.to_vec(),
+                },
+                stamp,
+            ],
+        }
+    }
+
+    #[test]
+    fn managed_commit_ids_are_dense_across_prebuilt_commits_and_rollbacks() {
+        let store = TreeStore::memory();
+        let root = catalog("cat_00000000000000000000000000000001");
+        let member = catalog("cat_00000000000000000000000000000002");
+
+        let first = plan_for(&root, &member, 1, b"first");
+        let second = plan_for(&root, &member, 2, b"second");
+
+        first.commit(&store, false).expect("first commit");
+        second.commit(&store, false).expect("second commit");
+        assert_eq!(
+            store
+                .read_commit_metadata()
+                .expect("read commit metadata")
+                .expect("commit metadata")
+                .commit_id,
+            2,
+            "two committed write plans advance the commit high-water mark by two"
+        );
+
+        let rolled_back = plan_for(&root, &member, 3, b"rolled-back");
+        store.begin().expect("begin rollback bracket");
+        rolled_back
+            .commit(&store, true)
+            .expect("apply inside rollback bracket");
+        store.rollback().expect("rollback bracket");
+        assert_eq!(
+            store
+                .read_commit_metadata()
+                .expect("read commit metadata")
+                .expect("commit metadata")
+                .commit_id,
+            2,
+            "a rolled-back write does not consume a commit id"
+        );
+
+        let third = plan_for(&root, &member, 4, b"third");
+        third.commit(&store, false).expect("third commit");
+        assert_eq!(
+            store
+                .read_commit_metadata()
+                .expect("read commit metadata")
+                .expect("commit metadata")
+                .commit_id,
+            3,
+            "the next committed write reuses the id the rollback did not consume"
+        );
+    }
 }
