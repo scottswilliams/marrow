@@ -5,6 +5,7 @@ use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::tree::{DataPathSegment, TreeStore};
 
+use crate::catalog::SourceCatalogEntry;
 use crate::executable::{checked_activation_root_places, for_each_place_record};
 use crate::program::CheckedProgram;
 
@@ -109,16 +110,9 @@ pub(super) fn classify_absent_source_entries(
                         },
                     )?;
                 } else if populated_member_records(program, store, entry)? > 0 {
-                    // A dropped member with no retire intent whose cells are still populated
-                    // would orphan that data on a bare activation. Fence it closed until the
-                    // developer states the destructive intent with `evolve retire`; an empty
-                    // member has nothing to lose and stays a no-op below.
                     acc.diagnostic(
                         entry_id.clone(),
-                        format!(
-                            "dropped `{}` still holds stored data; retire it with `evolve retire {}` and apply with approval, or repair the data before activation",
-                            entry.path, entry.path
-                        ),
+                        populated_member_drop_diagnostic(program, store, &source_paths, entry)?,
                     );
                     acc.push(
                         entry_id,
@@ -133,6 +127,140 @@ pub(super) fn classify_absent_source_entries(
         }
     }
     Ok(())
+}
+
+fn populated_member_drop_diagnostic(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    source_paths: &[SourceCatalogEntry],
+    entry: &CatalogEntry,
+) -> Result<String, StoreError> {
+    let retire_guidance = format!(
+        "retire it with `evolve retire {}` and apply with approval, or repair the data before activation",
+        entry.path
+    );
+    if let Some(target) = plausible_bare_rename_target(program, store, source_paths, entry)? {
+        return Ok(format!(
+            "dropped `{}` still holds stored data; if this was a rename, declare `evolve rename` from `{}` to `{target}` before activation. Otherwise {retire_guidance}",
+            entry.path, entry.path
+        ));
+    }
+    Ok(format!(
+        "dropped `{}` still holds stored data; {retire_guidance}",
+        entry.path
+    ))
+}
+
+fn plausible_bare_rename_target(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    source_paths: &[SourceCatalogEntry],
+    dropped: &CatalogEntry,
+) -> Result<Option<String>, StoreError> {
+    if dropped.kind != CatalogEntryKind::ResourceMember {
+        return Ok(None);
+    }
+    let Some(resource_path) = member_resource_path(program, &dropped.path) else {
+        return Ok(None);
+    };
+    let Some(dropped_leaf) = dropped.accepted_leaf_token() else {
+        return Ok(None);
+    };
+    if !populated_drop_side_is_unique(program, store, source_paths, &resource_path, dropped_leaf)? {
+        return Ok(None);
+    }
+    let mut candidates = source_paths
+        .iter()
+        .filter(|source| source.kind == CatalogEntryKind::ResourceMember)
+        .filter(|source| member_belongs_to_resource(&source.path, &resource_path))
+        .filter(|source| source_added_member(program, &source.path))
+        .filter(|source| {
+            source_member_leaf_token(program, &source.path).is_some_and(|leaf| leaf == dropped_leaf)
+        })
+        .map(|source| source.path.as_str());
+    let Some(candidate) = candidates.next() else {
+        return Ok(None);
+    };
+    Ok(candidates.next().is_none().then(|| candidate.to_string()))
+}
+
+fn populated_drop_side_is_unique(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    source_paths: &[SourceCatalogEntry],
+    resource_path: &str,
+    leaf_token: &str,
+) -> Result<bool, StoreError> {
+    let mut matches = 0;
+    for entry in catalog_entries_for_drop_discharge(program) {
+        if entry.kind != CatalogEntryKind::ResourceMember
+            || !member_belongs_to_resource(&entry.path, resource_path)
+            || entry.accepted_leaf_token() != Some(leaf_token)
+            || source_declares_member(source_paths, &entry.path)
+            || !matches!(absent_entry_state(program, entry), AbsentEntryState::Active)
+        {
+            continue;
+        }
+        if populated_member_records(program, store, entry)? > 0 {
+            matches += 1;
+            if matches > 1 {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(matches == 1)
+}
+
+fn source_added_member(program: &CheckedProgram, path: &str) -> bool {
+    !program.catalog.accepted_entries.iter().any(|entry| {
+        entry.kind == CatalogEntryKind::ResourceMember
+            && entry.lifecycle == CatalogLifecycle::Active
+            && entry.path == path
+    })
+}
+
+fn source_declares_member(source_paths: &[SourceCatalogEntry], path: &str) -> bool {
+    source_paths
+        .iter()
+        .any(|source| source.kind == CatalogEntryKind::ResourceMember && source.path == path)
+}
+
+fn source_member_leaf_token<'a>(program: &'a CheckedProgram, path: &str) -> Option<&'a str> {
+    let stable_id = catalog_entries_for_drop_discharge(program)
+        .iter()
+        .find(|entry| {
+            entry.kind == CatalogEntryKind::ResourceMember
+                && entry.lifecycle == CatalogLifecycle::Active
+                && entry.path == path
+        })
+        .map(|entry| entry.stable_id.as_str())?;
+    program
+        .catalog
+        .declared_member_structs
+        .get(stable_id)
+        .map(String::as_str)
+        .and_then(marrow_catalog::structural_signature_leaf_token)
+}
+
+fn member_resource_path(program: &CheckedProgram, member_path: &str) -> Option<String> {
+    program
+        .modules
+        .iter()
+        .flat_map(|module| {
+            module
+                .resources
+                .iter()
+                .map(|resource| crate::catalog::resource_path(&module.name, &resource.name))
+        })
+        .filter(|resource_path| member_belongs_to_resource(member_path, resource_path))
+        .max_by_key(String::len)
+}
+
+fn member_belongs_to_resource(member_path: &str, resource_path: &str) -> bool {
+    member_path
+        .strip_prefix(resource_path)
+        .and_then(|tail| tail.strip_prefix("::"))
+        .is_some()
 }
 
 /// The catalog entries to consider for a source drop: the proposal entries when source proposed

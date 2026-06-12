@@ -27,7 +27,7 @@ schema does not fully describe until explicit data-evolution work runs.
 |---|---|
 | Add a sparse field | Existing records stay valid; the field reads as absent until written. It changes the durable shape, so a populated store is re-stamped, but discharging the change mutates no stored record: a `marrow run` auto-applies it (see [Run-Time Auto-Apply](#run-time-auto-apply)), and `marrow evolve apply` discharges it explicitly. |
 | Add a `required` field | `evolve default` or checked `evolve transform`, proven by `marrow evolve preview` and applied by `marrow evolve apply`. |
-| Rename a field | `evolve rename`, applied with `marrow evolve apply`; the stable identity moves with the rename, and stored cells addressed by that identity remain attached. |
+| Rename a field | `evolve rename`, applied with `marrow evolve apply`; the stable identity moves with the rename, and stored cells addressed by that identity remain attached. A bare source rename over populated data still fails closed, but when exactly one populated dropped field and one same-resource added field share a durable leaf shape, the repair guidance points at `evolve rename` before destructive retirement. |
 | Change a leaf's type | A populated leaf-type change fails closed; `marrow evolve preview` reports it. Add a new field of the new type, populate it with an `evolve transform` from the old field, then retire the old field. An empty leaf changes freely. |
 | Remove or unselect an enum member | Fails closed while saved data still selects the member (removal, marking it `category`, and giving it children all unselect it); migrate affected records to a current member first. Reordering members preserves every identity, mutates nothing, and auto-applies. Rename a member with `evolve rename`; a bare source rename reads as remove-plus-add and fails closed. |
 | Add an index | `marrow evolve preview` proves the rebuild and `marrow evolve apply` publishes index entries atomically. |
@@ -127,9 +127,12 @@ evolve
 The accepted catalog records the new canonical path, the old path as an alias,
 and the same stable ID. Stored cells addressed by that stable member ID remain
 attached to the renamed field; no best-effort name matching or migration script
-preserves identity. A source rename without a matching `evolve rename` intent is
-a check error: rename versus delete-and-add is ambiguous without the stated
-intent.
+preserves identity. A source rename without a matching `evolve rename` intent
+fails closed: rename versus delete-and-add is ambiguous without the stated
+intent. When the source diff has exactly one populated dropped field and one
+same-resource added field with the same durable leaf shape, check-time repair
+guidance names `evolve rename` first; otherwise it points at the destructive
+retire path.
 
 ## Accepted Catalog Metadata
 

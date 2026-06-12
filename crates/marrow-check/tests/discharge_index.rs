@@ -285,6 +285,238 @@ fn dropped_field_with_populated_data_fails_closed() {
     );
 }
 
+#[test]
+fn populated_drop_with_same_resource_same_type_addition_suggests_rename_before_retire() {
+    let subtitle_id = hex_id(4);
+    let root = temp_project("discharge-dropped-field-rename-plausible", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   summary: string\n\
+             store ^books(id: int): Book\n\
+             pub fn add(title: string, summary: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+        let accepted = accepted_catalog(
+            11,
+            "books::Book",
+            "books::^books",
+            None,
+            vec![
+                member_entry("books::Book::title", &hex_id(3), "string"),
+                member_entry("books::Book::subtitle", &subtitle_id, "string"),
+            ],
+        );
+        write_catalog(root, &accepted);
+    });
+    let program = checked(&root);
+    let place = root_place(&program, "books");
+    let store = TreeStore::memory();
+    let seed = Seed::new(&store, &place);
+    seed.record(1);
+    seed.member(1, "title", Scalar::Str("Dune".into()));
+    seed.member_by_id(1, &subtitle_id, Scalar::Str("Appendix".into()));
+
+    let (result, diagnostics) = preview(&program, &store).expect("preview");
+
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &subtitle_id,
+        RepairReason::PopulatedDropRequiresRetire,
+    );
+    let diagnostic = diagnostic_for(&diagnostics, &subtitle_id);
+    assert_repair_guidance_order(&diagnostic.message, "evolve rename", "evolve retire");
+}
+
+#[test]
+fn populated_drop_with_ambiguous_same_type_dropped_members_does_not_suggest_rename() {
+    let subtitle_id = hex_id(4);
+    let summary_id = hex_id(5);
+    let root = temp_project("discharge-dropped-field-ambiguous-dropped-side", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   blurb: string\n\
+             store ^books(id: int): Book\n\
+             pub fn add(title: string, blurb: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+        let accepted = accepted_catalog(
+            11,
+            "books::Book",
+            "books::^books",
+            None,
+            vec![
+                member_entry("books::Book::title", &hex_id(3), "string"),
+                member_entry("books::Book::subtitle", &subtitle_id, "string"),
+                member_entry("books::Book::summary", &summary_id, "string"),
+            ],
+        );
+        write_catalog(root, &accepted);
+    });
+    let program = checked(&root);
+    let place = root_place(&program, "books");
+    let store = TreeStore::memory();
+    let seed = Seed::new(&store, &place);
+    seed.record(1);
+    seed.member(1, "title", Scalar::Str("Dune".into()));
+    seed.member_by_id(1, &subtitle_id, Scalar::Str("Appendix".into()));
+    seed.member_by_id(1, &summary_id, Scalar::Str("Short".into()));
+
+    let (result, diagnostics) = preview(&program, &store).expect("preview");
+
+    for dropped_id in [&subtitle_id, &summary_id] {
+        assert_fails_closed(
+            &result,
+            &diagnostics,
+            dropped_id,
+            RepairReason::PopulatedDropRequiresRetire,
+        );
+        assert!(
+            !diagnostic_for(&diagnostics, dropped_id)
+                .message
+                .contains("evolve rename"),
+            "{diagnostics:#?}"
+        );
+    }
+}
+
+#[test]
+fn populated_drop_ignores_same_type_addition_in_another_resource_for_rename_hint() {
+    let subtitle_id = hex_id(6);
+    let root = temp_project("discharge-dropped-field-cross-resource-addition", |root| {
+        write(
+            root,
+            "src/library.mw",
+            "module library\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             resource Author\n\
+             \x20   required name: string\n\
+             \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
+             store ^authors(id: int): Author\n\
+             pub fn addBook(title: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+        let accepted = marrow_catalog::CatalogMetadata::new(
+            20,
+            vec![
+                entry(CatalogEntryKind::Resource, "library::Book", &hex_id(1)),
+                store_entry("library::^books", &hex_id(2), "int"),
+                member_entry("library::Book::title", &hex_id(3), "string"),
+                entry(CatalogEntryKind::Resource, "library::Author", &hex_id(4)),
+                store_entry("library::^authors", &hex_id(5), "int"),
+                member_entry("library::Book::subtitle", &subtitle_id, "string"),
+            ],
+        );
+        write_catalog(root, &accepted);
+    });
+    let program = checked(&root);
+    let place = root_place(&program, "books");
+    let store = TreeStore::memory();
+    let seed = Seed::new(&store, &place);
+    seed.record(1);
+    seed.member(1, "title", Scalar::Str("Dune".into()));
+    seed.member_by_id(1, &subtitle_id, Scalar::Str("Appendix".into()));
+
+    let (result, diagnostics) = preview(&program, &store).expect("preview");
+
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &subtitle_id,
+        RepairReason::PopulatedDropRequiresRetire,
+    );
+    assert!(
+        !diagnostic_for(&diagnostics, &subtitle_id)
+            .message
+            .contains("evolve rename"),
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn populated_drop_ignores_same_resource_different_type_addition_for_rename_hint() {
+    let subtitle_id = hex_id(4);
+    let root = temp_project("discharge-dropped-field-different-type-addition", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   pages: int\n\
+             store ^books(id: int): Book\n\
+             pub fn add(title: string, pages: int): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+        let accepted = accepted_catalog(
+            11,
+            "books::Book",
+            "books::^books",
+            None,
+            vec![
+                member_entry("books::Book::title", &hex_id(3), "string"),
+                member_entry("books::Book::subtitle", &subtitle_id, "string"),
+            ],
+        );
+        write_catalog(root, &accepted);
+    });
+    let program = checked(&root);
+    let place = root_place(&program, "books");
+    let store = TreeStore::memory();
+    let seed = Seed::new(&store, &place);
+    seed.record(1);
+    seed.member(1, "title", Scalar::Str("Dune".into()));
+    seed.member_by_id(1, &subtitle_id, Scalar::Str("Appendix".into()));
+
+    let (result, diagnostics) = preview(&program, &store).expect("preview");
+
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &subtitle_id,
+        RepairReason::PopulatedDropRequiresRetire,
+    );
+    assert!(
+        !diagnostic_for(&diagnostics, &subtitle_id)
+            .message
+            .contains("evolve rename"),
+        "{diagnostics:#?}"
+    );
+}
+
+fn diagnostic_for<'a>(
+    diagnostics: &'a [marrow_check::evolution::RepairDiagnostic],
+    catalog_id: &str,
+) -> &'a marrow_check::evolution::RepairDiagnostic {
+    diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.catalog_id.as_str() == catalog_id)
+        .unwrap_or_else(|| panic!("diagnostic for `{catalog_id}` among {diagnostics:#?}"))
+}
+
+fn assert_repair_guidance_order(message: &str, first: &str, second: &str) {
+    let first_index = message
+        .find(first)
+        .unwrap_or_else(|| panic!("missing `{first}` in diagnostic: {message}"));
+    let second_index = message
+        .find(second)
+        .unwrap_or_else(|| panic!("missing `{second}` in diagnostic: {message}"));
+    assert!(
+        first_index < second_index,
+        "`{first}` must appear before `{second}` in diagnostic: {message}"
+    );
+}
+
 /// Dropping a whole resource (its `resource` block, its `store`, and its members) whose
 /// store still holds records would orphan every record under the gone root. The store entry
 /// the accepted catalog still records is no longer declared in source, so the discharge
