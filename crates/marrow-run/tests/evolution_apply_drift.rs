@@ -9,7 +9,9 @@ mod evolution_apply_support;
 
 use evolution_apply_support::*;
 
-use marrow_run::evolution::{ApplyError, apply, verify_activation_completion};
+use marrow_run::evolution::{
+    ApplyError, apply, current_engine_profile, verify_activation_completion,
+};
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
@@ -72,7 +74,13 @@ fn optional_add_stamps_epoch_without_data_step() {
     );
     // The epoch was still stamped so old binaries are fenced.
     if let Some(epoch) = proposal_epoch {
-        assert_eq!(store.read_catalog_epoch().expect("epoch"), Some(epoch));
+        assert_eq!(
+            store
+                .read_commit_metadata()
+                .expect("read commit")
+                .map(|commit| commit.catalog_epoch),
+            Some(epoch)
+        );
     }
 }
 
@@ -293,8 +301,10 @@ fn commit_id_overflow_aborts_without_staging_apply_writes() {
     };
     seed.record(1);
     seed.member(1, "title", Scalar::Str("Dune".into()));
+    let mut predecessor = commit_metadata(u64::MAX, program.source_digest());
+    predecessor.catalog_epoch = program.catalog.accepted_epoch.expect("accepted epoch");
     store
-        .write_commit_metadata(&commit_metadata(u64::MAX, program.source_digest()))
+        .write_commit_metadata(&predecessor)
         .expect("stamp predecessor at the commit-id limit");
 
     let witness = witness(&program, &store);
@@ -465,12 +475,13 @@ fn no_op_apply_does_not_churn_the_commit_id() {
 }
 
 fn commit_metadata(commit_id: u64, source_digest: String) -> CommitMetadata {
+    let profile = current_engine_profile();
     CommitMetadata {
         commit_id,
         catalog_epoch: 0,
-        layout_epoch: 0,
+        layout_epoch: profile.layout_epoch(),
         source_digest,
-        engine_profile_digest: [0; 8],
+        engine_profile_digest: profile.digest_bytes(),
         changed_root_catalog_ids: Vec::new(),
         changed_index_catalog_ids: Vec::new(),
         activation_evolution_digest: String::new(),

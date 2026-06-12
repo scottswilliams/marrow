@@ -107,19 +107,24 @@ fn build_manifest(
     snapshot: Option<&marrow_catalog::CatalogMetadata>,
     record_count: u64,
 ) -> Result<BackupManifest, BackupError> {
-    let engine = EngineDescriptor::recorded(
-        &current_engine_profile(),
-        store.read_layout_epoch()?,
-        store.read_engine_profile_digest()?,
-    );
-    let commit = store
-        .read_commit_metadata()?
+    let commit_metadata = store.read_commit_metadata()?;
+    validate_catalog_snapshot_commit_binding(snapshot, commit_metadata.as_ref())?;
+    let engine = EngineDescriptor::recorded(&current_engine_profile(), commit_metadata.as_ref());
+    let commit = commit_metadata
         .as_ref()
         .map(CommitDescriptor::from_metadata);
+    let source_digest = commit_metadata.as_ref().map_or_else(
+        || program.source_digest().to_string(),
+        |commit| commit.source_digest.clone(),
+    );
+    let catalog_epoch = commit_metadata
+        .as_ref()
+        .map(|commit| commit.catalog_epoch)
+        .or_else(|| snapshot.map(|snapshot| snapshot.epoch));
     let manifest = BackupManifest {
         format_version: FORMAT_VERSION,
-        source_digest: program.source_digest().to_string(),
-        catalog_epoch: store.read_catalog_epoch()?,
+        source_digest,
+        catalog_epoch,
         catalog_digest: snapshot.map(|snapshot| snapshot.digest.clone()),
         engine,
         commit,
@@ -131,6 +136,22 @@ fn build_manifest(
     }
     validate_catalog_manifest_binding(&manifest)?;
     Ok(manifest)
+}
+
+fn validate_catalog_snapshot_commit_binding(
+    snapshot: Option<&marrow_catalog::CatalogMetadata>,
+    commit: Option<&marrow_store::tree::CommitMetadata>,
+) -> Result<(), BackupError> {
+    let (Some(snapshot), Some(commit)) = (snapshot, commit) else {
+        return Ok(());
+    };
+    if snapshot.epoch != commit.catalog_epoch {
+        return Err(BackupError::corrupt(
+            BackupCorruptProblem::ManifestCatalogBindingMismatch,
+            "backup catalog section epoch disagrees with commit metadata",
+        ));
+    }
+    Ok(())
 }
 
 /// The catalog section and the stamped catalog epoch describe one accepted catalog,
@@ -156,33 +177,82 @@ pub(crate) fn validate_catalog_manifest_binding(
 #[cfg(test)]
 mod tests {
     use marrow_catalog::CatalogMetadata;
-    use marrow_store::tree::{CommitMetadata, TreeStore};
+    use marrow_store::tree::{CommitMetadata, EngineProfile, TreeStore};
 
     use super::super::test_support::{BOOK_SOURCE, committed_program};
     use super::super::{BackupCorruptProblem, BackupError};
     use super::build_manifest;
 
     #[test]
-    fn backup_manifest_rejects_commit_metadata_that_disagrees_with_binding() {
-        let (root, program) = committed_program("backup-commit-binding", BOOK_SOURCE);
+    fn backup_manifest_uses_commit_metadata_as_stamp() {
+        let (root, program) = committed_program("backup-commit-only-stamp", BOOK_SOURCE);
         let store = TreeStore::memory();
         let epoch = program.catalog.accepted_epoch.expect("accepted epoch");
         let snapshot = CatalogMetadata::new(epoch, program.catalog.accepted_entries.clone());
-        store.begin().expect("begin catalog stamp");
+        store.begin().expect("begin catalog publish");
         store
             .replace_catalog_snapshot(&snapshot)
             .expect("write accepted catalog snapshot");
-        store.write_catalog_epoch(epoch).expect("stamp epoch");
-        store.commit().expect("commit catalog stamp");
-        let profile = marrow_run::evolution::current_engine_profile();
+        store.commit().expect("commit catalog publish");
+        let recorded_profile =
+            EngineProfile::new(marrow_run::evolution::current_engine_profile().layout_epoch() + 1);
         store
             .write_commit_metadata(&CommitMetadata {
                 commit_id: 1,
                 catalog_epoch: epoch,
+                layout_epoch: recorded_profile.layout_epoch(),
+                source_digest: program.source_digest().to_string(),
+                engine_profile_digest: recorded_profile.digest_bytes(),
+                changed_root_catalog_ids: Vec::new(),
+                changed_index_catalog_ids: Vec::new(),
+                activation_evolution_digest: String::new(),
+                activation_proposal_catalog_digest: None,
+                activation_proposal_new_catalog_ids: Vec::new(),
+                activation_records_backfilled: 0,
+                activation_default_records_by_id: Vec::new(),
+                activation_indexes_rebuilt: 0,
+                activation_records_retired: 0,
+                activation_retire_evidence_digest: String::new(),
+                activation_records_retired_by_id: Vec::new(),
+                activation_records_transformed: 0,
+            })
+            .expect("stamp commit");
+
+        let manifest =
+            build_manifest(&program, &store, Some(&snapshot), 0).expect("build manifest");
+        std::fs::remove_dir_all(&root).ok();
+
+        assert_eq!(manifest.catalog_epoch, Some(epoch));
+        assert_eq!(
+            manifest.engine.layout_epoch,
+            recorded_profile.layout_epoch()
+        );
+        assert_eq!(
+            manifest.engine.profile_digest,
+            recorded_profile.digest_bytes()
+        );
+        assert_eq!(
+            manifest.commit.as_ref().map(|commit| commit.catalog_epoch),
+            Some(epoch)
+        );
+    }
+
+    #[test]
+    fn backup_manifest_rejects_commit_epoch_that_disagrees_with_catalog_snapshot() {
+        let (root, program) = committed_program("backup-commit-snapshot-drift", BOOK_SOURCE);
+        let store = TreeStore::memory();
+        let epoch = program.catalog.accepted_epoch.expect("accepted epoch");
+        let snapshot = CatalogMetadata::new(epoch, program.catalog.accepted_entries.clone());
+        store
+            .replace_catalog_snapshot(&snapshot)
+            .expect("write accepted catalog snapshot");
+        let profile = marrow_run::evolution::current_engine_profile();
+        store
+            .write_commit_metadata(&CommitMetadata {
+                commit_id: 1,
+                catalog_epoch: epoch + 1,
                 layout_epoch: profile.layout_epoch(),
-                source_digest:
-                    "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-                        .to_string(),
+                source_digest: program.source_digest().to_string(),
                 engine_profile_digest: profile.digest_bytes(),
                 changed_root_catalog_ids: Vec::new(),
                 changed_index_catalog_ids: Vec::new(),
@@ -200,14 +270,14 @@ mod tests {
             .expect("stamp commit");
 
         let error = build_manifest(&program, &store, Some(&snapshot), 0)
-            .expect_err("backup must not emit a self-inconsistent manifest");
+            .expect_err("commit and snapshot epoch mismatch is rejected");
         std::fs::remove_dir_all(&root).ok();
 
         assert_eq!(error.code(), "restore.corrupt_chunk");
         assert!(matches!(
             error,
             BackupError::CorruptChunk {
-                problem: BackupCorruptProblem::ManifestCommitBindingMismatch,
+                problem: BackupCorruptProblem::ManifestCatalogBindingMismatch,
                 ..
             }
         ));

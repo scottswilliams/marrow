@@ -518,7 +518,7 @@ fn populated_unstamped_store(
     if pending_baseline(program) {
         return Ok(!store.is_empty()?);
     }
-    if program.catalog.accepted_epoch.is_none() || store.read_catalog_epoch()?.is_some() {
+    if program.catalog.accepted_epoch.is_none() || store.read_commit_metadata()?.is_some() {
         return Ok(false);
     }
     for module in &program.modules {

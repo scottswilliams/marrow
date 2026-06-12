@@ -9,8 +9,32 @@ mod evolution_apply_support;
 use evolution_apply_support::*;
 
 use marrow_run::evolution::{ApplyError, FenceError, apply, current_engine_profile, fence};
-use marrow_store::tree::{EngineProfile, TreeStore};
+use marrow_store::tree::{CommitMetadata, EngineProfile, TreeStore};
 use marrow_store::value::Scalar;
+
+fn stamp_commit(store: &TreeStore, epoch: u64, source_digest: String, profile: EngineProfile) {
+    store
+        .write_commit_metadata(&CommitMetadata {
+            commit_id: 0,
+            catalog_epoch: epoch,
+            layout_epoch: profile.layout_epoch(),
+            source_digest,
+            engine_profile_digest: profile.digest_bytes(),
+            changed_root_catalog_ids: Vec::new(),
+            changed_index_catalog_ids: Vec::new(),
+            activation_evolution_digest: String::new(),
+            activation_proposal_catalog_digest: None,
+            activation_proposal_new_catalog_ids: Vec::new(),
+            activation_records_backfilled: 0,
+            activation_default_records_by_id: Vec::new(),
+            activation_indexes_rebuilt: 0,
+            activation_records_retired: 0,
+            activation_retire_evidence_digest: String::new(),
+            activation_records_retired_by_id: Vec::new(),
+            activation_records_transformed: 0,
+        })
+        .expect("stamp commit metadata");
+}
 
 /// A store this binary applies is stamped at the binary's own engine profile, so the
 /// same binary that applied it passes the open fence, while a binary pinned one epoch
@@ -108,12 +132,12 @@ fn apply_is_fenced_when_store_evolved_past_the_binary() {
 
     // Stamp the store as a newer binary would: a catalog epoch past this program's
     // accepted epoch, with this binary's engine profile so only the epoch fences.
-    store
-        .write_catalog_epoch(accepted + 1)
-        .expect("stamp newer epoch");
-    store
-        .write_engine_profile(&current_engine_profile())
-        .expect("stamp profile");
+    stamp_commit(
+        &store,
+        accepted + 1,
+        program.source_digest(),
+        current_engine_profile(),
+    );
 
     let w = witness(&program, &store);
     let error = apply(&w, &program, &store, false, None).expect_err("stale apply fenced");
@@ -126,8 +150,11 @@ fn apply_is_fenced_when_store_evolved_past_the_binary() {
     );
     // The store was not advanced and no data was written.
     assert_eq!(
-        store.read_catalog_epoch().expect("epoch"),
-        Some(accepted + 1)
+        store
+            .read_commit_metadata()
+            .expect("commit")
+            .map(|commit| commit.catalog_epoch),
+        Some(accepted + 1),
     );
     let store_id = store_id_of(&place);
     let pages_id = member_catalog_id(&place, "pages");
@@ -139,12 +166,12 @@ fn apply_is_fenced_when_store_evolved_past_the_binary() {
 #[test]
 fn engine_profile_drift_fences_a_matching_epoch_store() {
     let store = TreeStore::memory();
-    store.write_catalog_epoch(2).expect("epoch");
-    store
-        .write_engine_profile(&EngineProfile::new(
-            current_engine_profile().layout_epoch() + 1,
-        ))
-        .expect("drifted profile");
+    stamp_commit(
+        &store,
+        2,
+        "sha256:0000000000000000000000000000000000000000000000000000000000000002".to_string(),
+        EngineProfile::new(current_engine_profile().layout_epoch() + 1),
+    );
     let error = fence(
         Some(2),
         "sha256:0000000000000000000000000000000000000000000000000000000000000002",
@@ -152,26 +179,6 @@ fn engine_profile_drift_fences_a_matching_epoch_store() {
         &store,
     )
     .expect_err("drift fenced");
-    assert_eq!(error, FenceError::EngineProfileDrift);
-}
-
-/// A store that predates digest stamping carries only a layout epoch. A drifted
-/// layout epoch must fence even without a profile digest to compare.
-#[test]
-fn layout_epoch_drift_without_profile_digest_is_fenced() {
-    let store = TreeStore::memory();
-    store.write_catalog_epoch(2).expect("epoch");
-    store
-        .write_layout_epoch(current_engine_profile().layout_epoch() + 1)
-        .expect("layout epoch stamp");
-
-    let error = fence(
-        Some(2),
-        "sha256:0000000000000000000000000000000000000000000000000000000000000002",
-        &current_engine_profile(),
-        &store,
-    )
-    .expect_err("fenced");
     assert_eq!(error, FenceError::EngineProfileDrift);
 }
 
@@ -202,11 +209,6 @@ fn apply_without_accepted_catalog_refuses_and_leaves_store_unchanged() {
     let w = witness(&program, &store);
     let error = apply(&w, &program, &store, false, None).expect_err("apply refuses");
     assert_eq!(error, ApplyError::NoAcceptedCatalog);
-    assert_eq!(
-        store.read_catalog_epoch().expect("epoch"),
-        None,
-        "no phantom epoch was stamped"
-    );
     assert_eq!(
         store.read_commit_metadata().expect("commit"),
         None,

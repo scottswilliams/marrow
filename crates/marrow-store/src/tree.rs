@@ -131,39 +131,6 @@ impl TreeStore {
         self.backend.borrow_mut().rollback()
     }
 
-    pub fn write_catalog_epoch(&self, epoch: u64) -> Result<(), StoreError> {
-        self.write_u64_meta(MetaCell::CatalogEpoch, epoch)
-    }
-
-    pub fn read_catalog_epoch(&self) -> Result<Option<u64>, StoreError> {
-        self.read_u64_meta(MetaCell::CatalogEpoch)
-    }
-
-    /// Stamp the layout epoch without the engine-profile digest that
-    /// `write_engine_profile` also records, reproducing the pre-digest on-disk
-    /// shape the layout-epoch drift fence must still defend against.
-    pub fn write_layout_epoch(&self, epoch: u64) -> Result<(), StoreError> {
-        self.write_u64_meta(MetaCell::LayoutEpoch, epoch)
-    }
-
-    pub fn read_layout_epoch(&self) -> Result<Option<u64>, StoreError> {
-        self.read_u64_meta(MetaCell::LayoutEpoch)
-    }
-
-    pub fn write_engine_profile(&self, profile: &EngineProfile) -> Result<(), StoreError> {
-        self.write_layout_epoch(profile.layout_epoch())?;
-        self.write_cell(
-            CellKey::meta(MetaCell::EngineProfile).as_bytes(),
-            profile.digest_bytes().to_vec(),
-        )
-    }
-
-    pub fn read_engine_profile_digest(&self) -> Result<Option<EngineProfileDigest>, StoreError> {
-        self.read_cell(CellKey::meta(MetaCell::EngineProfile).as_bytes())?
-            .map(|bytes| decode_digest(&bytes))
-            .transpose()
-    }
-
     pub fn write_commit_metadata(&self, metadata: &CommitMetadata) -> Result<(), StoreError> {
         self.write_cell(
             CellKey::meta(MetaCell::Commit).as_bytes(),
@@ -910,16 +877,6 @@ impl TreeStore {
     ) -> Result<ScanPage, StoreError> {
         self.backend.borrow().scan_before(prefix, cursor, limit)
     }
-
-    fn write_u64_meta(&self, cell: MetaCell, value: u64) -> Result<(), StoreError> {
-        self.write_cell(CellKey::meta(cell).as_bytes(), value.to_be_bytes().to_vec())
-    }
-
-    fn read_u64_meta(&self, cell: MetaCell) -> Result<Option<u64>, StoreError> {
-        self.read_cell(CellKey::meta(cell).as_bytes())?
-            .map(|bytes| decode_u64(&bytes))
-            .transpose()
-    }
 }
 
 /// A pinned read snapshot over a [`TreeStore`]. While it is held, every read and
@@ -1424,15 +1381,6 @@ fn put_catalog_id(id: &CatalogId, out: &mut Vec<u8>) -> Result<(), StoreError> {
     put_bytes(id.as_str().as_bytes(), out)
 }
 
-fn decode_u64(bytes: &[u8]) -> Result<u64, StoreError> {
-    let raw: [u8; 8] = bytes.try_into().map_err(|_| corrupt_cell(bytes))?;
-    Ok(u64::from_be_bytes(raw))
-}
-
-fn decode_digest(bytes: &[u8]) -> Result<EngineProfileDigest, StoreError> {
-    bytes.try_into().map_err(|_| corrupt_cell(bytes))
-}
-
 type TreeValueReader<'a> = BoundedReader<'a, StoreError>;
 
 fn take_tree_value_version(cursor: &mut TreeValueReader<'_>) -> Result<(), StoreError> {
@@ -1502,6 +1450,30 @@ mod tests {
         }
     }
 
+    fn empty_commit_metadata(catalog_epoch: u64) -> CommitMetadata {
+        CommitMetadata {
+            commit_id: 0,
+            catalog_epoch,
+            layout_epoch: 0,
+            source_digest:
+                "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+                    .to_string(),
+            engine_profile_digest: [0; 8],
+            changed_root_catalog_ids: Vec::new(),
+            changed_index_catalog_ids: Vec::new(),
+            activation_evolution_digest: String::new(),
+            activation_proposal_catalog_digest: None,
+            activation_proposal_new_catalog_ids: Vec::new(),
+            activation_records_backfilled: 0,
+            activation_default_records_by_id: Vec::new(),
+            activation_indexes_rebuilt: 0,
+            activation_records_retired: 0,
+            activation_retire_evidence_digest: String::new(),
+            activation_records_retired_by_id: Vec::new(),
+            activation_records_transformed: 0,
+        }
+    }
+
     impl Backend for FailOnNthWrite {
         fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
             self.inner.read(key)
@@ -1568,8 +1540,8 @@ mod tests {
     /// A storage fault part-way through a staged transaction rolls the whole bracket
     /// back: a write that succeeded before the fault must not survive, and no metadata
     /// stamp may land. This is the atomic guarantee evolution apply relies on when it
-    /// commits backfills and the catalog-epoch stamp together; a read-only store fails
-    /// at `begin`, so only a mid-plan fault proves the rollback covers committed writes.
+    /// commits backfills and the metadata stamp together; a read-only store fails at
+    /// `begin`, so only a mid-plan fault proves the rollback covers committed writes.
     #[test]
     fn a_mid_transaction_write_fault_rolls_the_whole_bracket_back() {
         let store_id = catalog("cat_00000000000000000000000000000001");
@@ -1579,7 +1551,7 @@ mod tests {
         // buffer before the bracket aborts.
         let store = TreeStore::from_backend(Box::new(FailOnNthWrite::new(1)));
 
-        let before = store.read_catalog_epoch().expect("read epoch");
+        let before = store.read_commit_metadata().expect("read commit");
         assert_eq!(before, None, "the store starts unstamped");
 
         store.begin().expect("begin");
@@ -1607,7 +1579,7 @@ mod tests {
             "the faulted write left nothing behind"
         );
         assert_eq!(
-            store.read_catalog_epoch().expect("read epoch"),
+            store.read_commit_metadata().expect("read commit"),
             None,
             "no metadata stamp may land when the plan aborts"
         );
@@ -2029,8 +2001,8 @@ mod tests {
 
     /// A backup carries every data-family cell and nothing else, and replaying that
     /// stream into a fresh store reproduces it byte-for-byte. Index cells are derived
-    /// and rebuilt on restore, so they stay out of the stream; meta cells stay out
-    /// because restore restamps them from the manifest.
+    /// and rebuilt on restore, so they stay out of the stream; commit metadata stays
+    /// out because restore restamps it from the manifest.
     #[test]
     fn backup_cells_round_trip_and_exclude_index_and_meta() {
         let store_id = catalog("cat_00000000000000000000000000000001");
@@ -2056,7 +2028,9 @@ mod tests {
             )
             .expect("write index");
         // A meta stamp that the backup stream must not carry.
-        source.write_catalog_epoch(4).expect("stamp catalog epoch");
+        source
+            .write_commit_metadata(&empty_commit_metadata(4))
+            .expect("stamp commit metadata");
 
         let cells = collect_backup_cells(&source);
         assert!(!cells.is_empty(), "the populated store has backup cells");
@@ -2082,14 +2056,14 @@ mod tests {
                 .expect("read restored leaf"),
             Some(b"Mort".to_vec()),
         );
-        // The catalog-epoch meta cell was never part of the stream.
-        assert_eq!(restored.read_catalog_epoch().expect("read epoch"), None);
+        // The commit metadata cell was never part of the stream.
+        assert_eq!(restored.read_commit_metadata().expect("read commit"), None);
     }
 
     #[test]
     fn backup_cell_rejects_a_meta_key() {
-        // A meta-family key (catalog-epoch cell) is not a restorable backup cell.
-        let meta_key = CellKey::meta(super::MetaCell::CatalogEpoch);
+        // A meta-family key is not a restorable backup cell.
+        let meta_key = CellKey::meta(super::MetaCell::Commit);
         assert_corruption(TreeBackupCellBuf::from_raw(
             meta_key.into_bytes(),
             b"4".to_vec(),

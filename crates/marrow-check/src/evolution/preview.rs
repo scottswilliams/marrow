@@ -25,6 +25,8 @@ pub fn preview(
 
     let commit = store.read_commit_metadata()?;
     let store_source_digest = commit.as_ref().map(|commit| commit.source_digest.clone());
+    let engine_profile_digest = commit.as_ref().map(|commit| commit.engine_profile_digest);
+    let layout_epoch = commit.as_ref().map(|commit| commit.layout_epoch);
     let (source_digest, evolution_digest) = crate::catalog::source_and_evolution_digests(program);
     let witness =
         EvolutionWitness {
@@ -41,8 +43,8 @@ pub fn preview(
                 }
             }),
             store_source_digest,
-            engine_profile_digest: store.read_engine_profile_digest()?,
-            layout_epoch: store.read_layout_epoch()?,
+            engine_profile_digest,
+            layout_epoch,
             store_commit_id: commit.map(|commit| commit.commit_id),
             changed_root_catalog_ids: discharge.changed_root_catalog_ids,
             changed_index_catalog_ids: discharge.changed_index_catalog_ids,

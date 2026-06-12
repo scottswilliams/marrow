@@ -117,6 +117,13 @@ fn validate_catalog_section(
     section: &CatalogSection,
 ) -> Result<(), BackupError> {
     validate_catalog_manifest_binding(manifest)?;
+    let section_epoch = section.snapshot.as_ref().map(|snapshot| snapshot.epoch);
+    if section_epoch != manifest.catalog_epoch {
+        return Err(BackupError::corrupt(
+            BackupCorruptProblem::ManifestCatalogBindingMismatch,
+            "backup catalog section epoch does not match its manifest",
+        ));
+    }
     let section_digest = section.snapshot.as_ref().map(|snapshot| &snapshot.digest);
     if section_digest != manifest.catalog_digest.as_ref() {
         return Err(catalog_digest_mismatch());
@@ -207,12 +214,7 @@ fn replay(
     rebuild_store_indexes(program, store).map_err(rebuild_error)?;
 
     // Stamp the durable identity the data was written under, so the restored store
-    // fences exactly as the original did. The engine profile is this build's, already
-    // proven equal to the manifest's.
-    store.write_engine_profile(&current_engine_profile())?;
-    if let Some(epoch) = manifest.catalog_epoch {
-        store.write_catalog_epoch(epoch)?;
-    }
+    // fences exactly as the original did.
     if let Some(commit) = &manifest.commit {
         store.write_commit_metadata(&commit.to_metadata()?)?;
     }
@@ -282,7 +284,7 @@ mod tests {
 
     use super::super::test_support::{BOOK_SOURCE, committed_program};
     use super::super::{BackupCorruptProblem, archive};
-    use super::{BackupError, CHECKSUM_SEED, RestoreReport, restore_backup};
+    use super::{BackupError, CHECKSUM_SEED, RestoreReport, read_backup_prologue, restore_backup};
     use crate::backup::create_backup;
 
     /// Restore that verifies nothing: the restore.* codes under test fail in
@@ -337,9 +339,6 @@ mod tests {
         store
             .replace_catalog_snapshot(&snapshot)
             .expect("write accepted catalog snapshot");
-        store
-            .write_catalog_epoch(snapshot.epoch)
-            .expect("stamp epoch");
         store.commit().expect("commit catalog stamp");
         let profile = marrow_run::evolution::current_engine_profile();
         store
@@ -571,6 +570,35 @@ mod tests {
             "a rejected restore leaves the target without a catalog"
         );
         cleanup(&root);
+    }
+
+    #[test]
+    fn rejects_a_manifest_catalog_epoch_that_disagrees_with_the_section() {
+        let (root, program) = committed_program("restore-catalog-epoch", BOOK_SOURCE);
+        let archive = seeded_backup(&program);
+        let archive = rewrite_manifest(&archive, |manifest| {
+            let epoch = manifest
+                .get("catalog_epoch")
+                .and_then(|value| value.as_u64())
+                .expect("catalog epoch");
+            manifest["catalog_epoch"] = serde_json::json!(epoch + 1);
+        });
+
+        let result = read_backup_prologue(&mut &archive[..]);
+        cleanup(&root);
+
+        let error = match result {
+            Ok(_) => panic!("manifest/catalog section epoch mismatch must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), "restore.corrupt_chunk");
+        assert!(matches!(
+            error,
+            BackupError::CorruptChunk {
+                problem: BackupCorruptProblem::ManifestCatalogBindingMismatch,
+                ..
+            }
+        ));
     }
 
     #[test]

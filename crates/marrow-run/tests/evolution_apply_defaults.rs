@@ -114,7 +114,10 @@ fn proposal_required_default_backfills_before_catalog_acceptance() {
         Some(Scalar::Int(0))
     );
     assert_eq!(
-        store.read_catalog_epoch().expect("epoch"),
+        store
+            .read_commit_metadata()
+            .expect("commit")
+            .map(|commit| commit.catalog_epoch),
         Some(proposal_epoch)
     );
 }
@@ -187,15 +190,13 @@ fn completion_rejects_missing_default_backfill_cell() {
 fn completion_rejects_engine_profile_drift() {
     let (_root, program, _place, store, _pages_id) =
         applied_proposal_default_fixture("completion-engine-profile-drift", 1);
-    let commit = store
+    let mut commit = store
         .read_commit_metadata()
         .expect("read commit")
         .expect("activation commit");
-    store
-        .write_engine_profile(&EngineProfile::new(
-            current_engine_profile().layout_epoch() + 1,
-        ))
-        .expect("drift engine profile");
+    let drifted = EngineProfile::new(current_engine_profile().layout_epoch() + 1);
+    commit.layout_epoch = drifted.layout_epoch();
+    commit.engine_profile_digest = drifted.digest_bytes();
 
     let error = verify_activation_completion(&program, &store, &commit)
         .expect_err("engine profile drift fails");
@@ -305,7 +306,6 @@ fn proposal_required_default_rejects_preexisting_target_data() {
         Some(Scalar::Int(7))
     );
     assert_eq!(read_scalar(&store, &store_id, 2, &pages_id, INT), None);
-    assert_eq!(store.read_catalog_epoch().expect("epoch"), None);
     assert!(store.read_commit_metadata().expect("read commit").is_none());
 }
 
@@ -445,10 +445,6 @@ fn required_with_default_backfills_exactly_k_and_stamps_epoch() {
         .expect("read commit")
         .expect("a stamp");
     assert_eq!(commit.catalog_epoch, target_epoch);
-    assert_eq!(
-        store.read_catalog_epoch().expect("epoch"),
-        Some(target_epoch)
-    );
 
     // Idempotent re-apply: the same source against the now-applied store re-previews
     // to a no-op for pages (every record carries it) and re-applying succeeds.

@@ -143,7 +143,9 @@ pub fn apply(
         .as_ref()
         .map(|catalog| catalog.epoch)
         .unwrap_or(witness.accepted_catalog.epoch);
-    let current_epoch = store.read_catalog_epoch()?;
+    let current_epoch = store
+        .read_commit_metadata()?
+        .map(|commit| commit.catalog_epoch);
     if store_stamped_at_target(witness, target_epoch, current_epoch, store)? {
         let commit_id = witness.store_commit_id.unwrap_or(0);
         let staged = StagedWork::default();

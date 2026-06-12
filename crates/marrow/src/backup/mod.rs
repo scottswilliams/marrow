@@ -88,18 +88,17 @@ impl EngineDescriptor {
     }
 
     /// The engine identity a backup records: the running binary's name, key-profile,
-    /// and value-codec versions, but the store's recorded layout epoch and profile
-    /// digest when present so a backup describes the engine its data was written
-    /// under. An unstamped store falls back to the running profile's values.
-    pub(crate) fn recorded(
-        profile: &EngineProfile,
-        recorded_layout_epoch: Option<u64>,
-        recorded_profile_digest: Option<EngineProfileDigest>,
-    ) -> Self {
+    /// and value-codec versions, with layout and profile digest supplied by the
+    /// store's commit receipt when the store is stamped. An unstamped store falls
+    /// back to the running profile's values.
+    pub(crate) fn recorded(profile: &EngineProfile, commit: Option<&CommitMetadata>) -> Self {
         Self::build(
             profile,
-            recorded_layout_epoch.unwrap_or_else(|| profile.layout_epoch()),
-            recorded_profile_digest.unwrap_or_else(|| profile.digest_bytes()),
+            commit.map_or_else(|| profile.layout_epoch(), |commit| commit.layout_epoch),
+            commit.map_or_else(
+                || profile.digest_bytes(),
+                |commit| commit.engine_profile_digest,
+            ),
         )
     }
 
@@ -211,8 +210,8 @@ impl CommitDescriptor {
             || self.engine_profile_digest != manifest.engine.profile_digest
         {
             return Err(BackupError::corrupt(
-                BackupCorruptProblem::ManifestCommitBindingMismatch,
-                "manifest commit metadata disagrees with the backup binding",
+                BackupCorruptProblem::ManifestCommitReceiptMismatch,
+                "manifest fields disagree with the embedded commit receipt",
             ));
         }
         Ok(())
@@ -408,7 +407,7 @@ pub(crate) enum BackupCorruptProblem {
     CellStreamEndedEarly,
     CellTooLarge,
     MalformedCell,
-    ManifestCommitBindingMismatch,
+    ManifestCommitReceiptMismatch,
     ManifestCatalogBindingMismatch,
     MalformedCatalogId,
     CatalogSectionTooLarge,

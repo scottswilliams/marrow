@@ -66,7 +66,7 @@ names, member names, index names, enum member spelling, or declaration order.
 | Leaf cell | node prefix + `10` + member ID | A typed leaf under a node. |
 | Sequence cell | node prefix + `20` + member ID + `u64_be(position)` | A sequence element under a node/member, ordered by position. |
 | Index cell | index family + index ID + index-key tuple + `00` + record-key tuple + `00` | Sorts by exact index tuple, then record identity. |
-| Meta cells | meta family + `01`, `02`, `03`, or `04` | Catalog epoch, layout epoch, engine profile digest, or latest commit metadata. |
+| Meta cell | meta family + `04` | Latest commit metadata. A store is stamped when `read_commit_metadata()` returns `Some`. |
 | Catalog cells | catalog family + `00` header row, then `10` + stable catalog ID per entry | The accepted catalog snapshot: one header row (epoch and digest), one row per entry; the entry value carries its catalog ordinal. |
 | Prefix ranges | `[prefix, successor(prefix))` | A prefix range includes exactly keys beginning with the prefix. Empty/all-`ff` prefixes have no upper bound. |
 
@@ -80,9 +80,7 @@ uses the in-memory development/test engine; `TreeStore::open(path)` and
 `TreeStore::open_read_only(path)` use the native redb engine.
 
 - `begin`, `commit`, and `rollback`;
-- write/read catalog epoch and layout epoch;
 - read/replace the accepted catalog snapshot and read its digest;
-- write/read the engine profile digest;
 - write/read commit metadata;
 - write node markers and test node existence;
 - write/read/delete leaves;
@@ -116,14 +114,17 @@ there is no public physical-cell replay method.
 
 ## Metadata
 
-Store-level metadata is written through typed meta cells:
+Store-level metadata is written through one typed meta cell:
 
 | Meta cell | Tag | Value |
 |---|---|---|
-| Catalog epoch | `01` | `u64_be(catalog_epoch)` |
-| Layout epoch | `02` | `u64_be(layout_epoch)` |
-| Engine profile digest | `03` | 8 bytes, the stable v0 engine-profile digest |
 | Commit metadata | `04` | Commit id, catalog epoch, layout epoch, source digest, profile digest, changed root/index catalog IDs, and historical applied-step evidence |
+
+A store is stamped exactly when `TreeStore::read_commit_metadata()` returns `Some`.
+The commit receipt is the single durable owner of the stamped catalog epoch,
+layout epoch, source digest, and engine-profile digest. The accepted catalog
+snapshot remains in the catalog family; its epoch and digest must agree with a
+stamped commit when both are present.
 
 The v0 engine profile records layout epoch and key profile version `0`. Its
 profile fingerprint is deterministic, non-cryptographic, and scoped only to

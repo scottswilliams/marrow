@@ -69,7 +69,10 @@ fn run_commits_the_pending_catalog_into_the_store_not_a_file() {
         snapshot.entries
     );
     assert_eq!(
-        store.read_catalog_epoch().expect("store epoch"),
+        store
+            .read_commit_metadata()
+            .expect("read commit")
+            .map(|commit| commit.catalog_epoch),
         Some(1),
         "the store is stamped at the baseline catalog epoch"
     );

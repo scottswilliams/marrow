@@ -171,7 +171,10 @@ pub(crate) fn accepted_catalog_entry_id(root: impl AsRef<Path>, path: &str) -> S
 #[allow(dead_code)]
 pub(crate) fn store_epoch(root: impl AsRef<Path>) -> Option<u64> {
     let store = TreeStore::open(&native_store_path(root)).expect("reopen native store");
-    store.read_catalog_epoch().expect("read store epoch")
+    store
+        .read_commit_metadata()
+        .expect("read store commit")
+        .map(|commit| commit.catalog_epoch)
 }
 
 // The before/after `module books` evolution sources live in the repo-root corpus, so

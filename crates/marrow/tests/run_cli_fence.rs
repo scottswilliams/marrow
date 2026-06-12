@@ -35,10 +35,30 @@ fn run_is_fenced_when_store_evolved_past_the_project_epoch() {
     fs::create_dir_all(store_path.parent().unwrap()).expect("create data dir");
     {
         let store = marrow_store::tree::TreeStore::open(&store_path).expect("open native store");
-        store.write_catalog_epoch(2).expect("stamp newer epoch");
+        let profile = marrow_run::evolution::current_engine_profile();
         store
-            .write_engine_profile(&marrow_run::evolution::current_engine_profile())
-            .expect("stamp profile");
+            .write_commit_metadata(&marrow_store::tree::CommitMetadata {
+                commit_id: 0,
+                catalog_epoch: 2,
+                layout_epoch: profile.layout_epoch(),
+                source_digest:
+                    "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+                        .to_string(),
+                engine_profile_digest: profile.digest_bytes(),
+                changed_root_catalog_ids: Vec::new(),
+                changed_index_catalog_ids: Vec::new(),
+                activation_evolution_digest: String::new(),
+                activation_proposal_catalog_digest: None,
+                activation_proposal_new_catalog_ids: Vec::new(),
+                activation_records_backfilled: 0,
+                activation_default_records_by_id: Vec::new(),
+                activation_indexes_rebuilt: 0,
+                activation_records_retired: 0,
+                activation_retire_evidence_digest: String::new(),
+                activation_records_retired_by_id: Vec::new(),
+                activation_records_transformed: 0,
+            })
+            .expect("stamp commit metadata");
     }
 
     let output = marrow_sub("run", &[root.to_str().unwrap()]);
@@ -225,7 +245,7 @@ fn run_rejects_composite_root_in_populated_unstamped_accepted_store() {
                 .expect("read accepted catalog")
                 .is_some()
         );
-        assert_eq!(store.read_catalog_epoch().expect("read epoch"), None);
+        assert_eq!(store.read_commit_metadata().expect("read commit"), None);
         assert_eq!(
             store
                 .record_child_count(&store_id, &[])

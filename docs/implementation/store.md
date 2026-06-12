@@ -14,7 +14,7 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 - **Public facade** — `TreeStore` wraps a boxed `Backend` and exposes every typed write/read/navigation/transaction/snapshot/backup call other crates use.
 - **Durable receipts** — `metadata` (`CommitMetadata`, `EngineProfile`, the source digest the activation fence binds).
 - **Catalog table** — `catalog` persists the accepted `marrow_catalog::CatalogMetadata` as a header row plus one row per entry in its own physical family (`FAMILY_CATALOG`), written in the caller's transaction and invisible to data/index/meta access; a read verifies the stored header against the decoded rows, accepts the canonical order-insensitive digest or the legacy order-sensitive row-order digest, and returns a snapshot normalized to the canonical digest.
-- **Backup** — `backup` streams data-family node and value cells; index and meta cells are restamped on restore, never archived.
+- **Backup** — `backup` streams data-family node and value cells; index cells are rebuilt and commit metadata is restamped from the manifest on restore, never archived.
 
 ## Modules
 

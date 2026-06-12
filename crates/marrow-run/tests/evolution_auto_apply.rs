@@ -68,7 +68,10 @@ fn a_sparse_add_over_a_populated_store_auto_applies_and_advances_the_epoch() {
     let outcome = try_auto_apply(&w, &program, &store).expect("auto-apply");
     assert_eq!(outcome, AutoApplyOutcome::Applied);
     assert_eq!(
-        store.read_catalog_epoch().expect("read epoch"),
+        store
+            .read_commit_metadata()
+            .expect("read commit")
+            .map(|commit| commit.catalog_epoch),
         Some(target_epoch),
         "auto-apply advanced the store to the proposal epoch",
     );

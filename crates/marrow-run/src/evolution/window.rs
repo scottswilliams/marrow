@@ -95,9 +95,7 @@ pub(crate) fn metadata_stamp(facts: StampFacts) -> PlanStep {
         activation_records_transformed: applied_activation_evidence.records_transformed,
     };
     PlanStep::StampMetadata {
-        catalog_epoch: facts.catalog_epoch,
         catalog_snapshot: facts.catalog_snapshot,
-        profile,
         commit_id: facts.commit_id,
         activation_evidence,
         commit: Box::new(commit),
@@ -171,33 +169,23 @@ pub fn fence(
         return Ok(());
     };
 
-    if let Some(stored_layout) = store.read_layout_epoch()?
-        && stored_layout != expected_profile.layout_epoch()
-    {
-        return Err(FenceError::EngineProfileDrift);
-    }
-
-    if let Some(stored_digest) = store.read_engine_profile_digest()?
-        && stored_digest != expected_profile.digest_bytes()
-    {
-        return Err(FenceError::EngineProfileDrift);
-    }
-
-    let Some(stored) = store.read_catalog_epoch()? else {
+    let Some(commit) = store.read_commit_metadata()? else {
         return Ok(());
     };
+    if commit.layout_epoch != expected_profile.layout_epoch()
+        || commit.engine_profile_digest != expected_profile.digest_bytes()
+    {
+        return Err(FenceError::EngineProfileDrift);
+    }
 
+    let stored = commit.catalog_epoch;
     match stored.cmp(&accepted) {
         std::cmp::Ordering::Greater => return Err(FenceError::StoreEvolved { stored, accepted }),
         std::cmp::Ordering::Less => return Err(FenceError::StoreBehind { stored, accepted }),
         std::cmp::Ordering::Equal => {}
     }
 
-    // At the same epoch the catalog epoch cannot distinguish a structurally different
-    // schema, so the recorded source digest is the schema-bearing fence.
-    if let Some(commit) = store.read_commit_metadata()?
-        && commit.source_digest != expected_source_digest
-    {
+    if commit.source_digest != expected_source_digest {
         return Err(FenceError::SchemaDrift);
     }
 
@@ -206,42 +194,44 @@ pub fn fence(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        FenceError, StampActivationEvidence, StampFacts, current_engine_profile, fence,
-        metadata_stamp,
-    };
-    use crate::write_plan::{CommitIdAllocation, WritePlan};
-    use marrow_store::tree::{EngineProfile, TreeStore};
+    use super::{FenceError, current_engine_profile, fence};
+    use marrow_store::tree::{CommitMetadata, EngineProfile, TreeStore};
 
     const DIGEST: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000001";
 
-    fn stamp(store: &TreeStore, epoch: u64) {
-        store.write_catalog_epoch(epoch).expect("write epoch");
+    fn stamp_with_digest(store: &TreeStore, epoch: u64, digest: &str) {
         store
-            .write_engine_profile(&current_engine_profile())
-            .expect("write engine profile");
+            .write_commit_metadata(&commit_metadata(epoch, digest))
+            .expect("write commit metadata");
     }
 
-    fn stamp_with_digest(store: &TreeStore, epoch: u64, digest: &str) {
-        stamp(store, epoch);
-        let step = metadata_stamp(StampFacts {
+    fn commit_metadata(epoch: u64, digest: &str) -> CommitMetadata {
+        let profile = current_engine_profile();
+        CommitMetadata {
+            commit_id: 0,
             catalog_epoch: epoch,
-            catalog_snapshot: None,
-            commit_id: CommitIdAllocation::Next,
+            layout_epoch: profile.layout_epoch(),
             source_digest: digest.to_string(),
+            engine_profile_digest: profile.digest_bytes(),
             changed_root_catalog_ids: Vec::new(),
             changed_index_catalog_ids: Vec::new(),
-            activation_evidence: StampActivationEvidence::Empty,
-        });
-        WritePlan { steps: vec![step] }
-            .commit(store, false)
-            .expect("write commit metadata");
+            activation_evolution_digest: String::new(),
+            activation_proposal_catalog_digest: None,
+            activation_proposal_new_catalog_ids: Vec::new(),
+            activation_records_backfilled: 0,
+            activation_default_records_by_id: Vec::new(),
+            activation_indexes_rebuilt: 0,
+            activation_records_retired: 0,
+            activation_retire_evidence_digest: String::new(),
+            activation_records_retired_by_id: Vec::new(),
+            activation_records_transformed: 0,
+        }
     }
 
     #[test]
     fn store_evolved_past_program_is_fenced() {
         let store = TreeStore::memory();
-        stamp(&store, 5);
+        stamp_with_digest(&store, 5, DIGEST);
         let error = fence(Some(3), DIGEST, &current_engine_profile(), &store).expect_err("fenced");
         assert_eq!(
             error,
@@ -256,7 +246,7 @@ mod tests {
     #[test]
     fn store_behind_program_is_fenced() {
         let store = TreeStore::memory();
-        stamp(&store, 2);
+        stamp_with_digest(&store, 2, DIGEST);
         let error = fence(Some(4), DIGEST, &current_engine_profile(), &store).expect_err("fenced");
         assert_eq!(
             error,
@@ -291,11 +281,29 @@ mod tests {
     }
 
     #[test]
+    fn commit_metadata_alone_marks_store_as_stamped() {
+        let store = TreeStore::memory();
+        store
+            .write_commit_metadata(&commit_metadata(7, DIGEST))
+            .expect("write commit metadata");
+
+        let error = fence(
+            Some(7),
+            "sha256:00000000000000000000000000000000000000000000000000000000deadbeef",
+            &current_engine_profile(),
+            &store,
+        )
+        .expect_err("commit metadata is the stamp");
+
+        assert_eq!(error, FenceError::SchemaDrift);
+        assert_eq!(error.code(), "run.schema_drift");
+    }
+
+    #[test]
     fn epoch_match_without_commit_metadata_is_adopted() {
         let store = TreeStore::memory();
-        stamp(&store, 7);
         fence(Some(7), DIGEST, &current_engine_profile(), &store)
-            .expect("a store with no commit metadata is adopted on the epoch match");
+            .expect("a store with no commit metadata is adopted");
     }
 
     #[test]
@@ -311,12 +319,13 @@ mod tests {
     #[test]
     fn engine_profile_mismatch_is_fenced() {
         let store = TreeStore::memory();
-        store.write_catalog_epoch(3).expect("write epoch");
+        let mut commit = commit_metadata(3, DIGEST);
+        let drifted = EngineProfile::new(current_engine_profile().layout_epoch() + 1);
+        commit.layout_epoch = drifted.layout_epoch();
+        commit.engine_profile_digest = drifted.digest_bytes();
         store
-            .write_engine_profile(&EngineProfile::new(
-                current_engine_profile().layout_epoch() + 1,
-            ))
-            .expect("write drifted profile");
+            .write_commit_metadata(&commit)
+            .expect("write drifted commit metadata");
         let error = fence(Some(3), DIGEST, &current_engine_profile(), &store).expect_err("fenced");
         assert_eq!(error, FenceError::EngineProfileDrift);
         assert_eq!(error.code(), "run.engine_profile");

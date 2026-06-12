@@ -134,7 +134,7 @@ fn enum_member_values_store_catalog_ids_not_source_order() {
 }
 
 #[test]
-fn profile_and_metadata_cells_round_trip_in_memory() {
+fn profile_and_commit_metadata_round_trip_in_memory() {
     let profile = EngineProfile::new(9);
     assert_eq!(profile.layout_epoch(), 9);
     assert_eq!(profile.key_profile_version(), 0);
@@ -145,10 +145,6 @@ fn profile_and_metadata_cells_round_trip_in_memory() {
     let root = catalog_id("aaaaaaaaaaaaaaaa");
     let index = catalog_id("bbbbbbbbbbbbbbbb");
     let store = TreeStore::memory();
-    store.write_catalog_epoch(44).expect("write catalog epoch");
-    store
-        .write_engine_profile(&profile)
-        .expect("write engine profile");
     store
         .write_commit_metadata(&sample_commit_metadata(
             55,
@@ -161,20 +157,6 @@ fn profile_and_metadata_cells_round_trip_in_memory() {
         ))
         .expect("write commit");
 
-    assert_eq!(
-        store.read_catalog_epoch().expect("read catalog epoch"),
-        Some(44)
-    );
-    assert_eq!(
-        store.read_layout_epoch().expect("read layout epoch"),
-        Some(profile.layout_epoch())
-    );
-    assert_eq!(
-        store
-            .read_engine_profile_digest()
-            .expect("read engine profile digest"),
-        Some(profile.digest_bytes())
-    );
     assert_eq!(
         store.read_commit_metadata().expect("read commit"),
         Some(sample_commit_metadata(
@@ -816,8 +798,18 @@ fn facade_transactions_roll_back_data_index_and_metadata_atomically() {
     let store = TreeStore::memory();
 
     let path = [DataPathSegment::Member(title.clone())];
-    store.write_catalog_epoch(1).expect("seed catalog epoch");
-    store.write_engine_profile(&profile).expect("seed profile");
+    let initial_commit = sample_commit_metadata(
+        0,
+        1,
+        profile.layout_epoch(),
+        "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+        profile.digest_bytes(),
+        Vec::new(),
+        Vec::new(),
+    );
+    store
+        .write_commit_metadata(&initial_commit)
+        .expect("seed commit metadata");
     store.begin().expect("begin");
     store
         .write_data_value(&store_id, &identity, &path, b"Dune".to_vec())
@@ -830,7 +822,17 @@ fn facade_transactions_roll_back_data_index_and_metadata_atomically() {
             b"present".to_vec(),
         )
         .expect("write index");
-    store.write_catalog_epoch(2).expect("write catalog epoch");
+    store
+        .write_commit_metadata(&sample_commit_metadata(
+            1,
+            2,
+            profile.layout_epoch(),
+            "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+            profile.digest_bytes(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .expect("write commit metadata");
     store.rollback().expect("rollback");
 
     assert_eq!(
@@ -846,12 +848,9 @@ fn facade_transactions_roll_back_data_index_and_metadata_atomically() {
             .entries,
         Vec::new()
     );
-    assert_eq!(store.read_catalog_epoch().expect("catalog epoch"), Some(1));
     assert_eq!(
-        store
-            .read_engine_profile_digest()
-            .expect("engine profile digest"),
-        Some(profile.digest_bytes())
+        store.read_commit_metadata().expect("commit metadata"),
+        Some(initial_commit)
     );
 }
 
@@ -865,10 +864,6 @@ fn metadata_survives_native_redb_reopen() {
     let index = catalog_id("bbbbbbbbbbbbbbbb");
     {
         let store = TreeStore::open(&path).expect("open native store");
-        store.write_catalog_epoch(8).expect("write catalog epoch");
-        store
-            .write_engine_profile(&profile)
-            .expect("write engine profile");
         store
             .write_commit_metadata(&sample_commit_metadata(
                 9,
@@ -883,16 +878,6 @@ fn metadata_survives_native_redb_reopen() {
     }
 
     let store = TreeStore::open_read_only(&path).expect("reopen native store");
-    assert_eq!(
-        store.read_catalog_epoch().expect("read catalog epoch"),
-        Some(8)
-    );
-    assert_eq!(
-        store
-            .read_engine_profile_digest()
-            .expect("read engine profile digest"),
-        Some(profile.digest_bytes())
-    );
     assert_eq!(
         store.read_commit_metadata().expect("read commit metadata"),
         Some(sample_commit_metadata(

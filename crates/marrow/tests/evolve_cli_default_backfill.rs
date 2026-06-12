@@ -88,11 +88,9 @@ fn evolve_apply_backfills_proposal_required_default_before_accepting_catalog() {
         .read_commit_metadata()
         .expect("read commit")
         .expect("commit stamp");
-    let stamped_epoch = store.read_catalog_epoch().expect("store epoch");
 
     assert_eq!(catalog_epoch, baseline_epoch + 1);
     assert_eq!(commit.catalog_epoch, baseline_epoch + 1);
-    assert_eq!(stamped_epoch, Some(baseline_epoch + 1));
 }
 
 #[test]

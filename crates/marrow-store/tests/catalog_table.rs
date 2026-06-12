@@ -6,7 +6,7 @@
 
 use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::tree::{CommitMetadata, DataPathSegment, TreeStore};
 
 mod common;
 use common::catalog_id;
@@ -41,6 +41,29 @@ fn sample_snapshot() -> CatalogMetadata {
             },
         ],
     )
+}
+
+fn sample_commit_metadata() -> CommitMetadata {
+    CommitMetadata {
+        commit_id: 0,
+        catalog_epoch: 9,
+        layout_epoch: 0,
+        source_digest: "sha256:0000000000000000000000000000000000000000000000000000000000000009"
+            .to_string(),
+        engine_profile_digest: [0; 8],
+        changed_root_catalog_ids: Vec::new(),
+        changed_index_catalog_ids: Vec::new(),
+        activation_evolution_digest: String::new(),
+        activation_proposal_catalog_digest: None,
+        activation_proposal_new_catalog_ids: Vec::new(),
+        activation_records_backfilled: 0,
+        activation_default_records_by_id: Vec::new(),
+        activation_indexes_rebuilt: 0,
+        activation_records_retired: 0,
+        activation_retire_evidence_digest: String::new(),
+        activation_records_retired_by_id: Vec::new(),
+        activation_records_transformed: 0,
+    }
 }
 
 #[test]
@@ -118,7 +141,9 @@ fn the_catalog_family_is_invisible_to_data_index_and_meta_access() {
             Vec::new(),
         )
         .expect("write index");
-    store.write_catalog_epoch(9).expect("stamp meta epoch");
+    store
+        .write_commit_metadata(&sample_commit_metadata())
+        .expect("stamp commit metadata");
 
     // A backup traversal carries only data-family cells: every cell it yields is a
     // data cell under the data store, never a catalog row.
@@ -147,7 +172,7 @@ fn the_catalog_family_is_invisible_to_data_index_and_meta_access() {
         Some(SavedKey::Str("Mort".into()))
     );
 
-    // The catalog read is unaffected by the data, index, and meta cells.
+    // The catalog read is unaffected by the data, index, and commit metadata cells.
     let read = store
         .read_catalog_snapshot()
         .expect("read catalog")

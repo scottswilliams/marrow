@@ -1,6 +1,6 @@
 //! Evolution apply publishes the activated catalog snapshot inside the apply
-//! transaction. A committed activation advances the catalog snapshot, the catalog epoch,
-//! the source digest, and the data together; a transaction that fails before commit rolls
+//! transaction. A committed activation advances the catalog snapshot, commit stamp,
+//! source digest, and data together; a transaction that fails before commit rolls
 //! all of them back; and an apply whose store catalog drifted from the witness fails
 //! closed before staging.
 
@@ -77,7 +77,7 @@ const TRANSFORM_BASELINE: &str = "module books\n\
      pub fn add(price: int): Id(^books)\n\
      \x20   return nextId(^books)\n";
 
-/// A committed activation advances the store's catalog snapshot, catalog epoch, source
+/// A committed activation advances the store's catalog snapshot, commit stamp, source
 /// digest, and backfilled data in one transaction. Reading them back proves they moved
 /// together: the published snapshot is the activated proposal, not the baseline.
 #[test]
@@ -130,11 +130,7 @@ fn committed_activation_advances_snapshot_epoch_digest_and_data_together() {
         Some(proposal.digest.clone()),
         "the snapshot digest is the activated proposal digest"
     );
-    // The epoch, source digest, and data advanced in the same transaction.
-    assert_eq!(
-        store.read_catalog_epoch().expect("epoch"),
-        Some(proposal.epoch)
-    );
+    // The commit stamp, source digest, and data advanced in the same transaction.
     let commit = store
         .read_commit_metadata()
         .expect("commit")
@@ -152,9 +148,9 @@ fn committed_activation_advances_snapshot_epoch_digest_and_data_together() {
 }
 
 /// A failure before the outer commit rolls the whole apply back: the catalog snapshot,
-/// catalog epoch, commit metadata, and data all stay at their pre-apply state. A
-/// transform whose body overflows faults inside the transaction, so the activated snapshot
-/// is never published over the baseline.
+/// commit metadata, and data all stay at their pre-apply state. A transform whose body
+/// overflows faults inside the transaction, so the activated snapshot is never published
+/// over the baseline.
 #[test]
 fn apply_rollback_leaves_snapshot_epoch_and_data_at_pre_apply_state() {
     let root = temp_project("apply-rollback-no-publish", |_| {});
@@ -170,7 +166,6 @@ fn apply_rollback_leaves_snapshot_epoch_and_data_at_pre_apply_state() {
     seed.member(1, "price", Scalar::Int(9_000_000_000));
 
     let snapshot_before = store.read_catalog_snapshot().expect("snapshot");
-    let epoch_before = store.read_catalog_epoch().expect("epoch");
     let commit_before = store.read_commit_metadata().expect("commit");
     let store_id = store_id_of(&accepted_place);
 
@@ -190,13 +185,12 @@ fn apply_rollback_leaves_snapshot_epoch_and_data_at_pre_apply_state() {
         "expected TransformBodyFaulted, got {result:#?}"
     );
 
-    // Catalog rows, epoch, meta, and data are all exactly as before: nothing advanced.
+    // Catalog rows, metadata, and data are all exactly as before: nothing advanced.
     assert_eq!(
         store.read_catalog_snapshot().expect("snapshot"),
         snapshot_before,
         "the activated snapshot was never published over the baseline"
     );
-    assert_eq!(store.read_catalog_epoch().expect("epoch"), epoch_before);
     assert_eq!(store.read_commit_metadata().expect("commit"), commit_before);
     assert_eq!(
         read_scalar(&store, &store_id, 1, &cents_id, INT),

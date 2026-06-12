@@ -16,12 +16,13 @@ pub fn tooling_metadata(
     program: &CheckedProgram,
     store: &TreeStore,
 ) -> Result<ToolingCatalogMetadata, StoreError> {
+    let commit = store.read_commit_metadata()?;
     Ok(ToolingCatalogMetadata {
         source_digest: program.source_digest(),
         accepted_catalog_epoch: program.catalog.accepted_epoch,
-        store_catalog_epoch: store.read_catalog_epoch()?,
-        layout_epoch: store.read_layout_epoch()?,
-        engine_profile_digest: store.read_engine_profile_digest()?,
+        store_catalog_epoch: commit.as_ref().map(|commit| commit.catalog_epoch),
+        layout_epoch: commit.as_ref().map(|commit| commit.layout_epoch),
+        engine_profile_digest: commit.as_ref().map(|commit| commit.engine_profile_digest),
     })
 }
 

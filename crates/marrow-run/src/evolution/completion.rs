@@ -41,7 +41,7 @@ pub fn verify_activation_completion(
 ) -> Result<(), ApplyError> {
     let (witness, _diagnostics) = preview(program, store)?;
     verify_no_repair_verdicts(&witness)?;
-    verify_proposal_identity(&witness, store, commit)?;
+    verify_proposal_identity(&witness, commit)?;
 
     let places = marrow_check::checked_activation_root_places(program);
     let defaults = verify_default_completion(program, store, &places)?;

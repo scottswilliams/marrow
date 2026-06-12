@@ -2,7 +2,7 @@
 
 use marrow_store::StoreError;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{CommitMetadata, DataPathSegment, EngineProfile, TreeStore};
+use marrow_store::tree::{CommitMetadata, DataPathSegment, TreeStore};
 
 use crate::store::{DataAddress, IndexAddress};
 
@@ -76,19 +76,16 @@ pub(crate) enum PlanStep {
     DeleteIndexSubtree {
         address: IndexAddress,
     },
-    /// Stamp the catalog epoch, engine profile, and commit metadata, and publish the
-    /// activated catalog snapshot when one is present. The commit id resolves when this
-    /// step is applied, so the predecessor metadata is read inside the same write
-    /// bracket that writes the stamp. The snapshot publish is a store-internal
-    /// activation write, not a data or index write, so the read-only projection reports
-    /// the step as a [`WriteTarget::Meta`] keyed by the catalog epoch alone and never
-    /// exposes the rows as a data write. A `None` snapshot is an apply that does not
-    /// advance the accepted catalog (a pure backfill), so the published catalog is left
-    /// untouched.
+    /// Stamp commit metadata and publish the activated catalog snapshot when one is
+    /// present. The commit id resolves when this step is applied, so the predecessor
+    /// metadata is read inside the same write bracket that writes the stamp. The
+    /// snapshot publish is a store-internal activation write, not a data or index
+    /// write, so the read-only projection reports the step as a [`WriteTarget::Meta`]
+    /// keyed by the catalog epoch alone and never exposes the rows as a data write. A
+    /// `None` snapshot is an apply that does not advance the accepted catalog (a pure
+    /// backfill), so the published catalog is left untouched.
     StampMetadata {
-        catalog_epoch: u64,
         catalog_snapshot: Option<Box<marrow_catalog::CatalogMetadata>>,
-        profile: EngineProfile,
         commit_id: CommitIdAllocation,
         activation_evidence: ActivationEvidenceMode,
         commit: Box<CommitMetadata>,
@@ -169,10 +166,10 @@ impl WritePlan {
             PlanStep::DeleteIndexSubtree { address } => {
                 (WriteOp::Delete, index_target(address, &[]), None)
             }
-            PlanStep::StampMetadata { catalog_epoch, .. } => (
+            PlanStep::StampMetadata { commit, .. } => (
                 WriteOp::Write,
                 WriteTarget::Meta {
-                    catalog_epoch: *catalog_epoch,
+                    catalog_epoch: commit.catalog_epoch,
                 },
                 None,
             ),
@@ -207,9 +204,7 @@ fn apply_steps(steps: Vec<PlanStep>, store: &TreeStore) -> Result<(), StoreError
                 store.delete_index_subtree(&address.index, &address.keys)?
             }
             PlanStep::StampMetadata {
-                catalog_epoch,
                 catalog_snapshot,
-                profile,
                 commit_id,
                 activation_evidence,
                 commit,
@@ -226,8 +221,6 @@ fn apply_steps(steps: Vec<PlanStep>, store: &TreeStore) -> Result<(), StoreError
                 if let Some(snapshot) = catalog_snapshot {
                     store.replace_catalog_snapshot(&snapshot)?;
                 }
-                store.write_catalog_epoch(catalog_epoch)?;
-                store.write_engine_profile(&profile)?;
                 store.write_commit_metadata(&commit)?;
             }
         }
@@ -343,9 +336,7 @@ mod tests {
         let snapshot = marrow_catalog::CatalogMetadata::new(5, Vec::new());
         let plan = WritePlan {
             steps: vec![PlanStep::StampMetadata {
-                catalog_epoch: 5,
                 catalog_snapshot: Some(Box::new(snapshot)),
-                profile,
                 commit_id: CommitIdAllocation::Next,
                 activation_evidence: ActivationEvidenceMode::Explicit,
                 commit: Box::new(commit),
@@ -359,6 +350,26 @@ mod tests {
         assert_eq!(
             projected,
             vec![(WriteOp::Write, WriteTarget::Meta { catalog_epoch: 5 }, None)]
+        );
+    }
+
+    #[test]
+    fn stamp_metadata_projection_uses_commit_epoch() {
+        let profile = EngineProfile::new(3);
+        let commit = sample_commit(7, 9, &profile);
+        let plan = WritePlan {
+            steps: vec![PlanStep::StampMetadata {
+                catalog_snapshot: None,
+                commit_id: CommitIdAllocation::Next,
+                activation_evidence: ActivationEvidenceMode::Explicit,
+                commit: Box::new(commit),
+            }],
+        };
+
+        let projected: Vec<_> = plan.steps().collect();
+        assert_eq!(
+            projected,
+            vec![(WriteOp::Write, WriteTarget::Meta { catalog_epoch: 9 }, None)]
         );
     }
 
@@ -420,9 +431,7 @@ mod tests {
         let commit = sample_commit(1, 5, &profile);
         WritePlan {
             steps: vec![PlanStep::StampMetadata {
-                catalog_epoch: 5,
                 catalog_snapshot: None,
-                profile,
                 commit_id: CommitIdAllocation::Next,
                 activation_evidence: ActivationEvidenceMode::Explicit,
                 commit: Box::new(commit),

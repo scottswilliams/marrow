@@ -1,12 +1,11 @@
 use marrow_check::evolution::EvolutionWitness;
-use marrow_store::tree::{CommitMetadata, TreeStore};
+use marrow_store::tree::CommitMetadata;
 
 use super::super::apply::ApplyError;
 use super::super::window::current_engine_profile;
 
 pub(super) fn verify_proposal_identity(
     witness: &EvolutionWitness,
-    store: &TreeStore,
     commit: &CommitMetadata,
 ) -> Result<(), ApplyError> {
     let Some(proposal) = &witness.proposal_catalog else {
@@ -21,11 +20,6 @@ pub(super) fn verify_proposal_identity(
         || commit.activation_evolution_digest.is_empty()
         || commit.activation_evolution_digest != witness.evolution_digest
         || commit.activation_proposal_catalog_digest.as_deref() != Some(proposal.digest.as_str())
-    {
-        return Err(ApplyError::Drift);
-    }
-    if store.read_layout_epoch()? != Some(profile.layout_epoch())
-        || store.read_engine_profile_digest()? != Some(profile.digest_bytes())
     {
         return Err(ApplyError::Drift);
     }

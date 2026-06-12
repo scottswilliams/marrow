@@ -195,7 +195,10 @@ fn evolve_apply_advances_the_committed_catalog_and_store() {
     );
     let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
     assert_eq!(
-        store.read_catalog_epoch().expect("store epoch"),
+        store
+            .read_commit_metadata()
+            .expect("read commit")
+            .map(|commit| commit.catalog_epoch),
         Some(baseline_epoch + 1),
         "apply stamped the store with the new epoch"
     );

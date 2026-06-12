@@ -25,10 +25,10 @@ use super::window::{StampActivationEvidence, StampFacts, metadata_stamp};
 /// saved data without a catalog. That last case is a populated-but-unstamped store the
 /// caller must refuse rather than silently adopt, so the baseline never stamps over it.
 ///
-/// The catalog rows, the catalog epoch, the engine profile, and the commit metadata all
-/// land under one transaction, so a reader sees either no accepted catalog or the whole
-/// baseline. The commit metadata records no activation work: a baseline freezes identity
-/// without backfilling, transforming, or retiring any record.
+/// The catalog rows and commit metadata land under one transaction, so a reader sees
+/// either no accepted catalog or the whole baseline. The commit metadata records no
+/// activation work: a baseline freezes identity without backfilling, transforming, or
+/// retiring any record.
 pub fn commit_catalog_baseline(
     store: &TreeStore,
     program: &CheckedProgram,

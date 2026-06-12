@@ -54,9 +54,6 @@ impl std::error::Error for CellIdError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MetaCell {
-    CatalogEpoch,
-    LayoutEpoch,
-    EngineProfile,
     Commit,
 }
 
@@ -88,9 +85,6 @@ pub enum DataPathSegment {
 impl CellKey {
     pub(crate) fn meta(cell: MetaCell) -> Self {
         let tag = match cell {
-            MetaCell::CatalogEpoch => 0x01,
-            MetaCell::LayoutEpoch => 0x02,
-            MetaCell::EngineProfile => 0x03,
             MetaCell::Commit => 0x04,
         };
         let mut bytes = family(FAMILY_META);
@@ -341,8 +335,9 @@ impl DataCellKey {
 }
 
 /// Decodes a data-family cell key into its structural pieces. Returns `None` for a
-/// non-data key (index and meta cells are reconstructed, not backed up) or for bytes
-/// that are malformed under the v0 grammar, which the caller treats as corruption.
+/// non-data key (index cells are rebuilt and commit metadata is restamped, not backed
+/// up) or for bytes that are malformed under the v0 grammar, which the caller treats
+/// as corruption.
 pub(crate) fn decode_data_cell_key(bytes: &[u8]) -> Option<DataCellKey> {
     let [
         EMPTY_PLACEMENT_PREFIX,
