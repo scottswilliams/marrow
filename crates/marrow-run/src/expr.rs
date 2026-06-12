@@ -15,7 +15,9 @@ use marrow_syntax::{
 };
 
 use crate::call::{call_target_maybe_present, eval_call, expression_absent_at_resolution_site};
-use crate::durable_read::{eval_optional_field, eval_saved_field, read_resource};
+use crate::durable_read::{
+    eval_optional_field, eval_saved_field, read_resource, read_saved_value_if_present,
+};
 use crate::env::Env;
 use crate::error::{
     RUN_ABSENT, RUN_DECIMAL_OVERFLOW, RUN_NO_VALUE, RUN_OVERFLOW, RUN_TYPE, RUN_UNBOUND_NAME,
@@ -32,10 +34,16 @@ pub(crate) fn eval_coalesce(
     default: &ExecExpr,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
+    if path.saved_place().is_some() {
+        return match read_saved_value_if_present(path, path.span(), env)? {
+            Some(value) => Ok(value),
+            None => eval_expr(default, env),
+        };
+    }
     match eval_expr(path, env) {
-        // `??` absorbs an absent read as ordinary control flow, not an error,
-        // falling back to the default. Only an absent read falls back; schema and
-        // type faults still propagate.
+        // Non-saved absence faults, such as host environment lookups, keep the
+        // catchable error path. Saved-data absence is handled above by probing
+        // the fixed read site before any fatal read occurs.
         Err(error) if expression_absent_at_resolution_site(path, &error) => eval_expr(default, env),
         other => other,
     }

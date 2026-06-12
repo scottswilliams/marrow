@@ -21,7 +21,8 @@ pub(crate) use count::{eval_count, eval_exists};
 pub(crate) use error_constructor::eval_error_constructor;
 pub(crate) use index_lookup::{
     check_key_collection, decode_unique_index_identity, exact_unique_index_lookup_value,
-    read_exact_unique_index_lookup_value, unique_index_lookup,
+    read_exact_unique_index_lookup_if_present, read_exact_unique_index_lookup_value,
+    unique_index_lookup,
 };
 pub(crate) use math::{int_modulo, int_remainder};
 pub(crate) use output::eval_output;

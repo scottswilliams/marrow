@@ -428,6 +428,58 @@ fn accepts_if_const_over_a_singleton_saved_root() {
 }
 
 #[test]
+fn rejects_if_const_over_a_keyed_root_without_identity() {
+    let found = check_module(
+        "if-const-keyed-root",
+        "module m\n\
+         resource Book\n    title: string\n\
+         store ^books(id: int): Book\n\n\
+         fn f()\n    if const books = ^books\n        return\n",
+        "check.condition_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn accepts_if_const_over_a_fully_addressed_record() {
+    let found = check_module(
+        "if-const-record",
+        "module m\n\
+         resource Book\n    title: string\n\
+         store ^books(id: int): Book\n\n\
+         fn f(id: Id(^books)): string\n    if const book = ^books(id)\n        return book.title ?? \"\"\n    return \"\"\n",
+        "check.condition_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn accepts_if_const_over_a_composite_identity_splice() {
+    let found = check_module(
+        "if-const-composite-identity",
+        "module m\n\
+         resource Enrollment\n    status: string\n\
+         store ^enrollments(studentId: string, courseId: string): Enrollment\n\n\
+         fn f(id: Id(^enrollments)): string\n    if const status = ^enrollments(id).status\n        return status\n    return \"\"\n",
+        "check.condition_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn accepts_if_const_over_a_constructed_composite_identity() {
+    let found = check_module(
+        "if-const-constructed-composite-identity",
+        "module m\n\
+         resource Enrollment\n    status: string\n\
+         store ^enrollments(studentId: string, courseId: string): Enrollment\n\n\
+         fn f(): string\n    if const status = ^enrollments(Id(^enrollments, \"s1\", \"c1\")).status\n        return status\n    return \"\"\n",
+        "check.condition_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
 fn rejects_if_const_over_an_address_only_saved_layer() {
     let found = check_module(
         "if-const-layer",
@@ -435,6 +487,71 @@ fn rejects_if_const_over_an_address_only_saved_layer() {
          resource Book\n    tags(pos: int): string\n\
          store ^books(id: int): Book\n\n\
          fn f(id: Id(^books))\n    if const tags = ^books(id).tags\n        return\n",
+        "check.condition_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn accepts_if_const_over_a_fully_addressed_layer_entry() {
+    let found = check_module(
+        "if-const-layer-entry",
+        "module m\n\
+         resource Book\n    tags(pos: int): string\n\
+         store ^books(id: int): Book\n\n\
+         fn f(id: Id(^books)): string\n    if const tag = ^books(id).tags(1)\n        return tag\n    return \"\"\n",
+        "check.condition_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn rejects_if_const_over_a_neighbor_read() {
+    let found = check_module(
+        "if-const-neighbor-read",
+        "module m\n\
+         resource Book\n    title: string\n    tags(pos: int): string\n\
+         store ^books(id: int): Book\n\n\
+         fn f(): int\n    ^books(1).title = \"one\"\n    const p: int = append(^books(1).tags, \"a\")\n    const q: int = append(^books(1).tags, \"b\")\n    if const n = next(^books(1).tags(p))\n        return n\n    return 0\n",
+        "check.condition_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn rejects_if_const_over_a_non_unique_index_branch() {
+    let found = check_module(
+        "if-const-non-unique-index",
+        "module m\n\
+         resource Book\n    shelf: string\n\
+         store ^books(id: int): Book\n    index byShelf(shelf)\n\n\
+         fn f()\n    if const found = ^books.byShelf(\"fiction\")\n        return\n",
+        "check.condition_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn accepts_if_const_over_a_complete_unique_index_lookup() {
+    let found = check_module(
+        "if-const-unique-index",
+        "module m\n\
+         resource Book\n    isbn: string\n\
+         store ^books(id: int): Book\n    index byIsbn(isbn) unique\n\n\
+         fn f(): Id(^books)\n    if const id = ^books.byIsbn(\"isbn-1\")\n        return id\n    return Id(^books, 1)\n",
+        "check.condition_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn rejects_if_const_over_an_incomplete_unique_index_lookup() {
+    let found = check_module(
+        "if-const-incomplete-unique-index",
+        "module m\n\
+         resource Book\n    isbn: string\n    edition: int\n\
+         store ^books(id: int): Book\n    index byIsbn(isbn, edition) unique\n\n\
+         fn f()\n    if const id = ^books.byIsbn(\"isbn-1\")\n        return\n",
         "check.condition_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");

@@ -7,12 +7,14 @@ use marrow_check::{
 use marrow_store::key::SavedKey;
 use marrow_syntax::SourceSpan;
 
-use crate::collection::{ReadPosition, absent_read};
+use crate::collection::absent_read;
 use crate::env::Env;
 use crate::error::{RUN_ABSENT, RUN_TYPE, RuntimeError, type_error, unsupported};
 use crate::path::{lower, lower_keys};
 use crate::read::eval_local_field_get;
-use crate::stdlib::read_exact_unique_index_lookup_value;
+use crate::stdlib::{
+    read_exact_unique_index_lookup_if_present, read_exact_unique_index_lookup_value,
+};
 use crate::store::{DataAddress, LayerAddress, data_exists, read_data};
 use crate::value::{Value, decode_leaf};
 
@@ -32,7 +34,7 @@ pub(crate) fn read_saved_field(
     if !matches!(path.terminal, crate::path::Terminal::Field { .. }) {
         return Err(unsupported("this read", span));
     }
-    path.read(ReadPosition::Value, span, env)
+    path.read(span, env)
 }
 
 pub(crate) fn eval_optional_field(
@@ -60,6 +62,21 @@ pub(crate) fn eval_index_lookup(
     read_exact_unique_index_lookup_value(place, span, env)
 }
 
+pub(crate) fn read_saved_value_if_present(
+    expr: &ExecExpr,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Option<Value>, RuntimeError> {
+    if let Some(value) = read_exact_unique_index_lookup_if_present(expr, span, env)? {
+        return Ok(Some(value));
+    }
+    let path = lower(expr, env)?;
+    if !path.is_present(span, env)? {
+        return Ok(None);
+    }
+    path.read(span, env).map(Some)
+}
+
 pub(crate) fn eval_saved_layer_read(
     call: &ExecExpr,
     span: SourceSpan,
@@ -76,7 +93,6 @@ pub(crate) fn eval_saved_layer_read(
             layers: &path.layer_addresses,
             layer_facts,
         },
-        ReadPosition::Value,
         span,
         env,
     )
@@ -87,7 +103,6 @@ pub(crate) fn read_layer_entry(
     identity: &[SavedKey],
     layer_facts: &CheckedSavedLayer,
     layer_keys: &[SavedKey],
-    position: ReadPosition,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
@@ -98,7 +113,6 @@ pub(crate) fn read_layer_entry(
             layers: &[LayerAddress::from_checked(layer_facts, layer_keys.to_vec())],
             layer_facts,
         },
-        position,
         span,
         env,
     )
@@ -113,7 +127,6 @@ pub(crate) struct LayerEntryAddress<'a> {
 
 pub(crate) fn read_layer_entry_at(
     address: LayerEntryAddress<'_>,
-    position: ReadPosition,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
@@ -121,7 +134,6 @@ pub(crate) fn read_layer_entry_at(
     let Some(leaf) = &address.layer_facts.leaf else {
         if !data_exists(env.store, &entry, span)? {
             return Err(absent_read(
-                position,
                 format!("`{}` entry is absent", address.layer_facts.name),
                 span,
             ));
@@ -140,7 +152,6 @@ pub(crate) fn read_layer_entry_at(
     let bytes = read_data(env.store, &entry, span)?;
     let Some(bytes) = bytes else {
         return Err(absent_read(
-            position,
             format!("`{}` entry is absent", address.layer_facts.name),
             span,
         ));
@@ -199,7 +210,6 @@ pub(crate) fn read_resource(
     let address = DataAddress::record(place, identity, span)?;
     if !data_exists(env.store, &address, span)? {
         return Err(absent_read(
-            ReadPosition::Value,
             format!("`^{}` record is absent", place.root),
             span,
         ));

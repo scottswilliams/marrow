@@ -561,35 +561,12 @@ impl StatementCheck<'_> {
         let Some(value) = crate::CheckedExpr::lower(value, &context, &mut lower_scope) else {
             return;
         };
-        let read_resolves = crate::presence::read_resolves_in_type_scope(
+        if !crate::presence::bindable_saved_value_read_in_type_scope(
             self.program,
             &value,
             self.scope,
             self.transform_old,
-        );
-        let is_value_read = value
-            .saved_place()
-            .is_some_and(|place| match &place.terminal {
-                crate::CheckedSavedTerminal::Record => {
-                    let root_is_addressed =
-                        place.identity_keys.is_empty() || !place.identity_args.is_empty();
-                    let layers_are_addressed = place
-                        .layers
-                        .iter()
-                        .all(|layer| layer.key_params.is_empty() || !layer.args.is_empty());
-                    root_is_addressed && layers_are_addressed
-                }
-                crate::CheckedSavedTerminal::Field { .. } => true,
-                crate::CheckedSavedTerminal::Index {
-                    unique,
-                    arg_count,
-                    args,
-                    ..
-                } => *unique && args.len() == *arg_count,
-            })
-            || fixed_singleton_root(self.program, &value)
-            || (read_resolves && (maybe_present_read(&value) || transform_old_member_read(&value)));
-        if !is_value_read || !read_resolves {
+        ) {
             self.diagnostics.push(CheckDiagnostic::error(
                 CHECK_CONDITION_TYPE,
                 self.file,
@@ -778,33 +755,6 @@ fn local_field_root(expr: &marrow_syntax::Expression) -> Option<&str> {
         },
         _ => None,
     }
-}
-
-fn fixed_singleton_root(program: &CheckedProgram, expr: &crate::CheckedExpr) -> bool {
-    let crate::CheckedExpr::SavedRoot { name, .. } = expr else {
-        return false;
-    };
-    crate::resolve::resolve_store_by_root(program, name)
-        .is_some_and(|store| store.store.identity_keys.is_empty())
-}
-
-fn maybe_present_read(expr: &crate::CheckedExpr) -> bool {
-    let crate::CheckedExpr::Call { target, .. } = expr else {
-        return false;
-    };
-    crate::presence::maybe_present_result(target)
-}
-
-fn transform_old_member_read(expr: &crate::CheckedExpr) -> bool {
-    let (base, _) = match expr {
-        crate::CheckedExpr::Field { base, name, .. }
-        | crate::CheckedExpr::OptionalField { base, name, .. } => (base, name),
-        _ => return false,
-    };
-    matches!(
-        base.as_ref(),
-        crate::CheckedExpr::Name { segments, .. } if segments.as_slice() == ["old"]
-    )
 }
 
 struct RootReplacementCheck<'p, 'a> {

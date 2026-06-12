@@ -137,6 +137,39 @@ fn if_const_binding_guard_reads_present_values_and_skips_absent_values() {
 }
 
 #[test]
+fn if_const_binding_guard_evaluates_the_saved_path_once() {
+    let program = checked_program(
+        "resource Counter\n\
+         \x20\x20\x20\x20value: int\n\
+         resource Book\n\
+         \x20\x20\x20\x20required title: string\n\
+         store ^counters(id: int): Counter\n\
+         store ^books(id: int): Book\n\n\
+         pub fn bump(): int\n\
+         \x20\x20\x20\x20const current: int = ^counters(1).value ?? 0\n\
+         \x20\x20\x20\x20^counters(1).value = current + 1\n\
+         \x20\x20\x20\x20return current + 1\n\n\
+         pub fn title_once(): string\n\
+         \x20\x20\x20\x20if const title = ^books(bump()).title\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20return title\n\
+         \x20\x20\x20\x20return \"missing\"\n\n\
+         pub fn counter_value(): int\n\
+         \x20\x20\x20\x20return ^counters(1).value ?? 0\n",
+    );
+    let store = store_with_title(&program, 1, "Mort");
+
+    let title = run_entry(&store, checked_entry!(&program, "test::title_once"))
+        .expect("single guarded read")
+        .value;
+    assert_eq!(title, Some(Value::Str("Mort".into())));
+
+    let counter = run_entry(&store, checked_entry!(&program, "test::counter_value"))
+        .expect("counter read")
+        .value;
+    assert_eq!(counter, Some(Value::Int(1)));
+}
+
+#[test]
 fn a_saved_read_interpolates_and_prints() {
     let program = checked_program(BOOK_READER);
     let store = store_with_title(&program, 7, "Mort");

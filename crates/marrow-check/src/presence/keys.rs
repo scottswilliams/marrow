@@ -14,13 +14,17 @@
 
 use super::scope::NameScope;
 use super::util::extend_unique;
-use crate::{CheckedArg, CheckedExpr, CheckedInterpolationPart, CheckedSavedTerminal};
+use crate::{
+    CheckedArg, CheckedCallTarget, CheckedExpr, CheckedInterpolationPart, CheckedSavedTerminal,
+    MarrowType,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SavedPlaceKey {
     pub(super) root: String,
     pub(super) members: Vec<String>,
     pub(super) keys: Vec<String>,
+    pub(super) key_types: Vec<Option<MarrowType>>,
     pub(super) key_bindings: Vec<u32>,
 }
 
@@ -30,6 +34,7 @@ pub(super) struct SavedPlaceKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ExprKey {
     pub(super) text: String,
+    pub(super) ty: Option<MarrowType>,
     pub(super) bindings: Vec<u32>,
 }
 
@@ -43,6 +48,7 @@ pub(super) fn saved_place_key(expr: &CheckedExpr, scope: &NameScope) -> Option<S
             .map(|layer| layer.name.clone())
             .collect(),
         keys: Vec::new(),
+        key_types: Vec::new(),
         key_bindings: Vec::new(),
     };
     match &place.terminal {
@@ -65,14 +71,20 @@ fn append_args_to_key(path: &mut SavedPlaceKey, args: &[CheckedArg], scope: &Nam
     for arg in args {
         let key = argument_key(arg, scope);
         path.keys.push(key.text);
+        path.key_types.push(key.ty);
         extend_unique(&mut path.key_bindings, key.bindings);
     }
 }
 
 pub(super) fn binding_key(name: &str, scope: &NameScope) -> Option<ExprKey> {
+    scoped_binding_key(name, scope)
+}
+
+fn scoped_binding_key(name: &str, scope: &NameScope) -> Option<ExprKey> {
     let binding = scope.lookup(name)?;
     Some(ExprKey {
         text: format!("binding:{binding}:{name}"),
+        ty: scope.lookup_type(name).cloned(),
         bindings: vec![binding],
     })
 }
@@ -91,6 +103,7 @@ pub(super) fn argument_key(arg: &CheckedArg, scope: &NameScope) -> ExprKey {
     text.push_str(&value.text);
     ExprKey {
         text,
+        ty: value.ty,
         bindings: value.bindings,
     }
 }
@@ -99,30 +112,33 @@ pub(super) fn expression_key(expr: &CheckedExpr, scope: &NameScope) -> ExprKey {
     match expr {
         CheckedExpr::Literal { kind, text, .. } => ExprKey {
             text: format!("lit:{kind:?}:{text}"),
+            ty: None,
             bindings: Vec::new(),
         },
         CheckedExpr::Name { segments, .. } if segments.len() == 1 => {
             let name = &segments[0];
-            match scope.lookup(name) {
-                Some(binding) => ExprKey {
-                    text: format!("binding:{binding}:{name}"),
-                    bindings: vec![binding],
-                },
-                None => ExprKey {
-                    text: format!("name:{name}"),
-                    bindings: Vec::new(),
-                },
-            }
+            scoped_binding_key(name, scope).unwrap_or_else(|| ExprKey {
+                text: format!("name:{name}"),
+                ty: None,
+                bindings: Vec::new(),
+            })
         }
         CheckedExpr::Name { segments, .. } => ExprKey {
             text: format!("name:{}", segments.join("::")),
+            ty: None,
             bindings: Vec::new(),
         },
         CheckedExpr::SavedRoot { name, .. } => ExprKey {
             text: format!("root:{name}"),
+            ty: None,
             bindings: Vec::new(),
         },
-        CheckedExpr::Call { callee, args, .. } => {
+        CheckedExpr::Call {
+            callee,
+            args,
+            target,
+            ..
+        } => {
             let callee = expression_key(callee, scope);
             let mut bindings = callee.bindings;
             let mut args_text = Vec::new();
@@ -131,8 +147,15 @@ pub(super) fn expression_key(expr: &CheckedExpr, scope: &NameScope) -> ExprKey {
                 args_text.push(arg.text);
                 extend_unique(&mut bindings, arg.bindings);
             }
+            let ty = match target {
+                CheckedCallTarget::IdentityConstructor(constructor) => {
+                    Some(MarrowType::Identity(constructor.root.clone()))
+                }
+                _ => None,
+            };
             ExprKey {
                 text: format!("call:{}({})", callee.text, args_text.join(",")),
+                ty,
                 bindings,
             }
         }
@@ -140,6 +163,7 @@ pub(super) fn expression_key(expr: &CheckedExpr, scope: &NameScope) -> ExprKey {
             let base = expression_key(base, scope);
             ExprKey {
                 text: format!("field:{}:{name}", base.text),
+                ty: None,
                 bindings: base.bindings,
             }
         }
@@ -147,6 +171,7 @@ pub(super) fn expression_key(expr: &CheckedExpr, scope: &NameScope) -> ExprKey {
             let base = expression_key(base, scope);
             ExprKey {
                 text: format!("optional:{}:{name}", base.text),
+                ty: None,
                 bindings: base.bindings,
             }
         }
@@ -154,6 +179,7 @@ pub(super) fn expression_key(expr: &CheckedExpr, scope: &NameScope) -> ExprKey {
             let operand = expression_key(operand, scope);
             ExprKey {
                 text: format!("unary:{op:?}:{}", operand.text),
+                ty: None,
                 bindings: operand.bindings,
             }
         }
@@ -166,6 +192,7 @@ pub(super) fn expression_key(expr: &CheckedExpr, scope: &NameScope) -> ExprKey {
             extend_unique(&mut bindings, right.bindings);
             ExprKey {
                 text: format!("binary:{op:?}:{}:{}", left.text, right.text),
+                ty: None,
                 bindings,
             }
         }
@@ -189,6 +216,7 @@ pub(super) fn expression_key(expr: &CheckedExpr, scope: &NameScope) -> ExprKey {
             }
             ExprKey {
                 text: format!("range:{inclusive_end}:{}", parts.join(":")),
+                ty: None,
                 bindings,
             }
         }
@@ -208,6 +236,7 @@ pub(super) fn expression_key(expr: &CheckedExpr, scope: &NameScope) -> ExprKey {
                 .join(",");
             ExprKey {
                 text: format!("interp:{text}"),
+                ty: None,
                 bindings,
             }
         }

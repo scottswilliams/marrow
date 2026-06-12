@@ -4,7 +4,7 @@ use marrow_check::{
 use marrow_store::key::{SavedKey, decode_identity_payload_arity};
 use marrow_syntax::SourceSpan;
 
-use crate::collection::{ReadPosition, absent_read};
+use crate::collection::absent_read;
 use crate::env::Env;
 use crate::error::{Located, RUN_TYPE, RUN_UNSUPPORTED, RuntimeError, unsupported};
 use crate::expr::eval_expr;
@@ -124,13 +124,8 @@ pub(crate) fn read_exact_unique_index_lookup_value(
         root: place.root.clone(),
         remaining_key_depth: 0,
     };
-    read_unique_index_value(&lookup.address.keys, &lookup, span, env)?.ok_or_else(|| {
-        absent_read(
-            ReadPosition::Value,
-            format!("`{name}` has no entry for that key"),
-            span,
-        )
-    })
+    read_unique_index_value(&lookup.address.keys, &lookup, span, env)?
+        .ok_or_else(|| absent_read(format!("`{name}` has no entry for that key"), span))
 }
 
 pub(crate) fn exact_unique_index_lookup_value(
@@ -152,6 +147,23 @@ pub(crate) fn exact_unique_index_lookup_value(
             ExactUniqueIndexLookupValue::Present
         }))
     })
+}
+
+pub(crate) fn read_exact_unique_index_lookup_if_present(
+    expr: &ExecExpr,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Option<Value>, RuntimeError> {
+    let Some(lookup) = unique_index_lookup(expr, env)? else {
+        return Ok(None);
+    };
+    if lookup.remaining_key_depth > 0 {
+        return Err(unsupported(
+            "using an incomplete unique index lookup as a collection",
+            span,
+        ));
+    }
+    read_unique_index_value(&lookup.address.keys, &lookup, span, env)
 }
 
 fn index_lookup_keys(

@@ -12,6 +12,7 @@ use crate::call::{
     expression_absent_at_resolution_site,
 };
 use crate::call_args::default_value;
+use crate::durable_read::read_saved_value_if_present;
 use crate::env::{Env, Flow};
 use crate::error::{RuntimeError, assign_error, type_error, unsupported};
 use crate::exec::{eval_block, eval_match, local_target};
@@ -20,7 +21,7 @@ use crate::group_write::eval_group_entry_write;
 use crate::host::Frame;
 use crate::local_collection::eval_local_collection_write;
 use crate::loop_exec::{eval_for, eval_while};
-use crate::path::{direct_root_place, saved_path_present};
+use crate::path::direct_root_place;
 use crate::transaction::eval_transaction;
 use crate::value::Value;
 use crate::write_dispatch::{
@@ -55,6 +56,7 @@ fn eval_binding_or_write_statement(
             resource_default,
             value,
             span,
+            ..
         } => eval_var(
             name,
             *key_count,
@@ -126,6 +128,7 @@ fn eval_control_statement(statement: &ExecStmt, env: &mut Env<'_>) -> Result<Flo
             else_ifs,
             else_block,
             span,
+            ..
         } => eval_if_const(
             name,
             value,
@@ -296,20 +299,24 @@ fn eval_if_const(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
-    if expr_call_maybe_present(value) {
-        return match eval_expr(value, env) {
-            Ok(value) => eval_bound_if_const(name, value, then_block, env),
-            Err(error) if expression_absent_at_resolution_site(value, &error) => {
-                eval_if_const_fallback(else_ifs, else_block, span, env)
-            }
-            Err(error) => Err(error),
-        };
-    }
-    if saved_path_present(value, value.span(), env)? {
-        let value = eval_expr(value, env)?;
+    if let Some(value) = eval_if_const_value(value, env)? {
         return eval_bound_if_const(name, value, then_block, env);
     }
     eval_if_const_fallback(else_ifs, else_block, span, env)
+}
+
+fn eval_if_const_value(value: &ExecExpr, env: &mut Env<'_>) -> Result<Option<Value>, RuntimeError> {
+    if value.saved_place().is_some() {
+        return read_saved_value_if_present(value, value.span(), env);
+    }
+    if expr_call_maybe_present(value) {
+        return match eval_expr(value, env) {
+            Ok(value) => Ok(Some(value)),
+            Err(error) if expression_absent_at_resolution_site(value, &error) => Ok(None),
+            Err(error) => Err(error),
+        };
+    }
+    Ok(Some(eval_expr(value, env)?))
 }
 
 fn eval_bound_if_const(

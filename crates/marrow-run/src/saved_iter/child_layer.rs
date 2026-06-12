@@ -5,7 +5,6 @@ use marrow_store::key::SavedKey;
 use marrow_store::tree::IndexRangeBounds;
 use marrow_syntax::SourceSpan;
 
-use crate::collection::ReadPosition;
 use crate::durable_read::{LayerEntryAddress, read_layer_entry, read_layer_entry_at};
 use crate::env::{Env, Flow, TraversedLayer};
 use crate::error::{RuntimeError, unsupported};
@@ -131,7 +130,6 @@ impl ChildLayerScan {
                 &self.identity,
                 &self.layer_facts,
                 &layers[0].keys,
-                ReadPosition::Materialization,
                 self.span,
                 env,
             )
@@ -143,7 +141,6 @@ impl ChildLayerScan {
                     layers: &layers,
                     layer_facts: &self.layer_facts,
                 },
-                ReadPosition::Materialization,
                 self.span,
                 env,
             )

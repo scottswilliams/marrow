@@ -76,6 +76,197 @@ fn if_exists_narrowing_is_key_sensitive() {
 }
 
 #[test]
+fn composite_identity_raw_write_invalidates_spliced_identity_proof() {
+    assert_bare_present_read(
+        "presence-composite-identity-alias-invalidation",
+        "module books\n\
+             resource Book\n\
+             \x20   subtitle: string\n\
+             store ^books(author: string, ordinal: int): Book\n\
+             fn stale(author: string, ordinal: int): string\n\
+             \x20   const id: Id(^books) = Id(^books, author, ordinal)\n\
+             \x20   if exists(^books(id).subtitle)\n\
+             \x20       delete ^books(author, ordinal).subtitle\n\
+             \x20       return ^books(id).subtitle\n\
+             \x20   return \"missing\"\n",
+    );
+}
+
+#[test]
+fn function_returned_identity_raw_write_invalidates_spliced_identity_proof() {
+    assert_bare_present_read(
+        "presence-function-identity-alias-invalidation",
+        "module books\n\
+             resource Book\n\
+             \x20   subtitle: string\n\
+             store ^books(author: string, ordinal: int): Book\n\
+             fn makeId(author: string, ordinal: int): Id(^books)\n\
+             \x20   return Id(^books, author, ordinal)\n\
+             fn stale(author: string, ordinal: int): string\n\
+             \x20   const id: Id(^books) = makeId(author, ordinal)\n\
+             \x20   if exists(^books(id).subtitle)\n\
+             \x20       delete ^books(author, ordinal).subtitle\n\
+             \x20       return ^books(id).subtitle\n\
+             \x20   return \"missing\"\n",
+    );
+}
+
+#[test]
+fn var_identity_raw_write_invalidates_spliced_identity_proof() {
+    assert_bare_present_read(
+        "presence-var-identity-alias-invalidation",
+        "module books\n\
+             resource Book\n\
+             \x20   subtitle: string\n\
+             store ^books(author: string, ordinal: int): Book\n\
+             fn makeId(author: string, ordinal: int): Id(^books)\n\
+             \x20   return Id(^books, author, ordinal)\n\
+             fn stale(author: string, ordinal: int): string\n\
+             \x20   var id: Id(^books) = makeId(author, ordinal)\n\
+             \x20   if exists(^books(id).subtitle)\n\
+             \x20       delete ^books(author, ordinal).subtitle\n\
+             \x20       return ^books(id).subtitle\n\
+             \x20   return \"missing\"\n",
+    );
+}
+
+#[test]
+fn if_const_identity_raw_write_invalidates_spliced_identity_proof() {
+    assert_bare_present_read(
+        "presence-if-const-identity-alias-invalidation",
+        "module books\n\
+             resource Book\n\
+             \x20   subtitle: string\n\
+             \x20   isbn: string\n\
+             store ^books(author: string, ordinal: int): Book\n\
+             \x20   index byIsbn(isbn) unique\n\
+             fn stale(author: string, ordinal: int, isbn: string): string\n\
+             \x20   if const id = ^books.byIsbn(isbn)\n\
+             \x20       if exists(^books(id).subtitle)\n\
+             \x20           delete ^books(author, ordinal).subtitle\n\
+             \x20           return ^books(id).subtitle\n\
+             \x20   return \"missing\"\n",
+    );
+}
+
+#[test]
+fn distinct_primitive_bindings_may_alias_saved_write_target() {
+    assert_bare_present_read(
+        "presence-primitive-binding-alias-invalidation",
+        "module books\n\
+             resource Book\n\
+             \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
+             fn stale(id1: int, id2: int): string\n\
+             \x20   if exists(^books(id1).subtitle)\n\
+             \x20       delete ^books(id2).subtitle\n\
+             \x20       return ^books(id1).subtitle\n\
+             \x20   return \"missing\"\n",
+    );
+}
+
+#[test]
+fn different_literal_spellings_may_alias_saved_write_target() {
+    assert_bare_present_read(
+        "presence-literal-spelling-alias-invalidation",
+        "module books\n\
+             resource Book\n\
+             \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
+             fn stale(): string\n\
+             \x20   if exists(^books(1).subtitle)\n\
+             \x20       delete ^books(01).subtitle\n\
+             \x20       return ^books(1).subtitle\n\
+             \x20   return \"missing\"\n",
+    );
+}
+
+#[test]
+fn distinct_identity_bindings_may_alias_saved_write_target() {
+    assert_bare_present_read(
+        "presence-identity-binding-alias-invalidation",
+        "module books\n\
+             resource Book\n\
+             \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
+             fn stale(id1: Id(^books), id2: Id(^books)): string\n\
+             \x20   if exists(^books(id1).subtitle)\n\
+             \x20       delete ^books(id2).subtitle\n\
+             \x20       return ^books(id1).subtitle\n\
+             \x20   return \"missing\"\n",
+    );
+}
+
+#[test]
+fn saved_write_in_exists_key_expression_blocks_repeated_path_narrowing() {
+    assert_bare_present_read(
+        "presence-exists-key-expression-saved-write",
+        "module books\n\
+             resource Book\n\
+             \x20   subtitle: string\n\
+             resource Flag\n\
+             \x20   seen: bool\n\
+             store ^books(id: int): Book\n\
+             store ^flags(id: int): Flag\n\
+             fn key(id: int): int\n\
+             \x20   if exists(^flags(0).seen)\n\
+             \x20       delete ^books(id).subtitle\n\
+             \x20   else\n\
+             \x20       ^flags(0).seen = true\n\
+             \x20   return id\n\
+             fn stale(): string\n\
+             \x20   ^books(1).subtitle = \"present\"\n\
+             \x20   if exists(^books(key(1)).subtitle)\n\
+             \x20       return ^books(key(1)).subtitle\n\
+             \x20   return \"missing\"\n",
+    );
+}
+
+#[test]
+fn saved_write_in_if_const_key_expression_blocks_repeated_path_narrowing() {
+    assert_bare_present_read(
+        "presence-if-const-key-expression-saved-write",
+        "module books\n\
+             resource Book\n\
+             \x20   subtitle: string\n\
+             resource Flag\n\
+             \x20   seen: bool\n\
+             store ^books(id: int): Book\n\
+             store ^flags(id: int): Flag\n\
+             fn key(id: int): int\n\
+             \x20   if exists(^flags(0).seen)\n\
+             \x20       delete ^books(id).subtitle\n\
+             \x20   else\n\
+             \x20       ^flags(0).seen = true\n\
+             \x20   return id\n\
+             fn stale(): string\n\
+             \x20   ^books(1).subtitle = \"present\"\n\
+             \x20   if const value = ^books(key(1)).subtitle\n\
+             \x20       return ^books(key(1)).subtitle\n\
+             \x20   return \"missing\"\n",
+    );
+}
+
+#[test]
+fn saved_write_in_neighbor_path_key_expression_blocks_repeated_path_narrowing() {
+    assert_bare_present_read(
+        "presence-neighbor-key-expression-saved-write",
+        "module books\n\
+             resource Book\n\
+             \x20   title: string\n\
+             store ^books(id: int): Book\n\
+             fn key(id: int): int\n\
+             \x20   delete ^books(id).title\n\
+             \x20   return id\n\
+             fn stale(id: int, fallback: Id(^books)): string\n\
+             \x20   if exists(^books(id).title)\n\
+             \x20       const neighbor: Id(^books) = next(^books(key(id))) ?? fallback\n\
+             \x20       return ^books(id).title\n\
+             \x20   return \"missing\"\n",
+    );
+}
+
+#[test]
 fn if_exists_narrowing_is_binding_sensitive() {
     assert_bare_present_read(
         "presence-if-exists-shadowed-key",
@@ -375,6 +566,83 @@ fn for_loop_over_saved_layer_narrows_iterated_entry_reads() {
 }
 
 #[test]
+fn for_loop_over_composite_root_narrows_identity_reads() {
+    let root = temp_project("presence-composite-root-loop-narrowing", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             store ^books(author: string, ordinal: int): Book\n\
+             fn f()\n\
+             \x20   for id in ^books\n\
+             \x20       const book: Book = ^books(id)\n\
+             \x20       write(book.title)\n",
+        );
+    });
+
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn exact_non_unique_index_loop_over_composite_root_narrows_identity_reads() {
+    let root = temp_project("presence-composite-index-loop-narrowing", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   shelf: string\n\
+             store ^books(author: string, ordinal: int): Book\n\
+             \x20   index byShelf(shelf, author, ordinal)\n\
+             fn f()\n\
+             \x20   for id in ^books.byShelf(\"fiction\")\n\
+             \x20       const book: Book = ^books(id)\n\
+             \x20       write(book.title)\n",
+        );
+    });
+
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn non_unique_index_prefix_loop_does_not_narrow_record_identity_reads() {
+    assert_bare_present_read(
+        "presence-index-prefix-loop-not-identity",
+        "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   category: string\n\
+             store ^books(id: string): Book\n\
+             \x20   index byCategory(category, id)\n\
+             fn f()\n\
+             \x20   for id in ^books.byCategory\n\
+             \x20       const book: Book = ^books(id)\n\
+             \x20       write(book.title)\n",
+    );
+}
+
+#[test]
+fn for_loop_over_composite_root_does_not_narrow_sparse_field_reads() {
+    assert_bare_present_read(
+        "presence-composite-root-loop-sparse-field",
+        "module books\n\
+             resource Book\n\
+             \x20   subtitle: string\n\
+             store ^books(author: string, ordinal: int): Book\n\
+             fn f()\n\
+             \x20   for id in ^books\n\
+             \x20       write(^books(id).subtitle)\n",
+    );
+}
+
+#[test]
 fn unknown_cannot_reenter_a_saved_identity_keyspace() {
     let root = temp_project("identity-unknown-keyspace", |root| {
         write(
@@ -615,6 +883,288 @@ fn if_not_exists_with_a_looping_body_does_not_narrow_the_remainder() {
          \x20   if not exists(^books(id).subtitle)\n\
          \x20       while false\n\
          \x20           return \"missing\"\n\
+         \x20   return ^books(id).subtitle\n",
+    );
+}
+
+#[test]
+fn while_body_narrowing_does_not_escape_the_loop() {
+    assert_bare_present_read(
+        "presence-while-body-narrowing-local",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn leaked(id: Id(^books)): string\n\
+         \x20   while false\n\
+         \x20       if not exists(^books(id).subtitle)\n\
+         \x20           return \"missing\"\n\
+         \x20   return ^books(id).subtitle\n",
+    );
+}
+
+#[test]
+fn while_body_transient_invalidation_blocks_post_loop_reads() {
+    assert_bare_present_read(
+        "presence-while-transient-invalidation",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn leaked(id: Id(^books), stop: bool): string\n\
+         \x20   if not exists(^books(id).subtitle)\n\
+         \x20       return \"missing\"\n\
+         \x20   while true\n\
+         \x20       delete ^books(id).subtitle\n\
+         \x20       if stop\n\
+         \x20           break\n\
+         \x20       if not exists(^books(id).subtitle)\n\
+         \x20           return \"missing\"\n\
+         \x20   return ^books(id).subtitle\n",
+    );
+}
+
+#[test]
+fn while_body_continue_before_reproof_blocks_post_loop_reads() {
+    assert_bare_present_read(
+        "presence-while-continue-invalidation",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn leaked(id: Id(^books), stop: bool): string\n\
+         \x20   if not exists(^books(id).subtitle)\n\
+         \x20       return \"missing\"\n\
+         \x20   while true\n\
+         \x20       delete ^books(id).subtitle\n\
+         \x20       if stop\n\
+         \x20           continue\n\
+         \x20       if not exists(^books(id).subtitle)\n\
+         \x20           return \"missing\"\n\
+         \x20       break\n\
+         \x20   return ^books(id).subtitle\n",
+    );
+}
+
+#[test]
+fn while_body_saved_writing_call_blocks_post_loop_reads() {
+    assert_bare_present_read(
+        "presence-while-call-invalidation",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn clear(id: Id(^books))\n\
+         \x20   delete ^books(id).subtitle\n\
+         fn leaked(id: Id(^books), stop: bool): string\n\
+         \x20   if not exists(^books(id).subtitle)\n\
+         \x20       return \"missing\"\n\
+         \x20   while true\n\
+         \x20       clear(id)\n\
+         \x20       if stop\n\
+         \x20           break\n\
+         \x20       if not exists(^books(id).subtitle)\n\
+         \x20           return \"missing\"\n\
+         \x20   return ^books(id).subtitle\n",
+    );
+}
+
+#[test]
+fn for_body_transient_invalidation_blocks_post_loop_reads() {
+    assert_bare_present_read(
+        "presence-for-transient-invalidation",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn leaked(id: Id(^books), stop: bool): string\n\
+         \x20   if not exists(^books(id).subtitle)\n\
+         \x20       return \"missing\"\n\
+         \x20   for other in ^books\n\
+         \x20       delete ^books(id).subtitle\n\
+         \x20       if stop\n\
+         \x20           break\n\
+         \x20       if not exists(^books(id).subtitle)\n\
+         \x20           return \"missing\"\n\
+         \x20   return ^books(id).subtitle\n",
+    );
+}
+
+#[test]
+fn for_body_continue_before_reproof_blocks_post_loop_reads() {
+    assert_bare_present_read(
+        "presence-for-continue-invalidation",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn leaked(id: Id(^books), stop: bool): string\n\
+         \x20   if not exists(^books(id).subtitle)\n\
+         \x20       return \"missing\"\n\
+         \x20   for other in ^books\n\
+         \x20       delete ^books(id).subtitle\n\
+         \x20       if stop\n\
+         \x20           continue\n\
+         \x20       if not exists(^books(id).subtitle)\n\
+         \x20           return \"missing\"\n\
+         \x20   return ^books(id).subtitle\n",
+    );
+}
+
+#[test]
+fn local_key_mutation_in_loop_invalidates_key_dependent_proof() {
+    assert_bare_present_read(
+        "presence-loop-key-mutation",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn leaked(id: int, stop: bool): string\n\
+         \x20   var key: int = id\n\
+         \x20   if not exists(^books(key).subtitle)\n\
+         \x20       return \"missing\"\n\
+         \x20   while true\n\
+         \x20       key = 2\n\
+         \x20       if stop\n\
+         \x20           break\n\
+         \x20       if not exists(^books(key).subtitle)\n\
+         \x20           return \"missing\"\n\
+         \x20   return ^books(key).subtitle\n",
+    );
+}
+
+#[test]
+fn try_body_narrowing_does_not_escape_the_try() {
+    assert_bare_present_read(
+        "presence-try-body-narrowing-local",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn skip()\n\
+         \x20   throw Error(code: \"test.skip\", message: \"skip\")\n\
+         fn leaked(id: Id(^books)): string\n\
+         \x20   try\n\
+         \x20       skip()\n\
+         \x20       if not exists(^books(id).subtitle)\n\
+         \x20           return \"missing\"\n\
+         \x20   catch err: Error\n\
+         \x20       const ignored: int = 1\n\
+         \x20   return ^books(id).subtitle\n",
+    );
+}
+
+#[test]
+fn try_body_transient_invalidation_blocks_catch_reads() {
+    assert_bare_present_read(
+        "presence-try-catch-transient-invalidation",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn leaked(id: Id(^books), stop: bool): string\n\
+         \x20   if not exists(^books(id).subtitle)\n\
+         \x20       return \"missing\"\n\
+         \x20   try\n\
+         \x20       delete ^books(id).subtitle\n\
+         \x20       if stop\n\
+         \x20           throw Error(code: \"test.stop\", message: \"stop\")\n\
+         \x20       if not exists(^books(id).subtitle)\n\
+         \x20           return \"missing\"\n\
+         \x20   catch err: Error\n\
+         \x20       return ^books(id).subtitle\n\
+         \x20   return \"ok\"\n",
+    );
+}
+
+#[test]
+fn try_body_transient_invalidation_blocks_finally_reads() {
+    assert_bare_present_read(
+        "presence-try-finally-transient-invalidation",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn leaked(id: Id(^books), stop: bool): string\n\
+         \x20   if not exists(^books(id).subtitle)\n\
+         \x20       return \"missing\"\n\
+         \x20   try\n\
+         \x20       delete ^books(id).subtitle\n\
+         \x20       if stop\n\
+         \x20           throw Error(code: \"test.stop\", message: \"stop\")\n\
+         \x20       if not exists(^books(id).subtitle)\n\
+         \x20           return \"missing\"\n\
+         \x20   finally\n\
+         \x20       write(^books(id).subtitle)\n\
+         \x20   return \"ok\"\n",
+    );
+}
+
+#[test]
+fn saved_writing_call_in_try_blocks_catch_reads() {
+    assert_bare_present_read(
+        "presence-try-call-invalidation",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn clear(id: Id(^books))\n\
+         \x20   delete ^books(id).subtitle\n\
+         fn leaked(id: Id(^books), stop: bool): string\n\
+         \x20   if not exists(^books(id).subtitle)\n\
+         \x20       return \"missing\"\n\
+         \x20   try\n\
+         \x20       clear(id)\n\
+         \x20       if stop\n\
+         \x20           throw Error(code: \"test.stop\", message: \"stop\")\n\
+         \x20       if not exists(^books(id).subtitle)\n\
+         \x20           return \"missing\"\n\
+         \x20   catch err: Error\n\
+         \x20       return ^books(id).subtitle\n\
+         \x20   return \"ok\"\n",
+    );
+}
+
+#[test]
+fn catch_transient_invalidation_blocks_finally_reads() {
+    assert_bare_present_read(
+        "presence-catch-finally-transient-invalidation",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn leaked(id: Id(^books), stop: bool): string\n\
+         \x20   if not exists(^books(id).subtitle)\n\
+         \x20       return \"missing\"\n\
+         \x20   try\n\
+         \x20       throw Error(code: \"test.stop\", message: \"stop\")\n\
+         \x20   catch err: Error\n\
+         \x20       delete ^books(id).subtitle\n\
+         \x20       if stop\n\
+         \x20           throw Error(code: \"test.stop\", message: \"stop\")\n\
+         \x20       if not exists(^books(id).subtitle)\n\
+         \x20           return \"missing\"\n\
+         \x20   finally\n\
+         \x20       write(^books(id).subtitle)\n\
+         \x20   return \"ok\"\n",
+    );
+}
+
+#[test]
+fn finally_invalidation_blocks_post_try_reads() {
+    assert_bare_present_read(
+        "presence-finally-invalidation",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn leaked(id: Id(^books)): string\n\
+         \x20   if not exists(^books(id).subtitle)\n\
+         \x20       return \"missing\"\n\
+         \x20   try\n\
+         \x20       const ok: int = 1\n\
+         \x20   finally\n\
+         \x20       delete ^books(id).subtitle\n\
          \x20   return ^books(id).subtitle\n",
     );
 }

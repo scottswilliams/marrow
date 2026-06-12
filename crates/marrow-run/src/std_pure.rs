@@ -7,7 +7,7 @@ use marrow_store::value::{SavedValue, ScalarType, date_days, date_parts, decode_
 use marrow_syntax::SourceSpan;
 
 use crate::base64;
-use crate::collection::{ReadPosition, absent_read};
+use crate::collection::absent_read;
 use crate::env::Env;
 use crate::error::{RuntimeError, overflow, std_arity, temporal_overflow, type_error, unsupported};
 use crate::expr::eval_int;
@@ -180,7 +180,6 @@ fn eval_text_index_of(
     let needle = eval_text(needle, env, span)?;
     let Some(byte_index) = text.find(&needle) else {
         return Err(absent_read(
-            ReadPosition::Value,
             "`std::text::indexOf` found no match".into(),
             span,
         ));

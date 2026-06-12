@@ -2,7 +2,7 @@ use marrow_check::{CheckedArg as ExecArg, CheckedExpr as ExecExpr};
 use marrow_store::key::SavedKey;
 use marrow_syntax::SourceSpan;
 
-use crate::collection::{Direction, ReadPosition, absent_read};
+use crate::collection::{Direction, absent_read};
 use crate::env::Env;
 use crate::error::{RuntimeError, assign_error, overflow, type_error, unsupported};
 use crate::expr::eval_expr;
@@ -23,9 +23,7 @@ pub(crate) fn eval_local_collection_read(
                 .into_iter()
                 .find(|entry| entry.keys == keys)
                 .map(|entry| entry.value)
-                .ok_or_else(|| {
-                    absent_read(ReadPosition::Value, "`local tree` is absent".into(), span)
-                })
+                .ok_or_else(|| absent_read("`local tree` is absent".into(), span))
                 .map(Some)
         }
         _ => Ok(None),
@@ -209,13 +207,10 @@ fn read_local_sequence(
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     let index = eval_local_sequence_index(args, span, env)?;
-    items.get(index).cloned().ok_or_else(|| {
-        absent_read(
-            ReadPosition::Value,
-            "`local sequence` is absent".into(),
-            span,
-        )
-    })
+    items
+        .get(index)
+        .cloned()
+        .ok_or_else(|| absent_read("`local sequence` is absent".into(), span))
 }
 
 fn eval_local_sequence_index(

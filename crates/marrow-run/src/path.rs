@@ -7,8 +7,8 @@ use marrow_check::{
 use marrow_store::key::SavedKey;
 use marrow_syntax::SourceSpan;
 
-use crate::collection::{ReadPosition, absent_read};
-use crate::durable_read::read_resource;
+use crate::collection::absent_read;
+use crate::durable_read::{LayerEntryAddress, read_layer_entry_at, read_resource};
 use crate::env::Env;
 use crate::error::{Located, RUN_TYPE, RuntimeError, key_type_fault, type_error, unsupported};
 use crate::expr::eval_expr;
@@ -57,14 +57,9 @@ impl SavedPath {
     /// The current value at this lowered path. A `Terminal::Field` reads that
     /// scalar field (top-level or inside the group chain), decoding it with the
     /// field's declared type; a `Terminal::Record` reads the whole record. An
-    /// unpopulated element raises an absent-element fault, catchable or fatal per
-    /// `position`.
-    pub(crate) fn read(
-        &self,
-        position: ReadPosition,
-        span: SourceSpan,
-        env: &mut Env<'_>,
-    ) -> Result<Value, RuntimeError> {
+    /// unpopulated element raises a fatal absent-element fault. Read-site
+    /// resolution probes presence before calling this fixed-address read.
+    pub(crate) fn read(&self, span: SourceSpan, env: &mut Env<'_>) -> Result<Value, RuntimeError> {
         let Terminal::Field {
             name: field,
             catalog_id,
@@ -72,7 +67,24 @@ impl SavedPath {
         } = &self.terminal
         else {
             return match self.terminal {
-                Terminal::Record => read_resource(&self.place, &self.identity, span, env),
+                Terminal::Record if self.layer_addresses.is_empty() => {
+                    read_resource(&self.place, &self.identity, span, env)
+                }
+                Terminal::Record => {
+                    let Some(layer_facts) = self.place.layers.last() else {
+                        return Err(unsupported("reading this saved path", span));
+                    };
+                    read_layer_entry_at(
+                        LayerEntryAddress {
+                            place: &self.place,
+                            identity: &self.identity,
+                            layers: &self.layer_addresses,
+                            layer_facts,
+                        },
+                        span,
+                        env,
+                    )
+                }
                 Terminal::Index => Err(unsupported("reading this saved path", span)),
                 Terminal::Field { .. } => unreachable!("guarded by the let-else"),
             };
@@ -101,7 +113,7 @@ impl SavedPath {
             } else {
                 format!("`{field}` entry is absent")
             };
-            return Err(absent_read(position, what, span));
+            return Err(absent_read(what, span));
         };
         decode_leaf(env.program, &bytes, leaf).ok_or_else(|| {
             RuntimeError::fault(
@@ -110,6 +122,26 @@ impl SavedPath {
                 span,
             )
         })
+    }
+
+    pub(crate) fn is_present(&self, span: SourceSpan, env: &Env<'_>) -> Result<bool, RuntimeError> {
+        let address = match &self.terminal {
+            Terminal::Record if self.layer_addresses.is_empty() => {
+                DataAddress::record(&self.place, &self.identity, span)?
+            }
+            Terminal::Record => {
+                DataAddress::layer_prefix(&self.place, &self.identity, &self.layer_addresses, span)?
+            }
+            Terminal::Field { catalog_id, .. } => DataAddress::member(
+                &self.place,
+                &self.identity,
+                &self.layer_addresses,
+                catalog_id,
+                span,
+            )?,
+            Terminal::Index => return Ok(false),
+        };
+        data_exists(env.store, &address, span)
     }
 
     /// Routes the write through the terminal variant, delegating to the
@@ -228,24 +260,7 @@ pub(crate) fn saved_path_present(
     if let Some(present) = iterable_index_branch_present(expr, env)? {
         return Ok(present);
     }
-    let path = lower(expr, env)?;
-    let address = match &path.terminal {
-        Terminal::Record if path.layer_addresses.is_empty() => {
-            DataAddress::record(&path.place, &path.identity, span)?
-        }
-        Terminal::Record => {
-            DataAddress::layer_prefix(&path.place, &path.identity, &path.layer_addresses, span)?
-        }
-        Terminal::Field { catalog_id, .. } => DataAddress::member(
-            &path.place,
-            &path.identity,
-            &path.layer_addresses,
-            catalog_id,
-            span,
-        )?,
-        Terminal::Index => return Ok(false),
-    };
-    data_exists(env.store, &address, span)
+    lower(expr, env)?.is_present(span, env)
 }
 
 /// Evaluate a keyed lookup's arguments to saved key segments, rejecting named

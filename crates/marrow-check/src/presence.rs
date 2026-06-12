@@ -10,10 +10,12 @@ mod util;
 mod walk;
 mod writes;
 
-pub(crate) use calls::maybe_present_result;
 pub(crate) use direct::{direct_effects_for_block, direct_effects_for_expr};
 pub(crate) use read_only::{ReadOnlyExpressionEffects, read_only_expression_effects};
-pub(crate) use target::{exists_target_in_type_scope, read_resolves_in_type_scope};
+pub(crate) use target::{
+    bindable_saved_value_read_in_type_scope, exists_target_in_type_scope,
+    read_resolves_in_type_scope,
+};
 pub(crate) use writes::{effect_closure, effect_closure_for_direct};
 
 #[derive(Clone, Copy)]

@@ -1,7 +1,7 @@
 use super::calls::wrapper_arg;
 use super::keys::binding_key;
 use super::scope::NameScope;
-use super::target::{ReadPlace, ReadTarget, read_target_with_scope};
+use super::target::{ReadPlace, ReadTarget, ReadTargetValue, read_target_with_scope};
 use super::util::extend_unique;
 use super::writes::expr_calls_saved_writer;
 use crate::{
@@ -109,7 +109,9 @@ pub(super) fn traversal_narrowing(
     }
     let key = binding_key(&binding.first, scope)?;
     target.keys.push(key.text);
+    target.key_types.push(key.ty);
     extend_unique(&mut target.key_bindings, key.bindings);
+    target.value = ReadTargetValue::Value;
     Some(target)
 }
 

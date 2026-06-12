@@ -167,6 +167,74 @@ fn explicit_keyed_leaf_write_then_reads_back() {
 }
 
 #[test]
+fn if_const_reads_a_keyed_leaf_entry_value() {
+    let program = checked_program(&format!(
+        "{BOOK_TAGS_SCHEMA}pub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).tags(2) = \"funny\"\n\npub fn guarded_tag(id: int, pos: int): string\n    if const tag = ^books(id).tags(pos)\n        return tag\n    return \"missing\"\n"
+    ));
+    let store = TreeStore::memory();
+    run_entry(
+        &store,
+        checked_entry!(&program, "test::seed", Value::Int(1)),
+    )
+    .expect("seed");
+
+    let present = run_entry(
+        &store,
+        checked_entry!(&program, "test::guarded_tag", Value::Int(1), Value::Int(2)),
+    )
+    .expect("present keyed leaf")
+    .value;
+    assert_eq!(present, Some(Value::Str("funny".into())));
+
+    let absent = run_entry(
+        &store,
+        checked_entry!(&program, "test::guarded_tag", Value::Int(1), Value::Int(3)),
+    )
+    .expect("absent keyed leaf")
+    .value;
+    assert_eq!(absent, Some(Value::Str("missing".into())));
+}
+
+#[test]
+fn if_const_reads_a_keyed_group_entry_value() {
+    let program = checked_program(
+        "resource Book\n    required title: string\n    versions(version: int)\n        required title: string\nstore ^books(id: int): Book\n\npub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).versions(2).title = \"second\"\n\npub fn guarded_version(id: int, version: int): string\n    if const entry = ^books(id).versions(version)\n        return entry.title\n    return \"missing\"\n",
+    );
+    let store = TreeStore::memory();
+    run_entry(
+        &store,
+        checked_entry!(&program, "test::seed", Value::Int(1)),
+    )
+    .expect("seed");
+
+    let present = run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::guarded_version",
+            Value::Int(1),
+            Value::Int(2)
+        ),
+    )
+    .expect("present keyed group")
+    .value;
+    assert_eq!(present, Some(Value::Str("second".into())));
+
+    let absent = run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::guarded_version",
+            Value::Int(1),
+            Value::Int(3)
+        ),
+    )
+    .expect("absent keyed group")
+    .value;
+    assert_eq!(absent, Some(Value::Str("missing".into())));
+}
+
+#[test]
 fn explicit_keyed_leaf_write_creates_a_hole_that_append_skips() {
     // An explicit write past the dense range leaves a hole; append chooses one
     // past the highest positive key, not the first gap.

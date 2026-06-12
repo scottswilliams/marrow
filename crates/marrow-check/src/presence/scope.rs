@@ -2,11 +2,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::TransformOldReadScope;
+use crate::MarrowType;
 use marrow_schema::ReturnPresence;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct NameScope {
-    frames: Vec<HashMap<String, u32>>,
+    frames: Vec<HashMap<String, ScopedBinding>>,
     next_binding: u32,
     return_presence: ReturnPresence,
     transform_old: Option<TransformOldBinding>,
@@ -25,7 +26,13 @@ impl Default for NameScope {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
+struct ScopedBinding {
+    id: u32,
+    ty: Option<MarrowType>,
+}
+
+#[derive(Clone, Debug)]
 struct TransformOldBinding {
     binding: u32,
     resource: String,
@@ -40,7 +47,7 @@ impl NameScope {
         };
         scope.push_frame();
         for param in &function.params {
-            scope.bind(&param.name);
+            scope.bind_with_type(&param.name, Some(param.ty.clone()));
         }
         scope
     }
@@ -66,7 +73,7 @@ impl NameScope {
             let mut names: Vec<&str> = frame.keys().map(String::as_str).collect();
             names.sort_unstable();
             for name in names {
-                let binding = scope.bind(name);
+                let binding = scope.bind_with_type(name, frame.get(name).cloned());
                 if let Some(old) = transform_old
                     && name == "old"
                     && old.frame == frame_index
@@ -90,10 +97,14 @@ impl NameScope {
     }
 
     pub(super) fn bind(&mut self, name: &str) -> u32 {
+        self.bind_with_type(name, None)
+    }
+
+    pub(super) fn bind_with_type(&mut self, name: &str, ty: Option<MarrowType>) -> u32 {
         let id = self.next_binding;
         self.next_binding += 1;
         if let Some(frame) = self.frames.last_mut() {
-            frame.insert(name.to_string(), id);
+            frame.insert(name.to_string(), ScopedBinding { id, ty });
         }
         id
     }
@@ -102,7 +113,14 @@ impl NameScope {
         self.frames
             .iter()
             .rev()
-            .find_map(|frame| frame.get(name).copied())
+            .find_map(|frame| frame.get(name).map(|binding| binding.id))
+    }
+
+    pub(super) fn lookup_type(&self, name: &str) -> Option<&MarrowType> {
+        self.frames
+            .iter()
+            .rev()
+            .find_map(|frame| frame.get(name).and_then(|binding| binding.ty.as_ref()))
     }
 
     pub(super) fn transform_old_resource(&self) -> Option<&str> {

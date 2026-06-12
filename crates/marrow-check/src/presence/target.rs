@@ -13,8 +13,10 @@ use crate::facts::{PresenceProofPlace, PresenceProofRead, ResourceMemberId, Save
 pub(crate) struct ReadTarget {
     pub(super) place: ReadPlace,
     pub(super) keys: Vec<String>,
+    pub(super) key_types: Vec<Option<MarrowType>>,
     pub(super) key_bindings: Vec<u32>,
     pub(super) read: PresenceProofRead,
+    pub(super) value: ReadTargetValue,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +36,12 @@ pub(super) enum ReadPlace {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ReadTargetValue {
+    Value,
+    AddressOnly,
+}
+
 pub(crate) fn read_resolves_in_type_scope(
     program: &CheckedProgram,
     expr: &CheckedExpr,
@@ -51,6 +59,18 @@ pub(crate) fn exists_target_in_type_scope(
 ) -> bool {
     read_resolution_in_type_scope(program, expr, type_scope, transform_old)
         .is_some_and(|read| read == PresenceProofRead::Direct)
+}
+
+pub(crate) fn bindable_saved_value_read_in_type_scope(
+    program: &CheckedProgram,
+    expr: &CheckedExpr,
+    type_scope: &[std::collections::HashMap<String, MarrowType>],
+    transform_old: Option<super::TransformOldReadScope<'_>>,
+) -> bool {
+    let scope = NameScope::from_type_scope(type_scope, transform_old);
+    read_target_with_scope(program, expr, &scope).is_some_and(|target| {
+        target.read == PresenceProofRead::Direct && target.value == ReadTargetValue::Value
+    })
 }
 
 fn read_resolution_in_type_scope(
@@ -84,7 +104,9 @@ pub(super) fn read_target_with_scope(
         let mut target = args
             .first()
             .and_then(|arg| read_target_with_scope(program, &arg.value, scope))?;
-        target.keys.insert(0, expression_key(callee, scope).text);
+        let key = expression_key(callee, scope);
+        target.keys.insert(0, key.text);
+        target.key_types.insert(0, key.ty);
         target.read = read;
         return Some(target);
     }
@@ -141,14 +163,18 @@ fn saved_path_target(
     let path = saved_place_key(expr, scope)?;
     if let Some(index) = checked_saved_index_read(place) {
         let root = path.root;
+        let value = store_index_value(place);
         return Some(ReadTarget {
             place: ReadPlace::StoreIndex { root, id: index },
             keys: path.keys,
+            key_types: path.key_types,
             key_bindings: path.key_bindings,
             read: PresenceProofRead::Direct,
+            value,
         });
     }
     let effect = checked_saved_place_effect(&program.facts, place)?;
+    let value = saved_target_value(place);
     Some(ReadTarget {
         place: ReadPlace::Saved {
             root: path.root,
@@ -156,9 +182,40 @@ fn saved_path_target(
             effect,
         },
         keys: path.keys,
+        key_types: path.key_types,
         key_bindings: path.key_bindings,
         read: PresenceProofRead::Direct,
+        value,
     })
+}
+
+fn saved_target_value(place: &crate::CheckedSavedPlace) -> ReadTargetValue {
+    let root_addressed = place.identity_keys.is_empty() || !place.identity_args.is_empty();
+    let layers_addressed = place
+        .layers
+        .iter()
+        .all(|layer| layer.key_params.is_empty() || !layer.args.is_empty());
+    if !(root_addressed && layers_addressed) {
+        return ReadTargetValue::AddressOnly;
+    }
+    match &place.terminal {
+        crate::CheckedSavedTerminal::Record | crate::CheckedSavedTerminal::Field { .. } => {
+            ReadTargetValue::Value
+        }
+        crate::CheckedSavedTerminal::Index { .. } => ReadTargetValue::AddressOnly,
+    }
+}
+
+fn store_index_value(place: &crate::CheckedSavedPlace) -> ReadTargetValue {
+    match &place.terminal {
+        crate::CheckedSavedTerminal::Index {
+            unique,
+            arg_count,
+            args,
+            ..
+        } if *unique && args.len() == *arg_count => ReadTargetValue::Value,
+        _ => ReadTargetValue::AddressOnly,
+    }
 }
 
 fn transform_old_target(
@@ -189,7 +246,9 @@ fn transform_old_target(
             member: member.member,
         },
         keys: Vec::new(),
+        key_types: Vec::new(),
         key_bindings: Vec::new(),
         read: PresenceProofRead::Direct,
+        value: ReadTargetValue::Value,
     })
 }

@@ -10,7 +10,7 @@ use marrow_run::evolution::{Approval, apply};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
-use marrow_store::value::Scalar;
+use marrow_store::value::{Scalar, ScalarType};
 
 #[test]
 fn proposal_transform_writes_target_before_catalog_acceptance() {
@@ -137,6 +137,136 @@ fn proposal_transform_updates_every_store_using_the_resource() {
     assert_eq!(
         read_scalar(&store, &archives_store_id, 2, &cents_id, INT),
         Some(Scalar::Int(700))
+    );
+}
+
+#[test]
+fn transform_if_const_over_sparse_old_member_applies() {
+    let root = temp_project("apply-transform-if-const-old", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
+             pub fn add(title: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    seed.record(1);
+    seed.member(1, "title", Scalar::Str("one".into()));
+    seed.member(1, "subtitle", Scalar::Str("present".into()));
+    seed.record(2);
+    seed.member(2, "title", Scalar::Str("two".into()));
+
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   subtitle: string\n\
+         \x20   required summary: string\n\
+         store ^books(id: int): Book\n\
+         evolve\n\
+         \x20   transform Book.summary\n\
+         \x20       if const subtitle = old.subtitle\n\
+         \x20           return subtitle\n\
+         \x20       return old.title\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root);
+    let summary_id = proposal_catalog_id(&program, "books::Book::summary");
+    let w = witness(&program, &store);
+    assert!(w.is_activatable(), "{w:#?}");
+    assert_eq!(w.counts.records_to_transform, 2);
+
+    let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
+    assert_eq!(outcome.receipt.records_transformed, 2);
+
+    let store_id = store_id_of(&accepted_place);
+    assert_eq!(
+        read_scalar(&store, &store_id, 1, &summary_id, ScalarType::Str),
+        Some(Scalar::Str("present".into()))
+    );
+    assert_eq!(
+        read_scalar(&store, &store_id, 2, &summary_id, ScalarType::Str),
+        Some(Scalar::Str("two".into()))
+    );
+}
+
+#[test]
+fn transform_exists_over_sparse_old_member_applies() {
+    let root = temp_project("apply-transform-exists-old", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
+             pub fn add(title: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    seed.record(1);
+    seed.member(1, "title", Scalar::Str("one".into()));
+    seed.member(1, "subtitle", Scalar::Str("present".into()));
+    seed.record(2);
+    seed.member(2, "title", Scalar::Str("two".into()));
+
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   subtitle: string\n\
+         \x20   required summary: string\n\
+         store ^books(id: int): Book\n\
+         evolve\n\
+         \x20   transform Book.summary\n\
+         \x20       if exists(old.subtitle)\n\
+         \x20           return old.subtitle\n\
+         \x20       return old.title\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root);
+    let summary_id = proposal_catalog_id(&program, "books::Book::summary");
+    let w = witness(&program, &store);
+    assert!(w.is_activatable(), "{w:#?}");
+    assert_eq!(w.counts.records_to_transform, 2);
+
+    let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
+    assert_eq!(outcome.receipt.records_transformed, 2);
+
+    let store_id = store_id_of(&accepted_place);
+    assert_eq!(
+        read_scalar(&store, &store_id, 1, &summary_id, ScalarType::Str),
+        Some(Scalar::Str("present".into()))
+    );
+    assert_eq!(
+        read_scalar(&store, &store_id, 2, &summary_id, ScalarType::Str),
+        Some(Scalar::Str("two".into()))
     );
 }
 

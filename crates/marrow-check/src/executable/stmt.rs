@@ -35,14 +35,16 @@ impl CheckedBody {
         let mut statements = Vec::new();
         scope.push(HashMap::new());
         for statement in &block.statements {
-            statements.push(CheckedStmt::lower(statement, context, scope)?);
-            if let Some((name, ty)) = crate::infer::local_binding(
+            let local_binding = crate::infer::local_binding(
                 context.program,
                 statement,
                 scope,
                 &context.aliases,
                 context.source_file,
-            ) {
+            );
+            let binding_type = local_binding.as_ref().map(|(_, ty)| ty.clone());
+            statements.push(CheckedStmt::lower(statement, context, scope, binding_type)?);
+            if let Some((name, ty)) = local_binding {
                 scope.last_mut()?.insert(name, ty);
             }
         }
@@ -81,6 +83,7 @@ fn lower_scoped_with_binding(
 pub enum CheckedStmt {
     Const {
         name: String,
+        binding_type: Option<MarrowType>,
         value: CheckedExpr,
         span: SourceSpan,
     },
@@ -88,6 +91,7 @@ pub enum CheckedStmt {
         name: String,
         key_count: usize,
         ty: Option<Type>,
+        binding_type: Option<MarrowType>,
         resource_default: bool,
         value: Option<CheckedExpr>,
         span: SourceSpan,
@@ -133,6 +137,7 @@ pub enum CheckedStmt {
     },
     IfConst {
         name: String,
+        binding_type: Option<MarrowType>,
         value: CheckedExpr,
         then_block: CheckedBody,
         else_ifs: Vec<CheckedElseIf>,
@@ -173,8 +178,9 @@ impl CheckedStmt {
         statement: &syntax::Statement,
         context: &CheckedExecutableContext<'_>,
         scope: &mut Vec<HashMap<String, MarrowType>>,
+        binding_type: Option<MarrowType>,
     ) -> Option<Self> {
-        Self::lower_binding_or_write(statement, context, scope)
+        Self::lower_binding_or_write(statement, context, scope, binding_type)
             .or_else(|| Self::lower_control(statement, context, scope))
     }
 
@@ -182,12 +188,14 @@ impl CheckedStmt {
         statement: &syntax::Statement,
         context: &CheckedExecutableContext<'_>,
         scope: &mut Vec<HashMap<String, MarrowType>>,
+        binding_type: Option<MarrowType>,
     ) -> Option<Self> {
         Some(match statement {
             syntax::Statement::Const {
                 name, value, span, ..
             } => Self::Const {
                 name: name.clone(),
+                binding_type,
                 value: CheckedExpr::lower(value, context, scope)?,
                 span: *span,
             },
@@ -201,6 +209,7 @@ impl CheckedStmt {
                 name: name.clone(),
                 key_count: keys.len(),
                 ty: ty.as_ref().map(Type::resolve),
+                binding_type,
                 resource_default: ty.as_ref().is_some_and(|ty| {
                     let Type::Named(name) = Type::resolve(ty) else {
                         return false;
@@ -305,6 +314,7 @@ impl CheckedStmt {
                 );
                 Self::IfConst {
                     name: name.clone(),
+                    binding_type: Some(value_type.clone()),
                     value: CheckedExpr::lower(value, context, scope)?,
                     then_block: lower_scoped_with_binding(
                         then_block,

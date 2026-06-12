@@ -336,8 +336,8 @@ pub(crate) fn reraise_fault_with_transaction_escape(
     }
 }
 
-/// Raise a recoverable runtime fault (a managed-write failure or an
-/// absent-element read) as a catchable fault while keeping its dotted code. The
+/// Raise a recoverable runtime fault (such as a managed-write failure or host
+/// capability absence) as a catchable fault while keeping its dotted code. The
 /// `Error` value is constructed lazily at the catch site; an uncaught fault
 /// surfaces with the same code it did before it became catchable.
 pub(crate) fn raise_fault(code: &'static str, message: String, span: SourceSpan) -> RuntimeError {

@@ -4,7 +4,7 @@ use marrow_check::{CheckedArg as ExecArg, CheckedExpr as ExecExpr};
 use marrow_syntax::SourceSpan;
 
 use crate::env::Env;
-use crate::error::{RUN_ABSENT, RUN_TYPE, RuntimeError, raise_fault, unsupported};
+use crate::error::{RUN_ABSENT, RUN_TYPE, RuntimeError, unsupported};
 use crate::expr::eval_expr;
 use crate::local_collection::{
     enumerate_local_collection_dir, enumerate_local_keys_call_arg, materialize_local_collection_dir,
@@ -21,15 +21,6 @@ pub(crate) use materialize::{
     MaterializeKind, reversed_keys, reversed_materialized, values_or_entries,
 };
 
-/// Where a saved read sits, which decides how an absent element fails. A
-/// value-position read raises a catchable fault a `try`/`catch` can bind;
-/// materialization after an address has been chosen stays a plain fatal fault.
-#[derive(Clone, Copy)]
-pub(crate) enum ReadPosition {
-    Value,
-    Materialization,
-}
-
 /// The order a saved-layer walk yields its children. A descending walk reverses as
 /// one, so a composite identity is true-reversed at every level, not only its
 /// outermost component.
@@ -39,17 +30,9 @@ pub(crate) enum Direction {
     Descending,
 }
 
-/// The absent-element error for a read at `position`: catchable in value
-/// position, plain fatal during materialization.
-pub(crate) fn absent_read(
-    position: ReadPosition,
-    message: String,
-    span: SourceSpan,
-) -> RuntimeError {
-    match position {
-        ReadPosition::Value => raise_fault(RUN_ABSENT, message, span),
-        ReadPosition::Materialization => RuntimeError::fault(RUN_ABSENT, message, span),
-    }
+/// The absent-element error for a fixed read address.
+pub(crate) fn absent_read(message: String, span: SourceSpan) -> RuntimeError {
+    RuntimeError::fault(RUN_ABSENT, message, span)
 }
 
 pub(crate) fn durable_collection_value(span: SourceSpan) -> RuntimeError {
