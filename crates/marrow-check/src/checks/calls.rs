@@ -10,9 +10,7 @@ use marrow_schema::{ResourceSchema, Type};
 use marrow_store::value::ScalarType;
 use marrow_syntax::SourceSpan;
 
-use crate::infer::{
-    is_saved_path_expression, layer_key_type, record_identity_type, saved_group_chain,
-};
+use crate::infer::{layer_key_type, record_identity_type, saved_group_chain};
 use crate::resolve::resolve_store_by_root;
 use crate::typerules::{
     as_primitive, expects_conversion, marrow_type_name, mismatch_display, type_compatible,
@@ -39,16 +37,20 @@ pub(crate) struct CallCheck<'a> {
     pub(crate) callee: &'a marrow_syntax::Expression,
     pub(crate) args: &'a [marrow_syntax::Argument],
     pub(crate) arg_types: &'a [MarrowType],
+    pub(crate) scope: &'a [HashMap<String, MarrowType>],
     pub(crate) aliases: &'a HashMap<String, Vec<String>>,
     pub(crate) span: SourceSpan,
     pub(crate) file: &'a Path,
+    pub(crate) transform_old: Option<crate::presence::TransformOldReadScope<'a>>,
     pub(crate) diagnostics: &'a mut Vec<CheckDiagnostic>,
 }
 
 struct CallEnv<'a> {
     program: &'a CheckedProgram,
+    scope: &'a [HashMap<String, MarrowType>],
     span: SourceSpan,
     file: &'a Path,
+    transform_old: Option<crate::presence::TransformOldReadScope<'a>>,
     diagnostics: &'a mut Vec<CheckDiagnostic>,
 }
 
@@ -61,15 +63,19 @@ pub(crate) fn check_call(input: CallCheck<'_>) -> MarrowType {
         callee,
         args,
         arg_types,
+        scope,
         aliases,
         span,
         file,
+        transform_old,
         diagnostics,
     } = input;
     let mut env = CallEnv {
         program,
+        scope,
         span,
         file,
+        transform_old,
         diagnostics,
     };
     let marrow_syntax::Expression::Name { segments, .. } = callee else {
@@ -187,15 +193,7 @@ fn check_builtin_call(
     if let Some(ty) = check_closed_module_op(env, segments, &label) {
         return ty;
     }
-    check_builtin_call_args(
-        env.program,
-        segments,
-        args,
-        arg_types,
-        env.span,
-        env.file,
-        env.diagnostics,
-    );
+    check_builtin_call_args(env, segments, args, arg_types);
     if let Some(params) = std_call_params(segments) {
         check_args_against(
             &label,
@@ -413,31 +411,28 @@ fn check_user_function_call(
 }
 
 fn check_builtin_call_args(
-    program: &CheckedProgram,
+    env: &mut CallEnv<'_>,
     segments: &[String],
     args: &[marrow_syntax::Argument],
     arg_types: &[MarrowType],
-    span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let [name] = segments else { return };
     match name.as_str() {
         "print" | "write" => {
-            check_output_args(name, arg_types, span, file, diagnostics);
+            check_output_args(name, arg_types, env.span, env.file, env.diagnostics);
             return;
         }
         "exists" => {
-            check_exists_args(program, args, span, file, diagnostics);
+            check_exists_args(env, args);
             return;
         }
         _ => {}
     }
     if let Some(target) = ConversionTarget::from_name(name) {
-        check_conversion_call_shape(target, args, span, file, diagnostics);
-        check_conversion_arg(target, arg_types, span, file, diagnostics);
+        check_conversion_call_shape(target, args, env.span, env.file, env.diagnostics);
+        check_conversion_arg(target, arg_types, env.span, env.file, env.diagnostics);
         if target == ConversionTarget::ErrorCode {
-            check_error_code_conversion_literal(args, file, diagnostics);
+            check_error_code_conversion_literal(args, env.file, env.diagnostics);
         }
     }
 }
@@ -463,21 +458,32 @@ fn check_output_args(
     }
 }
 
-fn check_exists_args(
-    program: &CheckedProgram,
-    args: &[marrow_syntax::Argument],
-    span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) {
+fn check_exists_args(env: &mut CallEnv<'_>, args: &[marrow_syntax::Argument]) {
     let [arg] = args else { return };
-    if !is_saved_path_expression(program, &arg.value) {
-        diagnostics.push(call_diagnostic(
-            file,
-            span,
+    if !is_exists_target_arg(env, &arg.value) {
+        env.diagnostics.push(call_diagnostic(
+            env.file,
+            env.span,
             "`exists` expects a saved path".to_string(),
         ));
     }
+}
+
+fn is_exists_target_arg(env: &CallEnv<'_>, expr: &marrow_syntax::Expression) -> bool {
+    let Some(module_index) = env
+        .program
+        .modules
+        .iter()
+        .position(|module| module.source_file == env.file)
+    else {
+        return false;
+    };
+    let context = crate::executable::CheckedExecutableContext::new(env.program, module_index);
+    let mut lower_scope = env.scope.to_vec();
+    let Some(expr) = crate::CheckedExpr::lower(expr, &context, &mut lower_scope) else {
+        return false;
+    };
+    crate::presence::exists_target_in_type_scope(env.program, &expr, env.scope, env.transform_old)
 }
 
 /// The call-site context for a named-field constructor check: the constructor

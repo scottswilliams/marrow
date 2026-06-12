@@ -16,7 +16,9 @@ use marrow_syntax::{
 };
 
 use crate::catalog::{SourceCatalogEntry, source_catalog_entries};
-use crate::checks::{FilePrelude, check_block_types, file_prelude};
+use crate::checks::{
+    FilePrelude, TransformBlockTypeCheck, check_transform_block_types, file_prelude,
+};
 use crate::infer::infer_type;
 use crate::program::TypeNames;
 use crate::typerules::{marrow_type_name, type_compatible};
@@ -390,17 +392,18 @@ impl TypeContext<'_> {
         let mut scope = vec![self.prelude.module_constants.clone()];
         scope.push(HashMap::from([(
             "old".to_string(),
-            MarrowType::Resource(resource),
+            MarrowType::Resource(resource.clone()),
         )]));
-        check_block_types(
-            self.program,
-            self.file,
-            &member_type,
-            body,
-            &mut scope,
-            &self.prelude.aliases,
+        check_transform_block_types(TransformBlockTypeCheck {
+            program: self.program,
+            file: self.file,
+            return_type: &member_type,
+            block: body,
+            scope: &mut scope,
+            aliases: &self.prelude.aliases,
+            transform_old_resource: &resource,
             diagnostics,
-        );
+        });
         self.check_read_restrictions(target, body, diagnostics);
     }
 

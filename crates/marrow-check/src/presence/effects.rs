@@ -218,7 +218,18 @@ fn written_target_invalidates(written: &ReadTarget, target: &ReadTarget) -> bool
                 && written_index == target_index
                 && written.keys == target.keys
         }
+        (
+            ReadPlace::TransformOld {
+                resource: written_resource,
+                member: written_member,
+            },
+            ReadPlace::TransformOld {
+                resource: target_resource,
+                member: target_member,
+            },
+        ) => written_resource == target_resource && written_member == target_member,
         (ReadPlace::StoreIndex { .. }, ReadPlace::Saved { .. }) => false,
+        (ReadPlace::TransformOld { .. }, _) | (_, ReadPlace::TransformOld { .. }) => false,
     }
 }
 

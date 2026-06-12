@@ -22,6 +22,7 @@ pub(crate) use intents::{
     DefaultIntent, EvolveIntents, RenameIntent, RetireIntent, TransformIntent, check_evolve_types,
     check_transform_effects, collect_evolve_intents, transform_body_in_source,
 };
+pub(crate) use transform_reads::transform_old_member;
 
 pub use discharge::RepairDiagnostic;
 pub use preview::preview;

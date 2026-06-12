@@ -46,6 +46,15 @@ pub(crate) fn check_presence(program: &mut CheckedProgram, diagnostics: &mut Vec
             }
         }
     }
+    let transforms = program.catalog.evolve_transforms.clone();
+    for transform in &transforms {
+        let Some(body) = transform.runtime_body() else {
+            continue;
+        };
+        let mut scope = NameScope::for_transform(&transform.resource);
+        let mut narrowed = Vec::new();
+        collect_block(program, body, &mut narrowed, &mut scope, diagnostics);
+    }
 }
 
 fn collect_block(

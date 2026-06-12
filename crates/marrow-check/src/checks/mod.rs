@@ -25,7 +25,9 @@ pub(crate) use diagnostics::key_type_diagnostic;
 pub(crate) use driver::{
     FilePrelude, ModuleNamePolicy, ResolvedFileCheck, check_resolved_files, file_prelude,
 };
-pub(crate) use operators::{check_binary, check_coalesce, check_unary};
+pub(crate) use operators::{CoalesceCheck, check_binary, check_coalesce, check_unary};
 pub(crate) use ranges::check_range_value;
 pub(crate) use saved_keys::check_saved_key_args;
-pub(crate) use statements::check_block_types;
+pub(crate) use statements::{
+    TransformBlockTypeCheck, check_block_types, check_transform_block_types,
+};

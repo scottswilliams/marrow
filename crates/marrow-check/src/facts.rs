@@ -772,6 +772,10 @@ impl CheckedFacts {
                 NodeKind::Slot { .. } => ResourceMemberKind::Field,
                 NodeKind::Group => ResourceMemberKind::Group,
             };
+            let plain_field_required = match &node.kind {
+                NodeKind::Slot { required, .. } if node.key_params.is_empty() => Some(*required),
+                _ => None,
+            };
             let value_meaning = match &node.kind {
                 NodeKind::Slot { ty, .. } => self.stored_value_meaning(module_id, ty, aliases),
                 NodeKind::Group => None,
@@ -783,6 +787,7 @@ impl CheckedFacts {
                 parent,
                 name: node.name.clone(),
                 kind,
+                plain_field_required,
                 value_meaning,
                 catalog_id: None,
                 span,
@@ -1162,6 +1167,7 @@ pub struct ResourceMemberFact {
     pub parent: Option<ResourceMemberId>,
     pub name: String,
     pub kind: ResourceMemberKind,
+    pub plain_field_required: Option<bool>,
     pub value_meaning: Option<StoredValueMeaning>,
     pub catalog_id: Option<String>,
     pub span: SourceSpan,

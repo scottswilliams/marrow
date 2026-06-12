@@ -3,6 +3,7 @@ use super::keys::{SavedPathParts, expression_key, saved_path_parts};
 use super::scope::NameScope;
 use crate::CheckedExpr;
 use crate::CheckedProgram;
+use crate::MarrowType;
 use crate::facts::{
     CheckedFacts, PresenceProofPlace, PresenceProofRead, ResourceMemberId, SavedPlaceEffect,
     StoreIndexId,
@@ -19,12 +20,47 @@ pub(crate) struct ReadTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ReadPlace {
-    Saved { root: String, members: Vec<String> },
-    StoreIndex { root: String, index: String },
+    Saved {
+        root: String,
+        members: Vec<String>,
+    },
+    StoreIndex {
+        root: String,
+        index: String,
+    },
+    TransformOld {
+        resource: crate::facts::ResourceId,
+        member: ResourceMemberId,
+    },
 }
 
-pub(crate) fn read_target(program: &CheckedProgram, expr: &CheckedExpr) -> Option<ReadTarget> {
-    read_target_with_scope(program, expr, &NameScope::default())
+pub(crate) fn read_resolves_in_type_scope(
+    program: &CheckedProgram,
+    expr: &CheckedExpr,
+    type_scope: &[std::collections::HashMap<String, MarrowType>],
+    transform_old: Option<super::TransformOldReadScope<'_>>,
+) -> bool {
+    read_resolution_in_type_scope(program, expr, type_scope, transform_old).is_some()
+}
+
+pub(crate) fn exists_target_in_type_scope(
+    program: &CheckedProgram,
+    expr: &CheckedExpr,
+    type_scope: &[std::collections::HashMap<String, MarrowType>],
+    transform_old: Option<super::TransformOldReadScope<'_>>,
+) -> bool {
+    read_resolution_in_type_scope(program, expr, type_scope, transform_old)
+        .is_some_and(|read| read == PresenceProofRead::Direct)
+}
+
+fn read_resolution_in_type_scope(
+    program: &CheckedProgram,
+    expr: &CheckedExpr,
+    type_scope: &[std::collections::HashMap<String, MarrowType>],
+    transform_old: Option<super::TransformOldReadScope<'_>>,
+) -> Option<PresenceProofRead> {
+    let scope = NameScope::from_type_scope(type_scope, transform_old);
+    read_target_with_scope(program, expr, &scope).map(|target| target.read)
 }
 
 pub(super) fn read_target_with_scope(
@@ -60,6 +96,12 @@ pub(super) fn proof_place(
             root,
             members,
         )?)),
+        ReadPlace::TransformOld { resource, member } => {
+            Some(PresenceProofPlace::Saved(SavedPlaceEffect {
+                resource: *resource,
+                members: vec![*member],
+            }))
+        }
         ReadPlace::StoreIndex { root, index } => Some(PresenceProofPlace::StoreIndex(
             store_index_place(program, root, index)?,
         )),
@@ -121,6 +163,9 @@ fn saved_path_target(
     expr: &CheckedExpr,
     scope: &NameScope,
 ) -> Option<ReadTarget> {
+    if let Some(target) = transform_old_target(program, expr, scope) {
+        return Some(target);
+    }
     let path = saved_path_parts(expr, scope)?;
     if store_index_read(program, &path).is_some() {
         let root = path.root;
@@ -144,6 +189,39 @@ fn saved_path_target(
         },
         keys: path.keys,
         key_bindings: path.key_bindings,
+        read: PresenceProofRead::Direct,
+    })
+}
+
+fn transform_old_target(
+    program: &CheckedProgram,
+    expr: &CheckedExpr,
+    scope: &NameScope,
+) -> Option<ReadTarget> {
+    let (base, name) = match expr {
+        CheckedExpr::Field { base, name, .. } | CheckedExpr::OptionalField { base, name, .. } => {
+            (base, name)
+        }
+        _ => return None,
+    };
+    if !matches!(
+        base.as_ref(),
+        CheckedExpr::Name { segments, .. } if segments.as_slice() == ["old"]
+    ) {
+        return None;
+    }
+    let member =
+        crate::evolution::transform_old_member(program, scope.transform_old_resource()?, name)?;
+    if member.required {
+        return None;
+    }
+    Some(ReadTarget {
+        place: ReadPlace::TransformOld {
+            resource: member.resource,
+            member: member.member,
+        },
+        keys: Vec::new(),
+        key_bindings: Vec::new(),
         read: PresenceProofRead::Direct,
     })
 }

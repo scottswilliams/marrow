@@ -8,8 +8,8 @@ use marrow_store::value::ScalarType;
 use marrow_syntax::SourceSpan;
 
 use crate::checks::{
-    CallCheck, check_binary, check_call, check_coalesce, check_saved_key_args, check_unary,
-    is_saved_index_branch_path, key_type_diagnostic,
+    CallCheck, CoalesceCheck, check_binary, check_call, check_coalesce, check_saved_key_args,
+    check_unary, is_saved_index_branch_path, key_type_diagnostic,
 };
 use crate::enums::{
     IsCheck, check_is, enum_schema_in, join_or, resolve_enum_member_path, resolve_type,
@@ -72,6 +72,17 @@ pub(crate) fn local_binding(
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
 ) -> Option<(String, MarrowType)> {
+    local_binding_with_read_scope(program, statement, scope, aliases, file, None)
+}
+
+pub(crate) fn local_binding_with_read_scope(
+    program: &CheckedProgram,
+    statement: &marrow_syntax::Statement,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+    transform_old: Option<crate::presence::TransformOldReadScope<'_>>,
+) -> Option<(String, MarrowType)> {
     use marrow_syntax::Statement;
     let mut sink = Vec::new();
     let (name, keys, annotation, value_type) = match statement {
@@ -81,7 +92,15 @@ pub(crate) fn local_binding(
             name,
             &[][..],
             ty,
-            infer_type(program, value, scope, aliases, file, &mut sink),
+            infer_type_with_read_scope(
+                program,
+                value,
+                scope,
+                aliases,
+                file,
+                &mut sink,
+                transform_old,
+            ),
         ),
         Statement::Var {
             name,
@@ -91,7 +110,15 @@ pub(crate) fn local_binding(
             ..
         } => {
             let value_type = match value {
-                Some(value) => infer_type(program, value, scope, aliases, file, &mut sink),
+                Some(value) => infer_type_with_read_scope(
+                    program,
+                    value,
+                    scope,
+                    aliases,
+                    file,
+                    &mut sink,
+                    transform_old,
+                ),
                 None => MarrowType::Unknown,
             };
             (name, keys.as_slice(), ty, value_type)
@@ -123,6 +150,18 @@ pub(crate) fn infer_type(
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
+) -> MarrowType {
+    infer_type_with_read_scope(program, expr, scope, aliases, file, diagnostics, None)
+}
+
+pub(crate) fn infer_type_with_read_scope(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+    transform_old: Option<crate::presence::TransformOldReadScope<'_>>,
 ) -> MarrowType {
     use marrow_syntax::Expression;
     if let Some(rejection) = saved_access_rejection(program, expr) {
@@ -160,7 +199,15 @@ pub(crate) fn infer_type(
                         check_interpolation_text_escapes(text, *span, file, diagnostics);
                     }
                     marrow_syntax::InterpolationPart::Expr(expr) => {
-                        let ty = infer_type(program, expr, scope, aliases, file, diagnostics);
+                        let ty = infer_type_with_read_scope(
+                            program,
+                            expr,
+                            scope,
+                            aliases,
+                            file,
+                            diagnostics,
+                            transform_old,
+                        );
                         if type_renderable_at_runtime(&ty) == Some(false) {
                             diagnostics.push(interpolation_unsupported_source_diagnostic(
                                 file,
@@ -186,7 +233,15 @@ pub(crate) fn infer_type(
             })
         }
         Expression::Unary { op, operand, span } => {
-            let operand = infer_type(program, operand, scope, aliases, file, diagnostics);
+            let operand = infer_type_with_read_scope(
+                program,
+                operand,
+                scope,
+                aliases,
+                file,
+                diagnostics,
+                transform_old,
+            );
             check_unary(*op, &operand, *span, file, diagnostics)
         }
         Expression::Binary {
@@ -195,7 +250,15 @@ pub(crate) fn infer_type(
             right,
             span,
         } => {
-            let left_type = infer_type(program, left, scope, aliases, file, diagnostics);
+            let left_type = infer_type_with_read_scope(
+                program,
+                left,
+                scope,
+                aliases,
+                file,
+                diagnostics,
+                transform_old,
+            );
             // `is` is the enum-subtree predicate: its right is a member-path naming a
             // member or category, not a value, so it is resolved inside `check_is`
             // rather than inferred as a value here — inferring it would reject a
@@ -211,20 +274,30 @@ pub(crate) fn infer_type(
                     diagnostics,
                 });
             }
-            let right_type = infer_type(program, right, scope, aliases, file, diagnostics);
+            let right_type = infer_type_with_read_scope(
+                program,
+                right,
+                scope,
+                aliases,
+                file,
+                diagnostics,
+                transform_old,
+            );
             // `??` only defaults an absent path read, so its left operand must be a
             // path read or `?.` chain — a present non-path value is never absent
             // and has nothing to default. The result is the leaf type of that read.
             if matches!(op, marrow_syntax::BinaryOp::Coalesce) {
-                return check_coalesce(
+                return check_coalesce(CoalesceCheck {
                     program,
                     left,
-                    &left_type,
-                    &right_type,
-                    *span,
+                    left_type: &left_type,
+                    right_type: &right_type,
+                    span: *span,
                     file,
+                    scope,
+                    transform_old,
                     diagnostics,
-                );
+                });
             }
             check_binary(*op, &left_type, &right_type, *span, file, diagnostics)
         }
@@ -234,11 +307,29 @@ pub(crate) fn infer_type(
             // A bare single-segment callee names a function, not a value, so it is
             // left to `check_call` rather than flagged as an unresolved value name.
             if !is_bare_name(callee) {
-                infer_type(program, callee, scope, aliases, file, diagnostics);
+                infer_type_with_read_scope(
+                    program,
+                    callee,
+                    scope,
+                    aliases,
+                    file,
+                    diagnostics,
+                    transform_old,
+                );
             }
             let arg_types: Vec<MarrowType> = args
                 .iter()
-                .map(|arg| infer_type(program, &arg.value, scope, aliases, file, diagnostics))
+                .map(|arg| {
+                    infer_type_with_read_scope(
+                        program,
+                        &arg.value,
+                        scope,
+                        aliases,
+                        file,
+                        diagnostics,
+                        transform_old,
+                    )
+                })
                 .collect();
             if let Some(ty) = local_collection_access_type(
                 callee,
@@ -256,9 +347,11 @@ pub(crate) fn infer_type(
                 callee,
                 args,
                 arg_types: &arg_types,
+                scope,
                 aliases,
                 span: *span,
                 file,
+                transform_old,
                 diagnostics,
             });
             // A saved access carries key arguments the function-call path does not
@@ -276,7 +369,15 @@ pub(crate) fn infer_type(
         // declared leaf type: the short-circuit only changes the read's runtime
         // behavior on absence, not the type of a populated leaf.
         Expression::Field { base, name, .. } | Expression::OptionalField { base, name, .. } => {
-            let base_type = infer_type(program, base, scope, aliases, file, diagnostics);
+            let base_type = infer_type_with_read_scope(
+                program,
+                base,
+                scope,
+                aliases,
+                file,
+                diagnostics,
+                transform_old,
+            );
             saved_field_type(program, base, name)
                 .or_else(|| singleton_saved_group_field_type(program, base, name))
                 .or_else(|| saved_group_field_type(program, base, name))

@@ -10,6 +10,8 @@
 use marrow_store::cell::CatalogId;
 
 use crate::executable::CheckedSavedPlace;
+use crate::facts::{ResourceId, ResourceMemberId};
+use crate::{CheckedProgram, catalog};
 
 /// One resolved transform read member: the stable catalog id its data cells use, the
 /// member name the body reads it under (`old.<name>`), and its leaf kind for decoding.
@@ -18,6 +20,12 @@ pub struct TransformReadMember {
     pub catalog_id: CatalogId,
     pub name: String,
     pub leaf: crate::StoreLeafKind,
+}
+
+pub(crate) struct TransformOldMember {
+    pub(crate) resource: ResourceId,
+    pub(crate) member: ResourceMemberId,
+    pub(crate) required: bool,
 }
 
 /// Resolve each read-member stable id against a place to a top-level plain field. A read
@@ -42,4 +50,31 @@ pub fn transform_read_members(
             })
         })
         .collect()
+}
+
+pub(crate) fn transform_old_member(
+    program: &CheckedProgram,
+    resource_path: &str,
+    member_name: &str,
+) -> Option<TransformOldMember> {
+    let resource = transform_resource(program, resource_path)?;
+    let member = program.facts.resource_members().iter().find(|member| {
+        member.resource == resource
+            && member.parent.is_none()
+            && member.name == member_name
+            && member.plain_field_required.is_some()
+    })?;
+    Some(TransformOldMember {
+        resource,
+        member: member.id,
+        required: member.plain_field_required?,
+    })
+}
+
+fn transform_resource(program: &CheckedProgram, expected_path: &str) -> Option<ResourceId> {
+    program.facts.resources().iter().find_map(|resource| {
+        let module = program.facts.modules().get(resource.module.0 as usize)?;
+        (catalog::resource_path(&module.name, &resource.name) == expected_path)
+            .then_some(resource.id)
+    })
 }

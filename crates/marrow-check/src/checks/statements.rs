@@ -9,7 +9,7 @@ use std::path::Path;
 use marrow_syntax::SourceSpan;
 
 use crate::enums::{MatchCheck, check_match, resolve_type};
-use crate::infer::{bind, infer_type, local_binding};
+use crate::infer::{bind, infer_type_with_read_scope, local_binding_with_read_scope};
 use crate::{
     CHECK_COLLECTION_UNSUPPORTED, CHECK_CONDITION_TYPE, CheckDiagnostic, CheckedProgram, MarrowType,
 };
@@ -67,38 +67,101 @@ pub(crate) fn check_block_types(
     aliases: &HashMap<String, Vec<String>>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    scope.push(HashMap::new());
-    for statement in &block.statements {
-        check_statement_types(
+    check_block_types_with_read_scope(
+        BlockTypeContext {
             program,
             file,
             return_type,
-            statement,
-            scope,
             aliases,
-            diagnostics,
-        );
+            transform_old: None,
+        },
+        block,
+        scope,
+        diagnostics,
+    );
+}
+
+pub(crate) struct TransformBlockTypeCheck<'a> {
+    pub(crate) program: &'a CheckedProgram,
+    pub(crate) file: &'a Path,
+    pub(crate) return_type: &'a MarrowType,
+    pub(crate) block: &'a marrow_syntax::Block,
+    pub(crate) scope: &'a mut Vec<HashMap<String, MarrowType>>,
+    pub(crate) aliases: &'a HashMap<String, Vec<String>>,
+    pub(crate) transform_old_resource: &'a str,
+    pub(crate) diagnostics: &'a mut Vec<CheckDiagnostic>,
+}
+
+pub(crate) fn check_transform_block_types(check: TransformBlockTypeCheck<'_>) {
+    let TransformBlockTypeCheck {
+        program,
+        file,
+        return_type,
+        block,
+        scope,
+        aliases,
+        transform_old_resource,
+        diagnostics,
+    } = check;
+    let transform_old =
+        scope
+            .len()
+            .checked_sub(1)
+            .map(|frame| crate::presence::TransformOldReadScope {
+                resource: transform_old_resource,
+                frame,
+            });
+    check_block_types_with_read_scope(
+        BlockTypeContext {
+            program,
+            file,
+            return_type,
+            aliases,
+            transform_old,
+        },
+        block,
+        scope,
+        diagnostics,
+    );
+}
+
+#[derive(Clone, Copy)]
+struct BlockTypeContext<'a> {
+    program: &'a CheckedProgram,
+    file: &'a Path,
+    return_type: &'a MarrowType,
+    aliases: &'a HashMap<String, Vec<String>>,
+    transform_old: Option<crate::presence::TransformOldReadScope<'a>>,
+}
+
+fn check_block_types_with_read_scope(
+    context: BlockTypeContext<'_>,
+    block: &marrow_syntax::Block,
+    scope: &mut Vec<HashMap<String, MarrowType>>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    scope.push(HashMap::new());
+    for statement in &block.statements {
+        check_statement_types(context, statement, scope, diagnostics);
     }
     scope.pop();
 }
 
 /// Type-check one statement, recursing into nested blocks and recording the type
 /// of any binding it introduces.
-pub(crate) fn check_statement_types(
-    program: &CheckedProgram,
-    file: &Path,
-    return_type: &MarrowType,
+fn check_statement_types(
+    context: BlockTypeContext<'_>,
     statement: &marrow_syntax::Statement,
     scope: &mut Vec<HashMap<String, MarrowType>>,
-    aliases: &HashMap<String, Vec<String>>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     StatementCheck {
-        program,
-        file,
-        return_type,
+        program: context.program,
+        file: context.file,
+        return_type: context.return_type,
         scope,
-        aliases,
+        aliases: context.aliases,
+        transform_old: context.transform_old,
         diagnostics,
     }
     .check(statement);
@@ -110,6 +173,7 @@ struct StatementCheck<'a> {
     return_type: &'a MarrowType,
     scope: &'a mut Vec<HashMap<String, MarrowType>>,
     aliases: &'a HashMap<String, Vec<String>>,
+    transform_old: Option<crate::presence::TransformOldReadScope<'a>>,
     diagnostics: &'a mut Vec<CheckDiagnostic>,
 }
 
@@ -185,24 +249,28 @@ impl StatementCheck<'_> {
     }
 
     fn infer(&mut self, expr: &marrow_syntax::Expression) -> MarrowType {
-        infer_type(
+        infer_type_with_read_scope(
             self.program,
             expr,
             self.scope,
             self.aliases,
             self.file,
             self.diagnostics,
+            self.transform_old,
         )
     }
 
     fn check_block(&mut self, block: &marrow_syntax::Block) {
-        check_block_types(
-            self.program,
-            self.file,
-            self.return_type,
+        check_block_types_with_read_scope(
+            BlockTypeContext {
+                program: self.program,
+                file: self.file,
+                return_type: self.return_type,
+                aliases: self.aliases,
+                transform_old: self.transform_old,
+            },
             block,
             self.scope,
-            self.aliases,
             self.diagnostics,
         );
     }
@@ -235,9 +303,14 @@ impl StatementCheck<'_> {
     }
 
     fn bind_local(&mut self, statement: &marrow_syntax::Statement) {
-        if let Some((name, ty)) =
-            local_binding(self.program, statement, self.scope, self.aliases, self.file)
-        {
+        if let Some((name, ty)) = local_binding_with_read_scope(
+            self.program,
+            statement,
+            self.scope,
+            self.aliases,
+            self.file,
+            self.transform_old,
+        ) {
             bind(self.scope, &name, ty);
         }
     }
@@ -322,6 +395,7 @@ impl StatementCheck<'_> {
             condition,
             self.scope,
             self.aliases,
+            self.transform_old,
             self.diagnostics,
         );
         check_range_value(self.file, condition, self.diagnostics);
@@ -390,7 +464,12 @@ impl StatementCheck<'_> {
         let Some(value) = crate::CheckedExpr::lower(value, &context, &mut lower_scope) else {
             return;
         };
-        let read_target = crate::presence::read_target(self.program, &value);
+        let read_resolves = crate::presence::read_resolves_in_type_scope(
+            self.program,
+            &value,
+            self.scope,
+            self.transform_old,
+        );
         let is_value_read = value
             .saved_place()
             .is_some_and(|place| match &place.terminal {
@@ -412,8 +491,8 @@ impl StatementCheck<'_> {
                 } => *unique && args.len() == *arg_count,
             })
             || fixed_singleton_root(self.program, &value)
-            || (read_target.is_some() && !matches!(value_type, MarrowType::Unknown));
-        if !is_value_read || read_target.is_none() {
+            || (read_resolves && !matches!(value_type, MarrowType::Unknown));
+        if !is_value_read || !read_resolves {
             self.diagnostics.push(CheckDiagnostic::error(
                 CHECK_CONDITION_TYPE,
                 self.file,

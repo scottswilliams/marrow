@@ -1,8 +1,11 @@
 mod support;
 mod support_discharge;
 
-use marrow_check::check_project;
 use marrow_check::evolution::{RepairReason, Verdict, preview};
+use marrow_check::{
+    CHECK_BARE_MAYBE_PRESENT_READ, CheckedProgram, PresenceProofPlace, PresenceProofSource,
+    PresenceProofStatus, ResourceMemberId, check_project,
+};
 use marrow_store::tree::TreeStore;
 use marrow_store::value::Scalar;
 
@@ -165,6 +168,177 @@ fn transform_return_type_mismatch_is_check_error() {
         "expected a return-type error: {:#?}",
         report.diagnostics
     );
+}
+
+/// A transform body reads `old.<member>` from the record's existing value set, so
+/// a sparse member must be resolved at the read site just like a saved-root read.
+#[test]
+fn transform_bare_sparse_read_requires_resolution() {
+    let root = temp_project("discharge-transform-sparse-bare", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   subtitle: string\n\
+             \x20   required summary: string\n\
+             store ^books(id: int): Book\n\
+             evolve\n\
+             \x20   transform Book.summary\n\
+             \x20       return old.subtitle\n\
+             pub fn add(title: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+/// `??` resolves a sparse transform read at the read site.
+#[test]
+fn transform_coalesce_resolves_sparse_read() {
+    let root = temp_project("discharge-transform-sparse-coalesce", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   subtitle: string\n\
+             \x20   required summary: string\n\
+             store ^books(id: int): Book\n\
+             evolve\n\
+             \x20   transform Book.summary\n\
+             \x20       return old.subtitle ?? old.title\n\
+             pub fn add(title: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert!(
+        !report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
+        "{:#?}",
+        report.diagnostics
+    );
+    assert_discharged_narrowing_for(&program, "books::Book::subtitle");
+}
+
+/// `if const` resolves a sparse transform read before the branch consumes it.
+#[test]
+fn transform_if_const_resolves_sparse_read() {
+    let root = temp_project("discharge-transform-sparse-if-const", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   subtitle: string\n\
+             \x20   required summary: string\n\
+             store ^books(id: int): Book\n\
+             evolve\n\
+             \x20   transform Book.summary\n\
+             \x20       if const subtitle = old.subtitle\n\
+             \x20           return subtitle\n\
+             \x20       return old.title\n\
+             pub fn add(title: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert!(
+        !report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
+        "{:#?}",
+        report.diagnostics
+    );
+    assert_discharged_narrowing_for(&program, "books::Book::subtitle");
+}
+
+/// `exists` resolves a sparse transform read for the guarded branch.
+#[test]
+fn transform_exists_resolves_sparse_read() {
+    let root = temp_project("discharge-transform-sparse-exists", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   subtitle: string\n\
+             \x20   required summary: string\n\
+             store ^books(id: int): Book\n\
+             evolve\n\
+             \x20   transform Book.summary\n\
+             \x20       if exists(old.subtitle)\n\
+             \x20           return old.subtitle\n\
+             \x20       return old.title\n\
+             pub fn add(title: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert!(
+        !report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
+        "{:#?}",
+        report.diagnostics
+    );
+    assert_discharged_narrowing_for(&program, "books::Book::subtitle");
+}
+
+fn assert_discharged_narrowing_for(program: &CheckedProgram, member_path: &str) {
+    let member_id = resource_member_id(program, member_path);
+    assert!(
+        program.facts.presence_proofs().iter().any(|proof| {
+            proof.source == PresenceProofSource::Narrowing
+                && proof.status == PresenceProofStatus::Discharged
+                && matches!(
+                    &proof.place,
+                    PresenceProofPlace::Saved(place) if place.members.as_slice() == [member_id]
+                )
+        }),
+        "{:#?}",
+        program.facts.presence_proofs()
+    );
+}
+
+fn resource_member_id(program: &CheckedProgram, member_path: &str) -> ResourceMemberId {
+    program
+        .facts
+        .resource_members()
+        .iter()
+        .find_map(|member| {
+            (program
+                .facts
+                .resource_member_catalog_path(member.id)
+                .as_deref()
+                == Some(member_path))
+            .then_some(member.id)
+        })
+        .unwrap_or_else(|| panic!("missing resource member fact for {member_path}"))
 }
 
 /// Reading the transform's own target via `old.<target>` is a check error: the target

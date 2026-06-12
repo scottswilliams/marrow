@@ -8,7 +8,7 @@ use std::path::Path;
 use marrow_store::value::ScalarType;
 use marrow_syntax::SourceSpan;
 
-use crate::infer::infer_type;
+use crate::infer::infer_type_with_read_scope;
 use crate::typerules::{
     as_primitive, binary_symbol, expects_conversion, is_concrete_nonscalar, is_numeric, is_ordered,
     is_steppable, marrow_type_name, mismatch_display, type_compatible, unary_symbol,
@@ -29,9 +29,18 @@ pub(crate) fn check_condition(
     condition: &marrow_syntax::Expression,
     scope: &[HashMap<String, MarrowType>],
     aliases: &HashMap<String, Vec<String>>,
+    transform_old: Option<crate::presence::TransformOldReadScope<'_>>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    let condition_type = infer_type(program, condition, scope, aliases, file, diagnostics);
+    let condition_type = infer_type_with_read_scope(
+        program,
+        condition,
+        scope,
+        aliases,
+        file,
+        diagnostics,
+        transform_old,
+    );
     let span = condition.span();
     match as_primitive(&condition_type) {
         Some(primitive) if primitive != ScalarType::Bool => {
@@ -436,15 +445,30 @@ pub(crate) fn check_equality(
 /// the left (a populated read yields that value; an absent one yields the
 /// default), so the default must be the same scalar type. A non-path left operand
 /// is rejected: only a read that can be absent has anything to default.
-pub(crate) fn check_coalesce(
-    program: &CheckedProgram,
-    left: &marrow_syntax::Expression,
-    left_type: &MarrowType,
-    right_type: &MarrowType,
-    span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) -> MarrowType {
+pub(crate) struct CoalesceCheck<'a> {
+    pub(crate) program: &'a CheckedProgram,
+    pub(crate) left: &'a marrow_syntax::Expression,
+    pub(crate) left_type: &'a MarrowType,
+    pub(crate) right_type: &'a MarrowType,
+    pub(crate) span: SourceSpan,
+    pub(crate) file: &'a Path,
+    pub(crate) scope: &'a [HashMap<String, MarrowType>],
+    pub(crate) transform_old: Option<crate::presence::TransformOldReadScope<'a>>,
+    pub(crate) diagnostics: &'a mut Vec<CheckDiagnostic>,
+}
+
+pub(crate) fn check_coalesce(check: CoalesceCheck<'_>) -> MarrowType {
+    let CoalesceCheck {
+        program,
+        left,
+        left_type,
+        right_type,
+        span,
+        file,
+        scope,
+        transform_old,
+        diagnostics,
+    } = check;
     if matches!(left_type, MarrowType::Invalid) || matches!(right_type, MarrowType::Invalid) {
         return MarrowType::Invalid;
     }
@@ -461,7 +485,7 @@ pub(crate) fn check_coalesce(
         return MarrowType::Unknown;
     };
     let context = crate::executable::CheckedExecutableContext::new(program, module_index);
-    let mut lower_scope = Vec::new();
+    let mut lower_scope = scope.to_vec();
     let Some(left) = crate::CheckedExpr::lower(left, &context, &mut lower_scope) else {
         diagnostics.push(operator_diagnostic(
             file,
@@ -470,7 +494,7 @@ pub(crate) fn check_coalesce(
         ));
         return MarrowType::Unknown;
     };
-    if crate::presence::read_target(program, &left).is_none() {
+    if !crate::presence::read_resolves_in_type_scope(program, &left, scope, transform_old) {
         diagnostics.push(operator_diagnostic(
             file,
             span,
