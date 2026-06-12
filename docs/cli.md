@@ -43,7 +43,7 @@ Commands that report diagnostics, saved data, or test results take `--format`:
 - `jsonl` — one JSON object per line for streaming reports, ending with a
   `{"kind": "summary", …}` line where the report has many records.
 
-Plain `run` output is the program's own `print`/`write` stream, which carries no
+Plain `run` output is the program's own `print` stream, which carries no
 envelope and does not accept `--format`. `run --trace` and `run --dry-run`
 accept `--format` for their tooling reports; those reports are written to
 stderr, leaving stdout for the program's own output.
@@ -203,7 +203,7 @@ accepted only when it names one public function in the checked program; ambiguou
 bare names fail with `run.ambiguous_function`. If neither entry source is
 present, `run` fails with `run.no_entry` (exit `1`).
 
-Output written with `print`/`write` goes to stdout. `std::log` output goes to
+Output written with `print` goes to stdout. `std::log` output goes to
 stderr. The run reads the real system clock, environment, and filesystem.
 
 `--maintenance` grants the run the maintenance capability for data evolution and
@@ -214,7 +214,7 @@ that the default run rejects. An operator must type it; the default run and
 `--trace` reports each statement as it runs — file, line, call depth, and the
 visible locals — and each managed write or delete, in execution order. The trace
 is tooling output on stderr under every format, leaving the program's stdout for
-its own `print`/`write` output: under text an indented stream, under `json`/`jsonl`
+its own `print` output: under text an indented stream, under `json`/`jsonl`
 `step` records and managed-write `write` records.
 
 In the human-readable text of a `--trace` or `--dry-run` write, the leaf value is

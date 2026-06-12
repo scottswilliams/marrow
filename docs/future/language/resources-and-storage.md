@@ -105,22 +105,22 @@ var counts: map[string, int]
 counts(word) = (counts(word) ?? 0) + 1
 
 for count in counts
-    write($"{count}")
+    print($"{count}")
 
 for word, count in counts
-    write($"{word}: {count}")
+    print($"{word}: {count}")
 
 for word in keys(counts)
-    write(word)
+    print(word)
 
 var seen: set[string]
 insert(seen(word))
 
 if exists(seen(word))
-    write(word)
+    print(word)
 
 for word in seen
-    write(word)
+    print(word)
 
 delete seen(word)
 ```

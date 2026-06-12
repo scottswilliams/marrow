@@ -230,7 +230,7 @@ Names resolve in this order:
 4. builtins.
 
 Module-level declarations — functions, constants, enums, and resources — cannot
-redefine builtin names such as `exists`, `keys`, `Error`, `write`, or `int`. An
+redefine builtin names such as `exists`, `keys`, `Error`, `print`, or `int`. An
 imported short module name binds the import even when it matches a builtin name,
 shadowing the builtin within the file. Local variables may also shadow builtin
 names.

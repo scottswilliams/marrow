@@ -124,22 +124,76 @@ fn std_call_with_wrong_arity_is_flagged() {
     );
 }
 
-/// A well-typed std call checks clean: `std::clock::add(instant, duration)` with
-/// the right argument types reports nothing.
 #[test]
-fn well_typed_std_call_checks_clean() {
-    let root = temp_project("program-std-clean", |root| {
-        write(
-            root,
-            "src/shelf/t.mw",
+fn write_is_not_a_language_builtin() {
+    let root = temp_project("program-write-removed", |root| {
+        let removed = "write";
+        let source = format!(
             "module shelf::t\n\
-             pub fn good(): instant\n\
-             \x20   return std::clock::add(std::clock::parseInstant(\"2026-05-28T12:00:00Z\"), std::clock::parseDuration(\"PT1H\"))\n",
+             pub fn bad()\n\
+             \x20   {removed}(\"x\")\n"
         );
+        write(root, "src/shelf/t.mw", &source);
     });
     let (report, _) = check_project(&root, &config()).expect("check");
 
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.unresolved_call"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn removed_clock_shift_helper_is_not_a_standard_library_operation() {
+    let root = temp_project("program-clock-shift-removed", |root| {
+        let removed = "add";
+        let source = format!(
+            "module shelf::t\n\
+             pub fn bad()\n\
+             \x20   std::clock::{removed}(std::clock::parseInstant(\"2026-05-28T12:00:00Z\"), 1.hour)\n"
+        );
+        write(root, "src/shelf/t.mw", &source);
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+
+    let unresolved = with_code(&report, "check.unresolved_call");
+    assert_eq!(unresolved.len(), 1, "{:#?}", report.diagnostics);
+    assert!(
+        unresolved[0]
+            .message
+            .contains("not a standard-library operation"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn removed_imported_clock_shift_helper_is_not_a_standard_library_operation() {
+    let root = temp_project("program-short-clock-shift-removed", |root| {
+        let removed = "add";
+        let source = format!(
+            "module shelf::t\n\
+             use std::clock\n\
+             pub fn bad()\n\
+             \x20   clock::{removed}(std::clock::parseInstant(\"2026-05-28T12:00:00Z\"), 1.hour)\n"
+        );
+        write(root, "src/shelf/t.mw", &source);
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+
+    let unresolved = with_code(&report, "check.unresolved_call");
+    assert_eq!(unresolved.len(), 1, "{:#?}", report.diagnostics);
+    assert!(
+        unresolved[0]
+            .message
+            .contains("not a standard-library operation"),
+        "{:#?}",
+        report.diagnostics
+    );
 }
 
 /// A duration literal types to `duration`: returned from a `: duration`
@@ -155,15 +209,15 @@ fn duration_literal_types_to_duration() {
              pub fn span(): duration\n\
              \x20   return 1.day\n\
              pub fn shift(): instant\n\
-             \x20   return std::clock::add(std::clock::parseInstant(\"2026-05-28T12:00:00Z\"), 1.hour)\n\
+             \x20   return std::clock::parseInstant(\"2026-05-28T12:00:00Z\") + 1.hour\n\
              pub fn wrong(): int\n\
              \x20   return 1.day\n",
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
 
-    // The duration argument to `std::clock::add` must not raise an untyped-value
-    // error: a duration literal is a known type, not dynamic data.
+    // The duration operand must not raise an untyped-value error: a duration
+    // literal is a known type, not dynamic data.
     assert!(
         !report
             .diagnostics
@@ -177,32 +231,6 @@ fn duration_literal_types_to_duration() {
         return_type_errors.len(),
         1,
         "only the `: int` return should mismatch: {:#?}",
-        report.diagnostics
-    );
-}
-
-/// Short-form std calls are arg-checked identically to fully-qualified ones:
-/// `clock::add(int, ...)` (wrong first arg) under `use std::clock` is flagged.
-#[test]
-fn short_form_std_call_is_arg_checked() {
-    let root = temp_project("program-std-shortform-arg", |root| {
-        write(
-            root,
-            "src/shelf/t.mw",
-            "module shelf::t\n\
-             use std::clock\n\
-             pub fn bad(): instant\n\
-             \x20   return clock::add(1, clock::parseDuration(\"PT1H\"))\n",
-        );
-    });
-    let (report, _) = check_project(&root, &config()).expect("check");
-
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "check.call_argument"),
-        "{:#?}",
         report.diagnostics
     );
 }

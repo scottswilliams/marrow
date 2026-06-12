@@ -200,17 +200,6 @@ fn eval_clock_std(
             "parseDuration: invalid duration text",
             span,
         ),
-        "add" => {
-            let [instant, span_arg] = args else {
-                return Err(std_arity("clock", op, span));
-            };
-            let nanos = eval_instant_arg(instant, env, span)?;
-            let offset = eval_duration_arg(span_arg, env, span)?;
-            nanos
-                .checked_add(offset)
-                .map(Value::Instant)
-                .ok_or_else(|| overflow(span))
-        }
         other => Err(unsupported(&format!("std::clock::{other}"), span)),
     }
 }

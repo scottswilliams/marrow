@@ -21,9 +21,9 @@ Blocks are introduced by indentation:
 
 ```mw
 if status == "open"
-    write("open")
+    print("open")
 else
-    write("not open")
+    print("not open")
 ```
 
 Blank lines and comments do not close a block. A less-indented statement
@@ -139,7 +139,6 @@ loanCount = loanCount + 1
 delete ^books(id).subtitle
 var draftBook: Book
 return id
-write($"created {id}")
 print($"created {id}")
 ```
 
@@ -147,9 +146,9 @@ Assignment is a statement only. It cannot appear as a subexpression, cannot be
 chained, and does not return a value.
 The right-hand expression is evaluated before the target is changed.
 
-`write(...)` and `print(...)` use call syntax, but they are statements: they
-perform output and produce no value. User-defined functions may still be
-effectful and return values.
+`print(...)` uses call syntax, but it is a statement: it performs output and
+produces no value. User-defined functions may still be effectful and return
+values.
 
 General statement chaining and postconditionals are not part of Marrow `.mw`.
 Use normal `if` blocks.
@@ -200,7 +199,7 @@ Equality is `==` and inequality is `!=`. They read values; they never assign:
 
 ```mw
 if book.title == "Small Gods"
-    write("found")
+    print("found")
 
 const same: bool = (left == right)
 ```
@@ -219,34 +218,40 @@ From tightest to loosest precedence:
 | 2 | unary `-`, `not` | negate, boolean not |
 | 3 | `*`, `/`, `%` | multiply, divide, remainder |
 | 4 | `+`, `-` | add, subtract |
-| 5 | `_` | concatenate |
+| 5 | `??` | absence default (non-associative) |
 | 6 | `..`, `..=` | exclusive and inclusive ranges |
 | 7 | `<`, `<=`, `>`, `>=` | comparison |
-| 8 | `??` | absence default |
-| 9 | `==`, `!=` | equality, not equal |
-| 10 | `is` | enum-subtree test (non-associative) |
-| 11 | `and` | short-circuit and |
-| 12 | `or` | short-circuit or |
+| 8 | `==`, `!=` | equality, not equal |
+| 9 | `is` | enum-subtree test (non-associative) |
+| 10 | `and` | short-circuit and |
+| 11 | `or` | short-circuit or |
 
 `%` is remainder. Use `std::math::modulo(...)` when code needs modulo
 behavior for negative operands.
 
-Arithmetic operands must be numeric. `+`, `-`, `*`, and `/` require matching
-numeric types. `+`, `-`, and `*` return that type. `/` returns `decimal`.
-`%` accepts `int` operands and returns `int`.
+Numeric arithmetic operands must have matching numeric types. Numeric `+`, `-`,
+and `*` return that type. `/` returns `decimal`. `%` accepts `int` operands and
+returns `int`.
+
+`+` also concatenates two strings. Both operands must be `string`; Marrow does
+not implicitly convert values to strings for concatenation.
+
+Temporal arithmetic handles linear spans only: `instant - instant` returns
+`duration`; `instant + duration` and `instant - duration` return `instant`; and
+`duration + duration` and `duration - duration` return `duration`. Calendar math
+for dates belongs in future `std::clock` helpers, not operators.
 
 Equality requires comparable values of the same type. Ordering comparisons
 require ordered values of the same type.
-
-Concatenation with `_` requires `string` operands.
 
 The absence-default `??` reads a maybe-present operand on its left and yields the
 right operand when that read is absent. Its left operand must be a maybe-present
 read — a path read, a `?.` chain, or a maybe-present builtin result such as
 `next`/`prev` — since a value that is always present has nothing to default; the
-default must match the read's type. It binds tighter than `==`, so
-`name ?? "anon" == "anon"` is `(name ?? "anon") == "anon"`. It does not chain:
-write one `??` per read.
+default must match the read's type. It binds looser than `+`/`-` and tighter
+than ranges and comparisons, so `count ?? 0 < 5` is `(count ?? 0) < 5`,
+`start ?? 1 .. n` is `(start ?? 1) .. n`, and `x ?? y + 1` is `x ?? (y + 1)`.
+It does not chain: write one `??` per read.
 
 The optional read `?.` accesses a field that may be absent. An absent step
 short-circuits the rest of the chain to absent rather than failing the read, so
@@ -260,9 +265,6 @@ Range endpoints must be a steppable type — `int`, `decimal`, `date`, or
 `instant` — and both endpoints share that type. The checker accepts ranges for
 `for` loops, not as saved values. See
 [Control Flow And Errors](control-flow-and-effects.md) for step rules.
-
-Use spaces around `_` when it is the concatenation operator; without spaces,
-`_` is part of an identifier.
 
 Operands and call arguments evaluate left to right. `and` and `or`
 short-circuit; other operators evaluate their operands before applying the
@@ -282,7 +284,7 @@ escapes are rejected at check.
 Interpolation is explicit with `$"..."`:
 
 ```mw
-write($"book {id}: {title}")
+print($"book {id}: {title}")
 ```
 
 Inside interpolation strings, text segments decode the same string escapes;
@@ -373,8 +375,8 @@ const loaded: Id(^books) = Id(^books, "book-17")
 ## Spelling
 
 Marrow uses full statement keywords such as `if`, `else`, `for`,
-`transaction`, and `delete`. Output uses the call-shaped builtins `write(...)`
-and `print(...)`. Single-letter statement abbreviations are not part of `.mw`.
+`transaction`, and `delete`. Output uses the call-shaped builtin `print(...)`.
+Single-letter statement abbreviations are not part of `.mw`.
 
 Type names have one source spelling: `int`, `decimal`, `bool`, `string`,
 `bytes`, `date`, `instant`, `duration`, `ErrorCode`, and `unknown`.

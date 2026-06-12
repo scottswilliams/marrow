@@ -131,7 +131,7 @@ populated; the check narrows the path inside the guarded block:
 ```mw
 if exists(^books(id).subtitle)
     if const subtitle = ^books(id).subtitle
-        write(subtitle)
+        print(subtitle)
 ```
 
 Use the absence-default `??` when absence is expected:
@@ -193,7 +193,7 @@ draft.shelf = "fiction"
 const id: Id(^books) = nextId(^books)
 ^books(id) = draft
 if const saved = ^books(id)
-    write(saved.title)
+    print(saved.title)
 ```
 
 Resource constructors create local resource values:

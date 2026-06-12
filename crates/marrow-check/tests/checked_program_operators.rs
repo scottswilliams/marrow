@@ -224,7 +224,7 @@ fn unary_on_identity_is_an_operator_type_error() {
 // --- Non-equality binary operators over concrete non-scalar operands ---
 //
 // `==`/`!=` over identities, records, and sequences is decided before the scalar
-// gate. The other binary operators (`+`, `<`, `and`, `_`, …) shared that gate but
+// gate. The other binary operators (`+`, `<`, `and`, …) shared that gate but
 // dropped a concrete non-scalar operand to `Unknown` with no diagnostic. Each
 // non-scalar operand is operator misuse, like the unary and `Error` cases.
 
@@ -307,18 +307,18 @@ fn logical_with_identity_operand_is_an_operator_type_error() {
     );
 }
 
-/// Concatenating a string with an identity (`"a" _ b`) is operator misuse: `_`
-/// joins two strings, so an identity operand is `check.operator_type`.
+/// Concatenating a string with an identity (`"a" + b`) is operator misuse: string
+/// `+` joins two strings, so an identity operand is `check.operator_type`.
 #[test]
-fn concat_with_identity_operand_is_an_operator_type_error() {
-    let root = temp_project("program-bin-id-concat", |root| {
+fn string_add_with_identity_operand_is_an_operator_type_error() {
+    let root = temp_project("program-bin-id-string-add", |root| {
         write(
             root,
             "src/shelf/ops.mw",
             &format!(
                 "{OPERATOR_OPERANDS}\
                  fn f(b: Id(^books)): string\n\
-                 \x20   return \"a\" _ b\n"
+                 \x20   return \"a\" + b\n"
             ),
         );
     });
@@ -331,6 +331,71 @@ fn concat_with_identity_operand_is_an_operator_type_error() {
         "{:#?}",
         report.diagnostics
     );
+}
+
+/// String `+` is valid only for two strings and yields a string.
+#[test]
+fn string_addition_checks_clean() {
+    let root = temp_project("program-string-add", |root| {
+        write(
+            root,
+            "src/shelf/ops.mw",
+            "module shelf::ops\n\
+             fn f(prefix: string, suffix: string): string\n\
+             \x20   return prefix + suffix\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+/// Linear temporal arithmetic is owned by operators: instants combine with
+/// durations, and subtracting instants yields a duration.
+#[test]
+fn temporal_arithmetic_operator_shapes_check_clean() {
+    let root = temp_project("program-temporal-operators", |root| {
+        write(
+            root,
+            "src/shelf/ops.mw",
+            "module shelf::ops\n\
+             fn shifted_forward(i: instant, d: duration): instant\n\
+             \x20   return i + d\n\
+             fn shifted_back(i: instant, d: duration): instant\n\
+             \x20   return i - d\n\
+             fn elapsed(a: instant, b: instant): duration\n\
+             \x20   return a - b\n\
+             fn longer(a: duration, b: duration): duration\n\
+             \x20   return a + b\n\
+             fn shorter(a: duration, b: duration): duration\n\
+             \x20   return a - b\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn unsupported_temporal_arithmetic_shapes_are_operator_type_errors() {
+    let root = temp_project("program-temporal-operator-errors", |root| {
+        write(
+            root,
+            "src/shelf/ops.mw",
+            "module shelf::ops\n\
+             fn date_plus_duration(d: date, span: duration): date\n\
+             \x20   return d + span\n\
+             fn duration_plus_instant(span: duration, i: instant): instant\n\
+             \x20   return span + i\n\
+             fn duration_times_int(span: duration, n: int): duration\n\
+             \x20   return span * n\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+    let errors = report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == "check.operator_type")
+        .count();
+    assert_eq!(errors, 3, "{:#?}", report.diagnostics);
 }
 
 /// A scalar-only binary operation (`1 + 2`) checks clean.

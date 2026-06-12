@@ -312,7 +312,35 @@ pub(crate) fn check_binary(
     };
     // Each arm is (operator accepts these operands, result type when it does).
     let (valid, result) = match op {
-        BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply => (
+        BinaryOp::Add => match (left, right) {
+            (ScalarType::Str, ScalarType::Str) => (true, MarrowType::Primitive(ScalarType::Str)),
+            (ScalarType::Instant, ScalarType::Duration) => {
+                (true, MarrowType::Primitive(ScalarType::Instant))
+            }
+            (ScalarType::Duration, ScalarType::Duration) => {
+                (true, MarrowType::Primitive(ScalarType::Duration))
+            }
+            _ => (
+                is_numeric(left) && left == right,
+                MarrowType::Primitive(left),
+            ),
+        },
+        BinaryOp::Subtract => match (left, right) {
+            (ScalarType::Instant, ScalarType::Instant) => {
+                (true, MarrowType::Primitive(ScalarType::Duration))
+            }
+            (ScalarType::Instant, ScalarType::Duration) => {
+                (true, MarrowType::Primitive(ScalarType::Instant))
+            }
+            (ScalarType::Duration, ScalarType::Duration) => {
+                (true, MarrowType::Primitive(ScalarType::Duration))
+            }
+            _ => (
+                is_numeric(left) && left == right,
+                MarrowType::Primitive(left),
+            ),
+        },
+        BinaryOp::Multiply => (
             is_numeric(left) && left == right,
             MarrowType::Primitive(left),
         ),
@@ -323,10 +351,6 @@ pub(crate) fn check_binary(
         BinaryOp::Remainder => (
             left == ScalarType::Int && right == ScalarType::Int,
             MarrowType::Primitive(ScalarType::Int),
-        ),
-        BinaryOp::Concat => (
-            left == ScalarType::Str && right == ScalarType::Str,
-            MarrowType::Primitive(ScalarType::Str),
         ),
         BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => (
             is_ordered(left) && left == right,

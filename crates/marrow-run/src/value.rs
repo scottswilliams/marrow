@@ -195,7 +195,7 @@ fn render_debug_identity(identity: &IdentityValue) -> String {
     format!("^{}({})", identity.root, rendered.join(", "))
 }
 
-/// Receives an entry function's `print`/`write` output as the run produces it.
+/// Receives an entry function's `print` output as the run produces it.
 pub trait RunOutputSink {
     fn write(&mut self, text: &str);
 }

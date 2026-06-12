@@ -18,7 +18,7 @@ Two crates: `marrow-project` owns the `marrow.json` schema, source/test discover
   boundary.
 - `establish_store_baseline` — freeze a project's first proposed identity into a write-capable store in one transaction (catalog rows, epoch, engine profile, commit metadata via `marrow_run::evolution::commit_catalog_baseline`), then rebind the program against the now-accepted snapshot. Runs only over an empty store with a pending non-empty proposal; a project past its baseline never churns.
 
-Stream separation is load-bearing: a program's own `print`/`write` output owns stdout; run tooling reports such as trace and dry-run plans go to stderr, so a stdout JSON consumer never sees interleaving. `marrow test --format json|jsonl` owns stdout for its structured test-result report, with trace output kept on stderr. Exit codes are 0 success, 1 failure, 2 usage.
+Stream separation is load-bearing: a program's own `print` output owns stdout; run tooling reports such as trace and dry-run plans go to stderr, so a stdout JSON consumer never sees interleaving. `marrow test --format json|jsonl` owns stdout for its structured test-result report, with trace output kept on stderr. Exit codes are 0 success, 1 failure, 2 usage.
 
 ## Command families
 

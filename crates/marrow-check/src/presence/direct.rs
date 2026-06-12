@@ -265,9 +265,7 @@ fn host_effect(expr: &CheckedExpr) -> Option<HostEffect> {
         return None;
     };
     match target {
-        CheckedCallTarget::Builtin(CheckedBuiltinCall::Print | CheckedBuiltinCall::Write) => {
-            Some(HostEffect::Output)
-        }
+        CheckedCallTarget::Builtin(CheckedBuiltinCall::Print) => Some(HostEffect::Output),
         CheckedCallTarget::Std(target) => match target.capability {
             Capability::Pure => None,
             capability => Some(HostEffect::Capability(capability)),

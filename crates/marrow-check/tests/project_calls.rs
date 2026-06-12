@@ -520,7 +520,7 @@ fn non_identity_index_branches_reject_two_name_loops() {
         "module m\n\
          resource Book\n    author: string\n    shelf: string\n\
          store ^books(id: int): Book\n\n    index byAuthorShelf(author, shelf, id)\n\n\
-         fn f()\n    for shelf, book in ^books.byAuthorShelf(\"ann\")\n        write($\"{shelf}\")\n",
+         fn f()\n    for shelf, book in ^books.byAuthorShelf(\"ann\")\n        print($\"{shelf}\")\n",
         "check.collection_unsupported",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -584,7 +584,7 @@ fn index_branches_reject_value_materialization_wrappers() {
                 "module m\n\
                  resource Book\n    shelf: string\n\
                  store ^books(id: int): Book\n\n    index byShelf(shelf, id)\n\n\
-                 fn f()\n    for item in {wrapper}(^books.byShelf(\"fiction\"))\n        write($\"{{item}}\")\n",
+                 fn f()\n    for item in {wrapper}(^books.byShelf(\"fiction\"))\n        print($\"{{item}}\")\n",
             ),
             "check.collection_unsupported",
         );

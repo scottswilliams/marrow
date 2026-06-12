@@ -219,12 +219,20 @@ pub(crate) fn resolve_function_in_module<'p>(
 pub(crate) fn is_builtin_call(segments: &[String]) -> bool {
     match segments {
         [name] => is_builtin_name(name),
-        // A `std::module::op` builtin must name a real std module, mirroring import
-        // resolution; an unknown submodule is not a builtin, so it is reported like a
-        // rejected `use std::bogus`.
-        [first, module, _] => first == "std" && std_modules().contains(&module.as_str()),
+        [first, module, op] => first == "std" && stdlib::lookup(module, op).is_some(),
         _ => false,
     }
+}
+
+/// A `std::module::op` call with a known std module but no declared operation is
+/// a stdlib spelling error, not a user-function call and not an open runtime hook.
+pub(crate) fn is_unknown_std_operation(segments: &[String]) -> bool {
+    let [first, module, op] = segments else {
+        return false;
+    };
+    first == "std"
+        && std_modules().contains(&module.as_str())
+        && stdlib::lookup(module, op).is_none()
 }
 
 fn is_builtin_name(name: &str) -> bool {
@@ -238,8 +246,8 @@ fn is_builtin_name(name: &str) -> bool {
         | "reversed" | "next" | "prev"
         // sequence updates and id allocation
         | "append" | "nextId"
-        // write and print
-        | "write" | "print"
+        // output
+        | "print"
         // error constructor
         | "Error"
     ) || ConversionTarget::from_name(name).is_some()
@@ -295,9 +303,9 @@ pub(crate) fn std_call_return_type(segments: &[String]) -> Option<MarrowType> {
 }
 
 /// The positional parameter types of a `std::module::op` helper, in order, derived
-/// from its descriptor. `None` for an unknown op, leaving its arguments to the
-/// runtime; a `None` slot inside the list marks a non-checked path argument
-/// (`assert::absent`).
+/// from its descriptor. Known `std` modules reject unknown operations at check time;
+/// recognized descriptor rows supply their argument checks here. A `None` slot
+/// inside the list marks a non-checked path argument (`assert::absent`).
 pub(crate) fn std_call_params(segments: &[String]) -> Option<Vec<Option<MarrowType>>> {
     let op = std_op(segments)?;
     Some(

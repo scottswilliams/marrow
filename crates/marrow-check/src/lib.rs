@@ -94,9 +94,10 @@ pub(crate) use driver::{
     CheckedFile, TestResolutionSuppression, build_alias_map, builtin_return_type,
     check_file_source, check_tests_with_sources_analysis, conversion_return_type, enum_visibility,
     expand_alias, expand_module_alias, find_resource_schema, identity_type_for_store,
-    is_builtin_call, is_resolved_import, module_of_file, module_path_error, push_schema_error,
-    read_source, resolve_function_in_module, resolve_resource_schema_type, resolve_resource_type,
-    resource_type_name, split_type_path, std_call_params, std_call_return_type,
+    is_builtin_call, is_resolved_import, is_unknown_std_operation, module_of_file,
+    module_path_error, push_schema_error, read_source, resolve_function_in_module,
+    resolve_resource_schema_type, resolve_resource_type, resource_type_name, split_type_path,
+    std_call_params, std_call_return_type,
 };
 pub(crate) use program::TypeNames;
 pub(crate) use rejected_surface::check_rejected_surface;

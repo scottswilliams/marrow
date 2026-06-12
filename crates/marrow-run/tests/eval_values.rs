@@ -301,7 +301,7 @@ fn splits_a_string_and_iterates_the_sequence() {
         "pub fn f(): string\n\
          \x20   var result = \"\"\n\
          \x20   for word in std::text::split(\"a,b,c\", \",\")\n\
-         \x20       result = result _ word\n\
+         \x20       result = result + word\n\
          \x20   return result\n",
     );
     assert_eq!(

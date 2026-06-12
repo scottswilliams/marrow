@@ -68,7 +68,7 @@ fn a_dynamically_built_invalid_error_code_faults_typed_at_run() {
         write(
             root,
             "src/app.mw",
-            "module app\n\npub fn main()\n    throw Error(code: \"Not \" _ \"Valid!\", message: \"boom\")\n",
+            "module app\n\npub fn main()\n    throw Error(code: \"Not \" + \"Valid!\", message: \"boom\")\n",
         );
     });
     let output = marrow_sub("run", &[root.to_str().unwrap()]);

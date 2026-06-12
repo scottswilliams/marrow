@@ -114,7 +114,7 @@ fn formats_expressions_to_canonical_source() {
         "a and b or c",
         "not ready",
         "-count",
-        "first _ last",
+        "first + last",
         "1..10",
         "1..=10",
         "a == b",
@@ -144,6 +144,8 @@ fn reinserts_minimal_parentheses_for_precedence() {
         ("-(a + b)", "-(a + b)"),
         ("not (a and b)", "not (a and b)"),
         ("(a or b) and c", "(a or b) and c"),
+        ("(count ?? 0) < 5", "count ?? 0 < 5"),
+        ("(start ?? 1)..n", "start ?? 1..n"),
     ];
     for (input, expected) in cases {
         assert_eq!(format_const_value(input), expected, "input {input:?}");

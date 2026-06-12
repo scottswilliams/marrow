@@ -71,10 +71,10 @@ fn a_bare_range_expression_statement_is_rejected() {
 
 #[test]
 fn misusing_the_loop_variable_as_a_wrong_type_is_a_check_error() {
-    // `i` is an int; concatenating it as a string is an operator error, which only
+    // `i` is an int; adding it as a string is an operator error, which only
     // fires because the loop variable carries its endpoint type.
     let codes = codes(&module(
-        "    for i in 1..10\n        var x: string = i _ \"x\"\n",
+        "    for i in 1..10\n        var x: string = i + \"x\"\n",
     ));
     assert!(
         codes.iter().any(|c| c == "check.operator_type"),

@@ -82,9 +82,9 @@ fn duration_literals_evaluate_to_their_fixed_spans() {
 
 #[test]
 fn duration_literal_is_usable_where_a_duration_value_is() {
-    // A duration literal flows into `add(instant, duration)` like any duration.
+    // A duration literal flows into instant/duration arithmetic like any duration.
     let program = checked_program(
-        "pub fn f(): string\n    return std::clock::formatInstant(std::clock::add(std::clock::parseInstant(\"2026-05-28T12:00:00Z\"), 1.hour))\n",
+        "pub fn f(): string\n    return std::clock::formatInstant(std::clock::parseInstant(\"2026-05-28T12:00:00Z\") + 1.hour)\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::f")).unwrap(),
@@ -93,14 +93,64 @@ fn duration_literal_is_usable_where_a_duration_value_is() {
 }
 
 #[test]
-fn clock_add_offsets_an_instant_by_a_duration() {
-    // add(instant, duration): one hour after noon UTC is 13:00.
+fn temporal_operators_cover_linear_instant_and_duration_math() {
     let program = checked_program(
-        "pub fn f(): string\n    return std::clock::formatInstant(std::clock::add(std::clock::parseInstant(\"2026-05-28T12:00:00Z\"), std::clock::parseDuration(\"PT3600S\")))\n",
+        "pub fn forward(): string\n\
+         \x20   return std::clock::formatInstant(std::clock::parseInstant(\"2026-05-28T12:00:00Z\") + std::clock::parseDuration(\"PT3600S\"))\n\
+         pub fn backward(): string\n\
+         \x20   return std::clock::formatInstant(std::clock::parseInstant(\"2026-05-28T12:00:00Z\") - 30.minutes)\n\
+         pub fn elapsed(): string\n\
+         \x20   return std::clock::formatDuration(std::clock::parseInstant(\"2026-05-28T13:00:00Z\") - std::clock::parseInstant(\"2026-05-28T12:00:00Z\"))\n\
+         pub fn duration_math(): string\n\
+         \x20   return std::clock::formatDuration(1.hour + 30.minutes - 15.minutes)\n",
     );
     assert_eq!(
-        run(checked_entry!(&program, "test::f")).unwrap(),
+        run(checked_entry!(&program, "test::forward")).unwrap(),
         Some(Value::Str("2026-05-28T13:00:00Z".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::backward")).unwrap(),
+        Some(Value::Str("2026-05-28T11:30:00Z".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::elapsed")).unwrap(),
+        Some(Value::Str("PT3600S".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::duration_math")).unwrap(),
+        Some(Value::Str("PT4500S".into()))
+    );
+}
+
+#[test]
+fn temporal_operator_overflow_is_catchable() {
+    let program = checked_program(
+        "pub fn instant_code(): string\n\
+         \x20   try\n\
+         \x20       var text: string = std::clock::formatInstant(std::clock::parseInstant(\"9999-12-31T23:59:59Z\") + 1.day)\n\
+         \x20   catch err: Error\n\
+         \x20       return err.code\n\
+         \x20   return \"none\"\n\
+         \n\
+         pub fn duration_code(a: duration, b: duration): string\n\
+         \x20   try\n\
+         \x20       var d: duration = a + b\n\
+         \x20   catch err: Error\n\
+         \x20       return err.code\n\
+         \x20   return \"none\"\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::instant_code")),
+        Ok(Some(Value::Str("run.temporal_overflow".into())))
+    );
+    assert_eq!(
+        run(checked_entry!(
+            &program,
+            "test::duration_code",
+            Value::Duration(i128::MAX),
+            Value::Duration(1)
+        )),
+        Ok(Some(Value::Str("run.temporal_overflow".into())))
     );
 }
 

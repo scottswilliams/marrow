@@ -82,9 +82,9 @@ their saved paths or traversed directly:
 
 ```mw
 if const p = ^patients(id)                ; scalars + unkeyed groups
-    write("patient found")
+    print("patient found")
 for visitDate in ^patients(id).visits     ; keyed layers read directly
-    write(^patients(id).visits(visitDate).note ?? "")
+    print(^patients(id).visits(visitDate).note ?? "")
 ```
 
 ## Identity Keys
@@ -168,7 +168,7 @@ optional chaining:
 ```mw
 if exists(^books(id).subtitle)
     if const subtitle = ^books(id).subtitle
-        write(subtitle)
+        print(subtitle)
 
 const subtitle: string = ^books(id).subtitle ?? ""
 ```

@@ -223,6 +223,7 @@ code, except `run.uncaught_error` — see "Typed Errors In Running Programs".
 | `run.unbound_name` | A name was read or assigned that is not bound in scope. Fatal runtime backstop for unchecked programs. |
 | `run.overflow` | Integer arithmetic overflowed the 64-bit range. |
 | `run.decimal_overflow` | Decimal arithmetic exceeded the 34-digit / 34-place envelope. |
+| `run.temporal_overflow` | Temporal arithmetic exceeded the saved RFC3339 instant envelope or the `duration` nanosecond range. |
 | `run.divide_by_zero` | Integer division or remainder by zero. |
 | `run.no_enclosing_loop` | A `break`/`continue` reached the top of a function with no loop to target. Fatal runtime control-flow backstop. |
 | `run.unknown_function` | A call named a function the program does not declare. Fatal runtime backstop for unchecked programs. |
@@ -385,8 +386,8 @@ In `.mw` code an error is an `Error` value with its own dotted `code`, raised by
 `throw` and caught by `catch`. Builtins, managed writes, and deterministic
 runtime faults raise typed errors too when the fault is recoverable: a failed
 `std::io::readText` raises `io.read`, a rejected write raises a `write.*` code,
-arithmetic raises specific numeric `run.*` codes, and value range failures raise
-`value.*` codes. These typed raises are catchable in code. Fatal runtime
+arithmetic raises specific numeric and temporal `run.*` codes, and value range
+failures raise `value.*` codes. These typed raises are catchable in code. Fatal runtime
 backstops for unchecked/internal states and host/tooling failures are not
 `Error` values and can surface at the top level under their own `run.*` code.
 When a language `throw` or `std::io` error is *not* caught and reaches the top of

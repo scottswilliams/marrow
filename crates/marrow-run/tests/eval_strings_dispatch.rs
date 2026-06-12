@@ -23,10 +23,9 @@ fn returns_a_string_literal() {
 
 #[test]
 fn concatenates_strings() {
-    // Marrow spells string concatenation `_`.
     assert_eq!(
         eval_source(
-            "pub fn greet(name: string): string\n    return \"Hello, \" _ name\n",
+            "pub fn greet(name: string): string\n    return \"Hello, \" + name\n",
             "greet",
             vec![Value::Str("World".into())]
         ),
@@ -79,7 +78,7 @@ fn unknown_string_escapes_are_rejected_at_check() {
 #[test]
 fn concatenation_requires_strings() {
     checker_rejects(
-        "pub fn f(): string\n    return \"x\" _ 5\n",
+        "pub fn f(): string\n    return \"x\" + 5\n",
         "check.operator_type",
     );
 }

@@ -8,6 +8,7 @@ use marrow_check::{
     CheckedUnaryOp as UnaryOp,
 };
 use marrow_store::Decimal;
+use marrow_store::value::{NANOS_PER_DAY, date_days};
 use marrow_syntax::{
     SourceSpan, StringLiteralError, decode_string_escapes, decode_string_literal,
     duration_unit_seconds,
@@ -18,7 +19,8 @@ use crate::durable_read::{eval_optional_field, eval_saved_field, read_resource};
 use crate::env::Env;
 use crate::error::{
     RUN_ABSENT, RUN_DECIMAL_OVERFLOW, RUN_NO_VALUE, RUN_OVERFLOW, RUN_TYPE, RUN_UNBOUND_NAME,
-    RuntimeError, decimal_overflow, divide_by_zero, overflow, raise_fault, type_error, unsupported,
+    RuntimeError, decimal_overflow, divide_by_zero, overflow, raise_fault, temporal_overflow,
+    type_error, unsupported,
 };
 use crate::path::direct_root_place;
 use crate::read::eval_local_field_get;
@@ -330,22 +332,8 @@ pub(crate) fn eval_binary(
         // the left does not already decide the result.
         BinaryOp::And => Ok(Value::Bool(eval_bool(left, env)? && eval_bool(right, env)?)),
         BinaryOp::Or => Ok(Value::Bool(eval_bool(left, env)? || eval_bool(right, env)?)),
-        BinaryOp::Add => numeric_op(
-            left,
-            right,
-            env,
-            span,
-            i64::checked_add,
-            Decimal::checked_add,
-        ),
-        BinaryOp::Subtract => numeric_op(
-            left,
-            right,
-            env,
-            span,
-            i64::checked_sub,
-            Decimal::checked_sub,
-        ),
+        BinaryOp::Add => add_values(left, right, env, span),
+        BinaryOp::Subtract => subtract_values(left, right, env, span),
         BinaryOp::Multiply => numeric_op(
             left,
             right,
@@ -366,7 +354,6 @@ pub(crate) fn eval_binary(
         BinaryOp::NotEqual => Ok(Value::Bool(!values_equal(left, right, env, span)?)),
         BinaryOp::Is => eval_is(left, right, span, env),
         BinaryOp::Coalesce => eval_coalesce(left, right, env),
-        BinaryOp::Concat => concat(left, right, env, span),
         BinaryOp::RangeExclusive | BinaryOp::RangeInclusive => {
             Err(unsupported("this operator", span))
         }
@@ -405,6 +392,73 @@ pub(crate) fn eval_is(
         value.member_id,
         right_member_id,
     )))
+}
+
+pub(crate) fn add_values(
+    left: &ExecExpr,
+    right: &ExecExpr,
+    env: &mut Env<'_>,
+    span: SourceSpan,
+) -> Result<Value, RuntimeError> {
+    match (eval_expr(left, env)?, eval_expr(right, env)?) {
+        (Value::Int(a), Value::Int(b)) => a
+            .checked_add(b)
+            .map(Value::Int)
+            .ok_or_else(|| overflow(span)),
+        (Value::Decimal(a), Value::Decimal(b)) => a
+            .checked_add(b)
+            .map(Value::Decimal)
+            .ok_or_else(|| decimal_overflow(span)),
+        (Value::Str(a), Value::Str(b)) => Ok(Value::Str(a + &b)),
+        (Value::Instant(a), Value::Duration(b)) => instant_result(a.checked_add(b), span),
+        (Value::Duration(a), Value::Duration(b)) => duration_result(a.checked_add(b), span),
+        _ => Err(type_error("operator `+` expects compatible operands", span)),
+    }
+}
+
+pub(crate) fn subtract_values(
+    left: &ExecExpr,
+    right: &ExecExpr,
+    env: &mut Env<'_>,
+    span: SourceSpan,
+) -> Result<Value, RuntimeError> {
+    match (eval_expr(left, env)?, eval_expr(right, env)?) {
+        (Value::Int(a), Value::Int(b)) => a
+            .checked_sub(b)
+            .map(Value::Int)
+            .ok_or_else(|| overflow(span)),
+        (Value::Decimal(a), Value::Decimal(b)) => a
+            .checked_sub(b)
+            .map(Value::Decimal)
+            .ok_or_else(|| decimal_overflow(span)),
+        (Value::Instant(a), Value::Instant(b)) => duration_result(a.checked_sub(b), span),
+        (Value::Instant(a), Value::Duration(b)) => instant_result(a.checked_sub(b), span),
+        (Value::Duration(a), Value::Duration(b)) => duration_result(a.checked_sub(b), span),
+        _ => Err(type_error("operator `-` expects compatible operands", span)),
+    }
+}
+
+fn duration_result(result: Option<i128>, span: SourceSpan) -> Result<Value, RuntimeError> {
+    result
+        .map(Value::Duration)
+        .ok_or_else(|| temporal_overflow(span))
+}
+
+fn instant_result(result: Option<i128>, span: SourceSpan) -> Result<Value, RuntimeError> {
+    let nanos = result.ok_or_else(|| temporal_overflow(span))?;
+    if instant_in_saved_range(nanos) {
+        Ok(Value::Instant(nanos))
+    } else {
+        Err(temporal_overflow(span))
+    }
+}
+
+fn instant_in_saved_range(nanos: i128) -> bool {
+    let min_day = date_days(1, 1, 1).expect("year 0001-01-01 is in the saved instant range");
+    let max_day = date_days(9999, 12, 31).expect("year 9999-12-31 is in the saved instant range");
+    let min = i128::from(min_day) * NANOS_PER_DAY;
+    let max = i128::from(max_day) * NANOS_PER_DAY + (NANOS_PER_DAY - 1);
+    (min..=max).contains(&nanos)
 }
 
 /// The checker rejects mixed int/decimal operands, so a mismatch here is
@@ -503,19 +557,6 @@ pub(crate) fn compare_values(
         }
     };
     Ok(Value::Bool(want(ordering)))
-}
-
-/// Concatenate two strings with `++`.
-pub(crate) fn concat(
-    left: &ExecExpr,
-    right: &ExecExpr,
-    env: &mut Env<'_>,
-    span: SourceSpan,
-) -> Result<Value, RuntimeError> {
-    match (eval_expr(left, env)?, eval_expr(right, env)?) {
-        (Value::Str(a), Value::Str(b)) => Ok(Value::Str(a + &b)),
-        _ => Err(type_error("`++` concatenates two strings", span)),
-    }
 }
 
 /// Operands must share a type; the checker rejects cross-type comparison

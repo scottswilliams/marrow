@@ -163,5 +163,5 @@ pub fn printShelf(shelf: string)
 ## Style
 
 Examples use full statement spellings such as `if`, `else`, `for`,
-`transaction`, and `delete`. Output uses `write(...)` and `print(...)`.
+`transaction`, and `delete`. Output uses `print(...)`.
 Type names use one source spelling.

@@ -6,11 +6,11 @@ Marrow control flow is structured and indentation-based.
 
 ```mw
 if status == "open"
-    write("open")
+    print("open")
 else if status == "loaned"
-    write("loaned")
+    print("loaned")
 else
-    write("other")
+    print("other")
 ```
 
 Conditions must be `bool`.
@@ -32,10 +32,10 @@ Range loops use range syntax:
 
 ```mw
 for i in 1..10
-    write($"{i}")      ; 1 through 9
+    print($"{i}")      ; 1 through 9
 
 for i in 1..=10
-    write($"{i}")      ; 1 through 10
+    print($"{i}")      ; 1 through 10
 ```
 
 `..` excludes the end; `..=` includes it. A range exists only as a loop iterable,
@@ -82,11 +82,11 @@ materializing it:
 ```mw
 for id in ^books
     if const title = ^books(id).title
-        write(title)
+        print(title)
 
 for pos in ^books(id).tags
     if const tag = ^books(id).tags(pos)
-        write(tag)
+        print(tag)
 ```
 
 A single loop variable is the durable key or identity being streamed. For a
@@ -97,30 +97,30 @@ identity stored in that lookup branch:
 ```mw
 for id in ^books.byShelf("fiction")
     if const title = ^books(id).title
-        write($"book {id}: {title}")
+        print($"book {id}: {title}")
 ```
 
 Use two loop variables, `entries(...)`, or `values(...)` when code needs values:
 
 ```mw
 for id, book in ^books
-    write($"{id}: {book.title}")
+    print($"{id}: {book.title}")
 
 for pos, tag in ^books(id).tags
-    write($"{pos}: {tag}")
+    print($"{pos}: {tag}")
 
 for book in values(^books)
-    write(book.title)
+    print(book.title)
 ```
 
 Use `keys(...)` when code wants to make address-only traversal explicit:
 
 ```mw
 for id in keys(^books)
-    write($"{id}")
+    print($"{id}")
 
 for pos in keys(^books(id).tags)
-    write($"{pos}")
+    print($"{pos}")
 ```
 
 Value and two-variable loops also read the values they yield; `keys(...)` reads
@@ -177,9 +177,9 @@ Catch errors with `try` / `catch` / `finally`:
 try
     loan(id, borrower)
 catch err: Error
-    write($"loan failed: {err.message}")
+    print($"loan failed: {err.message}")
 finally
-    write("attempt finished")
+    print("attempt finished")
 ```
 
 A `try` statement requires a `catch` clause, a `finally` clause, or both.

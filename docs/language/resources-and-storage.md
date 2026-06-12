@@ -247,7 +247,7 @@ distinct:
 ```mw
 for id in ^books.byShelf("fiction")
     if const title = ^books(id).title
-        write($"book {id}: {title}")
+        print($"book {id}: {title}")
 ```
 
 Indexes may be unique:
@@ -541,7 +541,7 @@ Rules:
 
 ```mw
 if const subtitle = ^books(id).subtitle
-    write(subtitle)
+    print(subtitle)
 
 const subtitle: string = ^books(id).subtitle ?? ""
 ```
@@ -695,7 +695,7 @@ An early-return guard also narrows the following statements:
 ```mw
 if not exists(^books(id).subtitle)
     return
-write(^books(id).subtitle)
+print(^books(id).subtitle)
 ```
 
 That narrowing is valid only while the place and every key expression used to

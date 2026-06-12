@@ -363,9 +363,9 @@ fn interpolation_rejects_temporal_values() {
 }
 
 #[test]
-fn print_and_write_reject_non_renderable_values() {
-    let found = check_module(
-        "output-non-renderable",
+fn print_allows_runtime_rendering_to_decide_value_support() {
+    let report = check_module_report(
+        "output-runtime-rendered",
         "module m\n\
          enum Color\n    red\n    green\n\n\
          resource Book\n    required title: string\n\
@@ -376,15 +376,14 @@ fn print_and_write_reject_non_renderable_values() {
          \x20   const span = 1.hour\n\
          \x20   const b = b\"hi\"\n\
          \x20   print(d)\n\
-         \x20   write(i)\n\
+         \x20   print(i)\n\
          \x20   print(span)\n\
-         \x20   write(b)\n\
+         \x20   print(b)\n\
          \x20   print(c)\n\
-         \x20   write(items)\n\
+         \x20   print(items)\n\
          \x20   print(book)\n",
-        "check.call_argument",
     );
-    assert_eq!(found.len(), 7, "{found:#?}");
+    assert_clean(&report);
 }
 
 #[test]
@@ -544,11 +543,15 @@ fn a_known_op_in_a_closed_pure_module_checks_clean() {
 }
 
 #[test]
-fn an_unknown_op_in_a_host_module_stays_module_open_at_check() {
+fn an_unknown_op_in_a_host_module_is_flagged_at_check() {
     let found = check_module(
-        "std-host-open-op",
+        "std-host-unknown-op",
         "module m\nfn f()\n    std::io::frobnicate(\"p\")\n",
         "check.unresolved_call",
     );
-    assert!(found.is_empty(), "{found:#?}");
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(
+        found[0].message.contains("std::io::frobnicate"),
+        "the diagnostic must name the unknown op: {found:#?}"
+    );
 }

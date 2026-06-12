@@ -564,7 +564,7 @@ fn a_caught_write_fault_does_not_leak_into_a_later_fault() {
     // After a `try` catches a write fault, the stashed Error is cleared, so a later
     // genuine fault (divide-by-zero) still faults rather than being miscaught.
     let program = checked_program(&format!(
-        "{BOOK_ISBN_SCHEMA}pub fn seed(id: int, t: string, isbn: string)\n    ^books(id).title = t\n    ^books(id).isbn = isbn\n\npub fn run_it(): int\n    try\n        ^books(2).isbn = \"978-0\"\n    catch err: Error\n        write(\"caught\")\n    const boom = 1 / 0\n    return 0\n"
+        "{BOOK_ISBN_SCHEMA}pub fn seed(id: int, t: string, isbn: string)\n    ^books(id).title = t\n    ^books(id).isbn = isbn\n\npub fn run_it(): int\n    try\n        ^books(2).isbn = \"978-0\"\n    catch err: Error\n        print(\"caught\")\n    const boom = 1 / 0\n    return 0\n"
     ));
     let store = TreeStore::memory();
     run_entry(

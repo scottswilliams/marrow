@@ -163,28 +163,15 @@ impl<'a> ExprParser<'a> {
     }
 
     fn equality_expr(&mut self) -> Option<Expression> {
-        let left = self.coalesce_expr()?;
+        let left = self.comparison_expr()?;
         let op = match self.peek() {
             Some(TokenKind::EqualEqual) => BinaryOp::Equal,
             Some(TokenKind::BangEqual) => BinaryOp::NotEqual,
             _ => return Some(left),
         };
         self.advance();
-        let right = self.coalesce_expr()?;
-        Some(binary_expr(op, left, right))
-    }
-
-    /// `??` sits one level tighter than equality and looser than comparison, on its
-    /// own non-associative level: `name ?? "anon" == "anon"` parses as
-    /// `(name ?? "anon") == "anon"`, and `a ?? b ?? c` is rejected (never chained).
-    fn coalesce_expr(&mut self) -> Option<Expression> {
-        let left = self.comparison_expr()?;
-        if !matches!(self.peek(), Some(TokenKind::QuestionQuestion)) {
-            return Some(left);
-        }
-        self.advance();
         let right = self.comparison_expr()?;
-        Some(binary_expr(BinaryOp::Coalesce, left, right))
+        Some(binary_expr(op, left, right))
     }
 
     fn comparison_expr(&mut self) -> Option<Expression> {
@@ -202,25 +189,28 @@ impl<'a> ExprParser<'a> {
     }
 
     fn range_expr(&mut self) -> Option<Expression> {
-        let left = self.concat_expr()?;
+        let left = self.coalesce_expr()?;
         let op = match self.peek() {
             Some(TokenKind::DotDot) => BinaryOp::RangeExclusive,
             Some(TokenKind::DotDotEqual) => BinaryOp::RangeInclusive,
             _ => return Some(left),
         };
         self.advance();
-        let right = self.concat_expr()?;
+        let right = self.coalesce_expr()?;
         Some(binary_expr(op, left, right))
     }
 
-    fn concat_expr(&mut self) -> Option<Expression> {
-        let mut left = self.additive_expr()?;
-        while matches!(self.peek(), Some(TokenKind::Underscore)) {
-            self.advance();
-            let right = self.additive_expr()?;
-            left = binary_expr(BinaryOp::Concat, left, right);
+    /// `??` sits one level tighter than ranges and looser than addition, on its
+    /// own non-associative level: `count ?? 0 < 5` parses as
+    /// `(count ?? 0) < 5`, and `a ?? b ?? c` is rejected (never chained).
+    fn coalesce_expr(&mut self) -> Option<Expression> {
+        let left = self.additive_expr()?;
+        if !matches!(self.peek(), Some(TokenKind::QuestionQuestion)) {
+            return Some(left);
         }
-        Some(left)
+        self.advance();
+        let right = self.additive_expr()?;
+        Some(binary_expr(BinaryOp::Coalesce, left, right))
     }
 
     fn additive_expr(&mut self) -> Option<Expression> {

@@ -3,7 +3,7 @@
 Marrow syntax stays small. Most everyday functionality belongs in `std::`
 modules with typed signatures.
 
-Builtins such as `exists`, `keys`, `write`, and conversions are documented in
+Builtins such as `exists`, `keys`, `print`, and conversions are documented in
 [Builtins](builtins.md). This page describes importable libraries.
 
 ## Design Rules
@@ -29,14 +29,12 @@ available in normal CLI runs. Host functions in `std::clock`, `std::io`,
 `std::env`, and `std::log` depend on the command or embedding host; a call made
 without the matching capability is a typed capability error. The capability is
 per function, not per module: within `std::clock` only `now()` and `today()`
-need the host clock, while the parse, format, and `add` helpers are pure.
+need the host clock, while the parse and format helpers are pure.
 
-The pure modules (`std::math`, `std::text`, `std::bytes`, `std::assert`) are
-closed: their full operation set is fixed, so a call to an operation they do not
-define is a check error. Host modules (`std::clock`, `std::io`, `std::env`,
-`std::log`) are not closed by this checker rule. Only recognized host helpers
-are lowered to runtime capabilities; the language does not promise that an
-unrecognized host operation reaches a host boundary.
+The descriptor table is closed for every known `std` module. A call to an
+operation the table does not define is a check error, whether the module is pure
+or host-capable. Host capability only affects recognized descriptor rows such as
+`std::clock::now()` or `std::io::readText(...)`.
 
 ## Import Style
 
@@ -71,13 +69,16 @@ std::clock::parseDuration(text: string): duration
 std::clock::formatInstant(value: instant): string
 std::clock::formatDate(value: date): string
 std::clock::formatDuration(value: duration): string
-std::clock::add(value: instant, span: duration): instant
 ```
 
-A `duration` argument can be written as a
-[duration literal](syntax.md#duration-literals) instead of parsed from text, so
-`std::clock::add(t, 1.hour)` shifts an instant by one hour without
-`parseDuration`.
+Linear instant/duration arithmetic uses operators:
+
+```mw
+const later = t + 1.hour
+const elapsed = finished - started
+```
+
+Calendar math for dates remains future `std::clock` territory.
 
 The host clock is captured once at the start of a run, so every `now()` call in
 one run returns the same instant and `today()` the same date.
@@ -90,8 +91,8 @@ language/database kernel.
 
 ## `std::io`
 
-Marrow `write` and `print` cover simple script output. `std::io` owns file
-access and byte/text boundaries:
+Marrow `print` covers simple script output. `std::io` owns file access and
+byte/text boundaries:
 
 ```mw
 std::io::readText(path: string): string

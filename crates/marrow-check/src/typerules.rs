@@ -243,7 +243,6 @@ pub(crate) fn binary_symbol(op: marrow_syntax::BinaryOp) -> &'static str {
         BinaryOp::Remainder => "%",
         BinaryOp::Add => "+",
         BinaryOp::Subtract => "-",
-        BinaryOp::Concat => "_",
         BinaryOp::RangeExclusive => "..",
         BinaryOp::RangeInclusive => "..=",
         BinaryOp::Less => "<",

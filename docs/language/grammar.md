@@ -366,13 +366,11 @@ and_expr        = is_expr ("and" is_expr)* ;
 is_expr         = equality_expr ("is" equality_expr)? ;
 
 equality_expr   =
-    coalesce_expr (("==" | "!=") coalesce_expr)? ;
-
-coalesce_expr   = comparison_expr ("??" comparison_expr)? ;
+    comparison_expr (("==" | "!=") comparison_expr)? ;
 
 comparison_expr = range_expr (("<" | "<=" | ">" | ">=") range_expr)? ;
-range_expr      = concat_expr ((".." | "..=") concat_expr)? ;
-concat_expr     = additive_expr ("_" additive_expr)* ;
+range_expr      = coalesce_expr ((".." | "..=") coalesce_expr)? ;
+coalesce_expr   = additive_expr ("??" additive_expr)? ;
 additive_expr   = multiplicative_expr (("+" | "-") multiplicative_expr)* ;
 multiplicative_expr =
     unary_expr (("*" | "/" | "%") unary_expr)* ;
@@ -395,12 +393,15 @@ optional_field_suffix = "?." field_name ;
 field_name      = identifier | string_lit ;
 ```
 
-`??` is non-associative: `a ?? b ?? c` is rejected. It binds tighter than `==`,
-so `name ?? "anon" == "anon"` is `(name ?? "anon") == "anon"`. Its left operand
-must be a maybe-present read — a path read (including a keyed child such as
-`^patients(id).visits(date)`), a `?.` chain, or a maybe-present builtin result
-such as `next`/`prev`; that constraint is enforced by the checker, not the
-grammar.
+`??` is deliberately non-associative: `a ?? b ?? c` is rejected. Layer defaults
+one read at a time, using parentheses or local bindings when a later extension
+needs nested defaults. It binds looser than additive expressions and tighter than
+ranges and comparisons: `count ?? 0 < 5` is `(count ?? 0) < 5`,
+`start ?? 1 .. n` is `(start ?? 1) .. n`, and `x ?? y + 1` is `x ?? (y + 1)`.
+Its left operand must be a maybe-present read — a path read (including a keyed
+child such as `^patients(id).visits(date)`), a `?.` chain, or a maybe-present
+builtin result such as `next`/`prev`; that constraint is enforced by the
+checker, not the grammar.
 
 `is` is the enum-subtree test: `value is Enum::member` is `true` when the value is
 at or under that member, exact for a concrete leaf. It is a reserved word, sits
@@ -499,10 +500,11 @@ These rules are part of the grammar contract:
   saved value read, such as a saved field, singleton root, fully addressed
   record or keyed-layer entry, or complete unique-index lookup. It does not
   bind address-only durable collections.
-- The absence-default `??` is non-associative and binds tighter than `==`. Its
-  left operand must be a maybe-present read — a path read, a `?.` chain, or a
-  maybe-present builtin result such as `next`/`prev`; an always-present left
-  operand is rejected as an operator misuse.
+- The absence-default `??` is non-associative and binds looser than additive
+  expressions and tighter than ranges and comparisons. Its left operand must be
+  a maybe-present read — a path read, a `?.` chain, or a maybe-present builtin
+  result such as `next`/`prev`; an always-present left operand is rejected as an
+  operator misuse.
 - The optional read `?.` is a postfix field access that short-circuits the chain
   to absent when a step is absent; only absence is short-circuited, not schema or
   decoding errors.

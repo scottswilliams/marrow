@@ -406,7 +406,7 @@ fn for_loop_over_saved_layer_narrows_iterated_entry_reads() {
              store ^books(id: int): Book\n\
              fn f()\n\
              \x20   for pos in ^books(1).tags\n\
-             \x20   \x20   write(^books(1).tags(pos))\n",
+             \x20   \x20   print(^books(1).tags(pos))\n",
         );
     });
 
@@ -461,7 +461,7 @@ fn values_loop_does_not_narrow_value_as_an_entry_key() {
              store ^books(id: int): Book\n\
              fn f()\n\
              \x20   for score in values(^books(1).scores)\n\
-             \x20   \x20   write(^books(1).scores(score))\n",
+             \x20   \x20   print(^books(1).scores(score))\n",
     );
 }
 
@@ -475,7 +475,7 @@ fn single_binding_entries_loop_does_not_narrow_entry_as_a_key() {
              store ^books(id: int): Book\n\
              fn f()\n\
              \x20   for entry in entries(^books(1).scores)\n\
-             \x20   \x20   write(^books(1).scores(entry))\n",
+             \x20   \x20   print(^books(1).scores(entry))\n",
     );
 }
 
@@ -489,7 +489,7 @@ fn two_binding_keys_loop_does_not_narrow_ordinal_as_a_key() {
              store ^books(id: int): Book\n\
              fn f()\n\
              \x20   for ordinal, pos in keys(^books(1).scores)\n\
-             \x20   \x20   write(^books(1).scores(ordinal))\n",
+             \x20   \x20   print(^books(1).scores(ordinal))\n",
     );
 }
 
@@ -503,7 +503,7 @@ fn two_binding_reversed_keys_loop_does_not_narrow_ordinal_as_a_key() {
              store ^books(id: int): Book\n\
              fn f()\n\
              \x20   for ordinal, pos in reversed(keys(^books(1).scores))\n\
-             \x20   \x20   write(^books(1).scores(ordinal))\n",
+             \x20   \x20   print(^books(1).scores(ordinal))\n",
     );
 }
 
@@ -519,7 +519,7 @@ fn two_binding_saved_path_loop_narrows_the_key_binding() {
              store ^books(id: int): Book\n\
              fn f()\n\
              \x20   for pos, score in ^books(1).scores\n\
-             \x20   \x20   write(^books(1).scores(pos))\n",
+             \x20   \x20   print(^books(1).scores(pos))\n",
         );
     });
 
@@ -538,7 +538,7 @@ fn duplicate_entries_loop_bindings_do_not_narrow_the_visible_value_as_a_key() {
              store ^books(id: int): Book\n\
              fn f()\n\
              \x20   for x, x in entries(^books(1).scores)\n\
-             \x20   \x20   write(^books(1).scores(x))\n",
+             \x20   \x20   print(^books(1).scores(x))\n",
     );
 }
 

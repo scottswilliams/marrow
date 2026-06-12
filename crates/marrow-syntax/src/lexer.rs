@@ -172,12 +172,6 @@ impl<'a> Lexer<'a> {
             }
 
             if is_identifier_start_char(ch) {
-                if ch == '_' && !self.identifier_continues_after(index, line.end_byte) {
-                    let end = index + ch.len_utf8();
-                    self.push(TokenKind::Underscore, self.span(line, index, end));
-                    index = end;
-                    continue;
-                }
                 index = self.lex_word(line, index);
                 continue;
             }
@@ -538,13 +532,6 @@ impl<'a> Lexer<'a> {
             _ => return None,
         };
         Some((kind, ch.len_utf8()))
-    }
-
-    fn identifier_continues_after(&self, index: usize, line_end: usize) -> bool {
-        self.source
-            .get(index + 1..line_end)
-            .and_then(|tail| tail.chars().next())
-            .is_some_and(is_identifier_continue_char)
     }
 
     fn push_newline(&mut self, line: Line<'a>) {

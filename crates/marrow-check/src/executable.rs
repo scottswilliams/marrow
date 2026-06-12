@@ -126,7 +126,6 @@ pub struct CheckedIdentityConstructor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckedBuiltinCall {
     Print,
-    Write,
     Exists,
     NextId,
     Append,

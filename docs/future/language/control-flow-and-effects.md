@@ -16,7 +16,7 @@ require exists(^books(id)) else
     )
 
 if const title = ^books(id).title
-    write(title)
+    print(title)
 ```
 
 The `else` block must not fall through to the following statement. Every path

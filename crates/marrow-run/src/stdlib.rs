@@ -24,4 +24,4 @@ pub(crate) use index_lookup::{
     read_exact_unique_index_lookup_value, unique_index_lookup,
 };
 pub(crate) use math::{int_modulo, int_remainder};
-pub(crate) use output::{OutputKind, eval_output};
+pub(crate) use output::eval_output;

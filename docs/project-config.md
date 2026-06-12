@@ -87,7 +87,7 @@ declared module.
 If neither `--entry` nor `run.defaultEntry` is set, `run` reports
 `run.no_entry` and exits non-zero.
 
-`run` prints only what the program writes with `print`/`write`. Returning a
+`run` prints only what the program writes with `print`. Returning a
 value does not print it.
 
 ### `store.backend` and `store.dataDir`

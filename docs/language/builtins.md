@@ -9,7 +9,7 @@ Builtins are always available. Documentation uses their full names.
 ```mw
 if exists(^books(id))
     if const title = ^books(id).title
-        write(title)
+        print(title)
 ```
 
 The absence-default operator `??` reads a value when populated and otherwise
@@ -100,14 +100,14 @@ over `values(...)` and `entries(...)` where those apply, and over an in-memory
 ```mw
 for id in reversed(^books)
     if const title = ^books(id).title
-        write(title)
+        print(title)
 
 for pos in reversed(^books(id).tags)
     if const tag = ^books(id).tags(pos)
-        write(tag)
+        print(tag)
 
 for word in reversed(std::text::split(line, ","))
-    write(word)
+    print(word)
 ```
 
 Over a saved layer the reversal streams stored keys from high to low — it is a
@@ -169,22 +169,23 @@ empty sequence writes key `1`. Append does not fill holes, and deleting an
 entry does not renumber subsequent entries. Treat sequence keys as storage
 positions, not as a promise that the sequence is dense.
 
-## Write And Print
+## Print
 
-`write(...)` is a call-shaped statement that writes text to the default output
-stream:
-
-```mw
-write($"book {id}: {title}")
-```
-
-`print(...)` is a call-shaped statement that writes text plus a newline:
+`print(...)` is a call-shaped statement that writes one rendered value plus a
+newline to the default output stream:
 
 ```mw
 print($"saved {id}")
 ```
 
-Neither statement produces a value. Complex IO belongs in `std::io`.
+It renders `string`, `int`, `bool`, `decimal`, and saved identity values at
+runtime. A single-key identity renders as its key, and a composite identity
+renders as `identity(k1, k2)`. Other values, including `instant`, `date`,
+`duration`, `bytes`, enums, sequences, local trees, and resources raise
+`run.unsupported`; format temporal values explicitly with
+`std::clock::formatInstant`, `std::clock::formatDate`, or
+`std::clock::formatDuration`. `print` produces no value. Complex IO belongs in
+`std::io`.
 
 ## Delete
 

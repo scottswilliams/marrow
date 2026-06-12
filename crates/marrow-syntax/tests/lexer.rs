@@ -32,7 +32,7 @@ fn texts(source: &str) -> Vec<String> {
 #[test]
 fn lexes_indentation_tokens_for_blocks() {
     let source =
-        "module shelf::books\nfn main()\n    const title = \"Small Gods\"\n    write(title)\n";
+        "module shelf::books\nfn main()\n    const title = \"Small Gods\"\n    print(title)\n";
 
     assert_eq!(
         kinds(source),
@@ -174,7 +174,7 @@ fn indented_doc_comments_follow_block_layout() {
 
 #[test]
 fn lexes_literals_operators_and_punctuation_boundaries() {
-    let source = "const row = ^books(id).\"old-title\" != b\"gone\" and note _ \"ok\"\n";
+    let source = "const row = ^books(id).\"old-title\" != b\"gone\" and note + \"ok\"\n";
 
     assert_eq!(
         texts(source),
@@ -193,7 +193,7 @@ fn lexes_literals_operators_and_punctuation_boundaries() {
             "b\"gone\"",
             "and",
             "note",
-            "_",
+            "+",
             "\"ok\"",
             "\n",
             "",
@@ -217,7 +217,7 @@ fn lexes_literals_operators_and_punctuation_boundaries() {
             TokenKind::Bytes,
             TokenKind::Keyword(Keyword::And),
             TokenKind::Identifier,
-            TokenKind::Underscore,
+            TokenKind::Plus,
             TokenKind::String,
             TokenKind::Newline,
             TokenKind::Eof,
@@ -275,7 +275,7 @@ fn duration_lexing_does_not_disturb_decimals_fields_or_unknown_units() {
 
 #[test]
 fn lexes_interpolation_with_expression_boundaries() {
-    let source = "write($\"book {id}: {{ready}}\")\n";
+    let source = "print($\"book {id}: {{ready}}\")\n";
 
     assert_eq!(
         kinds(source),
@@ -297,7 +297,7 @@ fn lexes_interpolation_with_expression_boundaries() {
     assert_eq!(
         texts(source),
         vec![
-            "write",
+            "print",
             "(",
             "$\"",
             "book ",
@@ -455,7 +455,7 @@ fn rejects_obsolete_operators_with_marrow_guidance() {
 
 #[test]
 fn keeps_valid_operators_after_obsolete_check() {
-    let source = "if a != b\n    write(\"ne\")\n";
+    let source = "if a != b\n    print(\"ne\")\n";
     let lexed = lex_source(source);
 
     assert!(
@@ -474,7 +474,7 @@ fn keeps_valid_operators_after_obsolete_check() {
 
 #[test]
 fn lexes_equality_operator() {
-    let source = "if a == b\n    write(\"eq\")\n";
+    let source = "if a == b\n    print(\"eq\")\n";
     let lexed = lex_source(source);
 
     assert!(
@@ -494,7 +494,7 @@ fn lexes_equality_operator() {
 #[test]
 fn lexes_is_as_a_keyword() {
     // `is` is a reserved word operator, lexed as a keyword like `and`/`or`/`not`.
-    let kinds = kinds("write(pet is Cat::tiger)\n");
+    let kinds = kinds("print(pet is Cat::tiger)\n");
     assert!(
         kinds.contains(&TokenKind::Keyword(Keyword::Is)),
         "expected an `is` keyword, got {kinds:?}"
@@ -504,7 +504,7 @@ fn lexes_is_as_a_keyword() {
 #[test]
 fn lexes_absence_operators() {
     // `?.` and `??` each lex as a single multi-character punctuation token.
-    let lexed = lex_source("write(a?.b ?? c)\n");
+    let lexed = lex_source("print(a?.b ?? c)\n");
     assert!(
         !has_errors(&lexed),
         "`?.` and `??` should lex cleanly, got {:#?}",
@@ -530,7 +530,7 @@ fn lexes_absence_operators() {
 fn rejects_a_bare_question_mark() {
     // A lone `?` is not part of any operator, so it stays an unexpected character;
     // only `?.` and `??` are recognized.
-    let lexed = lex_source("write(a ? b)\n");
+    let lexed = lex_source("print(a ? b)\n");
     assert!(
         lexed.diagnostics.iter().any(|diagnostic| diagnostic.reason
             == DiagnosticReason::Lexer(LexerDiagnosticReason::UnexpectedCharacter('?'))),

@@ -189,7 +189,6 @@ impl CheckedBuiltinCall {
     fn from_name(name: &str) -> Option<Self> {
         Some(match name {
             "print" => Self::Print,
-            "write" => Self::Write,
             "exists" => Self::Exists,
             "nextId" => Self::NextId,
             "append" => Self::Append,

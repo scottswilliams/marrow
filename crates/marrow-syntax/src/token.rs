@@ -67,7 +67,6 @@ pub enum TokenKind {
     Star,
     Slash,
     Percent,
-    Underscore,
     Caret,
     At,
 }

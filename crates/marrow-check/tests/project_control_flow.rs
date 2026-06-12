@@ -274,7 +274,7 @@ fn throwing_an_error_value_is_allowed() {
 fn try_requires_a_catch_or_finally_clause() {
     let found = check_script(
         "bare-try",
-        "fn f()\n    try\n        write(\"x\")\n",
+        "fn f()\n    try\n        print(\"x\")\n",
         "check.try_handler",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -284,14 +284,14 @@ fn try_requires_a_catch_or_finally_clause() {
 fn try_with_catch_or_finally_is_allowed() {
     let with_catch = check_script(
         "try-catch",
-        "fn f()\n    try\n        write(\"x\")\n    catch e\n        return\n",
+        "fn f()\n    try\n        print(\"x\")\n    catch e\n        return\n",
         "check.try_handler",
     );
     assert!(with_catch.is_empty(), "{with_catch:#?}");
 
     let with_finally = check_script(
         "try-finally",
-        "fn f()\n    try\n        write(\"x\")\n    finally\n        write(\"done\")\n",
+        "fn f()\n    try\n        print(\"x\")\n    finally\n        print(\"done\")\n",
         "check.try_handler",
     );
     assert!(with_finally.is_empty(), "{with_finally:#?}");

@@ -112,15 +112,15 @@ fn a_try_that_succeeds_skips_catch() {
 #[test]
 fn finally_runs_on_success_and_on_throw() {
     let program = checked_program(
-        "pub fn run_it(do_throw: bool)\n    try\n        if do_throw\n            throw Error(code: \"x.y\", message: \"b\")\n    catch err: Error\n        write(\"caught \")\n    finally\n        write(\"cleanup\")\n",
+        "pub fn run_it(do_throw: bool)\n    try\n        if do_throw\n            throw Error(code: \"x.y\", message: \"b\")\n    catch err: Error\n        print(\"caught\")\n    finally\n        print(\"cleanup\")\n",
     );
     let out = |b| {
         run_full(checked_entry!(&program, "test::run_it", Value::Bool(b)))
             .unwrap()
             .output
     };
-    assert_eq!(out(false), "cleanup");
-    assert_eq!(out(true), "caught cleanup");
+    assert_eq!(out(false), "cleanup\n");
+    assert_eq!(out(true), "caught\ncleanup\n");
 }
 
 #[test]
@@ -177,7 +177,7 @@ fn numeric_parse_and_range_faults_are_catchable_with_specific_codes() {
          \n\
          pub fn instant_range_code(): string\n\
          \x20   try\n\
-         \x20       var text: string = std::clock::formatInstant(std::clock::add(std::clock::parseInstant(\"9999-12-31T23:59:59Z\"), 1.day))\n\
+         \x20       var text: string = std::clock::formatInstant(std::clock::parseInstant(\"9999-12-31T23:59:59Z\") + 1.day)\n\
          \x20   catch err: Error\n\
          \x20       return err.code\n\
          \x20   return \"none\"\n\
@@ -211,7 +211,7 @@ fn numeric_parse_and_range_faults_are_catchable_with_specific_codes() {
     );
     assert_eq!(
         run(checked_entry!(&program, "test::instant_range_code")),
-        Ok(Some(Value::Str("value.range".into())))
+        Ok(Some(Value::Str("run.temporal_overflow".into())))
     );
     assert_eq!(
         run(checked_entry!(&program, "test::decimal_overflow_code")),
@@ -279,7 +279,7 @@ fn a_caught_callee_throw_does_not_leak_into_a_later_fault() {
     // After a caller catches a callee's throw, the pending throw is cleared, so a
     // later fault is caught with its own Error value rather than the stale throw.
     let program = checked_program(
-        "pub fn callee()\n    throw Error(code: \"test.e1\", message: \"boom\")\npub fn check(): int\n    try\n        callee()\n    catch err: Error\n        write(\"caught\")\n    try\n        const boom = 1 / 0\n    catch err: Error\n        return 99\n    return 0\n",
+        "pub fn callee()\n    throw Error(code: \"test.e1\", message: \"boom\")\npub fn check(): int\n    try\n        callee()\n    catch err: Error\n        print(\"caught\")\n    try\n        const boom = 1 / 0\n    catch err: Error\n        return 99\n    return 0\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::check")),
@@ -293,7 +293,7 @@ fn a_throwing_finally_does_not_leak_a_pending_throw() {
     // stashed: after an outer `catch` swallows the finally throw, a later fault is
     // caught with its own Error value rather than the stale throw.
     let program = checked_program(
-        "pub fn callee()\n    throw Error(code: \"test.e1\", message: \"from call\")\npub fn leak(): int\n    try\n        try\n            callee()\n        finally\n            throw Error(code: \"test.e2\", message: \"from finally\")\n    catch err: Error\n        write(\"swallowed\")\n    try\n        const boom = 1 / 0\n    catch err: Error\n        return 99\n    return 0\n",
+        "pub fn callee()\n    throw Error(code: \"test.e1\", message: \"from call\")\npub fn leak(): int\n    try\n        try\n            callee()\n        finally\n            throw Error(code: \"test.e2\", message: \"from finally\")\n    catch err: Error\n        print(\"swallowed\")\n    try\n        const boom = 1 / 0\n    catch err: Error\n        return 99\n    return 0\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::leak")),
@@ -306,7 +306,7 @@ fn a_throw_from_a_call_in_finally_propagates() {
     // A `finally` whose own called function throws: that throw replaces the
     // outcome and is caught by an outer handler.
     let program = checked_program(
-        "pub fn boom()\n    throw Error(code: \"deep.fail\", message: \"x\")\npub fn run_it(): string\n    try\n        try\n            write(\"body\")\n        finally\n            boom()\n    catch err: Error\n        return err.code\n    return \"none\"\n",
+        "pub fn boom()\n    throw Error(code: \"deep.fail\", message: \"x\")\npub fn run_it(): string\n    try\n        try\n            print(\"body\")\n        finally\n            boom()\n    catch err: Error\n        return err.code\n    return \"none\"\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::run_it")),
@@ -319,11 +319,11 @@ fn a_clean_finally_preserves_a_propagated_call_throw() {
     // A clean `finally` (no throw of its own) over a call-propagated throw must
     // restore the pending throw so an outer `catch` still sees it.
     let program = checked_program(
-        "pub fn boom()\n    throw Error(code: \"deep.fail\", message: \"x\")\npub fn run_it(): string\n    try\n        try\n            boom()\n        finally\n            write(\"cleanup\")\n    catch err: Error\n        return err.code\n    return \"none\"\n",
+        "pub fn boom()\n    throw Error(code: \"deep.fail\", message: \"x\")\npub fn run_it(): string\n    try\n        try\n            boom()\n        finally\n            print(\"cleanup\")\n    catch err: Error\n        return err.code\n    return \"none\"\n",
     );
     let outcome = run_full(checked_entry!(&program, "test::run_it")).expect("caught");
     assert_eq!(outcome.value, Some(Value::Str("deep.fail".into())));
-    assert_eq!(outcome.output, "cleanup");
+    assert_eq!(outcome.output, "cleanup\n");
 }
 
 #[test]
@@ -343,7 +343,7 @@ fn finally_runs_after_a_fault_and_can_replace_it() {
 #[test]
 fn an_uncaught_throw_without_a_catch_propagates_through_finally() {
     let program = checked_program(
-        "pub fn f()\n    try\n        throw Error(code: \"x.y\", message: \"boom\")\n    finally\n        write(\"cleanup\")\n",
+        "pub fn f()\n    try\n        throw Error(code: \"x.y\", message: \"boom\")\n    finally\n        print(\"cleanup\")\n",
     );
     assert_run_error(run(checked_entry!(&program, "test::f")), RUN_UNCAUGHT_THROW);
 }
@@ -364,7 +364,7 @@ fn a_throw_in_finally_replaces_the_outcome() {
 fn a_clean_finally_preserves_a_return() {
     // A finally that completes normally lets the try's `return` through.
     let program = checked_program(
-        "pub fn f(): int\n    try\n        return 7\n    finally\n        write(\"cleanup\")\n",
+        "pub fn f(): int\n    try\n        return 7\n    finally\n        print(\"cleanup\")\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::f")),

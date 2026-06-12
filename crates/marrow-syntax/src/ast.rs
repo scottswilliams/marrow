@@ -271,7 +271,6 @@ pub enum BinaryOp {
     Remainder,
     Add,
     Subtract,
-    Concat,
     RangeExclusive,
     RangeInclusive,
     Less,

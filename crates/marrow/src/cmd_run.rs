@@ -52,9 +52,9 @@ impl RunObservation {
     }
 }
 
-/// Run a project's entry function. A plain run's only output is the program's own
-/// `print`/`write` stream, which carries no envelope; `--trace` and `--dry-run`
-/// are tooling reports that take `--format` and report separately from that stream.
+/// Run a project's entry function. A plain run's only output is the program's
+/// `print` stream, which carries no envelope; `--trace` and `--dry-run` are
+/// tooling reports that take `--format` and report separately from that stream.
 /// Failures report a dotted error code on stderr.
 pub(crate) fn run(args: &[String]) -> ExitCode {
     let mut entry = None;
@@ -102,7 +102,7 @@ Check a Marrow project, then run an entry function over the store its
 `marrow.json` selects (an in-memory store when none is configured). The entry
 is `--entry` if given, else the project's `run.defaultEntry`; qualify it as
 module::function unless the bare public function name is unique. Output written
-with `print`/`write` goes to stdout.
+with `print` goes to stdout.
 
   --maintenance  Run with the maintenance capability, for data evolution and
                  repair tooling. It permits whole managed-root
@@ -140,7 +140,7 @@ with `print`/`write` goes to stdout.
     };
     let observe = match (trace, dry_run) {
         (false, false) => {
-            // A plain run's only output is the program's own `print`/`write` stream,
+            // A plain run's only output is the program's `print` stream,
             // which carries no envelope, so `--format` has nothing to shape and is a
             // usage error rather than a silently ignored flag.
             if saw_format {

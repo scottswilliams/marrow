@@ -14,7 +14,6 @@ use crate::infer::{layer_key_type, record_identity_type, saved_group_chain};
 use crate::resolve::resolve_store_by_root;
 use crate::typerules::{
     as_primitive, expects_conversion, marrow_type_name, mismatch_display, type_compatible,
-    type_renderable_at_runtime,
 };
 use crate::{
     AppendTargetDiagnostic, CHECK_AMBIGUOUS_CALL, CHECK_CALL_ARGUMENT,
@@ -22,8 +21,9 @@ use crate::{
     CHECK_PRIVATE_FUNCTION, CHECK_UNRESOLVED_CALL, CHECK_UNTYPED_VALUE, CheckDiagnostic,
     CheckedProgram, ConversionTarget, ConversionUnsupportedSourceDiagnostic, Def, DefItem,
     DiagnosticPayload, MarrowType, Resolution, ResolvableKind, TypeNames, builtin_return_type,
-    conversion_return_type, identity_type_for_store, is_builtin_call, module_of_file, resolve,
-    resolve_resource_schema_type, resource_type_name, std_call_params, std_call_return_type,
+    conversion_return_type, identity_type_for_store, is_builtin_call, is_unknown_std_operation,
+    module_of_file, resolve, resolve_resource_schema_type, resource_type_name, std_call_params,
+    std_call_return_type,
 };
 
 use super::collections::{
@@ -90,6 +90,10 @@ pub(crate) fn check_call(input: CallCheck<'_>) -> MarrowType {
     }
     if is_builtin_call(segments) {
         return check_builtin_call(&mut env, segments, args, arg_types);
+    }
+    if is_unknown_std_operation(segments) {
+        check_unknown_std_operation(&mut env, segments);
+        return MarrowType::Unknown;
     }
 
     let from_module = module_of_file(env.program, env.file).unwrap_or_default();
@@ -190,9 +194,6 @@ fn check_builtin_call(
         check_error_constructor_args(args, arg_types, env.span, env.file, env.diagnostics);
         return MarrowType::Error;
     }
-    if let Some(ty) = check_closed_module_op(env, segments, &label) {
-        return ty;
-    }
     check_builtin_call_args(env, segments, args, arg_types);
     if let Some(params) = std_call_params(segments) {
         check_args_against(
@@ -210,20 +211,8 @@ fn check_builtin_call(
         .unwrap_or(MarrowType::Unknown)
 }
 
-fn check_closed_module_op(
-    env: &mut CallEnv<'_>,
-    segments: &[String],
-    label: &str,
-) -> Option<MarrowType> {
-    let [first, module, op] = segments else {
-        return None;
-    };
-    if first != "std"
-        || !marrow_schema::stdlib::module_is_closed(module)
-        || marrow_schema::stdlib::lookup(module, op).is_some()
-    {
-        return None;
-    }
+fn check_unknown_std_operation(env: &mut CallEnv<'_>, segments: &[String]) {
+    let label = segments.join("::");
     env.diagnostics.push(
         CheckDiagnostic::error(
             CHECK_UNRESOLVED_CALL,
@@ -233,7 +222,6 @@ fn check_closed_module_op(
         )
         .with_payload(DiagnosticPayload::UnresolvedCall(label.to_string())),
     );
-    Some(MarrowType::Unknown)
 }
 
 fn check_resource_constructor_call(
@@ -417,43 +405,15 @@ fn check_builtin_call_args(
     arg_types: &[MarrowType],
 ) {
     let [name] = segments else { return };
-    match name.as_str() {
-        "print" | "write" => {
-            check_output_args(name, arg_types, env.span, env.file, env.diagnostics);
-            return;
-        }
-        "exists" => {
-            check_exists_args(env, args);
-            return;
-        }
-        _ => {}
+    if name.as_str() == "exists" {
+        check_exists_args(env, args);
+        return;
     }
     if let Some(target) = ConversionTarget::from_name(name) {
         check_conversion_call_shape(target, args, env.span, env.file, env.diagnostics);
         check_conversion_arg(target, arg_types, env.span, env.file, env.diagnostics);
         if target == ConversionTarget::ErrorCode {
             check_error_code_conversion_literal(args, env.file, env.diagnostics);
-        }
-    }
-}
-
-fn check_output_args(
-    label: &str,
-    arg_types: &[MarrowType],
-    span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) {
-    for arg_type in arg_types {
-        if type_renderable_at_runtime(arg_type) == Some(false) {
-            diagnostics.push(call_diagnostic(
-                file,
-                span,
-                format!(
-                    "argument to `{label}` cannot render `{}`; convert it explicitly",
-                    marrow_type_name(arg_type),
-                ),
-            ));
         }
     }
 }

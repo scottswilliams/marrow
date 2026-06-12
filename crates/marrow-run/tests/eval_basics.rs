@@ -322,7 +322,7 @@ fn a_date_range_steps_one_calendar_day_across_a_leap_boundary() {
     // 2024-02-27..=2024-03-02 by 1.day lands on Feb 28, 29, Mar 1, 2 in a leap year:
     // calendar arithmetic, not 30-day months.
     let program = checked_program(
-        "pub fn f(): string\n    var acc = \"\"\n    for d in std::clock::parseDate(\"2024-02-27\")..=std::clock::parseDate(\"2024-03-02\") by 1.day\n        acc = acc _ std::clock::formatDate(d) _ \";\"\n    return acc\n",
+        "pub fn f(): string\n    var acc = \"\"\n    for d in std::clock::parseDate(\"2024-02-27\")..=std::clock::parseDate(\"2024-03-02\") by 1.day\n        acc = acc + std::clock::formatDate(d) + \";\"\n    return acc\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::f")).unwrap(),
@@ -345,7 +345,7 @@ fn an_instant_range_steps_by_a_duration_in_utc() {
     // Stepping an instant range by 1.hour from noon to 3pm UTC yields noon, 1pm, 2pm
     // (exclusive end): three instants.
     let program = checked_program(
-        "pub fn f(): string\n    var acc = \"\"\n    for t in std::clock::parseInstant(\"2024-03-10T12:00:00Z\")..std::clock::parseInstant(\"2024-03-10T15:00:00Z\") by 1.hour\n        acc = acc _ std::clock::formatInstant(t) _ \";\"\n    return acc\n",
+        "pub fn f(): string\n    var acc = \"\"\n    for t in std::clock::parseInstant(\"2024-03-10T12:00:00Z\")..std::clock::parseInstant(\"2024-03-10T15:00:00Z\") by 1.hour\n        acc = acc + std::clock::formatInstant(t) + \";\"\n    return acc\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::f")).unwrap(),

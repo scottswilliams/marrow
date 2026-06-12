@@ -17,6 +17,22 @@ enum Expectation<'a> {
     Name(&'a [&'a str]),
 }
 
+fn parsed_return_expr(source: &str) -> Expression {
+    let parsed = parse_source(source);
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "expected {source:?} to parse cleanly: {:#?}",
+        parsed.diagnostics
+    );
+    let Statement::Return {
+        value: Some(value), ..
+    } = &parsed.file.function("f").expect("f").body.statements[0]
+    else {
+        panic!("expected a return expression in {source:?}");
+    };
+    value.clone()
+}
+
 #[test]
 fn parses_const_values_into_expression_nodes() {
     let cases: &[(&str, Expectation<'_>)] = &[
@@ -317,6 +333,48 @@ fn coalesce_binds_tighter_than_equality() {
 }
 
 #[test]
+fn coalesce_binds_tighter_than_comparison_and_range_but_looser_than_additive() {
+    let value = parsed_return_expr("fn f(count: int): bool\n    return count ?? 0 < 5\n");
+    assert!(
+        matches!(
+            value,
+            Expression::Binary {
+                op: BinaryOp::Less,
+                ref left,
+                ..
+            } if matches!(left.as_ref(), Expression::Binary { op: BinaryOp::Coalesce, .. })
+        ),
+        "expected `(count ?? 0) < 5`: {value:?}"
+    );
+
+    let value = parsed_return_expr("fn f(start: int, n: int): int\n    return start ?? 1..n\n");
+    assert!(
+        matches!(
+            value,
+            Expression::Binary {
+                op: BinaryOp::RangeExclusive,
+                ref left,
+                ..
+            } if matches!(left.as_ref(), Expression::Binary { op: BinaryOp::Coalesce, .. })
+        ),
+        "expected `(start ?? 1)..n`: {value:?}"
+    );
+
+    let value = parsed_return_expr("fn f(x: int, y: int): int\n    return x ?? y + 1\n");
+    assert!(
+        matches!(
+            value,
+            Expression::Binary {
+                op: BinaryOp::Coalesce,
+                ref right,
+                ..
+            } if matches!(right.as_ref(), Expression::Binary { op: BinaryOp::Add, .. })
+        ),
+        "expected `x ?? (y + 1)`: {value:?}"
+    );
+}
+
+#[test]
 fn chained_coalesce_is_not_associative() {
     // `??` is non-associative, so `a ?? b ?? c` does not parse.
     let parsed = parse_source("fn f(a: int): int\n    return ^books(a)?.pages ?? 0 ?? 1\n");
@@ -324,6 +382,24 @@ fn chained_coalesce_is_not_associative() {
         parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"),
         "expected a parse error for chained `??`: {:#?}",
         parsed.diagnostics
+    );
+}
+
+#[test]
+fn underscore_no_longer_parses_as_string_concatenation() {
+    let parsed = parse_source("const Bad = \"a\" _ \"b\"\n");
+    assert!(
+        parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"),
+        "expected a parse error for `_` concatenation: {:#?}",
+        parsed.diagnostics
+    );
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected const declaration");
+    };
+    assert!(
+        decl.value.is_none(),
+        "expected obsolete `_` concatenation to carry no value, got {:?}",
+        decl.value
     );
 }
 

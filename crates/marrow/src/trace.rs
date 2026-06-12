@@ -2,8 +2,8 @@
 //!
 //! A [`TraceHook`] observes each statement and managed write as the run executes
 //! and reports them in execution order, on standard error to leave the program's
-//! own `print`/`write` alone on stdout. It only observes: a traced run does exactly
-//! what an untraced one does, plus the trace.
+//! `print` output alone on stdout. It only observes: a traced run does exactly what
+//! an untraced one does, plus the trace.
 
 use std::collections::HashMap;
 

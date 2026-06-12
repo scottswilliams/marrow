@@ -16,7 +16,7 @@ use common::{has_reason, lexer_reason, parse_reason};
 /// silently treating the rest as text.
 #[test]
 fn unterminated_interpolation_expression_is_a_lexer_error() {
-    let lexed = lex_source("fn main()\n    write($\"book {id\")\n");
+    let lexed = lex_source("fn main()\n    print($\"book {id\")\n");
     assert!(
         lexed.diagnostics.iter().any(|diagnostic| diagnostic.reason
             == lexer_reason(LexerDiagnosticReason::UnterminatedInterpolationExpression)),
@@ -32,7 +32,7 @@ fn unterminated_interpolation_expression_is_a_lexer_error() {
 /// contain another interpolation opener.
 #[test]
 fn nested_brace_inside_interpolation_expression_is_a_lexer_error() {
-    let lexed = lex_source("fn main()\n    write($\"book {a{b}}\")\n");
+    let lexed = lex_source("fn main()\n    print($\"book {a{b}}\")\n");
     assert!(
         lexed.diagnostics.iter().any(|diagnostic| diagnostic.reason
             == lexer_reason(LexerDiagnosticReason::UnterminatedInterpolationExpression)),
@@ -98,7 +98,7 @@ fn a_lone_closing_brace_is_literal_interpolation_text() {
 /// unterminated-expression case above.
 #[test]
 fn unterminated_interpolation_string_is_a_lexer_error() {
-    let lexed = lex_source("fn main()\n    write($\"book {id} more\n");
+    let lexed = lex_source("fn main()\n    print($\"book {id} more\n");
     assert!(
         lexed.diagnostics.iter().any(|diagnostic| diagnostic.reason
             == lexer_reason(LexerDiagnosticReason::UnterminatedInterpolationString)),

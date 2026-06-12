@@ -140,14 +140,14 @@ fn functions_that_return_on_all_paths_are_not_flagged() {
 
 /// Each operator enforces its operand types: a single `check.operator_type` fires when
 /// a `var x = ...` body mixes types the operator does not accept. The rows cover the
-/// arithmetic, concatenation, logical, comparison, and unary operators in turn.
+/// arithmetic, string addition, logical, comparison, and unary operators in turn.
 #[test]
 fn rejects_an_operator_on_wrongly_typed_operands() {
     let cases: &[(&str, &str)] = &[
         // `+` needs matching numeric operands; `1 + true` adds an int and a bool.
         ("op-arith", "fn f()\n    var x = 1 + true\n"),
-        // `_` concatenates strings; `1 _ 2` joins two ints.
-        ("op-concat", "fn f()\n    var x = 1 _ 2\n"),
+        // String addition requires two strings; `"x" + 1` mixes string and int.
+        ("op-string-add", "fn f()\n    var x = \"x\" + 1\n"),
         // `and` needs bool operands; `true and 1` mixes in an int.
         ("op-logical", "fn f()\n    var x = true and 1\n"),
         // Ordering compares same-typed values; `1 < "a"` mixes int and string.
@@ -196,7 +196,7 @@ fn well_typed_operators_are_not_flagged() {
         "fn ok(a: int, b: int, s: string, t: string, p: bool, q: bool): bool\n\
          \x20   const sum = a + b\n\
          \x20   const quot = a / b\n\
-         \x20   const cat = s _ t\n\
+         \x20   const cat = s + t\n\
          \x20   const cmp = a < b\n\
          \x20   const ne = a != b\n\
          \x20   const both = p and q\n\
