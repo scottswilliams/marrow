@@ -829,7 +829,6 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 The catalog/evolution series coordinates with the live engine-resident-catalog refactor — it is
 the named owner of the #24/#27 subtractions. The remaining tail lane sequences after the catalog
 series.
-docs/backend-contract.md remaining integration: W3.9.
 
 Catalog/evolution series (sequenced; live-refactor coordination):
 **W3.10 → Transform sparse reads.** Carries: presence checking for evolve transform bodies after
