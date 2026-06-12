@@ -176,6 +176,7 @@ fn encode_entry(ordinal: u64, entry: &CatalogEntry) -> Result<Vec<u8>, StoreErro
     out.push(entry.lifecycle.tag());
     put_optional_text(entry.accepted_key_shape.as_deref(), &mut out)?;
     put_optional_text(entry.accepted_struct.as_deref(), &mut out)?;
+    put_optional_text(entry.accepted_index_shape.as_deref(), &mut out)?;
     Ok(out)
 }
 
@@ -189,6 +190,11 @@ fn decode_entry(stable_id: &str, bytes: &[u8]) -> Result<EntryRow, StoreError> {
     let lifecycle = decode_lifecycle(cursor.take_u8()?)?;
     let accepted_key_shape = take_optional_text(&mut cursor)?;
     let accepted_struct = take_optional_text(&mut cursor)?;
+    let accepted_index_shape = if cursor.is_empty() {
+        None
+    } else {
+        take_optional_text(&mut cursor)?
+    };
     if !cursor.is_empty() {
         return Err(corrupt_catalog("catalog entry has trailing bytes"));
     }
@@ -199,6 +205,7 @@ fn decode_entry(stable_id: &str, bytes: &[u8]) -> Result<EntryRow, StoreError> {
         aliases,
         lifecycle,
         accepted_key_shape,
+        accepted_index_shape,
         accepted_struct,
     };
     Ok(EntryRow { ordinal, entry })
@@ -335,7 +342,7 @@ mod tests {
         format!("cat_{:032x}", suffix)
     }
 
-    /// A two-entry snapshot exercising aliases, a store key shape, and a member
+    /// A snapshot exercising aliases, a store key shape, a store-index shape, and a member
     /// structural signature, so every optional field has a populated round-trip.
     fn sample_snapshot() -> CatalogMetadata {
         CatalogMetadata::new(
@@ -348,6 +355,20 @@ mod tests {
                     aliases: vec!["library".to_string(), "tomes".to_string()],
                     lifecycle: CatalogLifecycle::Active,
                     accepted_key_shape: Some("int,string".to_string()),
+                    accepted_index_shape: None,
+                    accepted_struct: None,
+                },
+                CatalogEntry {
+                    kind: CatalogEntryKind::StoreIndex,
+                    path: "books.byTitle".to_string(),
+                    stable_id: stable_id(3),
+                    aliases: Vec::new(),
+                    lifecycle: CatalogLifecycle::Active,
+                    accepted_key_shape: None,
+                    accepted_index_shape: Some(
+                        "unique=false;keys=[member:cat_00000000000000000000000000000002:string]"
+                            .to_string(),
+                    ),
                     accepted_struct: None,
                 },
                 CatalogEntry {
@@ -357,6 +378,7 @@ mod tests {
                     aliases: Vec::new(),
                     lifecycle: CatalogLifecycle::Reserved,
                     accepted_key_shape: None,
+                    accepted_index_shape: None,
                     accepted_struct: Some("leaf:string".to_string()),
                 },
             ],
@@ -403,6 +425,7 @@ mod tests {
                 aliases: Vec::new(),
                 lifecycle: CatalogLifecycle::Active,
                 accepted_key_shape: None,
+                accepted_index_shape: None,
                 accepted_struct: None,
             }],
         );
@@ -435,6 +458,7 @@ mod tests {
             aliases: Vec::new(),
             lifecycle: CatalogLifecycle::Active,
             accepted_key_shape: None,
+            accepted_index_shape: None,
             accepted_struct: None,
         };
         backend
@@ -451,7 +475,7 @@ mod tests {
 
         let id = &snapshot.entries[0].stable_id;
         let mut bytes = encode_entry(0, &snapshot.entries[0]).expect("encode");
-        bytes.truncate(bytes.len() - 1);
+        bytes.truncate(bytes.len() - 2);
         backend.write(&entry_key(id), bytes).expect("corrupt row");
         assert_corruption(read_catalog_snapshot(&backend));
     }

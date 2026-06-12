@@ -149,8 +149,8 @@ The snapshot records its catalog epoch and digest. Each entry records:
 - the stable ID;
 - lifecycle state;
 - the accepted shape its durable data was written under: a store's
-  identity-key shape, or a resource member's identity-aware structural
-  signature.
+  identity-key shape, a store index's declaration shape, or a resource member's
+  identity-aware structural signature.
 
 `active` entries bind current source to stable IDs. `reserved` entries remember
 spellings that must not be reused after a retire; a later source declaration at
@@ -191,14 +191,14 @@ corrupting storage.
 The catalog digest is `sha256:<64 lowercase hex>` over the canonical object
 `{"epoch": <u64>, "entries": <entries in canonical digest order>}`. Canonical
 digest order sorts entries by declaration kind tag, canonical path, stable ID,
-aliases, lifecycle tag, accepted store-key shape, and accepted structural
-signature. Source/member order and catalog-row order are not digest inputs, so a
-pure enum-member reorder preserves catalog identity. New catalog writes stamp
-the canonical digest. Reads also accept a stored header digest computed by the
-legacy order-sensitive row-order form only when that digest still matches the
-decoded rows; the returned snapshot is normalized to the canonical digest before
-its IDs bind. A snapshot whose stored header matches neither accepted digest is
-rejected.
+aliases, lifecycle tag, accepted store-key shape, accepted store-index shape, and
+accepted structural signature. Source/member order and catalog-row order are not
+digest inputs, so a pure enum-member reorder preserves catalog identity. New
+catalog writes stamp the canonical digest. Reads also accept a stored header
+digest computed by the legacy order-sensitive row-order form only when that
+digest still matches the decoded rows; the returned snapshot is normalized to
+the canonical digest before its IDs bind. A snapshot whose stored header matches
+neither accepted digest is rejected.
 
 ## Activation Fencing
 

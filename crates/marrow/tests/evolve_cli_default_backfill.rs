@@ -97,6 +97,54 @@ fn evolve_apply_backfills_proposal_required_default_before_accepting_catalog() {
 }
 
 #[test]
+fn evolve_apply_does_not_rebuild_an_unchanged_existing_index() {
+    const BASELINE_WITH_INDEX: &str = "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         store ^books(id: int): Book\n\
+         \x20   index byTitle(title, id)\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n";
+    const DEFAULT_WITH_SAME_INDEX: &str = "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required pages: int\n\
+         store ^books(id: int): Book\n\
+         \x20   index byTitle(title, id)\n\
+         evolve\n\
+         \x20   default Book.pages = 0\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n";
+
+    let root = native_books_project("evolve-apply-default-keeps-index", BASELINE_WITH_INDEX);
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+    }
+    write(&root, "src/books.mw", DEFAULT_WITH_SAME_INDEX);
+
+    let output = marrow(&[
+        "evolve",
+        "apply",
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let record = support::json(output.stdout);
+    assert_eq!(record["status"], serde_json::json!("applied"));
+    assert_eq!(record["records_backfilled"], serde_json::json!(1));
+    assert_eq!(
+        record["indexes_rebuilt"],
+        serde_json::json!(0),
+        "an unchanged accepted index must not be staged as derived rebuild work: {record}"
+    );
+}
+
+#[test]
 fn evolve_apply_activates_a_local_store_behind_the_committed_catalog_file() {
     const BASELINE_WITH_SEED: &str = "module books\n\
          resource Book\n\
@@ -250,6 +298,15 @@ fn evolve_apply_noop_when_store_already_at_target() {
 
     let second = marrow(&["evolve", "apply", root.to_str().unwrap()]);
     assert_eq!(second.status.code(), Some(0), "no-op apply: {second:?}");
+    let stdout = String::from_utf8(second.stdout).expect("stdout utf8");
+    assert!(
+        stdout.contains("nothing to apply"),
+        "no-op apply output must say no work was applied: {stdout}"
+    );
+    assert!(
+        !stdout.contains("applied evolution"),
+        "no-op apply output must not imply a new activation was applied: {stdout}"
+    );
 
     assert_eq!(
         snapshot_before,

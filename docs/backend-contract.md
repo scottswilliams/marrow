@@ -178,11 +178,12 @@ are reached only through the typed snapshot read/replace operations. A read
 rebuilds the snapshot from its rows and verifies the stored header against the
 decoded entries. The canonical catalog digest sorts entries by declaration kind
 tag, canonical path, stable ID, aliases, lifecycle tag, accepted store-key shape,
-and accepted structural signature before hashing, so declaration order does not
-change the digest. Reads also accept a legacy order-sensitive row-order header
-digest when it matches the decoded rows, then return the snapshot with the
-canonical digest. A tampered catalog row — even one that decodes into a
-structurally valid entry — fails closed as `store.corruption`.
+accepted store-index shape, and accepted structural signature before hashing, so
+declaration order does not change the digest. Reads also accept a legacy
+order-sensitive row-order header digest when it matches the decoded rows, then
+return the snapshot with the canonical digest. A tampered catalog row — even one
+that decodes into a structurally valid entry — fails closed as
+`store.corruption`.
 
 Malformed tree-cell metadata, malformed node markers, malformed tree-cell
 reference/enum values, malformed index identity suffixes, and a catalog snapshot

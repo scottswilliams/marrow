@@ -7,8 +7,9 @@ mod support_evolve;
 
 use support::{marrow, write};
 use support_evolve::{
-    REQUIRED_DEFAULT_SOURCE, commit_catalog, member_catalog_id, native_books_project,
-    native_store_path, open_native_store, root_place, seed_member, seed_title_only,
+    REQUIRED_BASELINE_SOURCE, REQUIRED_DEFAULT_SOURCE, commit_catalog, member_catalog_id,
+    native_books_project, native_store_path, open_native_store, root_place, seed_member,
+    seed_title_only,
 };
 
 #[test]
@@ -34,6 +35,11 @@ fn evolve_preview_reports_the_exact_witness_counts() {
     assert_eq!(witness["kind"], serde_json::json!("evolve_preview"));
     assert_eq!(witness["status"], serde_json::json!("activatable"));
     assert_eq!(witness["records_to_backfill"], serde_json::json!(1));
+    assert_eq!(
+        witness["nothing_to_discharge"],
+        serde_json::json!(false),
+        "a preview with backfill work must not render as a no-work discharge: {witness}"
+    );
     // The preview carries the schema-bearing source digest and the accepted epoch the
     // store would advance from: both are present facts, not just a rendered label.
     assert!(
@@ -43,6 +49,38 @@ fn evolve_preview_reports_the_exact_witness_counts() {
         "{witness}"
     );
     assert!(witness["accepted_epoch"].is_number(), "{witness}");
+}
+
+#[test]
+fn evolve_preview_reports_when_there_is_nothing_to_discharge() {
+    let root = native_books_project("evolve-preview-no-work", REQUIRED_BASELINE_SOURCE);
+    commit_catalog(&root);
+
+    let text = marrow(&["evolve", "preview", root.to_str().unwrap()]);
+    assert_eq!(text.status.code(), Some(0), "{text:?}");
+    let stdout = String::from_utf8(text.stdout).expect("stdout utf8");
+    assert!(
+        stdout.contains("nothing to discharge"),
+        "text preview must make the no-work discharge explicit: {stdout}"
+    );
+
+    let json = marrow(&[
+        "evolve",
+        "preview",
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
+    assert_eq!(json.status.code(), Some(0), "{json:?}");
+    let value = support::json(json.stdout);
+    assert_eq!(value["status"], serde_json::json!("activatable"));
+    assert_eq!(value["records_to_backfill"], serde_json::json!(0));
+    assert_eq!(value["records_to_transform"], serde_json::json!(0));
+    assert_eq!(
+        value["nothing_to_discharge"],
+        serde_json::json!(true),
+        "JSON preview must carry the explicit no-work boolean: {value}"
+    );
 }
 
 #[test]

@@ -562,6 +562,7 @@ fn stale_catalog_snapshot() -> CatalogMetadata {
             aliases: Vec::new(),
             lifecycle: CatalogLifecycle::Active,
             accepted_key_shape: Some("int".to_string()),
+            accepted_index_shape: None,
             accepted_struct: Some("old::Book".to_string()),
         }],
     )

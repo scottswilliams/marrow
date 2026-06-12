@@ -1,14 +1,14 @@
 mod support;
 mod support_discharge;
 
-use marrow_catalog::CatalogEntryKind;
+use marrow_catalog::{CatalogEntryKind, CatalogMetadata};
 use marrow_check::evolution::{RepairReason, Verdict, preview};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_store::value::{Scalar, encode_value};
 
-use support::catalog::write_catalog;
+use support::catalog::{read_catalog, write_catalog};
 use support::{TempProject, check_with_accepted, temp_project, write};
 use support_discharge::*;
 
@@ -27,6 +27,22 @@ fn composite_index_project(name: &str) -> TempProject {
              \x20   return nextId(^books)\n",
         );
     })
+}
+
+fn checked_with_missing_index_shape(
+    root: &std::path::Path,
+    index_path: &str,
+) -> marrow_check::CheckedProgram {
+    let mut catalog = read_catalog(root).expect("accepted catalog");
+    let entry = catalog
+        .entries
+        .iter_mut()
+        .find(|entry| entry.kind == CatalogEntryKind::StoreIndex && entry.path == index_path)
+        .expect("store index entry");
+    entry.accepted_index_shape = None;
+    let catalog = CatalogMetadata::new(catalog.epoch, catalog.entries);
+    write_catalog(root, &catalog);
+    checked(root)
 }
 
 /// Retiring a member whose source is gone, with populated records, is a destructive
@@ -92,10 +108,10 @@ fn retire_of_populated_member_requires_scoped_approval() {
     }
 }
 
-/// A new unique index over clean (collision-free) data discharges to a derived
-/// rebuild.
+/// An accepted unique index whose catalog predates index-shape signatures discharges once to a
+/// derived rebuild, so the current declaration is proved before the signature is frozen forward.
 #[test]
-fn new_unique_index_over_clean_data_rebuilds() {
+fn legacy_unique_index_shape_over_clean_data_rebuilds() {
     let root = temp_project("discharge-index-clean", |root| {
         write(
             root,
@@ -109,7 +125,8 @@ fn new_unique_index_over_clean_data_rebuilds() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    commit_then_check(&root);
+    let program = checked_with_missing_index_shape(&root, "books::^books::byIsbn");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -131,10 +148,10 @@ fn new_unique_index_over_clean_data_rebuilds() {
     assert_eq!(result.counts.index_collisions, 0);
 }
 
-/// A unique index over colliding data fails activation and the witness counts the
-/// collisions.
+/// A missing accepted index-shape signature does not bypass uniqueness: discharge probes the
+/// current declaration and fails closed when records would collide.
 #[test]
-fn new_unique_index_over_colliding_data_fails() {
+fn legacy_unique_index_shape_over_colliding_data_fails() {
     let root = temp_project("discharge-index-collide", |root| {
         write(
             root,
@@ -148,7 +165,8 @@ fn new_unique_index_over_colliding_data_fails() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    commit_then_check(&root);
+    let program = checked_with_missing_index_shape(&root, "books::^books::byIsbn");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -935,13 +953,13 @@ fn dropped_index_is_index_dropped() {
     );
 }
 
-/// A composite unique index over distinct full key tuples that happen to share
-/// their first key column is collision-free: the discharge must derive the full
-/// `(a, b)` tuple per record, not descend the first column alone.
+/// A legacy accepted composite-index signature is rebuilt from the full `(a, b)` tuple per
+/// record; distinct full tuples that share their first key column are collision-free.
 #[test]
-fn composite_unique_index_distinct_tuples_rebuild() {
+fn legacy_composite_unique_index_distinct_tuples_rebuild() {
     let root = composite_index_project("discharge-composite-clean");
-    let program = commit_then_check(&root);
+    commit_then_check(&root);
+    let program = checked_with_missing_index_shape(&root, "books::^books::byPair");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -963,13 +981,13 @@ fn composite_unique_index_distinct_tuples_rebuild() {
     assert_eq!(result.counts.index_collisions, 0);
 }
 
-/// A composite unique index over a real duplicate full tuple `(a, b)` is a
-/// collision the index cannot publish, even when the records also share their
-/// first column. The verdict fails closed.
+/// The legacy-signature path still probes a composite unique index over the full tuple, so a
+/// duplicate `(a, b)` fails closed before the signature can be accepted.
 #[test]
-fn composite_unique_index_duplicate_tuple_collides() {
+fn legacy_composite_unique_index_duplicate_tuple_collides() {
     let root = composite_index_project("discharge-composite-collide");
-    let program = commit_then_check(&root);
+    commit_then_check(&root);
+    let program = checked_with_missing_index_shape(&root, "books::^books::byPair");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -994,11 +1012,10 @@ fn composite_unique_index_duplicate_tuple_collides() {
     assert!(result.counts.index_collisions > 0, "{:#?}", result.counts);
 }
 
-/// A newly-declared single-column unique index has no index cells yet: the
-/// discharge must derive each record's prospective key from its member value, not
-/// from a (nonexistent) index entry. Distinct member values rebuild cleanly.
+/// A legacy accepted single-column unique index with no cells still derives each prospective key
+/// from member values; distinct values rebuild cleanly.
 #[test]
-fn new_unique_index_no_cells_clean_rebuilds() {
+fn legacy_unique_index_shape_no_cells_clean_rebuilds() {
     let root = temp_project("discharge-new-index-clean", |root| {
         write(
             root,
@@ -1012,12 +1029,12 @@ fn new_unique_index_no_cells_clean_rebuilds() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    commit_then_check(&root);
+    let program = checked_with_missing_index_shape(&root, "books::^books::byIsbn");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
-    // Records exist with distinct member values, but no index cells were ever
-    // written: the index is being declared over a pre-existing store.
+    // Records exist with distinct member values, but no index cells were ever written.
     seed.record(1);
     seed.member(1, "isbn", Scalar::Str("111".into()));
     seed.record(2);
@@ -1034,11 +1051,10 @@ fn new_unique_index_no_cells_clean_rebuilds() {
     assert_eq!(result.counts.index_collisions, 0);
 }
 
-/// A newly-declared unique index over pre-existing records whose member values
-/// collide fails closed, even though the store holds no index cells: the
-/// prospective keys are derived from the records themselves.
+/// A legacy accepted unique index whose current prospective member values collide fails closed,
+/// even when the store holds no index cells.
 #[test]
-fn new_unique_index_no_cells_duplicate_collides() {
+fn legacy_unique_index_shape_no_cells_duplicate_collides() {
     let root = temp_project("discharge-new-index-collide", |root| {
         write(
             root,
@@ -1052,7 +1068,8 @@ fn new_unique_index_no_cells_duplicate_collides() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    commit_then_check(&root);
+    let program = checked_with_missing_index_shape(&root, "books::^books::byIsbn");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);

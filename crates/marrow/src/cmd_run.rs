@@ -467,8 +467,20 @@ fn auto_apply_then_reopen(
             return Err(ExitCode::FAILURE);
         }
     };
+    let from_epoch = witness
+        .store_catalog
+        .as_ref()
+        .map(|catalog| catalog.epoch)
+        .unwrap_or(witness.accepted_catalog.epoch);
+    let to_epoch = witness
+        .proposal_catalog
+        .as_ref()
+        .map(|catalog| catalog.epoch)
+        .unwrap_or(witness.accepted_catalog.epoch);
     match try_auto_apply(&witness, &program, &store.store) {
-        Ok(AutoApplyOutcome::Applied) => {}
+        Ok(AutoApplyOutcome::Applied) => {
+            eprintln!("auto-applied evolution: catalog epoch {from_epoch} -> {to_epoch}");
+        }
         Ok(AutoApplyOutcome::MustFence(obligation)) => {
             report_simple_error(
                 "run.schema_drift",

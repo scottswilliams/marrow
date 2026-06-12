@@ -9,9 +9,9 @@ use crate::program::CheckedProgram;
 
 use super::{Accumulator, required_catalog_id};
 
-/// Stable ids of catalog entries the proposal changes (new, retired, or moved), each
-/// tagged with its kind so the accumulator partitions an index from a data root without
-/// re-classifying it.
+/// Stable ids of catalog entries the proposal changes (new, retired, moved, or a store-index
+/// declaration shape edit), each tagged with its kind so the accumulator partitions an index
+/// from a data root without re-classifying it.
 pub(super) fn proposal_changed_catalog_ids(
     program: &CheckedProgram,
 ) -> Vec<(String, CatalogEntryKind)> {
@@ -30,7 +30,10 @@ pub(super) fn proposal_changed_catalog_ids(
         .filter(
             |entry| match accepted.get(&(entry.kind, entry.path.as_str())) {
                 Some(prior) => {
-                    prior.stable_id != entry.stable_id || prior.lifecycle != entry.lifecycle
+                    prior.stable_id != entry.stable_id
+                        || prior.lifecycle != entry.lifecycle
+                        || (entry.kind == CatalogEntryKind::StoreIndex
+                            && prior.accepted_index_shape != entry.accepted_index_shape)
                 }
                 None => true,
             },

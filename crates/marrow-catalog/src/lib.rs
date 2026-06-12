@@ -110,6 +110,9 @@ impl CatalogMetadata {
             if let Some(shape) = &entry.accepted_key_shape {
                 reject_nul("accepted key shape", shape)?;
             }
+            if let Some(shape) = &entry.accepted_index_shape {
+                reject_nul("accepted index shape", shape)?;
+            }
             if let Some(signature) = &entry.accepted_struct {
                 reject_nul("accepted structural signature", signature)?;
             }
@@ -135,6 +138,13 @@ pub struct CatalogEntry {
     /// a store entry records it; every other kind leaves it `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accepted_key_shape: Option<String>,
+    /// The declaration shape a store index's derived cells were accepted under. It records
+    /// uniqueness and each ordered key column by durable source identity, so a same-name index
+    /// whose key list or uniqueness changes is discharged as a derived rebuild even though its
+    /// catalog path and stable id stay fixed. Only a store-index entry records it; every other
+    /// kind leaves it `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_index_shape: Option<String>,
     /// The identity-aware structural signature a resource member's durable data was accepted
     /// under, decoded through [`structural_signature`] into a [`StructuralSignature`] (which owns
     /// the wire grammar). It records the member's shape by referent identity rather than source
@@ -263,6 +273,7 @@ mod digest_tests {
             aliases: Vec::new(),
             lifecycle: CatalogLifecycle::Active,
             accepted_key_shape: None,
+            accepted_index_shape: None,
             accepted_struct: None,
         }
     }
@@ -486,6 +497,17 @@ fn legacy_order_sensitive_catalog_digest(epoch: u64, entries: &[CatalogEntry]) -
     digest_json(&json)
 }
 
+type DigestEntryOrder<'a> = (
+    u8,
+    &'a str,
+    &'a str,
+    &'a [String],
+    u8,
+    &'a Option<String>,
+    &'a Option<String>,
+    &'a Option<String>,
+);
+
 fn digest_json(json: &str) -> String {
     let digest = Sha256::digest(json.as_bytes());
     let mut out = String::with_capacity("sha256:".len() + digest.len() * 2);
@@ -496,17 +518,7 @@ fn digest_json(json: &str) -> String {
     out
 }
 
-fn digest_entry_order(
-    entry: &CatalogEntry,
-) -> (
-    u8,
-    &str,
-    &str,
-    &[String],
-    u8,
-    &Option<String>,
-    &Option<String>,
-) {
+fn digest_entry_order(entry: &CatalogEntry) -> DigestEntryOrder<'_> {
     (
         entry.kind.tag(),
         entry.path.as_str(),
@@ -514,6 +526,7 @@ fn digest_entry_order(
         &entry.aliases,
         entry.lifecycle.tag(),
         &entry.accepted_key_shape,
+        &entry.accepted_index_shape,
         &entry.accepted_struct,
     )
 }

@@ -181,10 +181,10 @@ impl IndexScan {
     }
 }
 
-/// Classify every index the place declares. Each carries a derived-rebuild obligation
-/// regardless of uniqueness, so apply rebuilds its entries from the records it covers. A unique
-/// index whose prospective tuples collide, or one the scan could not probe, upgrades to a
-/// fail-closed repair so a uniqueness guarantee is never published without verification.
+/// Classify each changed index the place declares. Non-unique indexes rebuild their derived cells
+/// from the records they cover; unique indexes first consume the prospective tuple scan, and a
+/// collision or unprobeable key shape fails closed so a uniqueness guarantee is never published
+/// without verification.
 pub(super) fn classify_indexes(
     place: &CheckedSavedPlace,
     collisions: &HashMap<CatalogId, IndexScan>,
@@ -196,6 +196,9 @@ pub(super) fn classify_indexes(
             continue;
         };
         let index_id = catalog_id(index_catalog_id)?;
+        if !acc.is_changed_index(&index_id) {
+            continue;
+        }
         let collision_tuples = collisions
             .get(&index_id)
             .map_or(0, IndexScan::collision_tuple_count);
@@ -245,6 +248,7 @@ mod tests {
     use crate::facts::{
         ResourceMemberId, StoreId, StoreIndexId, StoreIndexKeySource, StoredValueMeaning,
     };
+    use marrow_catalog::CatalogEntryKind;
     use marrow_store::cell::CatalogId;
     use marrow_store::key::SavedKey;
     use marrow_store::value::ScalarType;
@@ -341,6 +345,16 @@ mod tests {
                 .into_iter()
                 .collect();
         let mut acc = empty_accumulator();
+        acc.insert_affected(
+            "cat_000000000000000000000000000000c1",
+            CatalogEntryKind::StoreIndex,
+        )
+        .expect("mark changed index");
+        acc.insert_affected(
+            "cat_000000000000000000000000000000c2",
+            CatalogEntryKind::StoreIndex,
+        )
+        .expect("mark changed index");
 
         classify_indexes(&place, &HashMap::new(), &unprobeable, &mut acc).expect("classify");
 

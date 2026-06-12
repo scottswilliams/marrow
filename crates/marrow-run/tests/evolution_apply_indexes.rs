@@ -8,11 +8,47 @@ mod evolution_apply_support;
 
 use evolution_apply_support::*;
 
-use marrow_run::evolution::{ApplyError, apply};
+use marrow_catalog::{CatalogEntryKind, CatalogMetadata};
+use marrow_run::evolution::{ApplyError, apply, current_engine_profile};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::tree::{CommitMetadata, DataPathSegment, TreeStore};
 use marrow_store::value::{Scalar, encode_value};
+
+fn checked_with_missing_index_shape(
+    root: &std::path::Path,
+    index_path: &str,
+) -> marrow_check::CheckedProgram {
+    let catalog_path = root.join("marrow.catalog.json");
+    let mut catalog = CatalogMetadata::from_json(
+        &std::fs::read_to_string(&catalog_path).expect("read accepted catalog"),
+    )
+    .expect("accepted catalog parses");
+    let entry = catalog
+        .entries
+        .iter_mut()
+        .find(|entry| entry.kind == CatalogEntryKind::StoreIndex && entry.path == index_path)
+        .expect("store index entry");
+    entry.accepted_index_shape = None;
+    let catalog = CatalogMetadata::new(catalog.epoch, catalog.entries);
+    std::fs::write(&catalog_path, catalog.to_json_pretty()).expect("write accepted catalog");
+    checked(root)
+}
+
+fn stamp_clean_commit(store: &TreeStore, program: &marrow_check::CheckedProgram) {
+    let profile = current_engine_profile();
+    store
+        .write_commit_metadata(&CommitMetadata {
+            commit_id: 1,
+            catalog_epoch: program.catalog.accepted_epoch.expect("accepted epoch"),
+            layout_epoch: profile.layout_epoch(),
+            source_digest: program.source_digest(),
+            engine_profile_digest: profile.digest_bytes(),
+            changed_root_catalog_ids: Vec::new(),
+            changed_index_catalog_ids: Vec::new(),
+        })
+        .expect("stamp clean commit");
+}
 
 #[test]
 fn proposal_index_rebuild_writes_entries_before_catalog_acceptance() {
@@ -292,9 +328,10 @@ fn unique_index_over_transform_target_fails_closed() {
     assert_eq!(error, ApplyError::NotActivatable);
 }
 
-/// A new unique index over clean data rebuilds its entries and stamps the epoch.
+/// A unique index accepted before index-shape signatures rebuilds its entries once and stamps the
+/// advanced catalog that freezes the current signature.
 #[test]
-fn new_index_rebuild_writes_entries_and_stamps() {
+fn legacy_unique_index_shape_rebuild_writes_entries_and_stamps() {
     let root = temp_project("apply-index-rebuild", |root| {
         write(
             root,
@@ -308,7 +345,8 @@ fn new_index_rebuild_writes_entries_and_stamps() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    commit_then_check(&root);
+    let program = checked_with_missing_index_shape(&root, "books::^books::byIsbn");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -353,13 +391,11 @@ fn new_index_rebuild_writes_entries_and_stamps() {
     );
 }
 
-/// A new NON-UNIQUE index over existing records rebuilds its entries. The discharge
-/// must issue a derived rebuild regardless of uniqueness, so apply writes the index
-/// entries rather than stamping success over a silently empty index. A non-unique index
-/// ends with the identity keys, so each record publishes one entry under its full key
-/// tuple `(genre, id)`.
+/// A non-unique index accepted before index-shape signatures rebuilds its entries. The discharge
+/// must issue a derived rebuild for the affected index, so apply writes the index entries rather
+/// than stamping success over a silently empty index.
 #[test]
-fn new_non_unique_index_rebuild_writes_entries() {
+fn legacy_non_unique_index_shape_rebuild_writes_entries() {
     let root = temp_project("apply-nonunique-index", |root| {
         write(
             root,
@@ -373,7 +409,8 @@ fn new_non_unique_index_rebuild_writes_entries() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    commit_then_check(&root);
+    let program = checked_with_missing_index_shape(&root, "books::^books::byGenre");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -414,6 +451,217 @@ fn new_non_unique_index_rebuild_writes_entries() {
             "a new non-unique index must hold record {id}, not be silently empty"
         );
     }
+}
+
+#[test]
+fn same_name_index_key_change_rebuilds_under_existing_catalog_id() {
+    let root = temp_project("apply-index-same-name-key-change", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   required shelf: string\n\
+             store ^books(id: int): Book\n\
+             \x20   index byLookup(title, id)\n\
+             pub fn add(title: string, shelf: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let index_id = CatalogId::new(index_catalog_id(&accepted_place, "byLookup")).unwrap();
+
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    for (id, title) in [(1, "Dune"), (2, "Hyperion")] {
+        seed.record(id);
+        seed.member(id, "title", Scalar::Str(title.into()));
+        seed.member(id, "shelf", Scalar::Str("fiction".into()));
+        store
+            .write_index_entry(
+                &index_id,
+                &[SavedKey::Str(title.into()), SavedKey::Int(id)],
+                &[SavedKey::Int(id)],
+                Vec::new(),
+            )
+            .expect("seed old index entry");
+    }
+    stamp_clean_commit(&store, &accepted);
+
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required shelf: string\n\
+         store ^books(id: int): Book\n\
+         \x20   index byLookup(shelf, id)\n\
+         pub fn add(title: string, shelf: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root);
+    let w = witness(&program, &store);
+    assert!(w.is_activatable(), "{w:#?}");
+
+    let outcome = apply(&w, &program, &store, false, None).expect("apply");
+    assert_eq!(outcome.receipt.indexes_rebuilt, 1);
+
+    for id in [1, 2] {
+        let scan = store
+            .scan_index_tuple(
+                &index_id,
+                &[SavedKey::Str("fiction".into()), SavedKey::Int(id)],
+                8,
+            )
+            .expect("scan new key");
+        assert_eq!(
+            scan.entries
+                .iter()
+                .map(|entry| entry.identity.clone())
+                .collect::<Vec<_>>(),
+            vec![vec![SavedKey::Int(id)]],
+            "same-name index must be rebuilt for record {id}"
+        );
+    }
+    let stale = store
+        .scan_index_tuple(
+            &index_id,
+            &[SavedKey::Str("Dune".into()), SavedKey::Int(1)],
+            8,
+        )
+        .expect("scan old key");
+    assert!(
+        stale.entries.is_empty(),
+        "old key-shape entries must be removed by the rebuild"
+    );
+}
+
+#[test]
+fn same_name_unique_index_key_change_fails_closed_on_collisions() {
+    let root = temp_project("apply-index-same-name-unique-key-change", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   required shelf: string\n\
+             store ^books(id: int): Book\n\
+             \x20   index byLookup(title) unique\n\
+             pub fn add(title: string, shelf: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let index_id = CatalogId::new(index_catalog_id(&accepted_place, "byLookup")).unwrap();
+
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    for (id, title) in [(1, "Dune"), (2, "Hyperion")] {
+        seed.record(id);
+        seed.member(id, "title", Scalar::Str(title.into()));
+        seed.member(id, "shelf", Scalar::Str("fiction".into()));
+        store
+            .write_index_entry(
+                &index_id,
+                &[SavedKey::Str(title.into())],
+                &[SavedKey::Int(id)],
+                Vec::new(),
+            )
+            .expect("seed old unique index entry");
+    }
+    stamp_clean_commit(&store, &accepted);
+
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required shelf: string\n\
+         store ^books(id: int): Book\n\
+         \x20   index byLookup(shelf) unique\n\
+         pub fn add(title: string, shelf: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root);
+    let w = witness(&program, &store);
+
+    assert!(!w.is_activatable(), "{w:#?}");
+    assert_eq!(w.counts.index_collisions, 1, "{w:#?}");
+    let error = apply(&w, &program, &store, false, None).expect_err("apply refuses");
+    assert_eq!(error, ApplyError::NotActivatable);
+}
+
+#[test]
+fn same_name_index_uniqueness_change_fails_closed_on_collisions() {
+    let root = temp_project("apply-index-same-name-uniqueness-change", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   required shelf: string\n\
+             store ^books(id: int): Book\n\
+             \x20   index byLookup(shelf, id)\n\
+             pub fn add(title: string, shelf: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let index_id = CatalogId::new(index_catalog_id(&accepted_place, "byLookup")).unwrap();
+
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    for (id, title) in [(1, "Dune"), (2, "Hyperion")] {
+        seed.record(id);
+        seed.member(id, "title", Scalar::Str(title.into()));
+        seed.member(id, "shelf", Scalar::Str("fiction".into()));
+        store
+            .write_index_entry(
+                &index_id,
+                &[SavedKey::Str("fiction".into()), SavedKey::Int(id)],
+                &[SavedKey::Int(id)],
+                Vec::new(),
+            )
+            .expect("seed old non-unique index entry");
+    }
+    stamp_clean_commit(&store, &accepted);
+
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required shelf: string\n\
+         store ^books(id: int): Book\n\
+         \x20   index byLookup(shelf) unique\n\
+         pub fn add(title: string, shelf: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root);
+    let w = witness(&program, &store);
+
+    assert!(!w.is_activatable(), "{w:#?}");
+    assert_eq!(w.counts.index_collisions, 1, "{w:#?}");
+    let error = apply(&w, &program, &store, false, None).expect_err("apply refuses");
+    assert_eq!(error, ApplyError::NotActivatable);
 }
 
 /// Dropping a source index discharges: apply deletes its derived cells, advances the

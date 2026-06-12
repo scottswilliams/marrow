@@ -31,6 +31,7 @@ fn literal_entry(
         aliases: aliases.iter().map(|alias| alias.to_string()).collect(),
         lifecycle: CatalogLifecycle::Active,
         accepted_key_shape: None,
+        accepted_index_shape: None,
         accepted_struct: None,
     }
 }
@@ -91,6 +92,7 @@ fn round_trips_stable_ids_aliases_lifecycle_epoch_and_digest() {
             aliases: vec!["books::Status::inactive".to_string()],
             lifecycle: CatalogLifecycle::Reserved,
             accepted_key_shape: None,
+            accepted_index_shape: None,
             accepted_struct: None,
         },
     ]);
@@ -338,6 +340,17 @@ fn rejects_hostile_catalog_json_families() {
     store_with_null_shape.accepted_key_shape = Some("int\0str".to_string());
     let error = CatalogMetadata::from_json(&catalog(vec![store_with_null_shape]).to_json_pretty())
         .expect_err("null byte accepted key shape must fail closed");
+    assert_eq!(error.code, CATALOG_INVALID);
+
+    let mut index_with_null_shape = literal_entry(
+        CatalogEntryKind::StoreIndex,
+        "books::^books::byTitle",
+        "cat_77777777777777777777777777777777",
+        &[],
+    );
+    index_with_null_shape.accepted_index_shape = Some("unique=false\0".to_string());
+    let error = CatalogMetadata::from_json(&catalog(vec![index_with_null_shape]).to_json_pretty())
+        .expect_err("null byte accepted index shape must fail closed");
     assert_eq!(error.code, CATALOG_INVALID);
 
     let mut member_with_null_struct = literal_entry(

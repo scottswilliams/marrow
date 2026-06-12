@@ -7,6 +7,7 @@ use marrow_syntax::SourceSpan;
 
 use crate::evolution::leaf_type;
 use crate::evolution::{DefaultIntent, EvolveIntents, RenameIntent, RetireIntent, TransformIntent};
+use crate::facts::{StoreIndexFact, StoreIndexKeySource, StoredValueMeaning};
 use crate::program::{EvolveDefault, EvolveTransform};
 use crate::{
     CHECK_CATALOG_INTENT, CHECK_EVOLVE_TARGET, CatalogIntentDiagnostic, CatalogIntentKind,
@@ -122,6 +123,96 @@ fn member_structs(
             Some((catalog_id.clone(), token))
         })
         .collect()
+}
+
+/// The single owner of each store index's `(stable_id, declaration shape token)` from source,
+/// for every index whose identity is bound in `ids`. The token records uniqueness and the
+/// ordered key sources by durable identity, so a same-path index key or uniqueness edit advances
+/// the proposal and discharges a rebuild under the preserved index id.
+fn store_index_shapes(
+    program: &CheckedProgram,
+    ids: &HashMap<CatalogKey, String>,
+) -> Vec<(String, Option<String>)> {
+    program
+        .facts
+        .store_indexes()
+        .iter()
+        .filter_map(|index| {
+            let store = program.facts.store(index.store);
+            let module = &program.modules[store.module.0 as usize];
+            let catalog_id = ids.get(&CatalogKey::new(
+                CatalogEntryKind::StoreIndex,
+                store_index_path(&module.name, &store.root, &index.name),
+            ))?;
+            Some((
+                catalog_id.clone(),
+                store_index_shape_token(program, index, ids),
+            ))
+        })
+        .collect()
+}
+
+fn store_index_shape_token(
+    program: &CheckedProgram,
+    index: &StoreIndexFact,
+    ids: &HashMap<CatalogKey, String>,
+) -> Option<String> {
+    let store = program.facts.store(index.store);
+    let mut key_tokens = Vec::with_capacity(index.keys.len());
+    for key in &index.keys {
+        let meaning = stored_value_meaning_token(program, &key.value_meaning, ids)?;
+        let source = match key.source {
+            StoreIndexKeySource::IdentityKey => {
+                let position = store
+                    .identity_keys
+                    .iter()
+                    .position(|identity_key| identity_key.name == key.name)?;
+                format!("identity:{position}:{meaning}")
+            }
+            StoreIndexKeySource::ResourceMember(member_id) => {
+                let member_path = program.facts.resource_member_catalog_path(member_id)?;
+                let member_id = ids.get(&CatalogKey::new(
+                    CatalogEntryKind::ResourceMember,
+                    member_path,
+                ))?;
+                format!("member:{member_id}:{meaning}")
+            }
+        };
+        key_tokens.push(source);
+    }
+    Some(format!(
+        "unique={};keys=[{}]",
+        index.unique,
+        key_tokens.join(",")
+    ))
+}
+
+fn stored_value_meaning_token(
+    program: &CheckedProgram,
+    meaning: &StoredValueMeaning,
+    ids: &HashMap<CatalogKey, String>,
+) -> Option<String> {
+    match meaning {
+        StoredValueMeaning::Scalar(scalar) => Some(scalar.name().to_string()),
+        StoredValueMeaning::Identity(store_id) => {
+            let store = program.facts.store(*store_id);
+            let module = &program.modules[store.module.0 as usize];
+            let store_id = ids.get(&CatalogKey::new(
+                CatalogEntryKind::Store,
+                store_path(&module.name, &store.root),
+            ))?;
+            Some(format!("id:{store_id}:{}", store.identity_keys.len()))
+        }
+        StoredValueMeaning::Enum { enum_id, .. } => {
+            let enum_fact = program.facts.enum_(*enum_id)?;
+            let module = &program.modules[enum_fact.module.0 as usize];
+            let enum_id = ids.get(&CatalogKey::new(
+                CatalogEntryKind::Enum,
+                enum_path(&module.name, &enum_fact.name),
+            ))?;
+            Some(format!("enum:{enum_id}"))
+        }
+    }
 }
 
 /// [`store_key_shapes`] keyed by stable catalog id for lookup.
@@ -334,9 +425,11 @@ fn record_signatures_into(
     let leaf_token_ids = proposal_id_map(proposal_entries);
     let key_shapes_changed =
         record_store_key_shapes(program, proposal_entries, &leaf_token_ids, accepted);
+    let index_shapes_changed =
+        record_store_index_shapes(program, proposal_entries, &leaf_token_ids, accepted);
     let structs_changed =
         record_member_structs(program, proposal_entries, &leaf_token_ids, accepted);
-    key_shapes_changed || structs_changed
+    key_shapes_changed || index_shapes_changed || structs_changed
 }
 
 /// Bind current source with no accepted catalog: every entity mints fresh identity, and every
@@ -712,6 +805,26 @@ fn record_store_key_shapes(
     )
 }
 
+/// Record each store index's declaration shape into its proposal entry. Unlike store and member
+/// signatures, an accepted same-path index with no recorded shape is treated as changed once:
+/// old catalogs cannot prove their derived cells match the current declaration, so apply must
+/// rebuild or probe before freezing the signature forward.
+fn record_store_index_shapes(
+    program: &CheckedProgram,
+    entries: &mut [CatalogEntry],
+    ids: &HashMap<CatalogKey, String>,
+    accepted: Option<&CatalogMetadata>,
+) -> bool {
+    record_index_signatures(
+        entries,
+        store_index_shapes(program, ids),
+        accepted_field(accepted, CatalogEntryKind::StoreIndex, |entry| {
+            &entry.accepted_index_shape
+        }),
+        |entry| &mut entry.accepted_index_shape,
+    )
+}
+
 /// Record each resource member's identity-aware structural signature into its proposal entry,
 /// once every referent's id is bound. The signature covers leaf and group members alike, so a
 /// keyed-layer re-key, a group<->keyed-group reshape, or any other structural transition reads
@@ -780,6 +893,38 @@ fn record_signatures(
             && accepted_signature != Some(&signature)
         {
             changed = true;
+        }
+        *field(&mut entries[i]) = signature;
+    }
+    changed
+}
+
+fn record_index_signatures(
+    entries: &mut [CatalogEntry],
+    pairs: impl IntoIterator<Item = (String, Option<String>)>,
+    accepted: HashMap<&str, &Option<String>>,
+    field: impl Fn(&mut CatalogEntry) -> &mut Option<String>,
+) -> bool {
+    let index: HashMap<String, usize> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| (entry.stable_id.clone(), i))
+        .collect();
+    let mut changed = false;
+    for (stable_id, signature) in pairs {
+        let Some(&i) = index.get(stable_id.as_str()) else {
+            continue;
+        };
+        match accepted.get(stable_id.as_str()).copied() {
+            Some(Some(accepted_signature)) => {
+                if signature.as_deref() != Some(accepted_signature.as_str()) {
+                    changed = true;
+                }
+            }
+            Some(None) if signature.is_some() => {
+                changed = true;
+            }
+            _ => {}
         }
         *field(&mut entries[i]) = signature;
     }
@@ -1476,10 +1621,10 @@ fn proposed_catalog_entry(
         stable_id: allocator.allocate(),
         aliases: Vec::new(),
         lifecycle: CatalogLifecycle::Active,
-        // A store's identity-key shape and a member's structural signature are recorded in
-        // post-passes once every referent's id is bound; a freshly minted entry starts without
-        // either, and a leaf member's accepted leaf token is read back off its signature.
+        // Source-derived shape signatures are recorded in post-passes once every referent's id
+        // is bound; freshly minted entries start without them.
         accepted_key_shape: None,
+        accepted_index_shape: None,
         accepted_struct: None,
     }
 }
@@ -1496,6 +1641,7 @@ mod tests {
             aliases: Vec::new(),
             lifecycle: CatalogLifecycle::Active,
             accepted_key_shape: None,
+            accepted_index_shape: None,
             accepted_struct: None,
         }
     }

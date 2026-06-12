@@ -33,6 +33,22 @@ fn source_label(path: &str) -> String {
     path.replace("::", ".")
 }
 
+fn nothing_to_discharge(witness: &EvolutionWitness) -> bool {
+    witness.counts.records_to_backfill == 0
+        && witness.counts.records_to_transform == 0
+        && witness
+            .verdicts
+            .iter()
+            .all(|obligation| discharge_is_no_work(&obligation.verdict))
+}
+
+fn discharge_is_no_work(verdict: &Verdict) -> bool {
+    matches!(
+        verdict,
+        Verdict::NoOp | Verdict::CatalogOnly | Verdict::DataProof
+    )
+}
+
 pub(super) fn data_check_ok(dir: &str, witness: &EvolutionWitness, format: CheckFormat) {
     match format {
         CheckFormat::Text => {
@@ -78,6 +94,9 @@ pub(super) fn preview(
                 "records to transform: {}",
                 witness.counts.records_to_transform
             );
+            if nothing_to_discharge(witness) {
+                println!("nothing to discharge");
+            }
             if !witness.is_activatable() {
                 render_blocking_text(witness, diagnostics, labels);
             }
@@ -91,6 +110,7 @@ pub(super) fn preview(
             "records_scanned": witness.counts.scanned_records,
             "records_to_backfill": witness.counts.records_to_backfill,
             "records_to_transform": witness.counts.records_to_transform,
+            "nothing_to_discharge": nothing_to_discharge(witness),
             "diagnostics": diagnostics.iter().map(|diagnostic| &diagnostic.message).collect::<Vec<_>>(),
             "blocking": blocking_json(witness, diagnostics, labels),
         })),
@@ -236,7 +256,17 @@ fn approval_required_message(catalog_id: &str, populated: usize, labels: &Source
 /// per-kind record counts the receipt proves.
 pub(super) fn apply_success(outcome: &ApplyOutcome, format: CheckFormat) {
     let receipt = &outcome.receipt;
+    let nothing_to_apply = receipt.store_commit_id_before == Some(receipt.commit_id)
+        && receipt.records_backfilled == 0
+        && receipt.records_transformed == 0
+        && receipt.records_retired == 0
+        && receipt.indexes_rebuilt == 0;
     match format {
+        CheckFormat::Text if nothing_to_apply => {
+            println!("nothing to apply");
+            println!("catalog epoch: {}", receipt.catalog_epoch);
+            println!("commit id: {}", receipt.commit_id);
+        }
         CheckFormat::Text => {
             println!("applied evolution");
             println!("catalog epoch: {}", receipt.catalog_epoch);

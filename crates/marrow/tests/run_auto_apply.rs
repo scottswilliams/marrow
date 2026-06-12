@@ -144,6 +144,19 @@ fn a_required_add_against_an_empty_store_auto_applies_on_run() {
         "a required add over an empty store auto-applies: {rerun:?}",
     );
     assert_eq!(
+        String::from_utf8(rerun.stdout).expect("stdout utf8"),
+        "",
+        "auto-apply notice must not contaminate program stdout"
+    );
+    assert_eq!(
+        String::from_utf8(rerun.stderr).expect("stderr utf8"),
+        format!(
+            "auto-applied evolution: catalog epoch {epoch_before} -> {}\n",
+            epoch_before + 1
+        ),
+        "auto-apply must render exactly one stderr line naming the epoch transition"
+    );
+    assert_eq!(
         accepted_epoch(&root),
         epoch_before + 1,
         "the auto-apply advanced the epoch by one",

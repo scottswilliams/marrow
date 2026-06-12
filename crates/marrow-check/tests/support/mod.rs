@@ -155,7 +155,7 @@ pub fn analyze_overlay(name: &str, files: &[(&str, &str)]) -> (AnalysisSnapshot,
 /// constructor, the presence-suite catalog wrapper, and the deterministic
 /// label-to-id minting the presence suite keys its fixtures on. The discharge
 /// suite uses literal `cat_` ids; both layer their own structural fields
-/// (`accepted_struct`, `accepted_key_shape`) on top of the bare entry.
+/// (`accepted_struct`, `accepted_key_shape`, `accepted_index_shape`) on top of the bare entry.
 pub mod catalog {
     use std::hash::{Hash, Hasher};
     use std::path::{Path, PathBuf};
@@ -183,7 +183,7 @@ pub mod catalog {
 
     /// An `Active` catalog entry with the given kind, canonical path, stable id, and
     /// aliases and no recorded structural signature. Suites add their structural fields
-    /// (`accepted_struct`, `accepted_key_shape`) on top of this.
+    /// (`accepted_struct`, `accepted_key_shape`, `accepted_index_shape`) on top of this.
     pub fn entry(
         kind: CatalogEntryKind,
         path: &str,
@@ -197,6 +197,7 @@ pub mod catalog {
             aliases: aliases.iter().map(|alias| alias.to_string()).collect(),
             lifecycle: CatalogLifecycle::Active,
             accepted_key_shape: None,
+            accepted_index_shape: None,
             accepted_struct: None,
         }
     }

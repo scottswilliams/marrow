@@ -28,6 +28,7 @@ fn sample_snapshot() -> CatalogMetadata {
                 aliases: vec!["library".to_string()],
                 lifecycle: CatalogLifecycle::Active,
                 accepted_key_shape: Some("int".to_string()),
+                accepted_index_shape: None,
                 accepted_struct: None,
             },
             CatalogEntry {
@@ -37,6 +38,7 @@ fn sample_snapshot() -> CatalogMetadata {
                 aliases: Vec::new(),
                 lifecycle: CatalogLifecycle::Active,
                 accepted_key_shape: None,
+                accepted_index_shape: None,
                 accepted_struct: Some("leaf:string".to_string()),
             },
         ],
@@ -254,6 +256,7 @@ fn redb_round_trips_a_catalog_digest_used_for_comparison() {
             aliases: vec!["purchases".to_string()],
             lifecycle: CatalogLifecycle::Reserved,
             accepted_key_shape: Some("int,string".to_string()),
+            accepted_index_shape: None,
             accepted_struct: None,
         }],
     );

@@ -2082,6 +2082,7 @@ mod tests {
                 aliases: Vec::new(),
                 lifecycle: marrow_catalog::CatalogLifecycle::Active,
                 accepted_key_shape: Some("int".to_string()),
+                accepted_index_shape: None,
                 accepted_struct: None,
             }],
         )
@@ -2169,6 +2170,7 @@ mod tests {
                 aliases: Vec::new(),
                 lifecycle: marrow_catalog::CatalogLifecycle::Active,
                 accepted_key_shape: Some("int".to_string()),
+                accepted_index_shape: None,
                 accepted_struct: None,
             }],
         );

@@ -243,6 +243,10 @@ impl Accumulator {
         self.renamed.contains(catalog_id)
     }
 
+    fn is_changed_index(&self, id: &CatalogId) -> bool {
+        self.changed_indexes.contains(id)
+    }
+
     /// Whether a member's declared leaf type differs from its accepted type, by comparing two
     /// identity-aware tokens (scalar by name, enum/identity by referent stable id and arity), so
     /// a pure enum or store rename is not a retype. A non-leaf member has no declared token and
