@@ -136,6 +136,10 @@ for id, book in reversed(entries(^books))
     print($"{id}: {book.title}")
 ```
 
+Iteration helpers are not partially applied. `keys(...)`, `values(...)`, and
+`entries(...)` must receive their iterable at the read site; a helper name alone
+is not an iterator value.
+
 Use `values(...)` when code needs only values:
 
 ```mw

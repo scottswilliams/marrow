@@ -369,9 +369,9 @@ Single-letter statement abbreviations are not part of `.mw`.
 Type names have one source spelling: `int`, `decimal`, `bool`, `string`,
 `bytes`, `date`, `instant`, `duration`, `ErrorCode`, and `unknown`.
 
-## Reserved Words
+## Reserved And Held Names
 
-Marrow reserves:
+Marrow parser-reserved words are:
 
 ```text
 module use pub fn resource store at index unique
@@ -385,9 +385,18 @@ sequence
 unknown Error ErrorCode
 ```
 
-A reserved word cannot be used as a name. Bindings, parameters, resources,
-fields, functions, and module segments must not be spelled as a reserved word;
-doing so is a parse error.
+A parser-reserved word cannot be used as a name. Bindings, parameters,
+resources, fields, functions, and module segments must not be spelled as a
+parser-reserved word; doing so is a parse error.
+
+The names `journal`, `maybe`, `absent`, `Id`, `sensitive`, and `declassify` are
+held for current builtin forms or future language surfaces. v0.1 does not reject
+all uses of those spellings as identifiers at parse time; a use is rejected only
+where the current grammar or checker gives that spelling special meaning.
+
+Reserved-word recognition happens before identifier parsing. Builtin names and
+standard-library descriptors dispatch through the builtin table rather than
+through user declarations.
 
 `merge` and `lock` are reserved even though they are not v0.1 statements. They
 have no accepted statement form or formatter round trip in v0.1; the parser

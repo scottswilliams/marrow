@@ -1,9 +1,7 @@
-//! The one module-aware, visibility-aware name resolver, shared by the checker,
-//! runtime, and binding index so they cannot drift. A bare name resolves in
-//! its own module only — because `use` imports module names, not their contents —
-//! while saved roots stay project-wide, since a `^root` addresses its one owning
-//! store from any module. Builtins and `std::` helpers dispatch before user
-//! declarations and are the caller's pre-check, never resolved here.
+//! Module-aware name resolution for functions and resources. Function `pub`
+//! controls cross-module calls; resources and saved roots remain project-visible
+//! in v0.1. Builtins and `std::` helpers dispatch before user declarations and
+//! are the caller's pre-check, never resolved here.
 
 use marrow_schema::{ResourceSchema, StoreSchema};
 

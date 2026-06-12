@@ -69,6 +69,14 @@ generated index tree. Dotted paths are the expected spelling because they name
 the containing groups. A bare leaf shorthand such as `shelf` would need an
 explicit ambiguity rule before it could become part of the language.
 
+## No Triggers
+
+Saved-data writes do not run hidden triggers. Future derived structures,
+journals, outboxes, and caches are explicit resources or tooling contracts with
+checked write plans; they do not attach imperative callbacks to arbitrary writes.
+External effects happen after durable state is committed through ordinary code or
+host workers, not through store-internal trigger execution.
+
 ## Collection spellings
 
 Future collection spellings are a map/set collection family, not a v0.1

@@ -59,8 +59,8 @@ imports.
 
 ## Visibility
 
-Omitted visibility is module-private. Add `pub` when another module, the CLI,
-or a host embedding can call the function.
+Omitted function visibility is module-private. Function `pub` marks callable
+API: another module, the CLI, or a host embedding can call the function.
 
 ```mw
 pub fn add(title: string): int
@@ -79,9 +79,10 @@ They are compile-time constant expressions over literals and other top-level
 constants. They do not read saved data or call host modules. Local immutable
 values use `const`.
 
-Resource declarations do not take visibility markers. A resource belongs to
-its module and can be named with that module path where the project schema is
-loaded. Function visibility controls the callable API.
+Resource declarations do not take visibility markers. Resources are not
+visibility-gated in v0.1: a resource belongs to its module and can be named with
+that module path where the project schema is loaded. Function visibility
+controls the callable API.
 
 ## Functions
 

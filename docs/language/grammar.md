@@ -115,6 +115,13 @@ group_decl      =
 
 group_keying    = key_params ;
 
+Keyed layer members are `keyed_field_decl` and keyed `group_decl`. The reserved
+post-name `retain` clause position belongs on keyed layer members, after future
+keyed-layer `unique` or `counted` clauses if those clauses exist. v0.1 has no
+`retain`, `unique`, or `counted` keyed-layer clause and rejects those spellings
+there. A future declaration over populated data is a destructive decision;
+ongoing bounding of future writes is write-plan maintenance.
+
 index_decl      =
     "index" identifier "(" index_arg_list ")" unique_marker? NEWLINE ;
 

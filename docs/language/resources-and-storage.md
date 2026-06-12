@@ -64,6 +64,10 @@ A saved root has one managed store schema. If `^books` stores `Book`, another
 store cannot claim `^books` with a different shape. Use nested layers, indexes,
 or a separate root instead.
 
+Saved roots are project-wide in v0.1. Any module may read or write any saved
+root through its declared store shape; this is a first-version simplification,
+not a visibility gate.
+
 A store declaration may omit identity keys when the root itself is addressed
 directly:
 
@@ -339,6 +343,10 @@ tree and a saved one. Every traversal is written in source; see
 Marrow does not add a separate storage query language. If code needs a new lookup
 path, add an index to the store and rebuild the generated tree when existing
 data should appear through it.
+
+Value forms are the contract above index representation: code reads declared
+paths, identities, keys, entries, and values, while the generated index tree
+remains a maintained lookup structure.
 
 ## Managed Writes
 
@@ -639,10 +647,12 @@ writes before leaving. That includes exit by `return`, `break`, or `continue`.
 If an error escapes the block, saved writes from that transaction roll back,
 including generated index writes. Local variable mutation is ordinary program
 state and is not rewound by a transaction rollback. Rollback-sensitive host
-effects are rejected inside a transaction before they run: program output,
-logging, and filesystem writes must happen outside the transaction. Host
-capability reads, such as clock, environment, and filesystem reads, do not change
-saved state and may run inside transactions.
+effects are rejected inside a transaction before they run. The language builtin
+output sink on this page is `print`, which must happen outside the transaction;
+the standard-library host sinks `std::log::*`, `std::io::writeText`, and
+`std::io::writeBytes` follow the same rule. Host capability reads, such as
+clock, environment, and filesystem reads, do not change saved state and may run
+inside transactions.
 
 An error caught before it escapes any transaction block is ordinary control
 flow; rollback happens only if an error still escapes a transaction block.

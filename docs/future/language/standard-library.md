@@ -21,6 +21,13 @@ Storage and printing remain canonical. The `std::clock::format*` helpers return
 Marrow's canonical saved text, and saved `date`, `instant`, and `duration`
 values keep their canonical encodings.
 
+## Sensitive Output
+
+`sensitive` and `declassify` are reserved for a future checked information-flow
+surface. The declassification sink set is exactly `print`, all `std::log`
+functions, `std::io::writeText`, and `std::io::writeBytes`; other functions do
+not become output sinks by name.
+
 ## `std::text`
 
 `std::text::split(value, separator)` treats an empty separator as a request for
