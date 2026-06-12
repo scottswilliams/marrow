@@ -1,5 +1,6 @@
 use std::process::ExitCode;
 
+use marrow_run::SystemNondeterminism;
 use marrow_store::tree::TreeStore;
 
 use crate::{CheckFormat, open_store_for_inspection, report_simple_error, resolve_store_path};
@@ -29,7 +30,8 @@ pub(super) fn apply_store(
                     return Err(ExitCode::FAILURE);
                 }
             };
-            if let Err(error) = crate::backup::ensure_store_uid(&store) {
+            let mut nondeterminism = SystemNondeterminism::new();
+            if let Err(error) = crate::backup::ensure_store_uid(&store, &mut nondeterminism) {
                 report_simple_error(error.code(), &error.to_string(), format);
                 return Err(ExitCode::FAILURE);
             }

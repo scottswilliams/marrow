@@ -7,6 +7,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use marrow_run::SystemNondeterminism;
 use marrow_store::tree::TreeStore;
 use serde_json::json;
 
@@ -97,7 +98,15 @@ pub(crate) fn restore(args: &[String]) -> ExitCode {
         }
     };
 
-    match restore_backup_with_prologue(&program, &store, prologue, &mut reader, verify) {
+    let mut nondeterminism = SystemNondeterminism::new();
+    match restore_backup_with_prologue(
+        &program,
+        &store,
+        prologue,
+        &mut reader,
+        &mut nondeterminism,
+        verify,
+    ) {
         Ok(report) => {
             match format {
                 CheckFormat::Text => {

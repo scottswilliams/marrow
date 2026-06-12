@@ -212,6 +212,7 @@ pub(crate) fn validate_catalog_manifest_binding(
 #[cfg(test)]
 mod tests {
     use marrow_catalog::CatalogMetadata;
+    use marrow_run::FixedNondeterminism;
     use marrow_store::tree::{CommitMetadata, EngineProfile, TreeStore};
 
     use super::super::ensure_store_uid;
@@ -245,7 +246,9 @@ mod tests {
             .expect("stamp commit");
 
         let (record_count, state_digest) = scan_state(&store).expect("scan state");
-        let store_uid = ensure_store_uid(&store).expect("store uid");
+        let mut nondeterminism =
+            FixedNondeterminism::new(0, 0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10);
+        let store_uid = ensure_store_uid(&store, &mut nondeterminism).expect("store uid");
         let manifest = build_manifest(
             &program,
             &store,
@@ -297,7 +300,9 @@ mod tests {
             .expect("stamp commit");
 
         let (record_count, state_digest) = scan_state(&store).expect("scan state");
-        let store_uid = ensure_store_uid(&store).expect("store uid");
+        let mut nondeterminism =
+            FixedNondeterminism::new(0, 0x1112_1314_1516_1718_191a_1b1c_1d1e_1f20);
+        let store_uid = ensure_store_uid(&store, &mut nondeterminism).expect("store uid");
         let error = build_manifest(
             &program,
             &store,

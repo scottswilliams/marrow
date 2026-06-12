@@ -7,7 +7,7 @@ mod support;
 use support::*;
 
 use marrow_check::CheckedRuntimeProgram;
-use marrow_run::{CheckedEntryCall, Host, RUN_ABSENT, RUN_CAPABILITY, Value};
+use marrow_run::{CheckedEntryCall, FixedNondeterminism, Host, RUN_ABSENT, RUN_CAPABILITY, Value};
 use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 use marrow_store::value::{SavedValue, ScalarType};
@@ -92,6 +92,30 @@ fn clock_now_reads_the_host_clock_capability() {
     )
     .expect("read");
     assert_eq!(outcome.value, Some(Value::Instant(1_000_000_000)));
+}
+
+#[test]
+fn fixed_nondeterminism_replays_clock_output() {
+    let program = checked_program(
+        "pub fn emit_clock(): instant\n    print(std::clock::formatInstant(std::clock::now()))\n    return std::clock::now()\n",
+    );
+    let run_once = || {
+        let store = TreeStore::memory();
+        let nondeterminism = FixedNondeterminism::new(
+            1_700_000_000_000_000_000,
+            0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10,
+        );
+        let host = Host::new().with_nondeterminism(&nondeterminism);
+        run_entry_with_host(&store, &host, checked_entry!(&program, "test::emit_clock"))
+            .expect("clock run")
+    };
+
+    let first = run_once();
+    let second = run_once();
+
+    assert_eq!(first, second);
+    assert_eq!(first.value, Some(Value::Instant(1_700_000_000_000_000_000)));
+    assert_eq!(first.output, "2023-11-14T22:13:20Z\n");
 }
 
 #[test]

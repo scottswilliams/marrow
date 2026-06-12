@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use marrow_check::evolution::preview;
 use marrow_run::evolution::{AutoApplyOutcome, FenceError, RunObligation, fence, try_auto_apply};
+use marrow_run::{Nondeterminism, SystemNondeterminism};
 
 use crate::cmd_check::report_runtime_fault;
 use crate::dry_run::{self, DryRunHook};
@@ -182,10 +183,12 @@ fn run_project_dir(
     // an authorized state-establishing flow, so a pending durable identity is frozen into
     // the store here as its baseline, and an auto-applied evolution advances the epoch, so
     // the returned program may be a re-check past the one loaded above.
-    let open_store = match open_run_store(dir, &config, program, observe.format()) {
-        Ok(open_store) => open_store,
-        Err(code) => return code,
-    };
+    let mut nondeterminism = SystemNondeterminism::new();
+    let open_store =
+        match open_run_store(dir, &config, program, observe.format(), &mut nondeterminism) {
+            Ok(open_store) => open_store,
+            Err(code) => return code,
+        };
     let entry = entry_override
         .or(config.default_entry.as_deref())
         .expect("entry presence proven before the store opened");
@@ -193,7 +196,14 @@ fn run_project_dir(
         OpenStore::Memory(program) => {
             let runtime_program = program.runtime();
             let store = marrow_store::tree::TreeStore::memory();
-            execute(&runtime_program, &store, entry, maintenance, observe)
+            execute(
+                &runtime_program,
+                &store,
+                entry,
+                maintenance,
+                observe,
+                &nondeterminism,
+            )
         }
         OpenStore::Native { program, store } => {
             let runtime_program = program.runtime();
@@ -208,9 +218,17 @@ fn run_project_dir(
                     entry,
                     maintenance,
                     observe,
+                    &nondeterminism,
                 )
             } else {
-                execute(&runtime_program, &store.store, entry, maintenance, observe)
+                execute(
+                    &runtime_program,
+                    &store.store,
+                    entry,
+                    maintenance,
+                    observe,
+                    &nondeterminism,
+                )
             }
         }
     }
@@ -318,14 +336,17 @@ fn open_run_store(
     config: &marrow_project::ProjectConfig,
     program: marrow_check::CheckedProgram,
     format: CheckFormat,
+    nondeterminism: &mut impl Nondeterminism,
 ) -> Result<OpenStore, ExitCode> {
-    let Some(store) = open_store_file(dir, config, format)? else {
+    let Some(store) = open_store_file(dir, config, format, nondeterminism)? else {
         return open_memory_store(program, format);
     };
     let program = crate::establish_store_baseline(dir, config, &store.store, program, format)?;
     match fence_run(&program, &store.store) {
         Ok(()) => finish_open(program, store),
-        Err(FenceError::SchemaDrift) => auto_apply_then_reopen(dir, program, store, format),
+        Err(FenceError::SchemaDrift) => {
+            auto_apply_then_reopen(dir, program, store, format, nondeterminism)
+        }
         Err(error) => {
             report_simple_error(error.code(), &error.message(), CheckFormat::Text);
             Err(ExitCode::FAILURE)
@@ -373,6 +394,7 @@ fn open_store_file(
     dir: &str,
     config: &marrow_project::ProjectConfig,
     format: CheckFormat,
+    nondeterminism: &mut impl Nondeterminism,
 ) -> Result<Option<NativeRunStore>, ExitCode> {
     let Some(path) = resolve_store_path(dir, config, format)? else {
         return Ok(None);
@@ -381,7 +403,7 @@ fn open_store_file(
         report_simple_error(error.code(), &error.to_string(), format);
         ExitCode::FAILURE
     })?;
-    if let Err(error) = crate::backup::ensure_store_uid(&store) {
+    if let Err(error) = crate::backup::ensure_store_uid(&store, nondeterminism) {
         report_simple_error(error.code(), &error.to_string(), format);
         return Err(ExitCode::FAILURE);
     }
@@ -436,6 +458,7 @@ fn auto_apply_then_reopen(
     program: marrow_check::CheckedProgram,
     store: NativeRunStore,
     format: CheckFormat,
+    nondeterminism: &mut impl Nondeterminism,
 ) -> Result<OpenStore, ExitCode> {
     let witness = match preview(&program, &store.store) {
         Ok((witness, _diagnostics)) => witness,
@@ -475,7 +498,7 @@ fn auto_apply_then_reopen(
     // snapshot this auto-apply just advanced, so it proposes no further change and fences
     // clean.
     let (config, program) = load_checked_project(dir)?;
-    let Some(store) = open_store_file(dir, &config, format)? else {
+    let Some(store) = open_store_file(dir, &config, format, nondeterminism)? else {
         return Ok(OpenStore::Memory(program));
     };
     if let Err(error) = fence_run(&program, &store.store) {
@@ -560,9 +583,12 @@ fn saved_root_holds_records(
 /// and filesystem, with `std::log` output collected into `log`. The maintenance
 /// capability is added by `run` only when the operator passed `--maintenance`, so it
 /// stays local to that command rather than the shared base.
-pub(crate) fn base_host(log: std::rc::Rc<RefCell<String>>) -> marrow_run::Host {
+pub(crate) fn base_host(
+    log: std::rc::Rc<RefCell<String>>,
+    nondeterminism: &impl Nondeterminism,
+) -> marrow_run::Host {
     marrow_run::Host::new()
-        .with_system_clock()
+        .with_nondeterminism(nondeterminism)
         .with_system_environment()
         .with_log_sink(log)
         .with_filesystem()
@@ -579,9 +605,10 @@ fn execute(
     entry: &str,
     maintenance: bool,
     observe: RunObservation,
+    nondeterminism: &impl Nondeterminism,
 ) -> ExitCode {
     let log = std::rc::Rc::new(RefCell::new(String::new()));
-    let mut host = base_host(std::rc::Rc::clone(&log));
+    let mut host = base_host(std::rc::Rc::clone(&log), nondeterminism);
     if maintenance {
         host = host.with_maintenance();
     }

@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::Read;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -12,6 +13,81 @@ use crate::env::Env;
 use crate::error::RuntimeError;
 use crate::value::Value;
 use crate::write_plan::{WriteOp, WriteTarget};
+
+/// The nondeterministic inputs a host or tool may capture at a run boundary.
+pub trait Nondeterminism {
+    fn now_nanos(&self) -> i128;
+    fn entropy_u128(&mut self) -> u128;
+}
+
+/// Production nondeterminism from the operating system.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SystemNondeterminism;
+
+impl SystemNondeterminism {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Nondeterminism for SystemNondeterminism {
+    fn now_nanos(&self) -> i128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos() as i128)
+            .unwrap_or(0)
+    }
+
+    fn entropy_u128(&mut self) -> u128 {
+        system_entropy_u128()
+    }
+}
+
+/// Fixed nondeterminism for deterministic runs and tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FixedNondeterminism {
+    now_nanos: i128,
+    entropy_u128: u128,
+}
+
+impl FixedNondeterminism {
+    pub fn new(now_nanos: i128, entropy_u128: u128) -> Self {
+        Self {
+            now_nanos,
+            entropy_u128,
+        }
+    }
+}
+
+impl Nondeterminism for FixedNondeterminism {
+    fn now_nanos(&self) -> i128 {
+        self.now_nanos
+    }
+
+    fn entropy_u128(&mut self) -> u128 {
+        self.entropy_u128
+    }
+}
+
+#[cfg(unix)]
+fn system_entropy_u128() -> u128 {
+    let file =
+        std::fs::File::open("/dev/urandom").expect("nondeterminism entropy requires OS entropy");
+    entropy_u128_from_reader(file)
+}
+
+fn entropy_u128_from_reader(mut reader: impl Read) -> u128 {
+    let mut bytes = [0u8; 16];
+    reader
+        .read_exact(&mut bytes)
+        .expect("nondeterminism entropy requires OS entropy");
+    u128::from_be_bytes(bytes)
+}
+
+#[cfg(not(unix))]
+fn system_entropy_u128() -> u128 {
+    panic!("nondeterminism entropy requires OS entropy");
+}
 
 /// An opt-in debugger hook for statement-by-statement stepping and write
 /// observation. An ordinary run installs none and pays one `Option` check per
@@ -132,13 +208,9 @@ impl Host {
         Self::default()
     }
 
-    /// Clock reads the real system time, captured now.
-    pub fn with_system_clock(mut self) -> Self {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_nanos() as i128)
-            .unwrap_or(0);
-        self.clock = Some(nanos);
+    /// Clock captures one instant from the given nondeterminism provider.
+    pub fn with_nondeterminism(mut self, nondeterminism: &impl Nondeterminism) -> Self {
+        self.clock = Some(nondeterminism.now_nanos());
         self
     }
 
@@ -179,5 +251,24 @@ impl Host {
     pub fn with_maintenance(mut self) -> Self {
         self.maintenance = true;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{self, Read};
+
+    struct FailingEntropy;
+
+    impl Read for FailingEntropy {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::other("entropy unavailable"))
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "nondeterminism entropy requires OS entropy")]
+    fn entropy_reader_failure_panics() {
+        super::entropy_u128_from_reader(FailingEntropy);
     }
 }

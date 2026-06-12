@@ -128,7 +128,11 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
 
     // Tests get the same host capabilities as a run; their `std::log` output goes
     // to a discard sink so it stays out of the pass/fail report.
-    let host = crate::cmd_run::base_host(std::rc::Rc::new(RefCell::new(String::new())));
+    let nondeterminism = marrow_run::SystemNondeterminism::new();
+    let host = crate::cmd_run::base_host(
+        std::rc::Rc::new(RefCell::new(String::new())),
+        &nondeterminism,
+    );
     let mut passed = 0usize;
     let mut failed = 0usize;
     let mut errored = 0usize;

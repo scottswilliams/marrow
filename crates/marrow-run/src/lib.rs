@@ -57,6 +57,6 @@ pub use error::{
     RUN_OVERFLOW, RUN_PRIVATE_FUNCTION, RUN_RECURSION, RUN_STORE, RUN_TRAVERSAL, RUN_TYPE,
     RUN_UNBOUND_NAME, RUN_UNCAUGHT_THROW, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RuntimeError,
 };
-pub use host::{Frame, Host, StepHook};
+pub use host::{FixedNondeterminism, Frame, Host, Nondeterminism, StepHook, SystemNondeterminism};
 pub use value::{IdentityValue, RunOutput, RunOutputSink, Value};
 pub use write_plan::{WriteDataSegment, WriteOp, WriteTarget};

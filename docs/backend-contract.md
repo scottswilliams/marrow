@@ -35,6 +35,12 @@ those facts remain engine-profile facts. Source still declares `^` saved roots;
 a memory-resident or tiered durable backend does not get a separate source
 sigil.
 
+Deterministic simulation grows by substituting the runtime nondeterminism
+provider at host/tool boundaries, not by teaching backends to read clocks or
+entropy. Tree-cell backends remain deterministic stores of typed facts; runtime
+clock capture and store UID minting consume the provider before writing ordinary
+typed metadata.
+
 Physical tree-cell keys, prefix ranges, and ordered key byte codecs are private
 store substrate. Public callers provide typed IDs and key values; the store
 constructs physical bytes internally.

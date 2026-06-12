@@ -7,6 +7,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use marrow_run::SystemNondeterminism;
 use marrow_store::tree::TreeStore;
 use serde_json::json;
 
@@ -25,12 +26,13 @@ pub(crate) fn backup(args: &[String]) -> ExitCode {
         Ok(checked) => checked,
         Err(code) => return code,
     };
+    let mut nondeterminism = SystemNondeterminism::new();
     // A project with no saved data on disk yields a valid empty backup.
     let store = match open_store_for_inspection(&dir, &config, format) {
         Ok(Some(store)) => store,
         Ok(None) => {
             let store = TreeStore::memory();
-            if let Err(error) = ensure_store_uid(&store) {
+            if let Err(error) = ensure_store_uid(&store, &mut nondeterminism) {
                 report_simple_error(error.code(), &error.to_string(), format);
                 return ExitCode::FAILURE;
             }

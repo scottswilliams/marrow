@@ -8,6 +8,7 @@ use std::io::Read;
 
 use marrow_check::CheckedProgram;
 use marrow_project::Sha256Digest;
+use marrow_run::Nondeterminism;
 use marrow_run::evolution::{ApplyError, current_engine_profile, rebuild_store_indexes};
 use marrow_store::cell::DataCellKind;
 use marrow_store::tree::{TreeBackupCellBuf, TreeStore};
@@ -69,6 +70,7 @@ pub(crate) fn restore_backup_with_prologue(
     store: &TreeStore,
     prologue: BackupPrologue,
     input: &mut impl Read,
+    nondeterminism: &mut impl Nondeterminism,
     verify: impl Fn(&CheckedProgram, &TreeStore) -> Result<(), BackupError>,
 ) -> Result<RestoreReport, BackupError> {
     let BackupPrologue { manifest, section } = prologue;
@@ -78,7 +80,15 @@ pub(crate) fn restore_backup_with_prologue(
     }
 
     store.begin()?;
-    match replay(&restore_program, store, &manifest, &section, input, &verify) {
+    match replay(
+        &restore_program,
+        store,
+        &manifest,
+        &section,
+        input,
+        nondeterminism,
+        &verify,
+    ) {
         Ok(report) => {
             store.commit()?;
             Ok(report)
@@ -106,7 +116,9 @@ pub(crate) fn restore_backup(
     verify: impl Fn(&CheckedProgram, &TreeStore) -> Result<(), BackupError>,
 ) -> Result<RestoreReport, BackupError> {
     let prologue = read_backup_prologue(input)?;
-    restore_backup_with_prologue(program, store, prologue, input, verify)
+    let mut nondeterminism =
+        marrow_run::FixedNondeterminism::new(0, 0xfedc_ba98_7654_3210_f0e1_d2c3_b4a5_9687);
+    restore_backup_with_prologue(program, store, prologue, input, &mut nondeterminism, verify)
 }
 
 /// The catalog section's recomputed digest and row count must equal the manifest's
@@ -180,9 +192,10 @@ fn replay(
     manifest: &BackupManifest,
     section: &CatalogSection,
     input: &mut impl Read,
+    nondeterminism: &mut impl Nondeterminism,
     verify: &impl Fn(&CheckedProgram, &TreeStore) -> Result<(), BackupError>,
 ) -> Result<RestoreReport, BackupError> {
-    store.write_store_uid(&mint_store_uid())?;
+    store.write_store_uid(&mint_store_uid(nondeterminism))?;
     if let Some(snapshot) = &section.snapshot {
         store.replace_catalog_snapshot(snapshot)?;
     }
@@ -303,6 +316,7 @@ mod tests {
 
     use marrow_catalog::CatalogMetadata;
     use marrow_check::CheckedProgram;
+    use marrow_run::FixedNondeterminism;
     use marrow_store::cell::CatalogId;
     use marrow_store::key::{SavedKey, encode_identity_payload};
     use marrow_store::tree::{CommitMetadata, DataPathSegment, TreeStore};
@@ -379,7 +393,9 @@ mod tests {
             .expect("stamp commit");
 
         let mut archive = Vec::new();
-        ensure_store_uid(&store).expect("store uid");
+        let mut nondeterminism =
+            FixedNondeterminism::new(0, 0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10);
+        ensure_store_uid(&store, &mut nondeterminism).expect("store uid");
         create_backup(program, &store, &mut archive).expect("create backup");
         archive
     }

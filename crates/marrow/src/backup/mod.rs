@@ -33,8 +33,7 @@ mod restore;
 pub(crate) use create::create_backup;
 pub(crate) use restore::{BackupPrologue, read_backup_prologue, restore_backup_with_prologue};
 
-use std::io::Read;
-
+use marrow_run::Nondeterminism;
 use marrow_store::tree::{CommitMetadata, EngineProfile, EngineProfileDigest, StoreUid, TreeStore};
 
 /// The on-disk format version. It advances only on an incompatible change to the
@@ -230,11 +229,14 @@ fn catalog_ids(ids: &[String]) -> Result<Vec<marrow_store::cell::CatalogId>, Bac
     ids.iter().map(|id| catalog_id(id)).collect()
 }
 
-pub(crate) fn ensure_store_uid(store: &TreeStore) -> Result<StoreUid, BackupError> {
+pub(crate) fn ensure_store_uid(
+    store: &TreeStore,
+    nondeterminism: &mut impl Nondeterminism,
+) -> Result<StoreUid, BackupError> {
     if let Some(uid) = store.read_store_uid()? {
         return Ok(uid);
     }
-    let uid = mint_store_uid();
+    let uid = mint_store_uid(nondeterminism);
     store.write_store_uid(&uid)?;
     Ok(uid)
 }
@@ -243,10 +245,8 @@ pub(crate) fn require_store_uid(store: &TreeStore) -> Result<StoreUid, BackupErr
     store.read_store_uid()?.ok_or(BackupError::StoreUidMissing)
 }
 
-pub(crate) fn mint_store_uid() -> StoreUid {
-    let mut bytes = [0u8; 16];
-    fill_os_entropy(&mut bytes);
-    store_uid_from_bytes(bytes)
+pub(crate) fn mint_store_uid(nondeterminism: &mut impl Nondeterminism) -> StoreUid {
+    store_uid_from_bytes(nondeterminism.entropy_u128().to_be_bytes())
 }
 
 fn store_uid_from_bytes(bytes: [u8; 16]) -> StoreUid {
@@ -257,18 +257,6 @@ fn store_uid_from_bytes(bytes: [u8; 16]) -> StoreUid {
         write!(&mut uid, "{byte:02x}").expect("writing to a string cannot fail");
     }
     StoreUid::new(uid).expect("store uid encoding is valid")
-}
-
-#[cfg(unix)]
-fn fill_os_entropy(bytes: &mut [u8; 16]) {
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut file| file.read_exact(bytes))
-        .expect("store uid allocation requires OS entropy");
-}
-
-#[cfg(not(unix))]
-fn fill_os_entropy(_bytes: &mut [u8; 16]) {
-    panic!("store uid allocation requires an approved OS entropy source on this platform");
 }
 
 /// A backup or restore failure, carrying a stable dotted code for tools.
@@ -481,13 +469,26 @@ pub(super) mod test_support {
 
 #[cfg(test)]
 mod tests {
+    use marrow_run::FixedNondeterminism;
     use marrow_store::cell::CatalogId;
     use marrow_store::tree::CommitMetadata;
 
-    use super::CommitDescriptor;
+    use super::{CommitDescriptor, mint_store_uid};
 
     fn catalog(text: &str) -> CatalogId {
         CatalogId::new(text.to_string()).expect("valid catalog id")
+    }
+
+    #[test]
+    fn store_uid_minting_reads_entropy_from_nondeterminism() {
+        let mut first = FixedNondeterminism::new(0, 0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10);
+        let mut second = FixedNondeterminism::new(0, 0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10);
+
+        let first_uid = mint_store_uid(&mut first);
+        let second_uid = mint_store_uid(&mut second);
+
+        assert_eq!(first_uid, second_uid);
+        assert_eq!(first_uid.as_str(), "store_0102030405060708090a0b0c0d0e0f10");
     }
 
     #[test]
