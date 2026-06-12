@@ -850,20 +850,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 Parser/checker/runtime files overlap heavily: the cut series is sequenced; additions follow.
 Listing order is execution order. Store crate is quiet this wave except where noted.
 
-**W4.1 Operators + output.** Carries: `_`→`+` concat (II.E1 a, removal #2), `??` precedence
-(gate 12), write/print collapse (gate 13), temporal arithmetic + std::clock::add deletion
-(gate 40) — error-codes.md gains the catchable `run.temporal_overflow` row (the
-run.decimal_overflow pattern). Owns: parse_expr.rs, format.rs precedence mirror, token.rs,
-checks/operators.rs +
-typerules.rs (incl. the gate-40 temporal arms), marrow-run expr.rs (incl. duration/instant
-arithmetic) + stdlib/output.rs + CheckedBuiltinCall::Write deletion, syntax.md/grammar.md —
-incl. one grammar.md sentence recording `??` non-associativity as a deliberate design choice
-with layered defaults as the named extension point (C40) — spec operator rows, ~40 doc examples
-+ test migrations.
-Seed: failing parse fixtures for the new precedence + `+` over strings; `write(` is an unknown
-builtin. Review: docs corpus deterministic; no implicit conversions snuck in. Done: grep-zero
-`BinaryOp::Concat`, `OutputKind::Write`, `std::clock::add` (code and docs).
-
 **W4.2 → Control-flow + parameter-mode cuts.** Carries: loop labels, finally, `out`, inout
 (gates 18-19). Owns: parser label/finally/mode plumbing, AST + executable IR fields, formatter,
 walk_finally/walk_loop_control_flow collapse, runtime statement.rs finally execution +
