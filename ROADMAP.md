@@ -832,15 +832,6 @@ series.
 
 Catalog/evolution series (sequenced; live-refactor coordination):
 
-**W3.12 → Restore diagnosability.** Carries: restore.source_mismatch and
-restore.catalog_mismatch messages that print both sides of the comparison, plus the roll-forward
-recipe. Owns: cmd_restore.rs, backup/restore.rs, docs/data-evolution.md, and the
-restore.source_mismatch / restore.catalog_mismatch error-code rows. Seed: a restore fixture that
-currently reports only one digest or epoch. Review: no digest algorithm change, no first-diverging
-member diff, and no manifest fields. Done: source mismatch output includes backup and project
-source digests; catalog mismatch output includes backup epoch/digest and project epoch/digest;
-the docs describe restoring the old source plus backup, then re-stating pending evolve intents.
-
 **W3.13 → Restore replace.** Carries: `marrow restore --replace --count N` for atomically
 clearing and replaying a non-empty store when the confirmed live record count matches. Owns:
 cmd_restore.rs, backup/restore.rs empty-store guard plumbing, docs/cli.md, docs/future/cli.md
