@@ -850,19 +850,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 Parser/checker/runtime files overlap heavily: the cut series is sequenced; additions follow.
 Listing order is execution order. Store crate is quiet this wave except where noted.
 
-**W4.12 → Typed keyed-layer entries (C34; gate 41; the scoped seam build).** After W2.1 and
-W4.4; before W4.7. Owns: marrow-schema compile (resource name
-accepted on keyed_field_decl, resolution validated), marrow-check whole-entry required-field
-rules and whole-entry read materialization, marrow-run write planning over the W2.1 record-body
-plan + entry-node cell, two-name-loop binding for named-type layers, resources-and-storage.md
-lockstep section (write contract, read contract, evolution boundary). Explicitly excluded:
-evolution into the layer (fails closed as NestedRetireUnsupported, pending II.D2). Seed: failing
-fixture — `comments(seq: int): Comment` compiles; a whole-entry write missing a required Comment
-field rejects; a whole-entry read materializes scalars + unkeyed groups. Review: soundness lens
-probes presence readers and integrity over entry-node cells (identity/write-path magnet —
-re-review until clean); spec matches the gate-41 exclusion exactly. Done: the layer-entry
-surface works end to end with the evolution boundary fenced and tested.
-
 **W4.7 → Identity index components (II.C1, gate 4; store-touching).** Owns: marrow-schema
 validate.rs allowlist, marrow-check facts ordering fix (StoredValueMeaning::Identity made
 load-bearing), write-plan key derivation through the existing decoder, conformance coverage for
