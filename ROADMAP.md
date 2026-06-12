@@ -841,17 +841,6 @@ The catalog/evolution series coordinates with the live engine-resident-catalog r
 the named owner of the #24/#27 subtractions. The remaining tail lane sequences after the catalog
 series.
 
-Catalog/evolution series (sequenced; live-refactor coordination):
-
-**W3.15 → Dangling-ref audit.** Carries: a report-only `marrow data integrity` pass after W3.7
-that checks stored `Id(^store)` leaves for referent existence. Owns: integrity traversal over
-identity-typed leaves, `data.dangling_ref` finding and error-code row, data-tools.md integrity
-sentence, and one conformance fixture. Seed: a store containing an identity field whose target
-record node is absent reports no finding today. Review: no constraints, cascades, write-time
-rejection, automatic repair, absent-read prose, CLI flag, or evolve/discharge change. Done:
-`data.dangling_ref` exits 1 with containing identity, field catalog id, referenced root, and key
-value, while integrity remains streaming and report-only.
-
 Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 ---
