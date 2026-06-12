@@ -48,6 +48,17 @@ Operating principles for this plan:
 - **Live co-author.** The engine-resident-catalog refactor is in flight on main. All Wave 3
   catalog/evolution lanes coordinate with (or are executed by) that effort; rebase before
   integrating, never push over it.
+- **Conformance-corpus campaign.** A coordinated test-architecture effort owns
+  fixtures/v01/check/ and fixtures/v01/run/ (new, additive subtrees), the two corpus driver
+  suites (the marrow-check fixture walker; the `marrow test` corpus runner in crates/marrow
+  tests), and amendments to docs/testing-architecture.md. Roadmap lanes do not edit those files
+  or create competing test-architecture authorities; once the checker driver lands, lanes write
+  new Tier-1 checker tests as corpus fixtures rather than new Rust call sites. The campaign
+  never touches cmd_test.rs, discovery.rs, or the assert stdlib (W6.2/W6.18 own them); its
+  runtime driver sequences after W6.2 and consumes that record contract. Bulk checker-suite
+  migration runs only after Wave 5; remaining migration and the binary fold execute as W7.1
+  scope. Ledger-pinned suites in docs/freeze-gate-evidence.md keep their verification commands
+  until the owning lane updates the ledger rows in the same commit.
 
 Lane entry format — Carries: proposal ids / removal titles. Owns: crates/files. Deletes: removal
 targets. Seed: the first failing check. Review: adversarial focus. Done: evidence beyond green.
@@ -1403,9 +1414,13 @@ Wave gate: full gate; CLI surface frozen for the release contract.
 **W7.1 R11 test re-architecture (removals "Collapse the 500-fold inline schema duplication" and
 "Fold 176 integration-test binaries"; the latter P3 — may slip without contract cost).** Owns:
 the corpus constant in marrow-check test support (~60 verbatim cases; split-form after W1.7),
-fixtures/v01 confirmation, then one tests/main.rs per crate (dead_code allowances removed,
-support compiled once). Seed: suite-shape tidy checks. Review: golden/semantic coverage does not
-drop; golden updates reviewed as contract changes. Done: suite shape matches
+fixtures/v01 confirmation, migration of remaining runtime value suites and CLI semantic
+re-tests into the fixtures/v01 conformance corpus with same-commit deletion of the Rust
+originals (behavior inventory per suite; surviving crates/marrow tests are boundary-only),
+then one tests/main.rs per crate (dead_code allowances removed, support compiled once;
+docs/freeze-gate-evidence.md verification commands updated in the same commits). Seed:
+suite-shape tidy checks. Review: golden/semantic coverage does not drop; behavior inventories
+complete; golden updates reviewed as contract changes. Done: suite shape matches
 docs/testing-architecture.md.
 
 **W7.2 → Release contract (III.B2; gates 33, 35, 37, 45).** Owns: `--version` engine-profile
