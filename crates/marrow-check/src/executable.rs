@@ -3,6 +3,10 @@ use std::path::Path;
 
 use marrow_schema::ScalarType;
 use marrow_schema::stdlib::Capability;
+use marrow_store::StoreError;
+use marrow_store::cell::CatalogId;
+use marrow_store::key::SavedKey;
+use marrow_store::tree::TreeStore;
 use marrow_syntax::SourceSpan;
 
 use crate::facts::{EnumId, EnumMemberId};
@@ -43,6 +47,26 @@ pub fn checked_saved_root_place(
 
 pub fn checked_activation_root_places(program: &CheckedProgram) -> Vec<CheckedSavedPlace> {
     place::checked_activation_root_places(program)
+}
+
+pub fn checked_place_store_id(place: &CheckedSavedPlace) -> Result<CatalogId, StoreError> {
+    let Some(raw) = &place.store_catalog_id else {
+        return Err(StoreError::Corruption {
+            message: "checked saved place is missing its store catalog id".to_string(),
+        });
+    };
+    CatalogId::new(raw.clone()).map_err(|_| StoreError::Corruption {
+        message: "checked saved place has an invalid store catalog id".to_string(),
+    })
+}
+
+pub fn for_each_place_record(
+    store: &TreeStore,
+    place: &CheckedSavedPlace,
+    visit: &mut dyn FnMut(&[SavedKey]) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    let store_id = checked_place_store_id(place)?;
+    store.for_each_record(&store_id, place.identity_keys.len(), visit)
 }
 
 pub(crate) struct CheckedExecutableContext<'a> {

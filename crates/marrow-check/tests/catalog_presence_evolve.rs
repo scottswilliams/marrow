@@ -1,7 +1,10 @@
 mod support;
 
 use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
-use marrow_check::CHECK_CATALOG_INTENT;
+use marrow_check::{
+    CHECK_CATALOG_INTENT, CatalogIntentDiagnostic, CatalogIntentKind, CatalogPathCandidate,
+    CheckReport, DiagnosticPayload,
+};
 
 use support::catalog::{catalog, derived_id, entry as literal_entry, write_catalog};
 use support::{check_with_accepted, temp_project, write};
@@ -16,6 +19,18 @@ fn entry(
     aliases: &[&str],
 ) -> CatalogEntry {
     literal_entry(kind, canonical_path, &derived_id(label), aliases)
+}
+
+fn reserved_entry(
+    kind: CatalogEntryKind,
+    canonical_path: &str,
+    label: &str,
+    aliases: &[&str],
+) -> CatalogEntry {
+    CatalogEntry {
+        lifecycle: CatalogLifecycle::Reserved,
+        ..entry(kind, canonical_path, label, aliases)
+    }
 }
 
 /// A rejected retire must never reserve its target. The target keeps its
@@ -36,6 +51,62 @@ fn assert_entry_stays_active(program: &marrow_check::CheckedProgram, stable_id: 
         CatalogLifecycle::Active,
         "a retire the source still declares must not reserve the entry: {entry:#?}"
     );
+}
+
+fn assert_no_catalog_entry_at(program: &marrow_check::CheckedProgram, stable_id: &str, path: &str) {
+    if let Some(proposal) = &program.catalog.proposal {
+        assert!(
+            !proposal
+                .entries
+                .iter()
+                .any(|entry| entry.stable_id == derived_id(stable_id) && entry.path == path),
+            "a rejected intent must not move `{stable_id}` to `{path}`: {:#?}",
+            proposal.entries
+        );
+    }
+}
+
+fn accepted_candidate(
+    kind: CatalogEntryKind,
+    lifecycle: CatalogLifecycle,
+    label: &str,
+) -> CatalogPathCandidate {
+    CatalogPathCandidate {
+        kind,
+        lifecycle,
+        stable_id: derived_id(label),
+    }
+}
+
+fn assert_catalog_path_ambiguity(
+    report: &CheckReport,
+    intent: CatalogIntentKind,
+    path: &str,
+    accepted: Vec<CatalogPathCandidate>,
+    source: Vec<CatalogEntryKind>,
+) {
+    let payload = report
+        .diagnostics
+        .iter()
+        .find_map(|diagnostic| match &diagnostic.payload {
+            DiagnosticPayload::CatalogIntent(CatalogIntentDiagnostic::AmbiguousPath {
+                intent: actual_intent,
+                path: actual_path,
+                accepted: actual_accepted,
+                source: actual_source,
+            }) if *actual_intent == intent && actual_path == path => {
+                Some((actual_accepted, actual_source))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected catalog ambiguity payload for {intent:?} `{path}`: {:#?}",
+                report.diagnostics
+            )
+        });
+    assert_eq!(payload.0, &accepted);
+    assert_eq!(payload.1, &source);
 }
 
 #[test]
@@ -101,6 +172,362 @@ fn evolve_rename_authorizes_a_saved_data_backed_member_rename() {
         "the old path must not linger as a separate entry: {:#?}",
         proposal.entries
     );
+}
+
+#[test]
+fn evolve_retire_fails_closed_when_accepted_path_matches_active_and_reserved_entries() {
+    let root = temp_project("evolve-retire-accepted-path-ambiguous", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   title: string\n\
+             store ^books(id: int): Book\n\
+             evolve\n\
+             \x20   retire Book.subtitle\n",
+        );
+        let metadata = catalog(vec![
+            entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+            entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::title",
+                "member-title",
+                &[],
+            ),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::subtitle",
+                "member-subtitle",
+                &[],
+            ),
+            reserved_entry(
+                CatalogEntryKind::EnumMember,
+                "books::Book::subtitle",
+                "enum-member-subtitle",
+                &[],
+            ),
+        ]);
+        write_catalog(root, &metadata);
+    });
+
+    let (report, program) = check_with_accepted(&root);
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_CATALOG_INTENT),
+        "path-only retire must fail closed when accepted entries share the path: {:#?}",
+        report.diagnostics
+    );
+    assert_catalog_path_ambiguity(
+        &report,
+        CatalogIntentKind::RetireTarget,
+        "books::Book::subtitle",
+        vec![
+            accepted_candidate(
+                CatalogEntryKind::ResourceMember,
+                CatalogLifecycle::Active,
+                "member-subtitle",
+            ),
+            accepted_candidate(
+                CatalogEntryKind::EnumMember,
+                CatalogLifecycle::Reserved,
+                "enum-member-subtitle",
+            ),
+        ],
+        vec![],
+    );
+    assert_entry_stays_active(&program, "member-subtitle");
+}
+
+#[test]
+fn evolve_retire_fails_closed_when_accepted_path_matches_an_active_alias() {
+    let root = temp_project("evolve-retire-active-alias-ambiguous", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   title: string\n\
+             store ^books(id: int): Book\n\
+             evolve\n\
+             \x20   retire Book.subtitle\n",
+        );
+        let metadata = catalog(vec![
+            entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+            entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::title",
+                "member-title",
+                &[],
+            ),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::subtitle",
+                "member-subtitle",
+                &[],
+            ),
+            entry(
+                CatalogEntryKind::EnumMember,
+                "books::Book::archived",
+                "enum-member-archived",
+                &["books::Book::subtitle"],
+            ),
+        ]);
+        write_catalog(root, &metadata);
+    });
+
+    let (report, program) = check_with_accepted(&root);
+
+    assert_catalog_path_ambiguity(
+        &report,
+        CatalogIntentKind::RetireTarget,
+        "books::Book::subtitle",
+        vec![
+            accepted_candidate(
+                CatalogEntryKind::ResourceMember,
+                CatalogLifecycle::Active,
+                "member-subtitle",
+            ),
+            accepted_candidate(
+                CatalogEntryKind::EnumMember,
+                CatalogLifecycle::Active,
+                "enum-member-archived",
+            ),
+        ],
+        vec![],
+    );
+    assert_entry_stays_active(&program, "member-subtitle");
+}
+
+#[test]
+fn evolve_rename_fails_closed_when_source_path_matches_active_and_reserved_entries() {
+    let root = temp_project("evolve-rename-source-accepted-path-ambiguous", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   blurb: string\n\
+             store ^books(id: int): Book\n\
+             evolve\n\
+             \x20   rename Book.subtitle -> Book.blurb\n",
+        );
+        let metadata = catalog(vec![
+            entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+            entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::subtitle",
+                "member-subtitle",
+                &[],
+            ),
+            reserved_entry(
+                CatalogEntryKind::EnumMember,
+                "books::Book::subtitle",
+                "enum-member-subtitle",
+                &[],
+            ),
+        ]);
+        write_catalog(root, &metadata);
+    });
+
+    let (report, program) = check_with_accepted(&root);
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_CATALOG_INTENT),
+        "rename source must fail closed when accepted entries share the source path: {:#?}",
+        report.diagnostics
+    );
+    assert_catalog_path_ambiguity(
+        &report,
+        CatalogIntentKind::RenameSource,
+        "books::Book::subtitle",
+        vec![
+            accepted_candidate(
+                CatalogEntryKind::ResourceMember,
+                CatalogLifecycle::Active,
+                "member-subtitle",
+            ),
+            accepted_candidate(
+                CatalogEntryKind::EnumMember,
+                CatalogLifecycle::Reserved,
+                "enum-member-subtitle",
+            ),
+        ],
+        vec![],
+    );
+    assert_no_catalog_entry_at(&program, "member-subtitle", "books::Book::blurb");
+}
+
+#[test]
+fn evolve_rename_fails_closed_when_target_path_matches_an_active_alias() {
+    let root = temp_project("evolve-rename-target-active-alias-ambiguous", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   blurb: string\n\
+             store ^books(id: int): Book\n\
+             evolve\n\
+             \x20   rename Book.subtitle -> Book.blurb\n",
+        );
+        let metadata = catalog(vec![
+            entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+            entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::subtitle",
+                "member-subtitle",
+                &[],
+            ),
+            entry(
+                CatalogEntryKind::EnumMember,
+                "books::Book::archived",
+                "enum-member-archived",
+                &["books::Book::blurb"],
+            ),
+        ]);
+        write_catalog(root, &metadata);
+    });
+
+    let (report, program) = check_with_accepted(&root);
+
+    assert_catalog_path_ambiguity(
+        &report,
+        CatalogIntentKind::RenameTarget,
+        "books::Book::blurb",
+        vec![accepted_candidate(
+            CatalogEntryKind::EnumMember,
+            CatalogLifecycle::Active,
+            "enum-member-archived",
+        )],
+        vec![CatalogEntryKind::ResourceMember],
+    );
+    assert_entry_stays_active(&program, "member-subtitle");
+    assert_no_catalog_entry_at(&program, "member-subtitle", "books::Book::blurb");
+}
+
+#[test]
+fn evolve_rename_fails_closed_when_target_path_matches_an_accepted_entry_of_another_kind() {
+    let root = temp_project("evolve-rename-target-accepted-path-ambiguous", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   blurb: string\n\
+             store ^books(id: int): Book\n\
+             evolve\n\
+             \x20   rename Book.subtitle -> Book.blurb\n",
+        );
+        let metadata = catalog(vec![
+            entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+            entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::subtitle",
+                "member-subtitle",
+                &[],
+            ),
+            entry(
+                CatalogEntryKind::EnumMember,
+                "books::Book::blurb",
+                "enum-member-blurb",
+                &[],
+            ),
+        ]);
+        write_catalog(root, &metadata);
+    });
+
+    let (report, program) = check_with_accepted(&root);
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_CATALOG_INTENT),
+        "rename target must fail closed when accepted entries share the target path: {:#?}",
+        report.diagnostics
+    );
+    assert_catalog_path_ambiguity(
+        &report,
+        CatalogIntentKind::RenameTarget,
+        "books::Book::blurb",
+        vec![accepted_candidate(
+            CatalogEntryKind::EnumMember,
+            CatalogLifecycle::Active,
+            "enum-member-blurb",
+        )],
+        vec![CatalogEntryKind::ResourceMember],
+    );
+    assert_no_catalog_entry_at(&program, "member-subtitle", "books::Book::blurb");
+}
+
+#[test]
+fn consumed_rename_fails_closed_when_source_alias_matches_another_active_accepted_entry() {
+    let root = temp_project(
+        "evolve-consumed-rename-source-active-alias-ambiguous",
+        |root| {
+            write(
+                root,
+                "src/books.mw",
+                "module books\n\
+             resource Book\n\
+             \x20   blurb: string\n\
+             store ^books(id: int): Book\n\
+             evolve\n\
+             \x20   rename Book.subtitle -> Book.blurb\n",
+            );
+            let metadata = catalog(vec![
+                entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+                entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+                entry(
+                    CatalogEntryKind::ResourceMember,
+                    "books::Book::blurb",
+                    "member-subtitle",
+                    &["books::Book::subtitle"],
+                ),
+                entry(
+                    CatalogEntryKind::EnumMember,
+                    "books::Book::archived",
+                    "enum-member-archived",
+                    &["books::Book::subtitle"],
+                ),
+            ]);
+            write_catalog(root, &metadata);
+        },
+    );
+
+    let (report, program) = check_with_accepted(&root);
+
+    assert_catalog_path_ambiguity(
+        &report,
+        CatalogIntentKind::RenameSource,
+        "books::Book::subtitle",
+        vec![
+            accepted_candidate(
+                CatalogEntryKind::ResourceMember,
+                CatalogLifecycle::Active,
+                "member-subtitle",
+            ),
+            accepted_candidate(
+                CatalogEntryKind::EnumMember,
+                CatalogLifecycle::Active,
+                "enum-member-archived",
+            ),
+        ],
+        vec![],
+    );
+    assert_no_catalog_entry_at(&program, "member-subtitle", "books::Book::subtitle");
 }
 
 #[test]

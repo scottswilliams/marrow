@@ -7,7 +7,9 @@ use marrow_store::tree::{DataPathSegment, TreeStore};
 
 use crate::StoreLeafKind;
 use crate::evolution::witness::{RepairReason, Verdict};
-use crate::executable::{CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace};
+use crate::executable::{
+    CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace, for_each_place_record,
+};
 
 use super::enum_shrink::{EnumMembers, leaf_value_valid};
 use super::index::{
@@ -43,7 +45,7 @@ pub(super) fn discharge_root(
         .collect();
     let mut scanned = 0usize;
 
-    store.for_each_record(&store_id, place.identity_keys.len(), &mut |identity| {
+    for_each_place_record(store, place, &mut |identity| {
         scanned += 1;
         for (leaf, state) in leaves.iter().zip(leaf_state.iter_mut()) {
             if leaf.retyped {
@@ -325,7 +327,7 @@ fn discharge_keyed_layers(
         state: HashMap::new(),
     };
     let mut flat_state: Vec<LeafScan> = flat_retyped.iter().map(|_| LeafScan::default()).collect();
-    store.for_each_record(&store_id, place.identity_keys.len(), &mut |identity| {
+    for_each_place_record(store, place, &mut |identity| {
         scan.descend(identity, &place.root_members, &[])?;
         for (leaf, state) in flat_retyped.iter().zip(flat_state.iter_mut()) {
             if store.data_subtree_exists(&store_id, identity, &leaf.path)? {

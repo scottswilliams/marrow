@@ -1,28 +1,19 @@
-//! Member-tree location and per-record iteration for evolution apply.
+//! Run-side member-tree location for evolution apply.
 //!
-//! Locate a catalog id within a place's checked member tree, recording the path of keyed
-//! layers and plain members to reach it, and iterate every stored record of a place.
+//! Locate a catalog id within a checked place's member tree, recording the keyed layers
+//! and plain members needed to address it, and expose the place store id after validating
+//! the checked place shape.
 
-use marrow_check::{CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace};
-use marrow_store::StoreError;
+use marrow_check::{
+    CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace, checked_place_store_id,
+};
 use marrow_store::cell::CatalogId;
-use marrow_store::key::SavedKey;
-use marrow_store::tree::TreeStore;
 
 use super::apply::ApplyError;
 
 /// The store catalog id of a place, validated once.
 pub(super) fn store_id(place: &CheckedSavedPlace) -> Result<CatalogId, ApplyError> {
-    let Some(raw) = &place.store_catalog_id else {
-        return Err(ApplyError::Store(StoreError::Corruption {
-            message: "evolution apply saw a missing store catalog id".to_string(),
-        }));
-    };
-    CatalogId::new(raw.clone()).map_err(|_| {
-        ApplyError::Store(StoreError::Corruption {
-            message: "evolution apply saw an invalid store catalog id".to_string(),
-        })
-    })
+    Ok(checked_place_store_id(place)?)
 }
 
 pub(super) fn locate_member(
@@ -73,14 +64,4 @@ fn locate_in(
         steps.pop();
     }
     None
-}
-
-pub(super) fn for_each_place_record(
-    store: &TreeStore,
-    place: &CheckedSavedPlace,
-    visit: &mut dyn FnMut(&[SavedKey]) -> Result<(), StoreError>,
-) -> Result<(), ApplyError> {
-    let store_id = store_id(place)?;
-    store.for_each_record(&store_id, place.identity_keys.len(), visit)?;
-    Ok(())
 }

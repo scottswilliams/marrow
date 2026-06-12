@@ -44,9 +44,9 @@ pub use diagnostics::{
     CHECK_RANGE_VALUE, CHECK_REJECTED_SURFACE, CHECK_RETURN_TYPE, CHECK_RETURN_VALUE,
     CHECK_STRING_ESCAPE, CHECK_THROW_TYPE, CHECK_TRY_HANDLER, CHECK_UNKNOWN_ENUM_MEMBER,
     CHECK_UNKNOWN_TYPE, CHECK_UNRESOLVED_CALL, CHECK_UNRESOLVED_IMPORT, CHECK_UNRESOLVED_NAME,
-    CHECK_UNTYPED_VALUE, CheckDiagnostic, CheckReport, ConversionTarget,
-    ConversionUnsupportedSourceDiagnostic, DiagnosticPayload, EnumDiagnostic, IO_READ,
-    RejectedSurface, SCHEMA_DUPLICATE_ROOT_OWNER,
+    CHECK_UNTYPED_VALUE, CatalogIntentDiagnostic, CatalogIntentKind, CatalogPathCandidate,
+    CheckDiagnostic, CheckReport, ConversionTarget, ConversionUnsupportedSourceDiagnostic,
+    DiagnosticPayload, EnumDiagnostic, IO_READ, RejectedSurface, SCHEMA_DUPLICATE_ROOT_OWNER,
 };
 pub use driver::{
     ProjectSources, check_project, check_project_with_catalog, check_tests, check_tests_program,
@@ -65,7 +65,8 @@ pub use executable::{
     CheckedRuntimeValueType, CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedKeyParam,
     CheckedSavedLayer, CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace,
     CheckedSavedTerminal, CheckedStdCall, CheckedStmt, CheckedUnaryOp,
-    checked_activation_root_places, checked_saved_root_place,
+    checked_activation_root_places, checked_place_store_id, checked_saved_root_place,
+    for_each_place_record,
 };
 pub use facts::PresenceProofRead;
 pub use facts::{

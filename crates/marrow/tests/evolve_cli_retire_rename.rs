@@ -88,6 +88,87 @@ fn evolve_apply_accepts_two_repeated_approve_retire_flags() {
     assert_eq!(notes_present, None, "notes was retired");
 }
 
+#[test]
+fn evolve_apply_counts_and_deletes_a_retired_member_in_each_owning_root() {
+    let root = native_books_project(
+        "evolve-apply-retire-second-root",
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         store ^library(id: int): Book\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let accepted = commit_catalog(&root);
+    let books_place = root_place(&accepted, "books");
+    let library_place = root_place(&accepted, "library");
+    let subtitle_id = member_catalog_id(&library_place, "subtitle");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &books_place, 1, "Dune");
+        seed_title_only(&store, &library_place, 2, "Hyperion");
+        seed_member(
+            &store,
+            &library_place,
+            2,
+            "subtitle",
+            Scalar::Str("Cantos".into()),
+        );
+    }
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         store ^books(id: int): Book\n\
+         store ^library(id: int): Book\n\
+         evolve\n\
+         \x20   retire Book.subtitle\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+
+    let preview = marrow(&[
+        "evolve",
+        "preview",
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
+    assert_eq!(preview.status.code(), Some(1), "{preview:?}");
+    let preview_record = support::json(preview.stdout);
+    let retire_report = preview_record["blocking"]
+        .as_array()
+        .expect("blocking reports")
+        .iter()
+        .find(|report| report["data"]["catalog_id"] == serde_json::json!(subtitle_id))
+        .unwrap_or_else(|| panic!("{preview_record:#?}"));
+    assert_eq!(retire_report["data"]["populated"], serde_json::json!(1));
+
+    let apply = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        &format!("{subtitle_id}:1"),
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
+    assert_eq!(apply.status.code(), Some(0), "{apply:?}");
+    let apply_record = support::json(apply.stdout);
+    assert_eq!(apply_record["records_retired"], serde_json::json!(1));
+    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    assert_eq!(
+        read_scalar(&store, &library_place, 2, "subtitle", ScalarType::Str),
+        None,
+        "the retired cell in the second owning root was deleted"
+    );
+}
+
 /// A bare source rename of a populated member — `subtitle` renamed to `blurb` in source
 /// with no `evolve rename` intent — must not silently auto-apply on a plain `marrow run`.
 /// A bare diff is ambiguous between rename and delete-and-add; reading it as delete-and-add

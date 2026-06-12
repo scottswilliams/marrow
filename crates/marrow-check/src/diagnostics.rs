@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 
 use marrow_syntax::{Severity, SourceSpan};
 
-use crate::CatalogEntryKind;
 use crate::ScalarType;
 use crate::program::MarrowType;
+use crate::{CatalogEntryKind, CatalogLifecycle};
 
 /// A library file declares a module name that does not match its path.
 pub const CHECK_MODULE_PATH: &str = "check.module_path";
@@ -370,7 +370,8 @@ pub enum EnumDiagnostic {
 /// and accepted static sources. Interpolation unsupported-source diagnostics
 /// carry the source type that interpolation cannot render directly. Reserved
 /// catalog path reuse diagnostics carry the reused source identity and reserved
-/// stable id. Type mismatch diagnostics carry the expected and found types.
+/// stable id. Catalog-intent diagnostics carry structured intent facts. Type mismatch
+/// diagnostics carry the expected and found types.
 /// Other diagnostics carry [`DiagnosticPayload::None`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DiagnosticPayload {
@@ -422,10 +423,37 @@ pub enum DiagnosticPayload {
         source_path: String,
         reserved_stable_id: String,
     },
+    /// `check.catalog_intent`: a path-only evolve intent names more than one
+    /// catalog/source entity and cannot pick a semantic target.
+    CatalogIntent(CatalogIntentDiagnostic),
     /// `check.return_type` or `check.assignment_type`: incompatible known types.
     TypeMismatch {
         expected: MarrowType,
         found: MarrowType,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogIntentKind {
+    RetireTarget,
+    RenameSource,
+    RenameTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogPathCandidate {
+    pub kind: CatalogEntryKind,
+    pub lifecycle: CatalogLifecycle,
+    pub stable_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CatalogIntentDiagnostic {
+    AmbiguousPath {
+        intent: CatalogIntentKind,
+        path: String,
+        accepted: Vec<CatalogPathCandidate>,
+        source: Vec<CatalogEntryKind>,
     },
 }
 

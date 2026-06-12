@@ -5,7 +5,7 @@ use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::tree::{DataPathSegment, TreeStore};
 
-use crate::executable::checked_saved_root_place;
+use crate::executable::{checked_activation_root_places, for_each_place_record};
 use crate::program::CheckedProgram;
 
 use super::{Accumulator, catalog_id, required_catalog_id};
@@ -218,51 +218,46 @@ fn populated_member_records(
     if entry.kind != CatalogEntryKind::ResourceMember {
         return Ok(0);
     }
-    let Some((store_id, member_id)) = dropped_member_addresses(program, entry)? else {
+    let Some(resource_prefix) = dropped_member_resource_prefix(entry) else {
         return Ok(0);
     };
+    let member_id = catalog_id(&entry.stable_id)?;
     let path = [DataPathSegment::Member(member_id)];
     let mut populated = 0;
-    store.for_each_record(
-        &store_id,
-        owning_root_arity(program, entry),
-        &mut |identity| {
+    for place in places_owning_resource(program, resource_prefix) {
+        let store_id = required_catalog_id(&place.store_catalog_id)?;
+        for_each_place_record(store, &place, &mut |identity| {
             if store.data_subtree_exists(&store_id, identity, &path)? {
                 populated += 1;
             }
             Ok(())
-        },
-    )?;
+        })?;
+    }
     Ok(populated)
 }
 
-/// The store and member catalog ids for a dropped resource-member entry. The member id is the
-/// entry's own stable id, since its cells were written under that id.
-fn dropped_member_addresses(
-    program: &CheckedProgram,
-    entry: &CatalogEntry,
-) -> Result<Option<(CatalogId, CatalogId)>, StoreError> {
-    let Some(root) = owning_root(program, entry) else {
-        return Ok(None);
-    };
-    let Some(place) = checked_saved_root_place(program, &root, Default::default()) else {
-        return Ok(None);
-    };
-    let store_id = required_catalog_id(&place.store_catalog_id)?;
-    let member_id = catalog_id(&entry.stable_id)?;
-    Ok(Some((store_id, member_id)))
+fn dropped_member_resource_prefix(entry: &CatalogEntry) -> Option<&str> {
+    entry.path.rsplit_once("::").map(|(head, _)| head)
 }
 
-/// The store root whose resource owns the dropped member, matching the member path's resource
-/// prefix (`module::Resource::field...`) against a source store's resource.
-fn owning_root(program: &CheckedProgram, entry: &CatalogEntry) -> Option<String> {
-    let resource_prefix = entry.path.rsplit_once("::").map(|(head, _)| head)?;
-    program.modules.iter().find_map(|module| {
-        module.stores.iter().find_map(|store| {
-            let resource_path = crate::catalog::resource_path(&module.name, &store.resource);
-            (resource_path == resource_prefix).then(|| store.root.clone())
+fn places_owning_resource(
+    program: &CheckedProgram,
+    resource_prefix: &str,
+) -> Vec<crate::CheckedSavedPlace> {
+    let roots: HashSet<&str> = program
+        .modules
+        .iter()
+        .flat_map(|module| {
+            module.stores.iter().filter_map(|store| {
+                let resource_path = crate::catalog::resource_path(&module.name, &store.resource);
+                (resource_path == resource_prefix).then_some(store.root.as_str())
+            })
         })
-    })
+        .collect();
+    checked_activation_root_places(program)
+        .into_iter()
+        .filter(|place| roots.contains(place.root.as_str()))
+        .collect()
 }
 
 /// Whether a retired member is nested under a group or keyed layer rather than top-level. A
@@ -282,15 +277,6 @@ fn retired_member_is_nested(program: &CheckedProgram, entry: &CatalogEntry) -> b
                 .is_some_and(|member_chain| member_chain.contains("::"))
         })
     })
-}
-
-/// The identity arity of the store that owns the dropped member, or `1` when it
-/// cannot be resolved (the common single-key store).
-fn owning_root_arity(program: &CheckedProgram, entry: &CatalogEntry) -> usize {
-    owning_root(program, entry)
-        .and_then(|root| checked_saved_root_place(program, &root, Default::default()))
-        .map(|place| place.identity_keys.len())
-        .unwrap_or(1)
 }
 
 /// An active source index that reads the dropped member, as its name (for the diagnostic) and

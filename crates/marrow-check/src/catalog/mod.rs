@@ -9,7 +9,8 @@ use crate::evolution::leaf_type;
 use crate::evolution::{DefaultIntent, EvolveIntents, RenameIntent, RetireIntent, TransformIntent};
 use crate::program::{EvolveDefault, EvolveTransform};
 use crate::{
-    CHECK_CATALOG_INTENT, CHECK_EVOLVE_TARGET, CheckDiagnostic, CheckedProgram, DiagnosticPayload,
+    CHECK_CATALOG_INTENT, CHECK_EVOLVE_TARGET, CatalogIntentDiagnostic, CatalogIntentKind,
+    CatalogPathCandidate, CheckDiagnostic, CheckedProgram, DiagnosticPayload,
 };
 
 mod source_digest;
@@ -232,11 +233,13 @@ fn bind_against_accepted(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> Option<CatalogMetadata> {
     let accepted_index = AcceptedCatalog::new(catalog);
-    // `source_kinds` is the source view both rename resolution and retire admission read, so
-    // they agree on the kind each path declares. The rename map is an injective partial map
-    // keyed by the new path; its unresolved targets are reported after the source loop.
-    let source_kinds = source_kinds(source_entries);
-    let mut renames = resolve_renames(&accepted_index, &source_kinds, &evolve.renames, diagnostics);
+    let source_catalog = SourceCatalog::new(source_entries);
+    let mut renames = resolve_renames(
+        &accepted_index,
+        &source_catalog,
+        &evolve.renames,
+        diagnostics,
+    );
     let mut proposal_entries = catalog.entries.clone();
     let mut changed = bind_source_entries(
         &accepted_index,
@@ -250,12 +253,13 @@ fn bind_against_accepted(
     if apply_retires(
         &mut proposal_entries,
         &evolve.retires,
-        &source_kinds,
+        &accepted_index,
+        &source_catalog,
         diagnostics,
     ) {
         changed = true;
     }
-    if drop_absent_indexes(&mut proposal_entries, &source_kinds) {
+    if drop_absent_indexes(&mut proposal_entries, &source_catalog) {
         changed = true;
     }
     if record_signatures_into(program, &mut proposal_entries, Some(catalog)) {
@@ -477,34 +481,85 @@ struct ResolvedRename {
 /// - no active accepted entry carries the source path's identity forward.
 fn resolve_renames(
     accepted: &AcceptedCatalog<'_>,
-    source_kinds: &HashMap<&str, CatalogEntryKind>,
+    source_catalog: &SourceCatalog<'_>,
     renames: &[RenameIntent],
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> HashMap<String, ResolvedRename> {
     let mut resolved: HashMap<String, ResolvedRename> = HashMap::new();
     let mut from_paths: HashSet<String> = HashSet::new();
     for rename in renames {
-        let Some(&kind) = source_kinds.get(rename.to_path.as_str()) else {
-            // The new spelling names no current source entity, so there is nothing
-            // to carry identity onto; report it rather than relocate blindly.
-            report_unresolved_intent(&rename.file, rename.span, diagnostics);
-            continue;
+        let kind = match source_catalog.path_kind(rename.to_path.as_str()) {
+            SourcePathKind::Absent => {
+                report_unresolved_intent(&rename.file, rename.span, diagnostics);
+                continue;
+            }
+            SourcePathKind::Ambiguous => {
+                push_intent_path_ambiguous(
+                    &rename.file,
+                    rename.span,
+                    CatalogIntentKind::RenameTarget,
+                    &rename.to_path,
+                    accepted.path_candidates(&rename.to_path),
+                    source_catalog.kinds_at_path(&rename.to_path),
+                    diagnostics,
+                );
+                continue;
+            }
+            SourcePathKind::Unique(kind) => kind,
         };
+        if accepted_source_path_ambiguous(accepted, source_catalog, &rename.to_path, kind) {
+            push_intent_path_ambiguous(
+                &rename.file,
+                rename.span,
+                CatalogIntentKind::RenameTarget,
+                &rename.to_path,
+                accepted.path_candidates(&rename.to_path),
+                source_catalog.kinds_at_path(&rename.to_path),
+                diagnostics,
+            );
+            continue;
+        }
+        if accepted.path_is_ambiguous(&rename.from_path) {
+            push_intent_path_ambiguous(
+                &rename.file,
+                rename.span,
+                CatalogIntentKind::RenameSource,
+                &rename.from_path,
+                accepted.path_candidates(&rename.from_path),
+                source_catalog.kinds_at_path(&rename.from_path),
+                diagnostics,
+            );
+            continue;
+        }
+        match source_catalog.path_kind(rename.from_path.as_str()) {
+            SourcePathKind::Absent => {}
+            SourcePathKind::Unique(source_kind) if source_kind == kind => {
+                push_rename_source_declared(rename, diagnostics);
+                continue;
+            }
+            SourcePathKind::Unique(_) | SourcePathKind::Ambiguous => {
+                push_intent_path_ambiguous(
+                    &rename.file,
+                    rename.span,
+                    CatalogIntentKind::RenameSource,
+                    &rename.from_path,
+                    accepted.path_candidates(&rename.from_path),
+                    source_catalog.kinds_at_path(&rename.from_path),
+                    diagnostics,
+                );
+                continue;
+            }
+        }
         if rename_already_recorded(accepted, kind, rename) {
             // The accepted catalog already carries this entity at `to_path` with
-            // `from_path` recorded as an alias, so a prior apply consumed this rename.
-            // The block is a transient transition the author may keep or delete; the
-            // identity is already moved, so there is nothing to relocate and no error.
+            // `from_path` recorded as an alias. The intent has no relocation work left
+            // to perform and is not unresolved.
             continue;
         }
         let duplicate_target = resolved.contains_key(&rename.to_path);
         let duplicate_source = !from_paths.insert(rename.from_path.clone());
         if duplicate_target || duplicate_source {
             push_rename_conflict(rename, diagnostics);
-            continue;
-        }
-        if source_kinds.get(rename.from_path.as_str()) == Some(&kind) {
-            push_rename_source_declared(rename, diagnostics);
             continue;
         }
         if accepted.active_entry(kind, &rename.from_path).is_none() {
@@ -523,10 +578,25 @@ fn resolve_renames(
     resolved
 }
 
-/// Whether a prior apply already carried this rename into the accepted catalog: the
-/// live entry now sits at `to_path` and records `from_path` among its aliases. A
-/// consumed rename block is a transient transition the author may keep or delete, so
-/// it relocates nothing and is not an unresolved intent.
+fn accepted_source_path_ambiguous(
+    accepted: &AcceptedCatalog<'_>,
+    source_catalog: &SourceCatalog<'_>,
+    path: &str,
+    source_kind: CatalogEntryKind,
+) -> bool {
+    accepted.path_is_ambiguous(path)
+        || accepted
+            .path_candidates(path)
+            .iter()
+            .any(|candidate| candidate.kind != source_kind)
+        || source_catalog
+            .kinds_at_path(path)
+            .iter()
+            .any(|kind| *kind != source_kind)
+}
+
+/// Whether the accepted catalog already carries this identity at `to_path` while
+/// preserving `from_path` as an alias, leaving no relocation work for the intent.
 fn rename_already_recorded(
     accepted: &AcceptedCatalog<'_>,
     kind: CatalogEntryKind,
@@ -543,12 +613,53 @@ fn rename_already_recorded(
         })
 }
 
-/// Map each current source catalog path to the kind the source declares there.
-fn source_kinds(source_entries: &[SourceCatalogEntry]) -> HashMap<&str, CatalogEntryKind> {
-    source_entries
-        .iter()
-        .map(|entry| (entry.path.as_str(), entry.kind))
-        .collect()
+struct SourceCatalog<'a> {
+    entries: HashSet<(CatalogEntryKind, &'a str)>,
+    kinds_by_path: HashMap<&'a str, Vec<CatalogEntryKind>>,
+}
+
+#[derive(Clone, Copy)]
+enum SourcePathKind {
+    Absent,
+    Unique(CatalogEntryKind),
+    Ambiguous,
+}
+
+impl<'a> SourceCatalog<'a> {
+    fn new(source_entries: &'a [SourceCatalogEntry]) -> Self {
+        let mut entries = HashSet::new();
+        let mut kinds_by_path: HashMap<&str, Vec<CatalogEntryKind>> = HashMap::new();
+        for entry in source_entries {
+            entries.insert((entry.kind, entry.path.as_str()));
+            let kinds = kinds_by_path.entry(entry.path.as_str()).or_default();
+            if !kinds.contains(&entry.kind) {
+                kinds.push(entry.kind);
+            }
+        }
+        Self {
+            entries,
+            kinds_by_path,
+        }
+    }
+
+    fn contains(&self, kind: CatalogEntryKind, path: &str) -> bool {
+        self.entries.contains(&(kind, path))
+    }
+
+    fn kinds_at_path(&self, path: &str) -> &[CatalogEntryKind] {
+        self.kinds_by_path
+            .get(path)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    fn path_kind(&self, path: &str) -> SourcePathKind {
+        match self.kinds_at_path(path) {
+            [] => SourcePathKind::Absent,
+            [kind] => SourcePathKind::Unique(*kind),
+            _ => SourcePathKind::Ambiguous,
+        }
+    }
 }
 
 /// Carry the accepted entry at `from_path` forward to its new path: relocate it,
@@ -681,35 +792,130 @@ fn record_signatures(
 fn apply_retires(
     entries: &mut [CatalogEntry],
     retires: &[RetireIntent],
-    source_kinds: &HashMap<&str, CatalogEntryKind>,
+    accepted: &AcceptedCatalog<'_>,
+    source_catalog: &SourceCatalog<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> bool {
     let mut changed = false;
     for retire in retires {
-        // Fail closed whenever the path is still declared by source under any kind: reserving a
-        // still-declared entry would drop data the running program still reads and writes. Once
-        // no source declares the path, the lone active accepted entry there is safe to remove.
-        if source_kinds.contains_key(retire.path.as_str()) {
-            push_retire_source_declared(retire, diagnostics);
-            continue;
-        }
-        // A path already reserved by a prior apply leaves a transient retire block the author
-        // may keep or delete: nothing left to retire, no error. A path with no entry of any
-        // lifecycle names nothing and stays an unresolved intent.
-        let already_recorded = retire_already_recorded(entries, &retire.path);
-        match entries
-            .iter_mut()
-            .find(|entry| entry.lifecycle == CatalogLifecycle::Active && entry.path == retire.path)
-        {
-            Some(entry) => {
-                entry.lifecycle = CatalogLifecycle::Reserved;
+        match retire_target(entries, accepted, source_catalog, retire, diagnostics) {
+            RetireTarget::Active(index) => {
+                entries[index].lifecycle = CatalogLifecycle::Reserved;
                 changed = true;
             }
-            None if already_recorded => {}
-            None => report_unresolved_intent(&retire.file, retire.span, diagnostics),
+            RetireTarget::Consumed | RetireTarget::Rejected => {}
         }
     }
     changed
+}
+
+enum RetireTarget {
+    Active(usize),
+    Consumed,
+    Rejected,
+}
+
+fn retire_target(
+    entries: &[CatalogEntry],
+    accepted: &AcceptedCatalog<'_>,
+    source_catalog: &SourceCatalog<'_>,
+    retire: &RetireIntent,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> RetireTarget {
+    let active = entry_indexes_with_lifecycle(entries, CatalogLifecycle::Active, &retire.path);
+    let reserved = entry_indexes_with_lifecycle(entries, CatalogLifecycle::Reserved, &retire.path);
+    let declared_kinds = source_catalog.kinds_at_path(&retire.path);
+    if accepted.path_is_ambiguous(&retire.path)
+        || matches!(
+            source_catalog.path_kind(&retire.path),
+            SourcePathKind::Ambiguous
+        )
+    {
+        push_intent_path_ambiguous(
+            &retire.file,
+            retire.span,
+            CatalogIntentKind::RetireTarget,
+            &retire.path,
+            accepted.path_candidates(&retire.path),
+            declared_kinds,
+            diagnostics,
+        );
+        return RetireTarget::Rejected;
+    }
+    match active.as_slice() {
+        [index] => {
+            let active_kind = entries[*index].kind;
+            if source_catalog.contains(active_kind, &retire.path) {
+                push_retire_source_declared(retire, diagnostics);
+                RetireTarget::Rejected
+            } else if !declared_kinds.is_empty() {
+                push_intent_path_ambiguous(
+                    &retire.file,
+                    retire.span,
+                    CatalogIntentKind::RetireTarget,
+                    &retire.path,
+                    accepted.path_candidates(&retire.path),
+                    declared_kinds,
+                    diagnostics,
+                );
+                RetireTarget::Rejected
+            } else {
+                RetireTarget::Active(*index)
+            }
+        }
+        [] => {
+            if declared_kinds.is_empty() {
+                match reserved.as_slice() {
+                    [] => {
+                        report_unresolved_intent(&retire.file, retire.span, diagnostics);
+                        RetireTarget::Rejected
+                    }
+                    [_] => RetireTarget::Consumed,
+                    _ => {
+                        push_intent_path_ambiguous(
+                            &retire.file,
+                            retire.span,
+                            CatalogIntentKind::RetireTarget,
+                            &retire.path,
+                            accepted.path_candidates(&retire.path),
+                            declared_kinds,
+                            diagnostics,
+                        );
+                        RetireTarget::Rejected
+                    }
+                }
+            } else {
+                push_retire_source_declared(retire, diagnostics);
+                RetireTarget::Rejected
+            }
+        }
+        _ => {
+            push_intent_path_ambiguous(
+                &retire.file,
+                retire.span,
+                CatalogIntentKind::RetireTarget,
+                &retire.path,
+                accepted.path_candidates(&retire.path),
+                declared_kinds,
+                diagnostics,
+            );
+            RetireTarget::Rejected
+        }
+    }
+}
+
+fn entry_indexes_with_lifecycle(
+    entries: &[CatalogEntry],
+    lifecycle: CatalogLifecycle,
+    path: &str,
+) -> Vec<usize> {
+    entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            (entry.lifecycle == lifecycle && entry.path == path).then_some(index)
+        })
+        .collect()
 }
 
 /// Remove from the proposal each active store-index entry current source no longer declares,
@@ -721,23 +927,15 @@ fn apply_retires(
 /// which is sound because the index holds no durable identity of its own.
 fn drop_absent_indexes(
     entries: &mut Vec<CatalogEntry>,
-    source_kinds: &HashMap<&str, CatalogEntryKind>,
+    source_catalog: &SourceCatalog<'_>,
 ) -> bool {
     let before = entries.len();
     entries.retain(|entry| {
         !(entry.kind == CatalogEntryKind::StoreIndex
             && entry.lifecycle == CatalogLifecycle::Active
-            && !source_kinds.contains_key(entry.path.as_str()))
+            && !source_catalog.contains(CatalogEntryKind::StoreIndex, entry.path.as_str()))
     });
     entries.len() != before
-}
-
-/// Whether a prior apply already reserved this path, so a retire block left in
-/// source is a consumed transition rather than an unresolved intent.
-fn retire_already_recorded(entries: &[CatalogEntry], path: &str) -> bool {
-    entries
-        .iter()
-        .any(|entry| entry.lifecycle == CatalogLifecycle::Reserved && entry.path == path)
 }
 
 fn report_unresolved_intent(file: &Path, span: SourceSpan, diagnostics: &mut Vec<CheckDiagnostic>) {
@@ -752,6 +950,7 @@ fn report_unresolved_intent(file: &Path, span: SourceSpan, diagnostics: &mut Vec
 struct AcceptedCatalog<'a> {
     entries: HashMap<(CatalogEntryKind, &'a str), AcceptedEntry<'a>>,
     reserved: HashMap<(CatalogEntryKind, &'a str), AcceptedEntry<'a>>,
+    path_candidates: HashMap<&'a str, Vec<AcceptedPathCandidate<'a>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -759,26 +958,44 @@ struct AcceptedEntry<'a> {
     entry: &'a CatalogEntry,
 }
 
+#[derive(Clone, Copy)]
+struct AcceptedPathCandidate<'a> {
+    kind: CatalogEntryKind,
+    lifecycle: CatalogLifecycle,
+    stable_id: &'a str,
+}
+
 impl<'a> AcceptedCatalog<'a> {
     fn new(catalog: &'a CatalogMetadata) -> Self {
         let mut entries = HashMap::new();
         let mut reserved = HashMap::new();
+        let mut path_candidates = HashMap::new();
         for entry in &catalog.entries {
             let binding = AcceptedEntry { entry };
             match entry.lifecycle {
                 CatalogLifecycle::Active => {
                     entries.insert((entry.kind, entry.path.as_str()), binding);
+                    push_accepted_path_candidate(&mut path_candidates, entry.path.as_str(), entry);
+                    for alias in &entry.aliases {
+                        push_accepted_path_candidate(&mut path_candidates, alias.as_str(), entry);
+                    }
                 }
                 CatalogLifecycle::Reserved => {
                     reserved.insert((entry.kind, entry.path.as_str()), binding);
+                    push_accepted_path_candidate(&mut path_candidates, entry.path.as_str(), entry);
                     for alias in &entry.aliases {
                         reserved.insert((entry.kind, alias.as_str()), binding);
+                        push_accepted_path_candidate(&mut path_candidates, alias.as_str(), entry);
                     }
                 }
                 CatalogLifecycle::Deprecated => {}
             }
         }
-        Self { entries, reserved }
+        Self {
+            entries,
+            reserved,
+            path_candidates,
+        }
     }
 
     fn active_entry(&self, kind: CatalogEntryKind, path: &str) -> Option<AcceptedEntry<'a>> {
@@ -787,6 +1004,37 @@ impl<'a> AcceptedCatalog<'a> {
 
     fn reserved_entry(&self, kind: CatalogEntryKind, path: &str) -> Option<AcceptedEntry<'a>> {
         self.reserved.get(&(kind, path)).copied()
+    }
+
+    fn path_candidates(&self, path: &str) -> &[AcceptedPathCandidate<'a>] {
+        self.path_candidates
+            .get(path)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    fn path_is_ambiguous(&self, path: &str) -> bool {
+        self.path_candidates(path).len() > 1
+    }
+}
+
+fn push_accepted_path_candidate<'a>(
+    path_candidates: &mut HashMap<&'a str, Vec<AcceptedPathCandidate<'a>>>,
+    path: &'a str,
+    entry: &'a CatalogEntry,
+) {
+    let candidate = AcceptedPathCandidate {
+        kind: entry.kind,
+        lifecycle: entry.lifecycle,
+        stable_id: entry.stable_id.as_str(),
+    };
+    let candidates = path_candidates.entry(path).or_default();
+    if !candidates.iter().any(|existing| {
+        existing.kind == candidate.kind
+            && existing.lifecycle == candidate.lifecycle
+            && existing.stable_id == candidate.stable_id
+    }) {
+        candidates.push(candidate);
     }
 }
 
@@ -1046,6 +1294,84 @@ fn push_retire_source_declared(retire: &RetireIntent, diagnostics: &mut Vec<Chec
     ));
 }
 
+fn push_intent_path_ambiguous(
+    file: &Path,
+    span: SourceSpan,
+    intent: CatalogIntentKind,
+    path: &str,
+    accepted: &[AcceptedPathCandidate<'_>],
+    declared_kinds: &[CatalogEntryKind],
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let accepted_payload = accepted_path_payload(accepted);
+    diagnostics.push(
+        catalog_error(
+            file.to_path_buf(),
+            span,
+            format!(
+                "{} `{path}` is ambiguous across catalog entry kinds; accepted entries: {}; source kinds: {}",
+                catalog_intent_label(intent),
+                format_accepted_path_candidates(&accepted_payload),
+                format_catalog_kinds(declared_kinds)
+            ),
+        )
+        .with_payload(DiagnosticPayload::CatalogIntent(
+            CatalogIntentDiagnostic::AmbiguousPath {
+                intent,
+                path: path.to_string(),
+                accepted: accepted_payload,
+                source: declared_kinds.to_vec(),
+            },
+        )),
+    );
+}
+
+fn catalog_intent_label(intent: CatalogIntentKind) -> &'static str {
+    match intent {
+        CatalogIntentKind::RetireTarget => "retire target",
+        CatalogIntentKind::RenameSource => "rename source",
+        CatalogIntentKind::RenameTarget => "rename target",
+    }
+}
+
+fn accepted_path_payload(accepted: &[AcceptedPathCandidate<'_>]) -> Vec<CatalogPathCandidate> {
+    accepted
+        .iter()
+        .map(|candidate| CatalogPathCandidate {
+            kind: candidate.kind,
+            lifecycle: candidate.lifecycle,
+            stable_id: candidate.stable_id.to_string(),
+        })
+        .collect()
+}
+
+fn format_accepted_path_candidates(candidates: &[CatalogPathCandidate]) -> String {
+    if candidates.is_empty() {
+        return "none".to_string();
+    }
+    candidates
+        .iter()
+        .map(|candidate| {
+            format!(
+                "{:?}/{:?}/{}",
+                candidate.kind, candidate.lifecycle, candidate.stable_id
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn format_catalog_kinds(kinds: &[CatalogEntryKind]) -> String {
+    if kinds.is_empty() {
+        return "none".to_string();
+    }
+    kinds
+        .iter()
+        .map(|kind| format!("{kind:?}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn push_rename_conflict(rename: &RenameIntent, diagnostics: &mut Vec<CheckDiagnostic>) {
     diagnostics.push(catalog_error(
         rename.file.clone(),
@@ -1162,5 +1488,87 @@ fn proposed_catalog_entry(
         // either, and a leaf member's accepted leaf token is read back off its signature.
         accepted_key_shape: None,
         accepted_struct: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn active_entry(kind: CatalogEntryKind, path: &str, stable_id: &str) -> CatalogEntry {
+        CatalogEntry {
+            kind,
+            path: path.to_string(),
+            stable_id: stable_id.to_string(),
+            aliases: Vec::new(),
+            lifecycle: CatalogLifecycle::Active,
+            accepted_key_shape: None,
+            accepted_struct: None,
+        }
+    }
+
+    fn source_entry(kind: CatalogEntryKind, path: &str) -> SourceCatalogEntry {
+        SourceCatalogEntry {
+            kind,
+            path: path.to_string(),
+            file: std::path::PathBuf::from("src/books.mw"),
+            span: SourceSpan::default(),
+            leaf: None,
+            key_params: Vec::new(),
+        }
+    }
+
+    fn retire(path: &str) -> RetireIntent {
+        RetireIntent {
+            path: path.to_string(),
+            file: std::path::PathBuf::from("src/books.mw"),
+            span: SourceSpan::default(),
+        }
+    }
+
+    #[test]
+    fn path_only_retire_fails_closed_when_source_kind_collides_with_accepted_kind() {
+        let path = "books::Color::red";
+        let stable_id = "cat_000000000000000000000000000000aa";
+        let mut entries = vec![active_entry(
+            CatalogEntryKind::ResourceMember,
+            path,
+            stable_id,
+        )];
+        let accepted = CatalogMetadata::new(1, entries.clone());
+        let source = vec![
+            source_entry(CatalogEntryKind::Enum, "books::Color"),
+            source_entry(CatalogEntryKind::EnumMember, path),
+        ];
+        let mut diagnostics = Vec::new();
+
+        let changed = apply_retires(
+            &mut entries,
+            &[retire(path)],
+            &AcceptedCatalog::new(&accepted),
+            &SourceCatalog::new(&source),
+            &mut diagnostics,
+        );
+
+        assert!(
+            !changed,
+            "an ambiguous path-only retire must not reserve an entry"
+        );
+        assert_eq!(entries[0].lifecycle, CatalogLifecycle::Active);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].code, CHECK_CATALOG_INTENT);
+        assert_eq!(
+            diagnostics[0].payload,
+            DiagnosticPayload::CatalogIntent(CatalogIntentDiagnostic::AmbiguousPath {
+                intent: CatalogIntentKind::RetireTarget,
+                path: path.to_string(),
+                accepted: vec![CatalogPathCandidate {
+                    kind: CatalogEntryKind::ResourceMember,
+                    lifecycle: CatalogLifecycle::Active,
+                    stable_id: stable_id.to_string(),
+                }],
+                source: vec![CatalogEntryKind::EnumMember],
+            })
+        );
     }
 }

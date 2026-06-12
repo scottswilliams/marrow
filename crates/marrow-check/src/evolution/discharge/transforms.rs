@@ -6,7 +6,7 @@ use marrow_store::tree::{DataPathSegment, TreeStore};
 
 use crate::evolution::transform_reads::{TransformReadMember, transform_read_members};
 use crate::evolution::witness::{RepairReason, Verdict};
-use crate::executable::CheckedSavedPlace;
+use crate::executable::{CheckedSavedPlace, for_each_place_record};
 use crate::program::{CheckedProgram, EvolveTransform};
 
 use super::enum_shrink::{EnumMembers, leaf_value_valid};
@@ -132,7 +132,7 @@ fn scan_transform_records(
     let store_id = required_catalog_id(&place.store_catalog_id)?;
     let mut records = 0usize;
     let mut undecodable = None;
-    store.for_each_record(&store_id, place.identity_keys.len(), &mut |identity| {
+    for_each_place_record(store, place, &mut |identity| {
         records += 1;
         if undecodable.is_none() {
             for read in reads {

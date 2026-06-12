@@ -21,6 +21,7 @@ use marrow_check::evolution::{TransformReadMember, transform_read_members};
 use marrow_check::{
     CheckedProgram, CheckedRuntimeModule, CheckedRuntimeProgram, CheckedSavedMember,
     CheckedSavedMemberKind, CheckedSavedPlace, EvolveTransform, StoreLeafKind,
+    for_each_place_record,
 };
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
@@ -35,7 +36,7 @@ use crate::store::DataAddress;
 use crate::value::{RunOutputSink, Value, decode_leaf, value_to_leaf};
 
 use super::apply::ApplyError;
-use super::locate::{for_each_place_record, store_id};
+use super::locate::store_id;
 
 /// The read-only inputs a transform pass resolves against: the target member, the
 /// witness-proven read members, the checked program and runtime the body evaluates

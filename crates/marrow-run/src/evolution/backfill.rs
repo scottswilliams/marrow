@@ -8,7 +8,7 @@
 //! records; fusing the scans is not worth the complexity at apply's maintenance cadence.
 
 use marrow_check::evolution::DefaultValue;
-use marrow_check::{CheckedSavedIndex, CheckedSavedPlace};
+use marrow_check::{CheckedSavedIndex, CheckedSavedPlace, for_each_place_record};
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
@@ -18,7 +18,7 @@ use crate::index_maintenance::{EmptyStagedData, index_rebuild_entry_with_staged}
 use crate::write_plan::PlanStep;
 
 use super::apply::{ActivationDefaultRecordCount, ApplyError, StagedWork};
-use super::locate::{MemberLocation, PathStep, for_each_place_record, locate_member, store_id};
+use super::locate::{MemberLocation, PathStep, locate_member, store_id};
 
 /// Walk every default-target cell for `catalog_id` across the source places. The returned
 /// target count feeds the in-memory apply receipt; commit metadata persists only the slim

@@ -5,7 +5,7 @@ use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
 
 use crate::evolution::witness::{RepairReason, Verdict};
-use crate::executable::{CheckedSavedMember, CheckedSavedPlace};
+use crate::executable::{CheckedSavedMember, CheckedSavedPlace, for_each_place_record};
 
 use super::{Accumulator, catalog_id, member_label, required_catalog_id};
 
@@ -47,7 +47,7 @@ pub(super) fn classify_structural_backstop(
     }
     let store_id = required_catalog_id(&place.store_catalog_id)?;
     let mut populated = vec![false; candidates.len()];
-    store.for_each_record(&store_id, place.identity_keys.len(), &mut |identity| {
+    for_each_place_record(store, place, &mut |identity| {
         for (candidate, present) in candidates.iter().zip(populated.iter_mut()) {
             if !*present && descent_subtree_exists(store, &store_id, identity, &candidate.descent)?
             {
