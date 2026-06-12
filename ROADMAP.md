@@ -829,16 +829,9 @@ sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane pr
 The catalog/evolution series coordinates with the live engine-resident-catalog refactor — it is
 the named owner of the #24/#27 subtractions. An independent integrity lane (W3.7) can run after
 W2.8, and two tail lanes (W3.8, W3.9) sequence after the catalog series.
-docs/backend-contract.md integrates in lane order: W3.3 → W3.4 → W3.9.
+docs/backend-contract.md integrates in lane order: W3.4 → W3.9.
 
 Catalog/evolution series (sequenced; live-refactor coordination):
-**W3.3 Meta-cell collapse Part A (gate 10).** Owns: marrow-store metadata.rs/tree.rs (cells
-01-03 deleted; six facade methods deleted, entailing the `write_layout_epoch` visibility
-removal), window.rs fence reads, backup manifest reads, `ManifestCommitBindingMismatch` deletion,
-backend-contract.md table. Seed: failing test — "stamped" predicate is `read_commit_metadata()
-is Some`. Review: fence semantics byte-for-byte unchanged; witness/EngineDescriptor fields still
-derived from the one cell. Done: format change recorded pre-freeze; fixtures migrated.
-
 **W3.4 → Activation-receipt collapse (gate 9, removal #24) + apply staging (IV.D1(a)).** Owns:
 CommitMetadata seven-field removal + codec arms,
 completion/{default,index,retire,transform,receipt}.rs deletion (~400 lines), window.rs/apply.rs
