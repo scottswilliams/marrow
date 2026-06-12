@@ -257,32 +257,23 @@ slippable language lane), and if W4.8 slips past the `v0.1.0` tag the syntax sta
 parses, checker rejects), docs/language documents nothing until the lane lands, and no other
 feature may claim `..` in key-argument position.
 
-**12. `??` precedence (II.E1 b).** Decided: accept — `??` moves from its current level 8
-(between comparison and equality) to its own non-associative level immediately looser than
-additive and tighter than ranges, taking the ladder slot vacated by the deleted `_` concat
-operator, so `count ?? 0 < 5` parses `(count ?? 0) < 5`, `start ?? 1 .. n` parses
-`(start ?? 1) .. n`, and `x ?? y + 1` stays `x ?? (y + 1)`. Non-associativity is preserved
-exactly as today (`a ?? b ?? c` rejected) and grammar.md records it as a deliberate design
-choice with layered defaults as the named extension point (the C40 sentence W4.1 already
-carries); the documented "binds tighter than `==`" invariant remains true. parse_expr.rs and the
-hand-mirrored binary_precedence table in format.rs move in lockstep, with syntax.md's operator
-table and grammar.md's coalesce_expr/range_expr productions updated in the same change.
-(`_`→`+` concat is already user-approved; it executes, not re-decided.)
+**12. `??` precedence (II.E1 b).** Decided: accept — `??` is a non-associative level
+immediately looser than additive and tighter than ranges, so `count ?? 0 < 5` parses
+`(count ?? 0) < 5`, `start ?? 1 .. n` parses `(start ?? 1) .. n`, and `x ?? y + 1`
+stays `x ?? (y + 1)`. Non-associativity is part of the contract (`a ?? b ?? c`
+rejected), and grammar.md records it as a deliberate design choice with layered defaults as the
+named extension point; the documented "binds tighter than `==`" invariant remains true.
 
-**13. Output builtin + print argument contract (removal + II.E2 item 2).** Decided: delete
-`write(...)` and keep `print(...)` as the sole output builtin, always appending a trailing
-newline; II.E2 item 2's fork is resolved by documenting the actual runtime contract as v0.1, not
-string-only-plus-checker-rule. The print contract, recorded in the spec: print renders string,
-int, bool, decimal, and identity values (a single-key identity renders as its key, a composite
-as `identity(k1, k2)`); every other value — instant, date, duration, bytes, enum, sequence,
-local tree, resource — raises the fatal `run.unsupported` runtime fault, with temporal values
-rendered explicitly through std::clock::formatInstant/formatDate/formatDuration; no new checker
-rule in v0.1. Mechanics per the verified removal: OutputKind and CheckedBuiltinCall::Write are
-deleted, the write_does_not_add_a_newline test is deleted, ~41 doc examples and ~25-30 embedded
-test strings migrate mechanically to print, the grammar.md Ambiguity Rules sentence and the
-syntax.md/README dual mentions name only print, and the future partial-line use case is not
-pre-reserved as std::io streaming — if needed it lands in std::io at design time with a real
-contract.
+**13. Output builtin + print argument contract (II.E2 item 2).** Decided: accept `print(...)`
+as the sole output builtin, always appending a trailing newline; II.E2 item 2's fork is resolved
+by documenting the actual runtime contract as v0.1, not string-only-plus-checker-rule. The print
+contract, recorded in the spec: print renders string, int, bool, decimal, and identity values
+(a single-key identity renders as its key, a composite as `identity(k1, k2)`); every other
+value — instant, date, duration, bytes, enum, sequence, local tree, resource — raises the fatal
+`run.unsupported` runtime fault, with temporal values rendered explicitly through
+std::clock::formatInstant/formatDate/formatDuration; no new checker rule in v0.1. The future
+partial-line use case is not pre-reserved as std::io streaming — if needed it lands in std::io
+at design time with a real contract.
 
 **14. entries() closure (II.E3).** Decided: accept the closure in one motion — (1) bare two-name
 loops over local keyed trees bind key and value, matching the saved-layer rule and deleting the
@@ -652,17 +643,16 @@ explicit), and no Option value exists at runtime. The ReturnType marker is a gen
 function-signature fact, never a builtin-descriptor special case; grammar, descriptor attachment,
 the absent-exit form, and caller-site resolution share the existing maybe-present machinery.
 
-**40. Temporal arithmetic operators + std::clock::add deletion (C41).** Decided: option (a) —
-accept exactly the five typed operator rules — instant−instant→duration,
+**40. Temporal arithmetic operators (C41).** Decided: option (a) — accept exactly the five
+typed operator rules — instant−instant→duration,
 instant+duration→instant, instant−duration→instant, duration+duration→duration,
 duration−duration→duration — with no implicit conversions, no date operands, and no
 duration×scalar forms; everything outside the five rules is a type error. Overflow raises a new
 catchable `run.temporal_overflow` (the run.decimal_overflow per-family pattern), raised when a
 result leaves the representable envelope the saved encodings define (instant: the RFC 3339 saved
-range; duration: i128 nanoseconds). `std::clock::add` is deleted in the same W4.1 change with
-grep-zero across code and docs; calendar math (the addDays/daysBetween family) remains
-std::clock's domain — operators own linear span math only. The language/04 operator-table
-amendment rides W1.1. Options (b) operators-without-deletion and (c) decline are rejected.
+range; duration: i128 nanoseconds). Operators own linear span math only; calendar math (the
+addDays/daysBetween family) remains std::clock's domain. The language/04 operator-table
+amendment rides W1.1. Options (b) library-only linear span math and (c) decline are rejected.
 
 **41. Typed keyed-layer entries (C34).** Decided: accept with the exclusion:
 `comments(seq: int): Comment` is legal — a declared resource as a keyed layer's entry type, with
