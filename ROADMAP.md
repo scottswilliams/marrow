@@ -850,15 +850,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 Parser/checker/runtime files overlap heavily: the cut series is sequenced; additions follow.
 Listing order is execution order. Store crate is quiet this wave except where noted.
 
-**W4.4 → entries() closure (II.E3, gate 14).** Owns: marrow-run collection.rs/loop_exec.rs (pair
-materialization deleted; local two-name loops), checks/calls.rs loop-head restriction,
-builtins.md + control-flow-and-effects.md (one docs motion with the Loops section). Seed:
-failing fixture — two-name loop over a local keyed tree binds key/value; `entries()` in
-expression position is a check error; a single-name loop over `entries(...)` is also a check
-error. Review: `Value::Sequence([k,v])` unobservable anywhere; the restriction is two-name
-loop-head only — `reversed(entries(...))` in a two-name head remains accepted. Done: untyped
-pair encoding gone from the runtime.
-
 **W4.5 ∥ (after W4.1 — the descriptor table and standard-library.md shrink first) Stdlib floor
 (II.E6, gate 16).** Owns: marrow-schema stdlib.rs descriptor table (+
 sequence ParamType; the maybe ReturnType marker per the indexOf decision — built as a general
