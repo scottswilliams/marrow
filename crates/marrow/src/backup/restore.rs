@@ -17,7 +17,10 @@ use super::archive::{
     self, CHECKSUM_SEED, CatalogSection, checksum_catalog_section, checksum_cell, checksum_manifest,
 };
 use super::create::validate_catalog_manifest_binding;
-use super::{BackupCorruptProblem, BackupError, BackupManifest, EngineDescriptor, mint_store_uid};
+use super::{
+    BackupCorruptProblem, BackupError, BackupManifest, CatalogFingerprintRef, EngineDescriptor,
+    mint_store_uid,
+};
 
 /// What a completed restore replayed.
 #[derive(Debug)]
@@ -166,21 +169,29 @@ fn restore_program(
                 .to_string(),
         ));
     }
-    if manifest.source_digest != program.source_digest() {
-        return Err(BackupError::SourceMismatch(
-            "backup was written from a program whose schema does not match this project"
-                .to_string(),
+    let project_source_digest = program.source_digest();
+    if manifest.source_digest != project_source_digest {
+        return Err(BackupError::source_mismatch(
+            &manifest.source_digest,
+            project_source_digest.as_str(),
         ));
     }
     if let Some(commit) = &manifest.commit {
         commit.validate_manifest_binding(manifest)?;
     }
 
-    if manifest.catalog_epoch != program.catalog.accepted_epoch
-        || manifest.catalog_digest.as_deref() != program.catalog.accepted_digest.as_deref()
-    {
-        return Err(BackupError::CatalogMismatch(
-            "backup catalog does not match this project's accepted catalog".to_string(),
+    let backup_catalog = CatalogFingerprintRef::from_parts(
+        manifest.catalog_epoch,
+        manifest.catalog_digest.as_deref(),
+    );
+    let project_catalog = CatalogFingerprintRef::from_parts(
+        program.catalog.accepted_epoch,
+        program.catalog.accepted_digest.as_deref(),
+    );
+    if backup_catalog != project_catalog {
+        return Err(BackupError::catalog_mismatch(
+            backup_catalog,
+            project_catalog,
         ));
     }
     Ok(program.clone())

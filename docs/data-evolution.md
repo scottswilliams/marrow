@@ -396,6 +396,11 @@ profile, value codec, and stored data. Stable IDs are random opaque values that
 freeze when accepted, so divergent catalog histories may still freeze distinct
 accepted IDs for source that looks equivalent.
 
+To roll forward from an older backup after source has advanced, restore with the
+old source tree that matches the backup's source digest. Once the old source and
+backup restore cleanly, re-state the pending `evolve` intents in the project
+source and apply them again to advance the restored store to the desired catalog.
+
 ## Also Deferred
 
 These do not exist yet:

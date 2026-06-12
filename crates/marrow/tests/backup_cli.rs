@@ -23,6 +23,21 @@ fn json_code(output: &Output) -> String {
         .to_string()
 }
 
+fn json_message(output: &Output) -> String {
+    support::json(output.stdout.clone())["message"]
+        .as_str()
+        .expect("json error message")
+        .to_string()
+}
+
+fn project_source_digest(root: &Path) -> String {
+    let config_text = fs::read_to_string(root.join("marrow.json")).expect("read config");
+    let config = marrow_project::parse_config(&config_text).expect("parse config");
+    let (report, program) = marrow_check::check_project(root, &config).expect("check project");
+    assert!(!report.has_errors(), "project checks cleanly: {report:#?}");
+    program.source_digest()
+}
+
 fn marrow_with_env(args: &[&str], key: &str, value: &str) -> Output {
     Command::new(env!("CARGO_BIN_EXE_marrow"))
         .args(args)
@@ -556,6 +571,7 @@ fn restore_of_epoch_n_backup_refuses_after_project_catalog_advances_to_n_plus_on
 
     let backup = marrow(&["backup", &dir, &archive_arg]);
     assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
+    let backup_catalog = read_store_catalog(&data_dir).expect("backup catalog");
 
     add_pages_default_evolution(&root);
     let apply = marrow(&["evolve", "apply", &dir]);
@@ -568,6 +584,26 @@ fn restore_of_epoch_n_backup_refuses_after_project_catalog_advances_to_n_plus_on
 
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
     assert_eq!(json_code(&restore), "restore.catalog_mismatch");
+    let message = json_message(&restore);
+    assert!(
+        message.contains(&format!("backup catalog epoch {}", backup_catalog.epoch)),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!("backup catalog digest {}", backup_catalog.digest)),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!("project catalog epoch {}", advanced_catalog.epoch)),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!(
+            "project catalog digest {}",
+            advanced_catalog.digest
+        )),
+        "{message}"
+    );
     assert_store_empty(&data_dir);
     let catalog_file = fs::read_to_string(root.join("marrow.catalog.json"))
         .expect("advanced catalog file remains");
@@ -588,17 +624,27 @@ fn restore_of_epoch_n_backup_refuses_after_project_source_advances_to_n_plus_one
 
     let backup = marrow(&["backup", &dir, &archive_arg]);
     assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
+    let backup_source_digest = project_source_digest(&root);
 
     add_pages_default_evolution(&root);
     let apply = marrow(&["evolve", "apply", &dir]);
     assert_eq!(apply.status.code(), Some(0), "evolve apply: {apply:?}");
+    let project_source_digest = project_source_digest(&root);
 
-    fs::remove_file(root.join("marrow.catalog.json")).expect("remove accepted catalog file");
     empty_store_data(&root, &data_dir);
     let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
 
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
     assert_eq!(json_code(&restore), "restore.source_mismatch");
+    let message = json_message(&restore);
+    assert!(
+        message.contains(&format!("backup source digest {backup_source_digest}")),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!("project source digest {project_source_digest}")),
+        "{message}"
+    );
     assert_store_empty(&data_dir);
 }
 

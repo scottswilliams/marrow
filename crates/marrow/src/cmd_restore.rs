@@ -12,7 +12,8 @@ use marrow_store::tree::TreeStore;
 use serde_json::json;
 
 use crate::backup::{
-    BackupError, BackupPrologue, read_backup_prologue, restore_backup_with_prologue,
+    BackupError, BackupPrologue, CatalogFingerprintRef, read_backup_prologue,
+    restore_backup_with_prologue,
 };
 use crate::{
     CheckFormat, dir_and_path_args, load_config_with_format, native_store_path, report_io_error,
@@ -48,10 +49,6 @@ pub(crate) fn restore(args: &[String]) -> ExitCode {
         }
     };
 
-    if let Err(code) = reject_current_catalog_mismatch(&dir, &prologue, format) {
-        return code;
-    }
-
     // Restore binds the project against the catalog the backup carries, so the replayed
     // data validates against the same accepted identity the original store wrote it under
     // rather than a freshly proposed baseline.
@@ -59,6 +56,10 @@ pub(crate) fn restore(args: &[String]) -> ExitCode {
         Ok(program) => program,
         Err(code) => return code,
     };
+
+    if let Err(code) = reject_current_catalog_mismatch(&dir, &prologue, format) {
+        return code;
+    }
 
     // Restore needs a durable target. An in-memory project has nowhere to write to.
     let target_files = match RestoreTargetFiles::capture(&dir, &config) {
@@ -144,13 +145,13 @@ fn reject_current_catalog_mismatch(
     let Some(current) = read_source_tree_catalog(dir, format)? else {
         return Ok(());
     };
-    if catalog_fingerprint(Some(&current)) == catalog_fingerprint(prologue.catalog()) {
+    let backup_catalog = CatalogFingerprintRef::from_catalog(prologue.catalog());
+    let project_catalog = CatalogFingerprintRef::from_catalog(Some(&current));
+    if project_catalog == backup_catalog {
         return Ok(());
     }
     Err(report_backup_error(
-        BackupError::CatalogMismatch(
-            "backup catalog does not match this project's accepted catalog".to_string(),
-        ),
+        BackupError::catalog_mismatch(backup_catalog, project_catalog),
         format,
     ))
 }
@@ -174,10 +175,6 @@ fn read_source_tree_catalog(
             report_simple_error(error.code, &error.message, format);
             ExitCode::FAILURE
         })
-}
-
-fn catalog_fingerprint(catalog: Option<&marrow_catalog::CatalogMetadata>) -> Option<(u64, &str)> {
-    catalog.map(|catalog| (catalog.epoch, catalog.digest.as_str()))
 }
 
 struct RestoreTargetFiles {
@@ -304,12 +301,10 @@ fn check_against_backup_catalog(
                 );
                 ExitCode::FAILURE
             })?;
-    if prologue.source_digest() != program.source_digest() {
+    let project_source_digest = program.source_digest();
+    if prologue.source_digest() != project_source_digest {
         return Err(report_backup_error(
-            BackupError::SourceMismatch(
-                "backup was written from a program whose schema does not match this project"
-                    .to_string(),
-            ),
+            BackupError::source_mismatch(prologue.source_digest(), project_source_digest.as_str()),
             format,
         ));
     }

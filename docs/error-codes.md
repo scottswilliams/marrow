@@ -373,8 +373,8 @@ store predates the required physical store UID stamp.
 | `restore.corrupt_chunk` | The backup's cell stream is truncated or its data checksum does not match the manifest. |
 | `restore.not_empty` | The target store already holds saved data, generated indexes, or an accepted catalog. v0.1 restore writes into an empty store only. |
 | `restore.engine_recompile_required` | The backup was written under a different engine, layout, or value codec. A cross-engine restore is a future engine recompile. |
-| `restore.source_mismatch` | The backup was written from a program whose schema does not match this project. |
-| `restore.catalog_mismatch` | The backup's catalog epoch does not match this project's accepted catalog. |
+| `restore.source_mismatch` | The backup was written from a program whose schema does not match this project. The message prints backup source digest and project source digest. |
+| `restore.catalog_mismatch` | The backup's catalog does not match this project's accepted catalog. The message prints backup catalog epoch/digest and project catalog epoch/digest. |
 | `restore.data_invalid` | The replayed data does not validate against the project schema, including orphaned managed cells; the restore was rolled back. |
 
 ## Typed Errors In Running Programs

@@ -514,11 +514,13 @@ against the accepted catalog the backup carries, validates the backup against
 it (`restore.source_mismatch`, `restore.catalog_mismatch`,
 `restore.engine_recompile_required`), and refuses a target that already holds
 saved data, generated indexes, or an accepted catalog (`restore.not_empty`) —
-v0.1 restores into an empty store only. The replay
-writes the backup's catalog rows alongside its data cells and mints a fresh
-store UID, so the restored store carries its accepted identity and runs
-immediately. A non-empty `parent_snapshot_digest` is rejected; v0.1 accepts only
-the empty reserved sentinel.
+v0.1 restores into an empty store only. Source mismatch reports print both the
+backup and project source digests. Catalog mismatch reports print the backup
+catalog epoch/digest and the project catalog epoch/digest. The replay writes the
+backup's catalog rows alongside its data cells and mints a fresh store UID, so
+the restored store carries its accepted identity and runs immediately. A
+non-empty `parent_snapshot_digest` is rejected; v0.1 accepts only the empty
+reserved sentinel.
 The whole replay runs in one transaction: a checksum mismatch or trailing bytes
 (`restore.corrupt_chunk`), restored data that does not decode against the schema,
 or an orphaned managed cell in the restored stream (`restore.data_invalid`) rolls

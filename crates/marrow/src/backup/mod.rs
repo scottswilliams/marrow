@@ -44,6 +44,31 @@ pub(crate) const FORMAT_VERSION: u32 = 5;
 /// one; the layout, key-profile, and value-codec versions distinguish revisions.
 pub(crate) const ENGINE_NAME: &str = "marrow-tree-cell";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CatalogFingerprintRef<'a> {
+    pub(crate) epoch: Option<u64>,
+    pub(crate) digest: Option<&'a str>,
+}
+
+impl<'a> CatalogFingerprintRef<'a> {
+    pub(crate) fn from_catalog(catalog: Option<&'a marrow_catalog::CatalogMetadata>) -> Self {
+        catalog.map_or(
+            Self {
+                epoch: None,
+                digest: None,
+            },
+            |catalog| Self {
+                epoch: Some(catalog.epoch),
+                digest: Some(catalog.digest.as_str()),
+            },
+        )
+    }
+
+    pub(crate) fn from_parts(epoch: Option<u64>, digest: Option<&'a str>) -> Self {
+        Self { epoch, digest }
+    }
+}
+
 /// The typed header binding a backup's data to the program and engine that wrote
 /// it. Restore validates every field before replaying a single cell.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -346,6 +371,25 @@ pub(crate) enum BackupCorruptProblem {
 }
 
 impl BackupError {
+    pub(crate) fn source_mismatch(backup_source_digest: &str, project_source_digest: &str) -> Self {
+        Self::SourceMismatch(format!(
+            "backup source digest {backup_source_digest}; project source digest {project_source_digest}"
+        ))
+    }
+
+    pub(crate) fn catalog_mismatch(
+        backup: CatalogFingerprintRef<'_>,
+        project: CatalogFingerprintRef<'_>,
+    ) -> Self {
+        Self::CatalogMismatch(format!(
+            "backup catalog epoch {}; backup catalog digest {}; project catalog epoch {}; project catalog digest {}",
+            display_epoch(backup.epoch),
+            backup.digest.unwrap_or("none"),
+            display_epoch(project.epoch),
+            project.digest.unwrap_or("none"),
+        ))
+    }
+
     fn format_version(problem: BackupFormatProblem, message: String) -> Self {
         Self::FormatVersion { problem, message }
     }
@@ -372,6 +416,10 @@ impl BackupError {
             Self::DataInvalid(_) => "restore.data_invalid",
         }
     }
+}
+
+fn display_epoch(epoch: Option<u64>) -> String {
+    epoch.map_or_else(|| "none".to_string(), |epoch| epoch.to_string())
 }
 
 impl std::fmt::Display for BackupError {
