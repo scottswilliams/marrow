@@ -850,22 +850,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 Parser/checker/runtime files overlap heavily: the cut series is sequenced; additions follow.
 Listing order is execution order. Store crate is quiet this wave except where noted.
 
-**W4.6 ∥ (after W4.3 — shared syntax.md) Spec-closure bundle + visibility (II.E2 items 1,3-5;
-II.E4 a; gates 15, 39, 43-44).** Owns:
-syntax.md reserved words (+`store`, +`Id` bookkeeping from W2.6; +`journal` per gate 44;
-+`sensitive`/`declassify` per gate 43; +`maybe`/`absent` per gate 39), the
-reserved-word/builtin-dispatch sentence and the transaction-effect runtime note naming `print`
-only (gate 13), the gate-43 reservation sentences with the sink set pinned as exactly `print`,
-all `std::log` functions, `std::io::writeText`, and `std::io::writeBytes`, the
-gate-44 no-triggers doctrine paragraph in the docs/future contract page, the retain-clause
-grammar position reserved — post-name clause on keyed layer members, after unique/counted —
-with the spec vocabulary mapping (declaration over populated data = destructive decision;
-ongoing bounding = write-plan maintenance) (C18),
-partial-application iteration rule, value-forms-over-index contract, visibility sentences,
-resolve.rs comment fix. Docs-only plus one comment. Seed: n/a (docs lane; corpus must stay
-green). Review: every stated rule verified against the binary. Done: a careful reader can predict
-the implementation from the reference.
-
 **W4.12 → Typed keyed-layer entries (C34; gate 41; the scoped seam build).** After W2.1 and
 W4.4; before W4.7. Owns: marrow-schema compile (resource name
 accepted on keyed_field_decl, resolution validated), marrow-check whole-entry required-field
