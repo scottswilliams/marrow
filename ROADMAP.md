@@ -844,17 +844,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 ---
 
-## Wave 5 — Checker architecture series (the hotspot; strictly sequenced, one lane at a time)
-
-Runs after the language batch so the refactor churns once over the final v0.1 surface.
-
-Wave gate: full gate; analysis API contract recorded for marrow-lsp; the tooling/05 ABI-identity
-revision text drafted at this recording per gate 48's fixed definition — a pure byte-stable
-function of checked facts following the W5.4 discharge-digest pattern, reviewed in-lane, no user
-sitting.
-
----
-
 ## Wave 6 — Operator surface and integration (CLI; concurrent by command)
 
 Listing order is execution order. docs/cli.md integrates in lane order: W6.4 → W6.5 → W6.3 →

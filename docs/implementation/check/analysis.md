@@ -26,8 +26,12 @@ transaction blocks.
 
 ## Analysis API contract
 
-These public surfaces are read-only and recompute from the checked program or
-snapshot until a future editor host needs caching:
+The analysis API contract consumed by `marrow-lsp` is read-only, query-native,
+snapshot-scoped, and version-aware. It exposes checker facts and
+checker-faithful derived views; it does not parse language structure a second
+time, infer facts from diagnostic prose, or open, repair, or create stores
+during ordinary check. These public surfaces recompute from the checked program
+or snapshot until a future editor host needs caching:
 
 - `AnalysisSnapshot::sites_for(catalog_id)` filters the snapshot's `UseSite`
   table, which is built by one post-lowering walk over runtime-lowered module
@@ -42,6 +46,10 @@ snapshot until a future editor host needs caching:
   effects as `entry_footprints`. It is a model-audit surface, not a runtime
   multiplicity counter: repeated reads of the same saved member are one point
   read shape, and a counted index branch is one range-scan shape.
+- `CheckedProgram::effect_closure`, `entry_footprints`,
+  `entry_store_open_mode`, and `write_effects_reachable` provide the transitive
+  checked-fact view for editor and tooling classification. They expand lowered
+  direct callees and report typed store/index ids, not source spellings.
 - `BindingIndex::rename_action` returns source edits plus a canonical
   `evolve rename` fragment for saved-data-backed definitions, so editor callers
   do not synthesize catalog paths or formatter output themselves.
@@ -59,6 +67,10 @@ snapshot until a future editor host needs caching:
   With no backup it is schema-only and marks the live-store path deferred; with
   a backup path it streams archive cells to add bounded count and sample facts.
   It never opens a live store.
+- `ToolingCatalogMetadata` and `store_is_newer_than_program` are the
+  version/staleness facts for callers that already have a checked catalog and
+  explicit store handle. They compare program digest and catalog/store epochs;
+  they are not an ordinary-check store-open fallback.
 - Ordinary `marrow check` reads each source file through the analysis pipeline
   and reads the fixed `marrow.catalog.json` artifact when present. It does not
   open, repair, or create the native store.
