@@ -67,6 +67,11 @@ Each construct maps to a fixed shape of work:
   every omitted field, unkeyed group, and keyed child layer.
 - A bare write commits on its own; writes grouped in a `transaction` commit once.
 
+The checker warns with `check.commit_amplification` when a loop body contains a
+saved-data write outside a `transaction`, because that shape can turn one loop
+iteration into one durable commit. Wrap the loop or the write in `transaction`
+when the repeated writes should commit together.
+
 The checked model records these as traversal and write facts, so tools and the
 checker see the same operations the runtime performs.
 

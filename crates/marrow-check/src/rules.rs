@@ -15,7 +15,8 @@ use marrow_syntax::{
 
 use crate::checks::check_range_value;
 use crate::typerules::check_literal_range;
-use crate::{CHECK_TRY_HANDLER, CheckDiagnostic};
+use crate::walk::for_each_child_expr;
+use crate::{CHECK_COMMIT_AMPLIFICATION, CHECK_TRY_HANDLER, CheckDiagnostic};
 
 /// A `break`/`continue` is outside any loop, so it could never resolve at runtime.
 pub const CHECK_LOOP_CONTROL_FLOW: &str = "check.loop_control_flow";
@@ -49,6 +50,7 @@ pub(crate) fn check_function_body(
     );
     walk_loop_control_flow(file, &function.body, 0, out);
     walk_loop_layer_mutations(file, &function.body, &mut Vec::new(), out);
+    walk_commit_amplification(file, &function.body, false, false, out);
 }
 
 /// Apply the structural body rules to an `evolve transform` block, which has no
@@ -455,6 +457,155 @@ fn walk_loop_layer_mutations(
             | Statement::Expr { .. } => {}
         }
     }
+}
+
+fn walk_commit_amplification(
+    file: &Path,
+    block: &Block,
+    in_loop: bool,
+    in_transaction: bool,
+    out: &mut Vec<CheckDiagnostic>,
+) {
+    for statement in &block.statements {
+        if in_loop && !in_transaction {
+            push_commit_amplification_warnings(file, statement, out);
+        }
+        match statement {
+            Statement::If {
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            }
+            | Statement::IfConst {
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            } => {
+                walk_commit_amplification(file, then_block, in_loop, in_transaction, out);
+                for else_if in else_ifs {
+                    if in_loop
+                        && !in_transaction
+                        && let Some(condition) = &else_if.condition
+                    {
+                        push_append_write_warnings(file, condition, out);
+                    }
+                    walk_commit_amplification(file, &else_if.block, in_loop, in_transaction, out);
+                }
+                if let Some(block) = else_block {
+                    walk_commit_amplification(file, block, in_loop, in_transaction, out);
+                }
+            }
+            Statement::While { body, .. } | Statement::For { body, .. } => {
+                walk_commit_amplification(file, body, true, in_transaction, out);
+            }
+            Statement::Transaction { body, .. } => {
+                walk_commit_amplification(file, body, in_loop, true, out);
+            }
+            Statement::Try { body, catch, .. } => {
+                walk_commit_amplification(file, body, in_loop, in_transaction, out);
+                if let Some(catch) = catch {
+                    walk_commit_amplification(file, &catch.block, in_loop, in_transaction, out);
+                }
+            }
+            Statement::Match { arms, .. } => {
+                for arm in arms {
+                    walk_commit_amplification(file, &arm.block, in_loop, in_transaction, out);
+                }
+            }
+            Statement::Const { .. }
+            | Statement::Var { .. }
+            | Statement::Assign { .. }
+            | Statement::Delete { .. }
+            | Statement::Return { .. }
+            | Statement::ReturnAbsent { .. }
+            | Statement::Break { .. }
+            | Statement::Continue { .. }
+            | Statement::Throw { .. }
+            | Statement::Expr { .. } => {}
+        }
+    }
+}
+
+fn push_commit_amplification_warnings(
+    file: &Path,
+    statement: &Statement,
+    out: &mut Vec<CheckDiagnostic>,
+) {
+    match statement {
+        Statement::Assign { target, value, .. } => {
+            if is_saved_path(target) {
+                push_commit_amplification_warning(file, statement.span(), out);
+            }
+            push_append_write_warnings(file, target, out);
+            push_append_write_warnings(file, value, out);
+        }
+        Statement::Delete { path, .. } => {
+            if is_saved_path(path) {
+                push_commit_amplification_warning(file, statement.span(), out);
+            }
+            push_append_write_warnings(file, path, out);
+        }
+        Statement::Const { value, .. } => push_append_write_warnings(file, value, out),
+        Statement::Var { value, .. } => {
+            if let Some(value) = value {
+                push_append_write_warnings(file, value, out);
+            }
+        }
+        Statement::Return { value, .. } => {
+            if let Some(value) = value {
+                push_append_write_warnings(file, value, out);
+            }
+        }
+        Statement::Throw { value, .. } | Statement::Expr { value, .. } => {
+            push_append_write_warnings(file, value, out);
+        }
+        Statement::If { condition, .. } | Statement::While { condition, .. } => {
+            if let Some(condition) = condition {
+                push_append_write_warnings(file, condition, out);
+            }
+        }
+        Statement::IfConst { value, .. } => push_append_write_warnings(file, value, out),
+        Statement::For { iterable, step, .. } => {
+            push_append_write_warnings(file, iterable, out);
+            if let Some(step) = step {
+                push_append_write_warnings(file, step, out);
+            }
+        }
+        Statement::Match { scrutinee, .. } => {
+            if let Some(scrutinee) = scrutinee {
+                push_append_write_warnings(file, scrutinee, out);
+            }
+        }
+        Statement::ReturnAbsent { .. }
+        | Statement::Break { .. }
+        | Statement::Continue { .. }
+        | Statement::Transaction { .. }
+        | Statement::Try { .. } => {}
+    }
+}
+
+fn push_commit_amplification_warning(
+    file: &Path,
+    span: marrow_syntax::SourceSpan,
+    out: &mut Vec<CheckDiagnostic>,
+) {
+    out.push(CheckDiagnostic::warning(
+        CHECK_COMMIT_AMPLIFICATION,
+        file,
+        span,
+        "saved-data write inside a loop can amplify commits; use transaction",
+    ));
+}
+
+fn push_append_write_warnings(file: &Path, expr: &Expression, out: &mut Vec<CheckDiagnostic>) {
+    if let Expression::Call { callee, args, .. } = expr
+        && append_target(callee, args).is_some()
+    {
+        push_commit_amplification_warning(file, expr.span(), out);
+    }
+    for_each_child_expr(expr, |child| push_append_write_warnings(file, child, out));
 }
 
 /// The saved layer a `for` loop traverses, as canonical text, or `None` for a loop
