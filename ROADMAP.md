@@ -846,13 +846,7 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 ## Wave 6 — Operator surface and integration (CLI; concurrent by command)
 
-Listing order is execution order. docs/cli.md integrates in lane order: W6.4 → W6.5 → W6.3 →
-W6.6.
-
-**W6.4 ∥ Single-file check deletion (removal #16; supersedes III.C4's cli.md item).** Owns:
-cmd_check.rs ScratchDir/relocation deletion, check_cli.rs migration to project fixtures, cli.md
-rewrite, usage error pointing at marrow.json. Seed: `marrow check file.mw` is a typed usage
-error. Review: no scratch-project machinery survives anywhere. Done: one checking mode.
+Listing order is execution order. docs/cli.md integrates in lane order: W6.5 → W6.3 → W6.6.
 
 **W6.5 → (after W6.4 — shared cmd_check.rs) check --data retirement (gate 25, removal #18).**
 Owns: cmd_check --data path deletion — an ordinary unknown-flag usage error with no alias,

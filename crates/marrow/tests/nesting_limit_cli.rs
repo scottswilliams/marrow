@@ -32,9 +32,12 @@ fn nested_parens(depth: usize) -> String {
 /// The dotted codes on a `--format json` check, read from the typed `code` slot of
 /// each diagnostic record rather than matched in any rendered prose.
 fn check_json_codes(source: &str) -> (Option<i32>, Vec<String>) {
-    let path = temp_source("nesting", source);
-    let output = support::marrow_sub("check", &["--format", "json", path.to_str().unwrap()]);
-    fs::remove_file(&path).ok();
+    let project = support::temp_project_uncommitted("nesting-check", |root| {
+        fs::create_dir_all(root.join("src")).expect("create src dir");
+        fs::write(root.join("marrow.json"), r#"{ "sourceRoots": ["src"] }"#).expect("write config");
+        fs::write(root.join("src/app.mw"), source).expect("write source");
+    });
+    let output = support::marrow_sub("check", &["--format", "json", project.to_str().unwrap()]);
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json report");
     let codes = report["diagnostics"]
         .as_array()

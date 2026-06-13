@@ -395,8 +395,7 @@ pub(crate) fn analyze_source_project(
     // `var o: Order` could bind to a foreign resource of the same name, and an
     // entry in any but the first would be unreachable at run time. Rather than
     // assemble that aliasing module, reject every script: a project's library files
-    // must declare a `module`. The single-file `check`/`run` paths see one script
-    // and are unaffected.
+    // must declare a `module`. A project with exactly one script joins it normally.
     if scripts.len() <= 1 {
         program.modules.append(&mut scripts);
     } else {

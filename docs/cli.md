@@ -4,7 +4,7 @@ The `marrow` binary is the single entry point for the language and its built-in
 database.
 
 ```
-marrow check [--data] [--format text|json|jsonl] <file.mw | projectdir>
+marrow check [--data] [--format text|json|jsonl] <projectdir>
 marrow evolve <preview|apply> [--format text|json|jsonl] <projectdir>
 marrow fmt [--check | --write] <file.mw | projectdir>
 marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] \
@@ -57,44 +57,40 @@ report stays on stdout.
 ## `marrow check`
 
 ```
-marrow check [--data] [--format text|json|jsonl] <file.mw | projectdir>
+marrow check [--data] [--format text|json|jsonl] <projectdir>
 ```
 
-Parse a single `.mw` file, or check a whole project directory, and report
-diagnostics.
+Check a project directory containing `marrow.json` and report diagnostics.
 
-- Given a `.mw` file, it parses the file, then runs the full project checker
-  over a synthesized one-file project, so type and module-path rules apply to a
-  lone file. Only rules that need other project files are out of reach.
-- Given a project directory, it loads `marrow.json` and runs the project checker
-  over every source root plus configured test files: parse, type, effect, and
-  durable-place checks. It binds durable identity from the committed
+- It loads `marrow.json` and runs the project checker over every source root
+  plus configured test files: parse, type, effect, and durable-place checks. It
+  binds durable identity from the committed
   `marrow.catalog.json` artifact, repairing that file from a committed store
   snapshot when the local store already has one; it never creates the store or
   freezes identity.
-- `--data` is project-only. It opens the configured store read-only and runs the
-  same data-attached evolution preview that `marrow evolve preview` uses. A
-  repair-required or approval-required witness exits `1`.
+- `--data` opens the configured store read-only and runs the same data-attached
+  evolution preview that `marrow evolve preview` uses. A repair-required or
+  approval-required witness exits `1`.
+- Passing a bare `.mw` file is a usage error. Run `marrow check` on the project
+  directory that contains `marrow.json`.
 
-Exits `0` when there are no errors, `1` when there are (or when the file or
-`marrow.json` cannot be read).
+Exits `0` when there are no errors, `1` when there are diagnostics or
+`marrow.json` cannot be read, and `2` for usage errors such as a non-directory
+target.
 
 ```console
-$ marrow check src/shelf.mw
-ok: src/shelf.mw parsed (3 declarations)
-
 $ marrow check ./proj
 ok: ./proj checked
 
-$ marrow check --format json src/broken.mw
-{"file":"src/broken.mw","status":"failed","diagnostics":[{"code":"parse.syntax", …}],"declarations":0}
+$ marrow check --format json ./proj
+{"project":"./proj","status":"failed","diagnostics":[{"code":"parse.syntax", …}]}
 ```
 
 A failing check returns exit `1`:
 
 ```console
-$ marrow check src/broken.mw
-src/broken.mw:1:1: error: parse.syntax: expected function parameter list
+$ marrow check ./proj
+./proj/src/broken.mw:1:1: error: parse.syntax: expected function parameter list
 $ echo $?
 1
 ```

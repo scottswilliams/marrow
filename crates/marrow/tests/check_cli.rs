@@ -4,8 +4,6 @@ use serde_json::Value;
 
 mod support;
 
-use support::temp_source;
-
 fn check_json(path: impl AsRef<std::ffi::OsStr>) -> std::process::Output {
     let path = path.as_ref().to_str().expect("utf8 path");
     support::marrow_sub("check", &["--format", "json", path])
@@ -45,9 +43,9 @@ fn has_code(records: &[Value], code: &str) -> bool {
 }
 
 #[test]
-fn check_accepts_valid_mw_source() {
-    let path = temp_source(
-        "valid",
+fn check_rejects_file_targets_as_usage_failures() {
+    let path = support::temp_source(
+        "file-target",
         r#"module app
 pub fn main()
     print("ok")
@@ -57,18 +55,69 @@ pub fn main()
     let output = support::marrow_sub("check", &[path.to_str().unwrap()]);
 
     fs::remove_file(&path).ok();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(
+        output.stdout.is_empty(),
+        "unexpected stdout: {:?}",
+        output.stdout
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("project directory"), "{stderr}");
+    assert!(stderr.contains("marrow.json"), "{stderr}");
+}
+
+#[test]
+fn check_rejects_file_targets_before_json_diagnostics() {
+    let path = support::temp_source("json-file-target", "\tbad\n");
+
+    for format in ["json", "jsonl"] {
+        let output = support::marrow_sub("check", &["--format", format, path.to_str().unwrap()]);
+
+        assert_eq!(output.status.code(), Some(2), "{format}: {output:?}");
+        assert!(
+            output.stdout.is_empty(),
+            "{format} unexpected stdout: {:?}",
+            output.stdout
+        );
+        let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+        assert!(
+            stderr.contains("project directory") && stderr.contains("marrow.json"),
+            "{format}: {stderr}"
+        );
+        assert!(
+            !stderr.contains("parse.syntax"),
+            "{format} should fail as usage before parsing: {stderr}"
+        );
+    }
+
+    fs::remove_file(&path).ok();
+}
+
+#[test]
+fn check_accepts_valid_project_source() {
+    let dir = project_with_source(
+        "valid",
+        "src/app.mw",
+        r#"module app
+pub fn main()
+    print("ok")
+"#,
+    );
+
+    let output = support::marrow_sub("check", &[dir.to_str().unwrap()]);
+
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
     assert!(stdout.contains("ok"), "{stdout}");
+    assert!(stdout.contains("checked"), "{stdout}");
 }
 
 #[test]
 fn check_reports_parse_diagnostics() {
-    let path = temp_source("invalid", "module app\n\tpub fn main()\n");
+    let dir = project_with_source("invalid", "src/app.mw", "module app\n\tpub fn main()\n");
 
-    let output = check_jsonl(&path);
+    let output = check_jsonl(dir.path());
 
-    fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(1));
     let records = diagnostic_records(output);
     // The tab is rejected as a parse error at its own position (the leading tab on
@@ -99,34 +148,33 @@ fn check_allows_out_as_an_ordinary_binding_name() {
 
 #[test]
 fn check_reports_obsolete_operators_in_function_bodies() {
-    let path = temp_source(
+    let dir = project_with_source(
         "obsolete-op-body",
+        "src/app.mw",
         "module app\nfn main()\n    return a && b\n",
     );
 
-    let output = check_jsonl(&path);
+    let output = check_jsonl(dir.path());
 
-    fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(1));
     let records = diagnostic_records(output);
-    // The obsolete-operator diagnostic is found by its typed `help` payload, not by a
-    // message substring: the migration guidance lives in the structured `help` field,
-    // so a record carrying it is the obsolete-operator rejection. That help string is
-    // the one human render contract this test pins.
     let obsolete = records
         .iter()
-        .find(|record| record["help"] == "Use `and` for boolean and.")
-        .expect("an obsolete-operator diagnostic carrying the `and` migration help");
+        .find(|record| record["code"] == "parse.syntax" && record["source_span"]["line"] == 3)
+        .expect("an obsolete-operator diagnostic on the body line");
     assert_eq!(obsolete["code"], "parse.syntax", "{obsolete}");
 }
 
 #[test]
 fn check_jsonl_reports_diagnostics_and_summary() {
-    let path = temp_source("jsonl-invalid", "module app\n\tpub fn main()\n");
+    let dir = project_with_source(
+        "jsonl-invalid",
+        "src/app.mw",
+        "module app\n\tpub fn main()\n",
+    );
 
-    let output = support::marrow_sub("check", &["--format", "jsonl", path.to_str().unwrap()]);
+    let output = support::marrow_sub("check", &["--format", "jsonl", dir.to_str().unwrap()]);
 
-    fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
     let records = stdout
@@ -156,10 +204,17 @@ fn temp_project_dir(name: &str) -> support::TempProject {
     })
 }
 
+fn project_with_source(name: &str, relative: &str, source: &str) -> support::TempProject {
+    let dir = temp_project_dir(name);
+    fs::write(dir.join("marrow.json"), r#"{ "sourceRoots": ["src"] }"#).expect("write config");
+    support::write(dir.path(), relative, source);
+    dir
+}
+
 #[test]
 fn check_reports_schema_diagnostics_for_a_project_directory() {
     // Checking a project directory (one with marrow.json) runs the whole-project
-    // checker, which surfaces schema diagnostics that single-file parsing cannot.
+    // checker, which surfaces schema diagnostics.
     let dir = temp_project_dir("schema-project");
     fs::write(dir.join("marrow.json"), r#"{ "sourceRoots": ["src"] }"#).expect("write config");
     fs::write(
@@ -241,54 +296,51 @@ fn check_rejects_removed_inout_syntax_for_a_project_directory() {
 }
 
 #[test]
-fn check_reports_return_type_errors_for_a_single_file() {
-    // A single-file check runs the same type checker as a project check, with
-    // diagnostics located at the source path passed to the CLI.
-    let path = temp_source(
+fn check_reports_return_type_errors_for_a_project() {
+    let dir = project_with_source(
         "return-type",
+        "src/m.mw",
         "module m\nfn f(): int\n    return \"nope\"\n",
     );
 
-    let output = check_json(&path);
+    let output = check_json(dir.path());
 
-    fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(1));
     let report = support::json(output.stdout);
     assert_has_code(&report, "check.return_type");
     assert!(
         report["diagnostics"][0]["source_span"]["file"]
             .as_str()
-            .is_some_and(|file| file == path.display().to_string()),
-        "diagnostic should point at the named file: {report:#?}"
+            .is_some_and(|file| file == dir.join("src/m.mw").display().to_string()),
+        "diagnostic should point at the project source file: {report:#?}"
     );
 }
 
 #[test]
-fn check_reports_assignment_type_errors_for_a_single_file() {
-    // Assigning a `string` to an `int` local is a `check.assignment_type` error
-    // that single-file parsing alone never caught.
-    let path = temp_source(
+fn check_reports_assignment_type_errors_for_a_project() {
+    let dir = project_with_source(
         "assignment-type",
+        "src/m.mw",
         "module m\nfn f()\n    var x: int = \"str\"\n",
     );
 
-    let output = check_json(&path);
+    let output = check_json(dir.path());
 
-    fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(1));
     let report = support::json(output.stdout);
     assert_has_code(&report, "check.assignment_type");
 }
 
 #[test]
-fn check_reports_operator_type_errors_for_a_single_file() {
-    // `1 + true` is an int-plus-bool operator error in single-file and project
-    // checks alike.
-    let path = temp_source("operator-type", "module m\nfn f()\n    var x = 1 + true\n");
+fn check_reports_operator_type_errors_for_a_project() {
+    let dir = project_with_source(
+        "operator-type",
+        "src/m.mw",
+        "module m\nfn f()\n    var x = 1 + true\n",
+    );
 
-    let output = check_json(&path);
+    let output = check_json(dir.path());
 
-    fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(1));
     let report = support::json(output.stdout);
     assert_has_code(&report, "check.operator_type");
@@ -296,48 +348,44 @@ fn check_reports_operator_type_errors_for_a_single_file() {
 
 #[test]
 fn check_reports_type_errors_in_a_module_less_script() {
-    // A module-less script (no `module` line) is still type-checked: it is placed
-    // path-free in the synthesized project, so no spurious module-path error masks
-    // the real `check.return_type` diagnostic.
-    let path = temp_source("script-type", "fn f(): int\n    return \"nope\"\n");
+    let dir = project_with_source(
+        "script-type",
+        "src/main.mw",
+        "fn f(): int\n    return \"nope\"\n",
+    );
 
-    let output = check_json(&path);
+    let output = check_json(dir.path());
 
-    fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(1));
     let report = support::json(output.stdout);
     assert_has_code(&report, "check.return_type");
 }
 
 #[test]
-fn check_accepts_a_type_correct_single_file() {
-    // A file with a body that type-checks cleanly still exits 0 with the friendly
-    // `ok` summary — the type checker adds no false positives on correct source.
-    let path = temp_source(
+fn check_accepts_a_type_correct_project() {
+    let dir = project_with_source(
         "type-correct",
+        "src/m.mw",
         "module m\nfn f(): int\n    return 1\n\nfn g()\n    var x: int = f()\n",
     );
 
-    let output = support::marrow_sub("check", &[path.to_str().unwrap()]);
+    let output = support::marrow_sub("check", &[dir.to_str().unwrap()]);
 
-    fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
     assert!(stdout.contains("ok"), "{stdout}");
 }
 
 #[test]
-fn check_json_reports_type_errors_for_a_single_file() {
-    // The `--format json` single-file path also surfaces type errors: a failed
-    // status and a `check.return_type` diagnostic record.
-    let path = temp_source(
+fn check_json_reports_type_errors_for_a_project() {
+    let dir = project_with_source(
         "json-return-type",
+        "src/m.mw",
         "module m\nfn f(): int\n    return \"nope\"\n",
     );
 
-    let output = support::marrow_sub("check", &["--format", "json", path.to_str().unwrap()]);
+    let output = support::marrow_sub("check", &["--format", "json", dir.to_str().unwrap()]);
 
-    fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
     let record: Value = serde_json::from_str(stdout.trim()).expect("json object");
@@ -349,18 +397,15 @@ fn check_json_reports_type_errors_for_a_single_file() {
 }
 
 #[test]
-fn check_single_module_less_script_string_into_an_int_field_errors() {
-    // A module-less single file is a script. Its own `^orders` resource must be
-    // nominally checked through the single-file `check` path: a `string` written
-    // into the `int` field `count` is a type mismatch, exit 1.
-    let path = temp_source(
-        "single-script-string-into-int",
+fn check_module_less_project_script_string_into_an_int_field_errors() {
+    let dir = project_with_source(
+        "script-string-into-int",
+        "src/main.mw",
         "resource Order\n    required count: int\nstore ^orders(id: int): Order\n\npub fn main()\n    var o: Order\n    o.count = \"alsobad\"\n    ^orders(1) = o\n",
     );
 
-    let output = check_json(&path);
+    let output = check_json(dir.path());
 
-    fs::remove_file(&path).ok();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let report = support::json(output.stdout);
     assert_has_code(&report, "check.assignment_type");

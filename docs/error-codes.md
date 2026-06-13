@@ -100,14 +100,14 @@ code is stable and predictable:
 ## Code Reference
 
 Every code below is emitted by the current build. Codes are grouped by family.
-The "Surface" column says where a developer first meets the code: a single-file
-`check`, a project `check`/`run`/`test`, a managed write inside a running
-program, the store, or a `data` maintenance command.
+The "Surface" column says where a developer first meets the code: a project
+`check`/`run`/`test`, a managed write inside a running program, the store, or a
+`data` maintenance command.
 
 ### `parse.*` — kind `parse`
 
-Syntax errors from the lexer and parser. Reported by `check` (single file and
-project) and by any command that parses sources before running.
+Syntax errors from the lexer and parser. Reported by project `check` and by any
+command that parses sources before running.
 
 | Code | Meaning |
 |---|---|
@@ -115,8 +115,7 @@ project) and by any command that parses sources before running.
 
 ### `check.*` — kind `check`
 
-Static errors found while checking source. A bare single-file `check` runs the
-available checker rules for that file; project checks also run module-wide rules
+Static errors found while checking source. Project checks run module-wide rules
 over every configured source and test file.
 
 | Code | Meaning |
