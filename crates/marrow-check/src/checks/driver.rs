@@ -9,9 +9,11 @@ use marrow_schema::ReturnPresence;
 use marrow_schema::Type;
 use marrow_syntax::SourceSpan;
 
-use crate::enums::{private_enum_type_reference, resolve_type};
+use crate::enums::{
+    annotation_type_known, annotation_unknown_identity_name, private_enum_type_reference,
+    resolve_diagnosed_annotation_type, resolve_type,
+};
 use crate::infer::infer_type;
-use crate::resolve::resolve_store_by_root;
 use crate::{
     CHECK_MISSING_RETURN, CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_TYPE, CHECK_UNRESOLVED_IMPORT,
     CheckDiagnostic, CheckReport, CheckedProgram, DiagnosticPayload, MarrowType, build_alias_map,
@@ -189,7 +191,7 @@ pub(crate) fn file_prelude(
     for declaration in &parsed.file.declarations {
         if let marrow_syntax::Declaration::Const(constant) = declaration {
             let ty = match (&constant.ty, &constant.value) {
-                (Some(ty), _) => resolve_type(ty, program, &aliases, file),
+                (Some(ty), _) => resolve_diagnosed_annotation_type(ty, program, &aliases, file),
                 (None, Some(value)) => infer_type(
                     program,
                     value,
@@ -382,7 +384,7 @@ fn check_type_annotation(
         );
         return;
     }
-    let unknown_identity = unknown_identity_type_ref(ty, context);
+    let unknown_identity = annotation_unknown_identity_name(&schema_type, context.program);
     if unknown_identity.is_some() || !annotation_type_known(&schema_type, &resolved_type) {
         let name = unknown_identity.unwrap_or_else(|| ty.text.trim().to_string());
         diagnostics.push(
@@ -405,17 +407,6 @@ fn contains_resource_type(ty: &MarrowType) -> bool {
             keys.iter().any(contains_resource_type) || contains_resource_type(value)
         }
         _ => false,
-    }
-}
-
-pub(crate) fn annotation_type_known(schema_type: &Type, resolved_type: &MarrowType) -> bool {
-    match (schema_type, resolved_type) {
-        (Type::Unknown, _) => true,
-        (Type::Sequence(schema_element), MarrowType::Sequence(resolved_element)) => {
-            annotation_type_known(schema_element, resolved_element)
-        }
-        (_, MarrowType::Unknown) => false,
-        _ => true,
     }
 }
 
@@ -488,22 +479,7 @@ fn unknown_identity_type_ref(
     ty: &marrow_syntax::TypeRef,
     context: &TypeAnnotationContext<'_>,
 ) -> Option<String> {
-    unknown_identity_type(&Type::resolve(ty), context)
-}
-
-fn unknown_identity_type(ty: &Type, context: &TypeAnnotationContext<'_>) -> Option<String> {
-    match ty {
-        Type::Identity(identity) if !store_root_known(context.program, identity) => {
-            Some(format!("Id(^{identity})"))
-        }
-        Type::Identity(_) => None,
-        Type::Sequence(element) => unknown_identity_type(element, context),
-        Type::Scalar(_) | Type::Named(_) | Type::Unknown => None,
-    }
-}
-
-fn store_root_known(program: &CheckedProgram, identity: &str) -> bool {
-    resolve_store_by_root(program, identity).is_some()
+    annotation_unknown_identity_name(&Type::resolve(ty), context.program)
 }
 
 fn check_block_type_annotations(

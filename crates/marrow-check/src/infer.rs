@@ -12,7 +12,8 @@ use crate::checks::{
     check_saved_key_args, check_unary, key_type_diagnostic,
 };
 use crate::enums::{
-    IsCheck, check_is, enum_schema_in, join_or, resolve_enum_member_path, resolve_type,
+    IsCheck, check_is, enum_schema_in, join_or, resolve_diagnosed_annotation_type,
+    resolve_enum_member_path,
 };
 use crate::executable::{SavedAccessRejection, SavedPlaceResolver, lower_expr_for_file};
 use crate::program::TypeNames;
@@ -49,7 +50,7 @@ fn binding_type(
     file: &Path,
 ) -> MarrowType {
     match annotation {
-        Some(ty) => resolve_type(ty, program, aliases, file),
+        Some(ty) => resolve_diagnosed_annotation_type(ty, program, aliases, file),
         None => value_type,
     }
 }
@@ -132,7 +133,7 @@ pub(crate) fn local_binding_with_read_scope(
         MarrowType::LocalTree {
             keys: keys
                 .iter()
-                .map(|key| MarrowType::resolve(&key.ty, TypeNames::default()))
+                .map(|key| resolve_diagnosed_annotation_type(&key.ty, program, aliases, file))
                 .collect(),
             value: Box::new(value),
         }

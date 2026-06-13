@@ -38,6 +38,48 @@ pub(crate) fn normalize_program_named_types(
     apply_normalized_named_types(program, plan);
 }
 
+pub(crate) fn annotation_type_known(schema_type: &Type, resolved_type: &MarrowType) -> bool {
+    match (schema_type, resolved_type) {
+        (Type::Unknown, _) => true,
+        (Type::Sequence(schema_element), MarrowType::Sequence(resolved_element)) => {
+            annotation_type_known(schema_element, resolved_element)
+        }
+        (_, MarrowType::Unknown) => false,
+        _ => true,
+    }
+}
+
+pub(crate) fn annotation_unknown_identity_name(
+    ty: &Type,
+    program: &CheckedProgram,
+) -> Option<String> {
+    match ty {
+        Type::Identity(identity) if resolve_store_by_root(program, identity).is_none() => {
+            Some(format!("Id(^{identity})"))
+        }
+        Type::Identity(_) => None,
+        Type::Sequence(element) => annotation_unknown_identity_name(element, program),
+        Type::Scalar(_) | Type::Named(_) | Type::Unknown => None,
+    }
+}
+
+pub(crate) fn resolve_diagnosed_annotation_type(
+    ty: &marrow_syntax::TypeRef,
+    program: &CheckedProgram,
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+) -> MarrowType {
+    let schema_type = Type::resolve(ty);
+    let resolved_type = resolve_type(ty, program, aliases, file);
+    if annotation_unknown_identity_name(&schema_type, program).is_some()
+        || !annotation_type_known(&schema_type, &resolved_type)
+    {
+        MarrowType::Invalid
+    } else {
+        resolved_type
+    }
+}
+
 struct ModuleTypeNormalization {
     module_index: usize,
     functions: Vec<FunctionTypeNormalization>,
@@ -93,12 +135,14 @@ fn plan_normalized_named_types(
                 .params
                 .iter()
                 .zip(&decl.params)
-                .map(|(_, param_decl)| resolve_type(&param_decl.ty, program, &aliases, &file.path))
+                .map(|(_, param_decl)| {
+                    resolve_diagnosed_annotation_type(&param_decl.ty, program, &aliases, &file.path)
+                })
                 .collect();
             let return_type = match (function.return_type.as_ref(), decl.return_type.as_ref()) {
-                (Some(_), Some(return_ref)) => {
-                    Some(resolve_type(return_ref, program, &aliases, &file.path))
-                }
+                (Some(_), Some(return_ref)) => Some(resolve_diagnosed_annotation_type(
+                    return_ref, program, &aliases, &file.path,
+                )),
                 _ => None,
             };
             functions.push(FunctionTypeNormalization {
@@ -125,7 +169,7 @@ fn plan_normalized_named_types(
             };
             constants.push(ConstantTypeNormalization {
                 constant_index,
-                ty: resolve_type(const_ref, program, &aliases, &file.path),
+                ty: resolve_diagnosed_annotation_type(const_ref, program, &aliases, &file.path),
             });
         }
         plan.push(ModuleTypeNormalization {

@@ -848,15 +848,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 Runs after the language batch so the refactor churns once over the final v0.1 surface.
 
-**W5.9 → Unknown-flow diagnostic cascade suppression.** Carries: the retained half of
-partial-check-data-tools: suppress `check.unknown_type` / `check.untyped_value` cascades from
-already-diagnosed type-resolution failures. Owns: checker diagnostic emission over Unknown
-propagation in crates/marrow-check/src/checks and focused fixtures. Seed: an annotation-site
-`check.unknown_type` currently causes downstream Unknown-flow diagnostics naming no new problem.
-Review: no partial-check mode, no data-command execution on failed checks, no relaxation of the
-data-tools.md clean-check policy, and no new error code. Done: Unknown propagation behaves like
-the Invalid marker precedent: the primary diagnostic remains, secondary cascades disappear.
-
 Wave gate: full gate; analysis API contract recorded for marrow-lsp; the tooling/05 ABI-identity
 revision text drafted at this recording per gate 48's fixed definition — a pure byte-stable
 function of checked facts following the W5.4 discharge-digest pattern, reviewed in-lane, no user

@@ -4,8 +4,7 @@ use std::path::{Path, PathBuf};
 
 use marrow_syntax::{FieldDecl, ResourceDecl};
 
-use crate::checks::annotation_type_known;
-use crate::enums::private_enum_type_reference;
+use crate::enums::{annotation_type_known, private_enum_type_reference};
 use crate::resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
 use crate::{
     CHECK_PRIVATE_ENUM, CHECK_RECURSIVE_KEYED_ENTRY, CHECK_UNKNOWN_TYPE, CheckDiagnostic,

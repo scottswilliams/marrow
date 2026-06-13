@@ -59,6 +59,34 @@ fn reports_unknown_type_for_parser_migrated_keyed_var_key_annotation() {
 }
 
 #[test]
+fn unknown_annotation_diagnostics_do_not_cascade_to_untyped_values() {
+    let report = check_module_report(
+        "unknown-annotation-cascade",
+        "module m\n\
+         fn from_bad_annotation(param: MissingParam)\n\
+         \x20   var fromParam: int = param\n\
+         \x20   var local: MissingLocal = 1\n\
+         \x20   var fromLocal: int = local\n\n\
+         fn make_bad(): MissingReturn\n\
+         \x20   return 1\n\n\
+         fn use_return()\n\
+         \x20   var fromReturn: int = make_bad()\n",
+    );
+
+    assert_eq!(
+        with_code(&report, "check.unknown_type").len(),
+        3,
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.untyped_value").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn known_types_are_not_flagged_as_unknown() {
     let root = temp_project("known-types", |root| {
         // Primitive, sequence, identity, the module's own resource, `unknown`, and

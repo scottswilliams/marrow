@@ -8,7 +8,7 @@ use std::path::Path;
 
 use marrow_syntax::SourceSpan;
 
-use crate::enums::{MatchCheck, check_match, resolve_type};
+use crate::enums::{MatchCheck, check_match, resolve_diagnosed_annotation_type};
 use crate::infer::{
     bind, infer_assignment_target_type_with_read_scope, infer_type_with_read_scope,
     local_binding_with_read_scope,
@@ -47,7 +47,7 @@ pub(crate) fn check_function_types(
     for param in &function.params {
         base.insert(
             param.name.clone(),
-            resolve_type(&param.ty, program, aliases, file),
+            resolve_diagnosed_annotation_type(&param.ty, program, aliases, file),
         );
     }
     let mut scope: Vec<HashMap<String, MarrowType>> = vec![base];
@@ -56,7 +56,7 @@ pub(crate) fn check_function_types(
         .return_type
         .as_ref()
         .map_or(MarrowType::Unknown, |ty| {
-            resolve_type(ty, program, aliases, file)
+            resolve_diagnosed_annotation_type(ty, program, aliases, file)
         });
     check_block_types_with_read_scope(
         BlockTypeContext {
@@ -344,7 +344,12 @@ impl StatementCheck<'_> {
             check_assignment(
                 self.file,
                 span,
-                &resolve_type(annotation, self.program, self.aliases, self.file),
+                &resolve_diagnosed_annotation_type(
+                    annotation,
+                    self.program,
+                    self.aliases,
+                    self.file,
+                ),
                 &value_type,
                 self.diagnostics,
             );
