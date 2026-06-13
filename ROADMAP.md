@@ -850,13 +850,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 Parser/checker/runtime files overlap heavily: the cut series is sequenced; additions follow.
 Listing order is execution order. Store crate is quiet this wave except where noted.
 
-**W4.11 → is_type_text collapse (removal #33).** Owns: token.rs guard family deletion,
-parse_types_params/statement key-type guard removal, checker-fixture migration per the corrected
-plan, docs/implementation/syntax.md row. Seed: checker
-fixture asserting `check.unknown_type` for
-the migrated cases, red before migration. Review: diagnostic quality at declaration positions
-does not regress below usable (span coarsening acknowledged). Done: one type-spelling owner.
-
 **W4.13 → User-function maybe returns (C36; gate 39).** After W4.5. Owns: `maybe T` return
 spelling in the signature grammar, marker attachment for user function descriptors in
 marrow-schema, the `return absent` body exit (fall-through in a `maybe T` body stays the
