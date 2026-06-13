@@ -169,6 +169,15 @@ fn fmt_one(file: &str, source: &str, mode: FmtMode) -> Result<FmtOutcome, ()> {
         FmtMode::Write => {
             if source == formatted {
                 Ok(FmtOutcome::Unchanged)
+            } else if !marrow_syntax::format_preserves_comments(source, &formatted) {
+                report_simple_error(
+                    "fmt.comment_loss",
+                    &format!(
+                        "refusing to write {file}: formatting would discard retained comments"
+                    ),
+                    CheckFormat::Text,
+                );
+                Err(())
             } else if let Err(error) = write_formatted_source(file, &formatted) {
                 report_simple_error(
                     "io.write",

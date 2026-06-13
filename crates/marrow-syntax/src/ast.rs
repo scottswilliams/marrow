@@ -93,6 +93,7 @@ pub enum Declaration {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvolveDecl {
     pub steps: Vec<EvolveStep>,
+    pub comments: Vec<Comment>,
     pub span: SourceSpan,
 }
 

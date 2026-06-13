@@ -23,11 +23,11 @@ A value the grammar cannot structure yields `None` plus a `parse.syntax` diagnos
 
 ## The AST
 
-`ParsedSource = { file: SourceFile, diagnostics }`. `SourceFile` holds the optional `module`, `uses`, ordered `declarations`, and file-level `comments`, with name-lookup accessors downstream crates use. The AST records no parentheses — the formatter re-derives the minimum from a precedence table that must stay in sync with `parse_expr.rs`. `TypeRef` stores verbatim whitespace-stripped source text and is never resolved here. Comments are retained as block/file trivia with `placement` and column so `parse -> format` round-trips losslessly. `SourceSpan` (file-absolute byte range plus 1-based line/column) is on every token, node, and diagnostic.
+`ParsedSource = { file: SourceFile, diagnostics }`. `SourceFile` holds the optional `module`, `uses`, ordered `declarations`, and file-level `comments`, with name-lookup accessors downstream crates use. The AST records no parentheses — the formatter re-derives the minimum from a precedence table that must stay in sync with `parse_expr.rs`. `TypeRef` stores verbatim whitespace-stripped source text and is never resolved here. Comments are retained as file, declaration-body, evolve-body, and statement-block trivia with `placement` and column so `parse -> format` round-trips losslessly. `SourceSpan` (file-absolute byte range plus 1-based line/column) is on every token, node, and diagnostic.
 
 ## Formatter
 
-`format_source` re-parses the source string (it does not take an AST) then renders canonical `.mw`; it is idempotent. `format_declaration` and `format_expression` are public node-level renderers (`format_statement` is crate-private); note `format_declaration(source, decl)` still also takes the source `&str` for any statement body it carries, while only `format_expression(expr)` renders from an AST node alone.
+`format_source` re-parses the source string (it does not take an AST) then renders canonical `.mw`; it is idempotent. It re-emits retained comments from the AST and keeps a parse/format structural fingerprint over the documented corpus. `format_preserves_comments` is the write-safety predicate used by the CLI before replacing a file. `format_declaration` and `format_expression` are public node-level renderers (`format_statement` is crate-private); note `format_declaration(source, decl)` still also takes the source `&str` for any statement body it carries, while only `format_expression(expr)` renders from an AST node alone.
 
 ## Modules
 

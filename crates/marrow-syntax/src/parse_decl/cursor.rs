@@ -3,8 +3,9 @@
 //! diagnostic emitters the declaration bodies build on.
 
 use super::DeclParser;
-use super::tokens::{first_line_end, is_line_comment, line_end};
+use super::tokens::{comment_from_token, first_line_end, is_line_comment, line_end};
 use crate::PARSE_SYNTAX;
+use crate::ast::{Comment, CommentMarker, CommentPlacement};
 use crate::diagnostic::{
     Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, Severity, SourceSpan,
 };
@@ -17,17 +18,38 @@ impl<'a> DeclParser<'a> {
     /// so a multi-line const value stays one header line. A trailing comment is
     /// excluded from the returned slice so the caller sees only header content.
     pub(super) fn take_header_line(&mut self) -> &'a [Token] {
+        let (line, _) = self.take_header_line_with_trailing_comment();
+        line
+    }
+
+    pub(super) fn take_header_line_with_trailing_comment(
+        &mut self,
+    ) -> (&'a [Token], Option<Comment>) {
         let end = self.header_end();
-        let content_end = match self.tokens[self.pos..end].last() {
-            Some(token) if is_line_comment(token.kind) => end - 1,
-            _ => end,
+        let (content_end, trailing_comment) = match self.tokens[self.pos..end].last() {
+            Some(token) if is_line_comment(token.kind) => {
+                let marker = match token.kind {
+                    TokenKind::DocComment => CommentMarker::Doc,
+                    _ => CommentMarker::Line,
+                };
+                (
+                    end - 1,
+                    Some(comment_from_token(
+                        self.source,
+                        *token,
+                        CommentPlacement::Trailing,
+                        marker,
+                    )),
+                )
+            }
+            _ => (end, None),
         };
         let line = &self.tokens[self.pos..content_end];
         self.pos = end;
         if matches!(self.peek(), Some(TokenKind::Newline)) {
             self.advance();
         }
-        line
+        (line, trailing_comment)
     }
 
     pub(super) fn header_end(&self) -> usize {

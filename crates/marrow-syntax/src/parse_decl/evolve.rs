@@ -3,8 +3,10 @@
 //! expressions.
 
 use super::DeclParser;
-use super::tokens::{find_arrow, find_top_level_equal};
-use crate::ast::{Block, EvolveDecl, EvolveStep, Expression};
+use super::tokens::{comment_from_token, find_arrow, find_top_level_equal};
+use crate::ast::{
+    Block, Comment, CommentMarker, CommentPlacement, EvolveDecl, EvolveStep, Expression,
+};
 use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
 use crate::parse_expr::ExprParser;
 use crate::token::{Token, TokenKind};
@@ -17,7 +19,7 @@ impl<'a> DeclParser<'a> {
     pub(super) fn parse_evolve(&mut self) -> EvolveDecl {
         let span = self.header_span();
         self.take_header_line(); // `evolve`
-        let steps = if matches!(self.peek(), Some(TokenKind::Indent)) {
+        let (steps, comments) = if matches!(self.peek(), Some(TokenKind::Indent)) {
             self.parse_evolve_steps()
         } else {
             self.error_span(
@@ -25,16 +27,21 @@ impl<'a> DeclParser<'a> {
                 ParseDiagnosticReason::Expected(ExpectedSyntax::EvolveBody),
                 "expected an indented evolve body",
             );
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
-        EvolveDecl { steps, span }
+        EvolveDecl {
+            steps,
+            comments,
+            span,
+        }
     }
 
     /// Parse the `INDENT … DEDENT` block of evolution steps. A `transform` step
     /// owns the indented statement block that follows its header; the other steps
     /// are single header lines.
-    fn parse_evolve_steps(&mut self) -> Vec<EvolveStep> {
+    fn parse_evolve_steps(&mut self) -> (Vec<EvolveStep>, Vec<Comment>) {
         let mut steps = Vec::new();
+        let mut comments = Vec::new();
         self.advance(); // INDENT
         while let Some(kind) = self.peek() {
             match kind {
@@ -46,7 +53,7 @@ impl<'a> DeclParser<'a> {
                     self.advance();
                 }
                 TokenKind::Comment | TokenKind::DocComment => {
-                    self.advance();
+                    self.take_evolve_comment(&mut comments)
                 }
                 // Only a transform owns an indented body, which it consumes right
                 // after parsing its header. An indented block reaching here sits
@@ -62,28 +69,41 @@ impl<'a> DeclParser<'a> {
                     self.skip_to_block_end();
                 }
                 _ => {
-                    if let Some(step) = self.parse_evolve_step() {
+                    if let Some(step) = self.parse_evolve_step(&mut comments) {
                         steps.push(step);
                     }
                 }
             }
         }
-        steps
+        (steps, comments)
+    }
+
+    fn take_evolve_comment(&mut self, comments: &mut Vec<Comment>) {
+        let token = self.advance();
+        comments.push(comment_from_token(
+            self.source,
+            token,
+            CommentPlacement::OwnLine,
+            CommentMarker::Line,
+        ));
+        if matches!(self.peek(), Some(TokenKind::Newline)) {
+            self.advance();
+        }
     }
 
     /// Parse one evolution step from its header line. The lead word selects the
     /// step kind; an unknown lead is reported and its line dropped so the
     /// following steps still parse.
-    fn parse_evolve_step(&mut self) -> Option<EvolveStep> {
+    fn parse_evolve_step(&mut self, comments: &mut Vec<Comment>) -> Option<EvolveStep> {
         let span = self.header_span();
         let err = self.content_span();
         let lead = self.tokens[self.pos];
         let lead_word = (lead.kind == TokenKind::Identifier).then(|| lead.text(self.source));
         match lead_word {
-            Some("rename") => self.parse_evolve_rename(span),
-            Some("default") => self.parse_evolve_default(span),
-            Some("retire") => self.parse_evolve_retire(span),
-            Some("transform") => self.parse_evolve_transform(span),
+            Some("rename") => self.parse_evolve_rename(span, comments),
+            Some("default") => self.parse_evolve_default(span, comments),
+            Some("retire") => self.parse_evolve_retire(span, comments),
+            Some("transform") => self.parse_evolve_transform(span, comments),
             _ => {
                 self.take_header_line();
                 self.error_span(
@@ -98,9 +118,14 @@ impl<'a> DeclParser<'a> {
 
     /// Parse `rename <from> -> <to>`. The arrow is the `-` `>` token pair the lexer
     /// emits for `->`.
-    fn parse_evolve_rename(&mut self, span: SourceSpan) -> Option<EvolveStep> {
+    fn parse_evolve_rename(
+        &mut self,
+        span: SourceSpan,
+        comments: &mut Vec<Comment>,
+    ) -> Option<EvolveStep> {
         let err = self.content_span();
-        let header = self.take_header_line();
+        let (header, trailing_comment) = self.take_header_line_with_trailing_comment();
+        comments.extend(trailing_comment);
         let body = &header[1..];
         let Some(arrow) = find_arrow(body) else {
             self.error_span(
@@ -116,9 +141,14 @@ impl<'a> DeclParser<'a> {
     }
 
     /// Parse `default <target> = <expr>`.
-    fn parse_evolve_default(&mut self, span: SourceSpan) -> Option<EvolveStep> {
+    fn parse_evolve_default(
+        &mut self,
+        span: SourceSpan,
+        comments: &mut Vec<Comment>,
+    ) -> Option<EvolveStep> {
         let err = self.content_span();
-        let header = self.take_header_line();
+        let (header, trailing_comment) = self.take_header_line_with_trailing_comment();
+        comments.extend(trailing_comment);
         let body = &header[1..];
         let Some(equal) = find_top_level_equal(body) else {
             self.error_span(
@@ -138,17 +168,27 @@ impl<'a> DeclParser<'a> {
     }
 
     /// Parse `retire <target>`.
-    fn parse_evolve_retire(&mut self, span: SourceSpan) -> Option<EvolveStep> {
+    fn parse_evolve_retire(
+        &mut self,
+        span: SourceSpan,
+        comments: &mut Vec<Comment>,
+    ) -> Option<EvolveStep> {
         let err = self.content_span();
-        let header = self.take_header_line();
+        let (header, trailing_comment) = self.take_header_line_with_trailing_comment();
+        comments.extend(trailing_comment);
         let target = self.evolve_path(&header[1..], err)?;
         Some(EvolveStep::Retire { target, span })
     }
 
     /// Parse `transform <target>` followed by an indented statement block.
-    fn parse_evolve_transform(&mut self, span: SourceSpan) -> Option<EvolveStep> {
+    fn parse_evolve_transform(
+        &mut self,
+        span: SourceSpan,
+        comments: &mut Vec<Comment>,
+    ) -> Option<EvolveStep> {
         let err = self.content_span();
-        let header = self.take_header_line();
+        let (header, trailing_comment) = self.take_header_line_with_trailing_comment();
+        comments.extend(trailing_comment);
         let target = self.evolve_path(&header[1..], err);
         let body = if matches!(self.peek(), Some(TokenKind::Indent)) {
             self.parse_function_body()

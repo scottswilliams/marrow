@@ -173,6 +173,78 @@ fn fmt_write_failure_preserves_original_and_removes_temp_file() {
     );
 }
 
+#[test]
+fn fmt_write_refuses_to_destroy_retained_comments() {
+    let source = "module app\n\
+         fn main()\n\
+         \x20   throw Error(\n\
+         \x20       ; retained rationale\n\
+         \x20       code: \"book.absent\",\n\
+         \x20       message: \"missing book\",\n\
+         \x20   )\n";
+    let path = temp_source("write-comment-guard", source);
+    let output = run_fmt(&["--write", path.to_str().unwrap()]);
+    let written = fs::read_to_string(&path).expect("read back");
+    fs::remove_file(&path).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        fmt_reports_code(&output.stderr, "fmt.comment_loss"),
+        "{:?}",
+        output.stderr
+    );
+    assert_eq!(
+        written, source,
+        "fmt --write must leave the original source byte-for-byte"
+    );
+}
+
+#[test]
+fn fmt_write_refuses_to_destroy_evolve_doc_comment_markers() {
+    let source = "module app\n\
+         evolve\n\
+         \x20   ;; keep doc marker\n\
+         \x20   rename Book.title -> Book.subtitle\n";
+    let path = temp_source("write-evolve-doc-comment-guard", source);
+    let output = run_fmt(&["--write", path.to_str().unwrap()]);
+    let written = fs::read_to_string(&path).expect("read back");
+    fs::remove_file(&path).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        fmt_reports_code(&output.stderr, "fmt.comment_loss"),
+        "{:?}",
+        output.stderr
+    );
+    assert_eq!(
+        written, source,
+        "fmt --write must leave the original source byte-for-byte"
+    );
+}
+
+#[test]
+fn fmt_write_refuses_to_destroy_statement_doc_comment_markers() {
+    let source = "module app\n\
+         fn main()\n\
+         \x20   ;; keep doc marker\n\
+         \x20   return\n";
+    let path = temp_source("write-statement-doc-comment-guard", source);
+    let output = run_fmt(&["--write", path.to_str().unwrap()]);
+    let written = fs::read_to_string(&path).expect("read back");
+    fs::remove_file(&path).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        fmt_reports_code(&output.stderr, "fmt.comment_loss"),
+        "{:?}",
+        output.stderr
+    );
+    assert_eq!(
+        written, source,
+        "fmt --write must leave the original source byte-for-byte"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn fmt_write_follows_a_symlinked_source_file() {

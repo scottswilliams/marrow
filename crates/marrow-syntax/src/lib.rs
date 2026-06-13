@@ -28,7 +28,7 @@ pub use diagnostic::{
     ObsoleteOperator, ParseDiagnosticReason, ReservedSyntax, Severity, SourceSpan,
     UnsupportedSyntax, kind_for_code,
 };
-pub use format::{format_declaration, format_expression, format_source};
+pub use format::{format_declaration, format_expression, format_preserves_comments, format_source};
 pub use lexer::lex_source;
 pub use literal::{StringLiteralError, decode_string_escapes, decode_string_literal};
 pub use token::{Keyword, LexedSource, Token, TokenKind, duration_unit_seconds};

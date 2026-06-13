@@ -11,7 +11,7 @@ use crate::{
     Argument, BinaryOp, Block, CatchClause, Comment, CommentMarker, CommentPlacement, ConstDecl,
     Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression, ForBinding,
     FunctionDecl, InterpolationPart, KeyParam, MatchArm, ParamDecl, ResourceDecl, ResourceMember,
-    Statement, StoreDecl, TypeRef, UnaryOp,
+    Statement, StoreDecl, TokenKind, TypeRef, UnaryOp,
 };
 
 /// Precedence used to decide where parentheses are required, tightest-binding
@@ -80,6 +80,16 @@ pub fn format_source(source: &str) -> String {
     out
 }
 
+/// Whether replacing `source` with `formatted` would preserve every comment
+/// token's marker and normalized text and leave both files parseable.
+pub fn format_preserves_comments(source: &str, formatted: &str) -> bool {
+    let parsed_source = crate::parse_source(source);
+    let parsed_formatted = crate::parse_source(formatted);
+    !parsed_source.has_errors()
+        && !parsed_formatted.has_errors()
+        && normalized_comment_tokens(source) == normalized_comment_tokens(formatted)
+}
+
 struct FormatSection {
     span: crate::SourceSpan,
     text: String,
@@ -104,6 +114,28 @@ fn section_separator(prev: &FormatSection, next: &FormatSection) -> &'static str
         return "\n";
     }
     "\n\n"
+}
+
+fn normalized_comment_tokens(source: &str) -> Vec<(CommentMarker, String)> {
+    crate::lex_source(source)
+        .tokens
+        .iter()
+        .filter_map(|token| {
+            let marker = match token.kind {
+                TokenKind::Comment => CommentMarker::Line,
+                TokenKind::DocComment => CommentMarker::Doc,
+                _ => return None,
+            };
+            let text = match marker {
+                CommentMarker::Line => token.text(source).strip_prefix(';'),
+                CommentMarker::Doc => token.text(source).strip_prefix(";;"),
+            }
+            .unwrap_or(token.text(source))
+            .trim()
+            .to_string();
+            Some((marker, text))
+        })
+        .collect()
 }
 
 fn declaration_span(declaration: &Declaration) -> crate::SourceSpan {
@@ -133,41 +165,45 @@ pub fn format_declaration(source: &str, declaration: &Declaration) -> String {
 
 fn format_evolve(source: &str, decl: &EvolveDecl) -> String {
     let mut out = String::from("evolve");
-    let step_pad = INDENT;
-    for step in &decl.steps {
+    let body = format_body(
+        &decl.comments,
+        decl.steps
+            .iter()
+            .map(|step| (step.span(), format_evolve_step(source, step))),
+    );
+    if !body.is_empty() {
         out.push('\n');
-        match step {
-            EvolveStep::Rename { from, to, .. } => {
-                out.push_str(&format!(
-                    "{step_pad}rename {} -> {}",
-                    format_expression(from),
-                    format_expression(to)
-                ));
-            }
-            EvolveStep::Default { target, value, .. } => {
-                out.push_str(&format!(
-                    "{step_pad}default {} = {}",
-                    format_expression(target),
-                    format_expression(value)
-                ));
-            }
-            EvolveStep::Retire { target, .. } => {
-                out.push_str(&format!("{step_pad}retire {}", format_expression(target)));
-            }
-            EvolveStep::Transform { target, body, .. } => {
-                out.push_str(&format!(
-                    "{step_pad}transform {}",
-                    format_expression(target)
-                ));
-                let body = format_block(source, body, 2);
-                if !body.is_empty() {
-                    out.push('\n');
-                    out.push_str(&body);
-                }
-            }
-        }
+        out.push_str(&body);
     }
     out
+}
+
+fn format_evolve_step(source: &str, step: &EvolveStep) -> String {
+    let step_pad = INDENT;
+    match step {
+        EvolveStep::Rename { from, to, .. } => format!(
+            "{step_pad}rename {} -> {}",
+            format_expression(from),
+            format_expression(to)
+        ),
+        EvolveStep::Default { target, value, .. } => format!(
+            "{step_pad}default {} = {}",
+            format_expression(target),
+            format_expression(value)
+        ),
+        EvolveStep::Retire { target, .. } => {
+            format!("{step_pad}retire {}", format_expression(target))
+        }
+        EvolveStep::Transform { target, body, .. } => {
+            let mut out = format!("{step_pad}transform {}", format_expression(target));
+            let body = format_block(source, body, 2);
+            if !body.is_empty() {
+                out.push('\n');
+                out.push_str(&body);
+            }
+            out
+        }
+    }
 }
 
 fn format_const(decl: &ConstDecl) -> String {
@@ -266,27 +302,49 @@ fn format_enum_body(members: &[EnumMember], comments: &[Comment], level: usize) 
     )
 }
 
-/// Merge a body's own-line `comments` with its already-formatted items, ordering
-/// both by source position so a comment between two items keeps its place, and
-/// join them one per line. Each item supplies its own span and rendered text.
+/// Merge body comments with already-formatted items by source position. Own-line
+/// comments become standalone lines; trailing comments attach to the matching
+/// item line.
 fn format_body(
     comments: &[Comment],
     items: impl Iterator<Item = (crate::SourceSpan, String)>,
 ) -> String {
-    let mut lines: Vec<FormattedBodyLine> = comments
-        .iter()
-        .map(|comment| FormattedBodyLine {
-            span: comment.span,
-            text: format_comment(comment),
-        })
+    let mut lines = Vec::new();
+    let mut comments = comments.iter().peekable();
+    let items: Vec<FormattedBodyLine> = items
+        .map(|(span, text)| FormattedBodyLine { span, text })
         .collect();
-    lines.extend(items.map(|(span, text)| FormattedBodyLine { span, text }));
-    lines.sort_by_key(|line| line.span.start_byte);
-    lines
-        .into_iter()
-        .map(|line| line.text)
-        .collect::<Vec<_>>()
-        .join("\n")
+
+    for (index, item) in items.iter().enumerate() {
+        while let Some(comment) = comments.peek() {
+            if comment.placement == CommentPlacement::OwnLine
+                && comment.span.start_byte < item.span.start_byte
+            {
+                lines.push(format_comment(comments.next().expect("peeked")));
+            } else {
+                break;
+            }
+        }
+
+        let mut text = item.text.clone();
+        let next_start = items
+            .get(index + 1)
+            .map_or(usize::MAX, |next| next.span.start_byte);
+        if let Some(comment) = comments.peek()
+            && comment.placement == CommentPlacement::Trailing
+            && comment.span.start_byte > item.span.start_byte
+            && comment.span.start_byte < next_start
+        {
+            append_trailing_comment(&mut text, comments.next().expect("peeked"));
+        }
+        lines.push(text);
+    }
+
+    for comment in comments {
+        lines.push(format_comment(comment));
+    }
+
+    lines.join("\n")
 }
 
 struct FormattedBodyLine {
@@ -440,12 +498,7 @@ pub(crate) fn format_block(source: &str, block: &Block, level: usize) -> String 
             && comment.span.start_byte < next_start
         {
             let comment = comments.next().expect("peeked");
-            text.push(' ');
-            text.push_str(comment_marker_str(comment.marker));
-            if !comment.text.is_empty() {
-                text.push(' ');
-                text.push_str(&comment.text);
-            }
+            append_trailing_comment(&mut text, comment);
         }
         lines.push(text);
     }
@@ -456,6 +509,21 @@ pub(crate) fn format_block(source: &str, block: &Block, level: usize) -> String 
     }
 
     lines.join("\n")
+}
+
+fn append_trailing_comment(text: &mut String, comment: &Comment) {
+    let mut suffix = String::new();
+    suffix.push(' ');
+    suffix.push_str(comment_marker_str(comment.marker));
+    if !comment.text.is_empty() {
+        suffix.push(' ');
+        suffix.push_str(&comment.text);
+    }
+    if let Some(index) = text.find('\n') {
+        text.insert_str(index, &suffix);
+    } else {
+        text.push_str(&suffix);
+    }
 }
 
 /// Render an own-line comment, preserving its original column.

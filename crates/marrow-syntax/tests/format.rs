@@ -1,6 +1,6 @@
 use marrow_syntax::{
-    Block, Comment, CommentMarker, CommentPlacement, Declaration, Statement, format_expression,
-    format_source, parse_source,
+    Block, Comment, CommentMarker, CommentPlacement, Declaration, EvolveDecl, Statement,
+    format_expression, format_source, parse_source,
 };
 
 mod common;
@@ -48,6 +48,25 @@ fn reparsed_run_body(source: &str) -> Block {
         .expect("formatted source defines fn run")
         .body
         .clone()
+}
+
+fn reparsed_evolve_decl(source: &str) -> EvolveDecl {
+    let formatted = format_source(source);
+    let parsed = parse_source(&formatted);
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "formatted output must re-parse cleanly:\n{formatted}\n{:#?}",
+        parsed.diagnostics
+    );
+    parsed
+        .file
+        .declarations
+        .iter()
+        .find_map(|declaration| match declaration {
+            Declaration::Evolve(decl) => Some(decl.clone()),
+            _ => None,
+        })
+        .expect("formatted source defines evolve")
 }
 
 /// A retained comment reduced to the facts a round-trip must preserve: its
@@ -772,6 +791,51 @@ fn formats_evolve_block_consistently_with_resource_and_store() {
          \x20       return ^books(1).shelf\n";
 
     assert_eq!(format_source(source), expected);
+}
+
+#[test]
+fn preserves_evolve_step_comments() {
+    let source = "module app\n\
+         evolve\n\
+         \x20   ; choose a durable rename\n\
+         \x20   rename Book.title -> Book.subtitle ; keep rename rationale\n\
+         \x20   transform Book.shelf ; transform rationale\n\
+         \x20       ; body rationale\n\
+         \x20       return ^books(1).shelf\n";
+    let expected = "module app\n\
+         \n\
+         evolve\n\
+         \x20   ; choose a durable rename\n\
+         \x20   rename Book.title -> Book.subtitle ; keep rename rationale\n\
+         \x20   transform Book.shelf ; transform rationale\n\
+         \x20       ; body rationale\n\
+         \x20       return ^books(1).shelf\n";
+
+    assert_eq!(format_source(source), expected);
+
+    let evolve = reparsed_evolve_decl(source);
+    assert_eq!(
+        comment_facts(&evolve.comments),
+        vec![
+            (
+                "choose a durable rename",
+                CommentPlacement::OwnLine,
+                CommentMarker::Line,
+            ),
+            (
+                "keep rename rationale",
+                CommentPlacement::Trailing,
+                CommentMarker::Line,
+            ),
+            (
+                "transform rationale",
+                CommentPlacement::Trailing,
+                CommentMarker::Line,
+            ),
+        ]
+    );
+    let once = format_source(source);
+    assert_eq!(format_source(&once), once);
 }
 
 #[test]
