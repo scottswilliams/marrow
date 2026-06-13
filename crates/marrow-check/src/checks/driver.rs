@@ -293,13 +293,19 @@ pub(crate) fn check_file_types(
                 }
             }
             marrow_syntax::Declaration::Resource(resource) => {
-                check_resource_identity_annotations(
-                    &resource.members,
-                    &annotation_context,
-                    diagnostics,
-                );
                 if stored_resources.contains(resource.name.as_str()) {
+                    check_resource_identity_annotations(
+                        &resource.members,
+                        &annotation_context,
+                        diagnostics,
+                    );
                     check_qualified_saved_named_field_annotations(
+                        &resource.members,
+                        &annotation_context,
+                        diagnostics,
+                    );
+                } else {
+                    check_resource_type_annotations(
                         &resource.members,
                         &annotation_context,
                         diagnostics,
@@ -406,6 +412,29 @@ pub(crate) fn annotation_type_known(schema_type: &Type, resolved_type: &MarrowTy
     }
 }
 
+fn check_resource_type_annotations(
+    members: &[marrow_syntax::ResourceMember],
+    context: &TypeAnnotationContext<'_>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    for member in members {
+        match member {
+            marrow_syntax::ResourceMember::Field(field) => {
+                for key in &field.keys {
+                    check_type_annotation(&key.ty, key.ty.span, context, diagnostics);
+                }
+                check_type_annotation(&field.ty, field.ty.span, context, diagnostics);
+            }
+            marrow_syntax::ResourceMember::Group(group) => {
+                for key in &group.keys {
+                    check_type_annotation(&key.ty, key.ty.span, context, diagnostics);
+                }
+                check_resource_type_annotations(&group.members, context, diagnostics);
+            }
+        }
+    }
+}
+
 fn check_resource_identity_annotations(
     members: &[marrow_syntax::ResourceMember],
     context: &TypeAnnotationContext<'_>,
@@ -414,23 +443,38 @@ fn check_resource_identity_annotations(
     for member in members {
         match member {
             marrow_syntax::ResourceMember::Field(field) => {
-                if let Some(identity) = unknown_identity_type_ref(&field.ty, context) {
-                    diagnostics.push(
-                        CheckDiagnostic::error(
-                            CHECK_UNKNOWN_TYPE,
-                            context.file,
-                            field.span,
-                            format!("unknown type `{identity}`"),
-                        )
-                        .with_payload(DiagnosticPayload::UnknownType(Type::resolve(&field.ty))),
-                    );
-                }
+                check_unknown_identity_type_annotation(
+                    &field.ty,
+                    field.ty.span,
+                    context,
+                    diagnostics,
+                );
             }
             marrow_syntax::ResourceMember::Group(group) => {
                 check_resource_identity_annotations(&group.members, context, diagnostics);
             }
         }
     }
+}
+
+fn check_unknown_identity_type_annotation(
+    ty: &marrow_syntax::TypeRef,
+    span: SourceSpan,
+    context: &TypeAnnotationContext<'_>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let Some(name) = unknown_identity_type_ref(ty, context) else {
+        return;
+    };
+    diagnostics.push(
+        CheckDiagnostic::error(
+            CHECK_UNKNOWN_TYPE,
+            context.file,
+            span,
+            format!("unknown type `{name}`"),
+        )
+        .with_payload(DiagnosticPayload::UnknownType(Type::resolve(ty))),
+    );
 }
 
 fn unknown_identity_type_ref(

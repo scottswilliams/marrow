@@ -2,10 +2,12 @@
 //! statement parsers: line and span bounds, top-level delimiter scanning, comment
 //! construction, and the bridge into the expression parser.
 
-use super::ParseError;
+use super::{ParseError, ParseResult};
 use crate::PARSE_SYNTAX;
 use crate::ast::{Comment, CommentMarker, CommentPlacement, Expression, TypeRef};
-use crate::diagnostic::{Diagnostic, DiagnosticReason, Severity, SourceSpan};
+use crate::diagnostic::{
+    Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, Severity, SourceSpan,
+};
 use crate::parse_expr::{ExprParser, join_spans};
 use crate::token::{Token, TokenKind, is_qualified_name};
 
@@ -129,14 +131,25 @@ pub(super) fn expr_of(
 ) -> Option<Expression> {
     ExprParser::new(source, tokens).parse_complete(diagnostics)
 }
+pub(super) fn reject_structural_type_tokens(
+    tokens: &[Token],
+    expected: ExpectedSyntax,
+    message: &'static str,
+) -> ParseResult<()> {
+    if tokens.iter().any(|token| token.kind == TokenKind::Equal) {
+        return Err(ParseError::new(
+            ParseDiagnosticReason::Expected(expected),
+            message,
+        ));
+    }
+    Ok(())
+}
 pub(super) fn type_ref_from_tokens(source: &str, tokens: &[Token]) -> TypeRef {
     let start = tokens[0].span.start_byte;
     let end = tokens[tokens.len() - 1].span.end_byte;
     let span = join_spans(tokens[0].span, tokens[tokens.len() - 1].span);
-    // A type is a qualified name, optionally wrapped in `sequence[...]`, so no
-    // interior whitespace is significant. A type that wraps across physical lines
-    // inside its brackets is stored by its canonical single-line spelling, with
-    // the wrap whitespace removed, so the formatter emits one line.
+    // Type spelling is resolved downstream; syntax stores the annotation text in
+    // a whitespace-free form so wrapped annotations format as one line.
     let text = source[start..end]
         .chars()
         .filter(|ch| !ch.is_whitespace())

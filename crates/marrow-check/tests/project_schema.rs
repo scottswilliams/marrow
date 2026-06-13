@@ -384,6 +384,210 @@ fn typed_keyed_leaf_rejects_unknown_named_type_inside_sequence_value() {
 }
 
 #[test]
+fn resource_field_empty_sequence_element_is_schema_owned() {
+    let errors = check_module(
+        "resource-field-empty-sequence-element",
+        "module m\n\
+         resource Post\n\
+         \x20   tags: sequence[]\n\
+         store ^posts(id: int): Post\n",
+        "schema.non_enum_named_field",
+    );
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert_schema_payload(
+        &errors[0],
+        SchemaErrorKind::NonEnumNamedField {
+            field: "tags".to_string(),
+            ty: String::new(),
+        },
+    );
+    assert_eq!(errors[0].span.line, 3, "{errors:#?}");
+}
+
+#[test]
+fn stored_resource_schema_owned_annotations_do_not_emit_unknown_type_duplicates() {
+    let report = check_module_report(
+        "stored-resource-schema-owner-no-unknown-duplicates",
+        "module m\n\
+         resource Post\n\
+         \x20   tags: sequence[]\n\
+         \x20   title: Missing\n\
+         \x20   byTag(tag: MissingKey): string\n\
+         store ^posts(id: int): Post\n",
+    );
+
+    assert!(
+        with_code(&report, "check.unknown_type").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+    assert_eq!(
+        with_code(&report, "schema.non_enum_named_field").len(),
+        2,
+        "{:#?}",
+        report.diagnostics
+    );
+    assert_eq!(
+        with_code(&report, "schema.nonscalar_key").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn malformed_store_key_type_does_not_emit_checker_unknown_type() {
+    let report = check_module_report(
+        "malformed-store-key-type",
+        "module m\n\
+         resource Book\n\
+         \x20   title: string\n\
+         store ^books(id: int = 1): Book\n",
+    );
+
+    assert_eq!(
+        with_code(&report, "parse.syntax").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.unknown_type").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn stored_keyed_field_value_reports_unknown_identity_root() {
+    let errors = check_module(
+        "stored-keyed-field-value-unknown-identity",
+        "module m\n\
+         resource Target\n\
+         \x20   label: string\n\
+         store ^known(id: int): Target\n\
+         resource Post\n\
+         \x20   links(seq: int): Id(^missing)\n\
+         store ^posts(id: int): Post\n",
+        "check.unknown_type",
+    );
+
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert_eq!(
+        errors[0].payload,
+        DiagnosticPayload::UnknownType(Type::Identity("missing".into())),
+        "{errors:#?}"
+    );
+    assert_eq!(errors[0].span.line, 6, "{errors:#?}");
+    assert_eq!(errors[0].span.column, 22, "{errors:#?}");
+}
+
+#[test]
+fn unstored_keyed_field_value_reports_unknown_identity_root() {
+    let errors = check_module(
+        "unstored-keyed-field-value-unknown-identity",
+        "module m\n\
+         resource Post\n\
+         \x20   links(seq: int): Id(^missing)\n",
+        "check.unknown_type",
+    );
+
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert_eq!(
+        errors[0].payload,
+        DiagnosticPayload::UnknownType(Type::Identity("missing".into())),
+        "{errors:#?}"
+    );
+    assert_eq!(errors[0].span.line, 3, "{errors:#?}");
+    assert_eq!(errors[0].span.column, 22, "{errors:#?}");
+}
+
+#[test]
+fn keyed_field_value_accepts_known_identity_root() {
+    let report = check_module_report(
+        "keyed-field-value-known-identity",
+        "module m\n\
+         resource Target\n\
+         \x20   label: string\n\
+         store ^known(id: int): Target\n\
+         resource StoredPost\n\
+         \x20   links(seq: int): Id(^known)\n\
+         store ^storedPosts(id: int): StoredPost\n\
+         resource LoosePost\n\
+         \x20   values(seq: int): Id(^known)\n",
+    );
+
+    assert!(
+        with_code(&report, "check.unknown_type").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn unstored_resource_annotations_report_unknown_types() {
+    let errors = check_module(
+        "unstored-resource-unknown-types",
+        "module m\n\
+         resource Book\n\
+         \x20   title: Missing\n\
+         \x20   scores(tag: MissingKey): int\n\
+         \x20   byTag(tag: MissingGroup)\n\
+         \x20       label: string\n",
+        "check.unknown_type",
+    );
+    assert_eq!(errors.len(), 3, "{errors:#?}");
+    let expected = [
+        (Type::Named("Missing".into()), 3, 12),
+        (Type::Named("MissingKey".into()), 4, 17),
+        (Type::Named("MissingGroup".into()), 5, 16),
+    ];
+    for (diagnostic, (payload, line, column)) in errors.iter().zip(expected) {
+        assert_eq!(
+            diagnostic.payload,
+            DiagnosticPayload::UnknownType(payload),
+            "{errors:#?}"
+        );
+        assert_eq!(diagnostic.span.line, line, "{errors:#?}");
+        assert_eq!(diagnostic.span.column, column, "{errors:#?}");
+    }
+}
+
+#[test]
+fn unstored_resource_annotations_accept_known_resource_enum_and_imported_resource_types() {
+    let root = temp_project("unstored-resource-known-annotations", |root| {
+        write(
+            root,
+            "src/blog/comments.mw",
+            "module blog::comments\n\
+             resource Comment\n\
+             \x20   required body: string\n",
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             use blog::comments\n\
+             enum Status\n\
+             \x20   draft\n\
+             \x20   posted\n\
+             resource Author\n\
+             \x20   required name: string\n\
+             resource Post\n\
+             \x20   author: Author\n\
+             \x20   status: Status\n\
+             \x20   external: comments::Comment\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    assert!(
+        with_code(&report, "check.unknown_type").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn typed_keyed_leaf_rejects_checker_only_error_value_type() {
     let cases = [
         (

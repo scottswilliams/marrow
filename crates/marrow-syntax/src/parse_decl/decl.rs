@@ -8,7 +8,7 @@ use super::params::parse_function_head;
 use super::stmt::StmtParser;
 use super::tokens::{
     comment_from_token, doc_comment_text, find_top_level_equal, line_span, line_text_end_before,
-    qualified_name, type_ref_from_tokens,
+    qualified_name, reject_structural_type_tokens, type_ref_from_tokens,
 };
 use crate::ast::{
     Block, Comment, CommentMarker, CommentPlacement, ConstDecl, Declaration, EnumDecl, Expression,
@@ -18,9 +18,7 @@ use crate::ast::{
 use crate::diagnostic::{
     Diagnostic, ExpectedSyntax, ParseDiagnosticReason, SourceSpan, UnsupportedSyntax,
 };
-use crate::token::{
-    Keyword, Token, TokenKind, is_identifier, is_type_text, keyword, tokens_in_range,
-};
+use crate::token::{Keyword, Token, TokenKind, is_identifier, keyword, tokens_in_range};
 
 /// Recursive-descent parser for top-level declarations over the file-wide token
 /// stream, the same stream `StmtParser`/`ExprParser` consume. It dispatches on
@@ -309,12 +307,19 @@ impl<'a> DeclParser<'a> {
                 "expected const name before type annotation",
             );
         }
-        // No `:` leaves the type absent; a `:` with a well-formed type spelling
-        // yields it; an empty or malformed annotation reports and yields no type.
+        // No `:` leaves the type absent; a `:` with no tokens after it reports
+        // and yields no type. Semantic type resolution belongs downstream.
         let ty = type_tokens.and_then(|tokens| {
-            let ty = (!tokens.is_empty()).then(|| type_ref_from_tokens(self.source, tokens));
-            if ty.as_ref().is_some_and(|ty| is_type_text(&ty.text)) {
-                return ty;
+            if !tokens.is_empty() {
+                if let Err(error) = reject_structural_type_tokens(
+                    tokens,
+                    ExpectedSyntax::ConstType,
+                    "expected const type annotation",
+                ) {
+                    self.error_span(span, error.reason, error.message);
+                    return None;
+                }
+                return Some(type_ref_from_tokens(self.source, tokens));
             }
             self.error_span(
                 span,

@@ -250,28 +250,3 @@ pub(crate) fn is_qualified_name(text: &str) -> bool {
     };
     is_identifier(first) && parts.all(is_identifier)
 }
-
-/// Is `text` well-formed as a type annotation? A lexical guard the parser uses to
-/// disambiguate productions (for example, a key list `name: type` from other paren
-/// content) without resolving meaning, rejecting spellings that cannot be a type at
-/// all. The two live in different crates by design: shape decisions belong to the
-/// parser, semantic resolution to the schema layer downstream.
-pub(crate) fn is_type_text(text: &str) -> bool {
-    let text = text.trim();
-    if text.is_empty() || text.contains('=') {
-        return false;
-    }
-    if let Some(inner) = text
-        .strip_prefix("sequence[")
-        .and_then(|rest| rest.strip_suffix(']'))
-    {
-        return is_type_text(inner);
-    }
-    if let Some(root) = text
-        .strip_prefix("Id(^")
-        .and_then(|rest| rest.strip_suffix(')'))
-    {
-        return is_identifier(root);
-    }
-    is_qualified_name(text)
-}

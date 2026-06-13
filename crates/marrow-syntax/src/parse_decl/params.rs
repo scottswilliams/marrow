@@ -2,11 +2,13 @@
 //! the multi-line parameter grouping that lets a line break separate parameters
 //! the way a comma does.
 
-use super::tokens::{doc_comment_text, type_ref_from_tokens};
+use super::tokens::{
+    doc_comment_text, find_top_level_equal, reject_structural_type_tokens, type_ref_from_tokens,
+};
 use super::{FunctionHead, ParseError, ParseResult};
 use crate::ast::ParamDecl;
 use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, UnsupportedSyntax};
-use crate::token::{Keyword, Token, TokenKind, is_type_text};
+use crate::token::{Keyword, Token, TokenKind};
 
 /// Parse a function header's tokens: `pub? fn name(params) (: return)?`.
 pub(super) fn parse_function_head(source: &str, tokens: &[Token]) -> ParseResult<FunctionHead> {
@@ -95,13 +97,12 @@ pub(super) fn parse_function_head(source: &str, tokens: &[Token]) -> ParseResult
                 "expected return type after `:`",
             ));
         }
+        reject_structural_type_tokens(
+            ty_tokens,
+            ExpectedSyntax::FunctionReturnType,
+            "expected return type after `:`",
+        )?;
         let ty = type_ref_from_tokens(source, ty_tokens);
-        if !is_type_text(&ty.text) {
-            return Err(ParseError::new(
-                ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionReturnType),
-                "expected return type annotation",
-            ));
-        }
         Some(ty)
     };
     Ok(FunctionHead {
@@ -154,21 +155,30 @@ fn parse_params_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<ParamDe
             ));
         }
         let ty_tokens = &rest[2..];
-        // A default value (`name: type = expr`) is rejected; an `=` here means a
-        // parameter default, which Marrow does not use.
-        if ty_tokens.iter().any(|token| token.kind == TokenKind::Equal) {
+        if let Some(equal) = find_top_level_equal(ty_tokens) {
+            let ty_before_default = &ty_tokens[..equal];
+            if ty_before_default.is_empty() {
+                return Err(ParseError::new(
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::ParameterType),
+                    "expected parameter type annotation",
+                ));
+            }
+            reject_structural_type_tokens(
+                ty_before_default,
+                ExpectedSyntax::ParameterType,
+                "expected parameter type annotation",
+            )?;
             return Err(ParseError::new(
                 ParseDiagnosticReason::Unsupported(UnsupportedSyntax::ParameterDefaults),
                 "parameter defaults are not used in Marrow",
             ));
         }
+        reject_structural_type_tokens(
+            ty_tokens,
+            ExpectedSyntax::ParameterType,
+            "expected parameter type annotation",
+        )?;
         let ty = type_ref_from_tokens(source, ty_tokens);
-        if !is_type_text(&ty.text) {
-            return Err(ParseError::new(
-                ParseDiagnosticReason::Expected(ExpectedSyntax::ParameterType),
-                "expected parameter type annotation",
-            ));
-        }
         params.push(ParamDecl { docs, name, ty });
     }
     Ok(params)

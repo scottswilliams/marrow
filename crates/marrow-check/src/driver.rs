@@ -828,7 +828,7 @@ pub(crate) fn check_file_source(
                         }
                     }
                     stores.push(schema);
-                } else {
+                } else if !store.resource.is_empty() && !store.root.root.is_empty() {
                     diagnostics.push(CheckDiagnostic::error(
                         CHECK_UNKNOWN_TYPE,
                         file_path,

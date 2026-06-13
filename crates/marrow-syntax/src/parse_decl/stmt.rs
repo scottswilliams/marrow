@@ -299,7 +299,13 @@ impl<'a> StmtParser<'a> {
         let newline = self.find_line_end();
         let content_end = self.split_trailing_comment(newline);
         let header = &self.tokens[self.pos..content_end];
-        let (name, ty) = parse_catch_header(self.source, header);
+        let (name, ty) = match parse_catch_header(self.source, header) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                self.error_span_reason(line_span(header), error.reason, error.message);
+                (String::new(), None)
+            }
+        };
         self.pos = (newline + 1).min(self.tokens.len());
         let block = self.block_body();
         CatchClause { name, ty, block }

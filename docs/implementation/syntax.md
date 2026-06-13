@@ -35,7 +35,7 @@ A value the grammar cannot structure yields `None` plus a `parse.syntax` diagnos
 | --- | --- |
 | `crates/marrow-syntax/src/lib.rs` | Crate root; re-exports the public surface and defines `parse_source` (lex, parse, merge+sort diagnostics). |
 | `crates/marrow-syntax/src/lexer.rs` | The lexer: line splitting, indentation, `INDENT`/`DEDENT`/`NEWLINE`, numbers/durations/strings/bytes/interpolation/punctuation, tab/operator rejection. |
-| `crates/marrow-syntax/src/token.rs` | `Token`/`TokenKind`/`Keyword`/`LexedSource`, the keyword table, `duration_unit_seconds`, lexical predicates (`is_identifier`, `is_type_text`, `tokens_in_range`). |
+| `crates/marrow-syntax/src/token.rs` | `Token`/`TokenKind`/`Keyword`/`LexedSource`, the keyword table, `duration_unit_seconds`, lexical predicates (`is_identifier`, `is_qualified_name`, `tokens_in_range`). |
 | `crates/marrow-syntax/src/parse_decl/` | The declaration and statement parsers, split by concern: `decl` (top-level dispatch and declaration bodies), `cursor` (shared `DeclParser` navigation and diagnostics), `members` (resource/store/enum member bodies), `evolve` (evolution steps), `head` and `params` (token-slice declaration heads), `stmt` (`StmtParser` and compound-statement framing), `statement_lines` (single-statement-line parsers), `tokens` (low-level token-slice helpers); `mod.rs` holds the shared types and re-exports `DeclParser`. |
 | `crates/marrow-syntax/src/parse_expr.rs` | `ExprParser`: single-expression recursive descent with the full precedence ladder. |
 | `crates/marrow-syntax/src/ast.rs` | The full AST: `ParsedSource`, `SourceFile`, every declaration/statement/expression node, comment trivia, `span()` accessors, `TypeRef`. |
@@ -48,8 +48,6 @@ A value the grammar cannot structure yields `None` plus a `parse.syntax` diagnos
 - `format_source` re-parses rather than consuming a caller-held AST, so a caller already holding a `ParsedSource` pays for a second parse.
 - `StoreDecl` is produced only by explicit `store ^root: Resource` declarations. `resource` declarations describe shapes and never synthesize saved roots.
 - `EnumDecl.public` is parsed and round-tripped but visibility is not enforced here; the flag is inert until a later crate.
-- `is_type_text` recognizes `Id(^root)` spellings that no current production emits; that part of the guard is unexercised by the front end.
-
 ## Read next
 
 - `crates/marrow-syntax/src/lib.rs` — `parse_source` (the whole pipeline in one function).

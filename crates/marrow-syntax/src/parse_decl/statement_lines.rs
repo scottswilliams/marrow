@@ -7,7 +7,7 @@ use super::head::parse_key_params_tokens;
 use super::params::match_paren;
 use super::tokens::{
     expr_of, find_top_level, find_top_level_equal, line_span, push_parse_error,
-    type_ref_from_tokens,
+    reject_structural_type_tokens, type_ref_from_tokens,
 };
 use super::{ParseError, ParseResult};
 use crate::PARSE_SYNTAX;
@@ -117,13 +117,30 @@ fn parse_const_or_var(
     if line.get(index).map(|token| token.kind) == Some(TokenKind::Colon) {
         index += 1;
         let type_start = index;
-        while index < line.len() && line[index].kind != TokenKind::Equal {
-            index += 1;
-        }
-        if index == type_start {
+        let type_end = find_top_level_equal(&line[type_start..])
+            .map(|equal| type_start + equal)
+            .unwrap_or(line.len());
+        if type_end == type_start {
             return None;
         }
-        ty = Some(type_ref_from_tokens(source, &line[type_start..index]));
+        let expected = if is_var {
+            ExpectedSyntax::ParameterType
+        } else {
+            ExpectedSyntax::ConstType
+        };
+        let message = if is_var {
+            "expected variable type annotation"
+        } else {
+            "expected const type annotation"
+        };
+        if let Err(error) =
+            reject_structural_type_tokens(&line[type_start..type_end], expected, message)
+        {
+            push_parse_error(diagnostics, line_span(line), error);
+            return None;
+        }
+        ty = Some(type_ref_from_tokens(source, &line[type_start..type_end]));
+        index = type_end;
     }
 
     match line.get(index).map(|token| token.kind) {
@@ -291,21 +308,29 @@ fn find_top_level_by(source: &str, tokens: &[Token]) -> Option<usize> {
 
 /// Parse a `catch` header `name` or `name: Type` into the bound name and an
 /// optional type annotation. A malformed header yields an empty name.
-pub(super) fn parse_catch_header(source: &str, header: &[Token]) -> (String, Option<TypeRef>) {
+pub(super) fn parse_catch_header(
+    source: &str,
+    header: &[Token],
+) -> ParseResult<(String, Option<TypeRef>)> {
     let Some(name_token) = header.first() else {
-        return (String::new(), None);
+        return Ok((String::new(), None));
     };
     if name_token.kind != TokenKind::Identifier {
-        return (String::new(), None);
+        return Ok((String::new(), None));
     }
     let name = name_token.text(source).to_string();
     let ty = match header.get(1) {
         Some(colon) if colon.kind == TokenKind::Colon && header.len() > 2 => {
+            reject_structural_type_tokens(
+                &header[2..],
+                ExpectedSyntax::ParameterType,
+                "expected catch type annotation",
+            )?;
             Some(type_ref_from_tokens(source, &header[2..]))
         }
         _ => None,
     };
-    (name, ty)
+    Ok((name, ty))
 }
 
 fn parse_for_binding(source: &str, tokens: &[Token]) -> Option<ForBinding> {

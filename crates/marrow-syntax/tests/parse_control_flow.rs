@@ -1,7 +1,9 @@
 //! Control-flow statements: conditionals, loops, error
 //! handling, and match arms, with the body and indentation rules each enforces.
 
-use marrow_syntax::{BinaryOp, Expression, ParseDiagnosticReason, Statement, parse_source};
+use marrow_syntax::{
+    BinaryOp, ExpectedSyntax, Expression, ParseDiagnosticReason, Statement, parse_source,
+};
 
 mod common;
 
@@ -360,6 +362,31 @@ fn parses_try_catch_without_type_annotation() {
     let catch = catch.as_ref().expect("catch clause");
     assert_eq!(catch.name, "err");
     assert_eq!(catch.ty, None);
+}
+
+#[test]
+fn catch_rejects_structural_equal_inside_type_annotation() {
+    let parsed = parse_source(
+        "module app\n\
+         fn run()\n\
+         \x20   try\n\
+         \x20       return\n\
+         \x20   catch err: Error = 1\n\
+         \x20       return\n",
+    );
+
+    assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "parse.syntax"
+                && diagnostic.reason
+                    == parse_reason(ParseDiagnosticReason::Expected(
+                        ExpectedSyntax::ParameterType,
+                    ))
+        }),
+        "{:#?}",
+        parsed.diagnostics
+    );
 }
 
 /// Panic guard for the DEDENT-out-of-slice edge: a body that ends in nested

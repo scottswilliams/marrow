@@ -25,6 +25,40 @@ fn reports_unknown_types_in_signatures_and_consts() {
 }
 
 #[test]
+fn reports_unknown_types_for_parser_migrated_signature_spellings() {
+    let found = check_module(
+        "unknown-type-migrated-signature-spellings",
+        "module m\nfn f(rows: map[string, int]): map[string, int]\n    return 1\n",
+        "check.unknown_type",
+    );
+    assert_eq!(found.len(), 2, "{found:#?}");
+    assert!(
+        found.iter().all(|diagnostic| diagnostic.payload
+            == DiagnosticPayload::UnknownType(marrow_schema::Type::Named(
+                "map[string,int]".into()
+            ))
+            && diagnostic.span.line == 2),
+        "{found:#?}"
+    );
+}
+
+#[test]
+fn reports_unknown_type_for_parser_migrated_keyed_var_key_annotation() {
+    let found = check_script(
+        "unknown-type-migrated-keyed-var-key",
+        "fn f()\n    var counts(name: 1): int\n",
+        "check.unknown_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::UnknownType(marrow_schema::Type::Named("1".into())),
+        "{found:#?}"
+    );
+    assert_eq!(found[0].span.line, 2, "{found:#?}");
+}
+
+#[test]
 fn known_types_are_not_flagged_as_unknown() {
     let root = temp_project("known-types", |root| {
         // Primitive, sequence, identity, the module's own resource, `unknown`, and

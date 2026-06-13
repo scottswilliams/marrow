@@ -150,46 +150,94 @@ fn parses_keyed_var_declaration() {
 }
 
 #[test]
-fn keyed_var_rejects_a_non_type_key_like_the_resource_path() {
-    // The keyed-`var` key list and the resource key list are one concept and
-    // must apply the same key-type rule: a key whose annotation is not a type
-    // (here the integer `1`) is rejected in both.
+fn keyed_var_preserves_key_type_spelling_for_downstream_resolution() {
     let parsed = parse_source(
         "module app\n\
          fn tally()\n\
          \x20   var counts(name: 1): int\n",
     );
-    assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
+    assert!(!parsed.has_errors(), "{:#?}", parsed.diagnostics);
     let tally = parsed.file.function("tally").expect("tally function");
-    assert!(tally.body.statements.is_empty(), "{tally:#?}");
+    let Statement::Var { keys, ty, .. } = &tally.body.statements[0] else {
+        panic!("expected var, got {:?}", tally.body.statements[0]);
+    };
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0].name, "name");
+    assert_eq!(keys[0].ty.text, "1");
+    assert_eq!(ty.as_ref().map(|ty| ty.text.as_str()), Some("int"));
+}
+
+#[test]
+fn keyed_var_key_list_errors_keep_key_specific_reasons() {
+    let source = "fn f()\n    var counts(): int\n";
+    let parsed = parse_source(source);
+
+    assert!(parsed.has_errors(), "expected error for:\n{source}");
     assert!(
         has_reason(
             &parsed.diagnostics,
-            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::KeyType))
+            parse_reason(ParseDiagnosticReason::EmptyKeyParameters)
         ),
-        "{:#?}",
+        "expected keyed-var diagnostic for {source}: {:#?}",
+        parsed.diagnostics
+    );
+    assert!(
+        !has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement))
+        ),
+        "keyed-var errors should not fall back to statement recovery for {source}: {:#?}",
         parsed.diagnostics
     );
 }
 
 #[test]
-fn keyed_var_key_list_errors_keep_key_specific_reasons() {
-    for (source, expected) in [
+fn keyed_var_rejects_structural_equal_inside_key_type_annotations() {
+    let source = "fn f()\n    var counts(name: int = 1): string\n";
+    let parsed = parse_source(source);
+
+    assert!(parsed.has_errors(), "expected error for:\n{source}");
+    assert!(
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::KeyType))
+        ),
+        "expected keyed-var key-type diagnostic for {source}: {:#?}",
+        parsed.diagnostics
+    );
+    assert!(
+        !has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement))
+        ),
+        "keyed-var errors should not fall back to statement recovery for {source}: {:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
+fn local_bindings_reject_structural_equal_inside_type_annotations() {
+    let cases = [
         (
-            "fn f()\n    var counts(): int\n",
-            ParseDiagnosticReason::EmptyKeyParameters,
+            "fn f()\n    var x: sequence[a = b] = 1\n",
+            ExpectedSyntax::ParameterType,
         ),
         (
-            "fn f()\n    var counts(name: 1): int\n",
-            ParseDiagnosticReason::Expected(ExpectedSyntax::KeyType),
+            "fn f()\n    const x: sequence[a = b] = 1\n",
+            ExpectedSyntax::ConstType,
         ),
-    ] {
+    ];
+
+    for (source, expected) in cases {
         let parsed = parse_source(source);
 
         assert!(parsed.has_errors(), "expected error for:\n{source}");
         assert!(
-            has_reason(&parsed.diagnostics, parse_reason(expected)),
-            "expected keyed-var diagnostic for {source}: {:#?}",
+            has_reason(
+                &parsed.diagnostics,
+                parse_reason(ParseDiagnosticReason::Expected(expected))
+            ),
+            "expected local binding type diagnostic for {source}: {:#?}",
             parsed.diagnostics
         );
         assert!(
@@ -197,7 +245,7 @@ fn keyed_var_key_list_errors_keep_key_specific_reasons() {
                 &parsed.diagnostics,
                 parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement))
             ),
-            "keyed-var errors should not fall back to statement recovery for {source}: {:#?}",
+            "local binding type errors should not fall back to statement recovery for {source}: {:#?}",
             parsed.diagnostics
         );
     }

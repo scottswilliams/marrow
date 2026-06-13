@@ -3,7 +3,8 @@
 //! signature rejects (defaults, generics, removed parameter modes, type aliases).
 
 use marrow_syntax::{
-    Diagnose, ExpectedSyntax, ParseDiagnosticReason, UnsupportedSyntax, parse_source,
+    Diagnose, ExpectedSyntax, ParseDiagnosticReason, ResourceMember, UnsupportedSyntax,
+    parse_source,
 };
 
 mod common;
@@ -35,6 +36,51 @@ fn rejects_parameter_defaults() {
             )),
         "diagnostic should not fall back to a generic message, got {:?}",
         diagnostic.message
+    );
+}
+
+#[test]
+fn parameter_equal_classifies_defaults_separately_from_nested_type_syntax() {
+    let default = parse_source("module app\nfn f(x: int = 5)\n    return\n");
+    assert!(
+        default
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Unsupported(
+                    UnsupportedSyntax::ParameterDefaults,
+                ))),
+        "{:#?}",
+        default.diagnostics
+    );
+    assert!(
+        !default
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Expected(
+                    ExpectedSyntax::ParameterType,
+                ))),
+        "{:#?}",
+        default.diagnostics
+    );
+
+    let nested = parse_source("module app\nfn f(x: sequence[a = b])\n    return\n");
+    assert!(
+        nested.diagnostics.iter().any(|diagnostic| diagnostic.reason
+            == parse_reason(ParseDiagnosticReason::Expected(
+                ExpectedSyntax::ParameterType,
+            ))),
+        "{:#?}",
+        nested.diagnostics
+    );
+    assert!(
+        !nested.diagnostics.iter().any(|diagnostic| diagnostic.reason
+            == parse_reason(ParseDiagnosticReason::Unsupported(
+                UnsupportedSyntax::ParameterDefaults,
+            ))),
+        "{:#?}",
+        nested.diagnostics
     );
 }
 
@@ -124,9 +170,43 @@ fn rejects_malformed_type_annotations() {
             "module app\nresource Book\n    title: string\nstore ^books(id:): Book\n",
             ExpectedSyntax::KeyType,
         ),
+    ] {
+        let parsed = parse_source(source);
+
+        assert!(parsed.has_errors(), "expected error for:\n{source}");
+        assert!(
+            parsed.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == "parse.syntax"
+                    && diagnostic.reason == parse_reason(ParseDiagnosticReason::Expected(expected))
+            }),
+            "expected a parse.syntax diagnostic with {expected:?} for {source}: {:#?}",
+            parsed.diagnostics
+        );
+    }
+}
+
+#[test]
+fn rejects_structural_equal_inside_type_annotations() {
+    for (source, expected) in [
         (
-            "module app\nresource Book\n    title: sequence[]\n",
+            "module app\nconst Max: sequence[a = b] = 1\n",
+            ExpectedSyntax::ConstType,
+        ),
+        (
+            "module app\nfn f(): int = 1\n    return 1\n",
+            ExpectedSyntax::FunctionReturnType,
+        ),
+        (
+            "module app\nresource Book\n    title: string = 1\n",
             ExpectedSyntax::FieldType,
+        ),
+        (
+            "module app\nresource Book\n    scores(k: int = 1): string\n",
+            ExpectedSyntax::KeyType,
+        ),
+        (
+            "module app\nresource Book\n    title: string\nstore ^books(id: int = 1): Book\n",
+            ExpectedSyntax::KeyType,
         ),
     ] {
         let parsed = parse_source(source);
@@ -144,23 +224,29 @@ fn rejects_malformed_type_annotations() {
 }
 
 #[test]
-fn map_type_spelling_is_rejected_in_type_position() {
-    for source in [
-        "module app\nfn f(rows: map[string, int])\n    return\n",
-        "module app\nfn f(): map[string, int]\n    return 1\n",
-        "module app\nresource Book\n    scores: map[string, int]\n",
-        "module app\nresource Book\n    scores(k: map[string, int]): int\n",
-    ] {
-        let parsed = parse_source(source);
-        assert!(parsed.has_errors(), "expected parse error for:\n{source}");
-    }
-
-    let parsed = parse_source("module app\nresource Book\n    tags: sequence[string]\n");
-    assert!(
-        !parsed.has_errors(),
-        "sequence[T] should remain valid type syntax: {:#?}",
-        parsed.diagnostics
+fn parser_preserves_type_spellings_for_downstream_resolution() {
+    let parsed = parse_source(
+        "module app\n\
+         fn f(rows: map[string, int]): map[string, int]\n\
+         \x20   return 1\n\
+         resource Book\n\
+         \x20   scores(k: map[string, int]): sequence[]\n",
     );
+    assert!(!parsed.has_errors(), "{:#?}", parsed.diagnostics);
+
+    let function = parsed.file.function("f").expect("function f");
+    assert_eq!(function.params[0].ty.text, "map[string,int]");
+    assert_eq!(
+        function.return_type.as_ref().map(|ty| ty.text.as_str()),
+        Some("map[string,int]")
+    );
+
+    let book = parsed.file.resource("Book").expect("Book resource");
+    let ResourceMember::Field(scores) = &book.members[0] else {
+        panic!("expected scores field, got {:#?}", book.members[0]);
+    };
+    assert_eq!(scores.keys[0].ty.text, "map[string,int]");
+    assert_eq!(scores.ty.text, "sequence[]");
 }
 
 #[test]
