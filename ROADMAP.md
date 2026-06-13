@@ -850,19 +850,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 Parser/checker/runtime files overlap heavily: the cut series is sequenced; additions follow.
 Listing order is execution order. Store crate is quiet this wave except where noted.
 
-**W4.8 → Bounded ordered reads (II.C2, gate 11; store-touching; the named slippable language
-lane).**
-Owns: backend lo..hi bounded scan (composing with W2.8's reverse scan), facade exact-prefix +
-trailing-range construction, checker range-in-key-argument typing — open forms
-`start..`/`..end`/`..=end` accepted in key-argument position, bare `..` rejected, no composite
-endpoints, identity-typed components excluded from range bounds, `by` rejected in key-argument
-position — loop streaming, cost-model
-one-liner, spec rule. Seed: failing fixture — `for id in ^posts.byDate(start..end)` streams
-bounded; non-trailing range rejected; a range over an identity-typed component rejected. Review:
-range iteration never grants unique-lookup
-narrowing; conformance laws for bounded scans both directions. Done: keyset pagination
-demonstrated in a fixture with zero new concepts.
-
 **W4.9 ∥ (after W4.2 — shared format.rs) fmt comment retention (III.D1).** Owns:
 parse_decl/cursor.rs trailing-trivia capture,
 EvolveDecl comments slot, format.rs emission, the permanent comment-count refusal invariant in
