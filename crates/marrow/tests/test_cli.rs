@@ -12,7 +12,7 @@ fn run_test_args(args: &[&str]) -> std::process::Output {
     marrow_sub("test", args)
 }
 
-const CONFIG: &str = r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#;
+const CONFIG: &str = r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#;
 
 fn mixed_outcome_project(name: &str) -> support::TempProject {
     temp_project(name, |root| {
@@ -53,6 +53,7 @@ struct TestResult {
 #[derive(Debug, PartialEq, Eq)]
 struct Summary {
     total: u32,
+    selected: u32,
     passed: u32,
     failed: u32,
     errored: u32,
@@ -69,6 +70,8 @@ struct TestReport {
 /// pins the text render contract (singular `test`, the count ordering) where the
 /// parsed [`Summary`] tallies cannot.
 const SUMMARY_GOLDEN_ONE_PASS: &str = "1 test: 1 passed, 0 failed, 0 errored";
+const SUMMARY_GOLDEN_FILTERED_ONE_PASS: &str =
+    "1 of 3 selected tests: 1 passed, 0 failed, 0 errored";
 
 /// Parse `marrow test` stdout into typed results and a summary. Result lines lead with
 /// a fixed `ok`/`FAIL`/`ERROR` label; a non-`ok` result is followed by an indented
@@ -116,11 +119,19 @@ fn parse_report(stdout: &[u8]) -> TestReport {
     }
 }
 
-/// Parse `N test[s]: P passed, F failed, E errored` into typed tallies, or `None` for
-/// any other line.
+/// Parse `N test[s]: ...` or `S of T selected tests: ...` into typed tallies, or
+/// `None` for any other line.
 fn parse_summary(line: &str) -> Option<Summary> {
-    let (count, rest) = line.split_once(" test")?;
-    let total: u32 = count.parse().ok()?;
+    let (selected, total, rest) = if let Some((selected, rest)) = line.split_once(" of ") {
+        let selected: u32 = selected.parse().ok()?;
+        let (total, rest) = rest.split_once(" selected test")?;
+        let total: u32 = total.parse().ok()?;
+        (selected, total, rest)
+    } else {
+        let (count, rest) = line.split_once(" test")?;
+        let total: u32 = count.parse().ok()?;
+        (total, total, rest)
+    };
     let rest = rest.strip_prefix('s').unwrap_or(rest);
     let rest = rest.strip_prefix(": ")?;
     let mut tallies = rest.split(", ");
@@ -129,6 +140,7 @@ fn parse_summary(line: &str) -> Option<Summary> {
     let errored = leading_count(tallies.next()?, "errored")?;
     Some(Summary {
         total,
+        selected,
         passed,
         failed,
         errored,
@@ -184,6 +196,7 @@ fn runs_passing_tests_and_reports_a_summary() {
         report.summary,
         Summary {
             total: 1,
+            selected: 1,
             passed: 1,
             failed: 0,
             errored: 0,
@@ -236,6 +249,7 @@ fn a_failed_assertion_is_a_located_failure() {
         report.summary,
         Summary {
             total: 1,
+            selected: 1,
             passed: 0,
             failed: 1,
             errored: 0,
@@ -271,6 +285,7 @@ fn a_runtime_fault_is_reported_as_an_error() {
         report.summary,
         Summary {
             total: 1,
+            selected: 1,
             passed: 0,
             failed: 0,
             errored: 1,
@@ -294,6 +309,7 @@ fn format_json_reports_test_results_and_summary() {
         report["summary"],
         serde_json::json!({
             "total": 3,
+            "selected": 3,
             "passed": 1,
             "failed": 1,
             "errored": 1,
@@ -305,23 +321,34 @@ fn format_json_reports_test_results_and_summary() {
         tests[0]["name"],
         serde_json::json!("tests::app_test::passes")
     );
-    assert_eq!(tests[0]["status"], serde_json::json!("passed"));
-    assert_eq!(tests[0]["location"]["line"], serde_json::json!(1));
-    assert_eq!(tests[0]["location"]["column"], serde_json::json!(1));
+    assert_eq!(tests[0]["outcome"], serde_json::json!("passed"));
+    assert_eq!(
+        tests[0]["file"],
+        serde_json::json!(root.join("tests/app_test.mw").display().to_string())
+    );
+    assert_eq!(tests[0]["span"]["line"], serde_json::json!(1));
+    assert_eq!(tests[0]["span"]["column"], serde_json::json!(1));
+    assert!(tests[0].get("status").is_none(), "{report}");
+    assert!(tests[0].get("location").is_none(), "{report}");
+    assert!(tests[0].get("code").is_none(), "{report}");
     assert_eq!(
         tests[1]["name"],
         serde_json::json!("tests::app_test::fails")
     );
-    assert_eq!(tests[1]["status"], serde_json::json!("failed"));
+    assert_eq!(tests[1]["outcome"], serde_json::json!("failed"));
     assert_eq!(tests[1]["code"], serde_json::json!("run.assertion"));
-    assert_eq!(tests[1]["location"]["line"], serde_json::json!(5));
+    assert_eq!(tests[1]["span"]["line"], serde_json::json!(5));
+    assert!(tests[1].get("status").is_none(), "{report}");
+    assert!(tests[1].get("location").is_none(), "{report}");
     assert_eq!(
         tests[2]["name"],
         serde_json::json!("tests::app_test::errors")
     );
-    assert_eq!(tests[2]["status"], serde_json::json!("errored"));
+    assert_eq!(tests[2]["outcome"], serde_json::json!("errored"));
     assert_eq!(tests[2]["code"], serde_json::json!("run.divide_by_zero"));
-    assert_eq!(tests[2]["location"]["line"], serde_json::json!(9));
+    assert_eq!(tests[2]["span"]["line"], serde_json::json!(9));
+    assert!(tests[2].get("status").is_none(), "{report}");
+    assert!(tests[2].get("location").is_none(), "{report}");
 }
 
 #[test]
@@ -341,31 +368,130 @@ fn format_jsonl_streams_test_results_then_summary() {
         records[0]["name"],
         serde_json::json!("tests::app_test::passes")
     );
-    assert_eq!(records[0]["status"], serde_json::json!("passed"));
-    assert_eq!(records[0]["location"]["line"], serde_json::json!(1));
+    assert_eq!(records[0]["outcome"], serde_json::json!("passed"));
+    assert_eq!(
+        records[0]["file"],
+        serde_json::json!(root.join("tests/app_test.mw").display().to_string())
+    );
+    assert_eq!(records[0]["span"]["line"], serde_json::json!(1));
+    assert_eq!(records[0]["span"]["column"], serde_json::json!(1));
+    assert!(records[0].get("status").is_none(), "{records:#?}");
+    assert!(records[0].get("location").is_none(), "{records:#?}");
+    assert!(records[0].get("code").is_none(), "{records:#?}");
     assert_eq!(records[1]["kind"], serde_json::json!("test"));
     assert_eq!(
         records[1]["name"],
         serde_json::json!("tests::app_test::fails")
     );
-    assert_eq!(records[1]["status"], serde_json::json!("failed"));
+    assert_eq!(records[1]["outcome"], serde_json::json!("failed"));
     assert_eq!(records[1]["code"], serde_json::json!("run.assertion"));
+    assert_eq!(records[1]["span"]["line"], serde_json::json!(5));
+    assert!(records[1].get("status").is_none(), "{records:#?}");
+    assert!(records[1].get("location").is_none(), "{records:#?}");
     assert_eq!(records[2]["kind"], serde_json::json!("test"));
     assert_eq!(
         records[2]["name"],
         serde_json::json!("tests::app_test::errors")
     );
-    assert_eq!(records[2]["status"], serde_json::json!("errored"));
+    assert_eq!(records[2]["outcome"], serde_json::json!("errored"));
     assert_eq!(records[2]["code"], serde_json::json!("run.divide_by_zero"));
+    assert_eq!(records[2]["span"]["line"], serde_json::json!(9));
+    assert!(records[2].get("status").is_none(), "{records:#?}");
+    assert!(records[2].get("location").is_none(), "{records:#?}");
     assert_eq!(
         records[3],
         serde_json::json!({
             "kind": "summary",
             "total": 3,
+            "selected": 3,
             "passed": 1,
             "failed": 1,
             "errored": 1,
         })
+    );
+}
+
+#[test]
+fn filter_runs_only_matching_qualified_test_names() {
+    let root = mixed_outcome_project("test-filter-pass");
+    let output = run_test_args(&[
+        "--filter",
+        "app_test::passes",
+        root.to_str().expect("project path utf8"),
+    ]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let report = parse_report(&output.stdout);
+    assert_eq!(report.results.len(), 1);
+    assert_eq!(report.results[0].name, "tests::app_test::passes");
+    assert_eq!(report.results[0].outcome, Outcome::Ok);
+    let summary_line = String::from_utf8(output.stdout.clone())
+        .expect("stdout utf8")
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .expect("a summary line")
+        .to_string();
+    assert_eq!(summary_line, SUMMARY_GOLDEN_FILTERED_ONE_PASS);
+}
+
+#[test]
+fn format_jsonl_filter_reports_selected_and_total() {
+    let root = mixed_outcome_project("test-jsonl-filter");
+    let output = run_test_args(&[
+        "--format",
+        "jsonl",
+        "--filter",
+        "app_test::fails",
+        root.to_str().expect("project path utf8"),
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let records = jsonl(output.stdout);
+    assert_eq!(records.len(), 2, "{records:#?}");
+    assert_eq!(records[0]["kind"], serde_json::json!("test"));
+    assert_eq!(
+        records[0]["name"],
+        serde_json::json!("tests::app_test::fails")
+    );
+    assert_eq!(records[0]["outcome"], serde_json::json!("failed"));
+    assert_eq!(records[0]["code"], serde_json::json!("run.assertion"));
+    assert_eq!(
+        records[1],
+        serde_json::json!({
+            "kind": "summary",
+            "total": 3,
+            "selected": 1,
+            "passed": 0,
+            "failed": 1,
+            "errored": 0,
+        })
+    );
+}
+
+#[test]
+fn filter_with_no_matches_fails_closed() {
+    let root = mixed_outcome_project("test-filter-none");
+    let output = run_test_args(&[
+        "--format",
+        "jsonl",
+        "--filter",
+        "typo",
+        root.to_str().expect("project path utf8"),
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let records = jsonl(output.stdout);
+    assert_eq!(records.len(), 1, "{records:#?}");
+    assert_eq!(records[0]["code"], serde_json::json!("test.none"));
+    assert_eq!(
+        records[0]["message"],
+        serde_json::json!("no tests matched filter `typo`")
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "unexpected stderr: {:?}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
@@ -542,6 +668,7 @@ fn each_test_runs_against_a_fresh_store() {
         report.summary,
         Summary {
             total: 2,
+            selected: 2,
             passed: 2,
             failed: 0,
             errored: 0,

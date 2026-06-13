@@ -454,7 +454,7 @@ fn test_trace_labels_each_test() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
         );
         write(root, "src/app.mw", "module app\n");
         write(

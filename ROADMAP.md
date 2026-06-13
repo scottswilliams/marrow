@@ -849,16 +849,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 Listing order is execution order. docs/cli.md integrates in lane order: W6.4 → W6.5 → W6.3 →
 W6.6.
 
-**W6.2 ∥ CI-grade test + discovery (III.C2 a-b + gates 24, 31).** Owns: cmd_test JSON/JSONL
-results — one pre-stable record per test ({name, outcome, code?, file?, span?}) plus a summary
-record — `--filter <substring>` over qualified test names (zero matches fail closed as
-`test.none` naming the filter; the summary reports selected/total), plain-path tests config +
-fail-closed metacharacter rejection (any entry containing one of `*`, `?`, `[`, `]`, `{`, `}` is
-`config.invalid`), discovery.rs test rewrites — `tests/*.mw` asserts `config.invalid`; bare
-`tests` asserts the recursive walk — project-config.md, symlink rule documented. Seed: failing
-test — CI parses one JSON record per test. Review: fail-closed everywhere a typo could silently
-drop coverage. Done: glob pseudo-grammar absent; test_pattern_base deleted.
-
 **W6.4 ∥ Single-file check deletion (removal #16; supersedes III.C4's cli.md item).** Owns:
 cmd_check.rs ScratchDir/relocation deletion, check_cli.rs migration to project fixtures, cli.md
 rewrite, usage error pointing at marrow.json. Seed: `marrow check file.mw` is a typed usage

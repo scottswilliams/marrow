@@ -27,7 +27,7 @@ pub struct ProjectConfig {
     pub default_entry: Option<String>,
     /// The selected storage backend, if the project pins one.
     pub store: Option<StoreConfig>,
-    /// Test file glob patterns.
+    /// Test file or directory paths, relative to the project root.
     pub tests: Vec<String>,
 }
 
@@ -97,6 +97,7 @@ pub enum ConfigPathViolation {
     Empty,
     Absolute,
     ParentDir,
+    GlobMetacharacter,
 }
 
 impl ConfigError {
@@ -165,8 +166,9 @@ pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
     for source_root in &raw.source_roots {
         check_under_root(ConfigPathField::SourceRootsEntry, source_root)?;
     }
-    for pattern in &raw.tests {
-        check_under_root(ConfigPathField::TestsEntry, pattern)?;
+    for test_path in &raw.tests {
+        check_under_root(ConfigPathField::TestsEntry, test_path)?;
+        check_plain_test_path(test_path)?;
     }
 
     let store = match raw.store {
@@ -262,6 +264,20 @@ fn check_no_nul(label: &str, value: &str) -> Result<(), ConfigError> {
     Ok(())
 }
 
+fn check_plain_test_path(value: &str) -> Result<(), ConfigError> {
+    if value
+        .chars()
+        .any(|character| matches!(character, '*' | '?' | '[' | ']' | '{' | '}'))
+    {
+        return Err(invalid_config_path(
+            ConfigPathField::TestsEntry,
+            value,
+            ConfigPathViolation::GlobMetacharacter,
+        ));
+    }
+    Ok(())
+}
+
 fn invalid_config_path(
     field: ConfigPathField,
     value: &str,
@@ -275,6 +291,9 @@ fn invalid_config_path(
         }
         ConfigPathViolation::ParentDir => {
             format!("`{label}` `{value}` must not contain a `..` component")
+        }
+        ConfigPathViolation::GlobMetacharacter => {
+            format!("`{label}` `{value}` must not contain glob metacharacters")
         }
     };
     ConfigError::new(
@@ -386,29 +405,33 @@ pub fn discover_modules(
     Ok(files)
 }
 
-/// Discover the `.mw` test files a project's `tests` patterns select, pairing each
+/// Discover the `.mw` test files a project's `tests` paths select, pairing each
 /// with the module name its project-root-relative path implies. Test files live
 /// outside the source roots — they are scripts, not library modules — so their
 /// names are relative to the project root (`tests/books_test.mw` →
 /// `tests::books_test`).
 ///
-/// A pattern that matches nothing is skipped (no tests), not an error. See
-/// [`test_pattern_base`] for how each pattern's glob tail selects recursion.
+/// A `.mw` file entry selects that file. A directory entry is walked
+/// recursively. A path that resolves to nothing on disk contributes no tests.
 /// Results are sorted by path with duplicates removed.
 pub fn discover_test_modules(
     project_root: &Path,
     config: &ProjectConfig,
 ) -> Result<Vec<ModuleFile>, DiscoverError> {
     let mut files = Vec::new();
-    for pattern in &config.tests {
-        let (base, recursive) = test_pattern_base(pattern);
-        let target = project_root.join(base);
-        if target.is_file() {
+    for test_path in &config.tests {
+        let target = project_root.join(test_path);
+        let Some(file_type) = std::fs::symlink_metadata(&target)
+            .ok()
+            .map(|metadata| metadata.file_type())
+        else {
+            continue;
+        };
+        if file_type.is_file() && target.extension().and_then(|ext| ext.to_str()) == Some("mw") {
             files.push(module_file(project_root, target));
-        } else if target.is_dir() {
-            collect_mw_files(project_root, &target, &mut files, recursive)?;
+        } else if file_type.is_dir() {
+            collect_mw_files(project_root, &target, &mut files, true)?;
         }
-        // A pattern that resolves to nothing on disk contributes no tests.
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
     files.dedup_by(|a, b| a.path == b.path);
@@ -416,7 +439,7 @@ pub fn discover_test_modules(
 }
 
 /// Return the test module file for `path` when it is a `.mw` file selected by one
-/// of the project's `tests` patterns. This mirrors [`discover_test_modules`] for
+/// of the project's `tests` paths. This mirrors [`discover_test_modules`] for
 /// overlay paths that may not exist on disk yet.
 pub fn test_module_file(
     project_root: &Path,
@@ -429,38 +452,24 @@ pub fn test_module_file(
     if !path.starts_with(project_root) {
         return None;
     }
-    for pattern in &config.tests {
-        let (base, recursive) = test_pattern_base(pattern);
-        let target = project_root.join(base);
+    for test_path in &config.tests {
+        let target = project_root.join(test_path);
+        if std::fs::symlink_metadata(&target)
+            .ok()
+            .is_some_and(|metadata| metadata.file_type().is_symlink())
+        {
+            continue;
+        }
         let selected = if target.extension().and_then(|ext| ext.to_str()) == Some("mw") {
             path == target
-        } else if recursive {
-            path.starts_with(&target)
         } else {
-            path.parent() == Some(target.as_path())
+            path.starts_with(&target)
         };
         if selected {
             return Some(module_file(project_root, path.to_path_buf()));
         }
     }
     None
-}
-
-/// The base path of a `tests` pattern and whether its directory is walked
-/// recursively, with the trailing glob tail removed. A double-star tail
-/// (`/**/*.mw`, `/**`) recurses; a single-star tail (`/*.mw`) matches only the
-/// immediate directory; a bare directory recurses; a bare `.mw` file is taken
-/// directly.
-///
-/// `tests/**/*.mw` → (`tests`, recursive), `tests/*.mw` → (`tests`, shallow),
-/// `tests` → (`tests`, recursive), `tests/smoke.mw` → (`tests/smoke.mw`, _).
-fn test_pattern_base(pattern: &str) -> (&str, bool) {
-    for (suffix, recursive) in [("/**/*.mw", true), ("/**", true), ("/*.mw", false)] {
-        if let Some(base) = pattern.strip_suffix(suffix) {
-            return (base, recursive);
-        }
-    }
-    (pattern, true)
 }
 
 /// Collect the `.mw` files in `dir`, descending into subdirectories when

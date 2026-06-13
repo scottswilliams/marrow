@@ -215,10 +215,10 @@ std::assert::isTrue(actual == expected)
 schema or decoding errors.
 
 `marrow test` runs every `pub fn` with no parameters in a test file as a test;
-other functions are helpers. Test files are the project's `tests` patterns in
-`marrow.json`. Each test runs against a fresh in-memory store, so tests are
-independent and never touch saved data. `marrow test` reports failures as typed
-`Error` values with source locations.
+other functions are helpers. Test files are selected by the project's `tests`
+paths in `marrow.json`. Each test runs against a fresh in-memory store, so tests
+are independent and never touch saved data. `marrow test` reports failures as
+typed `Error` values with source locations.
 
 ## `std::log`
 

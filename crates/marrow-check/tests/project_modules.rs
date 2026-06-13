@@ -310,8 +310,7 @@ fn checks_test_files_into_named_modules() {
             "pub fn add_returns_one()\n    std::assert::isTrue(app::add() == 1)\n",
         );
     });
-    let cfg =
-        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+    let cfg = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
     let (src_report, src_program) = check_project(&root, &cfg).expect("check src");
     let (test_report, test_modules) = check_tests(&root, &cfg, src_program).expect("check tests");
 
@@ -341,8 +340,7 @@ fn reports_a_parse_error_in_a_test_file() {
             "pub fn t()\n\tstd::assert::fail(\"x\")\n",
         );
     });
-    let cfg =
-        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+    let cfg = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
     let (_src_report, src_program) = check_project(&root, &cfg).expect("check src");
     let (test_report, _modules) = check_tests(&root, &cfg, src_program).expect("check tests");
 
@@ -372,8 +370,7 @@ fn a_test_file_is_named_from_its_path_not_a_declared_module() {
             "module app\n\npub fn calls_app()\n    std::assert::isTrue(app::add() == 1)\n",
         );
     });
-    let cfg =
-        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+    let cfg = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
     let (_src_report, src_program) = check_project(&root, &cfg).expect("check src");
     let (test_report, test_modules) = check_tests(&root, &cfg, src_program).expect("check tests");
 

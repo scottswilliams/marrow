@@ -5,7 +5,7 @@ root. Every command that takes a project directory — `check`, `run`, `test`,
 `fmt`, `data`, `evolve`, `backup`, and `restore` — reads
 `<projectdir>/marrow.json` first. The file
 holds project choices only: source roots, a default entrypoint, the store
-backend and its data directory, and test patterns. It does not hold compiled
+backend and its data directory, and test paths. It does not hold compiled
 schemas, the accepted catalog, index metadata, data-evolution history,
 permissions, connection strings, or secrets.
 
@@ -19,7 +19,7 @@ setting.
   "sourceRoots": ["src"],
   "run": { "defaultEntry": "shelf::sample::main" },
   "store": { "backend": "native", "dataDir": ".marrow/data" },
-  "tests": ["tests/**/*.mw"]
+  "tests": ["tests"]
 }
 ```
 
@@ -57,6 +57,7 @@ under the project root — empty, absolute, and `..`-bearing values are rejected
 A `.mw` file's path under a source root determines the module it must declare:
 `shelf/books.mw` under `src` must declare `module shelf::books`. A file directly
 under a source root maps to a bare name (`src/books.mw` → `module books`).
+Recursive source walks skip symlinked files and directories.
 
 Multiple roots are searched in order:
 
@@ -130,27 +131,26 @@ configuration vocabulary, not a permission layer.
 
 ### `tests`
 
-Glob-style patterns selecting `.mw` test files. Each test file lives outside the
-source roots — test files are scripts, not library modules — so a test file is
-named from its project-root-relative path: `tests/books_test.mw` →
+Plain project-relative paths selecting `.mw` test files. Each test file lives
+outside the source roots — test files are scripts, not library modules — so a
+test file is named from its project-root-relative path: `tests/books_test.mw` →
 `tests::books_test`.
 
 `marrow test` runs every `pub fn` with no parameters in a discovered test file,
 each against a fresh in-memory store. Test entries follow the same under-root
-rule as source roots (no empty, absolute, or `..`-bearing values).
+rule as source roots (no empty, absolute, or `..`-bearing values). They also
+reject glob metacharacters (`*`, `?`, `[`, `]`, `{`, `}`) so a typo cannot
+silently drop coverage.
 
-Pattern forms (the directory-walk subset of globbing):
-
-| Pattern | Matches |
+| Entry | Matches |
 |---|---|
-| `tests/**/*.mw` | every `.mw` file under `tests`, recursively |
-| `tests/**` | same — recursive walk of `tests` |
-| `tests/*.mw` | `.mw` files directly in `tests` only (no recursion) |
-| `tests` | bare directory; walked recursively |
+| `tests` | every `.mw` file under `tests`, recursively |
 | `tests/smoke.mw` | a single file, taken directly |
 
-A pattern that matches nothing on disk contributes no tests — it is not an
+A path that resolves to nothing on disk contributes no tests — it is not an
 error. With no `tests` key, `marrow test` finds no tests and reports so.
+Configured test symlinks are skipped, and recursive test walks skip symlinked
+files and directories.
 
 ## Validation
 
@@ -167,6 +167,8 @@ rules:
 - Every path value — each `sourceRoots` entry, `dataDir`, and each `tests`
   entry — must be relative and must not be empty, absolute, or contain a `..`
   component. Such a value would escape the project root, so it is rejected.
+- `tests` entries must not contain glob metacharacters (`*`, `?`, `[`, `]`,
+  `{`, `}`).
 - Unknown top-level keys, and unknown keys inside `run` or `store`, are
   rejected.
 - Malformed JSON is rejected.

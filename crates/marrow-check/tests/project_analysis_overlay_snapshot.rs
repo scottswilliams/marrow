@@ -126,8 +126,7 @@ fn analyze_project_reports_configured_test_file_parse_errors() {
         // A tab is a lexical error.
         write(root, "tests/bad_test.mw", "pub fn t()\n\tapp::noop()\n");
     });
-    let cfg =
-        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+    let cfg = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
 
     let snapshot = analyze_project(&root, &cfg, &ProjectSources::new(), None).expect("analyze");
 
@@ -147,8 +146,7 @@ fn analyze_project_reports_unsaved_configured_test_file_parse_errors() {
     let root = temp_project("analyze-unsaved-test-parse", |root| {
         write(root, "src/app.mw", "module app\n");
     });
-    let cfg =
-        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+    let cfg = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
     let path = root.join("tests/new_test.mw");
     let sources = ProjectSources::new().with(&path, "pub fn t()\n\tapp::noop()\n");
 
@@ -173,8 +171,7 @@ fn analyze_project_retains_configured_test_files_in_snapshot() {
         write(root, "src/app.mw", "module app\n");
         write(root, "tests/smoke_test.mw", "fn smoke()\n    var x = 1\n");
     });
-    let cfg =
-        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+    let cfg = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
     let path = root.join("tests/smoke_test.mw");
 
     let snapshot = analyze_project(&root, &cfg, &ProjectSources::new(), None).expect("analyze");
@@ -195,8 +192,7 @@ fn analyze_project_retains_unsaved_configured_test_files_in_snapshot() {
     let root = temp_project("analyze-unsaved-test-snapshot", |root| {
         write(root, "src/app.mw", "module app\n");
     });
-    let cfg =
-        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+    let cfg = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
     let path = root.join("tests/new_test.mw");
     let source = "fn smoke()\n    var x = 1\n";
     let sources = ProjectSources::new().with(&path, source);
@@ -265,8 +261,7 @@ fn analysis_content_identity_tracks_analyzed_sources_and_config() {
         write(root, "tests/smoke.mw", "fn smoke()\n    app::main()\n");
         fs::create_dir_all(root.join("empty")).expect("create empty source root");
     });
-    let cfg =
-        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+    let cfg = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
 
     let baseline =
         analyze_project(&root, &cfg, &ProjectSources::new(), None).expect("baseline analyze");
@@ -295,7 +290,7 @@ fn analysis_content_identity_tracks_analyzed_sources_and_config() {
     assert_ne!(baseline_identity, content_identity(&test_edit));
 
     let config_edit = parse_config(
-        r#"{ "sourceRoots": ["src", "empty"], "tests": ["tests/**/*.mw"], "store": { "backend": "memory" } }"#,
+        r#"{ "sourceRoots": ["src", "empty"], "tests": ["tests"], "store": { "backend": "memory" } }"#,
     )
     .expect("config edit");
     let config_edit =

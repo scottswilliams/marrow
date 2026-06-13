@@ -936,7 +936,7 @@ mod tests {
             source_roots: vec!["src".to_string()],
             default_entry: None,
             store: None,
-            tests: vec!["src/*.mw".to_string(), "tests/*.mw".to_string()],
+            tests: vec!["src".to_string(), "tests".to_string()],
         };
 
         crate::driver::reset_source_read_count();

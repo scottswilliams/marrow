@@ -169,7 +169,7 @@ fn project_check_reports_parse_errors_in_configured_tests() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
         );
         write(
             root,
@@ -196,7 +196,7 @@ fn project_check_reports_type_errors_in_configured_tests() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
         );
         write(
             root,
@@ -223,7 +223,7 @@ fn surfaces_a_parse_error_in_configured_test_files() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
         );
         write(root, "src/app.mw", "module app\n");
         // A tab is a lexical error.
@@ -243,7 +243,7 @@ fn reports_configured_test_files_when_source_files_have_errors() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
         );
         write(
             root,
@@ -268,7 +268,7 @@ fn suppresses_configured_test_resolution_noise_when_source_parse_fails() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
         );
         // The tab is a lexical error, so this file contributes no `app` module,
         // even though the parser saw its resource and function declarations.
@@ -306,7 +306,7 @@ fn keeps_configured_test_local_resolution_diagnostics_when_source_parse_fails() 
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
         );
         write(root, "src/app.mw", "module app\n\tfn f()\n");
         write(
@@ -336,7 +336,7 @@ fn keeps_configured_test_local_bare_call_matching_hidden_source_module() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
         );
         write(root, "src/app.mw", "module app\n\tfn f()\n");
         write(
@@ -362,7 +362,7 @@ fn keeps_configured_test_local_submodule_import_matching_hidden_source_prefix() 
             write(
                 root,
                 "marrow.json",
-                r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+                r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
             );
             write(root, "src/app.mw", "module app\n\tfn f()\n");
             write(
@@ -387,7 +387,7 @@ fn keeps_configured_test_local_unresolved_call_when_another_test_has_parse_error
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
         );
         write(
             root,
@@ -417,7 +417,7 @@ fn suppresses_unresolved_import_when_broken_configured_test_is_imported() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
         );
         write(
             root,
@@ -448,7 +448,7 @@ fn ignores_declared_modules_in_broken_configured_tests_for_call_suppression() {
             write(
                 root,
                 "marrow.json",
-                r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+                r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
             );
             write(
                 root,
@@ -482,7 +482,7 @@ fn keeps_source_module_calls_when_broken_test_path_collides() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
         );
         write(
             root,
@@ -511,7 +511,7 @@ fn keeps_test_module_calls_when_broken_source_path_collides() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
         );
         write(root, "src/tests/app.mw", "module tests::app\n\tfn f()\n");
         write(root, "tests/app.mw", "fn existing()\n    return\n");
@@ -536,7 +536,7 @@ fn reports_duplicate_when_test_module_collides_with_source_module() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
         );
         write(
             root,
@@ -565,7 +565,7 @@ fn suppresses_unknown_types_from_broken_configured_test_declarations() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
         );
         write(
             root,
@@ -598,7 +598,7 @@ fn keeps_configured_test_local_unknown_type_diagnostics_when_hidden_type_names_m
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#,
+            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
         );
         write(
             root,

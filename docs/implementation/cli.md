@@ -27,7 +27,7 @@ Stream separation is load-bearing: a program's own `print` output owns stdout; r
 |---|---|---|
 | `check` | `cmd_check.rs` | Type-checks a single file (via a synthesized one-file scratch project, so it reaches `check.*` rules) or a project dir; project JSON output includes checker entry footprints; `--data` delegates to evolve data-check. |
 | `run` | `cmd_run.rs` | Freezes identity, opens and fences the store (auto-applies zero-mutation schema drift), executes the entry under a plain/trace/dry-run hook. |
-| `test` | `cmd_test.rs` | Collects public zero-param fns in test modules, runs each over a fresh in-memory store; assert fault is FAIL, any other is ERROR, rendered as text/json/jsonl test-result reports. |
+| `test` | `cmd_test.rs` | Collects public zero-param fns in test modules, optionally filters by qualified name substring, runs each selected test over a fresh in-memory store; assert fault is FAIL, any other is ERROR, rendered as text/json/jsonl test-result reports. |
 | `fmt` | `cmd_fmt.rs` | Formats one file to stdout, or `--check`/`--write` over source roots; refuses stdin, a bare dir with no mode, and `--write` rewrites that would reduce retained comments. |
 | `data <roots\|stats\|dump\|integrity\|recover\|get>` | `cmd_data.rs`, `cmd_data/` | Store inspection plus explicit recovery; read-only views pin one `ReadSnapshot` so multi-pass output describes one store version, while `recover` performs only a write-capable store open. |
 | `evolve <preview\|apply>` | `cmd_evolve/` | Read-only preview vs managed-write apply; apply gates destructive obligations and commits data plus catalog rows atomically. |
@@ -39,7 +39,7 @@ Stream separation is load-bearing: a program's own `print` output owns stdout; r
 
 | File | Responsibility |
 |---|---|
-| `crates/marrow-project/src/lib.rs` | `marrow.json` parse+validate, path-containment checks, module-name derivation, `.mw` source/test discovery. |
+| `crates/marrow-project/src/lib.rs` | `marrow.json` parse+validate, path-containment and plain-test-path checks, module-name derivation, `.mw` source/test discovery. |
 | `crates/marrow-project/src/digest.rs` | `sha256_digest`: `sha256:<hex>` over bytes, used for catalog and analyzed-source integrity digests. |
 
 ### CLI core (`marrow`)
@@ -49,7 +49,7 @@ Stream separation is load-bearing: a program's own `print` output owns stdout; r
 | `crates/marrow/src/main.rs` | argv dispatch, broken-pipe hook, and the shared loaders, store-path resolution, format parsing, and JSON envelope helpers. |
 | `crates/marrow/src/cmd_check.rs` | `check`; also the located runtime-fault renderer reused by `run`. |
 | `crates/marrow/src/cmd_run.rs` | `run`: fence, auto-apply, re-check, execute under a hook, emit the report. |
-| `crates/marrow/src/cmd_test.rs` | `test`: discover and run test fns, print pass/fail/error summary. |
+| `crates/marrow/src/cmd_test.rs` | `test`: discover, filter, and run test fns, print pass/fail/error summary. |
 | `crates/marrow/src/cmd_fmt.rs` | `fmt`: format to stdout or `--check`/`--write`. |
 | `crates/marrow/src/trace.rs` | `TraceHook` (a `StepHook`) and `WriteTargetNames` mapping catalog ids to store/member/index names. |
 | `crates/marrow/src/dry_run.rs` | `DryRunHook` recording managed writes during isolated dry-run execution. |
@@ -73,7 +73,7 @@ Stream separation is load-bearing: a program's own `print` output owns stdout; r
 
 ## Load-bearing invariants
 
-- **Path containment.** Every project-relative path (source roots, `dataDir`, tests) is rejected if empty, absolute, or containing `..`, because each is later `Path::join`ed onto the project root. `parse_config` double-parses (raw `Value` then typed `RawConfig`) to catch non-object roots and unknown-key spans.
+- **Path containment.** Every project-relative path (source roots, `dataDir`, tests) is rejected if empty, absolute, or containing `..`, because each is later `Path::join`ed onto the project root. Test paths additionally reject glob metacharacters, so discovery is plain file-or-directory selection rather than pattern matching. `parse_config` double-parses (raw `Value` then typed `RawConfig`) to catch non-object roots and unknown-key spans.
 - **Run baseline and auto-apply.** A clean project with a pending durable identity has its baseline frozen into the store the first time `run` opens it write-capable; a memory-backed project with a durable surface refuses with `run.durable_store_required` rather than running an identity nothing stamps, and a plain script runs over memory. On native schema-drift a zero-record-mutation change is auto-applied through the production apply path, which publishes the advanced catalog snapshot in the apply transaction; the run then re-checks and re-fences. Any backfill/transform/destructive change fences naming `evolve apply` instead. The redb file lock forces `auto_apply_then_reopen` to drop its first handle before reopening. A store holding records under no accepted catalog is refused as populated-but-unstamped.
 - **Restore is all-or-nothing.** The whole replay runs in one transaction; any checksum/framing/verify failure rolls the target back to its prior state. Restore targets are empty-only by default; counted replace mode first confirms the live record count from `--replace --count N`, then clears and replays inside the restore transaction. Restore carries data cells only (indexes are rebuilt), replays bytes verbatim only when `EngineDescriptor` matches exactly, and proves the data compiles against the schema via the `verify` closure before commit. Raw byte validity is never enough.
 - **Evolve apply.** `evolve apply` reads accepted identity from `marrow.catalog.json`, with the durable-state loader using the store snapshot as the crash bridge for commands that inspect or write the store. It freezes a pending baseline into the store, then applies the witness's durable work. The apply publishes the activated catalog snapshot, advances the epoch, and commits the data in one transaction; after commit, the CLI renders the project-root file from the committed store snapshot.

@@ -143,57 +143,37 @@ fn errors_when_a_source_root_is_missing() {
 }
 
 #[test]
-fn discovers_test_files_from_a_glob_pattern() {
-    let root = temp_project("test-glob", |root| {
+fn discovers_test_files_from_a_plain_directory_recursively() {
+    let root = temp_project("test-directory", |root| {
         write(root, "src/app.mw", "module app\n");
         write(root, "tests/books_test.mw", "pub fn ok()\n    return\n");
         write(root, "tests/deep/more_test.mw", "pub fn ok()\n    return\n");
         write(root, "tests/notes.txt", "ignore me");
     });
-    let config =
-        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+    let config = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
 
     let modules = discover_test_modules(&root, &config).expect("discover tests");
     let names: Vec<Option<String>> = modules.iter().map(|m| m.module_name.clone()).collect();
 
-    // Only `.mw` files under the pattern's directory, with project-relative names.
+    // Only `.mw` files under the configured directory, with project-relative names.
     assert_eq!(modules.len(), 2, "{modules:#?}");
     assert!(names.contains(&Some("tests::books_test".to_string())));
     assert!(names.contains(&Some("tests::deep::more_test".to_string())));
 }
 
 #[test]
-fn single_star_test_glob_does_not_recurse() {
-    // `tests/*.mw` (single star) matches only the immediate directory; recursion
-    // is reserved for the `tests/**/*.mw` double-star form.
-    let root = temp_project("test-single-star", |root| {
-        write(root, "tests/top_test.mw", "pub fn ok()\n    return\n");
-        write(
-            root,
-            "tests/deep/nested_test.mw",
-            "pub fn ok()\n    return\n",
-        );
-    });
+fn star_test_entry_is_invalid_config() {
+    let error = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/*.mw"] }"#)
+        .expect_err("glob-like test entry should fail closed");
 
-    let single =
-        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/*.mw"] }"#).expect("config");
-    let modules = discover_test_modules(&root, &single).expect("discover tests");
-    let names: Vec<Option<String>> = modules.iter().map(|m| m.module_name.clone()).collect();
-    assert_eq!(modules.len(), 1, "{modules:#?}");
-    assert!(names.contains(&Some("tests::top_test".to_string())));
-    assert!(!names.contains(&Some("tests::deep::nested_test".to_string())));
-
-    // The double-star form still walks subdirectories.
-    let double =
-        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
-    let modules = discover_test_modules(&root, &double).expect("discover tests");
-    assert_eq!(modules.len(), 2, "{modules:#?}");
+    assert_eq!(error.code, "config.invalid");
 }
 
 #[test]
-fn test_patterns_accept_a_bare_directory_or_file() {
+fn test_paths_accept_a_bare_directory_or_file() {
     let root = temp_project("test-bare", |root| {
         write(root, "checks/a_test.mw", "pub fn ok()\n    return\n");
+        write(root, "checks/deep/b_test.mw", "pub fn ok()\n    return\n");
         write(root, "smoke.mw", "pub fn ok()\n    return\n");
     });
     let config = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["checks", "smoke.mw"] }"#)
@@ -202,20 +182,35 @@ fn test_patterns_accept_a_bare_directory_or_file() {
     let modules = discover_test_modules(&root, &config).expect("discover tests");
     let names: Vec<Option<String>> = modules.iter().map(|m| m.module_name.clone()).collect();
 
-    assert_eq!(modules.len(), 2, "{modules:#?}");
+    assert_eq!(modules.len(), 3, "{modules:#?}");
     assert!(names.contains(&Some("checks::a_test".to_string())));
+    assert!(names.contains(&Some("checks::deep::b_test".to_string())));
     assert!(names.contains(&Some("smoke".to_string())));
+}
+
+#[cfg(unix)]
+#[test]
+fn configured_test_symlink_is_not_followed() {
+    let root = temp_project("test-symlink-root", |root| {
+        write(root, "real_tests/smoke.mw", "pub fn ok()\n    return\n");
+        std::os::unix::fs::symlink(root.join("real_tests"), root.join("tests"))
+            .expect("create test symlink");
+    });
+    let config = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
+
+    let modules = discover_test_modules(&root, &config).expect("discover tests");
+
+    assert!(modules.is_empty(), "{modules:#?}");
 }
 
 #[test]
 fn a_missing_test_directory_yields_no_tests() {
-    // A `tests` pattern that matches nothing is not an error — there are simply no
+    // A `tests` path that matches nothing is not an error — there are simply no
     // tests to run.
     let root = temp_project("test-missing", |root| {
         write(root, "src/app.mw", "module app\n");
     });
-    let config =
-        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+    let config = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
 
     let modules = discover_test_modules(&root, &config).expect("discover tests");
     assert!(modules.is_empty(), "{modules:#?}");

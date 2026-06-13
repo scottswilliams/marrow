@@ -22,7 +22,7 @@ Write `marrow.json`:
   "sourceRoots": ["src"],
   "run": { "defaultEntry": "shelf::books::main" },
   "store": { "backend": "native", "dataDir": ".marrow/data" },
-  "tests": ["tests/**/*.mw"]
+  "tests": ["tests"]
 }
 ```
 
@@ -34,7 +34,7 @@ Write `marrow.json`:
   store and requires a `dataDir`. This project declares saved data, so it needs
   one: without a native store, `marrow run` refuses with
   `run.durable_store_required`. (Tests always run in-memory.)
-- `tests` lists the glob patterns for test files.
+- `tests` lists plain paths to test files or test directories.
 
 A module's name must match its path under the source root. Because the file
 below is `src/shelf/books.mw`, it declares `module shelf::books`. A file at
@@ -227,7 +227,7 @@ deferred — see [future/data-tools.md](future/data-tools.md).
 
 ## 5. Write And Run A Test
 
-A test file is any `.mw` file matched by the `tests` patterns. `marrow test`
+A test file is any `.mw` file selected by the `tests` paths. `marrow test`
 runs every `pub fn` with no parameters in those files as a test; functions with
 parameters are helpers. Each test runs against a fresh in-memory store, so tests
 never touch saved data and never depend on each other.

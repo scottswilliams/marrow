@@ -327,7 +327,7 @@ pub(crate) fn std_call_params(segments: &[String]) -> Option<Vec<Option<MarrowTy
 }
 
 /// Discover, read, parse, and check a project's test files (the `tests`
-/// patterns), producing one checked module per clean test file plus any
+/// paths), producing one checked module per clean test file plus any
 /// diagnostics. Test files are scripts outside the source roots, so each is
 /// checked module-less and named from its project-relative path
 /// (`tests/books_test.mw` → `tests::books_test`). Imports resolve against the
@@ -343,7 +343,7 @@ pub fn check_tests(
 }
 
 /// Like [`check_tests`], but uses overlaid source text for selected test files and
-/// includes overlaid test files that match the configured `tests` patterns even
+/// includes overlaid test files that match the configured `tests` paths even
 /// when they are not on disk yet.
 pub fn check_tests_with_sources(
     project_root: &Path,

@@ -8,7 +8,7 @@ fn parses_the_documented_example_config() {
         "sourceRoots": ["src"],
         "run": { "defaultEntry": "shelf::sample::main" },
         "store": { "backend": "native", "dataDir": ".marrow/data" },
-        "tests": ["tests/**/*.mw"]
+        "tests": ["tests"]
     }"#;
     let config = parse_config(json).expect("valid config");
     assert_eq!(config.source_roots, ["src"]);
@@ -16,7 +16,7 @@ fn parses_the_documented_example_config() {
     let store = config.store.expect("store");
     assert_eq!(store.backend, StoreBackend::Native);
     assert_eq!(store.data_dir.as_deref(), Some(".marrow/data"));
-    assert_eq!(config.tests, ["tests/**/*.mw"]);
+    assert_eq!(config.tests, ["tests"]);
 }
 
 #[test]
@@ -113,9 +113,9 @@ fn rejects_path_entries_that_escape_the_project_root() {
             ConfigPathViolation::ParentDir,
         ),
         (
-            r#"{ "sourceRoots": ["src"], "tests": ["../tests/*.mw"] }"#,
+            r#"{ "sourceRoots": ["src"], "tests": ["../tests"] }"#,
             ConfigPathField::TestsEntry,
-            "../tests/*.mw",
+            "../tests",
             ConfigPathViolation::ParentDir,
         ),
         (
@@ -135,6 +135,24 @@ fn rejects_path_entries_that_escape_the_project_root() {
                 reason
             }
         );
+    }
+}
+
+#[test]
+fn rejects_test_entries_with_glob_metacharacters() {
+    for value in [
+        "tests/*.mw",
+        "tests/?_test.mw",
+        "tests/[unit].mw",
+        "tests/unit].mw",
+        "tests/{unit}.mw",
+        "tests/unit}.mw",
+    ] {
+        let json = format!(r#"{{ "sourceRoots": ["src"], "tests": ["{value}"] }}"#);
+        let error = parse_config(&json).expect_err("should reject glob-like test entry");
+        assert_eq!(error.code, "config.invalid", "{value}");
+        assert!(error.message.contains(value), "{:?}", error);
+        assert!(error.message.contains("glob metacharacter"), "{:?}", error);
     }
 }
 
@@ -196,8 +214,8 @@ fn rejects_hostile_config_json_families() {
             "{ \"sourceRoots\": [\"src\"], \"store\": { \"backend\": \"native\\u0000\", \"dataDir\": \"data\" } }",
         ),
         (
-            "null byte test pattern",
-            "{ \"sourceRoots\": [\"src\"], \"tests\": [\"tests\\u0000/*.mw\"] }",
+            "null byte test path",
+            "{ \"sourceRoots\": [\"src\"], \"tests\": [\"tests\\u0000/unit.mw\"] }",
         ),
         (
             "null byte native data dir",

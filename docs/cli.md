@@ -265,35 +265,37 @@ $ marrow run --maintenance --entry shelf::repair ./proj
 ## `marrow test`
 
 ```
-marrow test [--trace] [--format text|json|jsonl] <projectdir>
+marrow test [--trace] [--format text|json|jsonl] [--filter <substring>] <projectdir>
 ```
 
 Check a project, then run its tests: every `pub fn` with no parameters in a test
-file (the `tests` glob patterns in `marrow.json`). Each test runs against a fresh
-in-memory store. A test's `std::log` output is discarded so it stays out of the
-report.
+file selected by the `tests` paths in `marrow.json`. Each test runs against a
+fresh in-memory store. A test's `std::log` output is discarded so it stays out
+of the report.
 
 In text format, each result is printed as `ok`, `FAIL` (a `std::assert::*`
 failure, code `run.assertion`), or `ERROR` (any other runtime error), located at
 the test's source position, followed by a summary line.
+`--filter <substring>` runs only tests whose qualified name contains the
+substring; a filter that selects nothing fails with `test.none`.
 
 Under `--format json`, stdout is one test report envelope:
 
 ```json
-{"project":"./proj","tests":[{"kind":"test","name":"tests::smoke_test::add_runs","status":"passed","location":{"file":"tests/smoke_test.mw","line":1,"column":1}}],"summary":{"total":1,"passed":1,"failed":0,"errored":0}}
+{"project":"./proj","tests":[{"kind":"test","name":"tests::smoke_test::add_runs","outcome":"passed","file":"tests/smoke_test.mw","span":{"line":1,"column":1}}],"summary":{"total":1,"selected":1,"passed":1,"failed":0,"errored":0}}
 ```
 
 Under `--format jsonl`, stdout is one test-result record per line followed by a
 summary record:
 
 ```jsonl
-{"kind":"test","name":"tests::smoke_test::add_runs","status":"passed","location":{"file":"tests/smoke_test.mw","line":1,"column":1}}
-{"kind":"summary","total":1,"passed":1,"failed":0,"errored":0}
+{"kind":"test","name":"tests::smoke_test::add_runs","outcome":"passed","file":"tests/smoke_test.mw","span":{"line":1,"column":1}}
+{"kind":"summary","total":1,"selected":1,"passed":1,"failed":0,"errored":0}
 ```
 
-Failed and errored JSON records also carry the runtime fault `code` and
-`message`. Passing result locations point at the test function declaration;
-failed and errored result locations point at the runtime fault.
+Failed and errored JSON records also carry the runtime fault `code`. Passing
+result spans point at the test function declaration; failed and errored result
+spans point at the runtime fault.
 
 Exits `0` only when every test passes. It exits `1` if any test fails or errors,
 if the project does not check, or if no test is found (`test.none`).

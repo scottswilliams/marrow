@@ -317,8 +317,7 @@ fn checked_test_program_preserves_source_facts_and_resolves_test_facts() {
              \x20   return\n",
         );
     });
-    let cfg =
-        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+    let cfg = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
     let (src_report, src_program) = check_project(&root, &cfg).expect("check source");
     let (test_report, combined) =
         check_tests_program(&root, &cfg, src_program).expect("check tests");

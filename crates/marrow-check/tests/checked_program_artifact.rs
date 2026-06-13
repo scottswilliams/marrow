@@ -77,8 +77,7 @@ fn manually_assembled_non_empty_program_cannot_claim_source_digest() {
     expected = "checked program is missing captured durable source renderings for module `books`"
 )]
 fn test_program_finalization_does_not_mask_manual_source_digest() {
-    let cfg =
-        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+    let cfg = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
     let root = temp_project("program-manual-test-digest", |root| {
         write(
             root,
