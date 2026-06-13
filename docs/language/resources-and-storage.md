@@ -577,7 +577,9 @@ child layers you need directly.
 Whole-resource assignment is exact. It replaces the saved resource for that
 identity, clearing every field, unkeyed group, and keyed child layer omitted from
 the assigned value. To preserve children while changing current state, write the
-specific fields instead of using `=`.
+specific fields instead of using `=`. When the root resource has keyed child
+layers, the checker warns on whole-root replacement so a read-modify-write reset
+is visible before runtime.
 
 The compiler checks resource fields before runtime. Runtime reads from saved
 data also validate bytes before returning typed values.
@@ -881,8 +883,10 @@ no stored record is applied automatically when the project next runs.
 
 ## Passing Resource Values
 
-Functions accept resource values as normal inputs. Return a replacement resource
-and assign it where the caller wants the change to land:
+Functions accept resource values as normal inputs. For resources without keyed
+child layers, a caller can assign a replacement resource value directly. For
+resources with keyed children, update the fields that changed so keyed layers are
+preserved:
 
 ```mw
 fn normalize(book: Book): Book
@@ -894,7 +898,7 @@ var draft: Book
 if const saved = ^books(id)
     draft = saved
     draft = normalize(draft)
-    ^books(id) = draft
+    ^books(id).title = draft.title
 ```
 
 First-class storable references to saved places are not part of the ordinary

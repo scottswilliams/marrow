@@ -105,7 +105,7 @@ fn resources_unique_index_lookup_example_checks_clean() {
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
 
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
 }
 
 #[test]
@@ -123,8 +123,8 @@ fn documented_module_examples_check_clean() {
         let (report, _program) = check_project(&root, &config()).expect("check");
 
         assert!(
-            !report.has_errors(),
-            "{} block {} failed checker diagnostics: {:#?}",
+            report.diagnostics.is_empty(),
+            "{} block {} produced checker diagnostics: {:#?}",
             block.file_name,
             block.index,
             report.diagnostics

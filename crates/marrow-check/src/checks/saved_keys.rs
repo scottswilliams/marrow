@@ -115,6 +115,30 @@ pub(crate) fn check_saved_key_args(
     }
 }
 
+pub(crate) fn saved_root_args_address_record(
+    store: &StoreSchema,
+    args: &[Argument],
+    arg_types: &[MarrowType],
+) -> bool {
+    if args.iter().any(|arg| arg.name.is_some()) {
+        return false;
+    }
+    if let [MarrowType::Identity(_)] = arg_types {
+        return type_compatible(&identity_type_for_store(store), &arg_types[0]) != Some(false);
+    }
+    if range_arg_position(args).is_some() || args.len() != store.identity_keys.len() {
+        return false;
+    }
+    store
+        .identity_keys
+        .iter()
+        .zip(arg_types)
+        .all(|(key, arg_type)| {
+            let expected = MarrowType::from_resolved(key.ty.clone(), TypeNames::default());
+            saved_key_arg_matches(&expected, arg_type)
+        })
+}
+
 fn check_saved_key_argument_names(
     args: &[Argument],
     file: &Path,

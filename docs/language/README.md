@@ -63,13 +63,11 @@ store ^books(id: int): Book
     index byShelf(shelf, id)
 
 pub fn add(title: string, author: string, shelf: string): Id(^books)
-    var book: Book
-    book.title = title
-    book.author = author
-    book.shelf = shelf
-
     const id: Id(^books) = nextId(^books)
-    ^books(id) = book
+    transaction
+        ^books(id).title = title
+        ^books(id).author = author
+        ^books(id).shelf = shelf
 
     return id
 
@@ -87,8 +85,8 @@ This shows the main shape:
 - Documentation comments are accepted on declarations, members, and
   parameters and preserved by the formatter.
 - `index byShelf(shelf, id)` declares an alternate lookup tree owned by the store.
-- `var book: Book` uses the same resource shape locally.
-- `^books(id) = book` saves the local resource and creates index entries.
+- The `add` function writes required fields inside one transaction to create a
+  valid saved resource while preserving keyed child layers.
 - Assignment to an indexed field writes the field and maintains its index entries
   together.
 - A single managed write does not need a user-written transaction.

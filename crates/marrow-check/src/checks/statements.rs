@@ -10,10 +10,11 @@ use marrow_syntax::SourceSpan;
 
 use crate::enums::{MatchCheck, check_match, resolve_type};
 use crate::infer::{bind, infer_type_with_read_scope, local_binding_with_read_scope};
+use crate::resolve::resolve_store_by_root;
 use crate::walk::for_each_child_expr;
 use crate::{
-    CHECK_COLLECTION_UNSUPPORTED, CHECK_CONDITION_TYPE, CHECK_RANGE_VALUE, CheckDiagnostic,
-    CheckedProgram, MarrowType,
+    CHECK_COLLECTION_UNSUPPORTED, CHECK_CONDITION_TYPE, CHECK_LOSSY_ROUND_TRIP, CHECK_RANGE_VALUE,
+    CheckDiagnostic, CheckedProgram, MarrowType,
 };
 
 use super::collections::{
@@ -22,6 +23,7 @@ use super::collections::{
 };
 use super::operators::{check_assignment, check_condition, check_return_type, check_throw_type};
 use super::ranges::{check_range_header, check_range_iterable_value_parts};
+use super::saved_keys::saved_root_args_address_record;
 
 /// Type-check a function body, tracking the type of each in-scope binding and
 /// inferring each expression. A check fires only when a type or signature is known
@@ -344,7 +346,30 @@ impl StatementCheck<'_> {
                 "nested local resource fields cannot be assigned",
             ));
         }
+        self.check_lossy_round_trip_warning(target);
         check_assignment(self.file, span, &target_type, &value_type, self.diagnostics);
+    }
+
+    fn check_lossy_round_trip_warning(&mut self, target: &marrow_syntax::Expression) {
+        let Some(members) = saved_root_replacement_members(RootReplacementCheck {
+            program: self.program,
+            target,
+            scope: self.scope,
+            aliases: self.aliases,
+            file: self.file,
+            transform_old: self.transform_old,
+        }) else {
+            return;
+        };
+        if !members_contain_keyed_layer(members) {
+            return;
+        }
+        self.diagnostics.push(CheckDiagnostic::warning(
+            CHECK_LOSSY_ROUND_TRIP,
+            self.file,
+            target.span(),
+            "whole saved-root replacement clears keyed child layers omitted from the value",
+        ));
     }
 
     fn is_nested_local_resource_field_write(&self, target: &marrow_syntax::Expression) -> bool {
@@ -678,6 +703,68 @@ fn fixed_singleton_root(program: &CheckedProgram, expr: &crate::CheckedExpr) -> 
     };
     crate::resolve::resolve_store_by_root(program, name)
         .is_some_and(|store| store.store.identity_keys.is_empty())
+}
+
+struct RootReplacementCheck<'a> {
+    program: &'a CheckedProgram,
+    target: &'a marrow_syntax::Expression,
+    scope: &'a [HashMap<String, MarrowType>],
+    aliases: &'a HashMap<String, Vec<String>>,
+    file: &'a Path,
+    transform_old: Option<crate::presence::TransformOldReadScope<'a>>,
+}
+
+fn saved_root_replacement_members<'a>(
+    check: RootReplacementCheck<'a>,
+) -> Option<&'a [marrow_schema::Node]> {
+    match check.target {
+        marrow_syntax::Expression::SavedRoot { name, .. } => {
+            let store = resolve_store_by_root(check.program, name)?;
+            store
+                .store
+                .identity_keys
+                .is_empty()
+                .then_some(store.resource.members.as_slice())
+        }
+        marrow_syntax::Expression::Call { callee, args, .. } => {
+            let marrow_syntax::Expression::SavedRoot { name, .. } = callee.as_ref() else {
+                return None;
+            };
+            let store = resolve_store_by_root(check.program, name)?;
+            let arg_types = saved_root_replacement_arg_types(&check, args);
+            if saved_root_args_address_record(store.store, args, &arg_types) {
+                return Some(store.resource.members.as_slice());
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn saved_root_replacement_arg_types(
+    check: &RootReplacementCheck<'_>,
+    args: &[marrow_syntax::Argument],
+) -> Vec<MarrowType> {
+    let mut diagnostics = Vec::new();
+    args.iter()
+        .map(|arg| {
+            infer_type_with_read_scope(
+                check.program,
+                &arg.value,
+                check.scope,
+                check.aliases,
+                check.file,
+                &mut diagnostics,
+                check.transform_old,
+            )
+        })
+        .collect()
+}
+
+fn members_contain_keyed_layer(members: &[marrow_schema::Node]) -> bool {
+    members
+        .iter()
+        .any(|member| !member.key_params.is_empty() || members_contain_keyed_layer(&member.members))
 }
 
 fn has_invalid_assign_target(

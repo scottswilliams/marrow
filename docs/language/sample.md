@@ -26,16 +26,13 @@ store ^books(id: int): Book
     index byShelf(shelf, id)
 
 pub fn add(title: string, author: string, shelf: string, changedAt: instant): Id(^books)
-    var book: Book
-    book.title = title
-    book.author = author
-    book.shelf = shelf
-    book.currentVersion = 1
-
     const id: Id(^books) = nextId(^books)
 
     transaction
-        ^books(id) = book
+        ^books(id).title = title
+        ^books(id).author = author
+        ^books(id).shelf = shelf
+        ^books(id).currentVersion = 1
         ^books(id).versions(1).title = title
         ^books(id).versions(1).shelf = shelf
         ^books(id).versions(1).changedAt = changedAt

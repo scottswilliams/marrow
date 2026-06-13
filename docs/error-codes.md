@@ -139,6 +139,7 @@ over every configured source and test file.
 | `check.call_argument` | A call or constructor passes the wrong number of arguments, names a parameter or key that does not exist, omits a required key, or supplies one more than once. |
 | `check.return_type` | A `return` value's type does not match the function's declared return type. |
 | `check.assignment_type` | A value's type does not match the typed binding or assignment target it is stored into. |
+| `check.lossy_round_trip` | Warning: a whole saved-root replacement targets a resource shape with keyed child layers, so omitted keyed children will be cleared. |
 | `check.untyped_value` | A value whose type cannot be resolved (`unknown`) is stored into a concrete typed place. |
 | `check.key_type` | A saved key or identity argument's type does not match the key it addresses: a scalar of the wrong type in a keyed lookup, or an identity of a foreign store root spliced into a keyspace. |
 | `check.unresolved_name` | A bare name used as a value resolves to no binding in scope. |

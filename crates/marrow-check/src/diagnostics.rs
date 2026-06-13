@@ -43,6 +43,9 @@ pub const CHECK_RETURN_TYPE: &str = "check.return_type";
 /// A value's type does not match the binding or place it is stored into (a typed
 /// `const`/`var` initializer, or an assignment target).
 pub const CHECK_ASSIGNMENT_TYPE: &str = "check.assignment_type";
+/// A whole saved-root replacement can clear keyed child layers that a
+/// whole-resource read does not materialize.
+pub const CHECK_LOSSY_ROUND_TRIP: &str = "check.lossy_round_trip";
 /// A value whose type cannot be resolved is stored into a concrete typed place.
 /// Under strict typing, dynamic data must be converted before typed use.
 pub const CHECK_UNTYPED_VALUE: &str = "check.untyped_value";
