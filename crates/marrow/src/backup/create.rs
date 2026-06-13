@@ -21,7 +21,6 @@ use super::{
 /// What a completed backup wrote.
 pub(crate) struct BackupReport {
     pub(crate) record_count: u64,
-    pub(crate) catalog_epoch: Option<u64>,
 }
 
 /// Write a backup of `store` (read through one pinned snapshot) to `out`. The
@@ -62,10 +61,7 @@ pub(crate) fn create_backup(
     write_data_cells(store, out)?;
     out.flush()?;
 
-    Ok(BackupReport {
-        record_count,
-        catalog_epoch: manifest.catalog_epoch,
-    })
+    Ok(BackupReport { record_count })
 }
 
 fn scan_state(store: &TreeStore) -> Result<(u64, String), BackupError> {

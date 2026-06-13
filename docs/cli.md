@@ -8,12 +8,12 @@ marrow check [--data] [--format text|json|jsonl] <file.mw | projectdir>
 marrow evolve <preview|apply> [--format text|json|jsonl] <projectdir>
 marrow fmt [--check | --write] <file.mw | projectdir>
 marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] \
-  [--format text|json|jsonl] <projectdir>
+  [--format text|json] <projectdir>
 marrow test [--trace] [--format text|json|jsonl] <projectdir>
 marrow data <roots|stats|dump|integrity|recover> [--format text|json|jsonl] <projectdir>
 marrow data get [--format text|json|jsonl] <projectdir> <path>
-marrow backup [--format text|json|jsonl] <projectdir> <output-file>
-marrow restore [--format text|json|jsonl] [--replace --count N] <projectdir> <backup-file>
+marrow backup <projectdir> <output-file>
+marrow restore [--replace --count N] <projectdir> <backup-file>
 marrow --version
 marrow --help
 ```
@@ -44,13 +44,13 @@ Commands that report diagnostics, saved data, or test results take `--format`:
   `{"kind": "summary", …}` line where the report has many records.
 
 Plain `run` output is the program's own `print` stream, which carries no
-envelope and does not accept `--format`. `run --trace` and `run --dry-run`
-accept `--format` for their tooling reports; those reports are written to
-stderr, leaving stdout for the program's own output.
+envelope and does not accept `--format`. `run --dry-run` accepts
+`--format text|json` for its tooling report, written to stderr. `run --trace`
+is text-only and fails closed with non-text formats.
 
 `marrow test --format json|jsonl` shapes the test pass/fail report on stdout.
-With `--trace`, the trace is a separate tooling report on stderr using the same
-format, while the test report stays on stdout.
+With `--trace`, the trace is a separate text stream on stderr while the test
+report stays on stdout.
 
 ---
 
@@ -167,7 +167,7 @@ unknown flag, or a `-` stdin argument.
 
 ```
 marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] \
-  [--format text|json|jsonl] <projectdir>
+  [--format text|json] <projectdir>
 ```
 
 Check a project, then run an entry function over the store its `marrow.json`
@@ -213,14 +213,14 @@ that the default run rejects. An operator must type it; the default run and
 
 `--trace` reports each statement as it runs — file, line, call depth, and the
 visible locals — and each managed write or delete, in execution order. The trace
-is tooling output on stderr under every format, leaving the program's stdout for
-its own `print` output: under text an indented stream, under `json`/`jsonl`
-`step` records and managed-write `write` records.
+is a text-only tooling stream on stderr, leaving the program's stdout for its
+own `print` output. Combining `--trace` with a non-text format is a usage error.
 
 In the human-readable text of a `--trace` or `--dry-run` write, the leaf value is
 rendered as its declared typed scalar, not as raw codec bytes: a `bool` reads
 `true`/`false`, an int/date/duration/instant reads its canonical typed text. The
-machine-readable `value_b64` field in the JSON output stays the raw stored bytes.
+machine-readable `value_b64` field in dry-run JSON output stays the raw stored
+bytes.
 
 `--dry-run` runs the entry against an isolated store and reports the saved-data
 writes it would commit. Native-store dry runs copy the configured store after the
@@ -229,20 +229,20 @@ the entry then runs against the copy, so user `transaction` blocks cannot consum
 the dry-run boundary. Only saved data is isolated; host side effects such as
 `std::io` writes or `std::log` lines are not.
 
-`--dry-run` takes `--format`. A plain run's stdout is the program's own output
-and takes no format, so `--format` without `--trace` or `--dry-run` is a usage
+`--dry-run` takes `--format text|json`. A plain run's stdout is the program's
+own output and takes no format, so `--format` without `--dry-run` is a usage
 error (exit `2`). The report is tooling output on stderr under every format,
 off the program's stdout stream. Under text, planned writes are
 `would write <path>` / `would delete <path>` lines and a
-`dry run: N write(s), M delete(s) (not committed)` summary. Under `json`/`jsonl`,
+`dry run: N write(s), M delete(s) (not committed)` summary. Under `json`,
 the report is a `{"committed": false, "planned": […]}` envelope whose planned
 entries carry the op, human path, and base64 value bytes.
 
 `--trace` composes with `--dry-run`: the run is traced while its saved writes are
-isolated from the configured store. The trace and the dry-run report both go to stderr — under `--format
-json` the trace object followed by the dry-run envelope as separate top-level JSON
-objects — so the program's own stdout output stays uninterrupted. For source-native
-data evolution use `marrow evolve preview`; `run --maintenance --dry-run` is for
+isolated from the configured store. This composition is text-only: trace events
+and the dry-run report both go to stderr, and the program's own stdout output
+stays uninterrupted. For source-native data evolution use `marrow evolve
+preview`; `run --maintenance --dry-run` is for
 explicit repair/admin code.
 
 Exits `0` on success, `1` if the project does not check, the store cannot be
@@ -300,10 +300,8 @@ if the project does not check, or if no test is found (`test.none`).
 
 With `--trace`, every test runs under an execution trace attributed to that test
 by name. The trace is tooling output on stderr; the test report stays on stdout,
-so the two streams never interleave. Text trace events stream as they run. Under
-`--format json`, stderr is one JSON envelope with a `traces` array, one entry per
-test. Under `--format jsonl`, stderr remains a newline-delimited stream of trace
-events and per-test summary records.
+so the two streams never interleave. Trace events are text-only and stream as
+they run; combining `--trace` with `--format json|jsonl` is a usage error.
 
 ```console
 $ marrow test ./proj
@@ -460,7 +458,7 @@ $ marrow data get ./proj '^books(99).title'
 ## `marrow backup`
 
 ```
-marrow backup [--format text|json|jsonl] <projectdir> <output-file>
+marrow backup <projectdir> <output-file>
 ```
 
 Write a typed portable backup of a project's saved data. The backup is a Marrow
@@ -508,7 +506,7 @@ error.
 ## `marrow restore`
 
 ```
-marrow restore [--format text|json|jsonl] [--replace --count N] <projectdir> <backup-file>
+marrow restore [--replace --count N] <projectdir> <backup-file>
 ```
 
 Replay a backup into the project's native store. Restore checks the project
@@ -551,10 +549,6 @@ ok: restored 12 record(s) from ./proj-backup.mwbackup
 $ marrow restore --replace --count 12 ./proj ./proj-backup.mwbackup
 ok: restored 12 record(s) from ./proj-backup.mwbackup; receipt: mode=replace expected_live_records=12 replaced_live_records=12
 ```
-
-JSON and JSONL success output include a `receipt` object. Empty-only restores
-report `{"mode":"empty","restored_records":...}`; replace restores report
-`{"mode":"replace","expected_live_records":...,"replaced_live_records":...,"restored_records":...}`.
 
 Exits `0` on success, `1` on any validation, checksum, store, or i/o failure, and
 `2` on a command-line usage error. See [error-codes.md](error-codes.md) for the

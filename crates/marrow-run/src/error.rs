@@ -85,6 +85,16 @@ impl RuntimeError {
         }
     }
 
+    /// The original `Error.code` carried by an uncaught language throw.
+    pub fn uncaught_throw_code(&self) -> Option<String> {
+        if self.code != RUN_UNCAUGHT_THROW {
+            return None;
+        }
+        self.throw
+            .as_deref()
+            .and_then(|value| error_field(value, marrow_schema::error::CODE))
+    }
+
     /// Consume the fault and return the `Error` value a catch should bind.
     pub(crate) fn into_error_value(self) -> Option<Value> {
         if let Some(error) = self.throw {

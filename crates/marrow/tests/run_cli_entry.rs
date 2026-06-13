@@ -151,8 +151,8 @@ fn run_rejects_duplicate_format_flag() {
 #[test]
 fn a_plain_run_rejects_format_because_it_shapes_no_report() {
     // A plain run's only output is the program's own stream, which `--format` cannot
-    // shape, so the flag is a usage error rather than silently ignored. Only `--trace`
-    // and `--dry-run` emit a report that `--format` controls.
+    // shape, so the flag is a usage error rather than silently ignored. Only `--dry-run`
+    // emits a report that `--format` controls.
     let output = marrow_sub("run", &["--format", "json", "missing-project"]);
 
     assert_eq!(output.status.code(), Some(2), "{output:?}");

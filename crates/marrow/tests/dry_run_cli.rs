@@ -597,12 +597,12 @@ fn dry_run_keeps_the_program_output_on_stdout() {
 }
 
 #[test]
-fn dry_run_jsonl_keeps_program_output_off_the_record_stream() {
-    // Under `--format jsonl` the dry-run records are tooling output and must not
+fn dry_run_json_keeps_program_output_off_the_record_stream() {
+    // Under `--format json` the dry-run report is tooling output and must not
     // share the program's stdout stream: stdout is exactly the program's own
-    // `print` output, and the planned-write records land on stderr as parseable
-    // JSONL. Mixing them would corrupt a consumer parsing stdout as JSONL.
-    let project = temp_project("dryrun-jsonl-streams", |root| {
+    // `print` output, and the planned-write report lands on stderr as parseable
+    // JSON. Mixing them would corrupt a consumer parsing stdout as JSON.
+    let project = temp_project("dryrun-json-streams", |root| {
         write(
             root,
             "marrow.json",
@@ -651,12 +651,15 @@ fn dry_run_json_flushes_the_plan_when_the_run_faults() {
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let records = json_records_in_stderr(output.stderr);
-    let [report] = records.as_slice() else {
-        panic!("expected one dry-run JSON report before the fault: {records:?}");
+    let [report, fault] = records.as_slice() else {
+        panic!("expected dry-run JSON report and fault envelope: {records:?}");
     };
     assert_eq!(report["committed"], false, "{report}");
     assert_eq!(report["writes"], 2, "{report}");
     assert_eq!(report["deletes"], 0, "{report}");
+    assert_eq!(fault["code"], "run.divide_by_zero", "{fault}");
+    assert_eq!(fault["kind"], "runtime", "{fault}");
+    assert_eq!(fault["data"], serde_json::json!({}), "{fault}");
     assert!(
         report["planned"]
             .as_array()
@@ -679,26 +682,15 @@ fn dry_run_json_flushes_the_plan_when_the_run_faults() {
 }
 
 #[test]
-fn dry_run_jsonl_flushes_the_plan_when_the_run_faults() {
+fn dry_run_rejects_jsonl_format_before_running() {
     let project = faulting_dry_run_project("dryrun-jsonl-fault");
     let dir = project.to_str().unwrap().to_string();
     let output = marrow(&["run", "--dry-run", "--format", "jsonl", &dir]);
 
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let records = json_records_in_stderr(output.stderr);
-    let [report] = records.as_slice() else {
-        panic!("expected one dry-run JSONL report before the fault: {records:?}");
-    };
-    assert_eq!(report["committed"], false, "{report}");
-    assert_eq!(report["writes"], 2, "{report}");
-    assert!(
-        report["planned"]
-            .as_array()
-            .expect("planned array")
-            .iter()
-            .any(|step| step["op"] == "write" && step["path"] == "^books(1).title"),
-        "faulting dry run must include the planned write: {report}"
-    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("unknown format: jsonl"), "{stderr}");
 }
 
 #[test]

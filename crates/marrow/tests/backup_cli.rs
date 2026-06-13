@@ -16,19 +16,22 @@ use support::{
     TempProject, marrow, member_catalog_id, temp_project, temp_project_uncommitted, write,
 };
 
-/// The `code` field of a single JSON error record printed to stdout.
-fn json_code(output: &Output) -> String {
-    support::json(output.stdout.clone())["code"]
-        .as_str()
-        .expect("json error code")
-        .to_string()
+fn stderr_text(output: &Output) -> String {
+    String::from_utf8(output.stderr.clone()).expect("stderr utf8")
 }
 
-fn json_message(output: &Output) -> String {
-    support::json(output.stdout.clone())["message"]
-        .as_str()
-        .expect("json error message")
-        .to_string()
+fn text_code(output: &Output) -> String {
+    stderr_text(output)
+        .split_once(": ")
+        .map(|(code, _)| code.to_string())
+        .expect("text error code")
+}
+
+fn text_message(output: &Output) -> String {
+    stderr_text(output)
+        .split_once(": ")
+        .map(|(_, message)| message.trim().to_string())
+        .expect("text error message")
 }
 
 fn project_source_digest(root: &Path) -> String {
@@ -410,11 +413,13 @@ fn restore_replace_replays_backup_after_confirmed_live_count() {
     let archive_arg = archive.to_str().unwrap().to_string();
 
     let backup_state = dump_records(&root);
-    let backup = marrow(&["backup", "--format", "json", &dir, &archive_arg]);
+    let backup = marrow(&["backup", &dir, &archive_arg]);
     assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
-    let backup_records = support::json(backup.stdout)["records"]
-        .as_u64()
-        .expect("backup record count");
+    let backup_stdout = String::from_utf8(backup.stdout).expect("backup stdout utf8");
+    assert!(
+        backup_stdout.contains("backed up 12 record(s)"),
+        "{backup_stdout}"
+    );
 
     let mutate = marrow(&["run", "--entry", "shelf::mutate_live", &dir]);
     assert_eq!(mutate.status.code(), Some(0), "mutate live: {mutate:?}");
@@ -424,32 +429,16 @@ fn restore_replace_replays_backup_after_confirmed_live_count() {
         "fixture changes the live target without changing source or catalog"
     );
 
-    let restore = marrow(&[
-        "restore",
-        "--format",
-        "json",
-        "--replace",
-        "--count",
-        "9",
-        &dir,
-        &archive_arg,
-    ]);
+    let restore = marrow(&["restore", "--replace", "--count", "9", &dir, &archive_arg]);
     assert_eq!(restore.status.code(), Some(0), "restore: {restore:?}");
-    let report = support::json(restore.stdout);
-    assert_eq!(
-        report["records"],
-        serde_json::json!(backup_records),
-        "restore keeps the existing restored backup-cell count"
+    let restore_stdout = String::from_utf8(restore.stdout).expect("restore stdout utf8");
+    assert!(
+        restore_stdout.contains("restored 12 record(s)"),
+        "{restore_stdout}"
     );
-    assert_eq!(
-        report["receipt"],
-        serde_json::json!({
-            "mode": "replace",
-            "expected_live_records": 9,
-            "replaced_live_records": 9,
-            "restored_records": backup_records,
-        }),
-        "replace restore emits an audit receipt"
+    assert!(
+        restore_stdout.contains("mode=replace expected_live_records=9 replaced_live_records=9"),
+        "replace restore emits an audit receipt: {restore_stdout}"
     );
     assert_eq!(
         dump_records(&root),
@@ -473,20 +462,11 @@ fn restore_replace_wrong_count_refuses_before_changing_target() {
     let live_records = dump_records(&root);
     let live_catalog = read_store_catalog(&data_dir).expect("live catalog before restore");
 
-    let restore = marrow(&[
-        "restore",
-        "--format",
-        "json",
-        "--replace",
-        "--count",
-        "8",
-        &dir,
-        &archive_arg,
-    ]);
+    let restore = marrow(&["restore", "--replace", "--count", "8", &dir, &archive_arg]);
 
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
-    assert_eq!(json_code(&restore), "restore.not_empty");
-    let message = json_message(&restore);
+    assert_eq!(text_code(&restore), "restore.not_empty");
+    let message = text_message(&restore);
     assert!(message.contains("expected 8"), "{message}");
     assert!(message.contains("found 9"), "{message}");
     assert_eq!(
@@ -771,10 +751,10 @@ fn backup_refuses_an_existing_store_without_a_uid_without_writing() {
     let archive = root.join("missing-uid.mwbackup");
     let archive_arg = archive.to_str().unwrap().to_string();
 
-    let backup = marrow(&["backup", "--format", "json", &dir, &archive_arg]);
+    let backup = marrow(&["backup", &dir, &archive_arg]);
 
     assert_eq!(backup.status.code(), Some(1), "backup: {backup:?}");
-    assert_eq!(json_code(&backup), "backup.store_uid_missing");
+    assert_eq!(text_code(&backup), "backup.store_uid_missing");
     assert!(
         !String::from_utf8(backup.stderr)
             .expect("stderr utf8")
@@ -816,16 +796,11 @@ fn backup_succeeds_after_write_capable_run_seeds_store_uid() {
     let archive = root.join("seeded.mwbackup");
     let archive_arg = archive.to_str().unwrap().to_string();
 
-    let backup = marrow(&["backup", "--format", "json", &dir, &archive_arg]);
+    let backup = marrow(&["backup", &dir, &archive_arg]);
 
     assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
-    let backup_json = support::json(backup.stdout);
-    assert!(
-        backup_json["records"]
-            .as_u64()
-            .is_some_and(|records| records > 0),
-        "backup carries the seeded store cells: {backup_json:?}"
-    );
+    let stdout = String::from_utf8(backup.stdout).expect("backup stdout utf8");
+    assert!(stdout.contains("ok: backed up "), "{stdout}");
 }
 
 /// An `evolve apply` advances the store's catalog and data together, so a backup taken
@@ -903,11 +878,11 @@ fn restore_of_epoch_n_backup_refuses_after_project_catalog_advances_to_n_plus_on
 
     write(&root, "src/shelf.mw", EVOLUTION_DEFAULT_BASELINE_SOURCE);
     empty_store_data(&root, &data_dir);
-    let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
+    let restore = marrow(&["restore", &dir, &archive_arg]);
 
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
-    assert_eq!(json_code(&restore), "restore.catalog_mismatch");
-    let message = json_message(&restore);
+    assert_eq!(text_code(&restore), "restore.catalog_mismatch");
+    let message = text_message(&restore);
     assert!(
         message.contains(&format!("backup catalog epoch {}", backup_catalog.epoch)),
         "{message}"
@@ -955,11 +930,11 @@ fn restore_of_epoch_n_backup_refuses_after_project_source_advances_to_n_plus_one
     let project_source_digest = project_source_digest(&root);
 
     empty_store_data(&root, &data_dir);
-    let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
+    let restore = marrow(&["restore", &dir, &archive_arg]);
 
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
-    assert_eq!(json_code(&restore), "restore.source_mismatch");
-    let message = json_message(&restore);
+    assert_eq!(text_code(&restore), "restore.source_mismatch");
+    let message = text_message(&restore);
     assert!(
         message.contains(&format!("backup source digest {backup_source_digest}")),
         "{message}"
@@ -985,10 +960,10 @@ fn restore_source_mismatch_is_reported_before_non_empty_target() {
     let store_bytes_before = fs::read(&store_file).expect("read non-empty store before restore");
 
     add_pages_default_evolution(&root);
-    let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
+    let restore = marrow(&["restore", &dir, &archive_arg]);
 
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
-    assert_eq!(json_code(&restore), "restore.source_mismatch");
+    assert_eq!(text_code(&restore), "restore.source_mismatch");
     assert_eq!(
         fs::read(&store_file).expect("read non-empty store after restore"),
         store_bytes_before,
@@ -1013,9 +988,9 @@ fn restore_refuses_a_non_empty_target() {
         Some(0)
     );
     // The store still holds the seeded data, so restore must refuse it.
-    let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
+    let restore = marrow(&["restore", &dir, &archive_arg]);
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
-    assert_eq!(json_code(&restore), "restore.not_empty");
+    assert_eq!(text_code(&restore), "restore.not_empty");
 }
 
 #[test]
@@ -1042,9 +1017,9 @@ fn rejected_restore_does_not_leave_a_created_store_file() {
         "the target starts as an existing .data dir with no store file"
     );
 
-    let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
+    let restore = marrow(&["restore", &dir, &archive_arg]);
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
-    assert_eq!(json_code(&restore), "restore.corrupt_chunk");
+    assert_eq!(text_code(&restore), "restore.corrupt_chunk");
     assert!(
         !store_file.exists(),
         "a rejected restore removes only the store file it created"
@@ -1089,9 +1064,9 @@ fn rejected_restore_preserves_dangling_store_symlink_without_orphaning_target() 
     assert!(!store_file.exists(), "fixture store symlink is dangling");
     assert!(!symlink_target.exists(), "fixture target starts absent");
 
-    let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
+    let restore = marrow(&["restore", &dir, &archive_arg]);
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
-    assert_eq!(json_code(&restore), "restore.corrupt_chunk");
+    assert_eq!(text_code(&restore), "restore.corrupt_chunk");
 
     let link_preserved = fs::symlink_metadata(&store_file)
         .as_ref()
@@ -1156,9 +1131,9 @@ fn rejected_restore_removes_created_final_target_behind_store_symlink_chain() {
     );
     assert!(!final_target.exists(), "fixture final target starts absent");
 
-    let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
+    let restore = marrow(&["restore", &dir, &archive_arg]);
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
-    assert_eq!(json_code(&restore), "restore.corrupt_chunk");
+    assert_eq!(text_code(&restore), "restore.corrupt_chunk");
 
     let store_link_preserved = fs::symlink_metadata(&store_file)
         .as_ref()
@@ -1232,9 +1207,9 @@ fn restore_refuses_a_catalog_only_target() {
         "fixture target is catalog-only"
     );
 
-    let restore = marrow(&["restore", "--format", "json", &target_dir, &archive_arg]);
+    let restore = marrow(&["restore", &target_dir, &archive_arg]);
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
-    assert_eq!(json_code(&restore), "restore.not_empty");
+    assert_eq!(text_code(&restore), "restore.not_empty");
     assert!(
         target_store_file.exists(),
         "restore must not delete a pre-existing catalog-only store"
@@ -1266,9 +1241,9 @@ fn restore_rejects_a_corrupt_backup() {
     fs::write(&archive, &bytes).expect("write corrupt archive");
 
     empty_store_data(&root, &data_dir);
-    let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
+    let restore = marrow(&["restore", &dir, &archive_arg]);
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
-    assert_eq!(json_code(&restore), "restore.corrupt_chunk");
+    assert_eq!(text_code(&restore), "restore.corrupt_chunk");
     assert_store_empty(&data_dir);
 }
 
@@ -1428,13 +1403,13 @@ fn restore_rejects_a_backup_carrying_an_orphan_cell() {
     assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
 
     empty_store_data(&root, &data_dir);
-    let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
+    let restore = marrow(&["restore", &dir, &archive_arg]);
     assert_eq!(
         restore.status.code(),
         Some(1),
         "restore rejects a backup with orphan debris: {restore:?}"
     );
-    assert_eq!(json_code(&restore), "restore.data_invalid");
+    assert_eq!(text_code(&restore), "restore.data_invalid");
     assert_store_empty(&data_dir);
 }
 
@@ -1474,13 +1449,13 @@ fn restore_rejects_a_backup_carrying_an_impossible_data_cell_shape() {
     assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
 
     empty_store_data(&root, &data_dir);
-    let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
+    let restore = marrow(&["restore", &dir, &archive_arg]);
     assert_eq!(
         restore.status.code(),
         Some(1),
         "restore rejects a backup with an impossible data cell shape: {restore:?}"
     );
-    assert_eq!(json_code(&restore), "restore.data_invalid");
+    assert_eq!(text_code(&restore), "restore.data_invalid");
     assert_store_empty(&data_dir);
 }
 
@@ -1504,9 +1479,9 @@ fn restore_rejects_trailing_bytes() {
     fs::write(&archive, &bytes).expect("write archive with trailing bytes");
 
     empty_store_data(&root, &data_dir);
-    let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
+    let restore = marrow(&["restore", &dir, &archive_arg]);
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
-    assert_eq!(json_code(&restore), "restore.corrupt_chunk");
+    assert_eq!(text_code(&restore), "restore.corrupt_chunk");
     assert_store_empty(&data_dir);
 }
 
@@ -1600,11 +1575,8 @@ fn backup_of_an_unseeded_project_restores_empty() {
     assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
 
     empty_store_data(&root, &data_dir);
-    let restore = marrow(&["restore", "--format", "json", &dir, &archive_arg]);
+    let restore = marrow(&["restore", &dir, &archive_arg]);
     assert_eq!(restore.status.code(), Some(0), "restore: {restore:?}");
-    assert_eq!(
-        support::json(restore.stdout)["records"],
-        serde_json::json!(0),
-        "an empty backup restores zero records"
-    );
+    let stdout = String::from_utf8(restore.stdout).expect("restore stdout utf8");
+    assert!(stdout.contains("restored 0 record(s)"), "{stdout}");
 }

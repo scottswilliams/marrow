@@ -23,12 +23,12 @@ Usage:
   marrow check [--data] [--format text|json|jsonl] <file.mw | projectdir>
   marrow evolve <preview|apply> [--format text|json|jsonl] <projectdir>
   marrow fmt [--check | --write] <file.mw | projectdir>
-  marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] [--format text|json|jsonl] <projectdir>
+  marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] [--format text|json] <projectdir>
   marrow test [--trace] [--format text|json|jsonl] <projectdir>
   marrow data <roots|stats|dump|integrity|recover> <projectdir>
   marrow data get <projectdir> <path>
-  marrow backup [--format text|json|jsonl] <projectdir> <output-file>
-  marrow restore [--format text|json|jsonl] [--replace --count N] <projectdir> <backup-file>
+  marrow backup <projectdir> <output-file>
+  marrow restore [--replace --count N] <projectdir> <backup-file>
   marrow --version
   marrow --help
 ";
@@ -314,12 +314,22 @@ fn check_diagnostic_record(diagnostic: &marrow_check::CheckDiagnostic) -> serde_
 }
 
 pub(crate) fn report_simple_error(code: &str, message: &str, format: CheckFormat) {
+    report_simple_error_with_data(code, message, serde_json::Map::new(), format);
+}
+
+pub(crate) fn report_simple_error_with_data(
+    code: &str,
+    message: &str,
+    data: serde_json::Map<String, serde_json::Value>,
+    format: CheckFormat,
+) {
     match format {
         CheckFormat::Text => eprintln!("{code}: {message}"),
         CheckFormat::Json | CheckFormat::Jsonl => write_json(json!({
             "code": code,
             "kind": marrow_syntax::kind_for_code(code),
             "message": message,
+            "data": data,
             "source_span": null,
         })),
     }

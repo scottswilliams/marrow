@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use marrow_check::evolution::{EvolutionWitness, RepairDiagnostic, Verdict};
 use marrow_run::evolution::{ApplyError, ApplyOutcome};
 
-use crate::{CheckFormat, report_simple_error, write_json};
+use crate::{CheckFormat, report_simple_error, report_simple_error_with_data, write_json};
 
 pub(super) struct SourceLabels {
     by_catalog_id: HashMap<String, String>,
@@ -298,13 +298,19 @@ pub(super) fn apply_error(error: ApplyError, labels: &SourceLabels, format: Chec
             "this program has no durable catalog to apply from; it declares no saved data, so there is no baseline epoch to advance",
             format,
         ),
-        ApplyError::Drift => report_simple_error(
-            "evolve.drift",
+        ApplyError::Drift => report_drift_error(
+            drift_kind("witness"),
             "the live source, catalog, store snapshot, or counts no longer match the preview witness; rerun `marrow evolve preview`, then rerun `marrow evolve apply`",
             format,
         ),
-        ApplyError::StoreCommitDrift { pinned, found } => report_simple_error(
-            "evolve.store_commit_drift",
+        ApplyError::StoreCommitDrift { pinned, found } => report_drift_error(
+            drift_kind_with_fields(
+                "store_commit",
+                [
+                    ("pinned", serde_json::json!(pinned)),
+                    ("found", serde_json::json!(found)),
+                ],
+            ),
             &format!(
                 "store commit changed after preview (pinned {pinned:?}, found {found:?}); rerun `marrow evolve preview`, then rerun `marrow evolve apply`"
             ),
@@ -335,8 +341,14 @@ pub(super) fn apply_error(error: ApplyError, labels: &SourceLabels, format: Chec
             "destructive approval did not match the preview witness",
             format,
         ),
-        ApplyError::PlanMismatch { expected, staged } => report_simple_error(
-            "evolve.plan_mismatch",
+        ApplyError::PlanMismatch { expected, staged } => report_drift_error(
+            drift_kind_with_fields(
+                "plan_mismatch",
+                [
+                    ("expected", serde_json::json!(expected)),
+                    ("staged", serde_json::json!(staged)),
+                ],
+            ),
             &format!("staged {staged} item(s), but the witness expected {expected}"),
             format,
         ),
@@ -356,4 +368,28 @@ pub(super) fn apply_error(error: ApplyError, labels: &SourceLabels, format: Chec
             format,
         ),
     }
+}
+
+fn drift_kind(kind: &str) -> serde_json::Value {
+    drift_kind_with_fields(kind, [])
+}
+
+fn drift_kind_with_fields<const N: usize>(
+    kind: &str,
+    fields: [(&str, serde_json::Value); N],
+) -> serde_json::Value {
+    let mut object = serde_json::Map::from_iter([("kind".to_string(), serde_json::json!(kind))]);
+    for (name, value) in fields {
+        object.insert(name.to_string(), value);
+    }
+    serde_json::Value::Object(object)
+}
+
+fn report_drift_error(drift_kind: serde_json::Value, message: &str, format: CheckFormat) {
+    report_simple_error_with_data(
+        "evolve.drift",
+        message,
+        serde_json::Map::from_iter([("drift_kind".to_string(), drift_kind)]),
+        format,
+    );
 }

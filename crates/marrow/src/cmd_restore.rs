@@ -10,27 +10,26 @@ use std::process::ExitCode;
 
 use marrow_run::SystemNondeterminism;
 use marrow_store::tree::TreeStore;
-use serde_json::json;
 
 use crate::backup::{
     BackupError, BackupPrologue, CatalogFingerprintRef, RestoreReceipt, RestoreTargetMode,
     read_backup_prologue, restore_backup_with_prologue,
 };
 use crate::{
-    CheckFormat, load_config_with_format, native_store_path, parse_format_flag, report_io_error,
-    report_project, report_simple_error, resolve_store_path, write_json,
+    CheckFormat, load_config_with_format, native_store_path, report_io_error, report_project,
+    report_simple_error, resolve_store_path,
 };
 
 pub(crate) fn restore(args: &[String]) -> ExitCode {
     let RestoreArgs {
         dir,
         input,
-        format,
         target_mode,
     } = match parse_restore_args(args) {
         Ok(parsed) => parsed,
         Err(code) => return code,
     };
+    let format = CheckFormat::Text;
     let config = match load_config_with_format(&dir, format) {
         Ok(config) => config,
         Err(code) => return code,
@@ -116,15 +115,7 @@ pub(crate) fn restore(args: &[String]) -> ExitCode {
         verify,
     ) {
         Ok(report) => {
-            match format {
-                CheckFormat::Text => report_restore_text(&input, &report),
-                CheckFormat::Json | CheckFormat::Jsonl => write_json(json!({
-                    "input": input,
-                    "records": report.record_count,
-                    "catalog_epoch": report.catalog_epoch,
-                    "receipt": restore_receipt_json(&report),
-                })),
-            }
+            report_restore_text(&input, &report);
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -138,23 +129,17 @@ pub(crate) fn restore(args: &[String]) -> ExitCode {
 struct RestoreArgs {
     dir: String,
     input: String,
-    format: CheckFormat,
     target_mode: RestoreTargetMode,
 }
 
 fn parse_restore_args(args: &[String]) -> Result<RestoreArgs, ExitCode> {
     let mut positionals = Vec::new();
-    let mut format = CheckFormat::Text;
-    let mut saw_format = false;
     let mut replace = false;
     let mut expected_live_records = None;
     let mut saw_count = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
-            "--format" => {
-                parse_format_flag(args, &mut index, &mut saw_format, &mut format)?;
-            }
             "--replace" => {
                 if replace {
                     eprintln!("duplicate --replace");
@@ -177,7 +162,7 @@ fn parse_restore_args(args: &[String]) -> Result<RestoreArgs, ExitCode> {
             }
             "--help" | "-h" => {
                 print!(
-                    "Usage:\n  marrow restore [--format text|json|jsonl] [--replace --count N] <projectdir> <backup-file>\n"
+                    "Usage:\n  marrow restore [--replace --count N] <projectdir> <backup-file>\n"
                 );
                 return Err(ExitCode::SUCCESS);
             }
@@ -204,7 +189,6 @@ fn parse_restore_args(args: &[String]) -> Result<RestoreArgs, ExitCode> {
         [dir, input] => Ok(RestoreArgs {
             dir: dir.clone(),
             input: input.clone(),
-            format,
             target_mode,
         }),
         [] | [_] => {
@@ -242,24 +226,6 @@ fn report_restore_text(input: &str, report: &crate::backup::RestoreReport) {
                 report.record_count
             );
         }
-    }
-}
-
-fn restore_receipt_json(report: &crate::backup::RestoreReport) -> serde_json::Value {
-    match report.receipt {
-        RestoreReceipt::EmptyOnly => json!({
-            "mode": "empty",
-            "restored_records": report.record_count,
-        }),
-        RestoreReceipt::Replace {
-            expected_live_records,
-            replaced_live_records,
-        } => json!({
-            "mode": "replace",
-            "expected_live_records": expected_live_records,
-            "replaced_live_records": replaced_live_records,
-            "restored_records": report.record_count,
-        }),
     }
 }
 

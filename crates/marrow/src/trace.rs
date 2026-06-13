@@ -15,56 +15,24 @@ use marrow_store::tree::decode_tree_enum_member;
 use marrow_store::value::{SavedValue, ScalarType, decode_value, encode_value};
 use marrow_syntax::SourceSpan;
 use serde_json::json;
-
-use crate::CheckFormat;
-
 /// Observes a run and reports each statement and managed write. `label` prefixes
 /// each event so `test --trace` can attribute a trace to its test; a plain `run`
 /// passes an empty label.
 pub(crate) struct TraceHook {
-    format: CheckFormat,
     label: String,
     names: WriteTargetNames,
-    records: Vec<serde_json::Value>,
 }
 
 impl TraceHook {
-    pub(crate) fn new(
-        format: CheckFormat,
-        label: impl Into<String>,
-        program: &CheckedRuntimeProgram,
-    ) -> Self {
+    pub(crate) fn new(label: impl Into<String>, program: &CheckedRuntimeProgram) -> Self {
         Self {
-            format,
             label: label.into(),
             names: WriteTargetNames::from_program(program),
-            records: Vec::new(),
         }
     }
 
-    pub(crate) fn into_trace_record(self) -> serde_json::Value {
-        trace_record(&self.label, self.records)
-    }
-
-    /// Emit and reset the collected JSON records. Text traces print as they happen
-    /// and leave nothing to flush.
-    pub(crate) fn flush(&mut self) {
-        let records = std::mem::take(&mut self.records);
-        match self.format {
-            CheckFormat::Text => {}
-            CheckFormat::Json => crate::write_json_err(trace_record(&self.label, records)),
-            CheckFormat::Jsonl => {
-                for record in &records {
-                    crate::write_json_err(record.clone());
-                }
-                crate::write_json_err(json!({
-                    "kind": "summary",
-                    "trace": self.label,
-                    "events": records.len(),
-                }));
-            }
-        }
-    }
+    /// Text traces print as they happen and leave nothing to flush.
+    pub(crate) fn flush(&mut self) {}
 
     /// The text prefix for an event: the label and two spaces per nested call, so
     /// the stream reads as a call tree.
@@ -95,34 +63,16 @@ impl StepHook for TraceHook {
             .locals()
             .map(|(name, value)| (name.to_string(), value.display_debug()))
             .collect();
-        match self.format {
-            CheckFormat::Text => {
-                let locals_text = locals
-                    .iter()
-                    .map(|(name, value)| format!("{name}={value}"))
-                    .collect::<Vec<_>>()
-                    .join("  ");
-                let location = format!("{file}:{}", span.line);
-                if locals_text.is_empty() {
-                    eprintln!("{}{location}", self.text_indent(depth));
-                } else {
-                    eprintln!("{}{location}\t{locals_text}", self.text_indent(depth));
-                }
-            }
-            CheckFormat::Json | CheckFormat::Jsonl => {
-                let locals_json: Vec<serde_json::Value> = locals
-                    .iter()
-                    .map(|(name, value)| json!({ "name": name, "value": value }))
-                    .collect();
-                self.records.push(json!({
-                    "kind": "step",
-                    "trace": self.label,
-                    "file": file,
-                    "line": span.line,
-                    "depth": depth,
-                    "locals": locals_json,
-                }));
-            }
+        let locals_text = locals
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>()
+            .join("  ");
+        let location = format!("{file}:{}", span.line);
+        if locals_text.is_empty() {
+            eprintln!("{}{location}", self.text_indent(depth));
+        } else {
+            eprintln!("{}{location}\t{locals_text}", self.text_indent(depth));
         }
         Ok(())
     }
@@ -139,41 +89,19 @@ impl StepHook for TraceHook {
             WriteOp::Delete => "delete",
         };
         let rendered_target = render_write_target(target, &self.names);
-        match self.format {
-            CheckFormat::Text => {
-                let line = match value {
-                    Some(bytes) => {
-                        format!(
-                            "{op_name} {rendered_target} = {}",
-                            self.names.render_leaf_value(target, bytes)
-                        )
-                    }
-                    None => format!("{op_name} {rendered_target}"),
-                };
-                // A write is caused by the statement at the current depth; indent it
-                // one level past that statement so it nests under its cause.
-                eprintln!("{}{line}", self.text_indent(depth + 1));
+        let line = match value {
+            Some(bytes) => {
+                format!(
+                    "{op_name} {rendered_target} = {}",
+                    self.names.render_leaf_value(target, bytes)
+                )
             }
-            CheckFormat::Json | CheckFormat::Jsonl => {
-                self.records.push(json!({
-                    "kind": "write",
-                    "trace": self.label,
-                    "op": op_name,
-                    "target": write_target_json(target, &self.names),
-                    "path": rendered_target,
-                    "value_b64": value.map(marrow_run::base64::encode),
-                    "depth": depth,
-                }));
-            }
-        }
+            None => format!("{op_name} {rendered_target}"),
+        };
+        // A write is caused by the statement at the current depth; indent it
+        // one level past that statement so it nests under its cause.
+        eprintln!("{}{line}", self.text_indent(depth + 1));
     }
-}
-
-fn trace_record(label: &str, records: Vec<serde_json::Value>) -> serde_json::Value {
-    json!({
-        "trace": label,
-        "events": records,
-    })
 }
 
 #[derive(Clone, Default)]

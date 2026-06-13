@@ -4,7 +4,9 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use crate::{CheckFormat, report_check, report_io_error, report_project, report_simple_error};
+use crate::{
+    CheckFormat, report_check, report_io_error, report_project, report_simple_error, write_json_err,
+};
 
 pub(crate) fn check(args: &[String]) -> ExitCode {
     let mut format = CheckFormat::Text;
@@ -253,16 +255,41 @@ fn check_project_dir(dir: &str, format: CheckFormat, data: bool) -> ExitCode {
 pub(crate) fn report_runtime_fault(
     program: &marrow_check::CheckedRuntimeProgram,
     error: &marrow_run::RuntimeError,
+    format: CheckFormat,
 ) {
-    match error.origin.and_then(|id| program.file_path(id)) {
-        Some(path) => eprintln!(
-            "{}:{}:{}: {}: {}",
-            path.display(),
-            error.span.line,
-            error.span.column,
-            error.code,
-            error.message
-        ),
-        None => report_simple_error(error.code, &error.message, CheckFormat::Text),
+    let path = error.origin.and_then(|id| program.file_path(id));
+    match format {
+        CheckFormat::Text => match path {
+            Some(path) => eprintln!(
+                "{}:{}:{}: {}: {}",
+                path.display(),
+                error.span.line,
+                error.span.column,
+                error.code,
+                error.message
+            ),
+            None => report_simple_error(error.code, &error.message, CheckFormat::Text),
+        },
+        CheckFormat::Json | CheckFormat::Jsonl => {
+            let mut data = serde_json::Map::new();
+            if let Some(code) = error.uncaught_throw_code() {
+                data.insert("code".to_string(), serde_json::json!(code));
+            }
+            let source_span = match path {
+                Some(path) => serde_json::json!({
+                    "file": path.display().to_string(),
+                    "line": error.span.line,
+                    "column": error.span.column,
+                }),
+                None => serde_json::Value::Null,
+            };
+            write_json_err(serde_json::json!({
+                "code": error.code,
+                "kind": marrow_syntax::kind_for_code(error.code),
+                "message": error.message,
+                "data": data,
+                "source_span": source_span,
+            }));
+        }
     }
 }

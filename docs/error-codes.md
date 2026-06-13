@@ -41,8 +41,8 @@ the running program.
 Common fields:
 
 - `code`: stable machine code;
-- `kind`: broad category such as `parse`, `check`, `capability`, `runtime`,
-  `storage`, `io`, `usage`, or `tooling`;
+- `kind`: broad category such as `parse`, `check`, `runtime`, `storage`,
+  `io`, `usage`, or `tooling`;
 - `message`: short human summary;
 - `help`: optional repair guidance;
 - `source_span`: optional source location;
@@ -96,10 +96,6 @@ code is stable and predictable:
 | `store` | `storage` |
 | `io` | `io` |
 | everything else (`config`, `project`, `catalog`, `data`, `evolve`, `write`, `test`, `restore`) | `tooling` |
-
-A `run.capability` error is the runtime form of a missing host capability; it
-carries `kind` `runtime` (the `capability` kind named in the envelope section is
-a category label, not a separate code prefix).
 
 ## Code Reference
 
@@ -238,7 +234,7 @@ code, except `run.uncaught_error` — see "Typed Errors In Running Programs".
 | `run.unsupported` | A construct the runtime does not evaluate. Fatal runtime backstop. |
 | `run.capability` | A host capability a builtin needs (e.g. the clock for `std::clock::now`) was not provided to this run. Fatal host/tooling failure. |
 | `run.assertion` | A `std::assert::*` assertion did not hold. `marrow test` reports these as located test failures. |
-| `run.uncaught_error` | An `Error` raised by `throw` reached the top of a function with no `catch`. The original code travels in the message (e.g. `[io.read]`). |
+| `run.uncaught_error` | An `Error` raised by `throw` reached the top of a function with no `catch`. The original code travels in text messages (e.g. `[io.read]`) and in JSON envelopes as `data.code`. |
 | `run.traversal` | A write, delete, or append changed the saved layer a loop was actively traversing. Fatal dynamic counterpart of `check.loop_mutates_traversed_layer`. |
 | `run.recursion_limit` | Function-call nesting exceeded the fixed call-depth budget (256). Located at the offending call site and reports the budget plus observed attempted depth, so runaway or unbounded recursion fails closed rather than overflowing the stack; see the [cost model](language/cost-model.md). |
 | `run.no_entry` | `marrow run` found no entry: no `--entry` was given and `marrow.json` sets no `run.defaultEntry`. |
@@ -345,13 +341,11 @@ Source-native data-evolution preview/apply faults.
 |---|---|
 | `evolve.no_accepted_catalog` | Apply was run on a project that declares no saved data, so there is no baseline catalog epoch to advance from. |
 | `evolve.repair_required` | The attached data snapshot cannot discharge a required obligation. Repair the data through explicit maintenance/admin code, then run `marrow evolve preview` again. |
-| `evolve.drift` | The live source, catalog, store snapshot, engine metadata, affected IDs, or counts no longer match the preview witness. Rerun `marrow evolve preview`, then rerun `marrow evolve apply`. |
-| `evolve.store_commit_drift` | The store commit changed after preview. Rerun `marrow evolve preview`, then rerun `marrow evolve apply`. |
+| `evolve.drift` | The live source, catalog, store snapshot, engine metadata, affected IDs, store commit, or planned effect counts no longer match the preview witness. JSON envelopes carry `data.drift_kind`: `{"kind":"witness"}`, `{"kind":"store_commit","pinned":...,"found":...}`, or `{"kind":"plan_mismatch","expected":...,"staged":...}`. Rerun `marrow evolve preview`, then rerun `marrow evolve apply`. |
 | `evolve.catalog_drift` | The store's accepted catalog snapshot changed after preview, so the witness was discharged against a catalog the store no longer holds. Apply refuses before writing; rerun `marrow evolve preview`, then rerun `marrow evolve apply`. |
 | `evolve.maintenance_required` | A destructive retire was reached without the maintenance gate. |
 | `evolve.approval_required` | A destructive retire needs an approval naming the catalog ID and populated count from preview. |
 | `evolve.approval_mismatch` | The supplied destructive approval did not match the exact preview witness. |
-| `evolve.plan_mismatch` | Apply could not write the exact number of effects the witness counted. |
 | `evolve.transform_faulted` | A checked transform body faulted while running against real data, so apply rolled back. |
 
 ### `test.*` — kind `tooling`
@@ -394,8 +388,9 @@ failures raise `value.*` codes. These typed raises are catchable in code. Fatal 
 backstops for unchecked/internal states and host/tooling failures are not
 `Error` values and can surface at the top level under their own `run.*` code.
 When a language `throw` or `std::io` error is *not* caught and reaches the top of
-the program, `run`/`test` report it as `run.uncaught_error` and carry the
-original code in the message, for example:
+the program, `run`/`test` report it as `run.uncaught_error`. Text carries the
+original code in the message, while JSON envelopes carry it in `data.code`, for
+example:
 
 ```
 run.uncaught_error: uncaught error [io.read]: std::io::readText failed for `/no/such/file`: No such file or directory (os error 2)

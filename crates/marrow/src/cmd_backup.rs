@@ -9,19 +9,16 @@ use std::process::ExitCode;
 
 use marrow_run::SystemNondeterminism;
 use marrow_store::tree::TreeStore;
-use serde_json::json;
 
 use crate::backup::{create_backup, ensure_store_uid};
-use crate::{
-    CheckFormat, dir_and_path_args, load_checked_project, open_store_for_inspection,
-    report_simple_error, write_json,
-};
+use crate::{CheckFormat, load_checked_project, open_store_for_inspection, report_simple_error};
 
 pub(crate) fn backup(args: &[String]) -> ExitCode {
-    let (dir, output, format) = match dir_and_path_args("backup", "output-file", args) {
+    let (dir, output) = match backup_args(args) {
         Ok(parsed) => parsed,
         Err(code) => return code,
     };
+    let format = CheckFormat::Text;
     let (config, program) = match load_checked_project(&dir) {
         Ok(checked) => checked,
         Err(code) => return code,
@@ -76,19 +73,10 @@ pub(crate) fn backup(args: &[String]) -> ExitCode {
                 );
                 return ExitCode::FAILURE;
             }
-            match format {
-                CheckFormat::Text => {
-                    println!(
-                        "ok: backed up {} record(s) to {output}",
-                        report.record_count
-                    );
-                }
-                CheckFormat::Json | CheckFormat::Jsonl => write_json(json!({
-                    "output": output,
-                    "records": report.record_count,
-                    "catalog_epoch": report.catalog_epoch,
-                })),
-            }
+            println!(
+                "ok: backed up {} record(s) to {output}",
+                report.record_count
+            );
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -96,6 +84,31 @@ pub(crate) fn backup(args: &[String]) -> ExitCode {
             cleanup_temp_artifact(&temp_path);
             report_simple_error(error.code(), &error.to_string(), format);
             ExitCode::FAILURE
+        }
+    }
+}
+
+fn backup_args(args: &[String]) -> Result<(String, String), ExitCode> {
+    let mut positionals = Vec::new();
+    for arg in args {
+        match arg.as_str() {
+            "--help" | "-h" => {
+                print!("Usage:\n  marrow backup <projectdir> <output-file>\n");
+                return Err(ExitCode::SUCCESS);
+            }
+            value if value.starts_with('-') => return Err(crate::unknown_option("backup", value)),
+            value => positionals.push(value.to_string()),
+        }
+    }
+    match positionals.as_slice() {
+        [dir, output] => Ok((dir.clone(), output.clone())),
+        [] | [_] => {
+            eprintln!("marrow backup requires a project directory and an output-file");
+            Err(ExitCode::from(2))
+        }
+        _ => {
+            eprintln!("marrow backup accepts one project directory and one output-file");
+            Err(ExitCode::from(2))
         }
     }
 }

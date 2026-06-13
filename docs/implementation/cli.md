@@ -1,6 +1,6 @@
 # CLI and project discovery
 
-The CLI is wiring and rendering, not semantics. Commands resolve a project directory to the config, checked program, and durable state they actually need, then print diagnostics, program output, or a tooling report in `text`/`json`/`jsonl`. All meaning — parse, type-check, evolution verdicts, store keys, value decoding — is decided downstream in `marrow-check`, `marrow-run`, and `marrow-store` and only consumed here.
+The CLI is wiring and rendering, not semantics. Commands resolve a project directory to the config, checked program, and durable state they actually need, then print diagnostics, program output, or a tooling report in the formats that command owns. `check`, `evolve`, `test`, and `data` keep their structured `text`/`json`/`jsonl` reports; `run --dry-run` keeps `text`/`json`; trace, backup, and restore are text-only. All meaning — parse, type-check, evolution verdicts, store keys, value decoding — is decided downstream in `marrow-check`, `marrow-run`, and `marrow-store` and only consumed here.
 
 Two crates: `marrow-project` owns the `marrow.json` schema, source/test discovery, and the digest helper. `marrow` is the binary that dispatches argv to one `cmd_*` module.
 
@@ -19,7 +19,7 @@ Two crates: `marrow-project` owns the `marrow.json` schema, source/test discover
   surface typed `store.*` codes.
 - `establish_store_baseline` — freeze a project's first proposed identity into a write-capable store in one transaction (catalog rows, epoch, engine profile, commit metadata via `marrow_run::evolution::commit_catalog_baseline`), then rebind the program against the now-accepted snapshot. Runs only over an empty store with a pending non-empty proposal; a project past its baseline never churns.
 
-Stream separation is load-bearing: a program's own `print` output owns stdout; run tooling reports such as trace and dry-run plans go to stderr, so a stdout JSON consumer never sees interleaving. `marrow test --format json|jsonl` owns stdout for its structured test-result report, with trace output kept on stderr. Exit codes are 0 success, 1 failure, 2 usage.
+Stream separation is load-bearing: a program's own `print` output owns stdout; run tooling reports such as trace and dry-run plans go to stderr, so a stdout JSON consumer never sees interleaving. Trace is text-only and streams directly. `marrow test --format json|jsonl` owns stdout for its structured test-result report, with text trace output kept on stderr. Exit codes are 0 success, 1 failure, 2 usage.
 
 ## Command families
 

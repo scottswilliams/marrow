@@ -849,21 +849,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 Listing order is execution order. docs/cli.md integrates in lane order: W6.4 → W6.5 → W6.3 →
 W6.6.
 
-**W6.1 ∥ Format matrix + error-code trims (gate 24: removal #14 A+C, removal #15, III.C1).**
-Owns: trace.rs Json/Jsonl deletion (text-only trace; `--trace` composes only with text format),
-`jsonl` removed from `run` entirely (`run --format text|json` stays valid for `--dry-run`, and
-`run --format json` becomes the gate-27 envelope switch once W6.6 lands), backup/restore
-`--format` removal, `load_checked_project_with_format` routing for every surviving flag incl.
-failure paths, cmd_run.rs hard-coded Text sweep, the three-way drift merge — `evolve.drift`,
-`evolve.store_commit_drift`, and `evolve.plan_mismatch` collapse into one `evolve.drift` whose
-`data.drift_kind` is `witness`, `store_commit` (payload `pinned`/`found`), or `plan_mismatch`
-(payload `expected`/`staged`) — capability-kind row deletion, the C54 data.code emit path on
-run.uncaught_error + its CLI assertion test (W6.6 renders it in the envelope), per-command
-broken-marrow.json JSON-envelope tests in one new test file this lane owns. Seed: failing test —
-broken config under `--format json` yields a parseable envelope. Review: tooling/03
-branch-on-code+data preserved through the drift merge; no unbounded trace buffering remains.
-Done: every emitted line honors the surviving flags.
-
 **W6.2 ∥ CI-grade test + discovery (III.C2 a-b + gates 24, 31).** Owns: cmd_test JSON/JSONL
 results — one pre-stable record per test ({name, outcome, code?, file?, span?}) plus a summary
 record — `--filter <substring>` over qualified test names (zero matches fail closed as

@@ -370,7 +370,7 @@ fn format_jsonl_streams_test_results_then_summary() {
 }
 
 #[test]
-fn format_json_with_trace_keeps_test_report_on_stdout() {
+fn format_json_with_trace_is_a_usage_error() {
     let root = temp_project("test-json-trace-streams", |root| {
         write(root, "marrow.json", CONFIG);
         write(root, "src/app.mw", "module app\n");
@@ -387,29 +387,17 @@ fn format_json_with_trace_keeps_test_report_on_stdout() {
         root.to_str().expect("project path utf8"),
     ]);
 
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let report = json(output.stdout);
-    assert_eq!(
-        report["tests"][0]["name"],
-        serde_json::json!("tests::app_test::traced")
-    );
-    assert_eq!(report["summary"]["passed"], serde_json::json!(1));
-    let trace = json(output.stderr);
-    let traces = trace["traces"].as_array().expect("traces array");
-    assert_eq!(traces.len(), 1, "{trace}");
-    assert_eq!(
-        traces[0]["trace"],
-        serde_json::json!("tests::app_test::traced")
-    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
     assert!(
-        traces[0]["events"]
-            .as_array()
-            .is_some_and(|events| !events.is_empty())
+        stderr.contains("--trace") && stderr.contains("text"),
+        "{stderr}"
     );
 }
 
 #[test]
-fn format_json_with_trace_emits_one_stderr_envelope_for_multiple_tests() {
+fn format_json_with_trace_rejects_before_running_tests() {
     let root = temp_project("test-json-trace-envelope", |root| {
         write(root, "marrow.json", CONFIG);
         write(root, "src/app.mw", "module app\n");
@@ -426,29 +414,12 @@ fn format_json_with_trace_emits_one_stderr_envelope_for_multiple_tests() {
         root.to_str().expect("project path utf8"),
     ]);
 
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let report = json(output.stdout);
-    assert_eq!(report["summary"]["passed"], serde_json::json!(2));
-    let trace = json(output.stderr);
-    let traces = trace["traces"].as_array().expect("traces array");
-    assert_eq!(traces.len(), 2, "{trace}");
-    assert_eq!(
-        traces[0]["trace"],
-        serde_json::json!("tests::app_test::first")
-    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
     assert!(
-        traces[0]["events"]
-            .as_array()
-            .is_some_and(|events| !events.is_empty())
-    );
-    assert_eq!(
-        traces[1]["trace"],
-        serde_json::json!("tests::app_test::second")
-    );
-    assert!(
-        traces[1]["events"]
-            .as_array()
-            .is_some_and(|events| !events.is_empty())
+        stderr.contains("--trace") && stderr.contains("text"),
+        "{stderr}"
     );
 }
 

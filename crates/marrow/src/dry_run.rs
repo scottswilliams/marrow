@@ -150,7 +150,7 @@ pub(crate) fn report(
             }
             eprintln!("dry run: {writes} write(s), {deletes} delete(s) (not committed)");
         }
-        CheckFormat::Json | CheckFormat::Jsonl => {
+        CheckFormat::Json => {
             let records: Vec<serde_json::Value> = planned
                 .iter()
                 .map(|step| planned_record(step, &names))
@@ -162,6 +162,7 @@ pub(crate) fn report(
                 "planned": records,
             }));
         }
+        CheckFormat::Jsonl => unreachable!("run rejects --format jsonl before dry-run reporting"),
     }
 }
 

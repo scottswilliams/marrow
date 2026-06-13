@@ -27,7 +27,6 @@ use super::{
 #[derive(Debug)]
 pub(crate) struct RestoreReport {
     pub(crate) record_count: u64,
-    pub(crate) catalog_epoch: Option<u64>,
     pub(crate) receipt: RestoreReceipt,
 }
 
@@ -361,7 +360,6 @@ fn replay(
 
     Ok(RestoreReport {
         record_count: manifest.record_count,
-        catalog_epoch: manifest.catalog_epoch,
         receipt: RestoreReceipt::EmptyOnly,
     })
 }

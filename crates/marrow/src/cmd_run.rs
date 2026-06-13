@@ -15,46 +15,42 @@ use crate::cmd_check::report_runtime_fault;
 use crate::dry_run::{self, DryRunHook};
 use crate::trace::TraceHook;
 use crate::{
-    CheckFormat, load_checked_project, report_io_error, report_simple_error, resolve_store_path,
+    CheckFormat, load_checked_project_with_format, report_io_error, report_simple_error,
+    resolve_store_path,
 };
 
 /// How a run observes itself: a plain run with no tooling report, an execution
-/// `--trace`, a `--dry-run` that isolates its writes from the configured store, or
-/// both composed. The report `--format` lives only on the variants that emit a
-/// report, so a plain run cannot carry one.
+/// trace, a `--dry-run` that isolates its writes from the configured store, or
+/// both composed. Trace output is always text; only dry-run carries a selected
+/// structured report format.
 #[derive(Clone, Copy)]
 enum RunObservation {
     Plain,
-    Trace(CheckFormat),
+    Trace,
     DryRun(CheckFormat),
-    TraceDryRun(CheckFormat),
-    #[allow(dead_code)]
-    Profile(CheckFormat),
+    TraceDryRun,
 }
 
 impl RunObservation {
     fn traces(self) -> bool {
-        matches!(self, Self::Trace(_) | Self::TraceDryRun(_))
+        matches!(self, Self::Trace | Self::TraceDryRun)
     }
 
     fn isolates_writes(self) -> bool {
-        matches!(self, Self::DryRun(_) | Self::TraceDryRun(_))
+        matches!(self, Self::DryRun(_) | Self::TraceDryRun)
     }
 
     fn format(self) -> CheckFormat {
         match self {
-            Self::Plain => CheckFormat::Text,
-            Self::Trace(format)
-            | Self::DryRun(format)
-            | Self::TraceDryRun(format)
-            | Self::Profile(format) => format,
+            Self::Plain | Self::Trace | Self::TraceDryRun => CheckFormat::Text,
+            Self::DryRun(format) => format,
         }
     }
 }
 
 /// Run a project's entry function. A plain run's only output is the program's
-/// `print` stream, which carries no envelope; `--trace` and `--dry-run` are
-/// tooling reports that take `--format` and report separately from that stream.
+/// `print` stream, which carries no envelope; `--trace` is text-only, and
+/// `--dry-run` is the only run mode whose tooling report takes `--format`.
 /// Failures report a dotted error code on stderr.
 pub(crate) fn run(args: &[String]) -> ExitCode {
     let mut entry = None;
@@ -90,13 +86,17 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
                 {
                     return code;
                 }
+                if matches!(format, CheckFormat::Jsonl) {
+                    eprintln!("unknown format: jsonl");
+                    return ExitCode::from(2);
+                }
             }
             "--help" | "-h" => {
                 print!(
                     "\
 Usage:
   marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] \
-[--format text|json|jsonl] <projectdir>
+[--format text|json] <projectdir>
 
 Check a Marrow project, then run an entry function over the store its
 `marrow.json` selects (an in-memory store when none is configured). The entry
@@ -116,7 +116,7 @@ with `print` goes to stdout.
                  writes it would commit, and leave the configured store unchanged.
                  Side effects outside saved data are not rewound. The plan is
                  tooling output on stderr.
-  --format       The report format for --trace/--dry-run (default text). A plain
+  --format       The report format for --dry-run (default text). A plain
                  run's stdout is the program's own output and takes no --format.
 "
                 );
@@ -138,20 +138,19 @@ with `print` goes to stdout.
         eprintln!("missing project directory");
         return ExitCode::from(2);
     };
+    if trace && !matches!(format, CheckFormat::Text) {
+        eprintln!("--trace only supports --format text");
+        return ExitCode::from(2);
+    }
+    if saw_format && !dry_run {
+        eprintln!("--format applies to --dry-run output; this run takes none");
+        return ExitCode::from(2);
+    }
     let observe = match (trace, dry_run) {
-        (false, false) => {
-            // A plain run's only output is the program's `print` stream,
-            // which carries no envelope, so `--format` has nothing to shape and is a
-            // usage error rather than a silently ignored flag.
-            if saw_format {
-                eprintln!("--format applies to --trace/--dry-run output; a plain run takes none");
-                return ExitCode::from(2);
-            }
-            RunObservation::Plain
-        }
-        (true, false) => RunObservation::Trace(format),
+        (false, false) => RunObservation::Plain,
+        (true, false) => RunObservation::Trace,
         (false, true) => RunObservation::DryRun(format),
-        (true, true) => RunObservation::TraceDryRun(format),
+        (true, true) => RunObservation::TraceDryRun,
     };
     run_project_dir(&dir, entry.as_deref(), maintenance, observe)
 }
@@ -165,7 +164,8 @@ fn run_project_dir(
     maintenance: bool,
     observe: RunObservation,
 ) -> ExitCode {
-    let (config, program) = match load_checked_project(dir) {
+    let format = observe.format();
+    let (config, program) = match load_checked_project_with_format(dir, format) {
         Ok(checked) => checked,
         Err(code) => return code,
     };
@@ -174,7 +174,7 @@ fn run_project_dir(
         report_simple_error(
             "run.no_entry",
             "no entry to run; pass --entry <name> or set `run.defaultEntry` in marrow.json",
-            CheckFormat::Text,
+            format,
         );
         return ExitCode::FAILURE;
     }
@@ -343,12 +343,12 @@ fn open_run_store(
     };
     let program = crate::establish_store_baseline(dir, config, &store.store, program, format)?;
     match fence_run(&program, &store.store) {
-        Ok(()) => finish_open(program, store),
+        Ok(()) => finish_open(program, store, format),
         Err(FenceError::SchemaDrift) => {
             auto_apply_then_reopen(dir, program, store, format, nondeterminism)
         }
         Err(error) => {
-            report_simple_error(error.code(), &error.message(), CheckFormat::Text);
+            report_simple_error(error.code(), &error.message(), format);
             Err(ExitCode::FAILURE)
         }
     }
@@ -427,6 +427,7 @@ fn fence_run(
 fn finish_open(
     program: marrow_check::CheckedProgram,
     store: NativeRunStore,
+    format: CheckFormat,
 ) -> Result<OpenStore, ExitCode> {
     match populated_unstamped_store(&program, &store.store) {
         Ok(false) => Ok(OpenStore::Native { program, store }),
@@ -434,12 +435,12 @@ fn finish_open(
             report_simple_error(
                 "run.store_unstamped",
                 "store has saved records but no catalog activation stamp; run `marrow check --data` and `marrow evolve apply` before running this accepted catalog",
-                CheckFormat::Text,
+                format,
             );
             Err(ExitCode::FAILURE)
         }
         Err(error) => {
-            report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
+            report_simple_error(error.code(), &error.to_string(), format);
             Err(ExitCode::FAILURE)
         }
     }
@@ -463,7 +464,7 @@ fn auto_apply_then_reopen(
     let witness = match preview(&program, &store.store) {
         Ok((witness, _diagnostics)) => witness,
         Err(error) => {
-            report_simple_error(error.code(), &error.to_string(), CheckFormat::Text);
+            report_simple_error(error.code(), &error.to_string(), format);
             return Err(ExitCode::FAILURE);
         }
     };
@@ -482,11 +483,7 @@ fn auto_apply_then_reopen(
             eprintln!("auto-applied evolution: catalog epoch {from_epoch} -> {to_epoch}");
         }
         Ok(AutoApplyOutcome::MustFence(obligation)) => {
-            report_simple_error(
-                "run.schema_drift",
-                &fence_message(&obligation),
-                CheckFormat::Text,
-            );
+            report_simple_error("run.schema_drift", &fence_message(&obligation), format);
             return Err(ExitCode::FAILURE);
         }
         Err(_) => {
@@ -497,7 +494,7 @@ fn auto_apply_then_reopen(
             report_simple_error(
                 FenceError::SchemaDrift.code(),
                 "store changed under the auto-apply probe; re-run to recompute the evolution against current data",
-                CheckFormat::Text,
+                format,
             );
             return Err(ExitCode::FAILURE);
         }
@@ -509,15 +506,15 @@ fn auto_apply_then_reopen(
     // re-open and re-fence the store, which now matches. The reload reads the catalog
     // snapshot this auto-apply just advanced, so it proposes no further change and fences
     // clean.
-    let (config, program) = load_checked_project(dir)?;
+    let (config, program) = load_checked_project_with_format(dir, format)?;
     let Some(store) = open_store_file(dir, &config, format, nondeterminism)? else {
         return Ok(OpenStore::Memory(program));
     };
     if let Err(error) = fence_run(&program, &store.store) {
-        report_simple_error(error.code(), &error.message(), CheckFormat::Text);
+        report_simple_error(error.code(), &error.message(), format);
         return Err(ExitCode::FAILURE);
     }
-    finish_open(program, store)
+    finish_open(program, store, format)
 }
 
 /// The actionable diagnostic a fenced obligation reports, naming `evolve apply` and the
@@ -624,10 +621,11 @@ fn execute(
     if maintenance {
         host = host.with_maintenance();
     }
+    let format = observe.format();
     let call = match marrow_run::CheckedEntryCall::new(program, entry, Vec::new()) {
         Ok(call) => call,
         Err(error) => {
-            report_runtime_fault(program, &error);
+            report_runtime_fault(program, &error, format);
             return ExitCode::FAILURE;
         }
     };
@@ -637,7 +635,6 @@ fn execute(
     // isolation boundary. It observes every managed write through the same hook the
     // trace uses. A `--trace` (with or without `--dry-run`) installs the trace hook;
     // a plain run installs none.
-    let format = observe.format();
     let mut stdout = std::io::stdout();
     let mut program_output = |text: &str| {
         stdout
@@ -646,9 +643,7 @@ fn execute(
         stdout.flush().expect("program stdout flush failed");
     };
     let (result, report) = if observe.isolates_writes() {
-        let trace = observe
-            .traces()
-            .then(|| TraceHook::new(format, "", program));
+        let trace = observe.traces().then(|| TraceHook::new("", program));
         let mut hook = DryRunHook::new(trace);
         let result = marrow_run::run_entry_with_debugger(
             store,
@@ -660,7 +655,7 @@ fn execute(
         let (planned, trace) = hook.into_report();
         (result, Report::Dry { planned, trace })
     } else if observe.traces() {
-        let mut hook = TraceHook::new(format, "", program);
+        let mut hook = TraceHook::new("", program);
         let result = marrow_run::run_entry_with_debugger(
             store,
             &host,
@@ -683,7 +678,7 @@ fn execute(
     match result {
         Ok(_) => ExitCode::SUCCESS,
         Err(error) => {
-            report_runtime_fault(program, &error);
+            report_runtime_fault(program, &error, format);
             ExitCode::FAILURE
         }
     }

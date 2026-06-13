@@ -40,8 +40,8 @@ a test file (the `tests` patterns in marrow.json). Each test runs against a fres
 in-memory store; a `std::assert::*` failure is a located test failure.
 
   --format  Shape the test report on stdout.
-  --trace   Report each statement and managed write of every test as a separate
-            stderr trace stream, shaped by --format and attributed by test name.
+  --trace   Report each statement and managed write of every test as a text
+            stderr trace stream attributed by test name.
 "
                 );
                 return ExitCode::SUCCESS;
@@ -62,6 +62,10 @@ in-memory store; a `std::assert::*` failure is a located test failure.
         eprintln!("missing project directory");
         return ExitCode::from(2);
     };
+    if trace && !matches!(format, CheckFormat::Text) {
+        eprintln!("--trace only supports --format text");
+        return ExitCode::from(2);
+    }
     test_project_dir(&dir, trace, format)
 }
 
@@ -137,7 +141,6 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
     let mut failed = 0usize;
     let mut errored = 0usize;
     let mut results = Vec::new();
-    let mut json_traces = Vec::new();
     for test in &tests {
         let store = marrow_store::tree::TreeStore::memory();
         let mut program_output = |_text: &str| {};
@@ -148,7 +151,7 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
             match marrow_run::CheckedEntryCall::new(&runtime_program, &test.name, Vec::new()) {
                 Err(error) => Err(error),
                 Ok(call) if trace => {
-                    let mut hook = TraceHook::new(format, test.name.clone(), &runtime_program);
+                    let mut hook = TraceHook::new(test.name.clone(), &runtime_program);
                     let result = marrow_run::run_entry_with_debugger(
                         &store,
                         &host,
@@ -156,11 +159,7 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
                         &call,
                         &mut program_output,
                     );
-                    if matches!(format, CheckFormat::Json) {
-                        json_traces.push(hook.into_trace_record());
-                    } else {
-                        hook.flush();
-                    }
+                    hook.flush();
                     result
                 }
                 Ok(call) => {
@@ -219,9 +218,6 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
                 *counter += 1;
             }
         }
-    }
-    if matches!(format, CheckFormat::Json) && trace {
-        crate::write_json_err(json!({ "traces": json_traces }));
     }
     report_test_results(dir, format, &results, passed, failed, errored);
     if failed == 0 && errored == 0 {
