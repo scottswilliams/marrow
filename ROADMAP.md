@@ -850,14 +850,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 Parser/checker/runtime files overlap heavily: the cut series is sequenced; additions follow.
 Listing order is execution order. Store crate is quiet this wave except where noted.
 
-**W4.9 ∥ (after W4.2 — shared format.rs) fmt comment retention (III.D1).** Owns:
-parse_decl/cursor.rs trailing-trivia capture,
-EvolveDecl comments slot, format.rs emission, the permanent comment-count refusal invariant in
-cmd_fmt --write, docs/implementation/syntax.md claim fix. (At-form attribution bug is moot —
-sugar deleted in W1.7.) Seed: round-trip test red on a trailing declaration comment. Review:
-AST-equality fingerprints + idempotence + docs corpus. Done: fmt --write cannot silently destroy
-a comment (refusal proven by test).
-
 **W4.10 ∥ (after W4.4) Lossy round-trip warning (III.D2).** Owns: `check.lossy_round_trip` warning (shape
 trigger first), diagnostics.rs, spec paragraph strengthening. Seed: failing fixture — whole-write
 to a root with keyed child layers warns; field write does not. Review: warning tier only;
@@ -866,7 +858,7 @@ Done: ADR language/03's visibility mandate implemented at check time.
 
 **W4.11 → is_type_text collapse (removal #33).** Owns: token.rs guard family deletion,
 parse_types_params/statement key-type guard removal, checker-fixture migration per the corrected
-plan, docs/implementation/syntax.md row (integrates after W4.9's claim fix). Seed: checker
+plan, docs/implementation/syntax.md row. Seed: checker
 fixture asserting `check.unknown_type` for
 the migrated cases, red before migration. Review: diagnostic quality at declaration positions
 does not regress below usable (span coarsening acknowledged). Done: one type-spelling owner.
