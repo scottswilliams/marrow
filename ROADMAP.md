@@ -844,15 +844,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 ---
 
-## Wave 4 — Language batch (decisions executed)
-
-Parser/checker/runtime files overlap heavily: the cut series is sequenced; additions follow.
-Listing order is execution order. Store crate is quiet this wave except where noted.
-
-Wave gate: full gate; docs corpus + executable fixtures green over the post-subtraction language.
-
----
-
 ## Wave 5 — Checker architecture series (the hotspot; strictly sequenced, one lane at a time)
 
 Runs after the language batch so the refactor churns once over the final v0.1 surface.
