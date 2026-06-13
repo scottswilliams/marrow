@@ -850,12 +850,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 Parser/checker/runtime files overlap heavily: the cut series is sequenced; additions follow.
 Listing order is execution order. Store crate is quiet this wave except where noted.
 
-**W4.10 ∥ (after W4.4) Lossy round-trip warning (III.D2).** Owns: `check.lossy_round_trip` warning (shape
-trigger first), diagnostics.rs, spec paragraph strengthening. Seed: failing fixture — whole-write
-to a root with keyed child layers warns; field write does not. Review: warning tier only;
-`has_errors` contract intact; nag-rate checked against fixtures before narrowing the trigger.
-Done: ADR language/03's visibility mandate implemented at check time.
-
 **W4.11 → is_type_text collapse (removal #33).** Owns: token.rs guard family deletion,
 parse_types_params/statement key-type guard removal, checker-fixture migration per the corrected
 plan, docs/implementation/syntax.md row. Seed: checker
@@ -874,8 +868,8 @@ span (checker fact boundary, not convention); call-chain propagation probed (a:m
 b:maybe must resolve at a's call site); no Option value materialized at runtime. Done: lookup
 APIs are abstractable; spec/checker/runtime agree.
 
-**W4.14 → Commit-amplification warning (C60; v01-full).** After W2.2, W4.8, and W4.10 (checker
-hotspot + shared cost-model.md). Owns:
+**W4.14 → Commit-amplification warning (C60; v01-full).** Checker hotspot + shared
+cost-model.md. Owns:
 warning-tier `check.commit_amplification` (loop body containing a bare saved write with no
 enclosing transaction; message names the one-word fix), diagnostics row, one cost-model.md
 paragraph, fixtures. Cross-function flows out of scope (stated). Seed: failing fixture — the
