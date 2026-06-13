@@ -848,13 +848,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 Runs after the language batch so the refactor churns once over the final v0.1 surface.
 
-**W5.1 Analysis versioning + borrow split (IV.C1).** Owns: AnalysisSnapshot content-identity
-token, deletion of the three whole-program deep clones (presence borrow split; phased
-build-then-freeze construction for lowering + normalization). Seed: a failing API test —
-snapshot identity changes iff sources/config change; plus a clone-count tidy check. Review: 700+
-checker tests as the oracle; no semantic change; marrow-lsp gets its invalidation key. Done:
-zero whole-program clones per analyze call.
-
 **W5.2 → Saved-place owner (IV.C2 + removal "Collapse saved-path shape recognition", option A
 incl. binding.rs).** Priority conflict resolved: REPORT P1 wins over the removal's P2 — same
 mechanism, fuller mechanics. Owns: one SavedPlaceResolver in the executable module; deletion of
