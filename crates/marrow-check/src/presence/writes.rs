@@ -1,25 +1,33 @@
-//! Whether a call target or statement tree transitively writes saved data,
-//! walking callee bodies under cycle protection.
+//! Transitive effect closure over lowered direct-effect facts.
 
 use crate::{
-    CheckedBody, CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedFunction,
-    CheckedFunctionRef, CheckedInterpolationPart, CheckedProgram, CheckedStmt,
+    CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedFunctionRef,
+    CheckedInterpolationPart, CheckedProgram,
 };
 
-pub(super) fn call_writes_saved_data(program: &CheckedProgram, target: &CheckedCallTarget) -> bool {
-    call_target_writes_saved_data(program, target, &mut Vec::new())
+use super::util::extend_unique;
+use crate::facts::{DirectEffectFacts, EffectClosureFacts};
+
+pub(crate) fn effect_closure(
+    program: &CheckedProgram,
+    function_ref: CheckedFunctionRef,
+) -> Option<EffectClosureFacts> {
+    program.facts.function_for_ref(function_ref)?;
+    let mut closure = EffectClosureFacts::default();
+    collect_function_closure(program, function_ref, &mut closure, &mut Vec::new());
+    closure.write_effects_reachable = !closure.stores_written.is_empty();
+    Some(closure)
 }
 
-fn call_target_writes_saved_data(
-    program: &CheckedProgram,
-    target: &CheckedCallTarget,
-    visiting: &mut Vec<CheckedFunctionRef>,
-) -> bool {
+pub(super) fn call_writes_saved_data(program: &CheckedProgram, target: &CheckedCallTarget) -> bool {
+    call_target_writes_saved_data(program, target)
+}
+
+fn call_target_writes_saved_data(program: &CheckedProgram, target: &CheckedCallTarget) -> bool {
     match target {
         CheckedCallTarget::Builtin(CheckedBuiltinCall::Append) => true,
-        CheckedCallTarget::Function(function_ref) => {
-            function_ref_writes_saved_data(program, *function_ref, visiting)
-        }
+        CheckedCallTarget::Function(function_ref) => effect_closure(program, *function_ref)
+            .is_some_and(|closure| closure.write_effects_reachable),
         CheckedCallTarget::SavedIndexLookup
         | CheckedCallTarget::SavedLayerRead
         | CheckedCallTarget::SavedResourceRead
@@ -32,172 +40,27 @@ fn call_target_writes_saved_data(
     }
 }
 
-fn function_ref_writes_saved_data(
+fn collect_function_closure(
     program: &CheckedProgram,
     function_ref: CheckedFunctionRef,
-    visiting: &mut Vec<CheckedFunctionRef>,
-) -> bool {
-    if visiting.contains(&function_ref) {
-        return false;
+    closure: &mut EffectClosureFacts,
+    visited: &mut Vec<CheckedFunctionRef>,
+) {
+    if visited.contains(&function_ref) {
+        return;
     }
-    let Some(function) = function_by_ref(program, function_ref) else {
-        return false;
+    let Some(function) = program.facts.function_for_ref(function_ref) else {
+        return;
     };
-    visiting.push(function_ref);
-    let writes = function_directly_writes_saved_data(program, function_ref, function)
-        || function
-            .runtime_body()
-            .is_some_and(|body| block_calls_saved_writer(program, body, visiting));
-    visiting.pop();
-    writes
-}
-
-fn function_directly_writes_saved_data(
-    program: &CheckedProgram,
-    function_ref: CheckedFunctionRef,
-    function: &CheckedFunction,
-) -> bool {
-    let module = crate::facts::ModuleId(function_ref.module);
-    program
-        .facts
-        .function_id(module, &function.name)
-        .is_some_and(|id| {
-            !program
-                .facts
-                .function(id)
-                .direct_effects
-                .saved_writes
-                .is_empty()
-        })
-}
-
-fn function_by_ref(
-    program: &CheckedProgram,
-    function_ref: CheckedFunctionRef,
-) -> Option<&CheckedFunction> {
-    program
-        .modules
-        .get(function_ref.module as usize)?
-        .functions
-        .get(function_ref.function as usize)
-}
-
-fn block_calls_saved_writer(
-    program: &CheckedProgram,
-    body: &CheckedBody,
-    visiting: &mut Vec<CheckedFunctionRef>,
-) -> bool {
-    body.statements()
-        .iter()
-        .any(|statement| statement_calls_saved_writer(program, statement, visiting))
-}
-
-fn statement_calls_saved_writer(
-    program: &CheckedProgram,
-    statement: &CheckedStmt,
-    visiting: &mut Vec<CheckedFunctionRef>,
-) -> bool {
-    match statement {
-        CheckedStmt::Const { value, .. }
-        | CheckedStmt::Var {
-            value: Some(value), ..
-        }
-        | CheckedStmt::Throw { value, .. }
-        | CheckedStmt::Expr { value, .. } => expr_calls_saved_writer(program, value, visiting),
-        CheckedStmt::Var { value: None, .. } => false,
-        CheckedStmt::Assign { target, value, .. } => {
-            expr_calls_saved_writer(program, target, visiting)
-                || expr_calls_saved_writer(program, value, visiting)
-        }
-        CheckedStmt::Delete { path, .. } => expr_calls_saved_writer(program, path, visiting),
-        CheckedStmt::Return { value, .. } => value
-            .as_ref()
-            .is_some_and(|value| expr_calls_saved_writer(program, value, visiting)),
-        CheckedStmt::ReturnAbsent { .. } => false,
-        CheckedStmt::If {
-            condition,
-            then_block,
-            else_ifs,
-            else_block,
-            ..
-        } => {
-            condition
-                .as_ref()
-                .is_some_and(|condition| expr_calls_saved_writer(program, condition, visiting))
-                || block_calls_saved_writer(program, then_block, visiting)
-                || else_ifs.iter().any(|else_if| {
-                    else_if.condition.as_ref().is_some_and(|condition| {
-                        expr_calls_saved_writer(program, condition, visiting)
-                    }) || block_calls_saved_writer(program, &else_if.block, visiting)
-                })
-                || else_block
-                    .as_ref()
-                    .is_some_and(|block| block_calls_saved_writer(program, block, visiting))
-        }
-        CheckedStmt::IfConst {
-            value,
-            then_block,
-            else_ifs,
-            else_block,
-            ..
-        } => {
-            expr_calls_saved_writer(program, value, visiting)
-                || block_calls_saved_writer(program, then_block, visiting)
-                || else_ifs.iter().any(|else_if| {
-                    else_if.condition.as_ref().is_some_and(|condition| {
-                        expr_calls_saved_writer(program, condition, visiting)
-                    }) || block_calls_saved_writer(program, &else_if.block, visiting)
-                })
-                || else_block
-                    .as_ref()
-                    .is_some_and(|block| block_calls_saved_writer(program, block, visiting))
-        }
-        CheckedStmt::While {
-            condition, body, ..
-        } => {
-            condition
-                .as_ref()
-                .is_some_and(|condition| expr_calls_saved_writer(program, condition, visiting))
-                || block_calls_saved_writer(program, body, visiting)
-        }
-        CheckedStmt::For {
-            iterable,
-            step,
-            body,
-            ..
-        } => {
-            expr_calls_saved_writer(program, iterable, visiting)
-                || step
-                    .as_ref()
-                    .is_some_and(|step| expr_calls_saved_writer(program, step, visiting))
-                || block_calls_saved_writer(program, body, visiting)
-        }
-        CheckedStmt::Transaction { body, .. } => block_calls_saved_writer(program, body, visiting),
-        CheckedStmt::Try { body, catch, .. } => {
-            block_calls_saved_writer(program, body, visiting)
-                || catch
-                    .as_ref()
-                    .is_some_and(|catch| block_calls_saved_writer(program, &catch.block, visiting))
-        }
-        CheckedStmt::Match {
-            scrutinee, arms, ..
-        } => {
-            scrutinee
-                .as_ref()
-                .is_some_and(|scrutinee| expr_calls_saved_writer(program, scrutinee, visiting))
-                || arms
-                    .iter()
-                    .any(|arm| block_calls_saved_writer(program, &arm.block, visiting))
-        }
-        CheckedStmt::Break { .. } | CheckedStmt::Continue { .. } => false,
+    visited.push(function_ref);
+    let direct = function.direct_effects.clone();
+    extend_closure(closure, &direct);
+    for callee in direct.user_function_calls {
+        collect_function_closure(program, callee, closure, visited);
     }
 }
 
-pub(super) fn expr_calls_saved_writer(
-    program: &CheckedProgram,
-    expr: &CheckedExpr,
-    visiting: &mut Vec<CheckedFunctionRef>,
-) -> bool {
+pub(super) fn expr_calls_saved_writer(program: &CheckedProgram, expr: &CheckedExpr) -> bool {
     match expr {
         CheckedExpr::Call {
             callee,
@@ -205,34 +68,57 @@ pub(super) fn expr_calls_saved_writer(
             target,
             ..
         } => {
-            call_target_writes_saved_data(program, target, visiting)
-                || expr_calls_saved_writer(program, callee, visiting)
+            call_target_writes_saved_data(program, target)
+                || expr_calls_saved_writer(program, callee)
                 || args
                     .iter()
-                    .any(|arg| expr_calls_saved_writer(program, &arg.value, visiting))
+                    .any(|arg| expr_calls_saved_writer(program, &arg.value))
         }
         CheckedExpr::Field { base, .. } | CheckedExpr::OptionalField { base, .. } => {
-            expr_calls_saved_writer(program, base, visiting)
+            expr_calls_saved_writer(program, base)
         }
-        CheckedExpr::Unary { operand, .. } => expr_calls_saved_writer(program, operand, visiting),
+        CheckedExpr::Unary { operand, .. } => expr_calls_saved_writer(program, operand),
         CheckedExpr::Binary { left, right, .. } => {
-            expr_calls_saved_writer(program, left, visiting)
-                || expr_calls_saved_writer(program, right, visiting)
+            expr_calls_saved_writer(program, left) || expr_calls_saved_writer(program, right)
         }
         CheckedExpr::Range {
             start, end, step, ..
         } => [start.as_deref(), end.as_deref(), step.as_deref()]
             .into_iter()
             .flatten()
-            .any(|part| expr_calls_saved_writer(program, part, visiting)),
+            .any(|part| expr_calls_saved_writer(program, part)),
         CheckedExpr::Interpolation { parts, .. } => parts.iter().any(|part| match part {
             CheckedInterpolationPart::Text { .. } => false,
-            CheckedInterpolationPart::Expr(expr) => {
-                expr_calls_saved_writer(program, expr, visiting)
-            }
+            CheckedInterpolationPart::Expr(expr) => expr_calls_saved_writer(program, expr),
         }),
         CheckedExpr::Literal { .. } | CheckedExpr::Name { .. } | CheckedExpr::SavedRoot { .. } => {
             false
         }
     }
+}
+
+fn extend_closure(closure: &mut EffectClosureFacts, direct: &DirectEffectFacts) {
+    extend_unique(&mut closure.saved_reads, direct.saved_reads.clone());
+    extend_unique(&mut closure.stores_read, direct.store_reads.clone());
+    extend_unique(
+        &mut closure.saved_index_reads,
+        direct.saved_index_reads.clone(),
+    );
+    extend_unique(&mut closure.saved_writes, direct.saved_writes.clone());
+    extend_unique(&mut closure.stores_written, direct.store_writes.clone());
+    extend_unique(
+        &mut closure.saved_index_writes,
+        direct.saved_index_writes.clone(),
+    );
+    extend_unique(
+        &mut closure.indexes_touched,
+        direct.saved_index_reads.clone(),
+    );
+    extend_unique(
+        &mut closure.indexes_touched,
+        direct.saved_index_writes.clone(),
+    );
+    closure.transactions |= direct.transactions;
+    extend_unique(&mut closure.host_calls, direct.host_calls.clone());
+    closure.throws |= direct.throws;
 }

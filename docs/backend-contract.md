@@ -175,6 +175,9 @@ evolution apply stamps the activation commit's changed IDs there, but a later
 managed write replaces them with that write's own changed IDs and does not carry
 the activation commit's changed IDs forward. If a stamped commit has no changed
 roots or indexes, the lists are empty.
+The change-signal fields are `changed_root_catalog_ids` and
+`changed_index_catalog_ids`; hosts invalidate cached root and index views from
+those catalog-id lists, never from source spellings.
 
 An evolution apply advances the accepted catalog rows, data/index effects, and
 commit metadata in one transaction. Replay suppression uses the slim stamp
@@ -271,6 +274,24 @@ cross-process file-open contract.
 A read-only native handle is an inspection handle: read calls work, while
 write-capability operations fail with `store.read_only`. Same-handle
 snapshot/write conflicts remain `store.transaction`, not `store.locked`.
+
+## Open-Mode Downgrade
+
+An entry whose checked transitive effect closure proves
+`write_effects_reachable = false`, has no reachable transaction block, and has
+no pending catalog proposal may execute against a native store opened read-only.
+The proof is over lowered direct-effect facts and resolved `CheckedFunctionRef`
+callees, so duplicate-name error recovery cannot hide a callee write. A closure
+with any reachable saved write or transaction requires a write-capable open.
+
+A first run against a store with no frozen catalog identity is always
+write-capable, even when the selected entry is otherwise read-only, because the
+catalog baseline writes accepted identity and a commit stamp. A check that binds
+an accepted catalog but still carries a pending proposal also remains
+write-capable until activation freezes that proposal. After identity is frozen,
+no proposal is pending, and the entry closure is read-only and transaction-free,
+the host may choose a read-only open under the native lock contract; read-only
+opens coexist with other read-only opens and still exclude writers.
 
 Marrow v0.1 does not include a built-in durable outbox engine. When application
 code needs an external side effect to follow saved-data changes, write an

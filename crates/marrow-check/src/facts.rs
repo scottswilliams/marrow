@@ -14,6 +14,7 @@ use crate::catalog::{
     CatalogKey, DurableRendering, enum_path, resource_member_path, resource_path, store_index_path,
     store_path,
 };
+use crate::executable::CheckedFunctionRef;
 use crate::program::{CheckedModule, MarrowType};
 use crate::{build_alias_map, expand_alias, split_type_path};
 
@@ -532,6 +533,21 @@ impl CheckedFacts {
 
     pub fn function(&self, id: FunctionId) -> &FunctionFact {
         &self.functions[id.0 as usize]
+    }
+
+    pub fn function_id_for_ref(&self, function_ref: CheckedFunctionRef) -> Option<FunctionId> {
+        let module = ModuleId(function_ref.module);
+        self.functions
+            .iter()
+            .find(|function| {
+                function.module == module && function.source_index == function_ref.function
+            })
+            .map(|function| function.id)
+    }
+
+    pub fn function_for_ref(&self, function_ref: CheckedFunctionRef) -> Option<&FunctionFact> {
+        self.function_id_for_ref(function_ref)
+            .map(|function| self.function(function))
     }
 
     fn function_fact(
@@ -1404,22 +1420,64 @@ fn bind_value_meaning_store_catalog_id(
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DirectEffectFacts {
     pub saved_reads: Vec<SavedPlaceEffect>,
+    pub store_reads: Vec<StoreId>,
     /// Index branches read saved data but do not name a resource-member path.
     pub saved_index_reads: Vec<StoreIndexId>,
     pub saved_writes: Vec<SavedPlaceEffect>,
+    pub store_writes: Vec<StoreId>,
+    pub saved_index_writes: Vec<StoreIndexId>,
     pub transactions: bool,
     pub host_calls: Vec<HostEffect>,
     pub throws: bool,
-    /// Whether the body calls a user-defined function. Callee effects are not expanded into the
-    /// direct summary, so callers that require a self-contained body (such as evolve transforms,
-    /// which cannot delegate to another function) read this bit instead of re-walking the AST.
-    pub calls_user_function: bool,
+    /// User-defined callees named directly by this body. Callee effects are not expanded into the
+    /// direct summary, so callers that require a self-contained body read this list instead of
+    /// re-walking source or resolving by name.
+    pub user_function_calls: Vec<CheckedFunctionRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SavedPlaceEffect {
     pub resource: ResourceId,
     pub members: Vec<ResourceMemberId>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EffectClosureFacts {
+    pub saved_reads: Vec<SavedPlaceEffect>,
+    pub stores_read: Vec<StoreId>,
+    pub saved_index_reads: Vec<StoreIndexId>,
+    pub saved_writes: Vec<SavedPlaceEffect>,
+    pub stores_written: Vec<StoreId>,
+    pub saved_index_writes: Vec<StoreIndexId>,
+    pub indexes_touched: Vec<StoreIndexId>,
+    pub transactions: bool,
+    pub host_calls: Vec<HostEffect>,
+    pub throws: bool,
+    pub write_effects_reachable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryFootprintFact {
+    pub function: FunctionId,
+    pub entry: String,
+    pub write_effects_reachable: bool,
+    pub stores_read: Vec<StoreId>,
+    pub stores_written: Vec<StoreId>,
+    pub indexes_touched: Vec<StoreIndexId>,
+    pub work_shape: WorkShapeClass,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkShapeClass {
+    ComputeOnly,
+    ReadOnly,
+    WritesSavedData,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryStoreOpenMode {
+    ReadOnly,
+    WriteCapable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

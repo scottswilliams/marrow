@@ -49,7 +49,7 @@ fn condition_effects(
         {
             ConditionEffects {
                 narrowings: exists_target(program, expr, scope).into_iter().collect(),
-                writes_saved: expr_calls_saved_writer(program, expr, &mut Vec::new()),
+                writes_saved: expr_calls_saved_writer(program, expr),
             }
         }
         CheckedExpr::Binary {
@@ -72,7 +72,7 @@ fn condition_effects(
         }
         _ => ConditionEffects {
             narrowings: Vec::new(),
-            writes_saved: expr_calls_saved_writer(program, expr, &mut Vec::new()),
+            writes_saved: expr_calls_saved_writer(program, expr),
         },
     }
 }

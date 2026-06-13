@@ -1,6 +1,6 @@
 # Presence and effect analysis
 
-A post-typecheck static pass over the lowered runtime IR that proves, before runtime, that every read of maybe-present saved data is justified. It walks each function body, constant body, and lowered `evolve transform` body flow-sensitively, tracking *narrowings* from read-site constructs such as `if exists(...)`, `if const`, early-return `if not exists(...)`, loop traversal, coalesce, and unique store-index lookup. The pass emits one `PresenceProofFact` per saved read and raises `CHECK_BARE_MAYBE_PRESENT_READ` when a maybe-present read is reached without a read-site proof. A second body-local entry summarizes each block's saved reads/writes, host capabilities, throws, transactions, and user-function calls into `DirectEffectFacts`.
+A post-typecheck static pass over the lowered runtime IR that proves, before runtime, that every read of maybe-present saved data is justified. It walks each function body, constant body, and lowered `evolve transform` body flow-sensitively, tracking *narrowings* from read-site constructs such as `if exists(...)`, `if const`, early-return `if not exists(...)`, loop traversal, coalesce, and unique store-index lookup. The pass emits one `PresenceProofFact` per saved read and raises `CHECK_BARE_MAYBE_PRESENT_READ` when a maybe-present read is reached without a read-site proof. A second body-local entry summarizes each block's saved reads/writes, touched stores/indexes, host capabilities, throws, transactions, and direct user-function callees into `DirectEffectFacts`.
 
 Maybe-present call results use the same typed resolution-site check as saved reads: a `CheckedStdCall` or `CheckedFunctionRef` with `ReturnPresence::MaybePresent` is bare unless it is consumed by `??`, `if const`, `exists`, or returned from another maybe-returning function. User-function calls are not converted into persisted `ReadTarget`s or saved proof places, so a proof for one call expression never narrows a later repeated call.
 
@@ -17,7 +17,7 @@ Narrowing identity is by **span-stripped canonical key**, never by structural `C
 - **Canonical key** (`keys.rs`): the one owner of the span-free key format.
 - **Read resolution** (`target.rs`): expression to `ReadTarget`/`ReadPlace`, and then to a persisted `PresenceProofPlace`. Type-check-only callers use boolean predicates from the same resolver rather than comparable proof targets.
 - **Proofs** (`proofs.rs`): the only place the bare-maybe-present diagnostic is raised; maps context to proof source/status and records the fact.
-- **Direct effects** (`direct.rs`) and **saved-write reachability** (`writes.rs`, cycle-guarded across user functions).
+- **Direct effects** (`direct.rs`) and **effect closure** (`writes.rs`, cycle-guarded across user functions).
 
 ## Modules
 
@@ -25,17 +25,17 @@ Narrowing identity is by **span-stripped canonical key**, never by structural `C
 | --- | --- |
 | `presence.rs` | Module root; defines `check_presence` as a thin wrapper over `walk::check_presence` and re-exports `direct_effects_for_block` plus type-check read-resolution predicates. |
 | `presence/walk.rs` | Flow-sensitive driver over function, constant, and transform bodies; threads narrowed set + scope, classifies reads, dispatches builtins, invalidates on writes and branch joins. |
-| `presence/direct.rs` | Body-local effect collector producing `DirectEffectFacts` for one block without expanding callee effects. |
+| `presence/direct.rs` | Body-local effect collector producing `DirectEffectFacts` for one block without expanding callee effects, including typed store roots and direct user-function refs. |
 | `presence/effects.rs` | Narrowing algebra: condition/loop narrowings and the invalidation (key-binding, written-target overlap, removed-on-branch, saved-wipe) rules. |
 | `presence/keys.rs` | Sole owner of the canonical span-stripped narrowing key; extracts `SavedPlaceKey` from the checked saved place. |
 | `presence/target.rs` | Resolves an expression to a `ReadTarget`/`ReadPlace` and maps it to a persisted `PresenceProofPlace`. Saved-place proof identity consumes checked-place effects from `executable/place.rs`; transform `old.<member>` resolution delegates the top-level read-member rule to `evolution/transform_reads.rs`. |
-| `presence/writes.rs` | Recursive saved-write reachability through callee bodies, reading each function's precomputed `direct_effects.saved_writes`. |
+| `presence/writes.rs` | Recursive effect closure through direct callee refs, reading each function's precomputed `DirectEffectFacts` and exposing `write_effects_reachable`. |
 | `presence/proofs.rs` | Builds a `ReadProof`, assigns source/status, records the fact, emits the bare-maybe-present diagnostic. |
 | `presence/calls.rs` | Typed-call helpers: std Path-argument mask, neighbor read direction, single-arg collection-view unwrap. |
 | `presence/scope.rs` | `NameScope`: frame stack mapping names to monotonic binding ids, including the transform `old` binding when walking lowered transform bodies and the current function's return presence for maybe-return propagation. |
 | `presence/util.rs` | `push_unique`/`extend_unique` dedup helpers for narrowing/binding lists. |
 
-Key types live mostly in `presence/target.rs` (`ReadTarget`, `ReadPlace`), `presence/keys.rs` (`ExprKey`, `SavedPlaceKey`), and `presence/proofs.rs` (`ReadContext`, `ReadProof`). The persisted forms — `DirectEffectFacts`, `PresenceProofFact`/`PresenceProofDraft`, `SavedPlaceEffect` — live in `facts.rs`.
+Key types live mostly in `presence/target.rs` (`ReadTarget`, `ReadPlace`), `presence/keys.rs` (`ExprKey`, `SavedPlaceKey`), and `presence/proofs.rs` (`ReadContext`, `ReadProof`). The persisted forms — `DirectEffectFacts`, `EffectClosureFacts`, `EntryFootprintFact`, `PresenceProofFact`/`PresenceProofDraft`, `SavedPlaceEffect` — live in `facts.rs`.
 
 ## Entry points
 
@@ -43,12 +43,13 @@ Key types live mostly in `presence/target.rs` (`ReadTarget`, `ReadPlace`), `pres
 | --- | --- | --- |
 | `check_presence` | `analysis.rs` (after lowering) | Runs the flow-sensitive walk, mutating facts and pushing diagnostics. |
 | `direct_effects_for_block` | `facts.rs` `refresh_direct_effects`, `evolution/intents.rs` | Summarizes one block's effects into `DirectEffectFacts`. |
+| `effect_closure` | `program.rs`, presence narrowing | Expands direct callee refs into a unified transitive summary and the write-reachability bit. |
 | `read_resolves_in_type_scope` | `checks/operators.rs`, `checks/statements.rs` | Boolean test for type-checking `??` and `if const` resolution. It rebuilds enough scope for name shadowing but does not expose a comparable `ReadTarget`. |
 | `exists_target_in_type_scope` | `checks/calls.rs` | Boolean test for type-checking `exists(...)`; accepts direct saved read targets and typed maybe-present call targets, so neighbor values remain rejected. |
 
 ## Notes on code reality
 
-- `function_ref_writes_saved_data` (`writes.rs`) reads each callee's precomputed `direct_effects.saved_writes`, so direct effects must be refreshed *before* the presence walk relies on them.
+- `effect_closure` (`writes.rs`) reads each callee's precomputed `DirectEffectFacts`, so direct effects must be refreshed *before* the presence walk relies on them.
 - Type-check read predicates rebuild a `NameScope` from type frames only to answer yes/no for `??`, `if const`, and `exists`. The full `ReadTarget` values used for narrowing and proof identity are produced by the real flow-sensitive walk's `NameScope`.
 - Transform `old.<member>` reads use the synthetic transform `old` binding in `NameScope`; the shared transform-read owner resolves whether the named member is a top-level plain field and whether it is required or maybe-present.
 - `keys.rs` claims `expression_key` is the sole canonical-form owner, yet `binding_key` in the same file independently formats the identical `binding:{id}:{name}` string — a second, consistent producer of that text.

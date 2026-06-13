@@ -12,6 +12,7 @@ mod writes;
 pub(crate) use calls::maybe_present_result;
 pub(crate) use direct::direct_effects_for_block;
 pub(crate) use target::{exists_target_in_type_scope, read_resolves_in_type_scope};
+pub(crate) use writes::effect_closure;
 
 #[derive(Clone, Copy)]
 pub(crate) struct TransformOldReadScope<'a> {

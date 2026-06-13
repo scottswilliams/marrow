@@ -262,8 +262,7 @@ fn impurity_reason(program: &CheckedProgram, body: &CheckedBody) -> Option<&'sta
     if effects.transactions {
         return Some("it opens a transaction");
     }
-    effects
-        .calls_user_function
+    (!effects.user_function_calls.is_empty())
         .then_some("it calls a function; inline the computation over `old`")
 }
 

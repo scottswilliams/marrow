@@ -848,25 +848,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 Runs after the language batch so the refactor churns once over the final v0.1 surface.
 
-**W5.5 → Effect closure + footprint facts (G1-4, C06, C21; gate 47).** After W5.4, before the
-Wave 5 gate records the analysis-API contract. Owns: the transitive effect-closure query over
-DirectEffectFacts (call-graph walk returning a unified summary; exposed on the analysis API —
-also tooling/05's future export classifier); the `write_effects_reachable` fact (write-specific,
-transitive, lowered-IR-resolved); the backend-contract.md open-mode downgrade section — an entry
-whose transitive closure proves no reachable write effects may open the store read-only under
-the gate-7 lock contract, and the first run against a store with no frozen catalog identity is
-always write-capable (the storage-engine/01 recording paragraph rides W1.1); the per-entry
-durable footprint fact with a stable JSON schema
-in `check --format json` (stores read/written, indexes touched, work-shape class); the
-backend-contract.md change-signal sentence naming
-changed_root_catalog_ids/changed_index_catalog_ids; one conformance test that a
-read-only-closure entry executes correctly against a read-only TreeStore. Seed: a failing test —
-an entry calling a writing helper classifies write_effects_reachable=true; its read-only twin
-classifies false and runs green on a read-only open. Review: no false negatives in the closure
-(the soundness surface — a misclassified write would break the writer fence); JSON schema
-reviewed as a contract. Done: hosts can classify and invalidate from static facts; the contract
-recording at the wave gate includes these queries.
-
 **W5.6 → Analysis-API innovation surface (C01, C02, C03, C08, C29, C30, G2-4).** After W5.5,
 before the wave gate. Owns: `sites_for(catalog_id)` + the UseSite table from one post-lowering
 walk (C01); the reserved StoreIndexId usage-bitmap field shape in CheckedFacts (C02,

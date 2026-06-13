@@ -219,13 +219,13 @@ fn check_project_dir(dir: &str, format: CheckFormat, data: bool) -> ExitCode {
         Ok(accepted) => accepted,
         Err(code) => return code,
     };
-    let report = match marrow_check::analyze_project(
+    let snapshot = match marrow_check::analyze_project(
         Path::new(dir),
         &config,
         &marrow_check::ProjectSources::new(),
         accepted.as_ref(),
     ) {
-        Ok(snapshot) => snapshot.report,
+        Ok(snapshot) => snapshot,
         Err(error) => {
             report_simple_error(
                 error.code,
@@ -236,10 +236,11 @@ fn check_project_dir(dir: &str, format: CheckFormat, data: bool) -> ExitCode {
         }
     };
 
-    report_project(dir, &report, format);
-    if report.has_errors() {
+    if snapshot.report.has_errors() {
+        crate::report_project(dir, &snapshot.report, format);
         ExitCode::FAILURE
     } else {
+        crate::report_project_with_program(dir, &snapshot.report, &snapshot.program, format);
         ExitCode::SUCCESS
     }
 }

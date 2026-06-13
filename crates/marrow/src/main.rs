@@ -128,6 +128,24 @@ pub(crate) fn report_project(
     report: &marrow_check::CheckReport,
     format: CheckFormat,
 ) {
+    report_project_with_footprints(target, report, None, format);
+}
+
+pub(crate) fn report_project_with_program(
+    target: &str,
+    report: &marrow_check::CheckReport,
+    program: &marrow_check::CheckedProgram,
+    format: CheckFormat,
+) {
+    report_project_with_footprints(target, report, Some(program), format);
+}
+
+fn report_project_with_footprints(
+    target: &str,
+    report: &marrow_check::CheckReport,
+    program: Option<&marrow_check::CheckedProgram>,
+    format: CheckFormat,
+) {
     let status = if report.has_errors() { "failed" } else { "ok" };
     match format {
         CheckFormat::Text => {
@@ -159,11 +177,71 @@ pub(crate) fn report_project(
         CheckFormat::Json | CheckFormat::Jsonl => report_diagnostic_records(
             format,
             report.diagnostics.iter().map(check_diagnostic_record),
-            serde_json::Map::from_iter([
-                ("project".into(), json!(target)),
-                ("status".into(), json!(status)),
-            ]),
+            project_envelope(target, status, program),
         ),
+    }
+}
+
+fn project_envelope(
+    target: &str,
+    status: &str,
+    program: Option<&marrow_check::CheckedProgram>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut envelope = serde_json::Map::from_iter([
+        ("project".into(), json!(target)),
+        ("status".into(), json!(status)),
+    ]);
+    if let Some(program) = program {
+        envelope.insert(
+            "entry_footprints".into(),
+            json!(entry_footprint_records(program)),
+        );
+    }
+    envelope
+}
+
+fn entry_footprint_records(program: &marrow_check::CheckedProgram) -> Vec<serde_json::Value> {
+    program
+        .entry_footprints()
+        .into_iter()
+        .map(|footprint| {
+            json!({
+                "entry": footprint.entry,
+                "write_effects_reachable": footprint.write_effects_reachable,
+                "stores_read": store_catalog_ids(program, &footprint.stores_read),
+                "stores_written": store_catalog_ids(program, &footprint.stores_written),
+                "indexes_touched": index_catalog_ids(program, &footprint.indexes_touched),
+                "work_shape": work_shape_name(footprint.work_shape),
+            })
+        })
+        .collect()
+}
+
+fn store_catalog_ids(
+    program: &marrow_check::CheckedProgram,
+    stores: &[marrow_check::StoreId],
+) -> Vec<String> {
+    stores
+        .iter()
+        .filter_map(|store| program.store_catalog_id(*store).map(str::to_string))
+        .collect()
+}
+
+fn index_catalog_ids(
+    program: &marrow_check::CheckedProgram,
+    indexes: &[marrow_check::StoreIndexId],
+) -> Vec<String> {
+    indexes
+        .iter()
+        .filter_map(|index| program.store_index_catalog_id(*index).map(str::to_string))
+        .collect()
+}
+
+fn work_shape_name(shape: marrow_check::WorkShapeClass) -> &'static str {
+    match shape {
+        marrow_check::WorkShapeClass::ComputeOnly => "compute_only",
+        marrow_check::WorkShapeClass::ReadOnly => "read_only",
+        marrow_check::WorkShapeClass::WritesSavedData => "writes_saved_data",
     }
 }
 

@@ -24,7 +24,7 @@ Stream separation is load-bearing: a program's own `print` output owns stdout; r
 
 | Command | Module | Behavior |
 |---|---|---|
-| `check` | `cmd_check.rs` | Type-checks a single file (via a synthesized one-file scratch project, so it reaches `check.*` rules) or a project dir; `--data` delegates to evolve data-check. |
+| `check` | `cmd_check.rs` | Type-checks a single file (via a synthesized one-file scratch project, so it reaches `check.*` rules) or a project dir; project JSON output includes checker entry footprints; `--data` delegates to evolve data-check. |
 | `run` | `cmd_run.rs` | Freezes identity, opens and fences the store (auto-applies zero-mutation schema drift), executes the entry under a plain/trace/dry-run hook. |
 | `test` | `cmd_test.rs` | Collects public zero-param fns in test modules, runs each over a fresh in-memory store; assert fault is FAIL, any other is ERROR, rendered as text/json/jsonl test-result reports. |
 | `fmt` | `cmd_fmt.rs` | Formats one file to stdout, or `--check`/`--write` over source roots; refuses stdin, a bare dir with no mode, and `--write` rewrites that would reduce retained comments. |

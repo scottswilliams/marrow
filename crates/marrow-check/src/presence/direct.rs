@@ -2,7 +2,10 @@ use super::util::push_unique;
 use crate::executable::{
     accepted_saved_place, checked_saved_index_read, checked_saved_place_effect,
 };
-use crate::facts::{CheckedFacts, DirectEffectFacts, HostEffect};
+use crate::facts::{
+    CheckedFacts, DirectEffectFacts, HostEffect, ResourceMemberId, StoreId, StoreIndexId,
+    StoreIndexKeySource,
+};
 use crate::{
     CheckedBody, CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedInterpolationPart,
     CheckedStmt,
@@ -146,6 +149,7 @@ fn collect_statement_effects(
 
 fn collect_expr_reads(facts: &CheckedFacts, expr: &CheckedExpr, effects: &mut DirectEffectFacts) {
     if let Some(place) = accepted_saved_place(expr) {
+        push_unique(&mut effects.store_reads, place.store_id);
         if let Some(effect) = saved_effect(facts, place) {
             push_unique(&mut effects.saved_reads, effect);
         }
@@ -182,8 +186,8 @@ fn collect_expr_reads(facts: &CheckedFacts, expr: &CheckedExpr, effects: &mut Di
                 }
                 return;
             }
-            if matches!(target, CheckedCallTarget::Function(_)) {
-                effects.calls_user_function = true;
+            if let CheckedCallTarget::Function(function_ref) = target {
+                push_unique(&mut effects.user_function_calls, *function_ref);
             }
             collect_expr_reads(facts, callee, effects);
             for arg in args {
@@ -245,11 +249,76 @@ fn collect_saved_path_key_reads(
 }
 
 fn collect_saved_write(facts: &CheckedFacts, expr: &CheckedExpr, effects: &mut DirectEffectFacts) {
-    if let Some(place) = accepted_saved_place(expr)
-        && let Some(effect) = saved_effect(facts, place)
-    {
-        push_unique(&mut effects.saved_writes, effect);
+    if let Some(place) = accepted_saved_place(expr) {
+        push_unique(&mut effects.store_writes, place.store_id);
+        if let Some(index) = checked_saved_index_read(place) {
+            push_unique(&mut effects.saved_index_writes, index);
+        }
+        if let Some(effect) = saved_effect(facts, place) {
+            for index in indexes_touched_by_write(facts, place.store_id, &effect) {
+                push_unique(&mut effects.saved_index_writes, index);
+            }
+            push_unique(&mut effects.saved_writes, effect);
+        }
     }
+}
+
+fn indexes_touched_by_write(
+    facts: &CheckedFacts,
+    store_id: StoreId,
+    effect: &crate::SavedPlaceEffect,
+) -> Vec<StoreIndexId> {
+    facts
+        .store_indexes()
+        .iter()
+        .filter(|index| index.store == store_id)
+        .filter(|index| index_touched_by_write(facts, index, effect))
+        .map(|index| index.id)
+        .collect()
+}
+
+fn index_touched_by_write(
+    facts: &CheckedFacts,
+    index: &crate::StoreIndexFact,
+    effect: &crate::SavedPlaceEffect,
+) -> bool {
+    if effect.members.is_empty() {
+        return true;
+    }
+    index.keys.iter().any(|key| match key.source {
+        StoreIndexKeySource::IdentityKey => false,
+        StoreIndexKeySource::ResourceMember(member) => {
+            member_paths_overlap(facts, member, &effect.members)
+        }
+    })
+}
+
+fn member_paths_overlap(
+    facts: &CheckedFacts,
+    indexed_member: ResourceMemberId,
+    written_members: &[ResourceMemberId],
+) -> bool {
+    let indexed_path = member_path(facts, indexed_member);
+    path_has_prefix(&indexed_path, written_members)
+        || path_has_prefix(written_members, &indexed_path)
+}
+
+fn member_path(facts: &CheckedFacts, member_id: ResourceMemberId) -> Vec<ResourceMemberId> {
+    let mut path = Vec::new();
+    let mut current = Some(member_id);
+    while let Some(id) = current {
+        let Some(member) = facts.resource_members().get(id.0 as usize) else {
+            break;
+        };
+        path.push(id);
+        current = member.parent;
+    }
+    path.reverse();
+    path
+}
+
+fn path_has_prefix(path: &[ResourceMemberId], prefix: &[ResourceMemberId]) -> bool {
+    path.len() >= prefix.len() && path.iter().zip(prefix).all(|(left, right)| left == right)
 }
 
 fn saved_effect(

@@ -21,7 +21,10 @@ use crate::executable::{
     CheckedBody, CheckedExecutableContext, CheckedExpr, CheckedFunctionRef,
     CheckedRuntimeValueType, checked_runtime_value_type,
 };
-use crate::facts::CheckedFacts;
+use crate::facts::{
+    CheckedFacts, EffectClosureFacts, EntryFootprintFact, EntryStoreOpenMode, StoreId,
+    StoreIndexId, WorkShapeClass,
+};
 
 /// Identifies one source file in a [`CheckedProgram`] by the index of the module
 /// that came from it. A program's modules are 1:1 with their files, so the index
@@ -182,6 +185,92 @@ impl CheckedProgram {
     /// [`CheckedProgram::source_digest`].
     pub fn evolution_digest(&self) -> String {
         crate::catalog::evolution_digest(self)
+    }
+
+    pub fn effect_closure(&self, function_ref: CheckedFunctionRef) -> Option<EffectClosureFacts> {
+        crate::presence::effect_closure(self, function_ref)
+    }
+
+    pub fn entry_footprints(&self) -> Vec<EntryFootprintFact> {
+        self.facts
+            .functions()
+            .iter()
+            .filter(|function| function.public)
+            .filter_map(|function| {
+                let source = self
+                    .modules
+                    .get(function.module.0 as usize)?
+                    .functions
+                    .get(function.source_index as usize)?;
+                let function_ref = CheckedFunctionRef {
+                    module: function.module.0,
+                    function: function.source_index,
+                    presence: source.return_presence,
+                };
+                let closure = self.effect_closure(function_ref)?;
+                let work_shape = work_shape(&closure);
+                let module = self.facts.modules().get(function.module.0 as usize)?;
+                Some(EntryFootprintFact {
+                    function: function.id,
+                    entry: runtime_entry_name(&module.name, &function.name),
+                    write_effects_reachable: closure.write_effects_reachable,
+                    stores_read: closure.stores_read,
+                    stores_written: closure.stores_written,
+                    indexes_touched: closure.indexes_touched,
+                    work_shape,
+                })
+            })
+            .collect()
+    }
+
+    pub fn entry_store_open_mode(
+        &self,
+        function_ref: CheckedFunctionRef,
+    ) -> Option<EntryStoreOpenMode> {
+        let closure = self.effect_closure(function_ref)?;
+        if self.catalog.accepted_epoch.is_none()
+            || self.catalog.proposal.is_some()
+            || closure.write_effects_reachable
+            || closure.transactions
+        {
+            return Some(EntryStoreOpenMode::WriteCapable);
+        }
+        Some(EntryStoreOpenMode::ReadOnly)
+    }
+
+    pub fn store_catalog_id(&self, store_id: StoreId) -> Option<&str> {
+        let store = self.facts.stores().get(store_id.0 as usize)?;
+        if let Some(catalog_id) = store.catalog_id.as_deref() {
+            return Some(catalog_id);
+        }
+        let module = self.facts.modules().get(store.module.0 as usize)?;
+        let path = crate::catalog::store_path(&module.name, &store.root);
+        self.proposal_catalog_id(marrow_catalog::CatalogEntryKind::Store, &path)
+    }
+
+    pub fn store_index_catalog_id(&self, index_id: StoreIndexId) -> Option<&str> {
+        let index = self.facts.store_indexes().get(index_id.0 as usize)?;
+        if let Some(catalog_id) = index.catalog_id.as_deref() {
+            return Some(catalog_id);
+        }
+        let store = self.facts.store(index.store);
+        let module = self.facts.modules().get(store.module.0 as usize)?;
+        let path = crate::catalog::store_index_path(&module.name, &store.root, &index.name);
+        self.proposal_catalog_id(marrow_catalog::CatalogEntryKind::StoreIndex, &path)
+    }
+
+    fn proposal_catalog_id(
+        &self,
+        kind: marrow_catalog::CatalogEntryKind,
+        path: &str,
+    ) -> Option<&str> {
+        self.catalog
+            .proposal
+            .as_ref()?
+            .entries
+            .iter()
+            .find(|entry| entry.kind == kind && entry.path == path)
+            .map(|entry| entry.stable_id.as_str())
     }
 
     pub(crate) fn lower_runtime_bodies<'a, I>(&mut self, sources: I)
@@ -601,6 +690,16 @@ fn runtime_entry_name(module: &str, function: &str) -> String {
         return function.to_string();
     }
     format!("{module}::{function}")
+}
+
+fn work_shape(closure: &EffectClosureFacts) -> WorkShapeClass {
+    if closure.write_effects_reachable {
+        WorkShapeClass::WritesSavedData
+    } else if !closure.stores_read.is_empty() || !closure.saved_index_reads.is_empty() {
+        WorkShapeClass::ReadOnly
+    } else {
+        WorkShapeClass::ComputeOnly
+    }
 }
 
 impl From<&CheckedProgram> for CheckedRuntimeProgram {

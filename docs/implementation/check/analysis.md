@@ -10,6 +10,13 @@ Two halves live in `crates/marrow-check/src`:
 - **`analysis`** runs the IDE-grade pipeline (discover, overlay-or-disk read, parse, check source roots plus configured tests) into an `AnalysisSnapshot` that retains every parse, error files included, and answers cursor queries (`type_at`/`scope_at`) by reconstructing the checker's lexical scope without emitting diagnostics.
 - **`tooling`** turns a `CheckedProgram` plus a `TreeStore` into typed saved-data facts: schema-validated path queries, paged child/walk traversal, integrity verdicts, and catalog/store epoch metadata.
 
+`CheckedProgram` also exposes the static entry footprint surface built from
+checked facts: `effect_closure`, `entry_footprints`, and
+`entry_store_open_mode`. These queries expand lowered direct callee refs, not
+source names, and report typed store/index ids plus the `write_effects_reachable`
+bit. Store-open classification also stays write-capable for first-run catalogs,
+pending catalog proposals, and reachable transaction blocks.
+
 ## Analysis pipeline
 
 `analysis.rs` assembles the snapshot in two passes: pass 1 parses all files and builds the project-wide module set, saved-root owner set, and the single deferred script; pass 2 resolves imports against the full set. Ownership and uniqueness (module name, saved root, at-most-one module-less script) are therefore decided on project-wide counts, not first-seen order. A parse-error file contributes no checked module but stays in the snapshot so editor tooling still works on broken buffers; the program is best-effort, not all-or-nothing.
@@ -27,6 +34,7 @@ Path resolution is the single chokepoint: `resolve_query_steps` validates source
 | File | Responsibility |
 | --- | --- |
 | `crates/marrow-check/src/analysis.rs` | Two-pass IDE analysis core: discover + overlay + parse + check into `AnalysisSnapshot`, enforce module/script/root-owner uniqueness, run the shared checker tail, compute test-resolution suppression. |
+| `crates/marrow-check/src/program.rs` | Checked-program artifact plus analysis queries for effect closure, per-entry durable footprints, and entry store-open mode. |
 | `crates/marrow-check/src/analysis/cursor.rs` | Cursor `type_at`/`scope_at`: replay the checker's binding primitives to rebuild lexical scope, infer the tightest covering expression; records no diagnostics. |
 | `crates/marrow-check/src/tooling/mod.rs` | Tooling facade: re-exports the data/integrity/metadata API; defines `ToolingError` (Query vs Store). |
 | `crates/marrow-check/src/tooling/data/mod.rs` | Data tooling root and shared value types (`DataQuery`, `DataChild`, `DataEntry`, `DataWalkPage`, `DataRecord`, `KeyMismatch`, `MAX_PREVIEW_ITEMS`). |
