@@ -9,7 +9,10 @@ use std::path::Path;
 use marrow_syntax::SourceSpan;
 
 use crate::enums::{MatchCheck, check_match, resolve_type};
-use crate::infer::{bind, infer_type_with_read_scope, local_binding_with_read_scope};
+use crate::infer::{
+    bind, infer_assignment_target_type_with_read_scope, infer_type_with_read_scope,
+    local_binding_with_read_scope,
+};
 use crate::resolve::resolve_store_by_root;
 use crate::walk::for_each_child_expr;
 use crate::{
@@ -326,7 +329,15 @@ impl StatementCheck<'_> {
         value: &marrow_syntax::Expression,
         span: SourceSpan,
     ) {
-        let target_type = self.infer(target);
+        let target_type = infer_assignment_target_type_with_read_scope(
+            self.program,
+            target,
+            self.scope,
+            self.aliases,
+            self.file,
+            self.diagnostics,
+            self.transform_old,
+        );
         let value_type = self.infer(value);
         self.check_range_value(value);
         if is_saved_index_branch_path(self.program, target, self.scope, self.file) {

@@ -848,14 +848,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 Runs after the language batch so the refactor churns once over the final v0.1 surface.
 
-**W5.7 → Checker field resolution.** Carries: static `check.unknown_field` for dotted field
-access on resolvable base types. Owns: infer.rs field/optional-field resolution, diagnostics.rs,
-docs/error-codes.md, and fixtures for local resource and saved-path unknown fields. Seed:
-`b.typoField` where `b: Book` and `^things(id).nosuchfield` currently fail later or noisily.
-Review: no did-you-mean search, no field diagnostic on Unknown bases, no runtime
-`write.unknown_field` removal, and no grammar/runtime/evolution change. Done: schema-known field
-typos are check-time diagnostics and `??`/unknown-flow secondary noise is suppressed.
-
 **W5.8 → Required-field definite assignment.** Carries: the straight-line required-field
 absence check for whole-root writes whose RHS is a var-typed local resource with never-assigned
 required fields. Owns: a narrow marrow-check pass or rule, diagnostics.rs,

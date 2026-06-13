@@ -61,6 +61,8 @@ pub const CHECK_KEY_TYPE: &str = "check.key_type";
 /// parameter, local, loop or catch binding, or module constant). Under strict
 /// typing every value name must be defined.
 pub const CHECK_UNRESOLVED_NAME: &str = "check.unresolved_name";
+/// A dotted field read names no member on a resolved resource-shaped value.
+pub const CHECK_UNKNOWN_FIELD: &str = "check.unknown_field";
 /// A call names a function that is neither a builtin nor a declared function. Only
 /// reported for calls in files that are part of a fully parsed project — a library
 /// module or a module-less script — so a module excluded by a parse error never

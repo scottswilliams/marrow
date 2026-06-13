@@ -509,6 +509,27 @@ fn type_surface_caught_error_fields_have_declared_types() {
 }
 
 #[test]
+fn an_unknown_error_field_is_flagged_without_untyped_noise() {
+    let report = check_module_report(
+        "unknown-error-field",
+        "module m\n\
+         fn f(): string\n\
+         \x20   const err = Error(code: \"x.y\", message: \"boom\")\n\
+         \x20   return err.nope\n",
+    );
+    assert_eq!(
+        report
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>(),
+        vec!["check.unknown_field"],
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn an_unknown_op_in_a_closed_pure_module_is_flagged_at_check() {
     let found = check_module(
         "std-closed-unknown-op",

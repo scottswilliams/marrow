@@ -144,6 +144,7 @@ over every configured source and test file.
 | `check.untyped_value` | A value whose type cannot be resolved (`unknown`) is stored into a concrete typed place. |
 | `check.key_type` | A saved key or identity argument's type does not match the key it addresses: a scalar of the wrong type in a keyed lookup, or an identity of a foreign store root spliced into a keyspace. |
 | `check.unresolved_name` | A bare name used as a value resolves to no binding in scope. |
+| `check.unknown_field` | A dotted field read names no field on a resolved resource-shaped value. |
 | `check.unresolved_call` | A call names a function that is neither a builtin nor a declared function. |
 | `check.private_function` | A qualified call (`module::fn`) names a function that exists but is not `pub`, so it is not callable from another module. The name resolves; the visibility does not. |
 | `check.ambiguous_call` | A bare call names a `pub` function reachable in two or more modules, so the bare name cannot pick one — it must be qualified (`module::fn`). |

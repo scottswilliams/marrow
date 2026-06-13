@@ -21,9 +21,10 @@ use crate::typerules::{
 };
 use crate::{
     CHECK_AMBIGUOUS_MEMBER, CHECK_CATEGORY_NOT_SELECTABLE, CHECK_COLLECTION_UNSUPPORTED,
-    CHECK_OPERATOR_TYPE, CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_ENUM_MEMBER, CHECK_UNRESOLVED_NAME,
-    CheckDiagnostic, CheckedProgram, DiagnosticPayload, EnumDiagnostic, MarrowType,
-    build_alias_map, expand_module_alias, resolve_resource_schema_type, resolve_resource_type,
+    CHECK_OPERATOR_TYPE, CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_ENUM_MEMBER, CHECK_UNKNOWN_FIELD,
+    CHECK_UNRESOLVED_NAME, CheckDiagnostic, CheckedProgram, DiagnosticPayload, EnumDiagnostic,
+    MarrowType, build_alias_map, expand_module_alias, resolve_resource_schema_type,
+    resolve_resource_type,
 };
 
 /// Infer a type during post-check resolution, discarding diagnostics the checking
@@ -162,27 +163,69 @@ pub(crate) fn infer_type_with_read_scope(
     diagnostics: &mut Vec<CheckDiagnostic>,
     transform_old: Option<crate::presence::TransformOldReadScope<'_>>,
 ) -> MarrowType {
+    infer_type_with_read_scope_inner(
+        program,
+        expr,
+        scope,
+        aliases,
+        file,
+        diagnostics,
+        transform_old,
+    )
+}
+
+pub(crate) fn infer_assignment_target_type_with_read_scope(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+    transform_old: Option<crate::presence::TransformOldReadScope<'_>>,
+) -> MarrowType {
     use marrow_syntax::Expression;
-    if let Some(rejection) = checked_expr(program, expr, scope, file)
-        .and_then(|expr| SavedPlaceResolver::new(program).access_rejection(&expr))
-    {
-        match rejection {
-            SavedAccessRejection::GeneratedIndexBranch => diagnostics.push(CheckDiagnostic::error(
-                CHECK_COLLECTION_UNSUPPORTED,
-                file,
-                expr.span(),
-                "generated index branches do not expose resource members or chained calls",
-            )),
-            SavedAccessRejection::KeyedRootMemberWithoutIdentity(root) => {
-                diagnostics.push(key_type_diagnostic(
-                    file,
-                    expr.span(),
-                    format!(
-                        "`^{root}` must be addressed with an identity before using its members"
-                    ),
-                ))
-            }
+    match expr {
+        Expression::Field {
+            base, name, span, ..
         }
+        | Expression::OptionalField {
+            base, name, span, ..
+        } => infer_field_access(FieldAccessInfer {
+            program,
+            expr,
+            base,
+            name,
+            span: *span,
+            scope,
+            aliases,
+            file,
+            diagnostics,
+            transform_old,
+            context: FieldAccessContext::AssignmentTarget,
+        }),
+        _ => infer_type_with_read_scope_inner(
+            program,
+            expr,
+            scope,
+            aliases,
+            file,
+            diagnostics,
+            transform_old,
+        ),
+    }
+}
+
+fn infer_type_with_read_scope_inner(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+    transform_old: Option<crate::presence::TransformOldReadScope<'_>>,
+) -> MarrowType {
+    use marrow_syntax::Expression;
+    if reject_saved_access(program, expr, scope, file, diagnostics) {
         return MarrowType::Unknown;
     }
     match expr {
@@ -432,20 +475,24 @@ pub(crate) fn infer_type_with_read_scope(
         // A plain field read and an optional (`?.`) field read resolve to the same
         // declared leaf type: the short-circuit only changes the read's runtime
         // behavior on absence, not the type of a populated leaf.
-        Expression::Field { base, name, .. } | Expression::OptionalField { base, name, .. } => {
-            let base_type = infer_type_with_read_scope(
-                program,
-                base,
-                scope,
-                aliases,
-                file,
-                diagnostics,
-                transform_old,
-            );
-            saved_expr_type(program, expr, scope, file)
-                .or_else(|| local_field_type(program, &base_type, name))
-                .unwrap_or(MarrowType::Unknown)
+        Expression::Field {
+            base, name, span, ..
         }
+        | Expression::OptionalField {
+            base, name, span, ..
+        } => infer_field_access(FieldAccessInfer {
+            program,
+            expr,
+            base,
+            name,
+            span: *span,
+            scope,
+            aliases,
+            file,
+            diagnostics,
+            transform_old,
+            context: FieldAccessContext::Read,
+        }),
         Expression::Name { segments, span } if segments.len() >= 2 => {
             enum_member_value_type(program, expr, segments, *span, aliases, file, diagnostics)
         }
@@ -454,6 +501,103 @@ pub(crate) fn infer_type_with_read_scope(
         }
         Expression::Name { .. } => MarrowType::Unknown,
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FieldAccessContext {
+    Read,
+    AssignmentTarget,
+}
+
+struct FieldAccessInfer<'a, 'd> {
+    program: &'a CheckedProgram,
+    expr: &'a marrow_syntax::Expression,
+    base: &'a marrow_syntax::Expression,
+    name: &'a str,
+    span: SourceSpan,
+    scope: &'a [HashMap<String, MarrowType>],
+    aliases: &'a HashMap<String, Vec<String>>,
+    file: &'a Path,
+    diagnostics: &'d mut Vec<CheckDiagnostic>,
+    transform_old: Option<crate::presence::TransformOldReadScope<'a>>,
+    context: FieldAccessContext,
+}
+
+fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
+    if reject_saved_access(
+        input.program,
+        input.expr,
+        input.scope,
+        input.file,
+        input.diagnostics,
+    ) {
+        return MarrowType::Unknown;
+    }
+    let base_type = match input.context {
+        FieldAccessContext::Read => infer_type_with_read_scope_inner(
+            input.program,
+            input.base,
+            input.scope,
+            input.aliases,
+            input.file,
+            input.diagnostics,
+            input.transform_old,
+        ),
+        FieldAccessContext::AssignmentTarget => infer_assignment_target_type_with_read_scope(
+            input.program,
+            input.base,
+            input.scope,
+            input.aliases,
+            input.file,
+            input.diagnostics,
+            input.transform_old,
+        ),
+    };
+    if let Some(ty) = saved_expr_type(input.program, input.expr, input.scope, input.file) {
+        return ty;
+    }
+    match local_field_resolution(input.program, &base_type, input.name) {
+        FieldResolution::Resolved(ty) => ty,
+        FieldResolution::UnknownField if input.context == FieldAccessContext::Read => {
+            input
+                .diagnostics
+                .push(unknown_field_diagnostic(input.file, input.span, input.name));
+            MarrowType::Invalid
+        }
+        FieldResolution::UnknownField | FieldResolution::NonValueMember => MarrowType::Unknown,
+        FieldResolution::InvalidBase => MarrowType::Invalid,
+        FieldResolution::UnresolvedBase => MarrowType::Unknown,
+    }
+}
+
+fn reject_saved_access(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> bool {
+    let Some(rejection) = checked_expr(program, expr, scope, file)
+        .and_then(|expr| SavedPlaceResolver::new(program).access_rejection(&expr))
+    else {
+        return false;
+    };
+    match rejection {
+        SavedAccessRejection::GeneratedIndexBranch => diagnostics.push(CheckDiagnostic::error(
+            CHECK_COLLECTION_UNSUPPORTED,
+            file,
+            expr.span(),
+            "generated index branches do not expose resource members or chained calls",
+        )),
+        SavedAccessRejection::KeyedRootMemberWithoutIdentity(root) => {
+            diagnostics.push(key_type_diagnostic(
+                file,
+                expr.span(),
+                format!("`^{root}` must be addressed with an identity before using its members"),
+            ))
+        }
+    }
+    true
 }
 
 struct CallArgInfer<'a, 'd> {
@@ -793,51 +937,80 @@ fn check_local_key_count(
     }
 }
 
-/// The declared type of a field read off a resource-typed value (`book.title`),
-/// looked up in that resource's schema.
-fn local_field_type(
+enum FieldResolution {
+    Resolved(MarrowType),
+    UnknownField,
+    NonValueMember,
+    InvalidBase,
+    UnresolvedBase,
+}
+
+/// Resolve a field read off a resource-shaped value (`book.title`) through that
+/// resource's schema while distinguishing a missing member from an untyped base.
+fn local_field_resolution(
     program: &CheckedProgram,
     base_type: &MarrowType,
     field: &str,
-) -> Option<MarrowType> {
+) -> FieldResolution {
     match base_type {
         MarrowType::Resource(name) => {
-            let (resource, module) = resolve_resource_type(program, name)?;
-            field_member_type(program, resource, &[field], module)
-                .or_else(|| group_entry_unkeyed_group_type(resource, name, &[field], &[], field))
+            let Some((resource, module)) = resolve_resource_type(program, name) else {
+                return FieldResolution::UnresolvedBase;
+            };
+            resource_field_resolution(program, resource, name, module, &[field], &[])
         }
         MarrowType::GroupEntry {
             resource: name,
             layers,
         } => {
-            let (resource, module) = resolve_resource_type(program, name)?;
+            let Some((resource, module)) = resolve_resource_type(program, name) else {
+                return FieldResolution::UnresolvedBase;
+            };
             let mut chain: Vec<&str> = layers.iter().map(String::as_str).collect();
             chain.push(field);
-            field_member_type(program, resource, &chain, module)
-                .or_else(|| group_entry_unkeyed_group_type(resource, name, &chain, layers, field))
+            resource_field_resolution(program, resource, name, module, &chain, layers)
         }
-        MarrowType::Error => error_field_type(field),
-        _ => None,
+        MarrowType::Error => error_field_type(field)
+            .map(FieldResolution::Resolved)
+            .unwrap_or(FieldResolution::UnknownField),
+        MarrowType::Invalid => FieldResolution::InvalidBase,
+        _ => FieldResolution::UnresolvedBase,
     }
 }
 
-fn group_entry_unkeyed_group_type(
+fn resource_field_resolution(
+    program: &CheckedProgram,
     resource: &marrow_schema::ResourceSchema,
     resource_name: &str,
+    owning_module: &str,
     chain: &[&str],
     layers: &[String],
-    field: &str,
-) -> Option<MarrowType> {
-    let node = resource.descend_layers(chain)?;
-    if !node.key_params.is_empty() || !matches!(node.kind, marrow_schema::NodeKind::Group) {
-        return None;
+) -> FieldResolution {
+    let Some((member, parents)) = chain.split_last() else {
+        return FieldResolution::UnresolvedBase;
+    };
+    let members = match parents {
+        [] => &resource.members,
+        _ => match resource.descend_layers(parents) {
+            Some(node) => &node.members,
+            None => return FieldResolution::UnknownField,
+        },
+    };
+    let Some(node) = members.iter().find(|node| node.name == *member) else {
+        return FieldResolution::UnknownField;
+    };
+    if let Some(ty) = node.plain_field_type() {
+        return FieldResolution::Resolved(lift_member_type(program, ty.clone(), owning_module));
     }
-    let mut nested = layers.to_vec();
-    nested.push(field.to_string());
-    Some(MarrowType::GroupEntry {
-        resource: resource_name.to_string(),
-        layers: nested,
-    })
+    if node.key_params.is_empty() && matches!(node.kind, marrow_schema::NodeKind::Group) {
+        let mut nested = layers.to_vec();
+        nested.push((*member).to_string());
+        return FieldResolution::Resolved(MarrowType::GroupEntry {
+            resource: resource_name.to_string(),
+            layers: nested,
+        });
+    }
+    FieldResolution::NonValueMember
 }
 
 fn error_field_type(field: &str) -> Option<MarrowType> {
@@ -848,18 +1021,13 @@ fn error_field_type(field: &str) -> Option<MarrowType> {
     ))
 }
 
-/// The checker type of a stored field read named by its `chain` of segments,
-/// outermost first. `owning_module` is the resource's declaring module, so an
-/// enum-typed field reads as that module's enum rather than `Unknown`.
-fn field_member_type(
-    program: &CheckedProgram,
-    resource: &marrow_schema::ResourceSchema,
-    chain: &[&str],
-    owning_module: &str,
-) -> Option<MarrowType> {
-    resource
-        .field_type(chain)
-        .map(|ty| lift_member_type(program, ty.clone(), owning_module))
+fn unknown_field_diagnostic(file: &Path, span: SourceSpan, field: &str) -> CheckDiagnostic {
+    CheckDiagnostic::error(
+        CHECK_UNKNOWN_FIELD,
+        file,
+        span,
+        format!("field `{field}` is not declared on this value's type"),
+    )
 }
 
 /// Lift a schema member [`Type`] through the same nominal resource placement used

@@ -2,6 +2,14 @@ mod support;
 
 use support::{assert_clean, check_module, check_module_report, with_code};
 
+fn codes(report: &marrow_check::CheckReport) -> Vec<&str> {
+    report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect()
+}
+
 #[test]
 fn a_nested_group_field_read_resolves_its_type() {
     // A read through nested group layers resolves to the innermost field's type,
@@ -65,6 +73,40 @@ fn a_saved_field_read_feeds_operator_checks() {
 }
 
 #[test]
+fn an_unknown_saved_path_field_is_flagged() {
+    let report = check_module_report(
+        "saved-field-unknown",
+        "module m\n\
+         resource Thing\n    title: string\n\
+         store ^things(id: int): Thing\n\n\
+         fn f(id: Id(^things))\n    var x = ^things(id).nosuchfield\n",
+    );
+    assert_eq!(
+        codes(&report),
+        vec!["check.unknown_field"],
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_unknown_saved_path_field_suppresses_coalesce_noise() {
+    let report = check_module_report(
+        "saved-field-unknown-coalesce",
+        "module m\n\
+         resource Thing\n    title: string\n\
+         store ^things(id: int): Thing\n\n\
+         fn f(id: Id(^things)): string\n    return ^things(id).nosuchfield ?? \"fallback\"\n",
+    );
+    assert_eq!(
+        codes(&report),
+        vec!["check.unknown_field"],
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn a_correctly_typed_saved_field_read_is_not_flagged() {
     // `^books(1).title` is `string`, matching `f`'s declared `string` return.
     let found = check_module(
@@ -104,6 +146,48 @@ fn a_correctly_typed_local_resource_field_is_not_flagged() {
         "check.return_type",
     );
     assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_unknown_local_resource_field_is_flagged() {
+    let report = check_module_report(
+        "local-field-unknown",
+        "module m\n\
+         resource Book\n    title: string\n\
+         fn f(b: Book)\n    var x = b.typoField\n",
+    );
+    assert_eq!(
+        codes(&report),
+        vec!["check.unknown_field"],
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_unknown_local_resource_field_suppresses_untyped_noise() {
+    let report = check_module_report(
+        "local-field-unknown-typed",
+        "module m\n\
+         resource Book\n    title: string\n\
+         fn f(b: Book)\n    const x: string = b.typoField\n",
+    );
+    assert_eq!(
+        codes(&report),
+        vec!["check.unknown_field"],
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_unknown_base_field_read_does_not_report_unknown_field() {
+    let report = check_module_report(
+        "unknown-base-field",
+        "module m\n\
+         fn f(raw: unknown)\n    var x = raw.nosuchfield\n",
+    );
+    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
 }
 
 #[test]
