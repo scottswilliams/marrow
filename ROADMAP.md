@@ -850,15 +850,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 Parser/checker/runtime files overlap heavily: the cut series is sequenced; additions follow.
 Listing order is execution order. Store crate is quiet this wave except where noted.
 
-**W4.7 → Identity index components (II.C1, gate 4; store-touching).** Owns: marrow-schema
-validate.rs allowlist, marrow-check facts ordering fix (StoredValueMeaning::Identity made
-load-bearing), write-plan key derivation through the existing decoder, conformance coverage for
-unique-conflict probing/rebuild/discharge over identity components, resources-and-storage.md
-index-arg typing rule (incl. enums). Seed: failing fixture — `index byAuthor(authorId, id)`
-compiles and `^books.byAuthor(author)` streams. Review: order-preserving identity payload +
-store-ID prefix against storage-engine/04; evolution discharge over the new component type. Done:
-the canonical relationship query is expressible; library.mw fixture updated.
-
 **W4.8 → Bounded ordered reads (II.C2, gate 11; store-touching; the named slippable language
 lane).**
 Owns: backend lo..hi bounded scan (composing with W2.8's reverse scan), facade exact-prefix +
