@@ -580,6 +580,185 @@ fn partial_non_unique_index_branches_bind_the_next_index_key_until_identity_suff
 }
 
 #[test]
+fn trailing_range_index_argument_checks_clean() {
+    let report = check_module_report(
+        "trailing-index-range",
+        "module m\n\
+         resource Post\n    published: int\n    required title: string\n\
+         store ^posts(id: int): Post\n\n    index byDate(published, id)\n\n\
+         fn f(start: int, end: int)\n    for id in ^posts.byDate(start..end)\n        var typed_id: Id(^posts) = id\n    for post_id, post in ^posts.byDate(start..end)\n        var typed_post_id: Id(^posts) = post_id\n        var title: string = post.title\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
+fn trailing_range_store_keyspace_argument_checks_clean() {
+    let report = check_module_report(
+        "trailing-root-range",
+        "module m\n\
+         resource Cell\n    required value: int\n\
+         store ^cells(x: int, y: int): Cell\n\n\
+         fn f(lo: int, hi: int)\n    for y in ^cells(1, lo..hi)\n        var typed_y: int = y\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
+fn trailing_range_keyed_layer_argument_checks_clean() {
+    let report = check_module_report(
+        "trailing-layer-range",
+        "module m\n\
+         resource Book\n    required title: string\n    tags(pos: int): string\n\
+         store ^books(id: int): Book\n\n\
+         fn f(id: int, lo: int, hi: int)\n    for pos in ^books(id).tags(lo..hi)\n        var typed_pos: int = pos\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
+fn enum_store_keyspace_range_argument_is_rejected() {
+    let found = check_module(
+        "enum-root-range",
+        "module m\n\
+         enum Axis\n    x\n    y\n\
+         resource Cell\n    required value: int\n\
+         store ^cells(axis: Axis): Cell\n\n\
+         fn f(lo: Axis)\n    for axis in ^cells(lo..)\n        print(axis)\n",
+        "check.key_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn enum_keyed_layer_range_argument_is_rejected() {
+    let found = check_module(
+        "enum-layer-range",
+        "module m\n\
+         enum Label\n    one\n    two\n\
+         resource Book\n    tags(label: Label): string\n\
+         store ^books(id: int): Book\n\n\
+         fn f(id: Id(^books), lo: Label)\n    for label in ^books(id).tags(lo..)\n        print(label)\n",
+        "check.key_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn enum_index_range_arguments_check_endpoints_consistently() {
+    let report = check_module_report(
+        "enum-index-range",
+        "module m\n\
+         enum Status\n    draft\n    published\n\
+         resource Post\n    status: Status\n\
+         store ^posts(id: int): Post\n\n    index byStatus(status, id)\n\n\
+         fn f(lo: Status, hi: Status)\n    for id in ^posts.byStatus(lo..hi)\n        var typed: Id(^posts) = id\n    for id in ^posts.byStatus(lo..)\n        var from_typed: Id(^posts) = id\n    for id in ^posts.byStatus(..hi)\n        var before_typed: Id(^posts) = id\n    for id in ^posts.byStatus(..=hi)\n        var through_typed: Id(^posts) = id\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
+fn collection_wrappers_accept_saved_key_range_arguments() {
+    let report = check_module_report(
+        "wrapped-key-ranges",
+        "module m\n\
+         resource Cell\n    required value: int\n\
+         store ^cells(x: int, y: int): Cell\n\
+         resource Book\n    required title: string\n    tags(pos: int): string\n\
+         store ^books(id: int): Book\n\
+         resource Post\n    published: int\n    required title: string\n\
+         store ^posts(id: int): Post\n\n    index byDate(published, id)\n\n\
+         fn f(book: Id(^books), lo: int, hi: int)\n    for y in keys(^cells(1, lo..hi))\n        print(y)\n    for cell in values(^cells(1, lo..hi))\n        var v: int = cell.value\n    for y, cell in entries(^cells(1, lo..hi))\n        var typed_y: int = y\n        var entry_v: int = cell.value\n    for pos in keys(^books(book).tags(lo..hi))\n        print(pos)\n    for pos, tag in entries(^books(book).tags(lo..hi))\n        var typed_pos: int = pos\n        var s: string = tag\n    for post in keys(^posts.byDate(lo..hi))\n        print(post)\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
+fn saved_key_range_calls_are_rejected_in_value_position() {
+    let found = check_module(
+        "range-call-value-position",
+        "module m\n\
+         resource Cell\n    required value: int\n\
+         store ^cells(x: int, y: int): Cell\n\
+         resource Book\n    tags(pos: int): string\n\
+         store ^books(id: int): Book\n\n\
+         fn f(id: Id(^books), lo: int, hi: int)\n    const row = ^cells(1, lo..hi)\n    const tag = ^books(id).tags(lo..hi)\n",
+        "check.range_value",
+    );
+    assert_eq!(found.len(), 2, "{found:#?}");
+}
+
+#[test]
+fn exists_accepts_index_range_but_rejects_root_and_layer_ranges() {
+    let clean = check_module_report(
+        "exists-index-range",
+        "module m\n\
+         resource Post\n    published: int\n\
+         store ^posts(id: int): Post\n\n    index byDate(published, id)\n\n\
+         fn f(lo: int, hi: int): bool\n    return exists(^posts.byDate(lo..hi))\n",
+    );
+    assert_clean(&clean);
+
+    let root = check_module(
+        "exists-root-range",
+        "module m\n\
+         resource Cell\n    required value: int\n\
+         store ^cells(x: int, y: int): Cell\n\n\
+         fn f(lo: int, hi: int): bool\n    return exists(^cells(1, lo..hi))\n",
+        "check.call_argument",
+    );
+    assert_eq!(root.len(), 1, "{root:#?}");
+
+    let layer = check_module(
+        "exists-layer-range",
+        "module m\n\
+         resource Book\n    tags(pos: int): string\n\
+         store ^books(id: int): Book\n\n\
+         fn f(id: Id(^books), lo: int, hi: int): bool\n    return exists(^books(id).tags(lo..hi))\n",
+        "check.call_argument",
+    );
+    assert_eq!(layer.len(), 1, "{layer:#?}");
+}
+
+#[test]
+fn inclusive_open_end_range_key_argument_is_rejected() {
+    let found = check_module(
+        "inclusive-open-end-key-range",
+        "module m\n\
+         resource Post\n    published: int\n    required title: string\n\
+         store ^posts(id: int): Post\n\n    index byDate(published, id)\n\n\
+         fn f(start: int)\n    for id in ^posts.byDate(start..=)\n        print(id)\n",
+        "check.key_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn non_trailing_range_index_argument_is_rejected() {
+    let found = check_module(
+        "non-trailing-index-range",
+        "module m\n\
+         resource Post\n    published: int\n    shelf: string\n\
+         store ^posts(id: int): Post\n\n    index byDateShelf(published, shelf, id)\n\n\
+         fn f(start: int, end: int)\n    for shelf in ^posts.byDateShelf(start..end, \"news\")\n        print(shelf)\n",
+        "check.key_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn pre_identity_partial_index_range_argument_is_rejected() {
+    let found = check_module(
+        "pre-identity-partial-index-range",
+        "module m\n\
+         resource Book\n    author: int\n    shelf: int\n\
+         store ^books(id: int): Book\n\n    index byAuthorShelf(author, shelf, id)\n\n\
+         fn f(lo: int, hi: int)\n    for shelf in ^books.byAuthorShelf(lo..hi)\n        print(shelf)\n",
+        "check.key_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
 fn identity_field_index_rejects_wrong_store_identity_argument() {
     let found = check_module(
         "identity-index-wrong-store",
@@ -591,6 +770,21 @@ fn identity_field_index_rejects_wrong_store_identity_argument() {
          resource Book\n    required title: string\n    authorId: Id(^authors)\n\
          store ^books(id: int): Book\n\n    index byAuthor(authorId, id)\n\n\
          fn f(publisher: Id(^publishers))\n    for id in ^books.byAuthor(publisher)\n        print($\"{id}\")\n",
+        "check.key_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn identity_index_component_rejects_range_argument() {
+    let found = check_module(
+        "identity-index-range",
+        "module m\n\
+         resource Author\n    required name: string\n\
+         store ^authors(id: int): Author\n\
+         resource Book\n    required title: string\n    author: Id(^authors)\n\
+         store ^books(id: int): Book\n\n    index byAuthor(author, id)\n\n\
+         fn f(lo: Id(^authors), hi: Id(^authors))\n    for id in ^books.byAuthor(lo..hi)\n        print(id)\n",
         "check.key_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");

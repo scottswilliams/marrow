@@ -79,6 +79,12 @@ impl<'a> ExprParser<'a> {
         self.tokens.get(self.pos + offset).map(|token| token.kind)
     }
 
+    fn peek_is_contextual(&self, text: &str) -> bool {
+        self.tokens.get(self.pos).is_some_and(|token| {
+            token.kind == TokenKind::Identifier && token.text(self.source) == text
+        })
+    }
+
     fn advance(&mut self) -> Token {
         let token = self.tokens[self.pos];
         self.pos += 1;
@@ -189,15 +195,72 @@ impl<'a> ExprParser<'a> {
     }
 
     fn range_expr(&mut self) -> Option<Expression> {
+        if matches!(
+            self.peek(),
+            Some(TokenKind::DotDot | TokenKind::DotDotEqual)
+        ) {
+            let op = self.advance();
+            let end = if self.peek().is_some_and(starts_expression) {
+                Some(Box::new(self.coalesce_expr()?))
+            } else {
+                None
+            };
+            let step = self.range_step()?;
+            let span = match (&end, &step) {
+                (_, Some(step)) => join_spans(op.span, step.span()),
+                (Some(end), None) => join_spans(op.span, end.span()),
+                (None, None) => op.span,
+            };
+            return Some(Expression::Range {
+                start: None,
+                end,
+                inclusive_end: op.kind == TokenKind::DotDotEqual,
+                step,
+                span,
+            });
+        }
         let left = self.coalesce_expr()?;
         let op = match self.peek() {
             Some(TokenKind::DotDot) => BinaryOp::RangeExclusive,
             Some(TokenKind::DotDotEqual) => BinaryOp::RangeInclusive,
             _ => return Some(left),
         };
-        self.advance();
+        let range_token = self.advance();
+        if !self.peek().is_some_and(starts_expression) {
+            let step = self.range_step()?;
+            let span = match &step {
+                Some(step) => join_spans(left.span(), step.span()),
+                None => join_spans(left.span(), range_token.span),
+            };
+            return Some(Expression::Range {
+                start: Some(Box::new(left)),
+                end: None,
+                inclusive_end: matches!(op, BinaryOp::RangeInclusive),
+                step,
+                span,
+            });
+        }
         let right = self.coalesce_expr()?;
+        let step = self.range_step()?;
+        if let Some(step) = step {
+            let span = join_spans(left.span(), step.span());
+            return Some(Expression::Range {
+                start: Some(Box::new(left)),
+                end: Some(Box::new(right)),
+                inclusive_end: matches!(op, BinaryOp::RangeInclusive),
+                step: Some(step),
+                span,
+            });
+        }
         Some(binary_expr(op, left, right))
+    }
+
+    fn range_step(&mut self) -> Option<Option<Box<Expression>>> {
+        if !self.peek_is_contextual("by") {
+            return Some(None);
+        }
+        self.advance();
+        Some(Some(Box::new(self.coalesce_expr()?)))
     }
 
     /// `??` sits one level tighter than ranges and looser than addition, on its
@@ -598,6 +661,39 @@ fn is_callable_keyword(keyword: Keyword) -> bool {
             | Keyword::Duration
             | Keyword::ErrorCode
             | Keyword::Error
+    )
+}
+
+fn starts_expression(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Integer
+            | TokenKind::Decimal
+            | TokenKind::Duration
+            | TokenKind::String
+            | TokenKind::Bytes
+            | TokenKind::Identifier
+            | TokenKind::Caret
+            | TokenKind::LeftParen
+            | TokenKind::InterpolationStart
+            | TokenKind::Minus
+            | TokenKind::DotDot
+            | TokenKind::DotDotEqual
+            | TokenKind::Keyword(
+                Keyword::True
+                    | Keyword::False
+                    | Keyword::Not
+                    | Keyword::Int
+                    | Keyword::Decimal
+                    | Keyword::Bool
+                    | Keyword::String
+                    | Keyword::Bytes
+                    | Keyword::Date
+                    | Keyword::Instant
+                    | Keyword::Duration
+                    | Keyword::ErrorCode
+                    | Keyword::Error
+            )
     )
 }
 

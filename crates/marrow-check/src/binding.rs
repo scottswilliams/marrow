@@ -1021,6 +1021,16 @@ impl UseWalker<'_, '_> {
                 self.walk_expr(left, scope);
                 self.walk_expr(right, scope);
             }
+            Expression::Range {
+                start, end, step, ..
+            } => {
+                for part in [start.as_deref(), end.as_deref(), step.as_deref()]
+                    .into_iter()
+                    .flatten()
+                {
+                    self.walk_expr(part, scope);
+                }
+            }
             Expression::Call { callee, args, .. } => {
                 // A saved keyed/record read is call-shaped; resolve its saved
                 // member before treating the callee as a function or value.

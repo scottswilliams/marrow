@@ -59,6 +59,7 @@ pub(super) fn saved_path_parts(expr: &CheckedExpr, scope: &NameScope) -> Option<
         | CheckedExpr::Name { .. }
         | CheckedExpr::Unary { .. }
         | CheckedExpr::Binary { .. }
+        | CheckedExpr::Range { .. }
         | CheckedExpr::Interpolation { .. } => None,
     }
 }
@@ -160,6 +161,29 @@ pub(super) fn expression_key(expr: &CheckedExpr, scope: &NameScope) -> ExprKey {
             extend_unique(&mut bindings, right.bindings);
             ExprKey {
                 text: format!("binary:{op:?}:{}:{}", left.text, right.text),
+                bindings,
+            }
+        }
+        CheckedExpr::Range {
+            start,
+            end,
+            inclusive_end,
+            step,
+            ..
+        } => {
+            let mut bindings = Vec::new();
+            let mut parts = Vec::new();
+            for part in [start.as_deref(), end.as_deref(), step.as_deref()] {
+                if let Some(part) = part {
+                    let key = expression_key(part, scope);
+                    extend_unique(&mut bindings, key.bindings);
+                    parts.push(key.text);
+                } else {
+                    parts.push(String::new());
+                }
+            }
+            ExprKey {
+                text: format!("range:{inclusive_end}:{}", parts.join(":")),
                 bindings,
             }
         }

@@ -188,6 +188,16 @@ fn collect_expr_reads(facts: &CheckedFacts, expr: &CheckedExpr, effects: &mut Di
             collect_expr_reads(facts, left, effects);
             collect_expr_reads(facts, right, effects);
         }
+        CheckedExpr::Range {
+            start, end, step, ..
+        } => {
+            for part in [start.as_deref(), end.as_deref(), step.as_deref()]
+                .into_iter()
+                .flatten()
+            {
+                collect_expr_reads(facts, part, effects);
+            }
+        }
         CheckedExpr::Interpolation { parts, .. } => {
             for part in parts {
                 if let CheckedInterpolationPart::Expr(expr) = part {
@@ -219,6 +229,7 @@ fn collect_saved_path_key_reads(
         | CheckedExpr::Name { .. }
         | CheckedExpr::Unary { .. }
         | CheckedExpr::Binary { .. }
+        | CheckedExpr::Range { .. }
         | CheckedExpr::Interpolation { .. } => {}
     }
 }

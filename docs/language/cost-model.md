@@ -52,8 +52,14 @@ Each construct maps to a fixed shape of work:
 - `for id in ^books.byShelf(shelf)` — one range scan over that index branch,
   streaming identities lazily. A field read in the loop body, such as
   `^books(id).title`, is the read you wrote: one point read per identity.
-- `count(^books.byShelf(shelf))` — one range scan over the branch, not a
-  maintained counter.
+- `for id in ^books.byDate(start..end)` — one bounded range scan over the exact
+  index prefix and trailing ordered key range, allowed only where the scan yields
+  matching identities lazily.
+- `for y in ^cells(1, lo..hi)` or `for pos in ^books(id).tags(lo..hi)` — one
+  bounded child-key scan under the exact saved-root or keyed-layer prefix,
+  streaming matching stored keys lazily.
+- `count(^books.byShelf(shelf))` or `count(^books.byDate(start..end))` — one
+  unbounded or bounded range scan over the branch, not a maintained counter.
 - `^books(id).shelf = "fiction"` — one field write plus, for each index the
   field feeds, a read of the old indexed value, removal of the old entry, and
   addition of the new entry.

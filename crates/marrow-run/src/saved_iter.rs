@@ -218,7 +218,9 @@ impl SavedLoopPlan {
             )));
         }
         match iterable_layer(spec.layer, env)? {
-            IterableLayer::Root(place) => Ok(Self::Root(RootScan::new(place, spec)?)),
+            IterableLayer::Root(place, address) => {
+                Ok(Self::Root(RootScan::new(place, address, spec)?))
+            }
             IterableLayer::Index(place, branch) => {
                 Ok(Self::Index(IndexScan::new(place, branch, spec)))
             }

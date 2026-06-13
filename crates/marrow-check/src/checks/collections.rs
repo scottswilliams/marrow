@@ -208,6 +208,16 @@ pub(super) fn check_entries_value_position(
             check_entries_value_position(file, left, diagnostics);
             check_entries_value_position(file, right, diagnostics);
         }
+        Expression::Range {
+            start, end, step, ..
+        } => {
+            for part in [start.as_deref(), end.as_deref(), step.as_deref()]
+                .into_iter()
+                .flatten()
+            {
+                check_entries_value_position(file, part, diagnostics);
+            }
+        }
         Expression::Interpolation { parts, .. } => {
             for part in parts {
                 if let InterpolationPart::Expr(expr) = part {
@@ -313,7 +323,8 @@ pub(super) fn saved_path_key_type(
             }
             Some(identity_type_for_store(store.store))
         }
-        Expression::Call { .. } => saved_index_branch_type(program, path),
+        Expression::Call { .. } => saved_index_branch_type(program, path)
+            .or_else(|| saved_range_key_component_type(program, path)),
         Expression::Field { .. } if is_saved_index_branch_path(program, path) => {
             saved_index_branch_type(program, path)
         }
@@ -345,8 +356,37 @@ fn saved_path_direct_value_type(
                 &store.resource.name,
             )))
         }
+        Expression::Call { .. } => saved_range_value_type(program, path),
         Expression::Field { .. } => saved_leaf_type(program, path)
             .or_else(|| saved_group_entry_type(program, path))
+            .or(Some(MarrowType::Unknown)),
+        _ => None,
+    }
+}
+
+fn saved_range_value_type(
+    program: &CheckedProgram,
+    path: &marrow_syntax::Expression,
+) -> Option<MarrowType> {
+    let marrow_syntax::Expression::Call { callee, args, .. } = path else {
+        return None;
+    };
+    if !args
+        .iter()
+        .any(|arg| marrow_syntax::range_expr(&arg.value).is_some())
+    {
+        return None;
+    }
+    match callee.as_ref() {
+        marrow_syntax::Expression::SavedRoot { name, .. } => {
+            let store = resolve_store_by_root(program, name)?;
+            Some(MarrowType::Resource(resource_type_name(
+                &store.module.name,
+                &store.resource.name,
+            )))
+        }
+        marrow_syntax::Expression::Field { .. } => saved_leaf_type(program, callee)
+            .or_else(|| saved_group_entry_type(program, callee))
             .or(Some(MarrowType::Unknown)),
         _ => None,
     }
@@ -439,6 +479,45 @@ pub(super) fn saved_index_schema<'p>(
     saved_index_schema_from_parts(program, base, name)
 }
 
+fn saved_range_key_component_type(
+    program: &CheckedProgram,
+    path: &marrow_syntax::Expression,
+) -> Option<MarrowType> {
+    let marrow_syntax::Expression::Call { callee, args, .. } = path else {
+        return None;
+    };
+    let range_position = args
+        .iter()
+        .position(|arg| marrow_syntax::range_expr(&arg.value).is_some())?;
+    if range_position + 1 != args.len() {
+        return None;
+    }
+    match callee.as_ref() {
+        marrow_syntax::Expression::SavedRoot { name, .. } => {
+            let store = resolve_store_by_root(program, name)?;
+            if args.len() != store.store.identity_keys.len() {
+                return None;
+            }
+            store
+                .store
+                .identity_keys
+                .get(range_position)
+                .map(|key| MarrowType::from_resolved(key.ty.clone(), TypeNames::default()))
+        }
+        _ => {
+            let (root, layers) = saved_layer_chain(callee)?;
+            let store = resolve_store_by_root(program, root)?;
+            let node = store.resource.descend_layers(&layers)?;
+            if args.len() != node.key_params.len() {
+                return None;
+            }
+            node.key_params
+                .get(range_position)
+                .map(|key| MarrowType::from_resolved(key.ty.clone(), TypeNames::default()))
+        }
+    }
+}
+
 fn saved_index_schema_from_parts<'p>(
     program: &'p CheckedProgram,
     base: &marrow_syntax::Expression,
@@ -466,6 +545,65 @@ pub(crate) fn is_saved_index_branch_path(
     path: &marrow_syntax::Expression,
 ) -> bool {
     saved_index_branch(program, path).is_some()
+}
+
+pub(crate) fn is_saved_key_range_path(
+    program: &CheckedProgram,
+    path: &marrow_syntax::Expression,
+) -> bool {
+    let path = saved_key_range_subject(path);
+    let marrow_syntax::Expression::Call { callee, args, .. } = path else {
+        return false;
+    };
+    if !args
+        .iter()
+        .any(|arg| marrow_syntax::range_expr(&arg.value).is_some())
+    {
+        return false;
+    }
+    match callee.as_ref() {
+        marrow_syntax::Expression::SavedRoot { name, .. } => {
+            resolve_store_by_root(program, name).is_some()
+        }
+        _ => {
+            saved_index_schema(program, callee).is_some()
+                || saved_layer_chain(callee)
+                    .and_then(|(root, layers)| {
+                        let store = resolve_store_by_root(program, root)?;
+                        store.resource.descend_layers(&layers)
+                    })
+                    .is_some()
+        }
+    }
+}
+
+pub(crate) fn is_saved_index_range_path(
+    program: &CheckedProgram,
+    path: &marrow_syntax::Expression,
+) -> bool {
+    let marrow_syntax::Expression::Call { callee, args, .. } = path else {
+        return false;
+    };
+    args.iter()
+        .any(|arg| marrow_syntax::range_expr(&arg.value).is_some())
+        && saved_index_schema(program, callee).is_some()
+}
+
+fn saved_key_range_subject(mut path: &marrow_syntax::Expression) -> &marrow_syntax::Expression {
+    loop {
+        if let Some(inner) = reversed_call_arg(path) {
+            path = inner;
+            continue;
+        }
+        if let Some(inner) = collection_wrapper_arg(path, "keys")
+            .or_else(|| collection_wrapper_arg(path, "values"))
+            .or_else(|| collection_wrapper_arg(path, "entries"))
+        {
+            path = inner;
+            continue;
+        }
+        return path;
+    }
 }
 
 fn is_saved_unique_index_branch_path(

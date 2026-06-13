@@ -201,6 +201,13 @@ pub enum Expression {
         right: Box<Expression>,
         span: SourceSpan,
     },
+    Range {
+        start: Option<Box<Expression>>,
+        end: Option<Box<Expression>>,
+        inclusive_end: bool,
+        step: Option<Box<Expression>>,
+        span: SourceSpan,
+    },
     /// An interpolated string `$"..."` as a sequence of literal text and embedded
     /// expression parts, in source order.
     Interpolation {
@@ -220,8 +227,54 @@ impl Expression {
             | Self::OptionalField { span, .. }
             | Self::Unary { span, .. }
             | Self::Binary { span, .. }
+            | Self::Range { span, .. }
             | Self::Interpolation { span, .. } => *span,
         }
+    }
+}
+
+pub struct RangeExpr<'a> {
+    pub start: Option<&'a Expression>,
+    pub end: Option<&'a Expression>,
+    pub inclusive_end: bool,
+    pub step: Option<&'a Expression>,
+    pub span: SourceSpan,
+}
+
+pub fn range_expr(expr: &Expression) -> Option<RangeExpr<'_>> {
+    match expr {
+        Expression::Binary {
+            op: BinaryOp::RangeExclusive | BinaryOp::RangeInclusive,
+            left,
+            right,
+            span,
+        } => Some(RangeExpr {
+            start: Some(left),
+            end: Some(right),
+            inclusive_end: matches!(
+                expr,
+                Expression::Binary {
+                    op: BinaryOp::RangeInclusive,
+                    ..
+                }
+            ),
+            step: None,
+            span: *span,
+        }),
+        Expression::Range {
+            start,
+            end,
+            inclusive_end,
+            step,
+            span,
+        } => Some(RangeExpr {
+            start: start.as_deref(),
+            end: end.as_deref(),
+            inclusive_end: *inclusive_end,
+            step: step.as_deref(),
+            span: *span,
+        }),
+        _ => None,
     }
 }
 

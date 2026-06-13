@@ -20,6 +20,19 @@ pub(crate) fn for_each_child_expr<'e>(expr: &'e Expression, mut visit: impl FnMu
             visit(left);
             visit(right);
         }
+        Expression::Range {
+            start, end, step, ..
+        } => {
+            if let Some(start) = start {
+                visit(start);
+            }
+            if let Some(end) = end {
+                visit(end);
+            }
+            if let Some(step) = step {
+                visit(step);
+            }
+        }
         Expression::Interpolation { parts, .. } => {
             for part in parts {
                 if let InterpolationPart::Expr(inner) = part {

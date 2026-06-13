@@ -126,11 +126,34 @@ pub(crate) trait Backend {
         cursor: &[u8],
         limit: usize,
     ) -> Result<ScanPage, StoreError>;
+    fn scan_between(
+        &self,
+        prefix: &[u8],
+        lower: Option<&[u8]>,
+        upper: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<ScanPage, StoreError>;
+    fn scan_between_after(
+        &self,
+        prefix: &[u8],
+        lower: Option<&[u8]>,
+        upper: Option<&[u8]>,
+        cursor: &[u8],
+        limit: usize,
+    ) -> Result<ScanPage, StoreError>;
     /// Return at most `limit` entries under `prefix` in reverse key order,
     /// strictly before `cursor`.
     fn scan_before(
         &self,
         prefix: &[u8],
+        cursor: &[u8],
+        limit: usize,
+    ) -> Result<ScanPage, StoreError>;
+    fn scan_between_before(
+        &self,
+        prefix: &[u8],
+        lower: Option<&[u8]>,
+        upper: Option<&[u8]>,
         cursor: &[u8],
         limit: usize,
     ) -> Result<ScanPage, StoreError>;
@@ -312,6 +335,63 @@ pub(crate) mod counting {
                 .set(self.cells().scan_befores.get() + 1);
             self.counts.add_bytes(cursor.len());
             let page = self.inner.scan_before(prefix, cursor, limit)?;
+            self.counts.count_page(&page);
+            Ok(page)
+        }
+
+        fn scan_between(
+            &self,
+            prefix: &[u8],
+            lower: Option<&[u8]>,
+            upper: Option<&[u8]>,
+            limit: usize,
+        ) -> Result<ScanPage, StoreError> {
+            self.cells().scans.set(self.cells().scans.get() + 1);
+            self.counts
+                .add_bytes(lower.map_or(0, <[u8]>::len) + upper.map_or(0, <[u8]>::len));
+            let page = self.inner.scan_between(prefix, lower, upper, limit)?;
+            self.counts.count_page(&page);
+            Ok(page)
+        }
+
+        fn scan_between_after(
+            &self,
+            prefix: &[u8],
+            lower: Option<&[u8]>,
+            upper: Option<&[u8]>,
+            cursor: &[u8],
+            limit: usize,
+        ) -> Result<ScanPage, StoreError> {
+            self.cells()
+                .scan_afters
+                .set(self.cells().scan_afters.get() + 1);
+            self.counts.add_bytes(
+                cursor.len() + lower.map_or(0, <[u8]>::len) + upper.map_or(0, <[u8]>::len),
+            );
+            let page = self
+                .inner
+                .scan_between_after(prefix, lower, upper, cursor, limit)?;
+            self.counts.count_page(&page);
+            Ok(page)
+        }
+
+        fn scan_between_before(
+            &self,
+            prefix: &[u8],
+            lower: Option<&[u8]>,
+            upper: Option<&[u8]>,
+            cursor: &[u8],
+            limit: usize,
+        ) -> Result<ScanPage, StoreError> {
+            self.cells()
+                .scan_befores
+                .set(self.cells().scan_befores.get() + 1);
+            self.counts.add_bytes(
+                cursor.len() + lower.map_or(0, <[u8]>::len) + upper.map_or(0, <[u8]>::len),
+            );
+            let page = self
+                .inner
+                .scan_between_before(prefix, lower, upper, cursor, limit)?;
             self.counts.count_page(&page);
             Ok(page)
         }

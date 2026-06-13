@@ -448,6 +448,46 @@ where
     traversal::scan(range, prefix, limit, io("scan_after"))
 }
 
+fn streamed_scan_between<T>(
+    table: &T,
+    prefix: &[u8],
+    lower: Option<&[u8]>,
+    upper: Option<&[u8]>,
+    limit: usize,
+) -> Result<ScanPage, StoreError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let lower = lower.map_or(Bound::Unbounded, Bound::Included);
+    let upper = upper.map_or(Bound::Unbounded, Bound::Excluded);
+    let range = table
+        .range::<&[u8]>((lower, upper))
+        .map_err(io("scan_between"))?;
+    traversal::scan(range, prefix, limit, io("scan_between"))
+}
+
+fn streamed_scan_between_after<T>(
+    table: &T,
+    prefix: &[u8],
+    lower: Option<&[u8]>,
+    upper: Option<&[u8]>,
+    cursor: &[u8],
+    limit: usize,
+) -> Result<ScanPage, StoreError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let lower = match lower {
+        Some(lower) if lower > cursor => lower,
+        _ => cursor,
+    };
+    let upper = upper.map_or(Bound::Unbounded, Bound::Excluded);
+    let range = table
+        .range::<&[u8]>((Bound::Excluded(lower), upper))
+        .map_err(io("scan_between_after"))?;
+    traversal::scan(range, prefix, limit, io("scan_between_after"))
+}
+
 fn streamed_scan_before<T>(
     table: &T,
     prefix: &[u8],
@@ -461,6 +501,28 @@ where
         .range::<&[u8]>((Bound::Unbounded, Bound::Excluded(cursor)))
         .map_err(io("scan_before"))?;
     traversal::scan(range.rev(), prefix, limit, io("scan_before"))
+}
+
+fn streamed_scan_between_before<T>(
+    table: &T,
+    prefix: &[u8],
+    lower: Option<&[u8]>,
+    upper: Option<&[u8]>,
+    cursor: &[u8],
+    limit: usize,
+) -> Result<ScanPage, StoreError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let lower = lower.map_or(Bound::Unbounded, Bound::Included);
+    let upper = match upper {
+        Some(upper) if upper < cursor => upper,
+        _ => cursor,
+    };
+    let range = table
+        .range::<&[u8]>((lower, Bound::Excluded(upper)))
+        .map_err(io("scan_between_before"))?;
+    traversal::scan(range.rev(), prefix, limit, io("scan_between_before"))
 }
 
 /// Run a read `$body` over the current read view: the open write transaction's
@@ -647,6 +709,44 @@ impl Backend for RedbStore {
     ) -> Result<ScanPage, StoreError> {
         read_view!(self, "scan_before", |table| {
             streamed_scan_before(&table, prefix, cursor, limit)
+        })
+    }
+
+    fn scan_between(
+        &self,
+        prefix: &[u8],
+        lower: Option<&[u8]>,
+        upper: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<ScanPage, StoreError> {
+        read_view!(self, "scan_between", |table| {
+            streamed_scan_between(&table, prefix, lower, upper, limit)
+        })
+    }
+
+    fn scan_between_after(
+        &self,
+        prefix: &[u8],
+        lower: Option<&[u8]>,
+        upper: Option<&[u8]>,
+        cursor: &[u8],
+        limit: usize,
+    ) -> Result<ScanPage, StoreError> {
+        read_view!(self, "scan_between_after", |table| {
+            streamed_scan_between_after(&table, prefix, lower, upper, cursor, limit)
+        })
+    }
+
+    fn scan_between_before(
+        &self,
+        prefix: &[u8],
+        lower: Option<&[u8]>,
+        upper: Option<&[u8]>,
+        cursor: &[u8],
+        limit: usize,
+    ) -> Result<ScanPage, StoreError> {
+        read_view!(self, "scan_between_before", |table| {
+            streamed_scan_between_before(&table, prefix, lower, upper, cursor, limit)
         })
     }
 

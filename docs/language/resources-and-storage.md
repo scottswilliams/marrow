@@ -242,6 +242,41 @@ Typed code reads non-unique index identities through direct iteration or
 `keys(...)`. It reads a unique index identity from the lookup path. Generated
 marker values are visible only through checked inspection tooling.
 
+Saved keyspace traversal may replace the final provided key argument with an
+ordered range bound. This applies to non-unique index branches, store-root
+keyspaces, and keyed child layers:
+
+```mw
+for id in ^posts.byDate(start..end)
+    print(id)
+
+for y in ^cells(1, lo..hi)
+    print(y)
+
+for pos in ^books(id).tags(lo..hi)
+    print(pos)
+```
+
+Accepted forms are `start..end`, `start..=end`, `start..`, `..end`, and
+`..=end`. Earlier arguments remain exact prefix keys, so each traversal walks
+only entries under that exact prefix and bounded final component. Store-root
+keyspaces and keyed layers range their final declared key component under exact
+leading components.
+Non-unique indexes may range only a component whose following components are the
+store identity suffix; the ranged traversal therefore yields store identities
+and can be used directly in one-name or two-name resource loops. A range that
+would leave another non-identity index component to enumerate is rejected; write
+that component as an exact key first or model a different index order.
+Range bounds are accepted for ordered scalar or enum index components and
+ordered scalar store/layer key components, not identity-typed components, and
+they do not apply to unique indexes. A bare `..`, `start..=`, non-trailing range,
+composite endpoint, or `by` step in a saved key argument is rejected.
+Ranged saved-key calls are traversal shapes, not value reads: use them as loop
+iterables, through `keys`/`values`/`entries` loop wrappers, or in supported
+cardinality/presence calls. In v0.1, ranged `exists(...)` is supported for
+non-unique index branches; store-root and keyed-layer ranges are traversed
+rather than tested as a single lookup value.
+
 Index arguments may name store keys or top-level fields only. Field components
 may be orderable scalars, enums, or `Id(^store)` typed references; an identity
 field is indexed by a store-id-prefixed canonical identity payload, so
@@ -325,6 +360,19 @@ Use an index when the access pattern matters:
 for id in ^books.byShelf("fiction")
     if const title = ^books(id).title
         print(title)
+```
+
+Bounded saved key ranges compose with the same streaming traversal:
+
+```mw
+for id in ^books.byShelfDate("fiction", start..end)
+    print(id)
+
+for id, book in ^books.byDate(start..end)
+    print(book.title)
+
+for pos in ^books(id).tags(lo..hi)
+    print(pos)
 ```
 
 Full-store traversal is explicit by iterating the store root, and streams the same

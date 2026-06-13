@@ -268,6 +268,87 @@ fn exact_index_tuple_zero_limit_returns_empty_page() {
 }
 
 #[test]
+fn bounded_index_range_empty_when_bounds_are_inverted() {
+    let by_date = catalog_id("4444444444444444");
+    let store = TreeStore::memory();
+    for (date, id) in [(10, 1), (20, 2), (30, 3)] {
+        store
+            .write_index_entry(
+                &by_date,
+                &[SavedKey::Int(date)],
+                &[SavedKey::Int(id)],
+                b"present".to_vec(),
+            )
+            .expect("write index");
+    }
+    let inverted = marrow_store::tree::IndexRangeBounds {
+        lower: Some(SavedKey::Int(30)),
+        upper: Some(SavedKey::Int(20)),
+        upper_inclusive: false,
+    };
+
+    let forward = store
+        .scan_index_range(&by_date, &[], &inverted, 10)
+        .expect("forward inverted range is empty");
+    assert!(forward.entries.is_empty());
+    assert!(forward.cursor.is_none());
+    assert!(!forward.truncated);
+
+    let reverse = store
+        .scan_index_range_reverse(&by_date, &[], &inverted, 10)
+        .expect("reverse inverted range is empty");
+    assert!(reverse.entries.is_empty());
+    assert!(reverse.cursor.is_none());
+    assert!(!reverse.truncated);
+}
+
+#[test]
+fn bounded_index_range_cursor_is_bound_to_range_bounds() {
+    let by_date = catalog_id("4444444444444444");
+    let store = TreeStore::memory();
+    for (date, id) in [(10, 1), (20, 2), (30, 3), (40, 4)] {
+        store
+            .write_index_entry(
+                &by_date,
+                &[SavedKey::Int(date)],
+                &[SavedKey::Int(id)],
+                b"present".to_vec(),
+            )
+            .expect("write index");
+    }
+    let first_range = marrow_store::tree::IndexRangeBounds {
+        lower: Some(SavedKey::Int(10)),
+        upper: Some(SavedKey::Int(35)),
+        upper_inclusive: false,
+    };
+    let second_range = marrow_store::tree::IndexRangeBounds {
+        lower: Some(SavedKey::Int(20)),
+        upper: Some(SavedKey::Int(45)),
+        upper_inclusive: false,
+    };
+    let first_page = store
+        .scan_index_range(&by_date, &[], &first_range, 1)
+        .expect("first bounded page");
+    assert!(first_page.truncated);
+    let cursor = first_page.cursor.as_ref().expect("bounded cursor");
+
+    let error = store
+        .scan_index_range_after(&by_date, &[], &second_range, cursor, 10)
+        .expect_err("cursor from another bounded range is invalid");
+    assert_eq!(error.code(), "store.cursor");
+
+    let reverse_page = store
+        .scan_index_range_reverse(&by_date, &[], &first_range, 1)
+        .expect("first reverse bounded page");
+    assert!(reverse_page.truncated);
+    let reverse_cursor = reverse_page.cursor.as_ref().expect("reverse cursor");
+    let error = store
+        .scan_index_range_before(&by_date, &[], &second_range, reverse_cursor, 10)
+        .expect_err("reverse cursor from another bounded range is invalid");
+    assert_eq!(error.code(), "store.cursor");
+}
+
+#[test]
 fn nested_data_paths_use_member_catalog_ids_and_typed_keys() {
     let books = catalog_id("1111111111111111");
     let versions = catalog_id("2222222222222222");

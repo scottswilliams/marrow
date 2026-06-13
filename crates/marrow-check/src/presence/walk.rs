@@ -598,6 +598,16 @@ fn collect_expr(
         } => {
             collect_binary_expr(program, *op, left, right, narrowed, scope, diagnostics);
         }
+        CheckedExpr::Range {
+            start, end, step, ..
+        } => {
+            for part in [start.as_deref(), end.as_deref(), step.as_deref()]
+                .into_iter()
+                .flatten()
+            {
+                collect_bare_expr(program, part, narrowed, scope, diagnostics);
+            }
+        }
         CheckedExpr::Interpolation { parts, .. } => {
             collect_interpolation_expr(program, parts, narrowed, scope, diagnostics);
         }
@@ -835,6 +845,7 @@ fn collect_path_key_exprs(
         | CheckedExpr::SavedRoot { .. }
         | CheckedExpr::Unary { .. }
         | CheckedExpr::Binary { .. }
+        | CheckedExpr::Range { .. }
         | CheckedExpr::Interpolation { .. } => {}
     }
 }

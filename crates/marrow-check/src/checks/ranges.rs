@@ -40,16 +40,8 @@ pub(super) fn range_endpoint_type(
 fn range_endpoints(
     iterable: &marrow_syntax::Expression,
 ) -> Option<(&marrow_syntax::Expression, &marrow_syntax::Expression)> {
-    use marrow_syntax::{BinaryOp, Expression};
-    match iterable {
-        Expression::Binary {
-            op: BinaryOp::RangeExclusive | BinaryOp::RangeInclusive,
-            left,
-            right,
-            ..
-        } => Some((left, right)),
-        _ => None,
-    }
+    let range = marrow_syntax::range_expr(iterable)?;
+    Some((range.start?, range.end?))
 }
 
 /// Reject ranges outside `for` iterables. A range is a loop shape, not a value
@@ -59,17 +51,11 @@ pub(crate) fn check_range_value(
     expr: &marrow_syntax::Expression,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    use marrow_syntax::{BinaryOp, Expression};
-    if let Expression::Binary {
-        op: BinaryOp::RangeExclusive | BinaryOp::RangeInclusive,
-        span,
-        ..
-    } = expr
-    {
+    if let Some(range) = marrow_syntax::range_expr(expr) {
         diagnostics.push(CheckDiagnostic::error(
             CHECK_RANGE_VALUE,
             file,
-            *span,
+            range.span,
             "a range can only be used as a `for` iterable",
         ));
     }

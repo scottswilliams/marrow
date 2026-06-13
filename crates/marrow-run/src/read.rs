@@ -1,12 +1,12 @@
 //! Saved-data reads and layer/index enumeration.
 
 use marrow_check::{
-    CheckedBuiltinCall, CheckedCallTarget, CheckedExpr as ExecExpr, CheckedSavedPlace,
-    CheckedSavedTerminal,
+    CheckedBuiltinCall, CheckedCallTarget, CheckedExpr as ExecExpr, CheckedSavedKeyParam,
+    CheckedSavedPlace, CheckedSavedTerminal,
 };
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::TreeStore;
+use marrow_store::tree::{DataPathSegment, IndexRangeBounds, TreeStore};
 use marrow_syntax::SourceSpan;
 
 use crate::collection::Direction;
@@ -15,10 +15,11 @@ use crate::error::{
     Located, RUN_ABSENT, RuntimeError, overflow, raise_fault, type_error, unsupported,
 };
 use crate::expr::eval_expr;
-use crate::path::{direct_root_place, lower};
+use crate::path::{direct_root_place, guard_key_type, lower, lower_keys};
+use crate::range_expr::checked_range;
 use crate::saved_iter::{IndexCursor, RecordCursor, count_keyed_children};
 use crate::store::{DataAddress, IndexAddress, LayerAddress};
-use crate::value::{Value, saved_key_to_value, value_to_index_key};
+use crate::value::{Value, saved_key_to_value, value_to_index_key, value_to_key};
 
 pub(crate) const INDEX_SCAN_PAGE_LIMIT: usize = 128;
 
@@ -58,12 +59,20 @@ pub(crate) fn keys_argument(expr: &ExecExpr) -> Option<&ExecExpr> {
 pub(crate) struct IndexBranchAddress {
     pub(crate) index: IndexAddress,
     pub(crate) arg_keys: Vec<SavedKey>,
+    pub(crate) range: Option<IndexRangeBounds>,
     pub(crate) identity_start: usize,
     pub(crate) depth: usize,
+    pub(crate) yields_identity: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct KeyRangeAddress {
+    pub(crate) exact_prefix: Vec<SavedKey>,
+    pub(crate) range: Option<IndexRangeBounds>,
 }
 
 pub(crate) enum IterableLayer<'a> {
-    Root(&'a CheckedSavedPlace),
+    Root(&'a CheckedSavedPlace, KeyRangeAddress),
     Index(&'a CheckedSavedPlace, IndexBranchAddress),
     ChildLayer,
 }
@@ -73,7 +82,18 @@ pub(crate) fn iterable_layer<'a>(
     env: &mut Env<'_>,
 ) -> Result<IterableLayer<'a>, RuntimeError> {
     if let Some(place) = direct_root_place(path) {
-        return Ok(IterableLayer::Root(place));
+        return Ok(IterableLayer::Root(
+            place,
+            KeyRangeAddress {
+                exact_prefix: Vec::new(),
+                range: None,
+            },
+        ));
+    }
+    if let Some(place) = path.saved_place()
+        && let Some(address) = iterable_root_key_range(place, path.span(), env)?
+    {
+        return Ok(IterableLayer::Root(place, address));
     }
     if let Some(place) = path.saved_place()
         && let Some(branch) = iterable_index_branch(place, path.span(), env)?
@@ -82,8 +102,63 @@ pub(crate) fn iterable_layer<'a>(
     }
     match path {
         ExecExpr::Field { .. } => Ok(IterableLayer::ChildLayer),
+        ExecExpr::Call { .. } if path.saved_place().is_some_and(layer_call_has_range) => {
+            Ok(IterableLayer::ChildLayer)
+        }
         other => Err(unsupported("iterating this saved path", other.span())),
     }
+}
+
+fn iterable_root_key_range(
+    place: &CheckedSavedPlace,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Option<KeyRangeAddress>, RuntimeError> {
+    if !matches!(place.terminal, CheckedSavedTerminal::Record) || !place.layers.is_empty() {
+        return Ok(None);
+    }
+    let Some(range_position) = place
+        .identity_args
+        .iter()
+        .position(|arg| is_key_range_expr(&arg.value))
+    else {
+        return Ok(None);
+    };
+    if range_position + 1 != place.identity_args.len()
+        || place.identity_args.len() != place.identity_keys.len()
+    {
+        return Err(unsupported("iterating this saved path", span));
+    }
+    let exact_prefix = lower_keys(
+        &place.identity_args[..range_position],
+        span,
+        false,
+        None,
+        &place.identity_keys,
+        env,
+    )?;
+    let range = key_range_bounds(
+        &place.identity_args[range_position].value,
+        &place.identity_keys[range_position],
+        span,
+        env,
+    )?;
+    Ok(range.map(|range| KeyRangeAddress {
+        exact_prefix,
+        range: Some(range),
+    }))
+}
+
+fn layer_call_has_range(place: &CheckedSavedPlace) -> bool {
+    matches!(place.terminal, CheckedSavedTerminal::Record)
+        && place
+            .layers
+            .last()
+            .is_some_and(|layer| layer.args.iter().any(|arg| is_key_range_expr(&arg.value)))
+}
+
+pub(crate) fn is_key_range_expr(expr: &ExecExpr) -> bool {
+    checked_range(expr).is_some()
 }
 
 fn iterable_index_branch(
@@ -110,9 +185,18 @@ fn iterable_index_branch(
         .find(|index| index.name == *name)
         .ok_or_else(|| unsupported("this index lookup", span))?;
     let mut arg_keys = Vec::new();
+    let mut range = None;
+    let mut range_position = None;
     for (position, arg) in args.iter().enumerate() {
         if arg.name.is_some() {
             return Err(unsupported("an index lookup with named arguments", span));
+        }
+        if let Some(bounds) =
+            index_range_bounds(&arg.value, &index.keys[position].value_meaning, span, env)?
+        {
+            range = Some(bounds);
+            range_position = Some(position);
+            break;
         }
         let key = value_to_index_key(
             eval_expr(&arg.value, env)?,
@@ -127,12 +211,77 @@ fn iterable_index_branch(
     } else {
         arg_count.saturating_sub(args.len())
     };
+    let yields_identity = range_position
+        .map(|position| position + 1 >= identity_start)
+        .unwrap_or(args.len() >= identity_start);
     Ok(Some(IndexBranchAddress {
         index: IndexAddress::from_place(place, name, arg_keys.clone(), span)?,
         arg_keys,
+        range,
         identity_start,
-        depth,
+        depth: if range_position.is_some() { 0 } else { depth },
+        yields_identity,
     }))
+}
+
+fn index_range_bounds(
+    expr: &ExecExpr,
+    meaning: &marrow_check::StoredValueMeaning,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Option<IndexRangeBounds>, RuntimeError> {
+    let Some(range) = checked_range(expr) else {
+        return Ok(None);
+    };
+    let lower = match range.start {
+        Some(start) => Some(value_to_index_key(eval_expr(start, env)?, meaning, span)?),
+        None => None,
+    };
+    let upper = match range.end {
+        Some(end) => Some(value_to_index_key(eval_expr(end, env)?, meaning, span)?),
+        None => None,
+    };
+    Ok(Some(IndexRangeBounds {
+        lower,
+        upper,
+        upper_inclusive: range.inclusive_end,
+    }))
+}
+
+pub(crate) fn key_range_bounds(
+    expr: &ExecExpr,
+    expected: &CheckedSavedKeyParam,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Option<IndexRangeBounds>, RuntimeError> {
+    let Some(range) = checked_range(expr) else {
+        return Ok(None);
+    };
+    let lower = match range.start {
+        Some(start) => Some(lower_range_bound(start, expected, span, env)?),
+        None => None,
+    };
+    let upper = match range.end {
+        Some(end) => Some(lower_range_bound(end, expected, span, env)?),
+        None => None,
+    };
+    Ok(Some(IndexRangeBounds {
+        lower,
+        upper,
+        upper_inclusive: range.inclusive_end,
+    }))
+}
+
+fn lower_range_bound(
+    expr: &ExecExpr,
+    expected: &CheckedSavedKeyParam,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<SavedKey, RuntimeError> {
+    let key = value_to_key(eval_expr(expr, env)?)
+        .ok_or_else(|| unsupported("a key of this type", span))?;
+    guard_key_type(expected, &key, span)?;
+    Ok(key)
 }
 
 pub(crate) fn count_iterable_layer(
@@ -140,7 +289,7 @@ pub(crate) fn count_iterable_layer(
     env: &mut Env<'_>,
 ) -> Result<usize, RuntimeError> {
     match iterable_layer(path, env)? {
-        IterableLayer::Root(place) => {
+        IterableLayer::Root(place, address) => {
             let arity = place.identity_keys.len();
             if arity == 0 {
                 return Err(type_error(
@@ -152,6 +301,23 @@ pub(crate) fn count_iterable_layer(
                 ));
             }
             let store = crate::store::catalog_id(&place.store_catalog_id, "store", path.span())?;
+            if address.range.is_some() {
+                let cursor = RecordCursor::new_bounded(
+                    &store,
+                    arity,
+                    Direction::Ascending,
+                    path.span(),
+                    address.range.clone(),
+                );
+                return count_keyed_children(
+                    &cursor,
+                    arity.saturating_sub(address.exact_prefix.len()),
+                    &address.exact_prefix,
+                    env,
+                    path.span(),
+                    |_, _| Ok(1),
+                );
+            }
             count_record_identities(&store, arity, path.span(), env)
         }
         IterableLayer::Index(_, branch) => count_index_branch(&branch, path.span(), env),
@@ -236,10 +402,19 @@ fn count_exact_index_tuple(
     env: &Env<'_>,
 ) -> Result<usize, RuntimeError> {
     let mut count = 0usize;
-    let mut page = env
-        .store
-        .scan_index_tuple(&branch.index.index, &branch.arg_keys, INDEX_SCAN_PAGE_LIMIT)
-        .map_err(|error| error.located(span))?;
+    let mut page = match &branch.range {
+        Some(range) => env.store.scan_index_range(
+            &branch.index.index,
+            &branch.arg_keys,
+            range,
+            INDEX_SCAN_PAGE_LIMIT,
+        ),
+        None => {
+            env.store
+                .scan_index_tuple(&branch.index.index, &branch.arg_keys, INDEX_SCAN_PAGE_LIMIT)
+        }
+    }
+    .map_err(|error| error.located(span))?;
     loop {
         count = count
             .checked_add(page.entries.len())
@@ -247,15 +422,22 @@ fn count_exact_index_tuple(
         let Some(cursor) = page.cursor else {
             break;
         };
-        page = env
-            .store
-            .scan_index_tuple_after(
+        page = match &branch.range {
+            Some(range) => env.store.scan_index_range_after(
+                &branch.index.index,
+                &branch.arg_keys,
+                range,
+                &cursor,
+                INDEX_SCAN_PAGE_LIMIT,
+            ),
+            None => env.store.scan_index_tuple_after(
                 &branch.index.index,
                 &branch.arg_keys,
                 &cursor,
                 INDEX_SCAN_PAGE_LIMIT,
-            )
-            .map_err(|error| error.located(span))?;
+            ),
+        }
+        .map_err(|error| error.located(span))?;
     }
     Ok(count)
 }
@@ -266,11 +448,17 @@ fn index_branch_present(
     env: &Env<'_>,
 ) -> Result<bool, RuntimeError> {
     if branch.depth == 0 {
-        return env
-            .store
-            .scan_index_tuple(&branch.index.index, &branch.arg_keys, 1)
-            .map(|page| !page.entries.is_empty())
-            .map_err(|error| error.located(span));
+        return match &branch.range {
+            Some(range) => {
+                env.store
+                    .scan_index_range(&branch.index.index, &branch.arg_keys, range, 1)
+            }
+            None => env
+                .store
+                .scan_index_tuple(&branch.index.index, &branch.arg_keys, 1),
+        }
+        .map(|page| !page.entries.is_empty())
+        .map_err(|error| error.located(span));
     }
     first_index_child(
         env.store,
@@ -331,6 +519,97 @@ pub(crate) fn next_record_child(
         Direction::Descending => store.record_prev_child_at_arity(store_id, prefix, arity, anchor),
     }
     .map_err(|error| error.located(span))
+}
+
+pub(crate) struct RecordChildRange<'a> {
+    pub(crate) store_id: &'a CatalogId,
+    pub(crate) prefix: &'a [SavedKey],
+    pub(crate) range: &'a IndexRangeBounds,
+    pub(crate) dir: Direction,
+    pub(crate) arity: usize,
+    pub(crate) span: SourceSpan,
+}
+
+pub(crate) fn first_record_child_in_range(
+    store: &TreeStore,
+    scan: RecordChildRange<'_>,
+) -> Result<Option<SavedKey>, RuntimeError> {
+    let child = match scan.dir {
+        Direction::Ascending => match &scan.range.lower {
+            Some(lower)
+                if record_child_exists(
+                    store,
+                    scan.store_id,
+                    scan.prefix,
+                    lower,
+                    scan.arity,
+                    scan.span,
+                )? =>
+            {
+                Some(lower.clone())
+            }
+            Some(lower) => store
+                .record_next_child_at_arity(scan.store_id, scan.prefix, scan.arity, lower)
+                .map_err(|error| error.located(scan.span))?,
+            None => store
+                .record_first_child_at_arity(scan.store_id, scan.prefix, scan.arity)
+                .map_err(|error| error.located(scan.span))?,
+        },
+        Direction::Descending => match &scan.range.upper {
+            Some(upper)
+                if scan.range.upper_inclusive
+                    && record_child_exists(
+                        store,
+                        scan.store_id,
+                        scan.prefix,
+                        upper,
+                        scan.arity,
+                        scan.span,
+                    )? =>
+            {
+                Some(upper.clone())
+            }
+            Some(upper) => store
+                .record_prev_child_at_arity(scan.store_id, scan.prefix, scan.arity, upper)
+                .map_err(|error| error.located(scan.span))?,
+            None => store
+                .record_last_child_at_arity(scan.store_id, scan.prefix, scan.arity)
+                .map_err(|error| error.located(scan.span))?,
+        },
+    };
+    Ok(child.filter(|key| key_in_range(key, scan.range)))
+}
+
+pub(crate) fn next_record_child_in_range(
+    store: &TreeStore,
+    scan: RecordChildRange<'_>,
+    anchor: &SavedKey,
+) -> Result<Option<SavedKey>, RuntimeError> {
+    let child = match scan.dir {
+        Direction::Ascending => {
+            store.record_next_child_at_arity(scan.store_id, scan.prefix, scan.arity, anchor)
+        }
+        Direction::Descending => {
+            store.record_prev_child_at_arity(scan.store_id, scan.prefix, scan.arity, anchor)
+        }
+    }
+    .map_err(|error| error.located(scan.span))?;
+    Ok(child.filter(|key| key_in_range(key, scan.range)))
+}
+
+fn record_child_exists(
+    store: &TreeStore,
+    store_id: &CatalogId,
+    prefix: &[SavedKey],
+    child: &SavedKey,
+    arity: usize,
+    span: SourceSpan,
+) -> Result<bool, RuntimeError> {
+    let mut identity = prefix.to_vec();
+    identity.push(child.clone());
+    store
+        .record_identity_exists_under(store_id, &identity, arity)
+        .map_err(|error| error.located(span))
 }
 
 pub(crate) fn first_index_child(
@@ -395,6 +674,93 @@ pub(crate) fn next_data_child(
         }
     }
     .map_err(|error| error.located(span))
+}
+
+pub(crate) fn first_data_child_in_range(
+    store: &TreeStore,
+    address: &DataAddress,
+    range: &IndexRangeBounds,
+    dir: Direction,
+    span: SourceSpan,
+) -> Result<Option<SavedKey>, RuntimeError> {
+    let child = match dir {
+        Direction::Ascending => match &range.lower {
+            Some(lower) if data_child_exists_at(store, address, lower, span)? => {
+                Some(lower.clone())
+            }
+            Some(lower) => store
+                .data_next_child(&address.store, &address.identity, &address.path, lower)
+                .map_err(|error| error.located(span))?,
+            None => store
+                .data_first_child(&address.store, &address.identity, &address.path)
+                .map_err(|error| error.located(span))?,
+        },
+        Direction::Descending => match &range.upper {
+            Some(upper)
+                if range.upper_inclusive && data_child_exists_at(store, address, upper, span)? =>
+            {
+                Some(upper.clone())
+            }
+            Some(upper) => store
+                .data_prev_child(&address.store, &address.identity, &address.path, upper)
+                .map_err(|error| error.located(span))?,
+            None => store
+                .data_last_child(&address.store, &address.identity, &address.path)
+                .map_err(|error| error.located(span))?,
+        },
+    };
+    Ok(child.filter(|key| key_in_range(key, range)))
+}
+
+pub(crate) fn next_data_child_in_range(
+    store: &TreeStore,
+    address: &DataAddress,
+    anchor: &SavedKey,
+    range: &IndexRangeBounds,
+    dir: Direction,
+    span: SourceSpan,
+) -> Result<Option<SavedKey>, RuntimeError> {
+    let child = match dir {
+        Direction::Ascending => {
+            store.data_next_child(&address.store, &address.identity, &address.path, anchor)
+        }
+        Direction::Descending => {
+            store.data_prev_child(&address.store, &address.identity, &address.path, anchor)
+        }
+    }
+    .map_err(|error| error.located(span))?;
+    Ok(child.filter(|key| key_in_range(key, range)))
+}
+
+fn data_child_exists_at(
+    store: &TreeStore,
+    address: &DataAddress,
+    child: &SavedKey,
+    span: SourceSpan,
+) -> Result<bool, RuntimeError> {
+    let mut path = address.path.clone();
+    path.push(DataPathSegment::Key(child.clone()));
+    store
+        .data_subtree_exists(&address.store, &address.identity, &path)
+        .map_err(|error| error.located(span))
+}
+
+fn key_in_range(key: &SavedKey, range: &IndexRangeBounds) -> bool {
+    if let Some(lower) = &range.lower
+        && key < lower
+    {
+        return false;
+    }
+    if let Some(upper) = &range.upper {
+        if range.upper_inclusive {
+            if key > upper {
+                return false;
+            }
+        } else if key >= upper {
+            return false;
+        }
+    }
+    true
 }
 
 pub(crate) fn collected_identity_value(

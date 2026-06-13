@@ -367,9 +367,10 @@ pub(crate) fn check_binary(
         // same steppable type. The endpoint typing, step, and direction rules are a
         // separate range-for check, so this only rejects a non-steppable or
         // mismatched endpoint pairing.
-        BinaryOp::RangeExclusive | BinaryOp::RangeInclusive => {
-            (is_steppable(left) && left == right, MarrowType::Unknown)
-        }
+        BinaryOp::RangeExclusive | BinaryOp::RangeInclusive => (
+            is_steppable(left) && left == right,
+            MarrowType::Primitive(left),
+        ),
         // `??` constrains its operands by the path's leaf type, not by scalar
         // shape alone, so it is typed in `check_coalesce` before reaching here.
         BinaryOp::Coalesce => (left == right, MarrowType::Primitive(left)),

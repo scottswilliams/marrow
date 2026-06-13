@@ -324,6 +324,22 @@ pub fn positionsDescending()
 pub fn keysOf()
     for pos in keys(^books(1).tags)
         print($\"{pos}\")
+
+pub fn positionsBetween(lo: int, hi: int)
+    for pos in ^books(1).tags(lo..hi)
+        print($\"{pos}\")
+
+pub fn positionsBetweenKeys(lo: int, hi: int)
+    for pos in keys(^books(1).tags(lo..hi))
+        print($\"{pos}\")
+
+pub fn entriesBetween(lo: int, hi: int)
+    for pos, tag in entries(^books(1).tags(lo..hi))
+        print($\"{pos}={tag}\")
+
+pub fn positionsBetweenDescending(lo: int, hi: int)
+    for pos in reversed(^books(1).tags(lo..hi))
+        print($\"{pos}\")
 ";
 
 #[test]
@@ -339,6 +355,54 @@ fn iterates_a_sequence_child_layer() {
     // `keys(^books(1).tags)` yields the same positions.
     let outcome = run_entry(&store, checked_entry!(&program, "test::keysOf")).expect("run");
     assert_eq!(outcome.output, "1\n2\n");
+
+    let outcome = run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::positionsBetween",
+            Value::Int(1),
+            Value::Int(2)
+        ),
+    )
+    .expect("run");
+    assert_eq!(outcome.output, "1\n");
+
+    let outcome = run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::positionsBetweenKeys",
+            Value::Int(1),
+            Value::Int(2)
+        ),
+    )
+    .expect("run");
+    assert_eq!(outcome.output, "1\n");
+
+    let outcome = run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::entriesBetween",
+            Value::Int(1),
+            Value::Int(3)
+        ),
+    )
+    .expect("run");
+    assert_eq!(outcome.output, "1=fiction\n2=funny\n");
+
+    let outcome = run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::positionsBetweenDescending",
+            Value::Int(1),
+            Value::Int(3)
+        ),
+    )
+    .expect("run");
+    assert_eq!(outcome.output, "2\n1\n");
 }
 
 #[test]

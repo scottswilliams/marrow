@@ -39,6 +39,7 @@ mod local_collection;
 mod loop_exec;
 mod neighbor;
 mod path;
+mod range_expr;
 mod read;
 mod saved_iter;
 mod statement;

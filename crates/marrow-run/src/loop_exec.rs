@@ -4,8 +4,7 @@ use std::cmp::Ordering;
 use std::ops::ControlFlow;
 
 use marrow_check::{
-    CheckedBinaryOp as BinaryOp, CheckedBody as ExecBody, CheckedExpr as ExecExpr,
-    CheckedForBinding as ForBinding,
+    CheckedBody as ExecBody, CheckedExpr as ExecExpr, CheckedForBinding as ForBinding,
 };
 use marrow_store::value::NANOS_PER_DAY;
 use marrow_syntax::SourceSpan;
@@ -16,6 +15,7 @@ use crate::error::{RuntimeError, overflow, type_error, unsupported};
 use crate::exec::eval_block;
 use crate::expr::{eval_condition, eval_expr};
 use crate::local_collection::{enumerate_local_collection_dir, materialize_local_collection_dir};
+use crate::range_expr::checked_range;
 use crate::read::{keys_argument, reversed_argument};
 use crate::saved_iter::{SavedLoopRow, SavedLoopSpec};
 use crate::value::Value;
@@ -165,13 +165,7 @@ fn eval_range_for(
 }
 
 fn is_range_expr(iterable: &ExecExpr) -> bool {
-    matches!(
-        iterable,
-        ExecExpr::Binary {
-            op: BinaryOp::RangeExclusive | BinaryOp::RangeInclusive,
-            ..
-        }
-    )
+    checked_range(iterable).is_some()
 }
 
 fn run_single_name_body(
@@ -315,21 +309,13 @@ fn range_iter(
 }
 
 fn range_bounds(iterable: &ExecExpr) -> Result<(&ExecExpr, &ExecExpr, bool), RuntimeError> {
-    Ok(match iterable {
-        ExecExpr::Binary {
-            op: BinaryOp::RangeExclusive,
-            left,
-            right,
-            ..
-        } => (left, right, false),
-        ExecExpr::Binary {
-            op: BinaryOp::RangeInclusive,
-            left,
-            right,
-            ..
-        } => (left, right, true),
-        other => return Err(unsupported("iterating this value", other.span())),
-    })
+    let Some(range) = checked_range(iterable) else {
+        return Err(unsupported("iterating this value", iterable.span()));
+    };
+    match (range.start, range.end) {
+        (Some(start), Some(end)) => Ok((start, end, range.inclusive_end)),
+        _ => Err(unsupported("iterating this value", iterable.span())),
+    }
 }
 
 fn int_range_iter(

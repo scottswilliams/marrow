@@ -32,7 +32,7 @@ impl IndexScan {
     ) -> Self {
         Self {
             place: place.clone(),
-            yields_identity: branch.arg_keys.len() >= branch.identity_start,
+            yields_identity: branch.yields_identity,
             branch,
             dir: spec.dir,
             shape: spec.shape,
@@ -52,7 +52,13 @@ impl IndexScan {
         let mut visit_keys =
             |keys: Vec<SavedKey>, env: &mut Env<'_>| self.visit_keys(keys, env, visit);
         if self.branch.depth == 0 {
-            return stream_exact_index_tuple(&self.branch, self.span, env, &mut visit_keys);
+            return stream_exact_index_tuple(
+                &self.branch,
+                self.dir,
+                self.span,
+                env,
+                &mut visit_keys,
+            );
         }
         let identity_prefix = self
             .branch
@@ -129,14 +135,35 @@ impl ChildCursor for IndexCursor<'_> {
 
 fn stream_exact_index_tuple(
     branch: &IndexBranchAddress,
+    dir: Direction,
     span: SourceSpan,
     env: &mut Env<'_>,
     visit: &mut impl FnMut(Vec<SavedKey>, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
 ) -> Result<Flow, RuntimeError> {
-    let mut page = env
-        .store
-        .scan_index_tuple(&branch.index.index, &branch.arg_keys, INDEX_SCAN_PAGE_LIMIT)
-        .map_err(|error| error.located(span))?;
+    let mut page = match (&branch.range, dir) {
+        (Some(range), Direction::Ascending) => env
+            .store
+            .scan_index_range(
+                &branch.index.index,
+                &branch.arg_keys,
+                range,
+                INDEX_SCAN_PAGE_LIMIT,
+            )
+            .map_err(|error| error.located(span))?,
+        (Some(range), Direction::Descending) => env
+            .store
+            .scan_index_range_reverse(
+                &branch.index.index,
+                &branch.arg_keys,
+                range,
+                INDEX_SCAN_PAGE_LIMIT,
+            )
+            .map_err(|error| error.located(span))?,
+        (None, _) => env
+            .store
+            .scan_index_tuple(&branch.index.index, &branch.arg_keys, INDEX_SCAN_PAGE_LIMIT)
+            .map_err(|error| error.located(span))?,
+    };
     loop {
         for entry in page.entries {
             match visit(entry.identity, env)? {
@@ -147,15 +174,37 @@ fn stream_exact_index_tuple(
         let Some(cursor) = page.cursor else {
             break;
         };
-        page = env
-            .store
-            .scan_index_tuple_after(
-                &branch.index.index,
-                &branch.arg_keys,
-                &cursor,
-                INDEX_SCAN_PAGE_LIMIT,
-            )
-            .map_err(|error| error.located(span))?;
+        page = match (&branch.range, dir) {
+            (Some(range), Direction::Ascending) => env
+                .store
+                .scan_index_range_after(
+                    &branch.index.index,
+                    &branch.arg_keys,
+                    range,
+                    &cursor,
+                    INDEX_SCAN_PAGE_LIMIT,
+                )
+                .map_err(|error| error.located(span))?,
+            (Some(range), Direction::Descending) => env
+                .store
+                .scan_index_range_before(
+                    &branch.index.index,
+                    &branch.arg_keys,
+                    range,
+                    &cursor,
+                    INDEX_SCAN_PAGE_LIMIT,
+                )
+                .map_err(|error| error.located(span))?,
+            (None, _) => env
+                .store
+                .scan_index_tuple_after(
+                    &branch.index.index,
+                    &branch.arg_keys,
+                    &cursor,
+                    INDEX_SCAN_PAGE_LIMIT,
+                )
+                .map_err(|error| error.located(span))?,
+        };
     }
     Ok(Flow::Normal)
 }

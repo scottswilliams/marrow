@@ -21,8 +21,8 @@ The public store crate surface is:
 
 The private engine substrate stores byte keys and byte values in one
 byte-lexicographic order. It provides exact read, exact write, prefix delete,
-bounded prefix scans, cursor-resumed forward and reverse prefix scans, and
-flat joined transactions.
+bounded prefix scans, bounded lower/upper prefix scans, cursor-resumed forward
+and reverse prefix scans, and flat joined transactions.
 The in-memory engine uses `BTreeMap`; the native engine uses redb. The supported
 production saved-data backend is the native redb engine. The in-memory engine is
 for tests, development, REPLs, short runs, and conformance. It can exercise the
@@ -98,6 +98,8 @@ uses the in-memory development/test engine; `TreeStore::open(path)` and
   child-key lists;
 - write/read/delete exact index entries;
 - scan an exact index tuple with an opaque cursor;
+- scan a non-unique index exact prefix plus one trailing ordered key range with
+  an opaque cursor, forward or reverse;
 - visit validated backup cells.
 
 `TreeStore` methods take a shared reference and serialize access through the
@@ -111,6 +113,21 @@ callers can only receive and return it through the typed index-scan API, and a
 cursor is bound to the exact tuple it was issued for; resuming it against a
 different tuple prefix is rejected as `store.cursor`, so a paged scan cannot drift
 onto another tuple's rows.
+
+A bounded index range scan starts from an exact index-key prefix and constrains
+only the next key component. The lower bound is inclusive when present; the upper
+bound is exclusive for `..` and inclusive for `..=` by scanning to the successor
+of the upper key prefix. Inverted bounds normalize to an empty page. Returned
+rows stay ordered by encoded index key and identity suffix. Cursors are bound to
+the exact prefix and normalized lower/upper byte bounds, not to public path text,
+so resuming one bounded range against another reports `store.cursor`.
+
+Store-root keyspace and keyed-layer range traversal use the same typed child
+navigation contract: exact leading key components are lowered to the record or
+nested-data prefix, the first child seek starts at the lower or upper bound for
+the requested direction, and each resumed first/next/previous step stops at the
+opposite bound. These scans return stored child keys only; they do not expose raw
+engine cursors or materialize unbounded child lists.
 
 Backup traversal returns `TreeBackupCell`, an opaque borrowed data-family cell.
 Callers can read its typed data-cell identity, fold its framed checksum, and

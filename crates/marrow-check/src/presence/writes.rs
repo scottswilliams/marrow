@@ -218,6 +218,12 @@ pub(super) fn expr_calls_saved_writer(
             expr_calls_saved_writer(program, left, visiting)
                 || expr_calls_saved_writer(program, right, visiting)
         }
+        CheckedExpr::Range {
+            start, end, step, ..
+        } => [start.as_deref(), end.as_deref(), step.as_deref()]
+            .into_iter()
+            .flatten()
+            .any(|part| expr_calls_saved_writer(program, part, visiting)),
         CheckedExpr::Interpolation { parts, .. } => parts.iter().any(|part| match part {
             CheckedInterpolationPart::Text { .. } => false,
             CheckedInterpolationPart::Expr(expr) => {

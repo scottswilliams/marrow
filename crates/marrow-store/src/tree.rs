@@ -32,11 +32,21 @@ pub struct IndexEntry {
     pub value: Vec<u8>,
 }
 
-/// Opaque cursor for resuming an exact index tuple scan.
+/// Opaque cursor for resuming an index scan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexCursor {
     prefix: Vec<u8>,
     last_key: Vec<u8>,
+    scope: IndexCursorScope,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum IndexCursorScope {
+    Exact,
+    Range {
+        lower: Vec<u8>,
+        upper: Option<Vec<u8>>,
+    },
 }
 
 /// One bounded page from an exact index tuple scan.
@@ -45,6 +55,27 @@ pub struct IndexPage {
     pub entries: Vec<IndexEntry>,
     pub cursor: Option<IndexCursor>,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexRangeBounds {
+    pub lower: Option<SavedKey>,
+    pub upper: Option<SavedKey>,
+    pub upper_inclusive: bool,
+}
+
+struct NormalizedIndexRange {
+    lower: Vec<u8>,
+    upper: Option<Vec<u8>>,
+}
+
+impl NormalizedIndexRange {
+    fn cursor_scope(&self) -> IndexCursorScope {
+        IndexCursorScope::Range {
+            lower: self.lower.clone(),
+            upper: self.upper.clone(),
+        }
+    }
 }
 
 /// A catalog-backed enum member value.
@@ -786,6 +817,64 @@ impl TreeStore {
         self.scan_index_tuple_from(index, index_keys, Some(cursor), limit)
     }
 
+    pub fn scan_index_range(
+        &self,
+        index: &CatalogId,
+        exact_prefix: &[SavedKey],
+        range: &IndexRangeBounds,
+        limit: usize,
+    ) -> Result<IndexPage, StoreError> {
+        self.scan_index_range_from(index, exact_prefix, range, None, limit)
+    }
+
+    pub fn scan_index_range_after(
+        &self,
+        index: &CatalogId,
+        exact_prefix: &[SavedKey],
+        range: &IndexRangeBounds,
+        cursor: &IndexCursor,
+        limit: usize,
+    ) -> Result<IndexPage, StoreError> {
+        self.scan_index_range_from(index, exact_prefix, range, Some(cursor), limit)
+    }
+
+    pub fn scan_index_range_reverse(
+        &self,
+        index: &CatalogId,
+        exact_prefix: &[SavedKey],
+        range: &IndexRangeBounds,
+        limit: usize,
+    ) -> Result<IndexPage, StoreError> {
+        let prefix = CellKey::index_key_prefix(index, exact_prefix);
+        let Some(bounds) = normalized_index_range(prefix.as_bytes(), range) else {
+            return Ok(empty_index_page());
+        };
+        let upper = bounds
+            .upper
+            .clone()
+            .or_else(|| prefix_successor(prefix.as_bytes()))
+            .ok_or_else(|| StoreError::InvalidCursor {
+                message: "bounded index range has no reverse cursor".into(),
+            })?;
+        let cursor = IndexCursor {
+            prefix: prefix.as_bytes().to_vec(),
+            last_key: upper,
+            scope: bounds.cursor_scope(),
+        };
+        self.scan_index_range_before_from(index, exact_prefix, range, &cursor, limit)
+    }
+
+    pub fn scan_index_range_before(
+        &self,
+        index: &CatalogId,
+        exact_prefix: &[SavedKey],
+        range: &IndexRangeBounds,
+        cursor: &IndexCursor,
+        limit: usize,
+    ) -> Result<IndexPage, StoreError> {
+        self.scan_index_range_before_from(index, exact_prefix, range, cursor, limit)
+    }
+
     /// Visit every row under one index id. The callback sees the stored index-key tuple
     /// and identity exactly as encoded, so callers can detect stale rows whose key arity
     /// no longer matches the current source declaration.
@@ -902,6 +991,44 @@ impl TreeStore {
     ) -> Result<ScanPage, StoreError> {
         self.backend.borrow().scan_before(prefix, cursor, limit)
     }
+
+    fn scan_between(
+        &self,
+        prefix: &[u8],
+        lower: Option<&[u8]>,
+        upper: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<ScanPage, StoreError> {
+        self.backend
+            .borrow()
+            .scan_between(prefix, lower, upper, limit)
+    }
+
+    fn scan_between_after(
+        &self,
+        prefix: &[u8],
+        lower: Option<&[u8]>,
+        upper: Option<&[u8]>,
+        cursor: &[u8],
+        limit: usize,
+    ) -> Result<ScanPage, StoreError> {
+        self.backend
+            .borrow()
+            .scan_between_after(prefix, lower, upper, cursor, limit)
+    }
+
+    fn scan_between_before(
+        &self,
+        prefix: &[u8],
+        lower: Option<&[u8]>,
+        upper: Option<&[u8]>,
+        cursor: &[u8],
+        limit: usize,
+    ) -> Result<ScanPage, StoreError> {
+        self.backend
+            .borrow()
+            .scan_between_before(prefix, lower, upper, cursor, limit)
+    }
 }
 
 /// A pinned read snapshot over a [`TreeStore`]. While it is held, every read and
@@ -941,6 +1068,11 @@ impl TreeStore {
                         message: "index cursor does not match exact index tuple".into(),
                     });
                 }
+                if cursor.scope != IndexCursorScope::Exact {
+                    return Err(StoreError::InvalidCursor {
+                        message: "index cursor does not match exact index tuple".into(),
+                    });
+                }
                 self.scan_after(prefix.as_bytes(), cursor.last_key.as_slice(), limit)?
             }
             None => self.scan(prefix.as_bytes(), limit)?,
@@ -961,6 +1093,137 @@ impl TreeStore {
             last_key.map(|last_key| IndexCursor {
                 prefix: prefix.as_bytes().to_vec(),
                 last_key,
+                scope: IndexCursorScope::Exact,
+            })
+        } else {
+            None
+        };
+        Ok(IndexPage {
+            entries,
+            cursor,
+            truncated: page.truncated,
+        })
+    }
+
+    fn scan_index_range_from(
+        &self,
+        index: &CatalogId,
+        exact_prefix: &[SavedKey],
+        range: &IndexRangeBounds,
+        cursor: Option<&IndexCursor>,
+        limit: usize,
+    ) -> Result<IndexPage, StoreError> {
+        if limit == 0 {
+            return Ok(IndexPage {
+                entries: Vec::new(),
+                cursor: None,
+                truncated: false,
+            });
+        }
+        let prefix = CellKey::index_key_prefix(index, exact_prefix);
+        let Some(bounds) = normalized_index_range(prefix.as_bytes(), range) else {
+            if cursor.is_some() {
+                return Err(StoreError::InvalidCursor {
+                    message: "index cursor does not match bounded index range".into(),
+                });
+            }
+            return Ok(empty_index_page());
+        };
+        let page = match cursor {
+            Some(cursor) => {
+                if cursor.prefix != prefix.as_bytes() {
+                    return Err(StoreError::InvalidCursor {
+                        message: "index cursor does not match bounded index range".into(),
+                    });
+                }
+                if cursor.scope != bounds.cursor_scope() {
+                    return Err(StoreError::InvalidCursor {
+                        message: "index cursor does not match bounded index range".into(),
+                    });
+                }
+                self.scan_between_after(
+                    prefix.as_bytes(),
+                    Some(bounds.lower.as_slice()),
+                    bounds.upper.as_deref(),
+                    cursor.last_key.as_slice(),
+                    limit,
+                )?
+            }
+            None => self.scan_between(
+                prefix.as_bytes(),
+                Some(bounds.lower.as_slice()),
+                bounds.upper.as_deref(),
+                limit,
+            )?,
+        };
+        self.decode_index_range_page(index, prefix, page, bounds.cursor_scope())
+    }
+
+    fn scan_index_range_before_from(
+        &self,
+        index: &CatalogId,
+        exact_prefix: &[SavedKey],
+        range: &IndexRangeBounds,
+        cursor: &IndexCursor,
+        limit: usize,
+    ) -> Result<IndexPage, StoreError> {
+        if limit == 0 {
+            return Ok(IndexPage {
+                entries: Vec::new(),
+                cursor: None,
+                truncated: false,
+            });
+        }
+        let prefix = CellKey::index_key_prefix(index, exact_prefix);
+        if cursor.prefix != prefix.as_bytes() {
+            return Err(StoreError::InvalidCursor {
+                message: "index cursor does not match bounded index range".into(),
+            });
+        }
+        let Some(bounds) = normalized_index_range(prefix.as_bytes(), range) else {
+            return Err(StoreError::InvalidCursor {
+                message: "index cursor does not match bounded index range".into(),
+            });
+        };
+        if cursor.scope != bounds.cursor_scope() {
+            return Err(StoreError::InvalidCursor {
+                message: "index cursor does not match bounded index range".into(),
+            });
+        }
+        let page = self.scan_between_before(
+            prefix.as_bytes(),
+            Some(bounds.lower.as_slice()),
+            bounds.upper.as_deref(),
+            cursor.last_key.as_slice(),
+            limit,
+        )?;
+        self.decode_index_range_page(index, prefix, page, bounds.cursor_scope())
+    }
+
+    fn decode_index_range_page(
+        &self,
+        index: &CatalogId,
+        prefix: CellKey,
+        page: ScanPage,
+        scope: IndexCursorScope,
+    ) -> Result<IndexPage, StoreError> {
+        let full_index_prefix = CellKey::index_key_prefix(index, &[]);
+        let mut entries = Vec::new();
+        let mut last_key = None;
+        for (key, value) in page.entries {
+            if !key.starts_with(prefix.as_bytes()) {
+                continue;
+            }
+            last_key = Some(key.clone());
+            let (_, identity) = decode_index_entry_key(&key[full_index_prefix.as_bytes().len()..])
+                .map_err(|_| corrupt_cell(&key))?;
+            entries.push(IndexEntry { identity, value });
+        }
+        let cursor = if page.truncated {
+            last_key.map(|last_key| IndexCursor {
+                prefix: prefix.as_bytes().to_vec(),
+                last_key,
+                scope,
             })
         } else {
             None
@@ -1375,6 +1638,42 @@ fn index_key_child_stem(index: &CatalogId, key_prefix: &[SavedKey], child: &Save
     CellKey::index_key_prefix(index, &child_prefix).into_bytes()
 }
 
+fn index_range_lower_bound(prefix: &[u8], range: &IndexRangeBounds) -> Vec<u8> {
+    let mut bytes = prefix.to_vec();
+    if let Some(lower) = &range.lower {
+        bytes.extend_from_slice(&encode_key_value(lower));
+    }
+    bytes
+}
+
+fn index_range_upper_bound(prefix: &[u8], range: &IndexRangeBounds) -> Option<Vec<u8>> {
+    let upper = range.upper.as_ref()?;
+    let mut bytes = prefix.to_vec();
+    bytes.extend_from_slice(&encode_key_value(upper));
+    if range.upper_inclusive {
+        prefix_successor(&bytes)
+    } else {
+        Some(bytes)
+    }
+}
+
+fn normalized_index_range(prefix: &[u8], range: &IndexRangeBounds) -> Option<NormalizedIndexRange> {
+    let lower = index_range_lower_bound(prefix, range);
+    let upper = index_range_upper_bound(prefix, range);
+    if upper.as_ref().is_some_and(|upper| lower >= *upper) {
+        return None;
+    }
+    Some(NormalizedIndexRange { lower, upper })
+}
+
+fn empty_index_page() -> IndexPage {
+    IndexPage {
+        entries: Vec::new(),
+        cursor: None,
+        truncated: false,
+    }
+}
+
 pub fn encode_tree_enum_member(value: &TreeEnumMember) -> Result<Vec<u8>, StoreError> {
     let mut bytes = vec![TREE_VALUE_VERSION_V0];
     put_catalog_id(&value.enum_id, &mut bytes)?;
@@ -1528,6 +1827,40 @@ mod tests {
             limit: usize,
         ) -> Result<ScanPage, StoreError> {
             self.inner.scan_before(prefix, cursor, limit)
+        }
+
+        fn scan_between(
+            &self,
+            prefix: &[u8],
+            lower: Option<&[u8]>,
+            upper: Option<&[u8]>,
+            limit: usize,
+        ) -> Result<ScanPage, StoreError> {
+            self.inner.scan_between(prefix, lower, upper, limit)
+        }
+
+        fn scan_between_after(
+            &self,
+            prefix: &[u8],
+            lower: Option<&[u8]>,
+            upper: Option<&[u8]>,
+            cursor: &[u8],
+            limit: usize,
+        ) -> Result<ScanPage, StoreError> {
+            self.inner
+                .scan_between_after(prefix, lower, upper, cursor, limit)
+        }
+
+        fn scan_between_before(
+            &self,
+            prefix: &[u8],
+            lower: Option<&[u8]>,
+            upper: Option<&[u8]>,
+            cursor: &[u8],
+            limit: usize,
+        ) -> Result<ScanPage, StoreError> {
+            self.inner
+                .scan_between_before(prefix, lower, upper, cursor, limit)
         }
 
         fn begin(&mut self) -> Result<(), StoreError> {

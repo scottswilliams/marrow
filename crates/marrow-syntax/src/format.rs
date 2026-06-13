@@ -786,6 +786,31 @@ fn format_expression_at(expression: &Expression, level: usize) -> String {
         Expression::Binary {
             op, left, right, ..
         } => format_binary_at(*op, left, right, level),
+        Expression::Range {
+            start,
+            end,
+            inclusive_end,
+            step,
+            ..
+        } => {
+            let op = if *inclusive_end { "..=" } else { ".." };
+            let mut out = format!(
+                "{}{}{}",
+                start
+                    .as_ref()
+                    .map(|start| format_child_at(start, PREC_ATOM, level))
+                    .unwrap_or_default(),
+                op,
+                end.as_ref()
+                    .map(|end| format_child_at(end, PREC_ATOM, level))
+                    .unwrap_or_default()
+            );
+            if let Some(step) = step {
+                out.push_str(" by ");
+                out.push_str(&format_child_at(step, PREC_ATOM, level));
+            }
+            out
+        }
         Expression::Interpolation { parts, .. } => format_interpolation_at(parts, level),
     }
 }

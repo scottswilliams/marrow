@@ -48,6 +48,54 @@ pub fn titles_on(shelf: string)
         print(book.title)
 ";
 
+const POST_DATES: &str = "\
+resource Post
+    required title: string
+    published: int
+store ^posts(id: int): Post
+
+    index byDate(published, id)
+
+pub fn add(id: int, title: string, published: int)
+    ^posts(id).title = title
+    ^posts(id).published = published
+
+pub fn titlesBetween(start: int, end: int)
+    for id in ^posts.byDate(start..end)
+        print(^posts(id).title ?? \"\")
+
+pub fn titlePairsBetween(start: int, end: int)
+    for id, post in ^posts.byDate(start..end)
+        print($\"{id}: {post.title}\")
+
+pub fn countBetween(start: int, end: int): int
+    return count(^posts.byDate(start..end))
+
+pub fn existsBetween(start: int, end: int): bool
+    return exists(^posts.byDate(start..end))
+
+pub fn titlesFrom(start: int)
+    for id in ^posts.byDate(start..)
+        print(^posts(id).title ?? \"\")
+
+pub fn titlesBefore(end: int)
+    for id in ^posts.byDate(..end)
+        print(^posts(id).title ?? \"\")
+
+pub fn titlesThrough(end: int)
+    for id in ^posts.byDate(..=end)
+        print(^posts(id).title ?? \"\")
+
+pub fn titlesAfter(lastSeen: int, end: int)
+    for id in ^posts.byDate(lastSeen..end)
+        if (^posts(id).published ?? 0) != lastSeen
+            print(^posts(id).title ?? \"\")
+
+pub fn titlesBetweenInverted(start: int, end: int)
+    for id in ^posts.byDate(start..end)
+        print(^posts(id).title ?? \"\")
+";
+
 #[test]
 fn iterates_index_keys() {
     let program = checked_program(BOOK_SHELF);
@@ -197,4 +245,121 @@ fn prints_titles_in_index_key_order() {
     )
     .expect("run");
     assert_eq!(outcome.output, "Mort\nSourcery\n");
+}
+
+#[test]
+fn bounded_index_range_streams_matching_records() {
+    let program = checked_program(POST_DATES);
+    let store = TreeStore::memory();
+    for (id, title, published) in [(1, "A", 10), (2, "B", 20), (3, "C", 30), (4, "D", 40)] {
+        run_entry(
+            &store,
+            checked_entry!(
+                &program,
+                "test::add",
+                Value::Int(id),
+                Value::Str(title.into()),
+                Value::Int(published),
+            ),
+        )
+        .expect("add");
+    }
+
+    let between = run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::titlesBetween",
+            Value::Int(20),
+            Value::Int(40)
+        ),
+    )
+    .expect("between");
+    assert_eq!(between.output, "B\nC\n");
+
+    let pairs = run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::titlePairsBetween",
+            Value::Int(20),
+            Value::Int(40)
+        ),
+    )
+    .expect("pairs");
+    assert_eq!(pairs.output, "2: B\n3: C\n");
+
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(
+                &program,
+                "test::countBetween",
+                Value::Int(100),
+                Value::Int(200)
+            )
+        )
+        .expect("count empty range")
+        .value,
+        Some(Value::Int(0))
+    );
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(
+                &program,
+                "test::existsBetween",
+                Value::Int(100),
+                Value::Int(200)
+            )
+        )
+        .expect("exists empty range")
+        .value,
+        Some(Value::Bool(false))
+    );
+
+    let from = run_entry(
+        &store,
+        checked_entry!(&program, "test::titlesFrom", Value::Int(30)),
+    )
+    .expect("from");
+    assert_eq!(from.output, "C\nD\n");
+
+    let before = run_entry(
+        &store,
+        checked_entry!(&program, "test::titlesBefore", Value::Int(30)),
+    )
+    .expect("before");
+    assert_eq!(before.output, "A\nB\n");
+
+    let through = run_entry(
+        &store,
+        checked_entry!(&program, "test::titlesThrough", Value::Int(30)),
+    )
+    .expect("through");
+    assert_eq!(through.output, "A\nB\nC\n");
+
+    let page = run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::titlesAfter",
+            Value::Int(20),
+            Value::Int(50)
+        ),
+    )
+    .expect("page after");
+    assert_eq!(page.output, "C\nD\n");
+
+    let inverted = run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::titlesBetweenInverted",
+            Value::Int(40),
+            Value::Int(20)
+        ),
+    )
+    .expect("inverted");
+    assert_eq!(inverted.output, "");
 }

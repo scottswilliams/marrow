@@ -126,6 +126,18 @@ fn parses_calls_paths_and_field_access() {
 }
 
 #[test]
+fn open_range_arguments_parse_in_calls() {
+    let parsed = parse_source(
+        "fn f(start: int, end: int)\n    for id in ^posts.byDate(start.., ..end, ..=end)\n        print(id)\n",
+    );
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "open range key arguments should parse cleanly: {:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
 fn quoted_field_segments_are_parse_errors() {
     let parsed = parse_source("const Old = ^books(id).\"old-title\"\n");
     assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);

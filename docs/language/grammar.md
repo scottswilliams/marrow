@@ -368,7 +368,12 @@ equality_expr   =
     comparison_expr (("==" | "!=") comparison_expr)? ;
 
 comparison_expr = range_expr (("<" | "<=" | ">" | ">=") range_expr)? ;
-range_expr      = coalesce_expr ((".." | "..=") coalesce_expr)? ;
+range_expr      =
+      coalesce_expr range_tail?
+    | open_range
+    ;
+range_tail      = ".." coalesce_expr? | "..=" coalesce_expr ;
+open_range      = ".." coalesce_expr | "..=" coalesce_expr ;
 coalesce_expr   = additive_expr ("??" additive_expr)? ;
 additive_expr   = multiplicative_expr (("+" | "-") multiplicative_expr)* ;
 multiplicative_expr =
@@ -391,6 +396,12 @@ optional_field_suffix = "?." field_name ;
 
 field_name      = identifier ;
 ```
+
+Open and half-open range forms are parsed here because saved-key traversal uses
+`start..end`, `start..=end`, `start..`, `..end`, and `..=end` as bounded key
+arguments. General range enumeration still requires both endpoints (`lo..hi` or
+`lo..=hi`); the checker rejects a bare `..`, a missing upper bound for `..=`
+such as `start..=`, and `by` steps inside saved-key arguments.
 
 `??` is deliberately non-associative: `a ?? b ?? c` is rejected. Layer defaults
 one read at a time, using parentheses or local bindings when a later extension

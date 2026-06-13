@@ -301,6 +301,59 @@ pub(crate) fn infer_type_with_read_scope(
             }
             check_binary(*op, &left_type, &right_type, *span, file, diagnostics)
         }
+        Expression::Range {
+            start,
+            end,
+            step,
+            span,
+            ..
+        } => {
+            let start_type = start.as_ref().map(|start| {
+                infer_type_with_read_scope(
+                    program,
+                    start,
+                    scope,
+                    aliases,
+                    file,
+                    diagnostics,
+                    transform_old,
+                )
+            });
+            let end_type = end.as_ref().map(|end| {
+                infer_type_with_read_scope(
+                    program,
+                    end,
+                    scope,
+                    aliases,
+                    file,
+                    diagnostics,
+                    transform_old,
+                )
+            });
+            if let Some(step) = step {
+                infer_type_with_read_scope(
+                    program,
+                    step,
+                    scope,
+                    aliases,
+                    file,
+                    diagnostics,
+                    transform_old,
+                );
+            }
+            match (start_type, end_type) {
+                (Some(start), Some(end)) => check_binary(
+                    marrow_syntax::BinaryOp::RangeExclusive,
+                    &start,
+                    &end,
+                    *span,
+                    file,
+                    diagnostics,
+                ),
+                (Some(ty), None) | (None, Some(ty)) => ty,
+                (None, None) => MarrowType::Unknown,
+            }
+        }
         Expression::Call {
             callee, args, span, ..
         } => {
@@ -317,20 +370,19 @@ pub(crate) fn infer_type_with_read_scope(
                     transform_old,
                 );
             }
-            let arg_types: Vec<MarrowType> = args
-                .iter()
-                .map(|arg| {
-                    infer_type_with_read_scope(
-                        program,
-                        &arg.value,
-                        scope,
-                        aliases,
-                        file,
-                        diagnostics,
-                        transform_old,
-                    )
-                })
-                .collect();
+            let mut arg_types = Vec::with_capacity(args.len());
+            for arg in args {
+                arg_types.push(infer_call_arg_type(CallArgInfer {
+                    program,
+                    callee,
+                    arg: &arg.value,
+                    scope,
+                    aliases,
+                    file,
+                    diagnostics,
+                    transform_old,
+                }));
+            }
             if let Some(ty) = local_collection_access_type(
                 callee,
                 args,
@@ -390,6 +442,93 @@ pub(crate) fn infer_type_with_read_scope(
         Expression::SavedRoot { name, .. } => singleton_resource_type(program, name),
         Expression::Name { .. } => MarrowType::Unknown,
     }
+}
+
+struct CallArgInfer<'a, 'd> {
+    program: &'a CheckedProgram,
+    callee: &'a marrow_syntax::Expression,
+    arg: &'a marrow_syntax::Expression,
+    scope: &'a [HashMap<String, MarrowType>],
+    aliases: &'a HashMap<String, Vec<String>>,
+    file: &'a Path,
+    diagnostics: &'d mut Vec<CheckDiagnostic>,
+    transform_old: Option<crate::presence::TransformOldReadScope<'a>>,
+}
+
+fn infer_call_arg_type(input: CallArgInfer<'_, '_>) -> MarrowType {
+    if is_saved_path_callee(input.program, input.callee)
+        && let Some(ty) = infer_saved_key_range_arg_type(
+            input.program,
+            input.arg,
+            input.scope,
+            input.aliases,
+            input.file,
+            input.diagnostics,
+            input.transform_old,
+        )
+    {
+        return ty;
+    }
+    infer_type_with_read_scope(
+        input.program,
+        input.arg,
+        input.scope,
+        input.aliases,
+        input.file,
+        input.diagnostics,
+        input.transform_old,
+    )
+}
+
+fn infer_saved_key_range_arg_type(
+    program: &CheckedProgram,
+    arg: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+    transform_old: Option<crate::presence::TransformOldReadScope<'_>>,
+) -> Option<MarrowType> {
+    let range = marrow_syntax::range_expr(arg)?;
+    if let Some(step) = range.step {
+        infer_type_with_read_scope(
+            program,
+            step,
+            scope,
+            aliases,
+            file,
+            diagnostics,
+            transform_old,
+        );
+    }
+    let start = range.start.map(|expr| {
+        infer_type_with_read_scope(
+            program,
+            expr,
+            scope,
+            aliases,
+            file,
+            diagnostics,
+            transform_old,
+        )
+    });
+    let end = range.end.map(|expr| {
+        infer_type_with_read_scope(
+            program,
+            expr,
+            scope,
+            aliases,
+            file,
+            diagnostics,
+            transform_old,
+        )
+    });
+    Some(match (start, end) {
+        (Some(start), Some(end)) if type_compatible(&start, &end) != Some(false) => start,
+        (Some(_), Some(_)) => MarrowType::Unknown,
+        (Some(ty), None) | (None, Some(ty)) => ty,
+        (None, None) => MarrowType::Unknown,
+    })
 }
 
 fn interpolation_unsupported_source_diagnostic(

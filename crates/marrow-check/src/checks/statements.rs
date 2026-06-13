@@ -10,16 +10,18 @@ use marrow_syntax::SourceSpan;
 
 use crate::enums::{MatchCheck, check_match, resolve_type};
 use crate::infer::{bind, infer_type_with_read_scope, local_binding_with_read_scope};
+use crate::walk::for_each_child_expr;
 use crate::{
-    CHECK_COLLECTION_UNSUPPORTED, CHECK_CONDITION_TYPE, CheckDiagnostic, CheckedProgram, MarrowType,
+    CHECK_COLLECTION_UNSUPPORTED, CHECK_CONDITION_TYPE, CHECK_RANGE_VALUE, CheckDiagnostic,
+    CheckedProgram, MarrowType,
 };
 
 use super::collections::{
     check_entries_value_position, check_for_collection_support, check_for_entries_support,
-    for_frame, is_saved_index_branch_path,
+    for_frame, is_saved_index_branch_path, is_saved_index_range_path, is_saved_key_range_path,
 };
 use super::operators::{check_assignment, check_condition, check_return_type, check_throw_type};
-use super::ranges::{check_range_header, check_range_iterable_value_parts, check_range_value};
+use super::ranges::{check_range_header, check_range_iterable_value_parts};
 
 /// Type-check a function body, tracking the type of each in-scope binding and
 /// inferring each expression. A check fires only when a type or signature is known
@@ -200,7 +202,7 @@ impl StatementCheck<'_> {
             Statement::Throw { value, span } => self.check_throw(value, *span),
             Statement::Expr { value, .. } => {
                 self.infer(value);
-                check_range_value(self.file, value, self.diagnostics);
+                self.check_range_value(value);
             }
             Statement::If {
                 condition,
@@ -285,7 +287,7 @@ impl StatementCheck<'_> {
         let value_type = match value {
             Some(value) => {
                 let value_type = self.infer(value);
-                check_range_value(self.file, value, self.diagnostics);
+                self.check_range_value(value);
                 value_type
             }
             None => MarrowType::Unknown,
@@ -323,7 +325,7 @@ impl StatementCheck<'_> {
     ) {
         let target_type = self.infer(target);
         let value_type = self.infer(value);
-        check_range_value(self.file, value, self.diagnostics);
+        self.check_range_value(value);
         if is_saved_index_branch_path(self.program, target) {
             self.diagnostics.push(CheckDiagnostic::error(
                 crate::rules::CHECK_INVALID_ASSIGN_TARGET,
@@ -371,7 +373,7 @@ impl StatementCheck<'_> {
     fn check_return(&mut self, value: Option<&marrow_syntax::Expression>, span: SourceSpan) {
         if let Some(value) = value {
             let value_type = self.infer(value);
-            check_range_value(self.file, value, self.diagnostics);
+            self.check_range_value(value);
             check_return_type(
                 self.file,
                 span,
@@ -384,7 +386,7 @@ impl StatementCheck<'_> {
 
     fn check_throw(&mut self, value: &marrow_syntax::Expression, span: SourceSpan) {
         let value_type = self.infer(value);
-        check_range_value(self.file, value, self.diagnostics);
+        self.check_range_value(value);
         check_throw_type(self.file, span, &value_type, self.diagnostics);
     }
 
@@ -398,7 +400,7 @@ impl StatementCheck<'_> {
             self.transform_old,
             self.diagnostics,
         );
-        check_range_value(self.file, condition, self.diagnostics);
+        self.check_range_value(condition);
         check_entries_value_position(self.file, condition, self.diagnostics);
     }
 
@@ -433,7 +435,7 @@ impl StatementCheck<'_> {
         else_block: Option<&marrow_syntax::Block>,
     ) {
         let value_type = self.infer(value);
-        check_range_value(self.file, value, self.diagnostics);
+        self.check_range_value(value);
         self.check_if_const_value(value, &value_type);
         let mut frame = HashMap::new();
         frame.insert(name.to_string(), value_type);
@@ -531,9 +533,13 @@ impl StatementCheck<'_> {
             self.transform_old,
         );
         check_for_entries_support(self.file, binding, iterable, self.diagnostics);
-        check_range_iterable_value_parts(self.file, iterable, self.diagnostics);
+        if !is_saved_index_branch_path(self.program, iterable)
+            && !is_saved_key_range_path(self.program, iterable)
+        {
+            check_range_iterable_value_parts(self.file, iterable, self.diagnostics);
+        }
         if let Some(step) = step {
-            check_range_value(self.file, step, self.diagnostics);
+            self.check_range_value(step);
             check_entries_value_position(self.file, step, self.diagnostics);
         }
         check_range_header(
@@ -582,7 +588,7 @@ impl StatementCheck<'_> {
     ) {
         if let Some(scrutinee) = scrutinee {
             check_entries_value_position(self.file, scrutinee, self.diagnostics);
-            check_range_value(self.file, scrutinee, self.diagnostics);
+            self.check_range_value(scrutinee);
         }
         check_match(MatchCheck {
             program: self.program,
@@ -595,6 +601,47 @@ impl StatementCheck<'_> {
             aliases: self.aliases,
             diagnostics: self.diagnostics,
         });
+    }
+
+    fn check_range_value(&mut self, value: &marrow_syntax::Expression) {
+        if allowed_saved_key_range_value_context(self.program, value) {
+            return;
+        }
+        if let Some(range) = marrow_syntax::range_expr(value) {
+            self.diagnostics.push(CheckDiagnostic::error(
+                CHECK_RANGE_VALUE,
+                self.file,
+                range.span,
+                "a range can only be used as a `for` iterable",
+            ));
+        }
+        for_each_child_expr(value, |child| self.check_range_value(child));
+    }
+}
+
+fn allowed_saved_key_range_value_context(
+    program: &CheckedProgram,
+    value: &marrow_syntax::Expression,
+) -> bool {
+    let marrow_syntax::Expression::Call { callee, args, .. } = value else {
+        return false;
+    };
+    let marrow_syntax::Expression::Name { segments, .. } = callee.as_ref() else {
+        return false;
+    };
+    let [name] = segments.as_slice() else {
+        return false;
+    };
+    let [arg] = args.as_slice() else {
+        return false;
+    };
+    if arg.name.is_some() || !is_saved_key_range_path(program, &arg.value) {
+        return false;
+    }
+    match name.as_str() {
+        "exists" => true,
+        "count" => is_saved_index_range_path(program, &arg.value),
+        _ => false,
     }
 }
 

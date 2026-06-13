@@ -182,6 +182,13 @@ pub enum CheckedExpr {
         right: Box<CheckedExpr>,
         span: SourceSpan,
     },
+    Range {
+        start: Option<Box<CheckedExpr>>,
+        end: Option<Box<CheckedExpr>>,
+        inclusive_end: bool,
+        step: Option<Box<CheckedExpr>>,
+        span: SourceSpan,
+    },
     Interpolation {
         parts: Vec<CheckedInterpolationPart>,
         span: SourceSpan,
@@ -283,6 +290,28 @@ impl CheckedExpr {
                 right: Box::new(Self::lower(right, context, scope)?),
                 span: *span,
             },
+            syntax::Expression::Range {
+                start,
+                end,
+                inclusive_end,
+                step,
+                span,
+            } => Self::Range {
+                start: match start {
+                    Some(start) => Some(Box::new(Self::lower(start, context, scope)?)),
+                    None => None,
+                },
+                end: match end {
+                    Some(end) => Some(Box::new(Self::lower(end, context, scope)?)),
+                    None => None,
+                },
+                inclusive_end: *inclusive_end,
+                step: match step {
+                    Some(step) => Some(Box::new(Self::lower(step, context, scope)?)),
+                    None => None,
+                },
+                span: *span,
+            },
             syntax::Expression::Interpolation { parts, span } => Self::Interpolation {
                 parts: parts
                     .iter()
@@ -303,6 +332,7 @@ impl CheckedExpr {
             | Self::Name { .. }
             | Self::Unary { .. }
             | Self::Binary { .. }
+            | Self::Range { .. }
             | Self::Interpolation { .. } => None,
         }
     }
@@ -317,6 +347,7 @@ impl CheckedExpr {
             | Self::OptionalField { span, .. }
             | Self::Unary { span, .. }
             | Self::Binary { span, .. }
+            | Self::Range { span, .. }
             | Self::Interpolation { span, .. } => *span,
         }
     }

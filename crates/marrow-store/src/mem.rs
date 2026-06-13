@@ -51,9 +51,67 @@ impl MemStore {
             .expect("memory scan is infallible")
     }
 
+    fn scan_between(
+        &self,
+        prefix: &[u8],
+        lower: Option<&[u8]>,
+        upper: Option<&[u8]>,
+        limit: usize,
+    ) -> ScanPage {
+        traversal::scan(
+            self.range_between(lower, upper, false),
+            prefix,
+            limit,
+            |error| error,
+        )
+        .expect("memory scan is infallible")
+    }
+
+    fn scan_between_after(
+        &self,
+        prefix: &[u8],
+        lower: Option<&[u8]>,
+        upper: Option<&[u8]>,
+        cursor: &[u8],
+        limit: usize,
+    ) -> ScanPage {
+        let lower = Some(match lower {
+            Some(lower) if lower > cursor => lower,
+            _ => cursor,
+        });
+        traversal::scan(
+            self.range_between(lower, upper, true),
+            prefix,
+            limit,
+            |error| error,
+        )
+        .expect("memory scan is infallible")
+    }
+
     fn scan_before(&self, prefix: &[u8], cursor: &[u8], limit: usize) -> ScanPage {
         traversal::scan(self.range_before(cursor), prefix, limit, |error| error)
             .expect("memory scan is infallible")
+    }
+
+    fn scan_between_before(
+        &self,
+        prefix: &[u8],
+        lower: Option<&[u8]>,
+        upper: Option<&[u8]>,
+        cursor: &[u8],
+        limit: usize,
+    ) -> ScanPage {
+        let upper = Some(match upper {
+            Some(upper) if upper < cursor => upper,
+            _ => cursor,
+        });
+        traversal::scan(
+            self.range_between(lower, upper, false).rev(),
+            prefix,
+            limit,
+            |error| error,
+        )
+        .expect("memory scan is infallible")
     }
 
     fn range_from<'a>(
@@ -81,6 +139,26 @@ impl MemStore {
         self.view()
             .range((Bound::Unbounded, Bound::Excluded(cursor.to_vec())))
             .rev()
+            .map(|(key, value)| Ok((key.as_slice(), value.as_slice())))
+    }
+
+    fn range_between<'a>(
+        &'a self,
+        lower: Option<&[u8]>,
+        upper: Option<&[u8]>,
+        exclude_lower: bool,
+    ) -> impl DoubleEndedIterator<Item = Result<(&'a [u8], &'a [u8]), StoreError>> {
+        let lower = match (lower, exclude_lower) {
+            (Some(lower), true) => Bound::Excluded(lower.to_vec()),
+            (Some(lower), false) => Bound::Included(lower.to_vec()),
+            (None, _) => Bound::Unbounded,
+        };
+        let upper = match upper {
+            Some(upper) => Bound::Excluded(upper.to_vec()),
+            None => Bound::Unbounded,
+        };
+        self.view()
+            .range((lower, upper))
             .map(|(key, value)| Ok((key.as_slice(), value.as_slice())))
     }
 }
@@ -126,6 +204,42 @@ impl Backend for MemStore {
         limit: usize,
     ) -> Result<ScanPage, StoreError> {
         Ok(MemStore::scan_before(self, prefix, cursor, limit))
+    }
+
+    fn scan_between(
+        &self,
+        prefix: &[u8],
+        lower: Option<&[u8]>,
+        upper: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<ScanPage, StoreError> {
+        Ok(MemStore::scan_between(self, prefix, lower, upper, limit))
+    }
+
+    fn scan_between_after(
+        &self,
+        prefix: &[u8],
+        lower: Option<&[u8]>,
+        upper: Option<&[u8]>,
+        cursor: &[u8],
+        limit: usize,
+    ) -> Result<ScanPage, StoreError> {
+        Ok(MemStore::scan_between_after(
+            self, prefix, lower, upper, cursor, limit,
+        ))
+    }
+
+    fn scan_between_before(
+        &self,
+        prefix: &[u8],
+        lower: Option<&[u8]>,
+        upper: Option<&[u8]>,
+        cursor: &[u8],
+        limit: usize,
+    ) -> Result<ScanPage, StoreError> {
+        Ok(MemStore::scan_between_before(
+            self, prefix, lower, upper, cursor, limit,
+        ))
     }
 
     fn begin(&mut self) -> Result<(), StoreError> {

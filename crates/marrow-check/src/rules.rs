@@ -90,6 +90,16 @@ fn check_literal_ranges(file: &Path, expr: &Expression, out: &mut Vec<CheckDiagn
             check_literal_ranges(file, left, out);
             check_literal_ranges(file, right, out);
         }
+        Expression::Range {
+            start, end, step, ..
+        } => {
+            for part in [start.as_deref(), end.as_deref(), step.as_deref()]
+                .into_iter()
+                .flatten()
+            {
+                check_literal_ranges(file, part, out);
+            }
+        }
         Expression::Interpolation { parts, .. } => {
             for part in parts {
                 if let InterpolationPart::Expr(expr) = part {
@@ -602,6 +612,12 @@ fn is_constant_expr(expr: &Expression) -> bool {
         Expression::Field { base, .. } => is_constant_expr(base),
         Expression::Unary { operand, .. } => is_constant_expr(operand),
         Expression::Binary { left, right, .. } => is_constant_expr(left) && is_constant_expr(right),
+        Expression::Range {
+            start, end, step, ..
+        } => [start.as_deref(), end.as_deref(), step.as_deref()]
+            .into_iter()
+            .flatten()
+            .all(is_constant_expr),
         Expression::Interpolation { parts, .. } => parts.iter().all(|part| match part {
             InterpolationPart::Text { .. } => true,
             InterpolationPart::Expr(expr) => is_constant_expr(expr),

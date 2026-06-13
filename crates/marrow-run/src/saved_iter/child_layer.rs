@@ -2,14 +2,18 @@ use std::ops::ControlFlow;
 
 use marrow_check::{CheckedExpr as ExecExpr, CheckedSavedLayer, CheckedSavedPlace};
 use marrow_store::key::SavedKey;
+use marrow_store::tree::IndexRangeBounds;
 use marrow_syntax::SourceSpan;
 
 use crate::collection::ReadPosition;
 use crate::durable_read::{LayerEntryAddress, read_layer_entry, read_layer_entry_at};
 use crate::env::{Env, Flow, TraversedLayer};
 use crate::error::{RuntimeError, unsupported};
-use crate::path::lower;
-use crate::read::{first_data_child, next_data_child};
+use crate::path::{lower, lower_keys};
+use crate::read::{
+    first_data_child, first_data_child_in_range, is_key_range_expr, key_range_bounds,
+    next_data_child, next_data_child_in_range,
+};
 use crate::store::{DataAddress, LayerAddress};
 use crate::value::{Value, saved_key_to_value};
 
@@ -20,6 +24,8 @@ pub(super) struct ChildLayerScan {
     identity: Vec<SavedKey>,
     parent_layers: Vec<LayerAddress>,
     layer_facts: CheckedSavedLayer,
+    exact_prefix: Vec<SavedKey>,
+    range: Option<IndexRangeBounds>,
     address: DataAddress,
     dir: crate::collection::Direction,
     shape: LoopShape,
@@ -28,9 +34,7 @@ pub(super) struct ChildLayerScan {
 
 impl ChildLayerScan {
     pub(super) fn new(spec: SavedLoopSpec<'_>, env: &mut Env<'_>) -> Result<Self, RuntimeError> {
-        let ExecExpr::Field { base, .. } = spec.layer else {
-            return Err(unsupported("iterating this saved path", spec.layer.span()));
-        };
+        let base = child_layer_base(spec.layer)?;
         let base_path = lower(base, env)?;
         let Some(place) = spec.layer.saved_place() else {
             return Err(unsupported("iterating this saved path", spec.layer.span()));
@@ -38,8 +42,12 @@ impl ChildLayerScan {
         let Some(layer_facts) = place.layers.last() else {
             return Err(unsupported("iterating this saved path", spec.layer.span()));
         };
+        let (exact_prefix, range) = layer_key_range(layer_facts, spec.span, env)?;
         let mut address_layers = base_path.layer_addresses.clone();
-        address_layers.push(LayerAddress::from_checked(layer_facts, Vec::new()));
+        address_layers.push(LayerAddress::from_checked(
+            layer_facts,
+            exact_prefix.clone(),
+        ));
         let address =
             DataAddress::layer_prefix(place, &base_path.identity, &address_layers, spec.span)?;
         Ok(Self {
@@ -47,6 +55,8 @@ impl ChildLayerScan {
             identity: base_path.identity,
             parent_layers: base_path.layer_addresses,
             layer_facts: layer_facts.clone(),
+            exact_prefix,
+            range,
             address,
             dir: spec.dir,
             shape: spec.shape,
@@ -63,14 +73,29 @@ impl ChildLayerScan {
         env: &mut Env<'_>,
         visit: &mut impl FnMut(SavedLoopRow, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
     ) -> Result<Flow, RuntimeError> {
-        let mut child = first_data_child(env.store, &self.address, self.dir, self.span)?;
+        let mut child = match &self.range {
+            Some(range) => {
+                first_data_child_in_range(env.store, &self.address, range, self.dir, self.span)?
+            }
+            None => first_data_child(env.store, &self.address, self.dir, self.span)?,
+        };
         while let Some(key) = child {
             let anchor = key.clone();
             match self.visit_key(key, env, visit)? {
                 ControlFlow::Continue(()) => {}
                 ControlFlow::Break(flow) => return Ok(flow),
             }
-            child = next_data_child(env.store, &self.address, &anchor, self.dir, self.span)?;
+            child = match &self.range {
+                Some(range) => next_data_child_in_range(
+                    env.store,
+                    &self.address,
+                    &anchor,
+                    range,
+                    self.dir,
+                    self.span,
+                )?,
+                None => next_data_child(env.store, &self.address, &anchor, self.dir, self.span)?,
+            };
         }
         Ok(Flow::Normal)
     }
@@ -97,7 +122,9 @@ impl ChildLayerScan {
 
     fn read_entry(&self, key: SavedKey, env: &mut Env<'_>) -> Result<Value, RuntimeError> {
         let mut layers = self.parent_layers.clone();
-        layers.push(LayerAddress::from_checked(&self.layer_facts, vec![key]));
+        let mut keys = self.exact_prefix.clone();
+        keys.push(key);
+        layers.push(LayerAddress::from_checked(&self.layer_facts, keys));
         if layers.len() == 1 {
             read_layer_entry(
                 &self.place,
@@ -122,4 +149,47 @@ impl ChildLayerScan {
             )
         }
     }
+}
+
+fn child_layer_base(layer: &ExecExpr) -> Result<&ExecExpr, RuntimeError> {
+    match layer {
+        ExecExpr::Field { base, .. } => Ok(base),
+        ExecExpr::Call { callee, .. } => match callee.as_ref() {
+            ExecExpr::Field { base, .. } => Ok(base),
+            _ => Err(unsupported("iterating this saved path", layer.span())),
+        },
+        _ => Err(unsupported("iterating this saved path", layer.span())),
+    }
+}
+
+fn layer_key_range(
+    layer: &CheckedSavedLayer,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(Vec<SavedKey>, Option<IndexRangeBounds>), RuntimeError> {
+    let Some(range_position) = layer
+        .args
+        .iter()
+        .position(|arg| is_key_range_expr(&arg.value))
+    else {
+        return Ok((Vec::new(), None));
+    };
+    if range_position + 1 != layer.args.len() || layer.args.len() != layer.key_params.len() {
+        return Err(unsupported("iterating this saved path", span));
+    }
+    let exact_prefix = lower_keys(
+        &layer.args[..range_position],
+        span,
+        false,
+        None,
+        &layer.key_params,
+        env,
+    )?;
+    let range = key_range_bounds(
+        &layer.args[range_position].value,
+        &layer.key_params[range_position],
+        span,
+        env,
+    )?;
+    Ok((exact_prefix, range))
 }

@@ -45,6 +45,103 @@ fn direct_saved_root_loop_streams_ids_and_reads_current_values() {
 }
 
 #[test]
+fn bounded_saved_root_keyspace_streams_matching_keys() {
+    let program = checked_program(
+        "resource Cell\n    required value: int\nstore ^cells(x: int, y: int): Cell\n\npub fn seed(x: int, y: int, value: int)\n    ^cells(x, y).value = value\n\npub fn ysBetween(x: int, lo: int, hi: int)\n    for y in ^cells(x, lo..hi)\n        print($\"{y}\")\n\npub fn ysBetweenKeys(x: int, lo: int, hi: int)\n    for y in keys(^cells(x, lo..hi))\n        print($\"{y}\")\n\npub fn valuesBetween(x: int, lo: int, hi: int)\n    for cell in values(^cells(x, lo..hi))\n        print($\"{cell.value}\")\n\npub fn entriesBetween(x: int, lo: int, hi: int)\n    for y, cell in entries(^cells(x, lo..hi))\n        print($\"{y}={cell.value}\")\n\npub fn ysBetweenRev(x: int, lo: int, hi: int)\n    for y in reversed(^cells(x, lo..hi))\n        print($\"{y}\")\n",
+    );
+    let store = TreeStore::memory();
+    for (x, y, value) in [(1, 1, 10), (1, 2, 20), (1, 3, 30), (1, 4, 40), (2, 2, 200)] {
+        run_entry(
+            &store,
+            checked_entry!(
+                &program,
+                "test::seed",
+                Value::Int(x),
+                Value::Int(y),
+                Value::Int(value)
+            ),
+        )
+        .expect("seed");
+    }
+
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(
+                &program,
+                "test::ysBetween",
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(4)
+            )
+        )
+        .expect("bounded root")
+        .output,
+        "2\n3\n"
+    );
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(
+                &program,
+                "test::valuesBetween",
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(4)
+            )
+        )
+        .expect("bounded root values")
+        .output,
+        "20\n30\n"
+    );
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(
+                &program,
+                "test::entriesBetween",
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(4)
+            )
+        )
+        .expect("bounded root entries")
+        .output,
+        "2=20\n3=30\n"
+    );
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(
+                &program,
+                "test::ysBetweenKeys",
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(4)
+            )
+        )
+        .expect("bounded root keys")
+        .output,
+        "2\n3\n"
+    );
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(
+                &program,
+                "test::ysBetweenRev",
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(4)
+            )
+        )
+        .expect("bounded root reversed")
+        .output,
+        "3\n2\n"
+    );
+}
+
+#[test]
 fn direct_saved_root_loop_returns_before_later_records() {
     let program = checked_program(
         &[BOOK_PRIMARY_SCHEMA, "pub fn seed(id: int)\n    ^books(id).title = $\"Book {id}\"\n\npub fn printFirstId()\n    for id in keys(^books)\n        print($\"{id}\")\n        return\n"].concat(),

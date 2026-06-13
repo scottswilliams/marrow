@@ -10,6 +10,8 @@ pub(crate) fn run_all<B: Backend>(mut make: impl FnMut() -> B) {
     scan_is_bounded_by_the_limit(&mut make());
     scan_after_resumes_inside_the_prefix(&mut make());
     scan_before_resumes_inside_the_prefix_in_reverse(&mut make());
+    bounded_scan_returns_only_entries_between_prefix_bounds(&mut make());
+    bounded_reverse_scan_returns_only_entries_between_prefix_bounds(&mut make());
     a_committed_transaction_keeps_its_writes(&mut make());
     a_rolled_back_transaction_discards_its_writes(&mut make());
     an_unbalanced_commit_or_rollback_is_a_no_op(&mut make());
@@ -102,6 +104,59 @@ fn scan_before_resumes_inside_the_prefix_in_reverse(store: &mut dyn Backend) {
     assert_eq!(
         second.entries,
         vec![(b"\x50\x01".to_vec(), b"first".to_vec())]
+    );
+}
+
+fn bounded_scan_returns_only_entries_between_prefix_bounds(store: &mut dyn Backend) {
+    store.write(b"\x58\x01", b"below".to_vec()).unwrap();
+    store.write(b"\x58\x02", b"first".to_vec()).unwrap();
+    store.write(b"\x58\x03", b"second".to_vec()).unwrap();
+    store.write(b"\x58\x04", b"above".to_vec()).unwrap();
+    store.write(b"\x59\x02", b"outside".to_vec()).unwrap();
+
+    let page = store
+        .scan_between(b"\x58", Some(b"\x58\x02"), Some(b"\x58\x04"), 10)
+        .unwrap();
+    assert!(!page.truncated);
+    assert_eq!(
+        page.entries,
+        vec![
+            (b"\x58\x02".to_vec(), b"first".to_vec()),
+            (b"\x58\x03".to_vec(), b"second".to_vec()),
+        ]
+    );
+}
+
+fn bounded_reverse_scan_returns_only_entries_between_prefix_bounds(store: &mut dyn Backend) {
+    store.write(b"\x59\x01", b"below".to_vec()).unwrap();
+    store.write(b"\x59\x02", b"first".to_vec()).unwrap();
+    store.write(b"\x59\x03", b"second".to_vec()).unwrap();
+    store.write(b"\x59\x04", b"above".to_vec()).unwrap();
+    store.write(b"\x5a\x02", b"outside".to_vec()).unwrap();
+
+    let first = store
+        .scan_between_before(
+            b"\x59",
+            Some(b"\x59\x02"),
+            Some(b"\x59\x04"),
+            b"\x59\x04",
+            1,
+        )
+        .unwrap();
+    assert!(first.truncated);
+    assert_eq!(
+        first.entries,
+        vec![(b"\x59\x03".to_vec(), b"second".to_vec())]
+    );
+
+    let cursor = first.entries.last().unwrap().0.clone();
+    let second = store
+        .scan_between_before(b"\x59", Some(b"\x59\x02"), Some(b"\x59\x04"), &cursor, 10)
+        .unwrap();
+    assert!(!second.truncated);
+    assert_eq!(
+        second.entries,
+        vec![(b"\x59\x02".to_vec(), b"first".to_vec())]
     );
 }
 

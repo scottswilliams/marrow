@@ -27,7 +27,8 @@ use crate::{
 };
 
 use super::collections::{
-    collection_loop_binding_types, is_saved_index_branch_path, saved_path_key_type,
+    collection_loop_binding_types, is_saved_index_branch_path, is_saved_index_range_path,
+    is_saved_key_range_path, saved_path_key_type,
 };
 use super::diagnostics::{call_diagnostic, key_type_diagnostic};
 use super::saved_keys::check_keys_against;
@@ -407,6 +408,12 @@ fn check_exists_args(env: &mut CallEnv<'_>, args: &[marrow_syntax::Argument]) {
 }
 
 fn is_exists_target_arg(env: &CallEnv<'_>, expr: &marrow_syntax::Expression) -> bool {
+    if is_saved_index_range_path(env.program, expr) {
+        return true;
+    }
+    if is_saved_key_range_path(env.program, expr) {
+        return false;
+    }
     let Some(module_index) = env
         .program
         .modules

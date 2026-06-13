@@ -5,12 +5,12 @@
 
 use std::path::Path;
 
-use marrow_schema::{IndexSchema, ResourceSchema, StoreSchema};
+use marrow_schema::{IndexSchema, KeyDef, ResourceSchema, StoreSchema};
 use marrow_syntax::{Argument, SourceSpan};
 
 use crate::infer::saved_layer_chain;
 use crate::resolve::resolve_store_by_root;
-use crate::typerules::{marrow_type_name, type_compatible};
+use crate::typerules::{is_ordered, marrow_type_name, type_compatible};
 use crate::{CheckDiagnostic, CheckedProgram, MarrowType, TypeNames, identity_type_for_store};
 
 use super::collections::{index_component_type, saved_index_schema};
@@ -52,13 +52,24 @@ pub(crate) fn check_saved_key_args(
             }
             return;
         }
-        check_keys_against(
-            &store.store.identity_keys,
-            arg_types,
-            span,
-            file,
-            diagnostics,
-        );
+        if range_arg_position(args).is_some() {
+            check_declared_key_range_args(
+                &store.store.identity_keys,
+                args,
+                arg_types,
+                span,
+                file,
+                diagnostics,
+            );
+        } else {
+            check_keys_against(
+                &store.store.identity_keys,
+                arg_types,
+                span,
+                file,
+                diagnostics,
+            );
+        }
         return;
     }
     // A declared index access `^root.index(args...)`: unique indexes read a
@@ -74,6 +85,7 @@ pub(crate) fn check_saved_key_args(
                 index,
                 module,
             },
+            args,
             arg_types,
             span,
             file,
@@ -88,7 +100,18 @@ pub(crate) fn check_saved_key_args(
         && let Some(node) = store.resource.descend_layers(&layers)
     {
         check_saved_key_argument_names(args, file, diagnostics);
-        check_keys_against(&node.key_params, arg_types, span, file, diagnostics);
+        if range_arg_position(args).is_some() {
+            check_declared_key_range_args(
+                &node.key_params,
+                args,
+                arg_types,
+                span,
+                file,
+                diagnostics,
+            );
+        } else {
+            check_keys_against(&node.key_params, arg_types, span, file, diagnostics);
+        }
     }
 }
 
@@ -118,6 +141,7 @@ struct IndexArgTarget<'a> {
 
 fn check_index_args_against(
     target: IndexArgTarget<'_>,
+    args: &[Argument],
     arg_types: &[MarrowType],
     span: SourceSpan,
     file: &Path,
@@ -131,6 +155,7 @@ fn check_index_args_against(
         module,
     } = target;
     let expected_len = index.args.len();
+    let range_arg = range_arg_position(args);
     if index.unique {
         if expected_len != arg_types.len() {
             diagnostics.push(key_type_diagnostic(
@@ -141,6 +166,17 @@ fn check_index_args_against(
                     index.name,
                     expected_len,
                     arg_types.len(),
+                ),
+            ));
+            return;
+        }
+        if range_arg.is_some() {
+            diagnostics.push(key_type_diagnostic(
+                file,
+                span,
+                format!(
+                    "unique index `{}` does not accept range arguments",
+                    index.name
                 ),
             ));
             return;
@@ -159,8 +195,42 @@ fn check_index_args_against(
         return;
     }
 
-    for (component, arg_type) in index.args.iter().zip(arg_types) {
+    if let Some(index) = range_arg
+        && index + 1 != args.len()
+    {
+        diagnostics.push(key_type_diagnostic(
+            file,
+            span,
+            "an index range argument must be the final key argument".to_string(),
+        ));
+        return;
+    }
+    if let Some(index) = range_arg {
+        let identity_start = expected_len.saturating_sub(store.identity_keys.len());
+        if index + 1 < identity_start {
+            diagnostics.push(key_type_diagnostic(
+                file,
+                span,
+                "an index range argument must leave only identity components after it".to_string(),
+            ));
+            return;
+        }
+    }
+
+    for (position, (component, arg_type)) in index.args.iter().zip(arg_types).enumerate() {
         let expected = index_component_type(program, store, resource, module, component);
+        if range_arg == Some(position) {
+            check_index_range_arg(
+                &expected,
+                arg_type,
+                component,
+                &args[position].value,
+                span,
+                file,
+                diagnostics,
+            );
+            continue;
+        }
         if !saved_key_arg_matches(&expected, arg_type) {
             diagnostics.push(key_type_diagnostic(
                 file,
@@ -173,6 +243,173 @@ fn check_index_args_against(
             ));
         }
     }
+}
+
+fn check_declared_key_range_args(
+    keys: &[KeyDef],
+    args: &[Argument],
+    arg_types: &[MarrowType],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let expected_len = keys.len();
+    if arg_types.len() != expected_len {
+        diagnostics.push(key_type_diagnostic(
+            file,
+            span,
+            format!(
+                "this keyed access expects {} key argument(s), but {} were given",
+                expected_len,
+                arg_types.len(),
+            ),
+        ));
+        return;
+    }
+    let Some(range_arg) = range_arg_position(args) else {
+        return;
+    };
+    if range_arg + 1 != args.len() {
+        diagnostics.push(key_type_diagnostic(
+            file,
+            span,
+            "a key range argument must be the final key argument".to_string(),
+        ));
+        return;
+    }
+    for (position, (key, arg_type)) in keys.iter().zip(arg_types).enumerate() {
+        let expected = MarrowType::from_resolved(key.ty.clone(), TypeNames::default());
+        if range_arg == position {
+            check_range_key_arg(
+                RangeKeyArg {
+                    expected: &expected,
+                    actual: arg_type,
+                    component: format!("key `{}`", key.name),
+                    arg: &args[position].value,
+                    allow_enum: false,
+                },
+                span,
+                file,
+                diagnostics,
+            );
+            continue;
+        }
+        if !saved_key_arg_matches(&expected, arg_type) {
+            diagnostics.push(key_type_diagnostic(
+                file,
+                span,
+                format!(
+                    "key `{}` expects `{}`, but this value is `{}`",
+                    key.name,
+                    marrow_type_name(&expected),
+                    marrow_type_name(arg_type),
+                ),
+            ));
+        }
+    }
+}
+
+fn check_index_range_arg(
+    expected: &MarrowType,
+    actual: &MarrowType,
+    component: &str,
+    arg: &marrow_syntax::Expression,
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    check_range_key_arg(
+        RangeKeyArg {
+            expected,
+            actual,
+            component: format!("index component `{component}`"),
+            arg,
+            allow_enum: true,
+        },
+        span,
+        file,
+        diagnostics,
+    );
+}
+
+struct RangeKeyArg<'a> {
+    expected: &'a MarrowType,
+    actual: &'a MarrowType,
+    component: String,
+    arg: &'a marrow_syntax::Expression,
+    allow_enum: bool,
+}
+
+fn check_range_key_arg(
+    check: RangeKeyArg<'_>,
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let Some(range) = marrow_syntax::range_expr(check.arg) else {
+        return;
+    };
+    if range.start.is_none() && range.end.is_none() {
+        diagnostics.push(key_type_diagnostic(
+            file,
+            span,
+            "a bare range is not a valid key argument".to_string(),
+        ));
+        return;
+    }
+    if range.inclusive_end && range.end.is_none() {
+        diagnostics.push(key_type_diagnostic(
+            file,
+            span,
+            "an inclusive range key argument must have an upper bound".to_string(),
+        ));
+        return;
+    }
+    if range.step.is_some() {
+        diagnostics.push(key_type_diagnostic(
+            file,
+            span,
+            "key range arguments do not accept `by` steps".to_string(),
+        ));
+        return;
+    }
+    if !ordered_range_component(check.expected, check.allow_enum) {
+        diagnostics.push(key_type_diagnostic(
+            file,
+            span,
+            format!(
+                "{} expects `{}`, which cannot be ranged",
+                check.component,
+                marrow_type_name(check.expected),
+            ),
+        ));
+        return;
+    }
+    if !saved_key_arg_matches(check.expected, check.actual) {
+        diagnostics.push(key_type_diagnostic(
+            file,
+            span,
+            format!(
+                "{} expects `{}`, but this range bound is `{}`",
+                check.component,
+                marrow_type_name(check.expected),
+                marrow_type_name(check.actual),
+            ),
+        ));
+    }
+}
+
+fn ordered_range_component(expected: &MarrowType, allow_enum: bool) -> bool {
+    match expected {
+        MarrowType::Primitive(scalar) => is_ordered(*scalar),
+        MarrowType::Enum { .. } => allow_enum,
+        _ => false,
+    }
+}
+
+fn range_arg_position(args: &[Argument]) -> Option<usize> {
+    args.iter()
+        .position(|arg| marrow_syntax::range_expr(&arg.value).is_some())
 }
 
 /// Check argument types against the declared key parameters they fill. A count
