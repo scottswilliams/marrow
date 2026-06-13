@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use marrow_schema::{IndexSchema, ResourceSchema, StoreSchema};
+use marrow_schema::{IndexSchema, ResourceSchema, ScalarType, StoreSchema};
 
 use crate::infer::{
     infer_type, layer_key_type, lift_member_type, saved_group_entry_type, saved_layer_chain,
@@ -21,8 +21,8 @@ use super::diagnostics::key_type_diagnostic;
 use super::ranges::range_endpoint_type;
 
 /// The scope frame a `for` loop's body runs under: its binding(s) typed against
-/// the iterable. Collection loops bind the element, with `keys(...)` preserving
-/// address-only traversal and two-name loops binding address plus element.
+/// the iterable. Keyed collection loops bind the address, with `values(...)`
+/// preserving value-only traversal and two-name loops binding address plus element.
 /// Inference here discards diagnostics; the type pass emits the iterable's.
 pub(crate) fn for_frame(
     program: &CheckedProgram,
@@ -33,6 +33,21 @@ pub(crate) fn for_frame(
     file: &Path,
 ) -> HashMap<String, MarrowType> {
     let iterable_type = infer_type(program, iterable, scope, aliases, file, &mut Vec::new());
+    if let Some((first_type, second_type)) = local_collection_loop_binding_types(
+        program,
+        binding.second.is_some(),
+        iterable,
+        scope,
+        aliases,
+        file,
+    ) {
+        let mut frame = HashMap::new();
+        frame.insert(binding.first.clone(), first_type);
+        if let Some(second) = &binding.second {
+            frame.insert(second.clone(), second_type.unwrap_or(MarrowType::Unknown));
+        }
+        return frame;
+    }
     if let Some((first_type, second_type)) =
         collection_loop_binding_types(program, binding.second.is_some(), iterable)
     {
@@ -45,18 +60,6 @@ pub(crate) fn for_frame(
     }
     let first_type = match (&binding.second, &iterable_type) {
         (None, MarrowType::Sequence(element)) => (**element).clone(),
-        (None, MarrowType::LocalTree { value, .. }) => (**value).clone(),
-        (Some(_), MarrowType::LocalTree { keys, value }) => {
-            let mut frame = HashMap::new();
-            frame.insert(
-                binding.first.clone(),
-                keys.first().cloned().unwrap_or(MarrowType::Unknown),
-            );
-            if let Some(second) = &binding.second {
-                frame.insert(second.clone(), (**value).clone());
-            }
-            return frame;
-        }
         // A range binds its variable to its endpoint scalar; only a same-typed
         // steppable-endpoint range types it, anything else stays unknown.
         (None, _) => range_endpoint_type(program, iterable, scope, aliases, file)
@@ -125,13 +128,145 @@ pub(super) fn collection_loop_binding_types(
     Some((saved_path_key_type(program, iterable)?, None))
 }
 
+fn local_collection_loop_binding_types(
+    program: &CheckedProgram,
+    two_name: bool,
+    iterable: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+) -> Option<(MarrowType, Option<MarrowType>)> {
+    let iterable = reversed_call_arg(iterable).unwrap_or(iterable);
+    if let Some(path) = collection_wrapper_arg(iterable, "keys") {
+        if two_name {
+            return None;
+        }
+        return local_key_binding_type(local_iterable_type(
+            program, path, scope, aliases, file, true,
+        ))
+        .map(|key| (key, None));
+    }
+    if let Some(path) = collection_wrapper_arg(iterable, "values") {
+        if two_name {
+            return None;
+        }
+        return local_value_binding_type(local_iterable_type(
+            program, path, scope, aliases, file, false,
+        ))
+        .map(|value| (value, None));
+    }
+    if let Some(path) = collection_wrapper_arg(iterable, "entries") {
+        if !two_name {
+            return None;
+        }
+        return local_entries_binding_types(local_iterable_type(
+            program, path, scope, aliases, file, false,
+        ));
+    }
+    local_tree_binding_types(
+        two_name,
+        local_iterable_type(program, iterable, scope, aliases, file, false),
+    )
+}
+
+fn local_iterable_type(
+    program: &CheckedProgram,
+    path: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+    peel_reversed: bool,
+) -> MarrowType {
+    let path = if peel_reversed {
+        reversed_call_arg(path).unwrap_or(path)
+    } else {
+        path
+    };
+    infer_type(program, path, scope, aliases, file, &mut Vec::new())
+}
+
+fn local_key_binding_type(ty: MarrowType) -> Option<MarrowType> {
+    match ty {
+        MarrowType::LocalTree { keys, .. } => Some(first_key_type(keys)),
+        MarrowType::Sequence(_) => Some(MarrowType::Primitive(ScalarType::Int)),
+        _ => None,
+    }
+}
+
+fn local_value_binding_type(ty: MarrowType) -> Option<MarrowType> {
+    match ty {
+        MarrowType::LocalTree { value, .. } | MarrowType::Sequence(value) => Some(*value),
+        _ => None,
+    }
+}
+
+fn local_tree_binding_types(
+    two_name: bool,
+    ty: MarrowType,
+) -> Option<(MarrowType, Option<MarrowType>)> {
+    let MarrowType::LocalTree { keys, value } = ty else {
+        return None;
+    };
+    let key = first_key_type(keys);
+    if two_name {
+        Some((key, Some(*value)))
+    } else {
+        Some((key, None))
+    }
+}
+
+fn first_key_type(keys: Vec<MarrowType>) -> MarrowType {
+    keys.into_iter().next().unwrap_or(MarrowType::Unknown)
+}
+
+fn local_entries_binding_types(ty: MarrowType) -> Option<(MarrowType, Option<MarrowType>)> {
+    match ty {
+        MarrowType::LocalTree { keys, value } => Some((first_key_type(keys), Some(*value))),
+        MarrowType::Sequence(element) => {
+            Some((MarrowType::Primitive(ScalarType::Int), Some(*element)))
+        }
+        _ => None,
+    }
+}
+
 pub(super) fn check_for_collection_support(
     program: &CheckedProgram,
     file: &Path,
     binding: &marrow_syntax::ForBinding,
     iterable: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
+    if binding.second.is_some() && is_non_pair_collection_wrapper(iterable) {
+        diagnostics.push(CheckDiagnostic::error(
+            CHECK_COLLECTION_UNSUPPORTED,
+            file,
+            iterable.span(),
+            "a two-name loop requires a pair iterable (use entries(...))",
+        ));
+        return;
+    }
+
+    if binding.second.is_some()
+        && two_name_entries_loop_arg(binding, iterable).is_none()
+        && local_collection_loop_binding_types(program, true, iterable, scope, aliases, file)
+            .is_none()
+        && collection_loop_binding_types(program, true, iterable).is_none()
+        && matches!(
+            infer_type(program, iterable, scope, aliases, file, &mut Vec::new()),
+            MarrowType::Sequence(_)
+        )
+    {
+        diagnostics.push(CheckDiagnostic::error(
+            CHECK_COLLECTION_UNSUPPORTED,
+            file,
+            iterable.span(),
+            "a two-name loop requires a pair iterable (use entries(...))",
+        ));
+        return;
+    }
+
     let iterable = reversed_call_arg(iterable).unwrap_or(iterable);
     let Some((store, _resource, index, _module, arg_count)) = saved_index_branch(program, iterable)
     else {
@@ -162,6 +297,11 @@ pub(super) fn check_for_collection_support(
         iterable.span(),
         "a two-name loop over an index branch must yield identity values",
     ));
+}
+
+fn is_non_pair_collection_wrapper(iterable: &marrow_syntax::Expression) -> bool {
+    let iterable = reversed_call_arg(iterable).unwrap_or(iterable);
+    is_collection_wrapper(iterable, "keys") || is_collection_wrapper(iterable, "values")
 }
 
 pub(super) fn check_for_entries_support(

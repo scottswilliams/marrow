@@ -14,7 +14,9 @@ use crate::env::{Env, Flow};
 use crate::error::{RuntimeError, overflow, type_error, unsupported};
 use crate::exec::eval_block;
 use crate::expr::{eval_condition, eval_expr};
-use crate::local_collection::{enumerate_local_collection_dir, materialize_local_collection_dir};
+use crate::local_collection::{
+    enumerate_local_collection_dir, enumerate_local_keys_call_arg, materialize_local_collection_dir,
+};
 use crate::range_expr::checked_range;
 use crate::read::{keys_argument, reversed_argument};
 use crate::saved_iter::{SavedLoopRow, SavedLoopSpec};
@@ -427,12 +429,8 @@ pub(crate) fn eval_collection(
         }
     }
     if let Some(path) = keys_argument(iterable) {
-        if path.saved_place().is_none() {
-            return enumerate_local_collection_dir(
-                eval_expr(path, env)?,
-                Direction::Ascending,
-                iterable.span(),
-            );
+        if let Some(keys) = enumerate_local_keys_call_arg(path, iterable.span(), env)? {
+            return Ok(keys);
         }
         return Err(durable_collection_value(iterable.span()));
     }
@@ -441,7 +439,9 @@ pub(crate) fn eval_collection(
     }
     match eval_expr(iterable, env)? {
         Value::Sequence(items) => Ok(items),
-        Value::LocalTree(entries) => Ok(entries.into_iter().map(|entry| entry.value).collect()),
+        value @ Value::LocalTree(_) => {
+            enumerate_local_collection_dir(value, Direction::Ascending, iterable.span())
+        }
         _ => Err(unsupported("iterating this value", iterable.span())),
     }
 }
@@ -463,6 +463,19 @@ fn eval_collection_entry_rows(
             );
         }
         return Err(durable_collection_value(iterable.span()));
+    }
+    if let Some(inner) = reversed_argument(iterable)
+        && inner.saved_place().is_none()
+    {
+        return match eval_expr(inner, env)? {
+            value @ Value::LocalTree(_) => {
+                materialize_local_collection_dir(value, Direction::Descending, iterable.span())
+            }
+            _ => Err(unsupported(
+                "a two-name binding over a non-pair iterable (use entries(...))",
+                span,
+            )),
+        };
     }
     if let Some(inner) = reversed_argument(iterable)
         && inner.saved_place().is_some()

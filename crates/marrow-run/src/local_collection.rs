@@ -6,6 +6,7 @@ use crate::collection::{Direction, ReadPosition, absent_read};
 use crate::env::Env;
 use crate::error::{RuntimeError, assign_error, overflow, type_error, unsupported};
 use crate::expr::eval_expr;
+use crate::read::reversed_argument;
 use crate::value::{LocalTreeEntry, Value, saved_key_to_value, value_to_key};
 
 pub(crate) fn eval_local_collection_read(
@@ -111,6 +112,41 @@ pub(crate) fn enumerate_local_collection_dir(
     };
     apply_direction(&mut keys, dir);
     Ok(keys)
+}
+
+pub(crate) fn enumerate_local_keys_call_arg(
+    arg: &ExecExpr,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Option<Vec<Value>>, RuntimeError> {
+    if let Some(inner) = reversed_argument(arg) {
+        if inner.saved_place().is_some() {
+            return Ok(None);
+        }
+        return enumerate_keys_over_reversed(eval_expr(inner, env)?, span).map(Some);
+    }
+    if arg.saved_place().is_some() {
+        return Ok(None);
+    }
+    enumerate_local_collection_dir(eval_expr(arg, env)?, Direction::Ascending, span).map(Some)
+}
+
+fn enumerate_keys_over_reversed(
+    value: Value,
+    span: SourceSpan,
+) -> Result<Vec<Value>, RuntimeError> {
+    match value {
+        Value::LocalTree(entries) => {
+            enumerate_local_collection_dir(Value::LocalTree(entries), Direction::Descending, span)
+        }
+        Value::Sequence(items) => {
+            enumerate_local_collection_dir(Value::Sequence(items), Direction::Ascending, span)
+        }
+        _ => Err(unsupported(
+            "reversing this value (expected an iterable)",
+            span,
+        )),
+    }
 }
 
 pub(crate) fn materialize_local_collection_dir(

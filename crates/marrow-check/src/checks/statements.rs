@@ -577,7 +577,15 @@ impl StatementCheck<'_> {
             self.aliases,
             self.diagnostics,
         );
-        check_for_collection_support(self.program, self.file, binding, iterable, self.diagnostics);
+        check_for_collection_support(
+            self.program,
+            self.file,
+            binding,
+            iterable,
+            self.scope,
+            self.aliases,
+            self.diagnostics,
+        );
         let frame = for_frame(
             self.program,
             binding,

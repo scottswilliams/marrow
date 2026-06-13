@@ -374,6 +374,135 @@ fn two_name_loop_over_a_local_keyed_tree_binds_key_and_value() {
 }
 
 #[test]
+fn two_name_reversed_loop_over_a_local_keyed_tree_binds_descending_pairs() {
+    let program = checked_program(
+        "pub fn keyed(): string\n\
+         \x20   var scores(playerId: string): int\n\
+         \x20   scores(\"p2\") = 20\n\
+         \x20   scores(\"p1\") = 10\n\
+         \x20   var out: string = \"\"\n\
+         \x20   for playerId, score in reversed(scores)\n\
+         \x20       const typedPlayer: string = playerId\n\
+         \x20       const typedScore: int = score\n\
+         \x20       out = $\"{out}{playerId}={score};\"\n\
+         \x20   return out\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::keyed")).unwrap(),
+        Some(Value::Str("p2=20;p1=10;".into()))
+    );
+}
+
+#[test]
+fn single_name_loop_over_a_local_keyed_tree_binds_keys() {
+    let program = checked_program(
+        "pub fn keyed(): string\n\
+         \x20   var scores(playerId: string): int\n\
+         \x20   scores(\"p2\") = 20\n\
+         \x20   scores(\"p1\") = 10\n\
+         \x20   var out: string = \"\"\n\
+         \x20   for playerId in scores\n\
+         \x20       const typed: string = playerId\n\
+         \x20       out = $\"{out}{playerId};\"\n\
+         \x20   return out\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::keyed")).unwrap(),
+        Some(Value::Str("p1;p2;".into()))
+    );
+}
+
+#[test]
+fn keys_over_reversed_local_keyed_tree_yields_descending_keys() {
+    let program = checked_program(
+        "pub fn keyed(): string\n\
+         \x20   var scores(playerId: string): int\n\
+         \x20   scores(\"p2\") = 20\n\
+         \x20   scores(\"p1\") = 10\n\
+         \x20   var out: string = \"\"\n\
+         \x20   for playerId in keys(reversed(scores))\n\
+         \x20       const typed: string = playerId\n\
+         \x20       out = $\"{out}{playerId};\"\n\
+         \x20   return out\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::keyed")).unwrap(),
+        Some(Value::Str("p2;p1;".into()))
+    );
+}
+
+#[test]
+fn reversed_loop_over_a_local_keyed_tree_binds_descending_keys() {
+    let program = checked_program(
+        "pub fn keyed(): string\n\
+         \x20   var scores(playerId: string): int\n\
+         \x20   scores(\"p2\") = 20\n\
+         \x20   scores(\"p1\") = 10\n\
+         \x20   var out: string = \"\"\n\
+         \x20   for playerId in reversed(scores)\n\
+         \x20       const typed: string = playerId\n\
+         \x20       out = $\"{out}{playerId};\"\n\
+         \x20   return out\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::keyed")).unwrap(),
+        Some(Value::Str("p2;p1;".into()))
+    );
+}
+
+#[test]
+fn reversed_local_keyed_tree_materializes_a_key_sequence() {
+    let program = checked_program(
+        "pub fn keyed(): string\n\
+         \x20   var scores(playerId: string): int\n\
+         \x20   scores(\"p2\") = 20\n\
+         \x20   scores(\"p1\") = 10\n\
+         \x20   const players = reversed(scores)\n\
+         \x20   var out: string = \"\"\n\
+         \x20   for playerId in players\n\
+         \x20       const typed: string = playerId\n\
+         \x20       out = $\"{out}{playerId};\"\n\
+         \x20   return out\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::keyed")).unwrap(),
+        Some(Value::Str("p2;p1;".into()))
+    );
+}
+
+#[test]
+fn local_keyed_tree_value_and_entry_views_stay_value_based() {
+    let program = checked_program(
+        "pub fn keyed(): string\n\
+         \x20   var scores(playerId: string): int\n\
+         \x20   scores(\"p2\") = 20\n\
+         \x20   scores(\"p1\") = 10\n\
+         \x20   var out: string = \"\"\n\
+         \x20   for score in values(scores)\n\
+         \x20       const typedScore: int = score\n\
+         \x20       out = $\"{out}v{score};\"\n\
+         \x20   for score in reversed(values(scores))\n\
+         \x20       const typedScore: int = score\n\
+         \x20       out = $\"{out}rv{score};\"\n\
+         \x20   for playerId, score in entries(scores)\n\
+         \x20       const typedPlayer: string = playerId\n\
+         \x20       const typedScore: int = score\n\
+         \x20       out = $\"{out}e{playerId}={score};\"\n\
+         \x20   for playerId, score in reversed(entries(scores))\n\
+         \x20       const typedPlayer: string = playerId\n\
+         \x20       const typedScore: int = score\n\
+         \x20       out = $\"{out}re{playerId}={score};\"\n\
+         \x20   return out\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::keyed")).unwrap(),
+        Some(Value::Str(
+            "v10;v20;rv20;rv10;ep1=10;ep2=20;rep2=20;rep1=10;".into()
+        ))
+    );
+}
+
+#[test]
 fn reads_and_writes_a_multi_key_local_tree() {
     let program = checked_program(
         "pub fn keyed(day: date): int\n\

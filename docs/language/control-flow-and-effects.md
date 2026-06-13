@@ -160,6 +160,14 @@ for pos in keys(^books(id).tags)
 Value and two-variable loops also read the values they yield; `keys(...)` reads
 only the addresses.
 
+Local keyed trees use the same loop shapes. For `var scores(player: string): int`,
+`for player in scores` and `for player in keys(scores)` bind `string` keys,
+`for player, score in scores` and `for player, score in entries(scores)` bind
+key/value pairs, and `for score in values(scores)` binds values. `reversed(...)`
+preserves the selected shape in descending key order: direct local keyed-tree
+loops stay key-only or key/value by loop head, `reversed(values(scores))` yields
+values, and `reversed(entries(scores))` yields pairs.
+
 `while` loops use a boolean condition:
 
 ```mw

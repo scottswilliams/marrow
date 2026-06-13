@@ -6,7 +6,9 @@ use marrow_syntax::SourceSpan;
 use crate::env::Env;
 use crate::error::{RUN_ABSENT, RUN_TYPE, RuntimeError, raise_fault, unsupported};
 use crate::expr::eval_expr;
-use crate::local_collection::{enumerate_local_collection_dir, materialize_local_collection_dir};
+use crate::local_collection::{
+    enumerate_local_collection_dir, enumerate_local_keys_call_arg, materialize_local_collection_dir,
+};
 use crate::read::keys_argument;
 use crate::stdlib::check_key_collection;
 use crate::value::Value;
@@ -78,12 +80,8 @@ pub(crate) fn eval_keys(
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     let path = single_path_arg(args, "keys", span)?;
-    if path.saved_place().is_none() {
-        return Ok(Value::Sequence(enumerate_local_collection_dir(
-            eval_expr(path, env)?,
-            Direction::Ascending,
-            span,
-        )?));
+    if let Some(keys) = enumerate_local_keys_call_arg(path, span, env)? {
+        return Ok(Value::Sequence(keys));
     }
     check_key_collection(path, span)?;
     Err(durable_collection_value(span))
@@ -159,16 +157,11 @@ fn reversed_in_memory(
             items.reverse();
             Ok(Value::Sequence(items))
         }
-        Value::LocalTree(entries) => Ok(Value::Sequence(
-            materialize_local_collection_dir(
-                Value::LocalTree(entries),
-                Direction::Descending,
-                span,
-            )?
-            .into_iter()
-            .map(|(_, value)| value)
-            .collect(),
-        )),
+        Value::LocalTree(entries) => Ok(Value::Sequence(enumerate_local_collection_dir(
+            Value::LocalTree(entries),
+            Direction::Descending,
+            span,
+        )?)),
         _ => Err(unsupported(
             "reversing this value (expected an iterable)",
             span,

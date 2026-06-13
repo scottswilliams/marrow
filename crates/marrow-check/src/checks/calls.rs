@@ -710,6 +710,11 @@ fn reversed_type(
     {
         return MarrowType::Sequence(Box::new(element));
     }
+    if let Some(MarrowType::LocalTree { keys, .. }) = arg_types.first() {
+        return MarrowType::Sequence(Box::new(
+            keys.first().cloned().unwrap_or(MarrowType::Unknown),
+        ));
+    }
     arg_types.first().cloned().unwrap_or(MarrowType::Unknown)
 }
 

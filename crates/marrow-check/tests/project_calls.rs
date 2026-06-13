@@ -589,6 +589,82 @@ fn local_keyed_tree_two_name_loops_bind_key_and_value() {
 }
 
 #[test]
+fn local_sequence_entries_loops_bind_position_and_value() {
+    let report = check_module_report(
+        "local-sequence-entries-loop",
+        "module m\n\
+         fn f()\n    var xs: sequence[int]\n    xs(1) = 1\n    xs(2) = 2\n    for pos, x in entries(xs)\n        const pos_ok: int = pos\n        const value_ok: int = x\n    for pos, x in reversed(entries(xs))\n        const pos_ok: int = pos\n        const value_ok: int = x\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
+fn local_sequence_key_and_value_views_bind_positions_and_values() {
+    let report = check_module_report(
+        "local-sequence-key-value-views",
+        "module m\n\
+         fn f()\n    var xs: sequence[int]\n    xs(1) = 1\n    xs(2) = 2\n    for pos in keys(xs)\n        const pos_ok: int = pos\n    for x in values(xs)\n        const value_ok: int = x\n    for pos in reversed(keys(xs))\n        const reversed_pos_ok: int = pos\n    for x in reversed(values(xs))\n        const reversed_value_ok: int = x\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
+fn two_name_local_key_and_value_views_are_rejected() {
+    for (name, setup, iterable) in [
+        (
+            "sequence-keys",
+            "var xs: sequence[int]\n    xs(1) = 1\n",
+            "keys(xs)",
+        ),
+        (
+            "sequence-values",
+            "var xs: sequence[int]\n    xs(1) = 1\n",
+            "values(xs)",
+        ),
+        (
+            "sequence-reversed-keys",
+            "var xs: sequence[int]\n    xs(1) = 1\n",
+            "reversed(keys(xs))",
+        ),
+        (
+            "sequence-reversed-values",
+            "var xs: sequence[int]\n    xs(1) = 1\n",
+            "reversed(values(xs))",
+        ),
+        (
+            "tree-keys",
+            "var scores(player: string): int\n    scores(\"p1\") = 10\n",
+            "keys(scores)",
+        ),
+        (
+            "tree-values",
+            "var scores(player: string): int\n    scores(\"p1\") = 10\n",
+            "values(scores)",
+        ),
+        (
+            "tree-reversed-keys",
+            "var scores(player: string): int\n    scores(\"p1\") = 10\n",
+            "reversed(keys(scores))",
+        ),
+        (
+            "tree-reversed-values",
+            "var scores(player: string): int\n    scores(\"p1\") = 10\n",
+            "reversed(values(scores))",
+        ),
+    ] {
+        let found = check_module(
+            &format!("two-name-local-{name}"),
+            &format!(
+                "module m\n\
+                 fn f()\n    {setup}    for first, second in {iterable}\n        print($\"{{first}}={{second}}\")\n",
+            ),
+            "check.collection_unsupported",
+        );
+        assert_eq!(found.len(), 1, "{name}: {found:#?}");
+    }
+}
+
+#[test]
 fn two_name_keys_and_values_loops_do_not_bind_pair_types() {
     for wrapper in ["keys", "values"] {
         let found = check_module(
@@ -602,6 +678,21 @@ fn two_name_keys_and_values_loops_do_not_bind_pair_types() {
             "check.operator_type",
         );
         assert!(found.is_empty(), "{wrapper}: {found:#?}");
+    }
+}
+
+#[test]
+fn two_name_sequence_loops_are_rejected_even_when_bindings_are_unused() {
+    for (name, iterable) in [("direct", "xs"), ("reversed", "reversed(xs)")] {
+        let found = check_module(
+            &format!("two-name-{name}-sequence-unused-bindings"),
+            &format!(
+                "module m\n\
+                 fn f(): string\n    var xs: sequence[int]\n    xs(1) = 1\n    xs(2) = 2\n    var out: string = \"\"\n    for pos, x in {iterable}\n        out = $\"{{out}}row;\"\n    return out\n",
+            ),
+            "check.collection_unsupported",
+        );
+        assert_eq!(found.len(), 1, "{name}: {found:#?}");
     }
 }
 
