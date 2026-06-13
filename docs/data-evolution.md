@@ -31,7 +31,7 @@ schema does not fully describe until explicit data-evolution work runs.
 | Change a leaf's type | A populated leaf-type change fails closed; `marrow evolve preview` reports it. Add a new field of the new type, populate it with an `evolve transform` from the old field, then retire the old field. An empty leaf changes freely. |
 | Remove or unselect an enum member | Fails closed while saved data still selects the member (removal, marking it `category`, and giving it children all unselect it); migrate affected records to a current member first. Reordering members preserves every identity, mutates nothing, and auto-applies. Rename a member with `evolve rename`; a bare source rename reads as remove-plus-add and fails closed. |
 | Add an index | `marrow evolve preview` proves the rebuild and `marrow evolve apply` publishes index entries atomically. |
-| Remove a field, resource, or store | If no stored cells exist, removal is a free source/catalog no-op. A populated destructive removal fails closed: stored cells under a field — or under a whole resource or store — the current source no longer declares would be orphaned, so `marrow check --data`, `marrow evolve preview`, `marrow evolve apply`, and a plain `marrow run` all report repair-required and refuse to activate. Resolve it with `evolve retire` applied under `--maintenance --approve-retire`, or maintenance repair that deletes or moves the data before activation. |
+| Remove a field, resource, or store | If no stored cells exist, removal is a free source/catalog no-op. A populated destructive removal fails closed: stored cells under a field — or under a whole resource or store — the current source no longer declares would be orphaned, so `marrow evolve preview`, `marrow evolve apply`, and a plain `marrow run` all report repair-required and refuse to activate. Resolve it with `evolve retire` applied under `--maintenance --approve-retire`, or maintenance repair that deletes or moves the data before activation. |
 | Change a store's identity key shape | Not supported over saved data; any change to the key arity or a key type fails closed. Model a new store and migrate with maintenance code. |
 | Re-key a keyed layer | Not supported over populated entries; any change to the layer's key arity or a key type fails closed. Model a new layer and migrate with maintenance code. |
 | Reshape a group to or from a keyed layer | Not supported over populated data; the reshape fails closed. Model a new member of the new shape and migrate with maintenance code. |
@@ -213,7 +213,7 @@ against a different one.
 | Store state | Outcome |
 |---|---|
 | Empty (no saved records, no stamp) | Adopted: the run or apply proceeds and the first commit stamps the program's epoch, profile, and digest. |
-| Populated but unstamped (saved records, no activation stamp) | `run.store_unstamped`: run `marrow check --data` and `marrow evolve apply` to activate the accepted catalog first. |
+| Populated but unstamped (saved records, no activation stamp) | `run.store_unstamped`: run `marrow evolve preview` to inspect the required work and `marrow evolve apply` to activate the accepted catalog first. |
 | Stamped epoch equals the program's, and the source digest matches | Proceeds. An apply advances the store to the proposal epoch; a run executes normally. |
 | Stamped epoch equals the program's, but the source digest differs | `run.schema_drift`: the store was stamped under a structurally different schema at this epoch; run `marrow evolve preview` or `marrow evolve apply`. |
 | Stamped epoch newer than the program | `run.store_evolved`: a newer binary evolved the store. Recompile or upgrade against the current accepted catalog. |
@@ -364,15 +364,15 @@ writes.
 
 Repair handles checked data that no longer matches the schema and cannot be
 discharged by rename/default/transform/rebuild/retire. A repair-required witness
-blocks `check --data`, `evolve preview`, and `evolve apply`.
+blocks `evolve preview` and `evolve apply`.
 
 - typed data integrity reports `data.decode`, `data.key_type`,
   `data.dangling_ref`, `data.incomplete`, and `data.orphan` problems. It is
   read-only.
 - typed data inspection renders durable places from checked/catalog facts.
 - A repair function run with `--maintenance` rewrites or deletes modeled data
-  through managed paths, then `check --data` or `evolve preview` must prove the
-  repaired snapshot before activation.
+  through managed paths, then `evolve preview` must prove the repaired snapshot
+  before activation.
 
 There is no dedicated `marrow repair` command. Repair is a maintenance run of
 your own code, verified before and after with `marrow data integrity`.

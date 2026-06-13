@@ -49,20 +49,6 @@ fn discharge_is_no_work(verdict: &Verdict) -> bool {
     )
 }
 
-pub(super) fn data_check_ok(dir: &str, witness: &EvolutionWitness, format: CheckFormat) {
-    match format {
-        CheckFormat::Text => {
-            println!("ok: {dir} checked with attached data");
-            println!("records scanned: {}", witness.counts.scanned_records);
-        }
-        CheckFormat::Json | CheckFormat::Jsonl => write_json(serde_json::json!({
-            "kind": "data_check",
-            "status": "ok",
-            "records_scanned": witness.counts.scanned_records,
-        })),
-    }
-}
-
 pub(super) fn preview(
     witness: &EvolutionWitness,
     diagnostics: &[RepairDiagnostic],

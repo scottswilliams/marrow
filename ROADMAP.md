@@ -846,16 +846,7 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 ## Wave 6 — Operator surface and integration (CLI; concurrent by command)
 
-Listing order is execution order. docs/cli.md integrates in lane order: W6.5 → W6.3 → W6.6.
-
-**W6.5 → (after W6.4 — shared cmd_check.rs) check --data retirement (gate 25, removal #18).**
-Owns: cmd_check --data path deletion — an ordinary unknown-flag usage error with no alias,
-fallback, or deprecation shim; the {kind: data_check, status: ok, records_scanned} success
-envelope retired with the spelling (evolve preview grows no abbreviated mode) — the
-`run.store_unstamped` help text + its error-codes.md row + cli.md + data-evolution.md +
-data_orphan_cli.rs atomically; model-ir/02 wording landed W1.1. Seed: `evolve preview` asserted
-as the one spelling in the migrated tests. Review: the pipeline stage survives untouched; only
-the spelling dies. Done: absence scan for check --data across docs and help.
+Listing order is execution order. docs/cli.md integrates in lane order: W6.3 → W6.6.
 
 **W6.3 ∥ (after W6.1 — main.rs dispatch/HELP one-line arm, mechanical rebase) marrow init
 (III.C3, gate 30).** Owns: the new command (~200 lines, pure file writer), quickstart-mirroring

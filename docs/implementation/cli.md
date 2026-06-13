@@ -25,7 +25,7 @@ Stream separation is load-bearing: a program's own `print` output owns stdout; r
 
 | Command | Module | Behavior |
 |---|---|---|
-| `check` | `cmd_check.rs` | Type-checks a project directory containing `marrow.json`; JSON output includes checker entry footprints; `--data` delegates to evolve data-check. |
+| `check` | `cmd_check.rs` | Type-checks a project directory containing `marrow.json`; JSON output includes checker entry footprints. |
 | `run` | `cmd_run.rs` | Freezes identity, opens and fences the store (auto-applies zero-mutation schema drift), executes the entry under a plain/trace/dry-run hook. |
 | `test` | `cmd_test.rs` | Collects public zero-param fns in test modules, optionally filters by qualified name substring, runs each selected test over a fresh in-memory store; assert fault is FAIL, any other is ERROR, rendered as text/json/jsonl test-result reports. |
 | `fmt` | `cmd_fmt.rs` | Formats one file to stdout, or `--check`/`--write` over source roots; refuses stdin, a bare dir with no mode, and `--write` rewrites that would reduce retained comments. |
@@ -61,7 +61,7 @@ Stream separation is load-bearing: a program's own `print` output owns stdout; r
 | `crates/marrow/src/cmd_data.rs` | `data` dispatch, `roots`/`stats`/`dump`, snapshot pinning, the streaming JSON-array envelope. |
 | `crates/marrow/src/cmd_data/get.rs` | `data get`: one path query, present/absent/children-only rendering. |
 | `crates/marrow/src/cmd_data/integrity.rs` | `data integrity`: render typed saved-data findings, including incomplete-record and dangling-reference catalog/key identity fields, and exit FAILURE when any exist. |
-| `crates/marrow/src/cmd_evolve/mod.rs` | `evolve` dispatch, `check_data`, and `apply_cmd` (the apply publishes the catalog atomically, then renders the project-root catalog file from the committed snapshot). |
+| `crates/marrow/src/cmd_evolve/mod.rs` | `evolve` dispatch, `preview_cmd`, and `apply_cmd` (the apply publishes the catalog atomically, then renders the project-root catalog file from the committed snapshot). |
 | `crates/marrow/src/cmd_evolve/args.rs` | apply grammar: `--maintenance`, repeated `--approve-retire <id>:<count>` folded into one `Approval`. |
 | `crates/marrow/src/cmd_evolve/render.rs` | all evolve output, including the `ApplyError` to code/message map. |
 | `crates/marrow/src/cmd_evolve/store.rs` | `preview_store` (read-only) / `apply_store` (writable native). |

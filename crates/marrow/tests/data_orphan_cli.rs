@@ -1,7 +1,7 @@
 //! Where a dropped-member or dropped-root drop surfaces. A populated member removed from
 //! source with no `evolve retire` intent would orphan its stored cells, and dropping a whole
 //! resource would orphan every record under its store; either way the source-attached
-//! activation surfaces (`check --data`, `evolve preview`, and a plain `marrow run`'s
+//! activation surfaces (`evolve preview`, `evolve apply`, and a plain `marrow run`'s
 //! auto-apply) fence it closed and name `evolve retire`, rather than silently dropping the
 //! data. An empty member or empty store has nothing to orphan, so the same bare drop is a
 //! free no-op there. The read-only `marrow data integrity` surface reports any lingering cell
@@ -149,21 +149,12 @@ fn data_integrity_reports_a_dropped_member_orphan() {
 }
 
 #[test]
-fn check_data_and_evolve_preview_fence_a_populated_bare_drop() {
+fn evolve_preview_fences_a_populated_bare_drop() {
     // A bare member drop with no retire intent whose cells are populated would orphan that
-    // data on a bare activation, so the source-attached activation surfaces fail closed and
+    // data on a bare activation, so the source-attached preview fails closed and
     // name `evolve retire`. The fence is the guard; the developer must state the destructive
     // intent before the data can be dropped.
     let (root, _place, _subtitle_id) = project_with_orphaned_subtitle("orphan-activation-surfaces");
-
-    let check = marrow(&[
-        "check",
-        "--data",
-        "--format",
-        "json",
-        root.to_str().unwrap(),
-    ]);
-    assert_eq!(check.status.code(), Some(1), "{check:?}");
 
     let preview = marrow(&[
         "evolve",
@@ -199,20 +190,6 @@ fn an_empty_member_drop_is_a_free_no_op() {
     // orphan, so the same bare drop is activatable with no fence. An empty store reshapes
     // freely — the fence guards data loss, not schema shape.
     let root = project_with_empty_subtitle_drop("orphan-empty-noop");
-
-    let check = marrow(&[
-        "check",
-        "--data",
-        "--format",
-        "json",
-        root.to_str().unwrap(),
-    ]);
-    assert_eq!(check.status.code(), Some(0), "{check:?}");
-    assert_eq!(
-        support::json(check.stdout)["status"],
-        serde_json::json!("ok"),
-        "check --data treats an empty-member drop as a no-op"
-    );
 
     let preview = marrow(&[
         "evolve",
@@ -285,18 +262,9 @@ fn a_populated_bare_drop_does_not_apply_without_a_retire_intent() {
 #[test]
 fn evolve_preview_fences_a_populated_whole_resource_drop() {
     // Dropping the whole `Book` resource takes its store with it. Its records would be
-    // orphaned under the gone root, so the source-attached activation surfaces fail closed
+    // orphaned under the gone root, so the source-attached preview fails closed
     // and name `evolve retire`, exactly as a populated member drop does.
     let (root, _place) = project_with_orphaned_book_resource("orphan-resource-surfaces");
-
-    let check = marrow(&[
-        "check",
-        "--data",
-        "--format",
-        "json",
-        root.to_str().unwrap(),
-    ]);
-    assert_eq!(check.status.code(), Some(1), "{check:?}");
 
     let preview = marrow(&[
         "evolve",
@@ -337,15 +305,6 @@ fn an_empty_whole_resource_drop_is_a_free_no_op() {
     // The carve-out: when the dropped resource's store holds no records, there is nothing to
     // orphan, so dropping the whole root is activatable with no fence.
     let root = project_with_empty_book_resource_drop("orphan-resource-empty-noop");
-
-    let check = marrow(&[
-        "check",
-        "--data",
-        "--format",
-        "json",
-        root.to_str().unwrap(),
-    ]);
-    assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     let preview = marrow(&[
         "evolve",

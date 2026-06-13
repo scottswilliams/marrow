@@ -241,7 +241,7 @@ code, except `run.uncaught_error` — see "Typed Errors In Running Programs".
 | `run.store_behind` | The store was stamped at a catalog epoch older than this program accepted, so its data predates the catalog. Run `marrow evolve apply` to activate the store first. Fenced before any execution; the store is unchanged. |
 | `run.schema_drift` | The store was stamped under a different schema at the same catalog epoch: its recorded source digest does not match the durable shape this binary expects. Run `marrow evolve preview` to inspect the required repair or `marrow evolve apply` to activate it. Fenced before any execution; the store is unchanged. |
 | `run.engine_profile` | The store's engine profile does not match this binary's storage layout. Fenced before any execution; the store is unchanged. |
-| `run.store_unstamped` | The store holds saved records but carries no catalog activation stamp. Run `marrow check --data` and `marrow evolve apply` to activate the accepted catalog before running. Fenced before any execution; the store is unchanged. |
+| `run.store_unstamped` | The store holds saved records but carries no catalog activation stamp. Run `marrow evolve preview` to inspect the required work and `marrow evolve apply` to activate the accepted catalog before running. Fenced before any execution; the store is unchanged. |
 
 ### `value.*` — kind `runtime`
 

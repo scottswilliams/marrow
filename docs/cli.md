@@ -4,7 +4,7 @@ The `marrow` binary is the single entry point for the language and its built-in
 database.
 
 ```
-marrow check [--data] [--format text|json|jsonl] <projectdir>
+marrow check [--format text|json|jsonl] <projectdir>
 marrow evolve <preview|apply> [--format text|json|jsonl] <projectdir>
 marrow fmt [--check | --write] <file.mw | projectdir>
 marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] \
@@ -57,7 +57,7 @@ report stays on stdout.
 ## `marrow check`
 
 ```
-marrow check [--data] [--format text|json|jsonl] <projectdir>
+marrow check [--format text|json|jsonl] <projectdir>
 ```
 
 Check a project directory containing `marrow.json` and report diagnostics.
@@ -68,9 +68,6 @@ Check a project directory containing `marrow.json` and report diagnostics.
   `marrow.catalog.json` artifact, repairing that file from a committed store
   snapshot when the local store already has one; it never creates the store or
   freezes identity.
-- `--data` opens the configured store read-only and runs the same data-attached
-  evolution preview that `marrow evolve preview` uses. A repair-required or
-  approval-required witness exits `1`.
 - Passing a bare `.mw` file is a usage error. Run `marrow check` on the project
   directory that contains `marrow.json`.
 
@@ -185,13 +182,13 @@ There is no separate acceptance step. See [data-evolution.md](data-evolution.md)
 
 Opening a native store is fenced against its catalog activation stamp. A store
 that holds saved records but no activation stamp is refused
-(`run.store_unstamped`); run `marrow check --data` and `marrow evolve apply` to
-stamp it first. When the source's shape drifted from the stamped schema, a
-change that mutates no stored records (such as adding a sparse field) is
-auto-applied through the production apply path and the run proceeds against the
-advanced catalog; a change that would backfill, transform, or destructively
-drop populated data is refused with `run.schema_drift`, naming the
-`marrow evolve apply` step that discharges it.
+(`run.store_unstamped`); run `marrow evolve preview` to inspect the required
+work and `marrow evolve apply` to stamp it first. When the source's shape
+drifted from the stamped schema, a change that mutates no stored records (such
+as adding a sparse field) is auto-applied through the production apply path and
+the run proceeds against the advanced catalog; a change that would backfill,
+transform, or destructively drop populated data is refused with
+`run.schema_drift`, naming the `marrow evolve apply` step that discharges it.
 
 The entry is `--entry` if given, otherwise the project's `run.defaultEntry`.
 Qualified entries (`module::function`) resolve exactly. A bare entry name is

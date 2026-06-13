@@ -434,7 +434,7 @@ fn finish_open(
         Ok(true) => {
             report_simple_error(
                 "run.store_unstamped",
-                "store has saved records but no catalog activation stamp; run `marrow check --data` and `marrow evolve apply` before running this accepted catalog",
+                "store has saved records but no catalog activation stamp; run `marrow evolve preview` to inspect the required work and `marrow evolve apply` before running this accepted catalog",
                 format,
             );
             Err(ExitCode::FAILURE)

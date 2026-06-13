@@ -9,6 +9,15 @@ mod support;
 
 use support::marrow;
 
+fn project_that_must_not_be_loaded(name: &str) -> support::TempProject {
+    let dir = support::temp_dir(name);
+    fs::write(dir.join("marrow.json"), support::native_config()).expect("write config");
+    fs::create_dir_all(dir.join("src")).expect("create src dir");
+    fs::write(dir.join("src/app.mw"), "module app\npub fn broken(\n")
+        .expect("write invalid source");
+    dir
+}
+
 #[test]
 fn an_unknown_subcommand_is_a_usage_failure() {
     let output = marrow(&["frobnicate"]);
@@ -125,4 +134,54 @@ fn an_unknown_data_subcommand_is_a_usage_failure_that_opens_no_store() {
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
     assert!(stderr.contains("unknown data subcommand"), "{stderr}");
     assert!(!store_created, "data dir should not have been created");
+}
+
+#[test]
+fn removed_data_flag_is_an_unknown_option_before_project_load() {
+    let dir = project_that_must_not_be_loaded("usage-check-data");
+
+    let output = marrow(&["check", "--data", dir.to_str().unwrap()]);
+    let store_created = dir.join(".data").exists();
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(
+        output.stdout.is_empty(),
+        "unknown check option must not render a check body report: {:?}",
+        output.stdout
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("unknown check option: --data"), "{stderr}");
+    assert!(
+        !stderr.contains("check."),
+        "usage parsing should fail before project diagnostics render: {stderr}"
+    );
+    assert!(
+        !store_created,
+        "unknown option must not open/create the store"
+    );
+}
+
+#[test]
+fn removed_json_data_flag_is_an_unknown_option_before_project_load() {
+    let dir = project_that_must_not_be_loaded("usage-check-json-data");
+
+    let output = marrow(&["check", "--format", "json", "--data", dir.to_str().unwrap()]);
+    let store_created = dir.join(".data").exists();
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(
+        output.stdout.is_empty(),
+        "unknown check option must not render JSON data-check output: {:?}",
+        output.stdout
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("unknown check option: --data"), "{stderr}");
+    assert!(
+        !stderr.trim_start().starts_with('{'),
+        "usage errors stay on stderr as usage text, not JSON: {stderr}"
+    );
+    assert!(
+        !store_created,
+        "unknown option must not open/create the store"
+    );
 }

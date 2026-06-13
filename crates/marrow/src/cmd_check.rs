@@ -9,12 +9,10 @@ use crate::{CheckFormat, report_simple_error, write_json_err};
 pub(crate) fn check(args: &[String]) -> ExitCode {
     let mut format = CheckFormat::Text;
     let mut saw_format = false;
-    let mut data = false;
     let mut target = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
-            "--data" => data = true,
             "--format" => {
                 if let Err(code) =
                     crate::parse_format_flag(args, &mut index, &mut saw_format, &mut format)
@@ -26,10 +24,9 @@ pub(crate) fn check(args: &[String]) -> ExitCode {
                 print!(
                     "\
 Usage:
-  marrow check [--data] [--format text|json|jsonl] <projectdir>
+  marrow check [--format text|json|jsonl] <projectdir>
 
-Check a project directory containing marrow.json and report diagnostics. With
---data, attach the project store read-only and prove data-evolution obligations.
+Check a project directory containing marrow.json and report diagnostics.
 "
                 );
                 return ExitCode::SUCCESS;
@@ -56,15 +53,12 @@ Check a project directory containing marrow.json and report diagnostics. With
         );
         return ExitCode::from(2);
     }
-    check_project_dir(&target, format, data)
+    check_project_dir(&target, format)
 }
 
 /// Check a whole project: load `<dir>/marrow.json`, then run the project
 /// checker over its source roots and configured test files.
-fn check_project_dir(dir: &str, format: CheckFormat, data: bool) -> ExitCode {
-    if data {
-        return crate::cmd_evolve::check_data(dir, format);
-    }
+fn check_project_dir(dir: &str, format: CheckFormat) -> ExitCode {
     let config = match crate::load_config_with_format(dir, format) {
         Ok(config) => config,
         Err(code) => return code,

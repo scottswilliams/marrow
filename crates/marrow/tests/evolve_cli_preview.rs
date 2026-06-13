@@ -7,9 +7,9 @@ mod support_evolve;
 
 use support::{marrow, write};
 use support_evolve::{
-    REQUIRED_BASELINE_SOURCE, REQUIRED_DEFAULT_SOURCE, commit_catalog, member_catalog_id,
-    native_books_project, native_store_path, open_native_store, root_place, seed_member,
-    seed_title_only,
+    REQUIRED_BASELINE_SOURCE, REQUIRED_DEFAULT_SOURCE, REQUIRED_NO_DEFAULT_SOURCE, commit_catalog,
+    member_catalog_id, native_books_project, native_store_path, open_native_store, root_place,
+    seed_member, seed_title_only,
 };
 
 #[test]
@@ -49,6 +49,39 @@ fn evolve_preview_reports_the_exact_witness_counts() {
         "{witness}"
     );
     assert!(witness["accepted_epoch"].is_number(), "{witness}");
+}
+
+#[test]
+fn evolve_preview_reports_repair_required_from_attached_store() {
+    let root = native_books_project("evolve-preview-repair", REQUIRED_NO_DEFAULT_SOURCE);
+    let program = commit_catalog(&root);
+    let place = root_place(&program, "books");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &place, 1, "Dune");
+    }
+
+    let output = marrow(&[
+        "evolve",
+        "preview",
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let value = support::json(output.stdout);
+    assert_eq!(value["kind"], serde_json::json!("evolve_preview"));
+    assert_eq!(value["status"], serde_json::json!("blocked"));
+    let pages_id = member_catalog_id(&place, "pages");
+    let blocking = value["blocking"].as_array().expect("blocking reports");
+    assert!(
+        blocking.iter().any(|report| {
+            report["code"] == serde_json::json!("evolve.repair_required")
+                && report["data"]["catalog_id"] == serde_json::json!(pages_id)
+        }),
+        "preview should report repair required for the attached store: {value:#?}"
+    );
 }
 
 #[test]

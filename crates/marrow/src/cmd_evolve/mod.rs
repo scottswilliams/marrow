@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use marrow_check::evolution::preview;
 use marrow_run::evolution::{ApplyError, apply};
 
-use crate::{CheckFormat, load_checked_project_with_format, report_simple_error};
+use crate::{load_checked_project_with_format, report_simple_error};
 
 mod args;
 mod render;
@@ -27,30 +27,6 @@ pub(crate) fn evolve(args: &[String]) -> ExitCode {
             eprintln!("unknown evolve subcommand: {other}");
             eprintln!("available evolve subcommands: preview, apply");
             ExitCode::from(2)
-        }
-    }
-}
-
-pub(crate) fn check_data(dir: &str, format: CheckFormat) -> ExitCode {
-    let Ok((config, program)) = load_checked_project_with_format(dir, format) else {
-        return ExitCode::FAILURE;
-    };
-    let Ok(store) = store::preview_store(dir, &config, format) else {
-        return ExitCode::FAILURE;
-    };
-    let labels = render::SourceLabels::from_program(&program);
-    match preview(&program, &store) {
-        Ok((witness, _diagnostics)) if witness.is_activatable() => {
-            render::data_check_ok(dir, &witness, format);
-            ExitCode::SUCCESS
-        }
-        Ok((witness, diagnostics)) => {
-            render::blocked(&witness, &diagnostics, &labels, format);
-            ExitCode::FAILURE
-        }
-        Err(error) => {
-            report_simple_error(error.code(), &error.to_string(), format);
-            ExitCode::FAILURE
         }
     }
 }
