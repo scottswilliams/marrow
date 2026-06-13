@@ -1,3 +1,4 @@
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -10,6 +11,7 @@ mod cmd_check;
 mod cmd_data;
 mod cmd_evolve;
 mod cmd_fmt;
+mod cmd_init;
 mod cmd_restore;
 mod cmd_run;
 mod cmd_test;
@@ -20,6 +22,7 @@ const HELP: &str = "\
 Marrow
 
 Usage:
+  marrow init <projectdir>
   marrow check [--format text|json|jsonl] <projectdir>
   marrow evolve <preview|apply> [--format text|json|jsonl] <projectdir>
   marrow fmt [--check | --write] <file.mw | projectdir>
@@ -35,7 +38,7 @@ Usage:
 
 fn main() -> ExitCode {
     install_broken_pipe_exit();
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let args = std::env::args_os().skip(1).collect::<Vec<_>>();
     let Some((command, rest)) = args.split_first() else {
         print!("{HELP}");
         return ExitCode::SUCCESS;
@@ -48,7 +51,33 @@ fn main() -> ExitCode {
     // instead of aborting the process with a native stack overflow.
     let command = command.clone();
     let rest = rest.to_vec();
-    run_on_worker_stack(move || dispatch(&command, &rest))
+    run_on_worker_stack(move || dispatch_os(&command, &rest))
+}
+
+fn dispatch_os(command: &OsStr, rest: &[OsString]) -> ExitCode {
+    if command == "init" {
+        return cmd_init::init_os(rest);
+    }
+    let Some(command) = command.to_str() else {
+        eprintln!("unknown command: {}", command.to_string_lossy());
+        eprintln!("run `marrow --help` for available commands");
+        return ExitCode::from(2);
+    };
+    let Some(rest) = utf8_args(rest) else {
+        report_simple_error(
+            "config.invalid",
+            "command arguments must be valid UTF-8",
+            CheckFormat::Text,
+        );
+        return ExitCode::FAILURE;
+    };
+    dispatch(command, &rest)
+}
+
+fn utf8_args(args: &[OsString]) -> Option<Vec<String>> {
+    args.iter()
+        .map(|arg| arg.to_str().map(str::to_string))
+        .collect()
 }
 
 fn dispatch(command: &str, rest: &[String]) -> ExitCode {

@@ -846,17 +846,7 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 ## Wave 6 — Operator surface and integration (CLI; concurrent by command)
 
-Listing order is execution order. docs/cli.md integrates in lane order: W6.3 → W6.6.
-
-**W6.3 ∥ (after W6.1 — main.rs dispatch/HELP one-line arm, mechanical rebase) marrow init
-(III.C3, gate 30).** Owns: the new command (~200 lines, pure file writer), quickstart-mirroring
-scaffold incl. plain-path tests entry (`"tests": ["tests"]`) and the explicit
-`"store": {"backend": "native", "dataDir": ".marrow/data"}` block, the matching quickstart.md
-edit (lines 25 and 36) in the same lockstep change, cli.md section, quickstart leads with init.
-Seed: failing CLI test — init → check → run → test all green through the production pipeline.
-Review: scaffold text and quickstart are one fixture (drift-pinned); init rejects a target
-directory whose name is not a valid Marrow module identifier (exit 1, config-family code)
-instead of scaffolding an uncompilable defaultEntry. Done: nothing-to-running in one command.
+Listing order is execution order. docs/cli.md integrates in lane order: W6.6.
 
 **W6.7 ∥ (after W6.2 — shared marrow-project lib.rs; W6.2 owns project-config.md) acceptedCatalog
 key deletion + required store block (removal #41; gates 32, 42).**
@@ -864,10 +854,9 @@ Owns: marrow-project config field → constant, validation arms — incl. the ga
 store-required arm: config.invalid on an absent store block, a two-choice diagnostic naming the
 exact config spellings `"native"` and `"memory"` and showing the one-line memory form
 (`"store": { "backend": "memory" }`) — three config tests + the store-required tests; doc pages
-project-config.md and quickstart.md (the quickstart edit integrates after W6.3's scaffold
-lockstep). Coordinated with the catalog refactor (W3.5). Seed: unknown-key error lists the
-shrunken set. Review: validation fails closed; the diagnostic names both backends with the
-exact config spellings; the gate-30 scaffold is untouched. Done: one
+project-config.md and quickstart.md. Coordinated with the catalog refactor (W3.5). Seed:
+unknown-key error lists the shrunken set. Review: validation fails closed; the diagnostic names
+both backends with the exact config spellings; the gate-30 scaffold is untouched. Done: one
 catalog path; no silent selection of the non-durable mode.
 
 **W6.8 ∥ Operations page + truth-sweep remainder (III.B1 + III.C4 residue).** Owns:
@@ -977,8 +966,7 @@ process. Review: no durable write on any mount path; gate-7 lock contract untouc
 lock taken). Done: point-in-time inspection and preview rehearsal work without restore
 choreography.
 
-**W6.13 ∥ marrow doctor (C28; slippable).** After W2.5 + W3.7 + W6.3 (main.rs dispatch/HELP
-one-line arm, mechanical rebase). Owns: one cmd module aggregating
+**W6.13 ∥ marrow doctor (C28; slippable).** After W2.5 + W3.7. Owns: one cmd module aggregating
 existing typed facts — config parse, check summary, catalog digest validation, store-open probe
 (store.locked with remedy), fence/stamp classification, engine-profile tuple, bounded integrity
 sample capped at a named constant — one finding per line, stable code (the W1.1-reserved set),

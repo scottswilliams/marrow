@@ -6,7 +6,7 @@ Two crates: `marrow-project` owns the `marrow.json` schema, source/test discover
 
 ## The shared spine
 
-`main::main` installs a broken-pipe panic hook (a `Broken pipe` payload exits 0, every other panic defers to the default hook), then dispatches `argv[1]` to one command on a worker thread with a large stack (`run_on_worker_stack`). The parser and runtime recurse over untrusted source on that stack, sized so their fixed depth limits (`check.nesting_limit`, `run.recursion_limit`) always trip before it overflows. Each command's first lines call the shared loaders in `main.rs`:
+`main::main` installs a broken-pipe panic hook (a `Broken pipe` payload exits 0, every other panic defers to the default hook), then dispatches `argv[1]` to one command on a worker thread with a large stack (`run_on_worker_stack`). The parser and runtime recurse over untrusted source on that stack, sized so their fixed depth limits (`check.nesting_limit`, `run.recursion_limit`) always trip before it overflows. Commands that read an existing project call the shared loaders in `main.rs`:
 
 - `load_config` / `load_checked_project` — dir to `ProjectConfig`, then to a `CheckedProgram` bound against an accepted catalog supplied by the caller.
 - `native_store_path` / `resolve_store_path` / `open_store_for_inspection` — locate and open the configured store; inspection uses `open_read_only`, while write-capable commands opt into the write-open path.
@@ -25,6 +25,7 @@ Stream separation is load-bearing: a program's own `print` output owns stdout; r
 
 | Command | Module | Behavior |
 |---|---|---|
+| `init` | `cmd_init.rs` | Creates the quickstart scaffold in a new target directory after validating the final path component as one module-name segment. |
 | `check` | `cmd_check.rs` | Type-checks a project directory containing `marrow.json`; JSON output includes checker entry footprints. |
 | `run` | `cmd_run.rs` | Freezes identity, opens and fences the store (auto-applies zero-mutation schema drift), executes the entry under a plain/trace/dry-run hook. |
 | `test` | `cmd_test.rs` | Collects public zero-param fns in test modules, optionally filters by qualified name substring, runs each selected test over a fresh in-memory store; assert fault is FAIL, any other is ERROR, rendered as text/json/jsonl test-result reports. |
@@ -47,6 +48,7 @@ Stream separation is load-bearing: a program's own `print` output owns stdout; r
 | File | Responsibility |
 |---|---|
 | `crates/marrow/src/main.rs` | argv dispatch, broken-pipe hook, and the shared loaders, store-path resolution, format parsing, and JSON envelope helpers. |
+| `crates/marrow/src/cmd_init.rs` | `init`: validates the target directory's final path component and writes the quickstart project scaffold without overwriting an existing target. |
 | `crates/marrow/src/cmd_check.rs` | `check`; also the located runtime-fault renderer reused by `run`. |
 | `crates/marrow/src/cmd_run.rs` | `run`: fence, auto-apply, re-check, execute under a hook, emit the report. |
 | `crates/marrow/src/cmd_test.rs` | `test`: discover, filter, and run test fns, print pass/fail/error summary. |

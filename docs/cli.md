@@ -4,6 +4,7 @@ The `marrow` binary is the single entry point for the language and its built-in
 database.
 
 ```
+marrow init <projectdir>
 marrow check [--format text|json|jsonl] <projectdir>
 marrow evolve <preview|apply> [--format text|json|jsonl] <projectdir>
 marrow fmt [--check | --write] <file.mw | projectdir>
@@ -51,6 +52,39 @@ is text-only and fails closed with non-text formats.
 `marrow test --format json|jsonl` shapes the test pass/fail report on stdout.
 With `--trace`, the trace is a separate text stream on stderr while the test
 report stays on stdout.
+
+---
+
+## `marrow init`
+
+```
+marrow init <projectdir>
+```
+
+Create a new project directory with the quickstart scaffold: `marrow.json`,
+`src/<name>/books.mw`, and `tests/books_test.mw`, where `<name>` is the target
+directory's final path component.
+
+The target directory must not already exist. Its final path component must parse
+as one Marrow module identifier segment, because the scaffold uses it in
+`run.defaultEntry`, `module <name>::books`, and `use <name>::books`.
+
+The generated config is explicit: `sourceRoots` is `["src"]`,
+`run.defaultEntry` is `<name>::books::main`, the store is
+`{"backend":"native","dataDir":".marrow/data"}`, and `tests` is `["tests"]`.
+No `.gitignore` or extra project files are created.
+
+Exits `0` after writing the scaffold, `1` if the target name is invalid or the
+target cannot be written safely, and `2` for usage errors.
+
+```console
+$ marrow init shelf
+created shelf
+
+$ cd shelf
+$ marrow check .
+ok: . checked
+```
 
 ---
 
