@@ -28,7 +28,7 @@ pub struct ResourceId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StoreId(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StoreIndexId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1364,6 +1364,8 @@ fn bind_value_meaning_store_catalog_id(
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DirectEffectFacts {
     pub saved_reads: Vec<SavedPlaceEffect>,
+    /// Index branches read saved data but do not name a resource-member path.
+    pub saved_index_reads: Vec<StoreIndexId>,
     pub saved_writes: Vec<SavedPlaceEffect>,
     pub transactions: bool,
     pub host_calls: Vec<HostEffect>,

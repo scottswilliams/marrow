@@ -848,21 +848,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 Runs after the language batch so the refactor churns once over the final v0.1 surface.
 
-**W5.2 → Saved-place owner (IV.C2 + removal "Collapse saved-path shape recognition", option A
-incl. binding.rs).** Priority conflict resolved: REPORT P1 wins over the removal's P2 — same
-mechanism, fuller mechanics. Owns: one SavedPlaceResolver in the executable module; deletion of
-the syntax-level extractor families in infer.rs, checks/collections.rs, checks/saved_keys.rs,
-checks/operators.rs (the check_coalesce hack becomes the normal path), binding.rs
-(saved_layer_base strictness preserved); one shared statement walker per IR; the
-`debug_assert_eq!` zip guard promoted to release-mode; WriteFallibilityFact derived in lowering
-— Infallible / UniqueConflict(StoreIndexId set) / MaintenanceGated — from CheckedSavedPlace +
-StoreIndexFact.unique, checked-IR only: no analysis-API exposure, no diagnostics, no new error
-code (C11). Seed: the 63-fixture suite as oracle; a
-failing architecture scan counting saved-path classifiers. Review: presence-pass and type-pass
-classifications provably identical (the soundness-risk surface); spans may shift, codes may not;
-the C11 classification never re-models the maintenance-capability surface.
-Done: absence scan — one owner answers "what saved place is this".
-
 **W5.3 → Type-identity unification (IV.C3).** Owns: id tables hoisted ahead of the type pass (or
 on-demand nominal resolution), the "permissive until unified" clause deleted, cross-module
 nominal mismatch fixtures (wrong-store identity; same-named resource/enum), the docs gap note

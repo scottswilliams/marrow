@@ -250,7 +250,7 @@ pub(crate) fn check_transform_effects(
 /// binding and the decodability proof discharge builds for each read member.
 fn impurity_reason(program: &CheckedProgram, body: &CheckedBody) -> Option<&'static str> {
     let effects = crate::presence::direct_effects_for_block(&program.facts, body);
-    if !effects.saved_reads.is_empty() {
+    if !effects.saved_reads.is_empty() || !effects.saved_index_reads.is_empty() {
         return Some("it reads saved data; a transform body may only read `old`");
     }
     if !effects.saved_writes.is_empty() {

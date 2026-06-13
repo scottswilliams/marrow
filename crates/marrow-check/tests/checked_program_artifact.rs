@@ -1,6 +1,9 @@
 mod support;
 
-use marrow_check::{MarrowType, check_project};
+use std::collections::BTreeSet;
+
+use marrow_check::{CheckedBody, CheckedExpr, CheckedProgram, CheckedStmt, StoreIndexId};
+use marrow_check::{MarrowType, WriteFallibilityFact, check_project};
 use marrow_schema::ReturnPresence;
 use marrow_store::value::ScalarType;
 
@@ -141,6 +144,127 @@ fn function_descriptors_preserve_return_presence() {
 }
 
 #[test]
+fn write_fallibility_marks_unique_conflict_assignments() {
+    let root = temp_project("program-write-fallibility-unique", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             resource Book\n\
+             \x20   required isbn: string\n\
+             \x20   title: string\n\
+             \x20   author: string\n\
+             store ^books(id: int): Book\n\
+             \x20   index byIsbn(isbn) unique\n\
+             \x20   index byTitle(title) unique\n\
+             pub fn write(id: Id(^books), book: Book, title: string, author: string)\n\
+             \x20   ^books(id) = book\n\
+             \x20   ^books(id).title = title\n\
+             \x20   ^books(id).author = author\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+
+    let by_isbn = store_index_id(&program, "byIsbn");
+    let by_title = store_index_id(&program, "byTitle");
+    let body = function_body(&program, "write");
+    let statements = body.statements();
+
+    assert_eq!(
+        assign_fallibility(&statements[0]),
+        &WriteFallibilityFact::UniqueConflict(BTreeSet::from([by_isbn, by_title]))
+    );
+    assert_eq!(
+        assign_fallibility(&statements[1]),
+        &WriteFallibilityFact::UniqueConflict(BTreeSet::from([by_title]))
+    );
+    assert_eq!(
+        assign_fallibility(&statements[2]),
+        &WriteFallibilityFact::Infallible
+    );
+}
+
+#[test]
+fn write_fallibility_marks_maintenance_gated_deletes() {
+    let root = temp_project("program-write-fallibility-delete", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   subtitle: string\n\
+             \x20   meta\n\
+             \x20       required digest: string\n\
+             store ^books(id: int): Book\n\
+             pub fn cleanup(id: Id(^books))\n\
+             \x20   delete ^books\n\
+             \x20   delete ^books(id)\n\
+             \x20   delete ^books(id).title\n\
+             \x20   delete ^books(id).meta\n\
+             \x20   delete ^books(id).subtitle\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+
+    let body = function_body(&program, "cleanup");
+    let statements = body.statements();
+
+    assert_eq!(
+        delete_fallibility(&statements[0]),
+        &WriteFallibilityFact::MaintenanceGated
+    );
+    assert_eq!(
+        delete_fallibility(&statements[1]),
+        &WriteFallibilityFact::Infallible
+    );
+    assert_eq!(
+        delete_fallibility(&statements[2]),
+        &WriteFallibilityFact::MaintenanceGated
+    );
+    assert_eq!(
+        delete_fallibility(&statements[3]),
+        &WriteFallibilityFact::MaintenanceGated
+    );
+    assert_eq!(
+        delete_fallibility(&statements[4]),
+        &WriteFallibilityFact::Infallible
+    );
+}
+
+#[test]
+fn write_fallibility_marks_append_calls_in_checked_ir() {
+    let root = temp_project("program-write-fallibility-append", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             resource Book\n\
+             \x20   tags(pos: int): string\n\
+             store ^books(id: int): Book\n\
+             pub fn add(id: Id(^books), tag: string): int\n\
+             \x20   return append(^books(id).tags, tag)\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+
+    let body = function_body(&program, "add");
+    let CheckedStmt::Return {
+        value: Some(CheckedExpr::Call {
+            write_fallibility, ..
+        }),
+        ..
+    } = &body.statements()[0]
+    else {
+        panic!("{:#?}", body.statements());
+    };
+    assert_eq!(write_fallibility, &Some(WriteFallibilityFact::Infallible));
+}
+
+#[test]
 fn a_file_with_a_parse_error_contributes_no_module() {
     let root = temp_project("program-parse-error", |root| {
         // A leading tab is a lexical error, so the file parses with errors and
@@ -155,4 +279,38 @@ fn a_file_with_a_parse_error_contributes_no_module() {
 
     assert!(report.has_errors(), "{:#?}", report.diagnostics);
     assert!(program.modules.is_empty(), "{program:#?}");
+}
+
+fn function_body<'a>(program: &'a CheckedProgram, name: &str) -> &'a CheckedBody {
+    program
+        .modules
+        .iter()
+        .flat_map(|module| module.functions.iter())
+        .find(|function| function.name == name)
+        .and_then(|function| function.runtime_body())
+        .unwrap_or_else(|| panic!("checked function body {name}"))
+}
+
+fn store_index_id(program: &CheckedProgram, name: &str) -> StoreIndexId {
+    program
+        .facts
+        .store_indexes()
+        .iter()
+        .find(|index| index.name == name)
+        .map(|index| index.id)
+        .unwrap_or_else(|| panic!("store index {name}"))
+}
+
+fn assign_fallibility(statement: &CheckedStmt) -> &WriteFallibilityFact {
+    let CheckedStmt::Assign { fallibility, .. } = statement else {
+        panic!("{statement:#?}");
+    };
+    fallibility
+}
+
+fn delete_fallibility(statement: &CheckedStmt) -> &WriteFallibilityFact {
+    let CheckedStmt::Delete { fallibility, .. } = statement else {
+        panic!("{statement:#?}");
+    };
+    fallibility
 }

@@ -5,15 +5,590 @@ use marrow_schema::{KeyDef, Node, NodeKind, Type};
 use marrow_syntax::SourceSpan;
 
 use crate::catalog::{CatalogKey, active_proposal_id_map, resource_member_path, store_index_path};
-use crate::facts::{ModuleId, ResourceId, ResourceMemberId, StoreId, StoreIndexFact};
-use crate::program::CheckedProgram;
+use crate::facts::{
+    CheckedFacts, ModuleId, ResourceId, ResourceMemberId, SavedPlaceEffect, StoreId,
+    StoreIndexFact, StoreIndexId, StoredValueMeaning,
+};
+use crate::program::{CheckedProgram, MarrowType};
 use crate::resolve::resolve_store_by_root;
+use crate::{StoreLeafKind, resolve_resource_schema_type};
 
 use super::{
     CheckedArg, CheckedExpr, CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedKeyParam,
     CheckedSavedLayer, CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace,
     CheckedSavedTerminal,
 };
+
+pub(crate) struct SavedPlaceResolver<'a> {
+    program: &'a CheckedProgram,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SavedAccessRejection {
+    GeneratedIndexBranch,
+    KeyedRootMemberWithoutIdentity(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SavedMemberRefKind {
+    Field,
+    Layer,
+    Index,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SavedMemberRef {
+    pub(crate) root: String,
+    pub(crate) chain: Vec<String>,
+    pub(crate) span: SourceSpan,
+    pub(crate) kind: SavedMemberRefKind,
+}
+
+impl<'a> SavedPlaceResolver<'a> {
+    pub(crate) fn new(program: &'a CheckedProgram) -> Self {
+        Self { program }
+    }
+
+    pub(crate) fn root_place(&self, root: &str, span: SourceSpan) -> Option<CheckedSavedPlace> {
+        checked_root_place(self.program, root, span)
+    }
+
+    pub(crate) fn call_place(
+        &self,
+        callee: &CheckedExpr,
+        args: &[CheckedArg],
+        span: SourceSpan,
+    ) -> Option<CheckedSavedPlace> {
+        checked_call_place(callee, args, self.program, span)
+    }
+
+    pub(crate) fn field_place(
+        &self,
+        base: &CheckedExpr,
+        name: &str,
+        span: SourceSpan,
+    ) -> Option<CheckedSavedPlace> {
+        checked_field_place(base, name, self.program, span)
+    }
+
+    pub(crate) fn access_rejection(&self, expr: &CheckedExpr) -> Option<SavedAccessRejection> {
+        saved_access_rejection(expr)
+    }
+
+    pub(crate) fn is_saved_path(&self, expr: &CheckedExpr) -> bool {
+        accepted_saved_place(expr).is_some()
+    }
+
+    pub(crate) fn is_saved_path_callee(&self, callee: &CheckedExpr) -> bool {
+        match callee {
+            CheckedExpr::SavedRoot { .. } => callee.saved_place().is_some(),
+            CheckedExpr::Call { .. } => self.is_saved_path(callee),
+            CheckedExpr::Field { base, name, .. }
+            | CheckedExpr::OptionalField { base, name, .. } => {
+                if let CheckedExpr::SavedRoot { .. } = base.as_ref() {
+                    let Some(place) = base.saved_place() else {
+                        return false;
+                    };
+                    place.identity_keys.is_empty() || saved_root_index(base, name).is_some()
+                } else {
+                    self.is_saved_path(base)
+                }
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn value_type(&self, expr: &CheckedExpr) -> Option<MarrowType> {
+        self.place_value_type(expr.saved_place()?)
+    }
+
+    pub(crate) fn key_type(&self, expr: &CheckedExpr) -> Option<MarrowType> {
+        self.place_key_type(expr.saved_place()?)
+    }
+
+    pub(crate) fn is_index_branch(&self, expr: &CheckedExpr) -> bool {
+        index_branch(expr).is_some()
+    }
+
+    pub(crate) fn is_key_range_path(&self, expr: &CheckedExpr) -> bool {
+        self.range_arg_position(expr).is_some()
+            && (self.is_index_branch(expr) || self.layer_or_root_range_subject(expr).is_some())
+    }
+
+    pub(crate) fn is_index_range_path(&self, expr: &CheckedExpr) -> bool {
+        self.range_arg_position(expr).is_some() && self.is_index_branch(expr)
+    }
+
+    pub(crate) fn index_branch_info<'b>(
+        &self,
+        expr: &'b CheckedExpr,
+    ) -> Option<IndexBranchInfo<'b>> {
+        let place = expr.saved_place()?;
+        let CheckedSavedTerminal::Index {
+            name,
+            args,
+            unique,
+            arg_count,
+            ..
+        } = &place.terminal
+        else {
+            return None;
+        };
+        (args.len() <= *arg_count).then_some(IndexBranchInfo {
+            place,
+            name,
+            unique: *unique,
+            arg_count: args.len(),
+            key_count: *arg_count,
+        })
+    }
+
+    pub(crate) fn non_unique_index_branch_yields_identity(&self, expr: &CheckedExpr) -> bool {
+        let Some(info) = self.index_branch_info(expr) else {
+            return false;
+        };
+        if info.unique {
+            return false;
+        }
+        let identity_start = info
+            .key_count
+            .saturating_sub(info.place.identity_keys.len());
+        info.arg_count >= identity_start
+    }
+
+    pub(crate) fn saved_key_params<'p>(
+        &self,
+        callee: &'p CheckedExpr,
+    ) -> Option<SavedKeyParamTarget<'p>> {
+        match callee.saved_place()?.terminal {
+            CheckedSavedTerminal::Record if matches!(callee, CheckedExpr::SavedRoot { .. }) => {
+                Some(SavedKeyParamTarget::Root(callee.saved_place()?))
+            }
+            CheckedSavedTerminal::Index { .. } => {
+                Some(SavedKeyParamTarget::Index(callee.saved_place()?))
+            }
+            CheckedSavedTerminal::Record => {
+                let place = callee.saved_place()?;
+                place.layers.last().map(SavedKeyParamTarget::Layer)
+            }
+            CheckedSavedTerminal::Field { .. } => None,
+        }
+    }
+
+    pub(crate) fn declared_member_or_index(&self, expr: &CheckedExpr) -> bool {
+        let Some(place) = accepted_saved_place(expr) else {
+            return false;
+        };
+        match &place.terminal {
+            CheckedSavedTerminal::Index { .. } => true,
+            CheckedSavedTerminal::Field {
+                catalog_id, leaf, ..
+            } => catalog_id.is_some() || leaf.is_some(),
+            CheckedSavedTerminal::Record => !place.layers.is_empty(),
+        }
+    }
+
+    pub(crate) fn saved_index_key_type(&self, key: &CheckedSavedIndexKey) -> MarrowType {
+        self.index_key_type(key)
+    }
+
+    pub(crate) fn saved_key_param_type(key: &CheckedSavedKeyParam) -> MarrowType {
+        checked_key_param_type(key).unwrap_or(MarrowType::Unknown)
+    }
+
+    pub(crate) fn binding_member_ref(&self, expr: &CheckedExpr) -> Option<SavedMemberRef> {
+        match expr {
+            CheckedExpr::Field { name, span, .. }
+            | CheckedExpr::OptionalField { name, span, .. } => {
+                let place = expr.saved_place()?;
+                if !matches!(place.terminal, CheckedSavedTerminal::Field { .. }) {
+                    return None;
+                }
+                let mut chain = place
+                    .layers
+                    .iter()
+                    .map(|layer| layer.name.clone())
+                    .collect::<Vec<_>>();
+                chain.push(name.clone());
+                Some(SavedMemberRef {
+                    root: place.root.clone(),
+                    chain,
+                    span: *span,
+                    kind: SavedMemberRefKind::Field,
+                })
+            }
+            CheckedExpr::Call { callee, .. } => {
+                let CheckedExpr::Field {
+                    base, name, span, ..
+                } = callee.as_ref()
+                else {
+                    return None;
+                };
+                let place = callee.saved_place()?;
+                if matches!(base.as_ref(), CheckedExpr::SavedRoot { .. }) {
+                    return matches!(place.terminal, CheckedSavedTerminal::Index { .. }).then(
+                        || SavedMemberRef {
+                            root: place.root.clone(),
+                            chain: vec![name.clone()],
+                            span: *span,
+                            kind: SavedMemberRefKind::Index,
+                        },
+                    );
+                }
+                if !matches!(base.as_ref(), CheckedExpr::Call { .. }) {
+                    return None;
+                }
+                let chain = place
+                    .layers
+                    .iter()
+                    .map(|layer| layer.name.clone())
+                    .collect::<Vec<_>>();
+                if chain.last() != Some(name) {
+                    return None;
+                }
+                Some(SavedMemberRef {
+                    root: place.root.clone(),
+                    chain,
+                    span: *span,
+                    kind: SavedMemberRefKind::Layer,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn place_value_type(&self, place: &CheckedSavedPlace) -> Option<MarrowType> {
+        match &place.terminal {
+            CheckedSavedTerminal::Record => {
+                if let Some(layer) = place.layers.last() {
+                    if let Some(leaf) = &layer.leaf {
+                        return self.leaf_type(leaf);
+                    }
+                    return self.group_entry_type(place);
+                }
+                (place.identity_keys.is_empty() || !place.identity_args.is_empty()).then(|| {
+                    MarrowType::Resource(crate::resource_type_name(
+                        &self.store_module_name(place),
+                        &place.resource_name,
+                    ))
+                })
+            }
+            CheckedSavedTerminal::Field { leaf, .. } => self.leaf_type(leaf.as_ref()?),
+            CheckedSavedTerminal::Index { unique, .. } => {
+                unique.then(|| MarrowType::Identity(place.root.clone()))
+            }
+        }
+    }
+
+    fn place_key_type(&self, place: &CheckedSavedPlace) -> Option<MarrowType> {
+        match &place.terminal {
+            CheckedSavedTerminal::Record if place.identity_args.is_empty() => {
+                (!place.identity_keys.is_empty()).then(|| MarrowType::Identity(place.root.clone()))
+            }
+            CheckedSavedTerminal::Record => {
+                if let Some(layer) = place.layers.last() {
+                    if let Some(position) = range_arg_position_in(&layer.args) {
+                        return (position + 1 == layer.args.len()
+                            && layer.args.len() == layer.key_params.len())
+                        .then(|| checked_key_param_type(&layer.key_params[position]))
+                        .flatten();
+                    }
+                    return match layer.key_params.as_slice() {
+                        [key] => checked_key_param_type(key),
+                        _ => None,
+                    };
+                }
+                let position = range_arg_position_in(&place.identity_args)?;
+                (position + 1 == place.identity_args.len()
+                    && place.identity_args.len() == place.identity_keys.len())
+                .then(|| checked_key_param_type(&place.identity_keys[position]))
+                .flatten()
+            }
+            CheckedSavedTerminal::Index {
+                args,
+                unique,
+                arg_count,
+                ..
+            } => {
+                if *unique {
+                    return Some(MarrowType::Identity(place.root.clone()));
+                }
+                let identity_start = arg_count.saturating_sub(place.identity_keys.len());
+                if args.len() < identity_start {
+                    let index = self.terminal_index(place)?;
+                    return index
+                        .keys
+                        .get(args.len())
+                        .map(|key| self.index_key_type(key));
+                }
+                Some(MarrowType::Identity(place.root.clone()))
+            }
+            CheckedSavedTerminal::Field { .. } => None,
+        }
+    }
+
+    fn group_entry_type(&self, place: &CheckedSavedPlace) -> Option<MarrowType> {
+        let store = resolve_store_by_root(self.program, &place.root)?;
+        let layers = place
+            .layers
+            .iter()
+            .map(|layer| layer.name.as_str())
+            .collect::<Vec<_>>();
+        let node = store.resource.descend_layers(&layers)?;
+        if let Some(entry_type) = &node.entry_type
+            && let Some(resource_type) =
+                resolve_resource_schema_type(self.program, &store.module.name, entry_type)
+        {
+            return Some(resource_type);
+        }
+        Some(MarrowType::GroupEntry {
+            resource: crate::resource_type_name(&store.module.name, &store.resource.name),
+            layers: place
+                .layers
+                .iter()
+                .map(|layer| layer.name.clone())
+                .collect(),
+        })
+    }
+
+    fn layer_or_root_range_subject<'p>(
+        &self,
+        expr: &'p CheckedExpr,
+    ) -> Option<&'p CheckedSavedPlace> {
+        let place = expr.saved_place()?;
+        match &place.terminal {
+            CheckedSavedTerminal::Record if place.layers.is_empty() => Some(place),
+            CheckedSavedTerminal::Record if place.layers.last().is_some() => Some(place),
+            _ => None,
+        }
+    }
+
+    fn range_arg_position(&self, expr: &CheckedExpr) -> Option<usize> {
+        let args = match expr {
+            CheckedExpr::Call { args, .. } => args,
+            _ => return None,
+        };
+        args.iter().position(|arg| checked_range_expr(&arg.value))
+    }
+
+    fn terminal_index<'p>(&self, place: &'p CheckedSavedPlace) -> Option<&'p CheckedSavedIndex> {
+        let CheckedSavedTerminal::Index { name, .. } = &place.terminal else {
+            return None;
+        };
+        place.indexes.iter().find(|index| index.name == *name)
+    }
+
+    fn leaf_type(&self, leaf: &StoreLeafKind) -> Option<MarrowType> {
+        match leaf {
+            StoreLeafKind::Scalar(scalar) => Some(MarrowType::Primitive(*scalar)),
+            StoreLeafKind::Identity { store_root, .. } => {
+                Some(MarrowType::Identity(store_root.clone()))
+            }
+            StoreLeafKind::Enum { enum_id } => {
+                let enum_fact = self.program.facts.enum_(*enum_id)?;
+                let module = self
+                    .program
+                    .facts
+                    .modules()
+                    .get(enum_fact.module.0 as usize)?;
+                Some(MarrowType::Enum {
+                    module: module.name.clone(),
+                    name: enum_fact.name.clone(),
+                })
+            }
+        }
+    }
+
+    fn index_key_type(&self, key: &CheckedSavedIndexKey) -> MarrowType {
+        match &key.value_meaning {
+            StoredValueMeaning::Scalar(scalar) => MarrowType::Primitive(*scalar),
+            StoredValueMeaning::Identity { root, .. } => MarrowType::Identity(root.clone()),
+            StoredValueMeaning::Enum { enum_id, .. } => {
+                let Some(enum_fact) = self.program.facts.enum_(*enum_id) else {
+                    return MarrowType::Unknown;
+                };
+                let Some(module) = self
+                    .program
+                    .facts
+                    .modules()
+                    .get(enum_fact.module.0 as usize)
+                else {
+                    return MarrowType::Unknown;
+                };
+                MarrowType::Enum {
+                    module: module.name.clone(),
+                    name: enum_fact.name.clone(),
+                }
+            }
+        }
+    }
+
+    fn store_module_name(&self, place: &CheckedSavedPlace) -> String {
+        let store = self.program.facts.store(place.store_id);
+        self.program
+            .facts
+            .modules()
+            .get(store.module.0 as usize)
+            .map(|module| module.name.clone())
+            .unwrap_or_default()
+    }
+}
+
+pub(crate) fn accepted_saved_place(expr: &CheckedExpr) -> Option<&CheckedSavedPlace> {
+    let place = expr.saved_place()?;
+    saved_access_rejection(expr).is_none().then_some(place)
+}
+
+pub(crate) fn checked_saved_place_effect(
+    facts: &CheckedFacts,
+    place: &CheckedSavedPlace,
+) -> Option<SavedPlaceEffect> {
+    if matches!(place.terminal, CheckedSavedTerminal::Index { .. }) {
+        return None;
+    }
+    let store = facts.store(place.store_id);
+    let members = checked_saved_member_ids(facts, store.resource, place)?;
+    Some(SavedPlaceEffect {
+        resource: store.resource,
+        members,
+    })
+}
+
+pub(crate) fn checked_saved_index_read(place: &CheckedSavedPlace) -> Option<StoreIndexId> {
+    let CheckedSavedTerminal::Index { name, .. } = &place.terminal else {
+        return None;
+    };
+    place
+        .indexes
+        .iter()
+        .find(|index| index.name == *name)
+        .map(|index| index.id)
+}
+
+fn checked_saved_member_ids(
+    facts: &CheckedFacts,
+    resource: ResourceId,
+    place: &CheckedSavedPlace,
+) -> Option<Vec<ResourceMemberId>> {
+    let names = checked_saved_member_names(place);
+    let mut ids = Vec::new();
+    for index in 0..names.len() {
+        ids.push(facts.resource_member_id(resource, &names[..=index])?);
+    }
+    Some(ids)
+}
+
+fn checked_saved_member_names(place: &CheckedSavedPlace) -> Vec<&str> {
+    let mut names = place
+        .layers
+        .iter()
+        .map(|layer| layer.name.as_str())
+        .collect::<Vec<_>>();
+    if let CheckedSavedTerminal::Field { name, .. } = &place.terminal {
+        names.push(name);
+    }
+    names
+}
+
+fn saved_access_rejection(expr: &CheckedExpr) -> Option<SavedAccessRejection> {
+    match expr {
+        CheckedExpr::Field { base, name, .. } | CheckedExpr::OptionalField { base, name, .. } => {
+            if matches!(expr, CheckedExpr::OptionalField { .. })
+                && saved_root_index(base, name).is_some()
+            {
+                return Some(SavedAccessRejection::GeneratedIndexBranch);
+            }
+            if index_branch(base).is_some() {
+                return Some(SavedAccessRejection::GeneratedIndexBranch);
+            }
+            if let CheckedExpr::SavedRoot { name: root, .. } = base.as_ref()
+                && let Some(place) = base.saved_place()
+                && !place.identity_keys.is_empty()
+                && saved_root_index(base, name).is_none()
+            {
+                return Some(SavedAccessRejection::KeyedRootMemberWithoutIdentity(
+                    root.clone(),
+                ));
+            }
+            saved_access_rejection(base)
+        }
+        CheckedExpr::Call { callee, .. } => {
+            if matches!(callee.as_ref(), CheckedExpr::Call { .. }) && index_branch(callee).is_some()
+            {
+                return Some(SavedAccessRejection::GeneratedIndexBranch);
+            }
+            match callee.as_ref() {
+                CheckedExpr::SavedRoot { .. } => None,
+                _ => saved_access_rejection(callee),
+            }
+        }
+        CheckedExpr::Unary { operand, .. } => saved_access_rejection(operand),
+        CheckedExpr::Binary { left, right, .. } => {
+            saved_access_rejection(left).or_else(|| saved_access_rejection(right))
+        }
+        CheckedExpr::Range {
+            start, end, step, ..
+        } => [start.as_deref(), end.as_deref(), step.as_deref()]
+            .into_iter()
+            .flatten()
+            .find_map(saved_access_rejection),
+        CheckedExpr::Interpolation { parts, .. } => parts.iter().find_map(|part| match part {
+            super::CheckedInterpolationPart::Expr(expr) => saved_access_rejection(expr),
+            super::CheckedInterpolationPart::Text { .. } => None,
+        }),
+        CheckedExpr::Literal { .. } | CheckedExpr::Name { .. } | CheckedExpr::SavedRoot { .. } => {
+            None
+        }
+    }
+}
+
+fn saved_root_index<'p>(base: &'p CheckedExpr, name: &str) -> Option<&'p CheckedSavedIndex> {
+    let CheckedExpr::SavedRoot { .. } = base else {
+        return None;
+    };
+    base.saved_place()?
+        .indexes
+        .iter()
+        .find(|index| index.name == name)
+}
+
+fn index_branch(expr: &CheckedExpr) -> Option<&CheckedSavedPlace> {
+    let place = expr.saved_place()?;
+    matches!(place.terminal, CheckedSavedTerminal::Index { .. }).then_some(place)
+}
+
+fn checked_range_expr(expr: &CheckedExpr) -> bool {
+    matches!(
+        expr,
+        CheckedExpr::Range { .. }
+            | CheckedExpr::Binary {
+                op: super::CheckedBinaryOp::RangeExclusive | super::CheckedBinaryOp::RangeInclusive,
+                ..
+            }
+    )
+}
+
+fn range_arg_position_in(args: &[CheckedArg]) -> Option<usize> {
+    args.iter().position(|arg| checked_range_expr(&arg.value))
+}
+
+fn checked_key_param_type(key: &CheckedSavedKeyParam) -> Option<MarrowType> {
+    key.scalar.map(MarrowType::Primitive)
+}
+
+pub(crate) struct IndexBranchInfo<'p> {
+    pub(crate) place: &'p CheckedSavedPlace,
+    pub(crate) name: &'p str,
+    pub(crate) unique: bool,
+    pub(crate) arg_count: usize,
+    pub(crate) key_count: usize,
+}
+
+pub(crate) enum SavedKeyParamTarget<'p> {
+    Root(&'p CheckedSavedPlace),
+    Index(&'p CheckedSavedPlace),
+    Layer(&'p CheckedSavedLayer),
+}
 
 pub(super) fn checked_root_place(
     program: &CheckedProgram,

@@ -22,7 +22,7 @@ use crate::enums;
 use crate::program::{
     CheckedConst, CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, TypeNames,
 };
-use crate::resolve::{self, Def, DefItem, Resolution, ResolvableKind, resolve};
+use crate::resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
 use crate::rules;
 use crate::{MarrowType, ScalarType};
 
@@ -85,17 +85,6 @@ pub fn check_project_with_catalog(
 ) -> Result<(CheckReport, CheckedProgram), DiscoverError> {
     analysis::analyze_source_project(project_root, config, &ProjectSources::new(), accepted)
         .map(|snapshot| (snapshot.report, snapshot.program))
-}
-
-/// The schema of the resource stored at saved root `^root`, if any. Saved roots
-/// are project-wide (a `^books` write addresses the one `books` store from any
-/// module), so this resolves through the store table and returns only the
-/// resource shape for callers that do not need identity keys or indexes.
-pub(crate) fn find_resource_schema<'p>(
-    program: &'p CheckedProgram,
-    root: &str,
-) -> Option<&'p marrow_schema::ResourceSchema> {
-    resolve::resolve_store_by_root(program, root).map(|store| store.resource)
 }
 
 pub(crate) fn identity_type_for_store(store: &marrow_schema::StoreSchema) -> MarrowType {
@@ -578,6 +567,11 @@ pub(crate) fn check_tests_with_sources_analysis(
         project,
         &parsed_files,
         &mut report.diagnostics,
+    );
+    project.rebuild_facts_with_sources_preserving_current_prefix(
+        parsed_files
+            .iter()
+            .map(|(file, parsed)| (file.path.as_path(), parsed)),
     );
     // Passes 2-3 plus targeted unresolved-call suppression are shared with check_project.
     // A read failure drops a file from `parsed_files` so a call into it would look

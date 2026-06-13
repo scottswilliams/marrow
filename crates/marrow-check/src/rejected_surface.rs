@@ -2,8 +2,7 @@ use std::path::Path;
 
 use marrow_syntax::{Block, Declaration, EvolveStep, Expression, SourceSpan, Statement};
 
-use crate::infer::saved_layer_chain;
-use crate::resolve::resolve_store_by_root;
+use crate::executable::{SavedPlaceResolver, lower_expr_for_file};
 use crate::walk::for_each_child_expr;
 use crate::{
     CHECK_REJECTED_SURFACE, CheckDiagnostic, CheckedProgram, DiagnosticPayload, RejectedSurface,
@@ -177,7 +176,7 @@ fn check_expr(
         callee, args, span, ..
     } = expr
     {
-        if let Some(method) = rejected_traversal_method(program, callee) {
+        if let Some(method) = rejected_traversal_method(program, file, callee) {
             push(
                 file,
                 *span,
@@ -209,6 +208,7 @@ const REJECTED_TRAVERSAL_METHODS: &[&str] = &[
 
 fn rejected_traversal_method<'a>(
     program: &CheckedProgram,
+    file: &Path,
     callee: &'a Expression,
 ) -> Option<&'a str> {
     let Expression::Field {
@@ -217,7 +217,10 @@ fn rejected_traversal_method<'a>(
     else {
         return None;
     };
-    if *quoted || !saved_path_like_syntax(base) || declared_saved_member_or_index(program, callee) {
+    if *quoted
+        || !saved_path_like_syntax(base)
+        || callee_names_declared_saved_surface(program, file, callee)
+    {
         return None;
     }
     REJECTED_TRAVERSAL_METHODS
@@ -225,24 +228,13 @@ fn rejected_traversal_method<'a>(
         .then_some(name.as_str())
 }
 
-fn declared_saved_member_or_index(program: &CheckedProgram, callee: &Expression) -> bool {
-    let Expression::Field { base, name, .. } = callee else {
-        return false;
-    };
-    if let Expression::SavedRoot { name: root, .. } = base.as_ref()
-        && let Some(store) = resolve_store_by_root(program, root)
-        && store.store.indexes.iter().any(|index| &index.name == name)
-    {
-        return true;
-    }
-    let Some((root, layers)) = saved_layer_chain(callee) else {
-        return false;
-    };
-    let Some(store) = resolve_store_by_root(program, root) else {
-        return false;
-    };
-    let resource = store.resource;
-    resource.descend_layers(&layers).is_some() || resource.field_type(&layers).is_some()
+fn callee_names_declared_saved_surface(
+    program: &CheckedProgram,
+    file: &Path,
+    callee: &Expression,
+) -> bool {
+    lower_expr_for_file(program, file, callee, &[])
+        .is_some_and(|callee| SavedPlaceResolver::new(program).declared_member_or_index(&callee))
 }
 
 fn saved_path_like_syntax(expr: &Expression) -> bool {

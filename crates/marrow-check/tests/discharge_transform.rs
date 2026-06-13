@@ -142,6 +142,48 @@ fn transform_saved_write_is_check_error() {
     );
 }
 
+/// Transform bodies are pure functions of `old`; reading any saved index would
+/// let unrelated stored data influence every transformed record.
+#[test]
+fn transform_index_reads_are_check_errors() {
+    let root = temp_project("discharge-transform-impure-index-read", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required shelf: string\n\
+             \x20   required isbn: string\n\
+             \x20   required published: int\n\
+             \x20   required shelfMetric: int\n\
+             \x20   required isbnMetric: int\n\
+             \x20   required rangeMetric: int\n\
+             store ^books(id: int): Book\n\
+             \x20   index byShelf(shelf, id)\n\
+             \x20   index byIsbn(isbn) unique\n\
+             \x20   index byPublished(published, id)\n\
+             evolve\n\
+             \x20   transform Book.shelfMetric\n\
+             \x20       return count(^books.byShelf(\"fiction\"))\n\
+             \x20   transform Book.isbnMetric\n\
+             \x20       return count(^books.byIsbn(\"978\"))\n\
+             \x20   transform Book.rangeMetric\n\
+             \x20       return count(^books.byPublished(1..10))\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    let transform_errors = report
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == marrow_check::CHECK_EVOLVE_TRANSFORM)
+        .count();
+    assert_eq!(
+        transform_errors, 3,
+        "expected one impure-transform error for each index read: {:#?}",
+        report.diagnostics
+    );
+}
+
 /// A transform body whose result type does not match the target member type is a
 /// check error.
 #[test]

@@ -1,14 +1,13 @@
 use super::calls::{maybe_present_result, neighbor_read};
-use super::keys::{SavedPathParts, expression_key, saved_path_parts};
+use super::keys::{expression_key, saved_place_key};
 use super::scope::NameScope;
 use crate::CheckedExpr;
 use crate::CheckedProgram;
 use crate::MarrowType;
-use crate::facts::{
-    CheckedFacts, PresenceProofPlace, PresenceProofRead, ResourceMemberId, SavedPlaceEffect,
-    StoreIndexId,
+use crate::executable::{
+    accepted_saved_place, checked_saved_index_read, checked_saved_place_effect,
 };
-use crate::resolve::resolve_store_by_root;
+use crate::facts::{PresenceProofPlace, PresenceProofRead, ResourceMemberId, SavedPlaceEffect};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReadTarget {
@@ -23,10 +22,11 @@ pub(super) enum ReadPlace {
     Saved {
         root: String,
         members: Vec<String>,
+        effect: SavedPlaceEffect,
     },
     StoreIndex {
         root: String,
-        index: String,
+        id: crate::facts::StoreIndexId,
     },
     TransformOld {
         resource: crate::facts::ResourceId,
@@ -91,25 +91,16 @@ pub(super) fn read_target_with_scope(
     saved_path_target(program, expr, scope)
 }
 
-pub(super) fn proof_place(
-    program: &CheckedProgram,
-    target: &ReadTarget,
-) -> Option<PresenceProofPlace> {
+pub(super) fn proof_place(target: &ReadTarget) -> Option<PresenceProofPlace> {
     match &target.place {
-        ReadPlace::Saved { root, members } => Some(PresenceProofPlace::Saved(saved_place(
-            &program.facts,
-            root,
-            members,
-        )?)),
+        ReadPlace::Saved { effect, .. } => Some(PresenceProofPlace::Saved(effect.clone())),
         ReadPlace::TransformOld { resource, member } => {
             Some(PresenceProofPlace::Saved(SavedPlaceEffect {
                 resource: *resource,
                 members: vec![*member],
             }))
         }
-        ReadPlace::StoreIndex { root, index } => Some(PresenceProofPlace::StoreIndex(
-            store_index_place(program, root, index)?,
-        )),
+        ReadPlace::StoreIndex { id, .. } => Some(PresenceProofPlace::StoreIndex(*id)),
     }
 }
 
@@ -138,31 +129,6 @@ pub(super) fn read_file(
     )
 }
 
-pub(super) fn saved_place(
-    facts: &CheckedFacts,
-    root: &str,
-    members: &[String],
-) -> Option<SavedPlaceEffect> {
-    let store = facts.store_by_root(root)?;
-    let member_names: Vec<&str> = members.iter().map(String::as_str).collect();
-    Some(SavedPlaceEffect {
-        resource: store.resource,
-        members: member_path_ids(facts, store.resource, &member_names)?,
-    })
-}
-
-fn member_path_ids(
-    facts: &CheckedFacts,
-    resource: crate::facts::ResourceId,
-    path: &[&str],
-) -> Option<Vec<ResourceMemberId>> {
-    let mut ids = Vec::new();
-    for index in 0..path.len() {
-        ids.push(facts.resource_member_id(resource, &path[..=index])?);
-    }
-    Some(ids)
-}
-
 fn saved_path_target(
     program: &CheckedProgram,
     expr: &CheckedExpr,
@@ -171,26 +137,23 @@ fn saved_path_target(
     if let Some(target) = transform_old_target(program, expr, scope) {
         return Some(target);
     }
-    let path = saved_path_parts(expr, scope)?;
-    if store_index_read(program, &path).is_some() {
+    let place = accepted_saved_place(expr)?;
+    let path = saved_place_key(expr, scope)?;
+    if let Some(index) = checked_saved_index_read(place) {
         let root = path.root;
-        let index = path.members[0].clone();
         return Some(ReadTarget {
-            place: ReadPlace::StoreIndex { root, index },
+            place: ReadPlace::StoreIndex { root, id: index },
             keys: path.keys,
             key_bindings: path.key_bindings,
             read: PresenceProofRead::Direct,
         });
     }
-    let store = resolve_store_by_root(program, &path.root)?;
-    if !path.members.is_empty() {
-        let member_names: Vec<&str> = path.members.iter().map(String::as_str).collect();
-        node_for_path(&store.resource.members, &member_names)?;
-    }
+    let effect = checked_saved_place_effect(&program.facts, place)?;
     Some(ReadTarget {
         place: ReadPlace::Saved {
             root: path.root,
             members: path.members,
+            effect,
         },
         keys: path.keys,
         key_bindings: path.key_bindings,
@@ -229,45 +192,4 @@ fn transform_old_target(
         key_bindings: Vec::new(),
         read: PresenceProofRead::Direct,
     })
-}
-
-fn store_index_read<'a>(
-    program: &'a CheckedProgram,
-    path: &SavedPathParts,
-) -> Option<&'a marrow_schema::IndexSchema> {
-    let [index_name] = path.members.as_slice() else {
-        return None;
-    };
-    let schema = resolve_store_by_root(program, &path.root)?;
-    schema
-        .store
-        .indexes
-        .iter()
-        .find(|index| index.name == *index_name && index.unique)
-}
-
-fn store_index_place(
-    program: &CheckedProgram,
-    root: &str,
-    index_name: &str,
-) -> Option<StoreIndexId> {
-    let store = program.facts.store_by_root(root)?;
-    program
-        .facts
-        .store_indexes()
-        .iter()
-        .find(|index| index.store == store.id && index.name == index_name)
-        .map(|index| index.id)
-}
-
-fn node_for_path<'a>(
-    nodes: &'a [marrow_schema::Node],
-    path: &[&str],
-) -> Option<&'a marrow_schema::Node> {
-    let (first, rest) = path.split_first()?;
-    let node = nodes.iter().find(|node| node.name == *first)?;
-    if rest.is_empty() {
-        return Some(node);
-    }
-    node_for_path(&node.members, rest)
 }

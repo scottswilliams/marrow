@@ -369,6 +369,11 @@ pub(crate) fn analyze_source_project(
         &parsed_files,
         &mut report.diagnostics,
     );
+    program.rebuild_facts_with_sources(
+        parsed_files
+            .iter()
+            .map(|(file, parsed)| (file.path.as_path(), parsed)),
+    );
 
     // Passes 2-3 plus unresolved-call suppression are shared with check_tests.
     check_resolved_files(

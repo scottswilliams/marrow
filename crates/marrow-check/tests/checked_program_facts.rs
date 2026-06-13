@@ -382,6 +382,62 @@ fn checked_facts_fail_closed_for_invalid_saved_places_and_signatures() {
 }
 
 #[test]
+fn invalid_bare_keyed_root_members_do_not_record_saved_effects_or_presence_proofs() {
+    let root = temp_project("program-fact-invalid-bare-keyed-member", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             store ^books(id: int): Book\n\
+             fn badRead()\n\
+             \x20   if exists(^books.title)\n\
+             \x20       return\n\
+             fn badWrite()\n\
+             \x20   ^books.title = \"x\"\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == marrow_check::CHECK_KEY_TYPE),
+        "{:#?}",
+        report.diagnostics
+    );
+    let facts = &program.facts;
+    let module = facts.module_id("books").expect("books module");
+    let bad_read = facts.function_id(module, "badRead").expect("badRead");
+    assert!(
+        facts
+            .function(bad_read)
+            .direct_effects
+            .saved_reads
+            .is_empty(),
+        "{:#?}",
+        facts.function(bad_read).direct_effects
+    );
+    let bad_write = facts.function_id(module, "badWrite").expect("badWrite");
+    assert!(
+        facts
+            .function(bad_write)
+            .direct_effects
+            .saved_writes
+            .is_empty(),
+        "{:#?}",
+        facts.function(bad_write).direct_effects
+    );
+    assert!(
+        facts.presence_proofs().is_empty(),
+        "{:#?}",
+        facts.presence_proofs()
+    );
+}
+
+#[test]
 fn checked_facts_record_saved_reads_inside_saved_path_keys() {
     let root = temp_project("program-fact-key-reads", |root| {
         write(

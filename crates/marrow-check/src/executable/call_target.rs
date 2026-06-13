@@ -57,21 +57,18 @@ impl CheckedCallTarget {
             .then(|| Self::LocalCollection { name: name.clone() })
     }
 
-    fn saved_path_call_target(callee: &CheckedExpr, program: &CheckedProgram) -> Option<Self> {
-        if let CheckedExpr::Field { base, name, .. } = callee {
-            if let CheckedExpr::SavedRoot { name: root, .. } = base.as_ref()
-                && resolve_store_by_root(program, root).is_some_and(|store| {
-                    store.store.indexes.iter().any(|index| index.name == *name)
-                })
+    fn saved_path_call_target(callee: &CheckedExpr, _program: &CheckedProgram) -> Option<Self> {
+        let place = callee.saved_place()?;
+        match &place.terminal {
+            super::CheckedSavedTerminal::Index { .. } => Some(Self::SavedIndexLookup),
+            super::CheckedSavedTerminal::Record
+                if matches!(callee, CheckedExpr::SavedRoot { .. }) =>
             {
-                return Some(Self::SavedIndexLookup);
+                Some(Self::SavedResourceRead)
             }
-            return Some(Self::SavedLayerRead);
+            super::CheckedSavedTerminal::Record => Some(Self::SavedLayerRead),
+            super::CheckedSavedTerminal::Field { .. } => Some(Self::SavedLayerRead),
         }
-        if matches!(callee, CheckedExpr::SavedRoot { .. }) {
-            return Some(Self::SavedResourceRead);
-        }
-        None
     }
 
     fn identity_constructor_call_target(

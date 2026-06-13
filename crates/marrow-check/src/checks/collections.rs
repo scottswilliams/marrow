@@ -5,16 +5,13 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use marrow_schema::{IndexSchema, ResourceSchema, ScalarType, StoreSchema};
+use marrow_schema::ScalarType;
 
-use crate::infer::{
-    infer_type, layer_key_type, lift_member_type, saved_group_entry_type, saved_layer_chain,
-    saved_leaf_type,
-};
-use crate::resolve::resolve_store_by_root;
+use crate::executable::{SavedPlaceResolver, lower_expr_for_file};
+use crate::infer::infer_type;
 use crate::{
-    CHECK_COLLECTION_UNSUPPORTED, CheckDiagnostic, CheckedProgram, MarrowType, TypeNames,
-    identity_type_for_store, resource_type_name,
+    CHECK_COLLECTION_UNSUPPORTED, CheckDiagnostic, CheckedExpr, CheckedProgram, CheckedSavedPlace,
+    MarrowType, resource_type_name,
 };
 
 use super::diagnostics::key_type_diagnostic;
@@ -49,7 +46,7 @@ pub(crate) fn for_frame(
         return frame;
     }
     if let Some((first_type, second_type)) =
-        collection_loop_binding_types(program, binding.second.is_some(), iterable)
+        collection_loop_binding_types(program, binding.second.is_some(), iterable, scope, file)
     {
         let mut frame = HashMap::new();
         frame.insert(binding.first.clone(), first_type);
@@ -78,54 +75,53 @@ pub(super) fn collection_loop_binding_types(
     program: &CheckedProgram,
     two_name: bool,
     iterable: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
 ) -> Option<(MarrowType, Option<MarrowType>)> {
     let iterable = reversed_call_arg(iterable).unwrap_or(iterable);
     if let Some(path) = collection_wrapper_arg(iterable, "keys") {
-        if two_name || is_saved_unique_index_branch_path(program, path) {
+        if two_name || is_saved_unique_index_branch_path(program, path, scope, file) {
             return None;
         }
-        return Some((saved_path_key_type(program, path)?, None));
+        return Some((saved_path_key_type(program, path, scope, file)?, None));
     }
     if let Some(path) = collection_wrapper_arg(iterable, "values") {
-        if two_name || is_saved_index_branch_path(program, path) {
+        if two_name || is_saved_index_branch_path(program, path, scope, file) {
             return None;
         }
-        return Some((saved_path_value_type(program, path), None));
+        return Some((saved_path_value_type(program, path, scope, file), None));
     }
     if let Some(path) = collection_wrapper_arg(iterable, "entries") {
-        if !two_name || is_saved_index_branch_path(program, path) {
+        if !two_name || is_saved_index_branch_path(program, path, scope, file) {
             return None;
         }
         return Some((
-            saved_path_key_type(program, path)?,
-            Some(saved_path_value_type(program, path)),
+            saved_path_key_type(program, path, scope, file)?,
+            Some(saved_path_value_type(program, path, scope, file)),
         ));
     }
-    saved_path_key_type(program, iterable)?;
-    if is_saved_index_branch_path(program, iterable) {
+    saved_path_key_type(program, iterable, scope, file)?;
+    if is_saved_index_branch_path(program, iterable, scope, file) {
         if two_name {
-            let (store, resource, index, module, arg_count) =
-                saved_index_branch(program, iterable)?;
-            if non_unique_index_branch_yields_identity(store, index, arg_count) {
+            let checked = checked_saved_expr(program, iterable, scope, file)?;
+            if SavedPlaceResolver::new(program).non_unique_index_branch_yields_identity(&checked) {
+                let place = checked.saved_place()?;
                 return Some((
-                    saved_path_key_type(program, iterable)?,
-                    Some(MarrowType::Resource(resource_type_name(
-                        module,
-                        &resource.name,
-                    ))),
+                    saved_path_key_type(program, iterable, scope, file)?,
+                    Some(saved_place_resource_type(program, place)),
                 ));
             }
             return None;
         }
-        return Some((saved_path_key_type(program, iterable)?, None));
+        return Some((saved_path_key_type(program, iterable, scope, file)?, None));
     }
     if two_name {
         return Some((
-            saved_path_key_type(program, iterable)?,
-            saved_path_direct_value_type(program, iterable),
+            saved_path_key_type(program, iterable, scope, file)?,
+            saved_path_direct_value_type(program, iterable, scope, file),
         ));
     }
-    Some((saved_path_key_type(program, iterable)?, None))
+    Some((saved_path_key_type(program, iterable, scope, file)?, None))
 }
 
 fn local_collection_loop_binding_types(
@@ -252,7 +248,7 @@ pub(super) fn check_for_collection_support(
         && two_name_entries_loop_arg(binding, iterable).is_none()
         && local_collection_loop_binding_types(program, true, iterable, scope, aliases, file)
             .is_none()
-        && collection_loop_binding_types(program, true, iterable).is_none()
+        && collection_loop_binding_types(program, true, iterable, scope, file).is_none()
         && matches!(
             infer_type(program, iterable, scope, aliases, file, &mut Vec::new()),
             MarrowType::Sequence(_)
@@ -268,19 +264,20 @@ pub(super) fn check_for_collection_support(
     }
 
     let iterable = reversed_call_arg(iterable).unwrap_or(iterable);
-    let Some((store, _resource, index, _module, arg_count)) = saved_index_branch(program, iterable)
-    else {
+    let Some(checked_iterable) = checked_saved_expr(program, iterable, scope, file) else {
         return;
     };
-    if index.unique && arg_count != index.args.len() {
+    let resolver = SavedPlaceResolver::new(program);
+    let Some(index) = resolver.index_branch_info(&checked_iterable) else {
+        return;
+    };
+    if index.unique && index.arg_count != index.key_count {
         diagnostics.push(key_type_diagnostic(
             file,
             iterable.span(),
             format!(
                 "unique index `{}` expects {} key argument(s), but {} were given",
-                index.name,
-                index.args.len(),
-                arg_count,
+                index.name, index.key_count, index.arg_count,
             ),
         ));
         return;
@@ -288,7 +285,7 @@ pub(super) fn check_for_collection_support(
     if binding.second.is_none() {
         return;
     }
-    if non_unique_index_branch_yields_identity(store, index, arg_count) {
+    if resolver.non_unique_index_branch_yields_identity(&checked_iterable) {
         return;
     }
     diagnostics.push(CheckDiagnostic::error(
@@ -453,280 +450,87 @@ fn collection_wrapper_arg<'a>(
 pub(super) fn saved_path_key_type(
     program: &CheckedProgram,
     path: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
 ) -> Option<MarrowType> {
-    use marrow_syntax::Expression;
-    match path {
-        Expression::SavedRoot { name, .. } => {
-            let store = resolve_store_by_root(program, name)?;
-            if store.store.identity_keys.is_empty() {
-                return None;
-            }
-            Some(identity_type_for_store(store.store))
-        }
-        Expression::Call { .. } => saved_index_branch_type(program, path)
-            .or_else(|| saved_range_key_component_type(program, path)),
-        Expression::Field { .. } if is_saved_index_branch_path(program, path) => {
-            saved_index_branch_type(program, path)
-        }
-        Expression::Field { .. } if saved_layer_chain(path).is_some() => {
-            Some(layer_key_type(program, path))
-        }
-        Expression::Field { .. } => None,
-        _ => None,
-    }
+    let expr = checked_saved_expr(program, path, scope, file)?;
+    SavedPlaceResolver::new(program).key_type(&expr)
 }
 
-fn saved_path_value_type(program: &CheckedProgram, path: &marrow_syntax::Expression) -> MarrowType {
-    saved_path_direct_value_type(program, path).unwrap_or(MarrowType::Unknown)
+fn saved_path_value_type(
+    program: &CheckedProgram,
+    path: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
+) -> MarrowType {
+    saved_path_direct_value_type(program, path, scope, file).unwrap_or(MarrowType::Unknown)
 }
 
 fn saved_path_direct_value_type(
     program: &CheckedProgram,
     path: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
 ) -> Option<MarrowType> {
-    use marrow_syntax::Expression;
-    match path {
-        Expression::SavedRoot { name, .. } => {
-            let store = resolve_store_by_root(program, name)?;
-            if store.store.identity_keys.is_empty() {
-                return None;
-            }
-            Some(MarrowType::Resource(resource_type_name(
-                &store.module.name,
-                &store.resource.name,
-            )))
-        }
-        Expression::Call { .. } => saved_range_value_type(program, path),
-        Expression::Field { .. } => saved_leaf_type(program, path)
-            .or_else(|| saved_group_entry_type(program, path))
-            .or(Some(MarrowType::Unknown)),
-        _ => None,
-    }
-}
-
-fn saved_range_value_type(
-    program: &CheckedProgram,
-    path: &marrow_syntax::Expression,
-) -> Option<MarrowType> {
-    let marrow_syntax::Expression::Call { callee, args, .. } = path else {
-        return None;
-    };
-    if !args
-        .iter()
-        .any(|arg| marrow_syntax::range_expr(&arg.value).is_some())
+    let expr = checked_saved_expr(program, path, scope, file)?;
+    if let Some(place) = expr.saved_place()
+        && place.layers.is_empty()
+        && matches!(place.terminal, crate::CheckedSavedTerminal::Record)
     {
-        return None;
+        return Some(saved_place_resource_type(program, place));
     }
-    match callee.as_ref() {
-        marrow_syntax::Expression::SavedRoot { name, .. } => {
-            let store = resolve_store_by_root(program, name)?;
-            Some(MarrowType::Resource(resource_type_name(
-                &store.module.name,
-                &store.resource.name,
-            )))
-        }
-        marrow_syntax::Expression::Field { .. } => saved_leaf_type(program, callee)
-            .or_else(|| saved_group_entry_type(program, callee))
-            .or(Some(MarrowType::Unknown)),
-        _ => None,
-    }
+    SavedPlaceResolver::new(program).value_type(&expr)
 }
 
-fn saved_index_branch_type(
+fn checked_saved_expr(
     program: &CheckedProgram,
     path: &marrow_syntax::Expression,
-) -> Option<MarrowType> {
-    let (store, resource, index, module, arg_count) = saved_index_branch(program, path)?;
-    if index.unique {
-        return Some(identity_type_for_store(store));
-    }
-    let identity_arity = store.identity_keys.len();
-    let identity_start = index.args.len().saturating_sub(identity_arity);
-    if arg_count < identity_start {
-        return index
-            .args
-            .get(arg_count)
-            .map(|name| index_component_type(program, store, resource, module, name));
-    }
-    Some(identity_type_for_store(store))
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
+) -> Option<CheckedExpr> {
+    lower_expr_for_file(program, file, path, scope)
 }
 
-pub(super) fn non_unique_index_branch_yields_identity(
-    store: &StoreSchema,
-    index: &IndexSchema,
-    arg_count: usize,
-) -> bool {
-    if index.unique {
-        return false;
-    }
-    let identity_arity = store.identity_keys.len();
-    let identity_start = index.args.len().saturating_sub(identity_arity);
-    arg_count >= identity_start
-}
-
-pub(super) fn index_component_type(
-    program: &CheckedProgram,
-    store: &StoreSchema,
-    resource: &ResourceSchema,
-    module: &str,
-    name: &str,
-) -> MarrowType {
-    if let Some(key) = store.identity_keys.iter().find(|key| key.name == name) {
-        return MarrowType::from_resolved(key.ty.clone(), TypeNames::default());
-    }
-    resource
-        .field_type(&[name])
-        .map(|ty| lift_member_type(program, ty.clone(), module))
-        .unwrap_or(MarrowType::Unknown)
-}
-
-fn saved_index_branch<'p>(
-    program: &'p CheckedProgram,
-    path: &marrow_syntax::Expression,
-) -> Option<(
-    &'p StoreSchema,
-    &'p ResourceSchema,
-    &'p IndexSchema,
-    &'p str,
-    usize,
-)> {
-    match path {
-        marrow_syntax::Expression::Call { callee, args, .. } => {
-            if args.iter().any(|arg| arg.name.is_some()) {
-                return None;
-            }
-            let (store, resource, index, module) = saved_index_schema(program, callee)?;
-            (args.len() <= index.args.len()).then_some((store, resource, index, module, args.len()))
-        }
-        marrow_syntax::Expression::Field { .. } => saved_index_schema(program, path)
-            .map(|(store, resource, index, module)| (store, resource, index, module, 0)),
-        _ => None,
-    }
-}
-
-pub(super) fn saved_index_schema<'p>(
-    program: &'p CheckedProgram,
-    callee: &marrow_syntax::Expression,
-) -> Option<(
-    &'p StoreSchema,
-    &'p ResourceSchema,
-    &'p IndexSchema,
-    &'p str,
-)> {
-    let marrow_syntax::Expression::Field { base, name, .. } = callee else {
-        return None;
-    };
-    saved_index_schema_from_parts(program, base, name)
-}
-
-fn saved_range_key_component_type(
-    program: &CheckedProgram,
-    path: &marrow_syntax::Expression,
-) -> Option<MarrowType> {
-    let marrow_syntax::Expression::Call { callee, args, .. } = path else {
-        return None;
-    };
-    let range_position = args
-        .iter()
-        .position(|arg| marrow_syntax::range_expr(&arg.value).is_some())?;
-    if range_position + 1 != args.len() {
-        return None;
-    }
-    match callee.as_ref() {
-        marrow_syntax::Expression::SavedRoot { name, .. } => {
-            let store = resolve_store_by_root(program, name)?;
-            if args.len() != store.store.identity_keys.len() {
-                return None;
-            }
-            store
-                .store
-                .identity_keys
-                .get(range_position)
-                .map(|key| MarrowType::from_resolved(key.ty.clone(), TypeNames::default()))
-        }
-        _ => {
-            let (root, layers) = saved_layer_chain(callee)?;
-            let store = resolve_store_by_root(program, root)?;
-            let node = store.resource.descend_layers(&layers)?;
-            if args.len() != node.key_params.len() {
-                return None;
-            }
-            node.key_params
-                .get(range_position)
-                .map(|key| MarrowType::from_resolved(key.ty.clone(), TypeNames::default()))
-        }
-    }
-}
-
-fn saved_index_schema_from_parts<'p>(
-    program: &'p CheckedProgram,
-    base: &marrow_syntax::Expression,
-    name: &str,
-) -> Option<(
-    &'p StoreSchema,
-    &'p ResourceSchema,
-    &'p IndexSchema,
-    &'p str,
-)> {
-    let marrow_syntax::Expression::SavedRoot { name: root, .. } = base else {
-        return None;
-    };
-    let store = resolve_store_by_root(program, root)?;
-    let index = store
-        .store
-        .indexes
-        .iter()
-        .find(|index| index.name == name)?;
-    Some((store.store, store.resource, index, &store.module.name))
+fn saved_place_resource_type(program: &CheckedProgram, place: &CheckedSavedPlace) -> MarrowType {
+    let store = program.facts.store(place.store_id);
+    let module = program
+        .facts
+        .modules()
+        .get(store.module.0 as usize)
+        .map(|module| module.name.as_str())
+        .unwrap_or_default();
+    MarrowType::Resource(resource_type_name(module, &place.resource_name))
 }
 
 pub(crate) fn is_saved_index_branch_path(
     program: &CheckedProgram,
     path: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
 ) -> bool {
-    saved_index_branch(program, path).is_some()
+    checked_saved_expr(program, path, scope, file)
+        .is_some_and(|expr| SavedPlaceResolver::new(program).is_index_branch(&expr))
 }
 
 pub(crate) fn is_saved_key_range_path(
     program: &CheckedProgram,
     path: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
 ) -> bool {
     let path = saved_key_range_subject(path);
-    let marrow_syntax::Expression::Call { callee, args, .. } = path else {
-        return false;
-    };
-    if !args
-        .iter()
-        .any(|arg| marrow_syntax::range_expr(&arg.value).is_some())
-    {
-        return false;
-    }
-    match callee.as_ref() {
-        marrow_syntax::Expression::SavedRoot { name, .. } => {
-            resolve_store_by_root(program, name).is_some()
-        }
-        _ => {
-            saved_index_schema(program, callee).is_some()
-                || saved_layer_chain(callee)
-                    .and_then(|(root, layers)| {
-                        let store = resolve_store_by_root(program, root)?;
-                        store.resource.descend_layers(&layers)
-                    })
-                    .is_some()
-        }
-    }
+    checked_saved_expr(program, path, scope, file)
+        .is_some_and(|expr| SavedPlaceResolver::new(program).is_key_range_path(&expr))
 }
 
 pub(crate) fn is_saved_index_range_path(
     program: &CheckedProgram,
     path: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
 ) -> bool {
-    let marrow_syntax::Expression::Call { callee, args, .. } = path else {
-        return false;
-    };
-    args.iter()
-        .any(|arg| marrow_syntax::range_expr(&arg.value).is_some())
-        && saved_index_schema(program, callee).is_some()
+    checked_saved_expr(program, path, scope, file)
+        .is_some_and(|expr| SavedPlaceResolver::new(program).is_index_range_path(&expr))
 }
 
 fn saved_key_range_subject(mut path: &marrow_syntax::Expression) -> &marrow_syntax::Expression {
@@ -749,6 +553,14 @@ fn saved_key_range_subject(mut path: &marrow_syntax::Expression) -> &marrow_synt
 fn is_saved_unique_index_branch_path(
     program: &CheckedProgram,
     path: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
 ) -> bool {
-    saved_index_branch(program, path).is_some_and(|(_, _, index, _, _)| index.unique)
+    checked_saved_expr(program, path, scope, file)
+        .and_then(|expr| {
+            SavedPlaceResolver::new(program)
+                .index_branch_info(&expr)
+                .map(|info| info.unique)
+        })
+        .unwrap_or(false)
 }

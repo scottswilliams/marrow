@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use marrow_schema::{MemberPathResolution, ScalarType};
 use marrow_syntax::{self as syntax, SourceSpan};
@@ -8,7 +8,7 @@ use crate::facts::{
 };
 use crate::program::{CheckedFunction, CheckedModule, CheckedProgram, MarrowType};
 
-use super::place::{checked_call_place, checked_field_place, checked_root_place};
+use super::place::SavedPlaceResolver;
 use super::{
     CheckedArg, CheckedBinaryOp, CheckedCallTarget, CheckedEnumMemberRef, CheckedEnumRef,
     CheckedExecutableContext, CheckedFunctionRef, CheckedInterpolationPart, CheckedLiteralKind,
@@ -30,6 +30,45 @@ pub struct CheckedSavedPlace {
     pub layers: Vec<CheckedSavedLayer>,
     pub terminal: CheckedSavedTerminal,
     pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteFallibilityFact {
+    Infallible,
+    UniqueConflict(BTreeSet<StoreIndexId>),
+    MaintenanceGated,
+}
+
+impl WriteFallibilityFact {
+    pub(crate) fn for_assignment(place: Option<&CheckedSavedPlace>) -> Self {
+        let Some(place) = place else {
+            return Self::Infallible;
+        };
+        let conflicts = assignment_unique_conflicts(place);
+        if conflicts.is_empty() {
+            Self::Infallible
+        } else {
+            Self::UniqueConflict(conflicts)
+        }
+    }
+
+    pub(crate) fn for_delete(place: Option<&CheckedSavedPlace>) -> Self {
+        let Some(place) = place else {
+            return Self::Infallible;
+        };
+        if deletes_keyed_root(place)
+            || deletes_required_field(place)
+            || deletes_unkeyed_required_group(place)
+        {
+            Self::MaintenanceGated
+        } else {
+            Self::Infallible
+        }
+    }
+
+    pub(crate) fn for_append(place: Option<&CheckedSavedPlace>) -> Option<Self> {
+        place.map(|_| Self::Infallible)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,6 +172,81 @@ pub enum CheckedSavedTerminal {
     },
 }
 
+fn assignment_unique_conflicts(place: &CheckedSavedPlace) -> BTreeSet<StoreIndexId> {
+    match &place.terminal {
+        CheckedSavedTerminal::Record if place.layers.is_empty() => place
+            .indexes
+            .iter()
+            .filter(|index| index.unique)
+            .map(|index| index.id)
+            .collect(),
+        CheckedSavedTerminal::Field { name, .. } if place.layers.is_empty() => {
+            let field_id = place
+                .root_members
+                .iter()
+                .find(|member| member.name == *name)
+                .and_then(|member| member.id);
+            place
+                .indexes
+                .iter()
+                .filter(|index| index.unique)
+                .filter(|index| {
+                    index.keys.iter().any(|key| {
+                        key.name == *name
+                            && field_id.is_none_or(|id| {
+                                key.source == StoreIndexKeySource::ResourceMember(id)
+                            })
+                    })
+                })
+                .map(|index| index.id)
+                .collect()
+        }
+        _ => BTreeSet::new(),
+    }
+}
+
+fn deletes_keyed_root(place: &CheckedSavedPlace) -> bool {
+    matches!(place.terminal, CheckedSavedTerminal::Record)
+        && place.layers.is_empty()
+        && !place.identity_keys.is_empty()
+        && place.identity_args.is_empty()
+}
+
+fn deletes_required_field(place: &CheckedSavedPlace) -> bool {
+    let CheckedSavedTerminal::Field { name, .. } = &place.terminal else {
+        return false;
+    };
+    place
+        .members
+        .iter()
+        .find(|member| member.name == *name)
+        .is_some_and(|member| {
+            matches!(
+                member.kind,
+                CheckedSavedMemberKind::Field { required: true }
+            )
+        })
+}
+
+fn deletes_unkeyed_required_group(place: &CheckedSavedPlace) -> bool {
+    let CheckedSavedTerminal::Record = place.terminal else {
+        return false;
+    };
+    let Some(layer) = place.layers.last() else {
+        return false;
+    };
+    layer.key_params.is_empty()
+        && layer.leaf.is_none()
+        && members_contain_required_field(&layer.members)
+}
+
+fn members_contain_required_field(members: &[CheckedSavedMember]) -> bool {
+    members.iter().any(|member| match member.kind {
+        CheckedSavedMemberKind::Field { required } => required,
+        CheckedSavedMemberKind::Group => members_contain_required_field(&member.group_members),
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckedExpr {
     Literal {
@@ -154,6 +268,7 @@ pub enum CheckedExpr {
         callee: Box<CheckedExpr>,
         args: Vec<CheckedArg>,
         target: CheckedCallTarget,
+        write_fallibility: Option<WriteFallibilityFact>,
         place: Option<CheckedSavedPlace>,
         span: SourceSpan,
     },
@@ -214,7 +329,7 @@ impl CheckedExpr {
             },
             syntax::Expression::SavedRoot { name, span } => Self::SavedRoot {
                 name: name.clone(),
-                place: checked_root_place(context.program, name, *span),
+                place: SavedPlaceResolver::new(context.program).root_place(name, *span),
                 span: *span,
             },
             syntax::Expression::Call {
@@ -233,11 +348,21 @@ impl CheckedExpr {
                     &context.aliases,
                     scope,
                 )?;
-                let place = checked_call_place(&callee, &args, context.program, *span);
+                let write_fallibility = match &target {
+                    CheckedCallTarget::Builtin(super::CheckedBuiltinCall::Append) => {
+                        WriteFallibilityFact::for_append(
+                            args.first().and_then(|arg| arg.value.saved_place()),
+                        )
+                    }
+                    _ => None,
+                };
+                let place =
+                    SavedPlaceResolver::new(context.program).call_place(&callee, &args, *span);
                 Self::Call {
                     callee,
                     args,
                     target,
+                    write_fallibility,
                     place,
                     span: *span,
                 }
@@ -249,7 +374,8 @@ impl CheckedExpr {
                 span,
             } => {
                 let base = Box::new(Self::lower(base, context, scope)?);
-                let place = checked_field_place(&base, name, context.program, *span);
+                let place =
+                    SavedPlaceResolver::new(context.program).field_place(&base, name, *span);
                 Self::Field {
                     base,
                     name: name.clone(),
@@ -265,7 +391,8 @@ impl CheckedExpr {
                 span,
             } => {
                 let base = Box::new(Self::lower(base, context, scope)?);
-                let place = checked_field_place(&base, name, context.program, *span);
+                let place =
+                    SavedPlaceResolver::new(context.program).field_place(&base, name, *span);
                 Self::OptionalField {
                     base,
                     name: name.clone(),

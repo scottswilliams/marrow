@@ -186,22 +186,34 @@ fn lower_function_bodies(
                 )
             })
             .collect();
-        let parsed = sources.get(&module.source_file).copied();
+        let Some(parsed) = sources.get(&module.source_file).copied() else {
+            continue;
+        };
         let context = CheckedExecutableContext::new(program, module_index);
         // The checked functions are built in source order, one per function
         // declaration, so they zip positionally with the parse's function
         // declarations. Matching by name would attach the wrong body to the
         // second duplicate-named function.
-        let declarations = parsed.into_iter().flat_map(|parsed| {
-            parsed
-                .file
-                .declarations
-                .iter()
-                .filter_map(|declaration| match declaration {
-                    Declaration::Function(function) => Some(function),
-                    _ => None,
-                })
-        });
+        let declarations: Vec<_> = parsed
+            .file
+            .declarations
+            .iter()
+            .filter_map(|declaration| match declaration {
+                Declaration::Function(function) => Some(function),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            context.module_name(),
+            module.name,
+            "checked executable context/module alignment diverged"
+        );
+        assert_eq!(
+            module.functions.len(),
+            declarations.len(),
+            "checked function/declaration count diverged for module {}",
+            module.name
+        );
         for ((function_index, function), declaration) in
             module.functions.iter().enumerate().zip(declarations)
         {
@@ -213,8 +225,10 @@ fn lower_function_bodies(
                     .map(|param| (param.name.clone(), param.ty.clone()))
                     .collect(),
             );
-            debug_assert_eq!(context.module_name(), module.name);
-            debug_assert_eq!(function.name, declaration.name);
+            assert_eq!(
+                function.name, declaration.name,
+                "checked function/declaration body alignment diverged"
+            );
             bodies.push(LoweredFunctionBody {
                 module_index,
                 function_index,

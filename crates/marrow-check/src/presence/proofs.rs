@@ -21,7 +21,7 @@ pub(super) fn read_proof(
     scope: &NameScope,
 ) -> Option<ReadProof> {
     let target = read_target_with_scope(program, expr, scope)?;
-    let place = proof_place(program, &target)?;
+    let place = proof_place(&target)?;
     let (source, status) = match context {
         ReadContext::Resolved => (
             PresenceProofSource::Narrowing,

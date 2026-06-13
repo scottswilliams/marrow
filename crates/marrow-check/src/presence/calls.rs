@@ -21,7 +21,7 @@ pub(super) fn std_path_arg_mask(target: &CheckedCallTarget) -> Option<Vec<bool>>
     )
 }
 
-pub(super) fn maybe_present_result(target: &CheckedCallTarget) -> bool {
+pub(crate) fn maybe_present_result(target: &CheckedCallTarget) -> bool {
     matches!(
         target,
         CheckedCallTarget::Std(std) if std.presence == ReturnPresence::MaybePresent

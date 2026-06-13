@@ -14,10 +14,10 @@
 
 use super::scope::NameScope;
 use super::util::extend_unique;
-use crate::{CheckedArg, CheckedExpr, CheckedInterpolationPart};
+use crate::{CheckedArg, CheckedExpr, CheckedInterpolationPart, CheckedSavedTerminal};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct SavedPathParts {
+pub(super) struct SavedPlaceKey {
     pub(super) root: String,
     pub(super) members: Vec<String>,
     pub(super) keys: Vec<String>,
@@ -33,34 +33,39 @@ pub(super) struct ExprKey {
     pub(super) bindings: Vec<u32>,
 }
 
-pub(super) fn saved_path_parts(expr: &CheckedExpr, scope: &NameScope) -> Option<SavedPathParts> {
-    match expr {
-        CheckedExpr::SavedRoot { name, .. } => Some(SavedPathParts {
-            root: name.clone(),
-            members: Vec::new(),
-            keys: Vec::new(),
-            key_bindings: Vec::new(),
-        }),
-        CheckedExpr::Call { callee, args, .. } => {
-            let mut path = saved_path_parts(callee, scope)?;
-            for arg in args {
-                let key = argument_key(arg, scope);
-                path.keys.push(key.text);
-                extend_unique(&mut path.key_bindings, key.bindings);
-            }
-            Some(path)
-        }
-        CheckedExpr::Field { base, name, .. } | CheckedExpr::OptionalField { base, name, .. } => {
-            let mut path = saved_path_parts(base, scope)?;
+pub(super) fn saved_place_key(expr: &CheckedExpr, scope: &NameScope) -> Option<SavedPlaceKey> {
+    let place = expr.saved_place()?;
+    let mut path = SavedPlaceKey {
+        root: place.root.clone(),
+        members: place
+            .layers
+            .iter()
+            .map(|layer| layer.name.clone())
+            .collect(),
+        keys: Vec::new(),
+        key_bindings: Vec::new(),
+    };
+    match &place.terminal {
+        CheckedSavedTerminal::Record => {}
+        CheckedSavedTerminal::Field { name, .. } | CheckedSavedTerminal::Index { name, .. } => {
             path.members.push(name.clone());
-            Some(path)
         }
-        CheckedExpr::Literal { .. }
-        | CheckedExpr::Name { .. }
-        | CheckedExpr::Unary { .. }
-        | CheckedExpr::Binary { .. }
-        | CheckedExpr::Range { .. }
-        | CheckedExpr::Interpolation { .. } => None,
+    }
+    append_args_to_key(&mut path, &place.identity_args, scope);
+    for layer in &place.layers {
+        append_args_to_key(&mut path, &layer.args, scope);
+    }
+    if let CheckedSavedTerminal::Index { args, .. } = &place.terminal {
+        append_args_to_key(&mut path, args, scope);
+    }
+    Some(path)
+}
+
+fn append_args_to_key(path: &mut SavedPlaceKey, args: &[CheckedArg], scope: &NameScope) {
+    for arg in args {
+        let key = argument_key(arg, scope);
+        path.keys.push(key.text);
+        extend_unique(&mut path.key_bindings, key.bindings);
     }
 }
 

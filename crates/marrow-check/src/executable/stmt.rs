@@ -9,7 +9,7 @@ use crate::resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
 use super::expr::{checked_enum_ref, lower_optional_expr};
 use super::{
     CheckedElseIf, CheckedEnumRef, CheckedExecutableContext, CheckedExpr, CheckedForBinding,
-    CheckedMatchArm,
+    CheckedMatchArm, WriteFallibilityFact,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,10 +95,12 @@ pub enum CheckedStmt {
     Assign {
         target: CheckedExpr,
         value: CheckedExpr,
+        fallibility: WriteFallibilityFact,
         span: SourceSpan,
     },
     Delete {
         path: CheckedExpr,
+        fallibility: WriteFallibilityFact,
         span: SourceSpan,
     },
     Return {
@@ -212,15 +214,25 @@ impl CheckedStmt {
                 target,
                 value,
                 span,
-            } => Self::Assign {
-                target: CheckedExpr::lower(target, context, scope)?,
-                value: CheckedExpr::lower(value, context, scope)?,
-                span: *span,
-            },
-            syntax::Statement::Delete { path, span } => Self::Delete {
-                path: CheckedExpr::lower(path, context, scope)?,
-                span: *span,
-            },
+            } => {
+                let target = CheckedExpr::lower(target, context, scope)?;
+                let fallibility = WriteFallibilityFact::for_assignment(target.saved_place());
+                Self::Assign {
+                    target,
+                    value: CheckedExpr::lower(value, context, scope)?,
+                    fallibility,
+                    span: *span,
+                }
+            }
+            syntax::Statement::Delete { path, span } => {
+                let path = CheckedExpr::lower(path, context, scope)?;
+                let fallibility = WriteFallibilityFact::for_delete(path.saved_place());
+                Self::Delete {
+                    path,
+                    fallibility,
+                    span: *span,
+                }
+            }
             syntax::Statement::Return { value, span } => Self::Return {
                 value: lower_optional_expr(value.as_ref(), context, scope)?,
                 span: *span,

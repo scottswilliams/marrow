@@ -69,11 +69,12 @@ fn eval_binding_or_write_statement(
             target,
             value,
             span,
+            ..
         } => {
             eval_assignment(target, value, *span, env)?;
             Ok(Some(Flow::Normal))
         }
-        ExecStmt::Delete { path, span } => {
+        ExecStmt::Delete { path, span, .. } => {
             eval_delete(path, *span, env)?;
             Ok(Some(Flow::Normal))
         }

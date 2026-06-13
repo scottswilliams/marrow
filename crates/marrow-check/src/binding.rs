@@ -4,8 +4,8 @@
 //! editor tooling (go-to-definition, find-all-references, rename) builds on. It
 //! does not reimplement name resolution: it reuses the checker's unified `resolve`
 //! (via `resolve_function_in_module`) for module-aware function calls,
-//! `find_resource_schema` plus the schema's field/layer/index lookup for saved
-//! data, and the same block traversal shape the checker's scope lowering uses (a
+//! checked executable saved-place lowering for saved data, and the same block
+//! traversal shape the checker's scope lowering uses (a
 //! frame per block, with loop and catch bindings scoped to their body) so a
 //! local's scope cannot drift from the one the checker builds.
 //!
@@ -28,10 +28,11 @@ use crate::MarrowType;
 use crate::analysis::span_covers;
 use crate::checks::{file_prelude, for_frame};
 use crate::enums::{enum_schema_in, resolve_enum_member_path, resolve_type};
+use crate::executable::{SavedMemberRefKind, SavedPlaceResolver, lower_expr_for_file};
 use crate::infer::{infer_only, local_binding};
 use crate::{
     AnalysisSnapshot, CheckedProgram, Def, DefItem, Resolution, ResolvableKind, expand_alias,
-    find_resource_schema, resolve, resolve_function_in_module, split_type_path,
+    resolve, resolve_function_in_module, split_type_path,
 };
 
 /// What a [`SymbolRef`] names. The kinds the index resolves, grouped by where they
@@ -745,7 +746,7 @@ impl UseWalker<'_, '_> {
                     self.resolve_type_ref(ty);
                 }
                 // The initializer runs before the binding, so resolve it first.
-                self.walk_expr(value, scope);
+                self.walk_expr(value, scope, type_scope);
                 self.bind_local(statement, name, *span, scope, type_scope);
             }
             Statement::Var {
@@ -763,23 +764,23 @@ impl UseWalker<'_, '_> {
                     self.resolve_type_ref(ty);
                 }
                 if let Some(value) = value {
-                    self.walk_expr(value, scope);
+                    self.walk_expr(value, scope, type_scope);
                 }
                 self.bind_local(statement, name, *span, scope, type_scope);
             }
             Statement::Assign { target, value, .. } => {
-                self.walk_expr(target, scope);
-                self.walk_expr(value, scope);
+                self.walk_expr(target, scope, type_scope);
+                self.walk_expr(value, scope, type_scope);
             }
-            Statement::Delete { path, .. } => self.walk_expr(path, scope),
+            Statement::Delete { path, .. } => self.walk_expr(path, scope, type_scope),
             Statement::Return { value, .. } => {
                 if let Some(value) = value {
-                    self.walk_expr(value, scope);
+                    self.walk_expr(value, scope, type_scope);
                 }
             }
             Statement::ReturnAbsent { .. } => {}
             Statement::Throw { value, .. } | Statement::Expr { value, .. } => {
-                self.walk_expr(value, scope);
+                self.walk_expr(value, scope, type_scope);
             }
             Statement::If {
                 condition,
@@ -789,12 +790,12 @@ impl UseWalker<'_, '_> {
                 ..
             } => {
                 if let Some(condition) = condition {
-                    self.walk_expr(condition, scope);
+                    self.walk_expr(condition, scope, type_scope);
                 }
                 self.walk_block(then_block, scope, type_scope);
                 for else_if in else_ifs {
                     if let Some(condition) = &else_if.condition {
-                        self.walk_expr(condition, scope);
+                        self.walk_expr(condition, scope, type_scope);
                     }
                     self.walk_block(&else_if.block, scope, type_scope);
                 }
@@ -810,11 +811,11 @@ impl UseWalker<'_, '_> {
                 else_block,
                 span,
             } => {
-                self.walk_expr(value, scope);
+                self.walk_expr(value, scope, type_scope);
                 self.walk_if_const_then(*span, name, value, then_block, scope, type_scope);
                 for else_if in else_ifs {
                     if let Some(condition) = &else_if.condition {
-                        self.walk_expr(condition, scope);
+                        self.walk_expr(condition, scope, type_scope);
                     }
                     self.walk_block(&else_if.block, scope, type_scope);
                 }
@@ -826,7 +827,7 @@ impl UseWalker<'_, '_> {
                 condition, body, ..
             } => {
                 if let Some(condition) = condition {
-                    self.walk_expr(condition, scope);
+                    self.walk_expr(condition, scope, type_scope);
                 }
                 self.walk_block(body, scope, type_scope);
             }
@@ -883,7 +884,7 @@ impl UseWalker<'_, '_> {
         scope: &mut Vec<HashMap<String, DefId>>,
         type_scope: &mut Vec<HashMap<String, MarrowType>>,
     ) {
-        self.walk_expr(iterable, scope);
+        self.walk_expr(iterable, scope, type_scope);
         let mut frame = HashMap::new();
         frame.insert(binding.first.clone(), self.define_local(statement_span));
         if let Some(second) = &binding.second {
@@ -975,7 +976,7 @@ impl UseWalker<'_, '_> {
         type_scope: &mut Vec<HashMap<String, MarrowType>>,
     ) {
         if let Some(scrutinee) = scrutinee {
-            self.walk_expr(scrutinee, scope);
+            self.walk_expr(scrutinee, scope, type_scope);
         }
         let enum_identity =
             scrutinee.and_then(|scrutinee| self.match_scrutinee_enum(scrutinee, type_scope));
@@ -1008,7 +1009,12 @@ impl UseWalker<'_, '_> {
     }
 
     /// Walk an expression, attributing each name/call/saved read to its definition.
-    fn walk_expr(&mut self, expr: &Expression, scope: &[HashMap<String, DefId>]) {
+    fn walk_expr(
+        &mut self,
+        expr: &Expression,
+        scope: &[HashMap<String, DefId>],
+        type_scope: &[HashMap<String, MarrowType>],
+    ) {
         match expr {
             Expression::Name { segments, span } => {
                 self.resolve_name(segments, *span, scope);
@@ -1017,10 +1023,10 @@ impl UseWalker<'_, '_> {
             // expression; resolution happens in the enclosing Call/Field arm
             // where the chain is known.
             Expression::SavedRoot { .. } => {}
-            Expression::Unary { operand, .. } => self.walk_expr(operand, scope),
+            Expression::Unary { operand, .. } => self.walk_expr(operand, scope, type_scope),
             Expression::Binary { left, right, .. } => {
-                self.walk_expr(left, scope);
-                self.walk_expr(right, scope);
+                self.walk_expr(left, scope, type_scope);
+                self.walk_expr(right, scope, type_scope);
             }
             Expression::Range {
                 start, end, step, ..
@@ -1029,30 +1035,30 @@ impl UseWalker<'_, '_> {
                     .into_iter()
                     .flatten()
                 {
-                    self.walk_expr(part, scope);
+                    self.walk_expr(part, scope, type_scope);
                 }
             }
             Expression::Call { callee, args, .. } => {
                 // A saved keyed/record read is call-shaped; resolve its saved
                 // member before treating the callee as a function or value.
-                if !self.resolve_saved_path(expr) && !self.resolve_call(callee) {
-                    self.walk_expr(callee, scope);
+                if !self.resolve_saved_path(expr, type_scope) && !self.resolve_call(callee) {
+                    self.walk_expr(callee, scope, type_scope);
                 }
                 for arg in args {
-                    self.walk_expr(&arg.value, scope);
+                    self.walk_expr(&arg.value, scope, type_scope);
                 }
             }
             Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
                 // Resolve as a saved path if applicable; otherwise descend into
                 // the base.
-                if !self.resolve_saved_path(expr) {
-                    self.walk_expr(base, scope);
+                if !self.resolve_saved_path(expr, type_scope) {
+                    self.walk_expr(base, scope, type_scope);
                 }
             }
             Expression::Interpolation { parts, .. } => {
                 for part in parts {
                     if let marrow_syntax::InterpolationPart::Expr(inner) = part {
-                        self.walk_expr(inner, scope);
+                        self.walk_expr(inner, scope, type_scope);
                     }
                 }
             }
@@ -1280,26 +1286,33 @@ impl UseWalker<'_, '_> {
         false
     }
 
-    /// Resolve a saved-path expression (`^root(..).field`, `^root(..).layer(..)`,
-    /// `^root.index(..)`, a singleton `^root.field`) to the saved member it reads,
-    /// recording the use at the member-name position. Returns whether it resolved.
-    fn resolve_saved_path(&mut self, expr: &Expression) -> bool {
-        let Some((root, chain, name_span, kind)) = saved_member_ref(expr) else {
+    fn resolve_saved_path(
+        &mut self,
+        expr: &Expression,
+        type_scope: &[HashMap<String, MarrowType>],
+    ) -> bool {
+        let Some(checked) = lower_expr_for_file(self.builder.program, self.file, expr, type_scope)
+        else {
             return false;
         };
-        // Only a declared saved root resolves; confirm the root is owned.
-        if find_resource_schema(self.builder.program, root).is_none() {
+        let Some(reference) =
+            SavedPlaceResolver::new(self.builder.program).binding_member_ref(&checked)
+        else {
             return false;
-        }
-        let chain: Vec<String> = chain.iter().map(|name| name.to_string()).collect();
+        };
+        let kind = match reference.kind {
+            SavedMemberRefKind::Field => SymbolKind::Field,
+            SavedMemberRefKind::Layer => SymbolKind::Layer,
+            SavedMemberRefKind::Index => SymbolKind::Index,
+        };
         if let Some(def) = self
             .builder
             .module_scope
             .saved_members
-            .get(&(root.to_string(), chain))
+            .get(&(reference.root.clone(), reference.chain))
             .copied()
         {
-            self.builder.use_of(def, self.file, name_span, kind);
+            self.builder.use_of(def, self.file, reference.span, kind);
             return true;
         }
         false
@@ -1447,90 +1460,4 @@ fn match_arm_header_span(arm: &MatchArm) -> SourceSpan {
 
 fn span_width(span: SourceSpan) -> usize {
     span.end_byte.saturating_sub(span.start_byte)
-}
-
-/// Extract `(root, member-chain, member-name span, kind)` from a saved-path read.
-/// The chain is the named segments after the identity, outermost first, and the
-/// span points at the leaf member name. Covers a top-level field
-/// `^root(..).field` / singleton `^root.field`, a keyed layer `^root(..).layer(..)`
-/// or unkeyed group hop, and a unique-index lookup `^root.index(..)`. Returns
-/// `None` for anything that is not a saved read of a named member.
-fn saved_member_ref(expr: &Expression) -> Option<(&str, Vec<&str>, SourceSpan, SymbolKind)> {
-    match expr {
-        // A field/group read names a stored field; an index is always *called*, so
-        // it never appears in a `Field` position.
-        Expression::Field {
-            base, name, span, ..
-        }
-        | Expression::OptionalField {
-            base, name, span, ..
-        } => {
-            let (root, mut chain) = saved_field_chain(base)?;
-            chain.push(name);
-            Some((root, chain, *span, SymbolKind::Field))
-        }
-        Expression::Call { callee, .. } => match callee.as_ref() {
-            Expression::Field {
-                base,
-                name,
-                span: name_span,
-                ..
-            } => {
-                // `^root.index(args)`: base is the bare saved root, so this names
-                // an index by its single-name chain.
-                if let Expression::SavedRoot { name: root, .. } = base.as_ref() {
-                    return Some((root, vec![name], *name_span, SymbolKind::Index));
-                }
-                let (root, mut chain) = saved_layer_base(base)?;
-                chain.push(name);
-                Some((root, chain, *name_span, SymbolKind::Layer))
-            }
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// The `(root, [member..])` chain leading to the base of a field read, peeling
-/// group hops.
-fn saved_field_chain(expr: &Expression) -> Option<(&str, Vec<&str>)> {
-    match expr {
-        Expression::Call { callee, .. } => match callee.as_ref() {
-            Expression::SavedRoot { name: root, .. } => Some((root, Vec::new())),
-            Expression::Field { .. } => saved_layer_base(callee),
-            _ => None,
-        },
-        Expression::SavedRoot { name: root, .. } => Some((root, Vec::new())),
-        Expression::Field { base, name, .. } => {
-            let (root, mut chain) = saved_field_chain(base)?;
-            chain.push(name);
-            Some((root, chain))
-        }
-        _ => None,
-    }
-}
-
-/// The `(root, [layer..])` chain to a keyed layer base `^root(..).layer`, layer
-/// names outermost first. Stricter than the inference-side layer decoder: it
-/// requires a keyed `Call` base, so a bare `^root.layer` does not resolve to a
-/// layer symbol here and editor symbol resolution does not widen.
-fn saved_layer_base(expr: &Expression) -> Option<(&str, Vec<&str>)> {
-    let Expression::Field {
-        base, name: layer, ..
-    } = expr
-    else {
-        return None;
-    };
-    let Expression::Call { callee, .. } = base.as_ref() else {
-        return None;
-    };
-    match callee.as_ref() {
-        Expression::SavedRoot { name: root, .. } => Some((root, vec![layer])),
-        Expression::Field { .. } => {
-            let (root, mut layers) = saved_layer_base(callee)?;
-            layers.push(layer);
-            Some((root, layers))
-        }
-        _ => None,
-    }
 }

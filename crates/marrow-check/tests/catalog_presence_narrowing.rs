@@ -273,6 +273,36 @@ fn unique_index_coalesce_records_presence_proof() {
 }
 
 #[test]
+fn index_range_exists_records_store_index_presence_proof() {
+    let proofs = presence_proofs(
+        "presence-index-range-exists",
+        "module books\n\
+         resource Post\n\
+         \x20   published: int\n\
+         store ^posts(id: int): Post\n\
+         \x20   index byDate(published, id)\n\
+         fn found(lo: int, hi: int): bool\n\
+         \x20   return exists(^posts.byDate(lo..hi))\n",
+    );
+
+    assert!(
+        proofs
+            .iter()
+            .any(|proof| matches!(proof.place, PresenceProofPlace::StoreIndex(_))),
+        "{proofs:#?}"
+    );
+    assert!(
+        !proofs.iter().any(|proof| {
+            matches!(
+                &proof.place,
+                PresenceProofPlace::Saved(place) if place.members.is_empty()
+            )
+        }),
+        "{proofs:#?}"
+    );
+}
+
+#[test]
 fn next_coalesce_records_read_site_resolution() {
     let root = temp_project("presence-next-coalesce", |root| {
         write(

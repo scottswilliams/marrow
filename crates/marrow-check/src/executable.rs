@@ -23,8 +23,13 @@ mod syntax_parts;
 pub use expr::{
     CheckedExpr, CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedKeyParam, CheckedSavedLayer,
     CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace, CheckedSavedTerminal,
+    WriteFallibilityFact,
 };
 use expr::{checked_enum_member_ref_in, function_ref};
+pub(crate) use place::{
+    SavedAccessRejection, SavedKeyParamTarget, SavedMemberRefKind, SavedPlaceResolver,
+    accepted_saved_place, checked_saved_index_read, checked_saved_place_effect,
+};
 pub(crate) use runtime_value::checked_runtime_value_type;
 pub use runtime_value::{
     CheckedResourceConstructor, CheckedResourceConstructorField, CheckedResourceRef,
@@ -42,7 +47,7 @@ pub fn checked_saved_root_place(
     root: &str,
     span: SourceSpan,
 ) -> Option<CheckedSavedPlace> {
-    place::checked_root_place(program, root, span)
+    SavedPlaceResolver::new(program).root_place(root, span)
 }
 
 pub fn checked_activation_root_places(program: &CheckedProgram) -> Vec<CheckedSavedPlace> {
@@ -74,6 +79,21 @@ pub(crate) struct CheckedExecutableContext<'a> {
     from_module: &'a str,
     source_file: &'a Path,
     aliases: HashMap<String, Vec<String>>,
+}
+
+pub(crate) fn lower_expr_for_file(
+    program: &CheckedProgram,
+    file: &Path,
+    expr: &marrow_syntax::Expression,
+    scope: &[HashMap<String, crate::MarrowType>],
+) -> Option<CheckedExpr> {
+    let module_index = program
+        .modules
+        .iter()
+        .position(|module| module.source_file == file)?;
+    let context = CheckedExecutableContext::new(program, module_index);
+    let mut scope = scope.to_vec();
+    CheckedExpr::lower(expr, &context, &mut scope)
 }
 
 impl<'a> CheckedExecutableContext<'a> {

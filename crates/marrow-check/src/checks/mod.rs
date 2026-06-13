@@ -20,7 +20,7 @@ mod saved_keys;
 mod statements;
 
 pub(crate) use calls::{CallCheck, check_call};
-pub(crate) use collections::{for_frame, is_saved_index_branch_path};
+pub(crate) use collections::for_frame;
 pub(crate) use diagnostics::key_type_diagnostic;
 pub(crate) use driver::{
     FilePrelude, ModuleNamePolicy, ResolvedFileCheck, annotation_type_known, check_resolved_files,
@@ -28,7 +28,7 @@ pub(crate) use driver::{
 };
 pub(crate) use operators::{CoalesceCheck, check_binary, check_coalesce, check_unary};
 pub(crate) use ranges::check_range_value;
-pub(crate) use saved_keys::check_saved_key_args;
+pub(crate) use saved_keys::{SavedKeyArgCheck, check_saved_key_args};
 pub(crate) use statements::{
     TransformBlockTypeCheck, check_block_types, check_transform_block_types,
 };

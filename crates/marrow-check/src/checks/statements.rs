@@ -329,7 +329,7 @@ impl StatementCheck<'_> {
         let target_type = self.infer(target);
         let value_type = self.infer(value);
         self.check_range_value(value);
-        if is_saved_index_branch_path(self.program, target) {
+        if is_saved_index_branch_path(self.program, target, self.scope, self.file) {
             self.diagnostics.push(CheckDiagnostic::error(
                 crate::rules::CHECK_INVALID_ASSIGN_TARGET,
                 self.file,
@@ -386,7 +386,7 @@ impl StatementCheck<'_> {
 
     fn check_delete_statement(&mut self, path: &marrow_syntax::Expression) {
         self.infer(path);
-        if is_saved_index_branch_path(self.program, path) {
+        if is_saved_index_branch_path(self.program, path, self.scope, self.file) {
             self.diagnostics.push(CheckDiagnostic::error(
                 CHECK_COLLECTION_UNSUPPORTED,
                 self.file,
@@ -462,7 +462,7 @@ impl StatementCheck<'_> {
     ) {
         let value_type = self.infer(value);
         self.check_range_value(value);
-        self.check_if_const_value(value, &value_type);
+        self.check_if_const_value(value);
         let mut frame = HashMap::new();
         frame.insert(name.to_string(), value_type);
         self.scope.push(frame);
@@ -479,7 +479,7 @@ impl StatementCheck<'_> {
         }
     }
 
-    fn check_if_const_value(&mut self, value: &marrow_syntax::Expression, value_type: &MarrowType) {
+    fn check_if_const_value(&mut self, value: &marrow_syntax::Expression) {
         let Some(module_index) = self
             .program
             .modules
@@ -520,7 +520,7 @@ impl StatementCheck<'_> {
                 } => *unique && args.len() == *arg_count,
             })
             || fixed_singleton_root(self.program, &value)
-            || (read_resolves && !matches!(value_type, MarrowType::Unknown));
+            || (read_resolves && (maybe_present_read(&value) || transform_old_member_read(&value)));
         if !is_value_read || !read_resolves {
             self.diagnostics.push(CheckDiagnostic::error(
                 CHECK_CONDITION_TYPE,
@@ -559,8 +559,8 @@ impl StatementCheck<'_> {
             self.transform_old,
         );
         check_for_entries_support(self.file, binding, iterable, self.diagnostics);
-        if !is_saved_index_branch_path(self.program, iterable)
-            && !is_saved_key_range_path(self.program, iterable)
+        if !is_saved_index_branch_path(self.program, iterable, self.scope, self.file)
+            && !is_saved_key_range_path(self.program, iterable, self.scope, self.file)
         {
             check_range_iterable_value_parts(self.file, iterable, self.diagnostics);
         }
@@ -638,7 +638,7 @@ impl StatementCheck<'_> {
     }
 
     fn check_range_value(&mut self, value: &marrow_syntax::Expression) {
-        if allowed_saved_key_range_value_context(self.program, value) {
+        if allowed_saved_key_range_value_context(self.program, value, self.scope, self.file) {
             return;
         }
         if let Some(range) = marrow_syntax::range_expr(value) {
@@ -656,6 +656,8 @@ impl StatementCheck<'_> {
 fn allowed_saved_key_range_value_context(
     program: &CheckedProgram,
     value: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
 ) -> bool {
     let marrow_syntax::Expression::Call { callee, args, .. } = value else {
         return false;
@@ -669,12 +671,12 @@ fn allowed_saved_key_range_value_context(
     let [arg] = args.as_slice() else {
         return false;
     };
-    if arg.name.is_some() || !is_saved_key_range_path(program, &arg.value) {
+    if arg.name.is_some() || !is_saved_key_range_path(program, &arg.value, scope, file) {
         return false;
     }
     match name.as_str() {
         "exists" => true,
-        "count" => is_saved_index_range_path(program, &arg.value),
+        "count" => is_saved_index_range_path(program, &arg.value, scope, file),
         _ => false,
     }
 }
@@ -712,6 +714,25 @@ fn fixed_singleton_root(program: &CheckedProgram, expr: &crate::CheckedExpr) -> 
     };
     crate::resolve::resolve_store_by_root(program, name)
         .is_some_and(|store| store.store.identity_keys.is_empty())
+}
+
+fn maybe_present_read(expr: &crate::CheckedExpr) -> bool {
+    let crate::CheckedExpr::Call { target, .. } = expr else {
+        return false;
+    };
+    crate::presence::maybe_present_result(target)
+}
+
+fn transform_old_member_read(expr: &crate::CheckedExpr) -> bool {
+    let (base, _) = match expr {
+        crate::CheckedExpr::Field { base, name, .. }
+        | crate::CheckedExpr::OptionalField { base, name, .. } => (base, name),
+        _ => return false,
+    };
+    matches!(
+        base.as_ref(),
+        crate::CheckedExpr::Name { segments, .. } if segments.as_slice() == ["old"]
+    )
 }
 
 struct RootReplacementCheck<'a> {

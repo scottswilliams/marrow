@@ -172,10 +172,12 @@ fn written_target_invalidates(written: &ReadTarget, target: &ReadTarget) -> bool
             ReadPlace::Saved {
                 root: written_root,
                 members: written_members,
+                ..
             },
             ReadPlace::Saved {
                 root: target_root,
                 members: target_members,
+                ..
             },
         ) => {
             written_root == target_root
@@ -191,19 +193,9 @@ fn written_target_invalidates(written: &ReadTarget, target: &ReadTarget) -> bool
             },
         ) => written_root == target_root,
         (
-            ReadPlace::StoreIndex {
-                root: written_root,
-                index: written_index,
-            },
-            ReadPlace::StoreIndex {
-                root: target_root,
-                index: target_index,
-            },
-        ) => {
-            written_root == target_root
-                && written_index == target_index
-                && written.keys == target.keys
-        }
+            ReadPlace::StoreIndex { id: written_id, .. },
+            ReadPlace::StoreIndex { id: target_id, .. },
+        ) => written_id == target_id && written.keys == target.keys,
         (
             ReadPlace::TransformOld {
                 resource: written_resource,

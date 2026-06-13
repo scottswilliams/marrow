@@ -1,9 +1,11 @@
-use super::target::saved_place;
 use super::util::push_unique;
+use crate::executable::{
+    accepted_saved_place, checked_saved_index_read, checked_saved_place_effect,
+};
 use crate::facts::{CheckedFacts, DirectEffectFacts, HostEffect};
 use crate::{
     CheckedBody, CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedInterpolationPart,
-    CheckedSavedPlace, CheckedSavedTerminal, CheckedStmt,
+    CheckedStmt,
 };
 
 pub(crate) fn direct_effects_for_block(
@@ -143,10 +145,17 @@ fn collect_statement_effects(
 }
 
 fn collect_expr_reads(facts: &CheckedFacts, expr: &CheckedExpr, effects: &mut DirectEffectFacts) {
-    if let Some(place) = expr.saved_place() {
+    if let Some(place) = accepted_saved_place(expr) {
         if let Some(effect) = saved_effect(facts, place) {
             push_unique(&mut effects.saved_reads, effect);
         }
+        if let Some(index) = checked_saved_index_read(place) {
+            push_unique(&mut effects.saved_index_reads, index);
+        }
+        collect_saved_path_key_reads(facts, expr, effects);
+        return;
+    }
+    if expr.saved_place().is_some() {
         collect_saved_path_key_reads(facts, expr, effects);
         return;
     }
@@ -236,7 +245,7 @@ fn collect_saved_path_key_reads(
 }
 
 fn collect_saved_write(facts: &CheckedFacts, expr: &CheckedExpr, effects: &mut DirectEffectFacts) {
-    if let Some(place) = expr.saved_place()
+    if let Some(place) = accepted_saved_place(expr)
         && let Some(effect) = saved_effect(facts, place)
     {
         push_unique(&mut effects.saved_writes, effect);
@@ -245,21 +254,9 @@ fn collect_saved_write(facts: &CheckedFacts, expr: &CheckedExpr, effects: &mut D
 
 fn saved_effect(
     facts: &CheckedFacts,
-    place: &CheckedSavedPlace,
+    place: &crate::CheckedSavedPlace,
 ) -> Option<crate::SavedPlaceEffect> {
-    saved_place(facts, &place.root, &effect_members(place))
-}
-
-fn effect_members(place: &CheckedSavedPlace) -> Vec<String> {
-    let mut members: Vec<_> = place
-        .layers
-        .iter()
-        .map(|layer| layer.name.clone())
-        .collect();
-    if let CheckedSavedTerminal::Field { name, .. } = &place.terminal {
-        members.push(name.clone());
-    }
-    members
+    checked_saved_place_effect(facts, place)
 }
 
 fn host_effect(expr: &CheckedExpr) -> Option<HostEffect> {

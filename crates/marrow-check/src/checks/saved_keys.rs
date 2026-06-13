@@ -3,115 +3,124 @@
 //! foreign identity spliced into a keyspace, or a scalar of the wrong type, is a
 //! `check.key_type`.
 
+use std::collections::HashMap;
 use std::path::Path;
 
-use marrow_schema::{IndexSchema, KeyDef, ResourceSchema, StoreSchema};
+use marrow_schema::StoreSchema;
 use marrow_syntax::{Argument, SourceSpan};
 
-use crate::infer::saved_layer_chain;
-use crate::resolve::resolve_store_by_root;
+use crate::executable::{SavedKeyParamTarget, SavedPlaceResolver, lower_expr_for_file};
 use crate::typerules::{is_ordered, marrow_type_name, type_compatible};
-use crate::{CheckDiagnostic, CheckedProgram, MarrowType, TypeNames, identity_type_for_store};
+use crate::{
+    CheckDiagnostic, CheckedProgram, CheckedSavedIndexKey, CheckedSavedKeyParam, CheckedSavedPlace,
+    CheckedSavedTerminal, MarrowType, TypeNames, identity_type_for_store,
+};
 
-use super::collections::{index_component_type, saved_index_schema};
 use super::diagnostics::{call_diagnostic, key_type_diagnostic};
 
 /// Type-check the key arguments of a saved access against the keys it addresses.
 /// A foreign identity spliced into a keyspace, or a scalar of the wrong type, is a
 /// `check.key_type`. Non-saved callees and unresolved roots are left alone.
-pub(crate) fn check_saved_key_args(
-    program: &CheckedProgram,
-    callee: &marrow_syntax::Expression,
+pub(crate) struct SavedKeyArgCheck<'a, 'd> {
+    pub(crate) program: &'a CheckedProgram,
+    pub(crate) callee: &'a marrow_syntax::Expression,
+    pub(crate) args: &'a [Argument],
+    pub(crate) arg_types: &'a [MarrowType],
+    pub(crate) scope: &'a [HashMap<String, MarrowType>],
+    pub(crate) span: SourceSpan,
+    pub(crate) file: &'a Path,
+    pub(crate) diagnostics: &'d mut Vec<CheckDiagnostic>,
+}
+
+pub(crate) fn check_saved_key_args(check: SavedKeyArgCheck<'_, '_>) {
+    let Some(callee) = lower_expr_for_file(check.program, check.file, check.callee, check.scope)
+    else {
+        return;
+    };
+    let Some(target) = SavedPlaceResolver::new(check.program).saved_key_params(&callee) else {
+        return;
+    };
+    check_saved_key_argument_names(check.args, check.file, check.diagnostics);
+    match target {
+        SavedKeyParamTarget::Root(place) => {
+            check_root_args_against(
+                place,
+                check.args,
+                check.arg_types,
+                check.span,
+                check.file,
+                check.diagnostics,
+            );
+        }
+        SavedKeyParamTarget::Index(place) => {
+            check_index_args_against(
+                check.program,
+                place,
+                check.args,
+                check.arg_types,
+                check.span,
+                check.file,
+                check.diagnostics,
+            );
+        }
+        SavedKeyParamTarget::Layer(layer) => {
+            if range_arg_position(check.args).is_some() {
+                check_checked_key_range_args(
+                    &layer.key_params,
+                    check.args,
+                    check.arg_types,
+                    check.span,
+                    check.file,
+                    check.diagnostics,
+                );
+            } else {
+                check_checked_keys_against(
+                    &layer.key_params,
+                    check.arg_types,
+                    check.span,
+                    check.file,
+                    check.diagnostics,
+                );
+            }
+        }
+    }
+}
+
+fn check_root_args_against(
+    place: &CheckedSavedPlace,
     args: &[Argument],
     arg_types: &[MarrowType],
     span: SourceSpan,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    use marrow_syntax::Expression;
-    // A whole-record lookup `^root(key…)`: a sole identity argument may be the
-    // resource's own identity (a splice), checked nominally; otherwise the per-key
-    // scalars are checked against the declared identity keys.
-    if let Expression::SavedRoot { name: root, .. } = callee {
-        let Some(store) = resolve_store_by_root(program, root) else {
-            return;
-        };
-        check_saved_key_argument_names(args, file, diagnostics);
-        if let [MarrowType::Identity(_)] = arg_types {
-            let expected = identity_type_for_store(store.store);
-            if type_compatible(&expected, &arg_types[0]) == Some(false) {
-                diagnostics.push(key_type_diagnostic(
-                    file,
-                    span,
-                    format!(
-                        "`^{root}` is addressed by `{}`, but this value is `{}`",
-                        marrow_type_name(&expected),
-                        marrow_type_name(&arg_types[0]),
-                    ),
-                ));
-            }
-            return;
-        }
-        if range_arg_position(args).is_some() {
-            check_declared_key_range_args(
-                &store.store.identity_keys,
-                args,
-                arg_types,
-                span,
+    if let [MarrowType::Identity(_)] = arg_types {
+        let expected = MarrowType::Identity(place.root.clone());
+        if type_compatible(&expected, &arg_types[0]) == Some(false) {
+            diagnostics.push(key_type_diagnostic(
                 file,
-                diagnostics,
-            );
-        } else {
-            check_keys_against(
-                &store.store.identity_keys,
-                arg_types,
                 span,
-                file,
-                diagnostics,
-            );
+                format!(
+                    "`^{}` is addressed by `{}`, but this value is `{}`",
+                    place.root,
+                    marrow_type_name(&expected),
+                    marrow_type_name(&arg_types[0]),
+                ),
+            ));
         }
         return;
     }
-    // A declared index access `^root.index(args...)`: unique indexes read a
-    // single identity only at a complete lookup key, while non-unique branches
-    // accept typed prefixes for traversal.
-    if let Some((store, resource, index, module)) = saved_index_schema(program, callee) {
-        check_saved_key_argument_names(args, file, diagnostics);
-        check_index_args_against(
-            IndexArgTarget {
-                program,
-                store,
-                resource,
-                index,
-                module,
-            },
+    if range_arg_position(args).is_some() {
+        check_checked_key_range_args(
+            &place.identity_keys,
             args,
             arg_types,
             span,
             file,
             diagnostics,
         );
-        return;
-    }
-    // A keyed-layer access `^root(key…).layer(key…)`: check this layer's key
-    // parameters.
-    if let Some((root, layers)) = saved_layer_chain(callee)
-        && let Some(store) = resolve_store_by_root(program, root)
-        && let Some(node) = store.resource.descend_layers(&layers)
-    {
-        check_saved_key_argument_names(args, file, diagnostics);
-        if range_arg_position(args).is_some() {
-            check_declared_key_range_args(
-                &node.key_params,
-                args,
-                arg_types,
-                span,
-                file,
-                diagnostics,
-            );
-        } else {
-            check_keys_against(&node.key_params, arg_types, span, file, diagnostics);
-        }
+    } else {
+        check_checked_keys_against(&place.identity_keys, arg_types, span, file, diagnostics);
     }
 }
 
@@ -155,39 +164,27 @@ fn check_saved_key_argument_names(
     }
 }
 
-struct IndexArgTarget<'a> {
-    program: &'a CheckedProgram,
-    store: &'a StoreSchema,
-    resource: &'a ResourceSchema,
-    index: &'a IndexSchema,
-    module: &'a str,
-}
-
 fn check_index_args_against(
-    target: IndexArgTarget<'_>,
+    program: &CheckedProgram,
+    place: &CheckedSavedPlace,
     args: &[Argument],
     arg_types: &[MarrowType],
     span: SourceSpan,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    let IndexArgTarget {
-        program,
-        store,
-        resource,
-        index,
-        module,
-    } = target;
-    let expected_len = index.args.len();
+    let Some((name, unique, expected_len, keys)) = checked_index_target(place) else {
+        return;
+    };
     let range_arg = range_arg_position(args);
-    if index.unique {
+    if unique {
         if expected_len != arg_types.len() {
             diagnostics.push(key_type_diagnostic(
                 file,
                 span,
                 format!(
                     "unique index `{}` expects {} key argument(s), but {} were given",
-                    index.name,
+                    name,
                     expected_len,
                     arg_types.len(),
                 ),
@@ -198,10 +195,7 @@ fn check_index_args_against(
             diagnostics.push(key_type_diagnostic(
                 file,
                 span,
-                format!(
-                    "unique index `{}` does not accept range arguments",
-                    index.name
-                ),
+                format!("unique index `{}` does not accept range arguments", name),
             ));
             return;
         }
@@ -211,7 +205,7 @@ fn check_index_args_against(
             span,
             format!(
                 "index `{}` accepts at most {} key argument(s), but {} were given",
-                index.name,
+                name,
                 expected_len,
                 arg_types.len(),
             ),
@@ -230,7 +224,7 @@ fn check_index_args_against(
         return;
     }
     if let Some(index) = range_arg {
-        let identity_start = expected_len.saturating_sub(store.identity_keys.len());
+        let identity_start = expected_len.saturating_sub(place.identity_keys.len());
         if index + 1 < identity_start {
             diagnostics.push(key_type_diagnostic(
                 file,
@@ -241,13 +235,14 @@ fn check_index_args_against(
         }
     }
 
-    for (position, (component, arg_type)) in index.args.iter().zip(arg_types).enumerate() {
-        let expected = index_component_type(program, store, resource, module, component);
+    let resolver = SavedPlaceResolver::new(program);
+    for (position, (component, arg_type)) in keys.iter().zip(arg_types).enumerate() {
+        let expected = resolver.saved_index_key_type(component);
         if range_arg == Some(position) {
             check_index_range_arg(
                 &expected,
                 arg_type,
-                component,
+                &component.name,
                 &args[position].value,
                 span,
                 file,
@@ -260,7 +255,8 @@ fn check_index_args_against(
                 file,
                 span,
                 format!(
-                    "index component `{component}` expects `{}`, but this value is `{}`",
+                    "index component `{}` expects `{}`, but this value is `{}`",
+                    component.name,
                     marrow_type_name(&expected),
                     marrow_type_name(arg_type),
                 ),
@@ -269,8 +265,24 @@ fn check_index_args_against(
     }
 }
 
-fn check_declared_key_range_args(
-    keys: &[KeyDef],
+fn checked_index_target(
+    place: &CheckedSavedPlace,
+) -> Option<(&str, bool, usize, &[CheckedSavedIndexKey])> {
+    let CheckedSavedTerminal::Index {
+        name,
+        unique,
+        arg_count,
+        ..
+    } = &place.terminal
+    else {
+        return None;
+    };
+    let index = place.indexes.iter().find(|index| index.name == *name)?;
+    Some((name, *unique, *arg_count, &index.keys))
+}
+
+fn check_checked_key_range_args(
+    keys: &[CheckedSavedKeyParam],
     args: &[Argument],
     arg_types: &[MarrowType],
     span: SourceSpan,
@@ -302,7 +314,7 @@ fn check_declared_key_range_args(
         return;
     }
     for (position, (key, arg_type)) in keys.iter().zip(arg_types).enumerate() {
-        let expected = MarrowType::from_resolved(key.ty.clone(), TypeNames::default());
+        let expected = SavedPlaceResolver::saved_key_param_type(key);
         if range_arg == position {
             check_range_key_arg(
                 RangeKeyArg {
@@ -462,6 +474,42 @@ pub(crate) fn check_keys_against(
     }
     for (key, arg_type) in keys.iter().zip(arg_types) {
         let expected = MarrowType::from_resolved(key.ty.clone(), TypeNames::default());
+        if !saved_key_arg_matches(&expected, arg_type) {
+            diagnostics.push(key_type_diagnostic(
+                file,
+                span,
+                format!(
+                    "key `{}` expects `{}`, but this value is `{}`",
+                    key.name,
+                    marrow_type_name(&expected),
+                    marrow_type_name(arg_type),
+                ),
+            ));
+        }
+    }
+}
+
+fn check_checked_keys_against(
+    keys: &[CheckedSavedKeyParam],
+    arg_types: &[MarrowType],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if keys.len() != arg_types.len() {
+        diagnostics.push(key_type_diagnostic(
+            file,
+            span,
+            format!(
+                "this keyed access expects {} key argument(s), but {} were given",
+                keys.len(),
+                arg_types.len(),
+            ),
+        ));
+        return;
+    }
+    for (key, arg_type) in keys.iter().zip(arg_types) {
+        let expected = SavedPlaceResolver::saved_key_param_type(key);
         if !saved_key_arg_matches(&expected, arg_type) {
             diagnostics.push(key_type_diagnostic(
                 file,

@@ -10,7 +10,7 @@ use marrow_schema::{ResourceSchema, Type};
 use marrow_store::value::ScalarType;
 use marrow_syntax::SourceSpan;
 
-use crate::infer::{layer_key_type, record_identity_type, saved_group_chain};
+use crate::executable::{SavedPlaceResolver, lower_expr_for_file};
 use crate::resolve::resolve_store_by_root;
 use crate::typerules::{
     as_primitive, expects_conversion, marrow_type_name, mismatch_display, type_compatible,
@@ -138,36 +138,21 @@ fn check_special_single_name_call(
         match name.as_str() {
             "reversed" => {
                 check_arity(name, 1, args, env.span, env.file, env.diagnostics);
-                return Some(reversed_type(env.program, args, arg_types));
+                return Some(reversed_type(env, args, arg_types));
             }
             "next" | "prev" => {
                 check_arity(name, 1, args, env.span, env.file, env.diagnostics);
-                return Some(check_neighbor(
-                    env.program,
-                    name,
-                    args,
-                    arg_types,
-                    env.span,
-                    env.file,
-                    env.diagnostics,
-                ));
+                return Some(check_neighbor(env, name, args, arg_types));
             }
             "values" | "entries" => {
                 check_arity(name, 1, args, env.span, env.file, env.diagnostics);
-                check_value_materialization_args(
-                    env.program,
-                    name,
-                    args,
-                    env.span,
-                    env.file,
-                    env.diagnostics,
-                );
+                check_value_materialization_args(env, name, args);
                 return Some(MarrowType::Unknown);
             }
             "append" => {
                 check_arity(name, 2, args, env.span, env.file, env.diagnostics);
-                check_append_args(env.program, args, env.span, env.file, env.diagnostics);
-                check_append(env.program, args, env.span, env.file, env.diagnostics);
+                check_append_args(env, args);
+                check_append(env, args);
                 return Some(MarrowType::Primitive(ScalarType::Int));
             }
             _ => {}
@@ -398,7 +383,7 @@ fn check_builtin_call_args(
 
 fn check_exists_args(env: &mut CallEnv<'_>, args: &[marrow_syntax::Argument]) {
     let [arg] = args else { return };
-    if !is_exists_target_arg(env, &arg.value) {
+    if !exists_target_arg_resolves(env, &arg.value) {
         env.diagnostics.push(call_diagnostic(
             env.file,
             env.span,
@@ -407,24 +392,14 @@ fn check_exists_args(env: &mut CallEnv<'_>, args: &[marrow_syntax::Argument]) {
     }
 }
 
-fn is_exists_target_arg(env: &CallEnv<'_>, expr: &marrow_syntax::Expression) -> bool {
-    if is_saved_index_range_path(env.program, expr) {
+fn exists_target_arg_resolves(env: &CallEnv<'_>, expr: &marrow_syntax::Expression) -> bool {
+    if is_saved_index_range_path(env.program, expr, env.scope, env.file) {
         return true;
     }
-    if is_saved_key_range_path(env.program, expr) {
+    if is_saved_key_range_path(env.program, expr, env.scope, env.file) {
         return false;
     }
-    let Some(module_index) = env
-        .program
-        .modules
-        .iter()
-        .position(|module| module.source_file == env.file)
-    else {
-        return false;
-    };
-    let context = crate::executable::CheckedExecutableContext::new(env.program, module_index);
-    let mut lower_scope = env.scope.to_vec();
-    let Some(expr) = crate::CheckedExpr::lower(expr, &context, &mut lower_scope) else {
+    let Some(expr) = lower_expr_for_file(env.program, env.file, expr, env.scope) else {
         return false;
     };
     crate::presence::exists_target_in_type_scope(env.program, &expr, env.scope, env.transform_old)
@@ -611,59 +586,52 @@ fn check_conversion_call_shape(
 }
 
 fn check_value_materialization_args(
-    program: &CheckedProgram,
+    env: &mut CallEnv<'_>,
     name: &str,
     args: &[marrow_syntax::Argument],
-    span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let [arg] = args else { return };
-    if arg.name.is_some() || !is_saved_index_branch_path(program, &arg.value) {
+    if arg.name.is_some()
+        || !is_saved_index_branch_path(env.program, &arg.value, env.scope, env.file)
+    {
         return;
     }
-    diagnostics.push(CheckDiagnostic::error(
+    env.diagnostics.push(CheckDiagnostic::error(
         CHECK_COLLECTION_UNSUPPORTED,
-        file,
-        span,
+        env.file,
+        env.span,
         format!("`{name}` cannot materialize values from an index branch; use `keys`"),
     ));
 }
 
-fn check_append_args(
-    program: &CheckedProgram,
-    args: &[marrow_syntax::Argument],
-    span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) {
+fn check_append_args(env: &mut CallEnv<'_>, args: &[marrow_syntax::Argument]) {
     let [target, _value] = args else { return };
-    let Some(node) = saved_layer_node(program, &target.value) else {
+    if !saved_layer_is_group(env.program, &target.value, env.scope, env.file) {
         return;
-    };
-    if matches!(node.kind, marrow_schema::NodeKind::Group) {
-        diagnostics.push(
-            CheckDiagnostic::error(
-                CHECK_CALL_ARGUMENT,
-                file,
-                span,
-                "`append` target must be a keyed leaf layer, but this path names a group layer",
-            )
-            .with_payload(DiagnosticPayload::AppendTarget(
-                AppendTargetDiagnostic::GroupLayer,
-            )),
-        );
     }
+    env.diagnostics.push(
+        CheckDiagnostic::error(
+            CHECK_CALL_ARGUMENT,
+            env.file,
+            env.span,
+            "`append` target must be a keyed leaf layer, but this path names a group layer",
+        )
+        .with_payload(DiagnosticPayload::AppendTarget(
+            AppendTargetDiagnostic::GroupLayer,
+        )),
+    );
 }
 
-fn saved_layer_node<'p>(
-    program: &'p CheckedProgram,
+fn saved_layer_is_group(
+    program: &CheckedProgram,
     expr: &marrow_syntax::Expression,
-) -> Option<&'p marrow_schema::Node> {
-    let (root, layers) = saved_group_chain(expr)?;
-    resolve_store_by_root(program, root)?
-        .resource
-        .descend_layers(&layers)
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
+) -> bool {
+    lower_expr_for_file(program, file, expr, scope)
+        .and_then(|expr| expr.saved_place().cloned())
+        .and_then(|place| place.layers.last().cloned())
+        .is_some_and(|layer| layer.leaf.is_none())
 }
 
 fn check_conversion_arg(
@@ -700,13 +668,14 @@ fn check_conversion_arg(
 }
 
 fn reversed_type(
-    program: &CheckedProgram,
+    env: &CallEnv<'_>,
     args: &[marrow_syntax::Argument],
     arg_types: &[MarrowType],
 ) -> MarrowType {
     if let [arg] = args
         && arg.name.is_none()
-        && let Some((element, None)) = collection_loop_binding_types(program, false, &arg.value)
+        && let Some((element, None)) =
+            collection_loop_binding_types(env.program, false, &arg.value, env.scope, env.file)
     {
         return MarrowType::Sequence(Box::new(element));
     }
@@ -970,69 +939,75 @@ pub(crate) fn check_next_id(
 /// composite-identity record and an index branch would fault uncatchably at
 /// runtime, so each is reported as a compile error. Any other shape is left
 /// `Unknown` for the runtime, where a surrounding `??` still types the default.
-pub(crate) fn check_neighbor(
-    program: &CheckedProgram,
+fn check_neighbor(
+    env: &mut CallEnv<'_>,
     which: &str,
     args: &[marrow_syntax::Argument],
     arg_types: &[MarrowType],
-    span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> MarrowType {
-    use marrow_syntax::Expression;
     let [arg] = args else {
         return MarrowType::Unknown;
     };
-    match &arg.value {
-        // A bare primary keyed root `^root`: its first/last record is sought. A
-        // composite identity has no single returned key value, so reject it before
-        // the runtime degrades it to one component.
-        Expression::SavedRoot { name: root, .. } => {
-            if composite_identity(program, root) {
+    let Some(checked) = lower_expr_for_file(env.program, env.file, &arg.value, env.scope) else {
+        if matches!(arg_types.first(), Some(MarrowType::Identity(_))) {
+            return neighbor_unsupported(
+                which,
+                "an identity value (use a saved place)",
+                env.span,
+                env.file,
+                env.diagnostics,
+            );
+        }
+        return MarrowType::Unknown;
+    };
+    let resolver = SavedPlaceResolver::new(env.program);
+    if resolver.is_index_branch(&checked) {
+        return neighbor_unsupported(
+            which,
+            "an index branch",
+            env.span,
+            env.file,
+            env.diagnostics,
+        );
+    }
+    match &checked {
+        crate::CheckedExpr::SavedRoot { name, .. } => {
+            if composite_identity(env.program, name) {
                 return neighbor_unsupported(
                     which,
                     "a composite-identity root (scope a single key level)",
-                    span,
-                    file,
-                    diagnostics,
+                    env.span,
+                    env.file,
+                    env.diagnostics,
                 );
             }
-            record_identity_type(program, root)
+            resolver.key_type(&checked).unwrap_or(MarrowType::Unknown)
         }
-        Expression::Call { callee, .. } => match callee.as_ref() {
-            // `^root(id…)`: a keyed record, anchoring at one key level, so a composite
-            // identity is out of scope.
-            Expression::SavedRoot { name: root, .. } => {
-                if composite_identity(program, root) {
-                    return neighbor_unsupported(
-                        which,
-                        "a composite-identity record (scope a single key level)",
-                        span,
-                        file,
-                        diagnostics,
-                    );
-                }
-                record_identity_type(program, root)
-            }
-            // `^root.index(args…)`: an index branch (the callee's base is the root
-            // itself). It inspects identities, with no single key position to seek.
-            Expression::Field { base, .. }
-                if matches!(base.as_ref(), Expression::SavedRoot { .. }) =>
+        crate::CheckedExpr::Call { callee, .. }
+            if matches!(callee.as_ref(), crate::CheckedExpr::SavedRoot { .. }) =>
+        {
+            if let crate::CheckedExpr::SavedRoot { name, .. } = callee.as_ref()
+                && composite_identity(env.program, name)
             {
-                neighbor_unsupported(which, "an index branch", span, file, diagnostics)
+                return neighbor_unsupported(
+                    which,
+                    "a composite-identity record (scope a single key level)",
+                    env.span,
+                    env.file,
+                    env.diagnostics,
+                );
             }
-            // `^root(id…).layer(k)`: a keyed layer position; its neighbor is a key.
-            Expression::Field { .. } => layer_key_type(program, callee.as_ref()),
-            _ => MarrowType::Unknown,
-        },
-        // A bare child layer `^root(id…).layer`: navigate among the layer's keys.
-        Expression::Field { .. } => layer_key_type(program, &arg.value),
+            resolver.key_type(callee).unwrap_or(MarrowType::Unknown)
+        }
+        crate::CheckedExpr::Call { .. } | crate::CheckedExpr::Field { .. } => {
+            resolver.key_type(&checked).unwrap_or(MarrowType::Unknown)
+        }
         _ if matches!(arg_types.first(), Some(MarrowType::Identity(_))) => neighbor_unsupported(
             which,
             "an identity value (use a saved place)",
-            span,
-            file,
-            diagnostics,
+            env.span,
+            env.file,
+            env.diagnostics,
         ),
         _ => MarrowType::Unknown,
     }
@@ -1041,28 +1016,23 @@ pub(crate) fn check_neighbor(
 /// Check `append(layer, value)` against the statically declared layer key kind.
 /// `append` allocates an integer position, so accepting a string- or bool-keyed
 /// layer would create stored keys the schema cannot address.
-pub(crate) fn check_append(
-    program: &CheckedProgram,
-    args: &[marrow_syntax::Argument],
-    span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) {
+fn check_append(env: &mut CallEnv<'_>, args: &[marrow_syntax::Argument]) {
     let [target, _] = args else {
         return;
     };
     if target.name.is_some() {
         return;
     }
-    let Some(key_type) = saved_path_key_type(program, &target.value) else {
+    let Some(key_type) = saved_path_key_type(env.program, &target.value, env.scope, env.file)
+    else {
         return;
     };
     if !matches!(as_primitive(&key_type), Some(ScalarType::Int)) {
-        diagnostics.push(
+        env.diagnostics.push(
             CheckDiagnostic::error(
                 CHECK_CALL_ARGUMENT,
-                file,
-                span,
+                env.file,
+                env.span,
                 format!(
                     "`append` requires an int-keyed layer, but this layer is keyed by `{}`",
                     marrow_type_name(&key_type)

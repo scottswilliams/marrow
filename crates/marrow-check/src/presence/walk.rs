@@ -4,7 +4,7 @@ use super::effects::{
     invalidate_saved_narrowings, invalidate_written_target, negated_exists_narrowings,
     traversal_narrowing,
 };
-use super::keys::saved_path_parts;
+use super::keys::saved_place_key;
 use super::proofs::{PresenceRecorder, ReadContext, read_proof, record_read};
 use super::scope::NameScope;
 use super::target::{ReadTarget, read_target_with_scope};
@@ -561,7 +561,7 @@ fn collect_expr(
         collect_path_key_exprs(program, expr, narrowed, scope, recorder);
         return;
     }
-    if saved_path_parts(expr, scope).is_some() {
+    if saved_place_key(expr, scope).is_some() {
         collect_path_key_exprs(program, expr, narrowed, scope, recorder);
         return;
     }
