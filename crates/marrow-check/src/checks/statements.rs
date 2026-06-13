@@ -26,6 +26,7 @@ use super::collections::{
 };
 use super::operators::{check_assignment, check_condition, check_return_type, check_throw_type};
 use super::ranges::{check_range_header, check_range_iterable_value_parts};
+use super::required_fields::RequiredFieldAssignments;
 use super::saved_keys::saved_root_args_address_record;
 
 /// Type-check a function body, tracking the type of each in-scope binding and
@@ -50,20 +51,25 @@ pub(crate) fn check_function_types(
         );
     }
     let mut scope: Vec<HashMap<String, MarrowType>> = vec![base];
+    let mut required_fields = RequiredFieldAssignments::new();
     let return_type = function
         .return_type
         .as_ref()
         .map_or(MarrowType::Unknown, |ty| {
             resolve_type(ty, program, aliases, file)
         });
-    check_block_types(
-        program,
-        file,
-        &return_type,
+    check_block_types_with_read_scope(
+        BlockTypeContext {
+            program,
+            file,
+            return_type: &return_type,
+            aliases,
+            transform_old: None,
+        },
         &function.body,
         &mut scope,
-        aliases,
         diagnostics,
+        &mut required_fields,
     );
 }
 
@@ -77,6 +83,7 @@ pub(crate) fn check_block_types(
     aliases: &HashMap<String, Vec<String>>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
+    let mut required_fields = RequiredFieldAssignments::inactive();
     check_block_types_with_read_scope(
         BlockTypeContext {
             program,
@@ -88,6 +95,7 @@ pub(crate) fn check_block_types(
         block,
         scope,
         diagnostics,
+        &mut required_fields,
     );
 }
 
@@ -121,6 +129,7 @@ pub(crate) fn check_transform_block_types(check: TransformBlockTypeCheck<'_>) {
                 resource: transform_old_resource,
                 frame,
             });
+    let mut required_fields = RequiredFieldAssignments::inactive();
     check_block_types_with_read_scope(
         BlockTypeContext {
             program,
@@ -132,6 +141,7 @@ pub(crate) fn check_transform_block_types(check: TransformBlockTypeCheck<'_>) {
         block,
         scope,
         diagnostics,
+        &mut required_fields,
     );
 }
 
@@ -149,11 +159,14 @@ fn check_block_types_with_read_scope(
     block: &marrow_syntax::Block,
     scope: &mut Vec<HashMap<String, MarrowType>>,
     diagnostics: &mut Vec<CheckDiagnostic>,
+    required_fields: &mut RequiredFieldAssignments,
 ) {
     scope.push(HashMap::new());
+    required_fields.push_frame();
     for statement in &block.statements {
-        check_statement_types(context, statement, scope, diagnostics);
+        check_statement_types(context, statement, scope, diagnostics, required_fields);
     }
+    required_fields.pop_frame();
     scope.pop();
 }
 
@@ -164,6 +177,7 @@ fn check_statement_types(
     statement: &marrow_syntax::Statement,
     scope: &mut Vec<HashMap<String, MarrowType>>,
     diagnostics: &mut Vec<CheckDiagnostic>,
+    required_fields: &mut RequiredFieldAssignments,
 ) {
     StatementCheck {
         program: context.program,
@@ -173,6 +187,7 @@ fn check_statement_types(
         aliases: context.aliases,
         transform_old: context.transform_old,
         diagnostics,
+        required_fields,
     }
     .check(statement);
 }
@@ -185,6 +200,7 @@ struct StatementCheck<'a> {
     aliases: &'a HashMap<String, Vec<String>>,
     transform_old: Option<crate::presence::TransformOldReadScope<'a>>,
     diagnostics: &'a mut Vec<CheckDiagnostic>,
+    required_fields: &'a mut RequiredFieldAssignments,
 }
 
 impl StatementCheck<'_> {
@@ -203,9 +219,15 @@ impl StatementCheck<'_> {
                 span,
             } => self.check_assignment_statement(target, value, *span),
             Statement::Delete { path, .. } => self.check_delete_statement(path),
-            Statement::Return { value, span } => self.check_return(value.as_ref(), *span),
-            Statement::ReturnAbsent { .. } => {}
-            Statement::Throw { value, span } => self.check_throw(value, *span),
+            Statement::Return { value, span } => {
+                self.check_return(value.as_ref(), *span);
+                self.required_fields.invalidate_all();
+            }
+            Statement::ReturnAbsent { .. } => self.required_fields.invalidate_all(),
+            Statement::Throw { value, span } => {
+                self.check_throw(value, *span);
+                self.required_fields.invalidate_all();
+            }
             Statement::Expr { value, .. } => {
                 self.infer(value);
                 self.check_range_value(value);
@@ -250,7 +272,9 @@ impl StatementCheck<'_> {
                 span,
                 ..
             } => self.check_match_statement(scrutinee.as_ref(), arms, *span),
-            Statement::Break { .. } | Statement::Continue { .. } => {}
+            Statement::Break { .. } | Statement::Continue { .. } => {
+                self.required_fields.invalidate_all();
+            }
         }
     }
 
@@ -280,6 +304,24 @@ impl StatementCheck<'_> {
             block,
             self.scope,
             self.diagnostics,
+            self.required_fields,
+        );
+    }
+
+    fn check_inconclusive_block(&mut self, block: &marrow_syntax::Block) {
+        let mut required_fields = RequiredFieldAssignments::inactive();
+        check_block_types_with_read_scope(
+            BlockTypeContext {
+                program: self.program,
+                file: self.file,
+                return_type: self.return_type,
+                aliases: self.aliases,
+                transform_old: self.transform_old,
+            },
+            block,
+            self.scope,
+            self.diagnostics,
+            &mut required_fields,
         );
     }
 
@@ -319,6 +361,8 @@ impl StatementCheck<'_> {
             self.file,
             self.transform_old,
         ) {
+            self.required_fields
+                .bind_statement(self.program, statement, &name, &ty);
             bind(self.scope, &name, ty);
         }
     }
@@ -358,21 +402,27 @@ impl StatementCheck<'_> {
                 "nested local resource fields cannot be assigned",
             ));
         }
-        self.check_lossy_round_trip_warning(target);
-        check_assignment(self.file, span, &target_type, &value_type, self.diagnostics);
-    }
-
-    fn check_lossy_round_trip_warning(&mut self, target: &marrow_syntax::Expression) {
-        let Some(members) = saved_root_replacement_members(RootReplacementCheck {
+        if let Some(store) = saved_root_replacement(RootReplacementCheck {
             program: self.program,
             target,
             scope: self.scope,
             aliases: self.aliases,
             file: self.file,
             transform_old: self.transform_old,
-        }) else {
-            return;
-        };
+        }) {
+            self.required_fields
+                .check_whole_root_write(self.file, value, store, self.diagnostics);
+            self.check_lossy_round_trip_warning(target, store.resource.members.as_slice());
+        }
+        check_assignment(self.file, span, &target_type, &value_type, self.diagnostics);
+        self.required_fields.assign_target(target);
+    }
+
+    fn check_lossy_round_trip_warning(
+        &mut self,
+        target: &marrow_syntax::Expression,
+        members: &[marrow_schema::Node],
+    ) {
         if !members_contain_keyed_layer(members) {
             return;
         }
@@ -451,16 +501,17 @@ impl StatementCheck<'_> {
         if let Some(condition) = condition {
             self.check_condition_expr(condition);
         }
-        self.check_block(then_block);
+        self.check_inconclusive_block(then_block);
         for else_if in else_ifs {
             if let Some(condition) = &else_if.condition {
                 self.check_condition_expr(condition);
             }
-            self.check_block(&else_if.block);
+            self.check_inconclusive_block(&else_if.block);
         }
         if let Some(block) = else_block {
-            self.check_block(block);
+            self.check_inconclusive_block(block);
         }
+        self.required_fields.invalidate_all();
     }
 
     fn check_if_const(
@@ -477,17 +528,18 @@ impl StatementCheck<'_> {
         let mut frame = HashMap::new();
         frame.insert(name.to_string(), value_type);
         self.scope.push(frame);
-        self.check_block(then_block);
+        self.check_inconclusive_block(then_block);
         self.scope.pop();
         for else_if in else_ifs {
             if let Some(condition) = &else_if.condition {
                 self.check_condition_expr(condition);
             }
-            self.check_block(&else_if.block);
+            self.check_inconclusive_block(&else_if.block);
         }
         if let Some(block) = else_block {
-            self.check_block(block);
+            self.check_inconclusive_block(block);
         }
+        self.required_fields.invalidate_all();
     }
 
     fn check_if_const_value(&mut self, value: &marrow_syntax::Expression) {
@@ -550,7 +602,8 @@ impl StatementCheck<'_> {
         if let Some(condition) = condition {
             self.check_condition_expr(condition);
         }
-        self.check_block(body);
+        self.check_inconclusive_block(body);
+        self.required_fields.invalidate_all();
     }
 
     fn check_for(
@@ -606,8 +659,9 @@ impl StatementCheck<'_> {
             self.file,
         );
         self.scope.push(frame);
-        self.check_block(body);
+        self.check_inconclusive_block(body);
         self.scope.pop();
+        self.required_fields.invalidate_all();
     }
 
     fn check_try(
@@ -615,14 +669,15 @@ impl StatementCheck<'_> {
         body: &marrow_syntax::Block,
         catch: Option<&marrow_syntax::CatchClause>,
     ) {
-        self.check_block(body);
+        self.check_inconclusive_block(body);
         if let Some(clause) = catch {
             let mut frame = HashMap::new();
             frame.insert(clause.name.clone(), MarrowType::Error);
             self.scope.push(frame);
-            self.check_block(&clause.block);
+            self.check_inconclusive_block(&clause.block);
             self.scope.pop();
         }
+        self.required_fields.invalidate_all();
     }
 
     fn check_match_statement(
@@ -646,6 +701,7 @@ impl StatementCheck<'_> {
             aliases: self.aliases,
             diagnostics: self.diagnostics,
         });
+        self.required_fields.invalidate_all();
     }
 
     fn check_range_value(&mut self, value: &marrow_syntax::Expression) {
@@ -746,8 +802,8 @@ fn transform_old_member_read(expr: &crate::CheckedExpr) -> bool {
     )
 }
 
-struct RootReplacementCheck<'a> {
-    program: &'a CheckedProgram,
+struct RootReplacementCheck<'p, 'a> {
+    program: &'p CheckedProgram,
     target: &'a marrow_syntax::Expression,
     scope: &'a [HashMap<String, MarrowType>],
     aliases: &'a HashMap<String, Vec<String>>,
@@ -755,17 +811,13 @@ struct RootReplacementCheck<'a> {
     transform_old: Option<crate::presence::TransformOldReadScope<'a>>,
 }
 
-fn saved_root_replacement_members<'a>(
-    check: RootReplacementCheck<'a>,
-) -> Option<&'a [marrow_schema::Node]> {
+fn saved_root_replacement<'p>(
+    check: RootReplacementCheck<'p, '_>,
+) -> Option<crate::resolve::StoreResource<'p>> {
     match check.target {
         marrow_syntax::Expression::SavedRoot { name, .. } => {
             let store = resolve_store_by_root(check.program, name)?;
-            store
-                .store
-                .identity_keys
-                .is_empty()
-                .then_some(store.resource.members.as_slice())
+            store.store.identity_keys.is_empty().then_some(store)
         }
         marrow_syntax::Expression::Call { callee, args, .. } => {
             let marrow_syntax::Expression::SavedRoot { name, .. } = callee.as_ref() else {
@@ -774,7 +826,7 @@ fn saved_root_replacement_members<'a>(
             let store = resolve_store_by_root(check.program, name)?;
             let arg_types = saved_root_replacement_arg_types(&check, args);
             if saved_root_args_address_record(store.store, args, &arg_types) {
-                return Some(store.resource.members.as_slice());
+                return Some(store);
             }
             None
         }
@@ -783,7 +835,7 @@ fn saved_root_replacement_members<'a>(
 }
 
 fn saved_root_replacement_arg_types(
-    check: &RootReplacementCheck<'_>,
+    check: &RootReplacementCheck<'_, '_>,
     args: &[marrow_syntax::Argument],
 ) -> Vec<MarrowType> {
     let mut diagnostics = Vec::new();

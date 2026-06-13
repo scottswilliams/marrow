@@ -6,8 +6,9 @@
 //! type driver (`statements`), collection and saved-path loop typing
 //! (`collections`), range-for rules (`ranges`), the operator/condition/
 //! assign/return/throw checks (`operators`), saved-access key typing
-//! (`saved_keys`), call checking (`calls`), and the shared diagnostic
-//! constructors (`diagnostics`).
+//! (`saved_keys`), straight-line required-field assignment (`required_fields`),
+//! call checking (`calls`), and the shared diagnostic constructors
+//! (`diagnostics`).
 
 mod calls;
 mod collections;
@@ -15,6 +16,7 @@ mod diagnostics;
 mod driver;
 mod operators;
 mod ranges;
+mod required_fields;
 mod returns;
 mod saved_keys;
 mod statements;

@@ -46,6 +46,9 @@ pub const CHECK_ASSIGNMENT_TYPE: &str = "check.assignment_type";
 /// A whole saved-root replacement can clear keyed child layers that a
 /// whole-resource read does not materialize.
 pub const CHECK_LOSSY_ROUND_TRIP: &str = "check.lossy_round_trip";
+/// A straight-line local resource value is missing a required field when written
+/// as a whole saved root.
+pub const CHECK_REQUIRED_ABSENT: &str = "check.required_absent";
 /// A loop contains a saved-data write outside an explicit transaction.
 pub const CHECK_COMMIT_AMPLIFICATION: &str = "check.commit_amplification";
 /// A value whose type cannot be resolved is stored into a concrete typed place.

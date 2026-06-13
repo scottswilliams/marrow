@@ -192,7 +192,12 @@ tool/admin maintenance run grants that capability.
 
 A local mutable resource can be built field by field. Required fields are
 checked when the resource is saved, returned, or passed where a complete
-resource value is required.
+resource value is required. The checker reports the straight-line case where an
+uninitialized local resource variable is written as a whole saved root without a
+required plain field path, including an unkeyed nested field path, ever being
+assigned. Branches, loops, prior whole-resource reads, constructor-built values,
+and keyed-layer entries are left to the runtime `write.required_absent` backstop
+when the checker cannot prove absence.
 
 Inside a keyed layer, required fields are checked for entries that exist. They
 do not require every possible key to be present.

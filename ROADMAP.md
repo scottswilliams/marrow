@@ -848,16 +848,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 Runs after the language batch so the refactor churns once over the final v0.1 surface.
 
-**W5.8 → Required-field definite assignment.** Carries: the straight-line required-field
-absence check for whole-root writes whose RHS is a var-typed local resource with never-assigned
-required fields. Owns: a narrow marrow-check pass or rule, diagnostics.rs,
-docs/error-codes.md, docs/language/types.md, and the required fixture. Seed: `var b: Book`
-sets only a sparse field, then writes `^books(id) = b` where Book has a required field. Review:
-constructor RHS and prior whole-record reads do not false-positive; branch/loop/early-return and
-cross-function paths remain inconclusive runtime checks; W4.12 keyed-layer entries stay out of
-scope. Done: the straight-line never-assigned case is caught statically and
-`write.required_absent` remains the runtime catch-all.
-
 **W5.9 → Unknown-flow diagnostic cascade suppression.** Carries: the retained half of
 partial-check-data-tools: suppress `check.unknown_type` / `check.untyped_value` cascades from
 already-diagnosed type-resolution failures. Owns: checker diagnostic emission over Unknown
