@@ -85,7 +85,7 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat) -> ExitCode {
     let source_module_count = src_program.modules.len();
 
     let (test_report, program) =
-        match marrow_check::check_tests_program(std::path::Path::new(dir), &config, &src_program) {
+        match marrow_check::check_tests_program(std::path::Path::new(dir), &config, src_program) {
             Ok(result) => result,
             Err(error) => {
                 report_simple_error(

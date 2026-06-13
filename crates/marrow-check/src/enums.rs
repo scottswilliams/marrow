@@ -34,19 +34,33 @@ pub(crate) fn normalize_program_named_types(
     program: &mut CheckedProgram,
     parsed_files: &[(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)],
 ) {
-    let resolver = program.clone();
-    normalize_program_named_types_against(program, &resolver, parsed_files);
+    let plan = plan_normalized_named_types(program, parsed_files);
+    apply_normalized_named_types(program, plan);
 }
 
-/// As [`normalize_program_named_types`], but resolving against an explicit
-/// `resolver` program. Test modules normalize against the combined project so a
-/// named type a test file imports from a project module resolves to that module.
-pub(crate) fn normalize_program_named_types_against(
-    program: &mut CheckedProgram,
-    resolver: &CheckedProgram,
+struct ModuleTypeNormalization {
+    module_index: usize,
+    functions: Vec<FunctionTypeNormalization>,
+    constants: Vec<ConstantTypeNormalization>,
+}
+
+struct FunctionTypeNormalization {
+    function_index: usize,
+    params: Vec<MarrowType>,
+    return_type: Option<MarrowType>,
+}
+
+struct ConstantTypeNormalization {
+    constant_index: usize,
+    ty: MarrowType,
+}
+
+fn plan_normalized_named_types(
+    program: &CheckedProgram,
     parsed_files: &[(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)],
-) {
-    for module in &mut program.modules {
+) -> Vec<ModuleTypeNormalization> {
+    let mut plan = Vec::new();
+    for (module_index, module) in program.modules.iter().enumerate() {
         let Some((file, parsed)) = parsed_files
             .iter()
             .find(|(file, _)| file.path == module.source_file)
@@ -71,17 +85,30 @@ pub(crate) fn normalize_program_named_types_against(
                     marrow_syntax::Declaration::Function(function) => Some(function),
                     _ => None,
                 });
-        for (function, decl) in module.functions.iter_mut().zip(function_decls) {
-            for (param, param_decl) in function.params.iter_mut().zip(&decl.params) {
-                param.ty = resolve_type(&param_decl.ty, resolver, &aliases, &file.path);
-            }
-            if let (Some(return_type), Some(return_ref)) =
-                (function.return_type.as_mut(), decl.return_type.as_ref())
-            {
-                *return_type = resolve_type(return_ref, resolver, &aliases, &file.path);
-            }
+        let mut functions = Vec::new();
+        for ((function_index, function), decl) in
+            module.functions.iter().enumerate().zip(function_decls)
+        {
+            let params = function
+                .params
+                .iter()
+                .zip(&decl.params)
+                .map(|(_, param_decl)| resolve_type(&param_decl.ty, program, &aliases, &file.path))
+                .collect();
+            let return_type = match (function.return_type.as_ref(), decl.return_type.as_ref()) {
+                (Some(_), Some(return_ref)) => {
+                    Some(resolve_type(return_ref, program, &aliases, &file.path))
+                }
+                _ => None,
+            };
+            functions.push(FunctionTypeNormalization {
+                function_index,
+                params,
+                return_type,
+            });
         }
-        for constant in &mut module.constants {
+        let mut constants = Vec::new();
+        for (constant_index, constant) in module.constants.iter().enumerate() {
             let Some(const_ref) =
                 parsed
                     .file
@@ -96,7 +123,43 @@ pub(crate) fn normalize_program_named_types_against(
             else {
                 continue;
             };
-            constant.ty = Some(resolve_type(const_ref, resolver, &aliases, &file.path));
+            constants.push(ConstantTypeNormalization {
+                constant_index,
+                ty: resolve_type(const_ref, program, &aliases, &file.path),
+            });
+        }
+        plan.push(ModuleTypeNormalization {
+            module_index,
+            functions,
+            constants,
+        });
+    }
+    plan
+}
+
+fn apply_normalized_named_types(program: &mut CheckedProgram, plan: Vec<ModuleTypeNormalization>) {
+    for module_plan in plan {
+        let Some(module) = program.modules.get_mut(module_plan.module_index) else {
+            continue;
+        };
+        for function_plan in module_plan.functions {
+            let Some(function) = module.functions.get_mut(function_plan.function_index) else {
+                continue;
+            };
+            for (param, ty) in function.params.iter_mut().zip(function_plan.params) {
+                param.ty = ty;
+            }
+            if let (Some(return_type), Some(ty)) =
+                (function.return_type.as_mut(), function_plan.return_type)
+            {
+                *return_type = ty;
+            }
+        }
+        for constant_plan in module_plan.constants {
+            let Some(constant) = module.constants.get_mut(constant_plan.constant_index) else {
+                continue;
+            };
+            constant.ty = Some(constant_plan.ty);
         }
     }
 }

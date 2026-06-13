@@ -18,23 +18,48 @@ pub(crate) fn normalize_resource_layers(
     parsed_files: &[(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)],
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    let resolver = program.clone();
+    let plan = plan_resource_layers(program, parsed_files, diagnostics);
+    for item in plan {
+        let Some(resource) = program
+            .modules
+            .get_mut(item.module_index)
+            .and_then(|module| module.resources.get_mut(item.resource_index))
+        else {
+            continue;
+        };
+        resource.members = item.members;
+    }
+}
+
+struct ResourceLayerNormalization {
+    module_index: usize,
+    resource_index: usize,
+    members: Vec<marrow_schema::Node>,
+}
+
+fn plan_resource_layers(
+    program: &CheckedProgram,
+    parsed_files: &[(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)],
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> Vec<ResourceLayerNormalization> {
+    let mut plan = Vec::new();
     let mut normalizer = Normalizer {
-        resolver: &resolver,
+        resolver: program,
         parsed_files,
         diagnostics,
     };
-    for module in &mut program.modules {
+    for (module_index, module) in program.modules.iter().enumerate() {
         let Some((_, parsed)) = parsed_files
             .iter()
             .find(|(file, _)| file.path == module.source_file)
         else {
             continue;
         };
-        for resource in &mut module.resources {
+        for (resource_index, resource) in module.resources.iter().enumerate() {
             let Some(decl) = parsed_resource_decl(parsed, &resource.name) else {
                 continue;
             };
+            let mut members = resource.members.clone();
             let mut stack = vec![(module.name.clone(), resource.name.clone())];
             normalizer.normalize_members(
                 MemberScope {
@@ -42,11 +67,17 @@ pub(crate) fn normalize_resource_layers(
                     module_name: &module.name,
                 },
                 &decl.members,
-                &mut resource.members,
+                &mut members,
                 &mut stack,
             );
+            plan.push(ResourceLayerNormalization {
+                module_index,
+                resource_index,
+                members,
+            });
         }
     }
+    plan
 }
 
 struct Normalizer<'a, 'd> {

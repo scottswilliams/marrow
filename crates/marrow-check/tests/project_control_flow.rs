@@ -21,7 +21,7 @@ fn check_tests_report(name: &str, app_src: &str, test_src: &str) -> marrow_check
         parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
     let (src_report, src_program) = check_project(&root, &cfg).expect("check src");
     assert!(!src_report.has_errors(), "{:#?}", src_report.diagnostics);
-    let (test_report, _modules) = check_tests(&root, &cfg, &src_program).expect("check tests");
+    let (test_report, _modules) = check_tests(&root, &cfg, src_program).expect("check tests");
     test_report
 }
 

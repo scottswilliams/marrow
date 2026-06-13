@@ -66,15 +66,13 @@ impl CheckedProgram {
         self.facts = CheckedFacts::from_modules(&self.modules, &sources);
     }
 
-    pub(crate) fn rebuild_facts_with_sources_preserving_prefix<'a, I>(
-        &mut self,
-        prefix: &CheckedProgram,
-        sources: I,
-    ) where
+    pub(crate) fn rebuild_facts_with_sources_preserving_current_prefix<'a, I>(&mut self, sources: I)
+    where
         I: IntoIterator<Item = (&'a Path, &'a ParsedSource)>,
     {
+        let prefix = std::mem::take(&mut self.facts);
         self.rebuild_facts_with_sources(sources);
-        self.facts.overwrite_prefix_from(&prefix.facts);
+        self.facts.overwrite_prefix_from(&prefix);
     }
 
     /// The source file the given file id names, or `None` if the id is out of
@@ -143,77 +141,107 @@ impl CheckedProgram {
             .into_iter()
             .map(|(path, parsed)| (path.to_path_buf(), parsed))
             .collect();
-        let snapshot = self.clone();
-        for (module_index, module) in self.modules.iter_mut().enumerate() {
-            let aliases = crate::build_alias_map(&module.imports);
-            let constants: HashMap<String, MarrowType> = module
-                .constants
-                .iter()
-                .map(|constant| {
-                    (
-                        constant.name.clone(),
-                        constant.ty.clone().unwrap_or(MarrowType::Unknown),
-                    )
-                })
-                .collect();
-            let source_file = module.source_file.clone();
-            let parsed = sources.get(&source_file).copied();
-            let module_name = module.name.clone();
-            let context = CheckedExecutableContext::new(&snapshot, module_index);
-            // The checked functions are built in source order, one per function
-            // declaration, so they zip positionally with the parse's function
-            // declarations. Matching by name would lower duplicate-named functions
-            // against the first declaration's body, attaching the wrong body to the
-            // second — a name carries no stable identity here, position does.
-            let declarations = parsed.into_iter().flat_map(|parsed| {
-                parsed
-                    .file
-                    .declarations
-                    .iter()
-                    .filter_map(|declaration| match declaration {
-                        Declaration::Function(function) => Some(function),
-                        _ => None,
-                    })
-            });
-            for (function, declaration) in module.functions.iter_mut().zip(declarations) {
-                let mut scope = vec![constants.clone()];
-                scope.push(
-                    function
-                        .params
-                        .iter()
-                        .map(|param| (param.name.clone(), param.ty.clone()))
-                        .collect(),
-                );
-                debug_assert_eq!(aliases, crate::build_alias_map(&module.imports));
-                debug_assert_eq!(context.module_name(), module_name);
-                debug_assert_eq!(function.name, declaration.name);
-                function.runtime_body = CheckedBody::lower(&declaration.body, &context, scope);
+        let function_bodies = lower_function_bodies(self, &sources);
+        for lowered in function_bodies {
+            if let Some(function) = self
+                .modules
+                .get_mut(lowered.module_index)
+                .and_then(|module| module.functions.get_mut(lowered.function_index))
+            {
+                function.runtime_body = lowered.body;
             }
         }
-        self.lower_transform_bodies(&snapshot, &sources);
-        self.facts.refresh_direct_effects(&self.modules);
-    }
-
-    /// Lower each `evolve transform` body with `old` bound to the owning resource's
-    /// type, so apply can execute it per record through the runtime evaluator. The body
-    /// is read back from the parse (the checked program carries no syntax body) and
-    /// lowered against its owning module's executable context, with the module constants
-    /// and the single `old` resource binding in scope. The type pass in
-    /// `check_evolve_types` has already proven the body well-typed, so a body that fails
-    /// to lower stays `None` and discharge does not classify it applyable.
-    fn lower_transform_bodies(
-        &mut self,
-        snapshot: &CheckedProgram,
-        sources: &HashMap<PathBuf, &ParsedSource>,
-    ) {
-        let mut bodies: Vec<Option<CheckedBody>> = Vec::new();
-        for transform in &self.catalog.evolve_transforms {
-            bodies.push(lower_transform_body(snapshot, sources, transform));
-        }
-        for (transform, body) in self.catalog.evolve_transforms.iter_mut().zip(bodies) {
+        let transform_bodies = lower_transform_bodies(self, &sources);
+        for (transform, body) in self
+            .catalog
+            .evolve_transforms
+            .iter_mut()
+            .zip(transform_bodies)
+        {
             transform.runtime_body = body;
         }
+        self.facts.refresh_direct_effects(&self.modules);
     }
+}
+
+struct LoweredFunctionBody {
+    module_index: usize,
+    function_index: usize,
+    body: Option<CheckedBody>,
+}
+
+fn lower_function_bodies(
+    program: &CheckedProgram,
+    sources: &HashMap<PathBuf, &ParsedSource>,
+) -> Vec<LoweredFunctionBody> {
+    let mut bodies = Vec::new();
+    for (module_index, module) in program.modules.iter().enumerate() {
+        let constants: HashMap<String, MarrowType> = module
+            .constants
+            .iter()
+            .map(|constant| {
+                (
+                    constant.name.clone(),
+                    constant.ty.clone().unwrap_or(MarrowType::Unknown),
+                )
+            })
+            .collect();
+        let parsed = sources.get(&module.source_file).copied();
+        let context = CheckedExecutableContext::new(program, module_index);
+        // The checked functions are built in source order, one per function
+        // declaration, so they zip positionally with the parse's function
+        // declarations. Matching by name would attach the wrong body to the
+        // second duplicate-named function.
+        let declarations = parsed.into_iter().flat_map(|parsed| {
+            parsed
+                .file
+                .declarations
+                .iter()
+                .filter_map(|declaration| match declaration {
+                    Declaration::Function(function) => Some(function),
+                    _ => None,
+                })
+        });
+        for ((function_index, function), declaration) in
+            module.functions.iter().enumerate().zip(declarations)
+        {
+            let mut scope = vec![constants.clone()];
+            scope.push(
+                function
+                    .params
+                    .iter()
+                    .map(|param| (param.name.clone(), param.ty.clone()))
+                    .collect(),
+            );
+            debug_assert_eq!(context.module_name(), module.name);
+            debug_assert_eq!(function.name, declaration.name);
+            bodies.push(LoweredFunctionBody {
+                module_index,
+                function_index,
+                body: CheckedBody::lower(&declaration.body, &context, scope),
+            });
+        }
+    }
+    bodies
+}
+
+/// Lower each `evolve transform` body with `old` bound to the owning resource's
+/// type, so apply can execute it per record through the runtime evaluator. The body
+/// is read back from the parse (the checked program carries no syntax body) and
+/// lowered against its owning module's executable context, with the module constants
+/// and the single `old` resource binding in scope. The type pass in
+/// `check_evolve_types` has already proven the body well-typed, so a body that fails
+/// to lower stays `None` and discharge does not classify it applyable.
+fn lower_transform_bodies(
+    program: &CheckedProgram,
+    sources: &HashMap<PathBuf, &ParsedSource>,
+) -> Vec<Option<CheckedBody>> {
+    program
+        .catalog
+        .evolve_transforms
+        .iter()
+        .map(|transform| lower_transform_body(program, sources, transform))
+        .collect()
 }
 
 /// Lower one transform body against its owning module, with the module constants and

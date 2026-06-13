@@ -3,9 +3,10 @@
 //! queries that read that snapshot live in [`cursor`].
 
 use std::collections::HashMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 
-use marrow_project::{DiscoverError, ProjectConfig, discover_modules};
+use marrow_project::{DiscoverError, ProjectConfig, Sha256Digest, StoreBackend, discover_modules};
 use marrow_syntax::SourceSpan;
 
 use crate::checks::{ModuleNamePolicy, ResolvedFileCheck, check_resolved_files};
@@ -22,15 +23,38 @@ mod cursor;
 pub(crate) use cursor::span_covers;
 pub use cursor::{scope_at, type_at};
 
+/// Stable content identity for an analyzed source/config set.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AnalysisIdentity(String);
+
+impl AnalysisIdentity {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for AnalysisIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// An IDE-grade view of a checked project: the diagnostics and best-effort
 /// program [`check_project`] produces, plus every parsed file — including files
 /// with parse errors, which contribute no [`CheckedModule`] but are retained
 /// here so editor tooling can still work on them.
 #[derive(Debug, Clone)]
 pub struct AnalysisSnapshot {
+    pub content_identity: AnalysisIdentity,
     pub report: CheckReport,
     pub program: CheckedProgram,
     pub files: Vec<AnalyzedFile>,
+}
+
+impl AnalysisSnapshot {
+    pub fn content_identity(&self) -> &AnalysisIdentity {
+        &self.content_identity
+    }
 }
 
 /// One parsed file in an [`AnalysisSnapshot`]: its path, the module name its
@@ -61,14 +85,17 @@ pub fn analyze_project(
     let tests = crate::check_tests_with_sources_analysis(
         project_root,
         config,
-        &snapshot.program,
+        &mut snapshot.program,
         sources,
         resolution_suppression,
+        crate::TestProgramOutput::DiagnosticsOnly,
     )?;
+    snapshot.program.modules.truncate(tests.test_module_start);
     snapshot.report.diagnostics.extend(tests.report.diagnostics);
     snapshot.files.extend(tests.files);
     snapshot.files.sort_by(|a, b| a.path.cmp(&b.path));
     snapshot.files.dedup_by(|a, b| a.path == b.path);
+    snapshot.content_identity = analysis_content_identity(project_root, config, &snapshot.files);
     Ok(snapshot)
 }
 
@@ -391,7 +418,7 @@ pub(crate) fn analyze_source_project(
     // Move every parse — error files included — into the snapshot now that the
     // shared tail has finished borrowing them. The path and module name are
     // copied from each `ModuleFile`; the parse itself moves.
-    let analyzed = parsed_files
+    let analyzed: Vec<AnalyzedFile> = parsed_files
         .into_iter()
         .map(|(file, parsed)| AnalyzedFile {
             path: file.path.clone(),
@@ -401,7 +428,10 @@ pub(crate) fn analyze_source_project(
         })
         .collect();
 
+    let content_identity = analysis_content_identity(project_root, config, &analyzed);
+
     Ok(AnalysisSnapshot {
+        content_identity,
         report,
         program,
         files: analyzed,
@@ -429,4 +459,87 @@ fn overlay_module_file(
         });
     }
     None
+}
+
+fn analysis_content_identity(
+    project_root: &Path,
+    config: &ProjectConfig,
+    files: &[AnalyzedFile],
+) -> AnalysisIdentity {
+    let mut digest = Sha256Digest::new();
+    digest.update(b"marrow.analysis.content.v1\0");
+    hash_config(&mut digest, config);
+    hash_str(&mut digest, "files.len", &files.len().to_string());
+    for file in files {
+        let path = file
+            .path
+            .strip_prefix(project_root)
+            .unwrap_or(file.path.as_path());
+        hash_str(&mut digest, "file.path", &path_token(path));
+        hash_opt_str(&mut digest, "file.module_name", file.module_name.as_deref());
+        hash_str(&mut digest, "file.source", &file.source);
+    }
+    AnalysisIdentity(digest.finish())
+}
+
+fn hash_config(digest: &mut Sha256Digest, config: &ProjectConfig) {
+    hash_str_list(digest, "config.source_roots", &config.source_roots);
+    hash_opt_str(
+        digest,
+        "config.default_entry",
+        config.default_entry.as_deref(),
+    );
+    match &config.store {
+        Some(store) => {
+            hash_str(digest, "config.store", "some");
+            hash_str(
+                digest,
+                "config.store.backend",
+                match store.backend {
+                    StoreBackend::Memory => "memory",
+                    StoreBackend::Native => "native",
+                },
+            );
+            hash_opt_str(digest, "config.store.data_dir", store.data_dir.as_deref());
+        }
+        None => hash_str(digest, "config.store", "none"),
+    }
+    hash_str_list(digest, "config.tests", &config.tests);
+}
+
+fn hash_str_list(digest: &mut Sha256Digest, label: &str, values: &[String]) {
+    hash_str(digest, &format!("{label}.len"), &values.len().to_string());
+    for value in values {
+        hash_str(digest, label, value);
+    }
+}
+
+fn hash_opt_str(digest: &mut Sha256Digest, label: &str, value: Option<&str>) {
+    match value {
+        Some(value) => {
+            hash_str(digest, label, "some");
+            hash_str(digest, label, value);
+        }
+        None => hash_str(digest, label, "none"),
+    }
+}
+
+fn hash_str(digest: &mut Sha256Digest, label: &str, value: &str) {
+    digest.update(label.as_bytes());
+    digest.update(b"\0");
+    digest.update(value.len().to_string().as_bytes());
+    digest.update(b"\0");
+    digest.update(value.as_bytes());
+    digest.update(b"\0");
+}
+
+fn path_token(path: &Path) -> String {
+    let mut token = String::new();
+    for component in path.components() {
+        if !token.is_empty() {
+            token.push('/');
+        }
+        token.push_str(&component.as_os_str().to_string_lossy());
+    }
+    token
 }

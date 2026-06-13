@@ -335,7 +335,7 @@ pub(crate) fn std_call_params(segments: &[String]) -> Option<Vec<Option<MarrowTy
 pub fn check_tests(
     project_root: &Path,
     config: &ProjectConfig,
-    project: &CheckedProgram,
+    project: CheckedProgram,
 ) -> Result<(CheckReport, Vec<CheckedModule>), DiscoverError> {
     check_tests_with_sources(project_root, config, project, &ProjectSources::new())
 }
@@ -346,20 +346,19 @@ pub fn check_tests(
 pub fn check_tests_with_sources(
     project_root: &Path,
     config: &ProjectConfig,
-    project: &CheckedProgram,
+    mut project: CheckedProgram,
     sources: &ProjectSources,
 ) -> Result<(CheckReport, Vec<CheckedModule>), DiscoverError> {
     let checked = check_tests_with_sources_analysis(
         project_root,
         config,
-        project,
+        &mut project,
         sources,
         TestResolutionSuppression::default(),
+        TestProgramOutput::FinalizeCombined,
     )?;
-    Ok((
-        checked.report,
-        checked.program.modules[checked.test_module_start..].to_vec(),
-    ))
+    let test_modules = project.modules.split_off(checked.test_module_start);
+    Ok((checked.report, test_modules))
 }
 
 /// Like [`check_tests`], but returns the full combined [`CheckedProgram`] (project
@@ -367,7 +366,7 @@ pub fn check_tests_with_sources(
 pub fn check_tests_program(
     project_root: &Path,
     config: &ProjectConfig,
-    project: &CheckedProgram,
+    project: CheckedProgram,
 ) -> Result<(CheckReport, CheckedProgram), DiscoverError> {
     check_tests_with_sources_program(project_root, config, project, &ProjectSources::new())
 }
@@ -375,17 +374,18 @@ pub fn check_tests_program(
 pub fn check_tests_with_sources_program(
     project_root: &Path,
     config: &ProjectConfig,
-    project: &CheckedProgram,
+    mut project: CheckedProgram,
     sources: &ProjectSources,
 ) -> Result<(CheckReport, CheckedProgram), DiscoverError> {
     let checked = check_tests_with_sources_analysis(
         project_root,
         config,
-        project,
+        &mut project,
         sources,
         TestResolutionSuppression::default(),
+        TestProgramOutput::FinalizeCombined,
     )?;
-    Ok((checked.report, checked.program))
+    Ok((checked.report, project))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -479,17 +479,23 @@ impl TestResolutionSuppression {
 
 pub(crate) struct CheckedTests {
     pub(crate) report: CheckReport,
-    pub(crate) program: CheckedProgram,
     pub(crate) test_module_start: usize,
     pub(crate) files: Vec<analysis::AnalyzedFile>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TestProgramOutput {
+    DiagnosticsOnly,
+    FinalizeCombined,
 }
 
 pub(crate) fn check_tests_with_sources_analysis(
     project_root: &Path,
     config: &ProjectConfig,
-    project: &CheckedProgram,
+    project: &mut CheckedProgram,
     sources: &ProjectSources,
     mut resolution_suppression: TestResolutionSuppression,
+    output: TestProgramOutput,
 ) -> Result<CheckedTests, DiscoverError> {
     let mut files = discover_test_modules(project_root, config)?;
     for path in sources.paths() {
@@ -556,9 +562,8 @@ pub(crate) fn check_tests_with_sources_analysis(
     // modules and the clean test modules, so cross-module calls, resource
     // constructors, and the `nextId` gate's resource schemas all resolve.
     let project_count = project.modules.len();
-    let mut combined =
-        CheckedProgram::from_modules(project.modules.iter().cloned().chain(modules).collect());
-    resolution_suppression.reveal_complete_modules(&combined);
+    project.modules.extend(modules);
+    resolution_suppression.reveal_complete_modules(project);
     // The duplicate diagnostic is the useful error; downstream references into
     // that invalid namespace should not also pretend the function is just absent.
     for module in &duplicate_test_module_names {
@@ -568,23 +573,23 @@ pub(crate) fn check_tests_with_sources_analysis(
     // true owner — resolved against the combined program — before the type pass
     // reads them. The project modules carry the project's own normalized
     // signatures already.
-    let resolver = combined.clone();
-    enums::normalize_program_named_types_against(&mut combined, &resolver, &parsed_files);
+    enums::normalize_program_named_types(project, &parsed_files);
     crate::keyed_entries::normalize_resource_layers(
-        &mut combined,
+        project,
         &parsed_files,
         &mut report.diagnostics,
     );
     // Passes 2-3 plus targeted unresolved-call suppression are shared with check_project.
     // A read failure drops a file from `parsed_files` so a call into it would look
     // unresolved; the shared suppression handles that qualified-call case.
+    let combined = project;
     checks::check_resolved_files(
         checks::ResolvedFileCheck {
             files: &files,
             parsed_files: &parsed_files,
             module_name_policy: checks::ModuleNamePolicy::PathOnly,
             resolvable: &resolvable,
-            program: &combined,
+            program: combined,
         },
         &mut report,
     );
@@ -596,17 +601,18 @@ pub(crate) fn check_tests_with_sources_analysis(
         .diagnostics
         .retain(|diagnostic| !resolution_suppression.should_suppress(diagnostic));
 
-    combined.rebuild_facts_with_sources_preserving_prefix(
-        project,
-        parsed_files
-            .iter()
-            .map(|(file, parsed)| (file.path.as_path(), parsed)),
-    );
-    combined.lower_runtime_bodies(
-        parsed_files
-            .iter()
-            .map(|(file, parsed)| (file.path.as_path(), parsed)),
-    );
+    if output == TestProgramOutput::FinalizeCombined {
+        combined.rebuild_facts_with_sources_preserving_current_prefix(
+            parsed_files
+                .iter()
+                .map(|(file, parsed)| (file.path.as_path(), parsed)),
+        );
+        combined.lower_runtime_bodies(
+            parsed_files
+                .iter()
+                .map(|(file, parsed)| (file.path.as_path(), parsed)),
+        );
+    }
     let analyzed = parsed_files
         .into_iter()
         .map(|(file, parsed)| analysis::AnalyzedFile {
@@ -619,7 +625,6 @@ pub(crate) fn check_tests_with_sources_analysis(
 
     Ok(CheckedTests {
         report,
-        program: combined,
         test_module_start: project_count,
         files: analyzed,
     })

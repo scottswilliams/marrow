@@ -50,22 +50,22 @@ pub(super) fn read_proof(
 }
 
 pub(super) fn record_read(
-    program: &mut CheckedProgram,
+    program: &CheckedProgram,
     expr: &CheckedExpr,
     proof: ReadProof,
     context: ReadContext,
-    diagnostics: &mut Vec<CheckDiagnostic>,
+    recorder: &mut PresenceRecorder<'_>,
 ) {
     if proof.status == PresenceProofStatus::PendingAttachedData && context == ReadContext::Bare {
         let file = read_file(program, &proof.place).unwrap_or_default();
-        diagnostics.push(CheckDiagnostic::error(
+        recorder.diagnostics.push(CheckDiagnostic::error(
             CHECK_BARE_MAYBE_PRESENT_READ,
             &file,
             expr.span(),
             "maybe-present saved read must be resolved at the read site",
         ));
     }
-    program.facts.record_presence_proof(PresenceProofDraft {
+    recorder.proofs.push(PresenceProofDraft {
         place: proof.place,
         keys: proof.keys,
         read: proof.read,
@@ -73,6 +73,11 @@ pub(super) fn record_read(
         status: proof.status,
         span: expr.span(),
     });
+}
+
+pub(super) struct PresenceRecorder<'a> {
+    pub(super) proofs: &'a mut Vec<PresenceProofDraft>,
+    pub(super) diagnostics: &'a mut Vec<CheckDiagnostic>,
 }
 
 pub(super) struct ReadProof {

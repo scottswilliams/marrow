@@ -3,10 +3,14 @@ mod support;
 use std::fs;
 use std::path::Path;
 
-use marrow_check::check_project;
+use marrow_check::{AnalysisSnapshot, ProjectSources, analyze_project, check_project};
 use marrow_project::parse_config;
 
 use support::{config, temp_project, write};
+
+fn content_identity(snapshot: &AnalysisSnapshot) -> String {
+    snapshot.content_identity().as_str().to_string()
+}
 
 #[test]
 fn analyze_project_uses_overlay_source_instead_of_disk() {
@@ -167,8 +171,6 @@ fn analyze_project_retains_unsaved_configured_test_files_in_snapshot() {
 
 #[test]
 fn analysis_snapshot_retains_files_with_parse_errors() {
-    use marrow_check::{ProjectSources, analyze_project};
-
     // A tab is a lexical error, so the file carries a parse diagnostic and
     // contributes no module to the program. The snapshot must still retain the
     // parsed file (with its parse diagnostic) so editor tooling can work on it.
@@ -207,4 +209,65 @@ fn analysis_snapshot_retains_files_with_parse_errors() {
             .any(|module| module.source_file == path),
         "the error file contributes no module to the program"
     );
+}
+
+#[test]
+fn analysis_content_identity_tracks_analyzed_sources_and_config() {
+    let root = temp_project("analysis-content-identity", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "module app\npub fn main()\n    print(1)\n",
+        );
+        write(root, "tests/smoke.mw", "fn smoke()\n    app::main()\n");
+        fs::create_dir_all(root.join("empty")).expect("create empty source root");
+    });
+    let cfg =
+        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+
+    let baseline =
+        analyze_project(&root, &cfg, &ProjectSources::new(), None).expect("baseline analyze");
+    let repeated =
+        analyze_project(&root, &cfg, &ProjectSources::new(), None).expect("repeat analyze");
+    let baseline_identity = content_identity(&baseline);
+    assert_eq!(baseline_identity, content_identity(&repeated));
+    assert!(baseline_identity.starts_with("sha256:"));
+
+    let accepted = marrow_catalog::CatalogMetadata::new(99, Vec::new());
+    let with_accepted = analyze_project(&root, &cfg, &ProjectSources::new(), Some(&accepted))
+        .expect("accepted analyze");
+    assert_eq!(baseline_identity, content_identity(&with_accepted));
+
+    let source_path = root.join("src/app.mw");
+    let edited_source =
+        ProjectSources::new().with(&source_path, "module app\npub fn main()\n    print(2)\n");
+    let source_edit =
+        analyze_project(&root, &cfg, &edited_source, None).expect("source edit analyze");
+    assert_ne!(baseline_identity, content_identity(&source_edit));
+
+    let test_path = root.join("tests/smoke.mw");
+    let edited_test =
+        ProjectSources::new().with(&test_path, "fn smoke()\n    const n = 2\n    app::main()\n");
+    let test_edit = analyze_project(&root, &cfg, &edited_test, None).expect("test edit analyze");
+    assert_ne!(baseline_identity, content_identity(&test_edit));
+
+    let config_edit = parse_config(
+        r#"{ "sourceRoots": ["src", "empty"], "tests": ["tests/**/*.mw"], "store": { "backend": "memory" } }"#,
+    )
+    .expect("config edit");
+    let config_edit =
+        analyze_project(&root, &config_edit, &ProjectSources::new(), None).expect("config analyze");
+    assert_ne!(baseline_identity, content_identity(&config_edit));
+
+    let moved_root = temp_project("analysis-content-identity-moved", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "module app\npub fn main()\n    print(1)\n",
+        );
+        write(root, "tests/smoke.mw", "fn smoke()\n    app::main()\n");
+    });
+    let moved =
+        analyze_project(&moved_root, &cfg, &ProjectSources::new(), None).expect("moved analyze");
+    assert_eq!(baseline_identity, content_identity(&moved));
 }

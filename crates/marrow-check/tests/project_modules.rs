@@ -313,7 +313,7 @@ fn checks_test_files_into_named_modules() {
     let cfg =
         parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
     let (src_report, src_program) = check_project(&root, &cfg).expect("check src");
-    let (test_report, test_modules) = check_tests(&root, &cfg, &src_program).expect("check tests");
+    let (test_report, test_modules) = check_tests(&root, &cfg, src_program).expect("check tests");
 
     assert!(!src_report.has_errors(), "{:#?}", src_report.diagnostics);
     assert!(!test_report.has_errors(), "{:#?}", test_report.diagnostics);
@@ -344,7 +344,7 @@ fn reports_a_parse_error_in_a_test_file() {
     let cfg =
         parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
     let (_src_report, src_program) = check_project(&root, &cfg).expect("check src");
-    let (test_report, _modules) = check_tests(&root, &cfg, &src_program).expect("check tests");
+    let (test_report, _modules) = check_tests(&root, &cfg, src_program).expect("check tests");
 
     assert!(
         test_report
@@ -375,7 +375,7 @@ fn a_test_file_is_named_from_its_path_not_a_declared_module() {
     let cfg =
         parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
     let (_src_report, src_program) = check_project(&root, &cfg).expect("check src");
-    let (test_report, test_modules) = check_tests(&root, &cfg, &src_program).expect("check tests");
+    let (test_report, test_modules) = check_tests(&root, &cfg, src_program).expect("check tests");
 
     assert!(!test_report.has_errors(), "{:#?}", test_report.diagnostics);
     assert_eq!(test_modules.len(), 1, "{test_modules:#?}");
