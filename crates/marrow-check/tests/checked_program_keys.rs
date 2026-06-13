@@ -226,14 +226,11 @@ fn explicit_identity_constructor_rejects_singleton_roots() {
     );
 }
 
-/// A cross-module *qualified* identity spliced into a keyed root defers rather
-/// than false-positives. The root's resource name is bare (`Book`), while an
-/// identity imported from another module keeps its `shelf::lib::Book`
-/// qualification, so the two cannot be matched nominally without the unified type
-/// IR. Splicing the imported identity into its own keyspace is valid and must be
-/// left to the runtime key guard, not rejected here.
+/// A cross-module identity imported with its owning root splices cleanly into
+/// that root. The identity and saved root compare by the resolved store, not by
+/// local spelling at the use site.
 #[test]
-fn cross_module_qualified_identity_splice_defers() {
+fn cross_module_imported_identity_splice_checks_clean() {
     let root = temp_project("program-key-cross-module-splice", |root| {
         write(
             root,
@@ -249,17 +246,60 @@ fn cross_module_qualified_identity_splice_defers() {
             "module app::main\n\
              use shelf::lib\n\
              fn read(b: Id(^books)): string\n\
-             \x20   return ^books(b).title\n",
+             \x20   if const title = ^books(b).title\n\
+             \x20       return title\n\
+             \x20   return \"\"\n",
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
 
-    assert!(
-        !report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "check.key_type"),
-        "{:#?}",
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+/// A same-shaped identity from another imported root remains nominally foreign.
+/// `Id(^magazines)` cannot address `^books` even though both stores are keyed by
+/// a single `int`.
+#[test]
+fn cross_module_imported_wrong_store_identity_splice_is_flagged() {
+    let root = temp_project("program-key-cross-module-wrong-store-splice", |root| {
+        write(
+            root,
+            "src/shelf/books.mw",
+            "module shelf::books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             store ^books(id: int): Book\n",
+        );
+        write(
+            root,
+            "src/shelf/magazines.mw",
+            "module shelf::magazines\n\
+             resource Magazine\n\
+             \x20   required title: string\n\
+             store ^magazines(id: int): Magazine\n",
+        );
+        write(
+            root,
+            "src/app/main.mw",
+            "module app::main\n\
+             use shelf::books\n\
+             use shelf::magazines\n\
+             fn read(m: Id(^magazines)): string\n\
+             \x20   if const title = ^books(m).title\n\
+             \x20       return title\n\
+             \x20   return \"\"\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+
+    let key_type = report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == "check.key_type")
+        .count();
+    assert_eq!(
+        key_type, 1,
+        "expected one key-type diagnostic: {:#?}",
         report.diagnostics
     );
 }

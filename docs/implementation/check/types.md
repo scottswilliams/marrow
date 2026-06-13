@@ -47,7 +47,6 @@ The orchestration that sequences the passes lives in `analysis.rs`, outside this
 ## Code-reality notes
 
 - `resolve.rs` `is_public` treats every `Resource` as cross-module visible and `pub`-gates functions (enum visibility is separate, owned by `enums.rs`). A non-`pub` resource is still reachable by qualified path — resources are not yet visibility-gated.
-- `type_compatible` returns `None` (defer) for a cross-module `Identity`/`Resource` the checker placed as `Unknown` — a documented soundness gap ("permissive until the type IR is unified"), so some cross-module nominal mismatches are not caught at check time.
 - `durable_path.rs` is a self-contained, publicly exported classifier whose consumers are tooling/runtime outside the crate; it couples to the spine only via `resolve_store_by_root` and `EnumId`. Read it as an adjacent utility, not part of the inference core.
 
 ## Read next

@@ -106,11 +106,11 @@ pub(crate) fn is_concrete_nonscalar(ty: &MarrowType) -> bool {
 /// Whether a value of type `actual` may stand where `expected` is required.
 /// `Some` is a verdict; `None` defers (the value is `unknown`, owned by the
 /// untyped-value path, or `expected` places no constraint). Identities, resources,
-/// and enums compare nominally: an identity matches by resource name, an enum by
-/// owning module and name, so a key-compatible foreign identity or a same-named
-/// enum from another module is still a mismatch. A cross-module identity the
-/// checker could not place is `Unknown` and defers, permissive until the type IR
-/// is unified across modules.
+/// and enums compare nominally: an identity matches by store root, a resource by
+/// module-qualified resource name, and an enum by owning module and name. A
+/// key-compatible foreign identity or same-named enum from another module is
+/// still a mismatch. `Unknown` and `Invalid` defer for recovery and explicit
+/// `unknown` flows.
 pub(crate) fn type_compatible(expected: &MarrowType, actual: &MarrowType) -> Option<bool> {
     if matches!(expected, MarrowType::Invalid)
         || matches!(actual, MarrowType::Unknown | MarrowType::Invalid)

@@ -848,14 +848,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 Runs after the language batch so the refactor churns once over the final v0.1 surface.
 
-**W5.3 → Type-identity unification (IV.C3).** Owns: id tables hoisted ahead of the type pass (or
-on-demand nominal resolution), the "permissive until unified" clause deleted, cross-module
-nominal mismatch fixtures (wrong-store identity; same-named resource/enum), the docs gap note
-removed; the Unknown deferral arm retained for recovery/`unknown`. Seed: failing fixture — an
-identity from the wrong store rejects at check time. Review: fixture fallout from newly-caught
-mismatches triaged in-lane; no false positives (the lattice law). Done: the documented soundness
-gap is closed and its documentation deleted.
-
 **W5.4 → Digest binding (IV.C4).** Owns: source_digest.rs computed from in-memory parses at
 analysis tail; disk re-read, re-parse, and Unreadable arm deleted; discharge_digest golden pins
 byte-identical rendering. Seed: an overlay-based test — digest binds buffer text, not disk.
