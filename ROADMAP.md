@@ -849,15 +849,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 Parser/checker/runtime files overlap heavily: the cut series is sequenced; additions follow.
 Listing order is execution order. Store crate is quiet this wave except where noted.
 
-**W4.14 → Commit-amplification warning (C60; v01-full).** Checker hotspot + shared
-cost-model.md. Owns:
-warning-tier `check.commit_amplification` (loop body containing a bare saved write with no
-enclosing transaction; message names the one-word fix), diagnostics row, one cost-model.md
-paragraph, fixtures. Cross-function flows out of scope (stated). Seed: failing fixture — the
-loop-of-bare-writes warns; the transaction-wrapped twin does not. Review: warning tier only;
-has_errors contract intact; nag-rate checked against the corpus. Done: the write-side sibling
-of the hidden-traversal law is enforced.
-
 **W4.15 → Local-saved unification rider.** Carries: the two verified local keyed-tree bug fixes
 as a W4.4 rider: single-name loops over local keyed trees bind keys, not values, and
 `keys(reversed(localTree))` yields keys in descending order. Owns: marrow-run loop_exec.rs and
