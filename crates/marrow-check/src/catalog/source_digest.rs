@@ -17,8 +17,8 @@ pub(crate) fn analyzed_source_digest(program: &CheckedProgram) -> String {
     digest_of(&render_declarations(program), DigestScope::Shape)
 }
 
-/// Both digests from a single render pass, so a caller that needs both (the evolution preview
-/// witness) reads and parses each module's source once.
+/// Both digests from one captured rendering set, so a caller that needs both (the evolution
+/// preview witness) hashes the checked program's in-memory source renderings once.
 pub(crate) fn source_and_evolution_digests(program: &CheckedProgram) -> (String, String) {
     let renderings = render_declarations(program);
     (
@@ -58,35 +58,24 @@ impl DigestScope {
 }
 
 /// Every durable declaration rendered in deterministic order, the single pass each scope's
-/// digest hashes a subset of. The source file is re-read because the formatter operates on the
-/// syntax tree, which the checked program drops; a file that no longer reads or parses (a
-/// checked-program invariant violation) contributes a path-tagged marker so the digest stays
-/// deterministic and never silently collides with a clean rendering.
+/// digest hashes a subset of. Each module's renderings are captured while the checker still
+/// holds the in-memory source text and parse.
 fn render_declarations(program: &CheckedProgram) -> Vec<DurableRendering> {
     let mut entries: Vec<DurableRendering> = Vec::new();
-    for module in &program.modules {
-        let source = std::fs::read_to_string(&module.source_file).ok();
-        let parsed = source.as_deref().map(marrow_syntax::parse_source);
-        match (&source, &parsed) {
-            (Some(source), Some(parsed)) => {
-                for declaration in &parsed.file.declarations {
-                    let Some(kind) = durable_kind(declaration) else {
-                        continue;
-                    };
-                    entries.push(DurableRendering {
-                        module: module.name.clone(),
-                        kind,
-                        name: declaration_name(declaration),
-                        text: marrow_syntax::format_declaration(source, declaration),
-                    });
-                }
-            }
-            _ => entries.push(DurableRendering {
-                module: module.name.clone(),
-                kind: DurableKind::Unreadable,
-                name: module.source_file.display().to_string(),
-                text: String::new(),
-            }),
+    for (module_index, module) in program.modules.iter().enumerate() {
+        let module_index = module_index as u32;
+        assert!(
+            program
+                .facts
+                .has_captured_durable_digest_renderings_for_module_index(module_index),
+            "checked program is missing captured durable source renderings for module `{}`",
+            module.name
+        );
+        for rendering in program
+            .facts
+            .durable_digest_renderings_for_module_index(module_index)
+        {
+            entries.push(rendering.clone());
         }
     }
     entries.sort_by(|a, b| {
@@ -113,24 +102,53 @@ fn digest_of(entries: &[DurableRendering], scope: DigestScope) -> String {
 
 /// One declaration's normalized rendering, with the `(module, kind, name)` keys that order it
 /// deterministically.
-struct DurableRendering {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DurableRendering {
+    module_index: u32,
     module: String,
     kind: DurableKind,
     name: String,
     text: String,
 }
 
+impl DurableRendering {
+    pub(crate) fn module_index(&self) -> u32 {
+        self.module_index
+    }
+}
+
+pub(crate) fn durable_renderings_for_source(
+    module_index: u32,
+    module: &str,
+    source: &str,
+    parsed: &marrow_syntax::ParsedSource,
+) -> Vec<DurableRendering> {
+    parsed
+        .file
+        .declarations
+        .iter()
+        .filter_map(|declaration| {
+            durable_kind(declaration).map(|kind| DurableRendering {
+                module_index,
+                module: module.to_string(),
+                kind,
+                name: declaration_name(declaration),
+                text: marrow_syntax::format_declaration(source, declaration),
+            })
+        })
+        .collect()
+}
+
 /// The declaration kinds a stored snapshot must satisfy. The discriminant orders renderings
 /// deterministically within a module; an evolve block carries no name, so its kind alone keeps
 /// it last.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DurableKind {
     Resource = 0,
     Store = 1,
     Enum = 2,
     Const = 3,
     Evolve = 4,
-    Unreadable = 5,
 }
 
 /// The digest kind of a declaration, or `None` for a function: transform bodies cannot call

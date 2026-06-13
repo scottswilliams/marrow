@@ -3,7 +3,8 @@ mod support;
 use std::collections::BTreeSet;
 
 use marrow_check::{CheckedBody, CheckedExpr, CheckedProgram, CheckedStmt, StoreIndexId};
-use marrow_check::{MarrowType, WriteFallibilityFact, check_project};
+use marrow_check::{MarrowType, WriteFallibilityFact, check_project, check_tests_program};
+use marrow_project::parse_config;
 use marrow_schema::ReturnPresence;
 use marrow_store::value::ScalarType;
 
@@ -49,6 +50,53 @@ fn builds_a_module_for_a_clean_library_file() {
             .is_some_and(|body| !body.statements().is_empty()),
         "{add:#?}"
     );
+}
+
+#[test]
+#[should_panic(expected = "checked program is missing captured durable source renderings")]
+fn manually_assembled_non_empty_program_cannot_claim_source_digest() {
+    let root = temp_project("program-manual-digest", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             store ^books(id: int): Book\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+
+    let manual = CheckedProgram::from_modules(program.modules.clone());
+    let _ = manual.source_digest();
+}
+
+#[test]
+#[should_panic(
+    expected = "checked program is missing captured durable source renderings for module `books`"
+)]
+fn test_program_finalization_does_not_mask_manual_source_digest() {
+    let cfg =
+        parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/**/*.mw"] }"#).expect("config");
+    let root = temp_project("program-manual-test-digest", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             store ^books(id: int): Book\n",
+        );
+        write(root, "tests/smoke.mw", "fn smoke()\n    var x = 1\n");
+    });
+    let (report, program) = check_project(&root, &cfg).expect("check");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+
+    let manual = CheckedProgram::from_modules(program.modules.clone());
+    let (test_report, combined) = check_tests_program(&root, &cfg, manual).expect("check tests");
+    assert!(!test_report.has_errors(), "{:#?}", test_report.diagnostics);
+    let _ = combined.source_digest();
 }
 
 #[test]

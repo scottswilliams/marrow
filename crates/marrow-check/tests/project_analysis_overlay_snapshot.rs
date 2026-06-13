@@ -45,6 +45,49 @@ fn analyze_project_uses_overlay_source_instead_of_disk() {
 }
 
 #[test]
+fn source_digest_binds_overlay_source_instead_of_disk() {
+    let disk_source = "module m\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         store ^books(id: int): Book\n";
+    let overlay_source = "module m\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   pages: int\n\
+         store ^books(id: int): Book\n";
+    let root = temp_project("overlay-digest", |root| {
+        write(root, "src/m.mw", disk_source);
+    });
+    let path = root.join("src/m.mw");
+
+    let disk = check_project(&root, &config())
+        .expect("disk check")
+        .1
+        .source_digest();
+    let overlaid = analyze_project(
+        &root,
+        &config(),
+        &ProjectSources::new().with(&path, overlay_source),
+        None,
+    )
+    .expect("overlay analyze")
+    .program
+    .source_digest();
+    let overlay_expected = check_project(
+        &temp_project("overlay-digest-expected", |root| {
+            write(root, "src/m.mw", overlay_source);
+        }),
+        &config(),
+    )
+    .expect("overlay expected check")
+    .1
+    .source_digest();
+
+    assert_ne!(disk, overlay_expected);
+    assert_eq!(overlaid, overlay_expected);
+}
+
+#[test]
 fn analyze_project_includes_unsaved_source_root_files() {
     use marrow_check::{ProjectSources, analyze_project};
 

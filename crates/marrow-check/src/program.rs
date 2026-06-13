@@ -75,6 +75,53 @@ impl CheckedProgram {
         self.facts.overwrite_prefix_from(&prefix);
     }
 
+    pub(crate) fn rebuild_durable_digest_renderings<'a, I>(&mut self, sources: I)
+    where
+        I: IntoIterator<Item = (&'a Path, &'a str, &'a ParsedSource)>,
+    {
+        let (captured_modules, renderings) = self.durable_digest_renderings_from_sources(sources);
+        self.facts
+            .set_durable_digest_renderings(captured_modules, renderings);
+    }
+
+    pub(crate) fn extend_durable_digest_renderings<'a, I>(&mut self, sources: I)
+    where
+        I: IntoIterator<Item = (&'a Path, &'a str, &'a ParsedSource)>,
+    {
+        let (captured_modules, renderings) = self.durable_digest_renderings_from_sources(sources);
+        self.facts
+            .extend_durable_digest_renderings(captured_modules, renderings);
+    }
+
+    fn durable_digest_renderings_from_sources<'a, I>(
+        &self,
+        sources: I,
+    ) -> (Vec<u32>, Vec<crate::catalog::DurableRendering>)
+    where
+        I: IntoIterator<Item = (&'a Path, &'a str, &'a ParsedSource)>,
+    {
+        let sources: HashMap<PathBuf, (&str, &ParsedSource)> = sources
+            .into_iter()
+            .map(|(path, source, parsed)| (path.to_path_buf(), (source, parsed)))
+            .collect();
+        let mut captured_modules = Vec::new();
+        let mut renderings = Vec::new();
+        for (module_index, module) in self.modules.iter().enumerate() {
+            let Some(&(source, parsed)) = sources.get(&module.source_file) else {
+                continue;
+            };
+            let module_index = module_index as u32;
+            captured_modules.push(module_index);
+            renderings.extend(crate::catalog::durable_renderings_for_source(
+                module_index,
+                &module.name,
+                source,
+                parsed,
+            ));
+        }
+        (captured_modules, renderings)
+    }
+
     /// The source file the given file id names, or `None` if the id is out of
     /// range (an id from a different program, or a fault with no project file).
     pub fn file_path(&self, id: FileId) -> Option<&Path> {
@@ -120,7 +167,9 @@ impl CheckedProgram {
     /// structurally different schema produces a different digest even at the same
     /// catalog epoch. It excludes the transient evolve block, so a consumed transition
     /// is deletable without reading as schema drift. The activation fence compares it
-    /// against the digest the store recorded.
+    /// against the digest the store recorded. Non-empty programs must be produced by
+    /// the checker so their durable source renderings are captured from the in-memory
+    /// parse before this digest is requested.
     pub fn source_digest(&self) -> String {
         crate::catalog::analyzed_source_digest(self)
     }
@@ -128,7 +177,9 @@ impl CheckedProgram {
     /// The digest of this program's durable shape *and* its evolve decision surface, in
     /// the same `sha256:<hex>` form. The evolution witness records it so apply aborts
     /// when the source it activates no longer matches what was discharged, including a
-    /// transform-body or evolve-default edit the shape digest cannot see.
+    /// transform-body or evolve-default edit the shape digest cannot see. Non-empty
+    /// programs must carry the checker-captured source renderings used by
+    /// [`CheckedProgram::source_digest`].
     pub fn evolution_digest(&self) -> String {
         crate::catalog::evolution_digest(self)
     }

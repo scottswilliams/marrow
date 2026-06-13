@@ -18,7 +18,8 @@ mod source_digest;
 mod stable_id;
 
 pub(crate) use source_digest::{
-    analyzed_source_digest, evolution_digest, source_and_evolution_digests,
+    DurableRendering, analyzed_source_digest, durable_renderings_for_source, evolution_digest,
+    source_and_evolution_digests,
 };
 use stable_id::StableIdAllocator;
 

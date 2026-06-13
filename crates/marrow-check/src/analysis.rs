@@ -419,6 +419,11 @@ pub(crate) fn analyze_source_project(
     );
     crate::evolution::check_transform_effects(&program, &mut report.diagnostics);
     crate::presence::check_presence(&mut program, &mut report.diagnostics);
+    program.rebuild_durable_digest_renderings(parsed_files.iter().filter_map(|(file, parsed)| {
+        parsed_sources
+            .get(&file.path)
+            .map(|source| (file.path.as_path(), source.as_str(), parsed))
+    }));
 
     // Move every parse — error files included — into the snapshot now that the
     // shared tail has finished borrowing them. The path and module name are

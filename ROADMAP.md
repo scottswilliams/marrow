@@ -848,11 +848,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 Runs after the language batch so the refactor churns once over the final v0.1 surface.
 
-**W5.4 → Digest binding (IV.C4).** Owns: source_digest.rs computed from in-memory parses at
-analysis tail; disk re-read, re-parse, and Unreadable arm deleted; discharge_digest golden pins
-byte-identical rendering. Seed: an overlay-based test — digest binds buffer text, not disk.
-Review: no second digest path survives. Done: digest is a pure function of the checked program.
-
 **W5.5 → Effect closure + footprint facts (G1-4, C06, C21; gate 47).** After W5.4, before the
 Wave 5 gate records the analysis-API contract. Owns: the transitive effect-closure query over
 DirectEffectFacts (call-graph walk returning a unified summary; exposed on the analysis API —

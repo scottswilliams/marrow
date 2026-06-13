@@ -606,6 +606,13 @@ pub(crate) fn check_tests_with_sources_analysis(
                 .iter()
                 .map(|(file, parsed)| (file.path.as_path(), parsed)),
         );
+        combined.extend_durable_digest_renderings(parsed_files.iter().filter_map(
+            |(file, parsed)| {
+                parsed_sources
+                    .get(&file.path)
+                    .map(|source| (file.path.as_path(), source.as_str(), parsed))
+            },
+        ));
     }
     let analyzed = parsed_files
         .into_iter()
