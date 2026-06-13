@@ -19,6 +19,7 @@ mod place;
 mod runtime_value;
 mod stmt;
 mod syntax_parts;
+mod walk;
 
 pub use expr::{
     CheckedExpr, CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedKeyParam, CheckedSavedLayer,
@@ -40,6 +41,9 @@ pub use stmt::{CheckedBody, CheckedStmt};
 pub use syntax_parts::{
     CheckedArg, CheckedBinaryOp, CheckedCatchClause, CheckedElseIf, CheckedForBinding,
     CheckedInterpolationPart, CheckedLiteralKind, CheckedMatchArm, CheckedUnaryOp,
+};
+pub(crate) use walk::{
+    CheckedBodyVisitor, walk_checked_body, walk_checked_expr, walk_checked_match_arm,
 };
 
 pub fn checked_saved_root_place(

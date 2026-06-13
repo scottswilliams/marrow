@@ -819,6 +819,7 @@ impl CheckedFacts {
                 name: index.name.clone(),
                 unique: index.unique,
                 keys,
+                usage: StoreIndexUsageBitmap::default(),
                 catalog_id: None,
                 span,
             });
@@ -1242,8 +1243,21 @@ pub struct StoreIndexFact {
     pub name: String,
     pub unique: bool,
     pub keys: Vec<StoreIndexKeyFact>,
+    pub usage: StoreIndexUsageBitmap,
     pub catalog_id: Option<String>,
     pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StoreIndexUsageBitmap {
+    pub read: bool,
+    pub write: bool,
+}
+
+impl StoreIndexUsageBitmap {
+    pub fn any(&self) -> bool {
+        self.read || self.write
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1428,6 +1442,7 @@ pub struct DirectEffectFacts {
     pub saved_index_writes: Vec<StoreIndexId>,
     pub transactions: bool,
     pub host_calls: Vec<HostEffect>,
+    pub unindexed_collection_reads: bool,
     pub throws: bool,
     /// User-defined callees named directly by this body. Callee effects are not expanded into the
     /// direct summary, so callers that require a self-contained body read this list instead of
@@ -1452,6 +1467,7 @@ pub struct EffectClosureFacts {
     pub indexes_touched: Vec<StoreIndexId>,
     pub transactions: bool,
     pub host_calls: Vec<HostEffect>,
+    pub unindexed_collection_reads: bool,
     pub throws: bool,
     pub write_effects_reachable: bool,
 }
@@ -1465,6 +1481,18 @@ pub struct EntryFootprintFact {
     pub stores_written: Vec<StoreId>,
     pub indexes_touched: Vec<StoreIndexId>,
     pub work_shape: WorkShapeClass,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryCostShapeFact {
+    pub function: FunctionId,
+    pub entry: String,
+    pub work_shape: WorkShapeClass,
+    pub point_reads: usize,
+    pub range_scans: usize,
+    pub writes: usize,
+    pub index_entry_touches: usize,
+    pub commit_points: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

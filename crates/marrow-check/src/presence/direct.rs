@@ -8,7 +8,7 @@ use crate::facts::{
 };
 use crate::{
     CheckedBody, CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedInterpolationPart,
-    CheckedStmt,
+    CheckedSavedTerminal, CheckedStmt,
 };
 
 pub(crate) fn direct_effects_for_block(
@@ -17,6 +17,15 @@ pub(crate) fn direct_effects_for_block(
 ) -> DirectEffectFacts {
     let mut effects = DirectEffectFacts::default();
     collect_block_effects(facts, body, &mut effects);
+    effects
+}
+
+pub(crate) fn direct_effects_for_expr(
+    facts: &CheckedFacts,
+    expr: &CheckedExpr,
+) -> DirectEffectFacts {
+    let mut effects = DirectEffectFacts::default();
+    collect_expr_reads(facts, expr, &mut effects);
     effects
 }
 
@@ -118,6 +127,9 @@ fn collect_statement_effects(
             ..
         } => {
             collect_expr_reads(facts, iterable, effects);
+            if saved_non_index_path(iterable) {
+                effects.unindexed_collection_reads = true;
+            }
             if let Some(step) = step {
                 collect_expr_reads(facts, step, effects);
             }
@@ -148,6 +160,9 @@ fn collect_statement_effects(
 }
 
 fn collect_expr_reads(facts: &CheckedFacts, expr: &CheckedExpr, effects: &mut DirectEffectFacts) {
+    if unindexed_collection_lookup(expr) {
+        effects.unindexed_collection_reads = true;
+    }
     if let Some(place) = accepted_saved_place(expr) {
         push_unique(&mut effects.store_reads, place.store_id);
         if let Some(effect) = saved_effect(facts, place) {
@@ -173,6 +188,20 @@ fn collect_expr_reads(facts: &CheckedFacts, expr: &CheckedExpr, effects: &mut Di
             target,
             ..
         } => {
+            if matches!(
+                target,
+                CheckedCallTarget::Builtin(CheckedBuiltinCall::NextId)
+            ) {
+                if let Some(target) = args.first()
+                    && let Some(place) = target.value.saved_place()
+                {
+                    push_unique(&mut effects.store_writes, place.store_id);
+                }
+                for arg in args {
+                    collect_expr_reads(facts, &arg.value, effects);
+                }
+                return;
+            }
             if matches!(
                 target,
                 CheckedCallTarget::Builtin(CheckedBuiltinCall::Append)
@@ -221,6 +250,39 @@ fn collect_expr_reads(facts: &CheckedFacts, expr: &CheckedExpr, effects: &mut Di
         }
         CheckedExpr::Literal { .. } | CheckedExpr::Name { .. } | CheckedExpr::SavedRoot { .. } => {}
     }
+}
+
+pub(super) fn unindexed_collection_lookup(expression: &CheckedExpr) -> bool {
+    let CheckedExpr::Call { target, args, .. } = expression else {
+        return false;
+    };
+    let CheckedCallTarget::Builtin(builtin) = target else {
+        return false;
+    };
+    unindexed_collection_builtin(*builtin)
+        && args
+            .first()
+            .is_some_and(|arg| saved_non_index_path(&arg.value))
+}
+
+fn unindexed_collection_builtin(builtin: CheckedBuiltinCall) -> bool {
+    matches!(
+        builtin,
+        CheckedBuiltinCall::Exists
+            | CheckedBuiltinCall::Count
+            | CheckedBuiltinCall::Keys
+            | CheckedBuiltinCall::Values
+            | CheckedBuiltinCall::Entries
+            | CheckedBuiltinCall::Reversed
+            | CheckedBuiltinCall::Next
+            | CheckedBuiltinCall::Prev
+    )
+}
+
+fn saved_non_index_path(expression: &CheckedExpr) -> bool {
+    expression
+        .saved_place()
+        .is_some_and(|place| !matches!(place.terminal, CheckedSavedTerminal::Index { .. }))
 }
 
 fn collect_saved_path_key_reads(

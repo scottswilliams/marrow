@@ -26,6 +26,19 @@ use crate::resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
 use crate::rules;
 use crate::{MarrowType, ScalarType};
 
+#[cfg(test)]
+static SOURCE_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(crate) fn reset_source_read_count() {
+    SOURCE_READS.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn source_read_count() -> usize {
+    SOURCE_READS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// An overlay of in-memory source text keyed by file path. Editor tooling fills
 /// it with unsaved buffer contents so analysis sees what the user is typing; a
 /// path with no overlay entry is read from disk as usual. An empty overlay means
@@ -738,6 +751,8 @@ pub(crate) fn read_source(
     if let Some(overlay) = sources.get(file_path) {
         return Some(overlay.to_string());
     }
+    #[cfg(test)]
+    SOURCE_READS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     match std::fs::read_to_string(file_path) {
         Ok(source) => Some(source),
         Err(error) => {

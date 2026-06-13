@@ -10,21 +10,14 @@ use serde_json::{Value, json};
 
 use super::{
     BackupCorruptProblem, BackupError, BackupFormatProblem, BackupManifest, CommitDescriptor,
-    EngineDescriptor, FORMAT_VERSION, require_sha256_digest,
+    EngineDescriptor, require_sha256_digest,
 };
 use marrow_store::tree::{
-    EngineProfileDigest, TreeBackupCell, TreeBackupCellBuf, TreeBackupCellReadError,
+    EngineProfileDigest, TREE_BACKUP_MAX_CATALOG_SECTION_BYTES, TREE_BACKUP_MAX_CELL_BYTES,
+    TREE_BACKUP_MAX_MANIFEST_BYTES, TreeBackupArchiveReadError, TreeBackupCell, TreeBackupCellBuf,
+    TreeBackupCellReadError, read_tree_backup_archive_chunk, read_tree_backup_archive_header,
+    write_tree_backup_archive_chunk, write_tree_backup_archive_header,
 };
-
-/// Identifies a Marrow backup file. A file that does not begin with it is not a
-/// backup this build can restore.
-const MAGIC: &[u8; 8] = b"MARROWBK";
-
-/// Upper bounds that keep a truncated or foreign file from forcing a huge
-/// allocation before the framing is validated.
-const MAX_MANIFEST_BYTES: u32 = 16 * 1024 * 1024;
-const MAX_CATALOG_SECTION_BYTES: u32 = 64 * 1024 * 1024;
-const MAX_CELL_BYTES: u32 = 256 * 1024 * 1024;
 
 const CHECKSUM_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const CHECKSUM_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -87,10 +80,8 @@ pub(super) fn write_header(
     manifest: &BackupManifest,
 ) -> Result<(), BackupError> {
     let manifest = serde_json::to_vec(&manifest_to_json(manifest)).expect("a manifest serializes");
-    out.write_all(MAGIC)?;
-    out.write_all(&FORMAT_VERSION.to_be_bytes())?;
-    out.write_all(&(manifest.len() as u32).to_be_bytes())?;
-    out.write_all(&manifest)?;
+    write_tree_backup_archive_header(out)?;
+    write_tree_backup_archive_chunk(out, &manifest)?;
     Ok(())
 }
 
@@ -98,8 +89,7 @@ pub(super) fn write_header(
 /// section, so every backup carries the frame and the read side never branches on its
 /// presence.
 pub(super) fn write_catalog_section(out: &mut impl Write, section: &[u8]) -> std::io::Result<()> {
-    out.write_all(&(section.len() as u32).to_be_bytes())?;
-    out.write_all(section)
+    write_tree_backup_archive_chunk(out, section)
 }
 
 pub(super) fn write_cell(out: &mut impl Write, cell: TreeBackupCell<'_>) -> std::io::Result<()> {
@@ -107,35 +97,9 @@ pub(super) fn write_cell(out: &mut impl Write, cell: TreeBackupCell<'_>) -> std:
 }
 
 pub(super) fn read_header(input: &mut impl Read) -> Result<BackupManifest, BackupError> {
-    let mut magic = [0u8; 8];
-    input.read_exact(&mut magic).map_err(format_version_io)?;
-    if &magic != MAGIC {
-        return Err(BackupError::format_version(
-            BackupFormatProblem::NotBackupFile,
-            "not a Marrow backup file".to_string(),
-        ));
-    }
-    let version = read_u32(input).map_err(format_version_io)?;
-    if version != FORMAT_VERSION {
-        return Err(BackupError::format_version(
-            BackupFormatProblem::UnsupportedVersion {
-                found: version,
-                expected: FORMAT_VERSION,
-            },
-            format!(
-                "backup format version {version} is unsupported (this build writes {FORMAT_VERSION})"
-            ),
-        ));
-    }
-    let manifest_len = read_u32(input).map_err(format_version_io)?;
-    if manifest_len > MAX_MANIFEST_BYTES {
-        return Err(BackupError::format_version(
-            BackupFormatProblem::ManifestTooLarge,
-            "backup manifest is implausibly large".to_string(),
-        ));
-    }
-    let mut bytes = vec![0u8; manifest_len as usize];
-    input.read_exact(&mut bytes).map_err(format_version_io)?;
+    read_tree_backup_archive_header(input).map_err(format_header_error)?;
+    let bytes = read_tree_backup_archive_chunk(input, TREE_BACKUP_MAX_MANIFEST_BYTES, "manifest")
+        .map_err(format_manifest_error)?;
     let value: Value = serde_json::from_slice(&bytes).map_err(|error| {
         BackupError::format_version(
             BackupFormatProblem::ManifestInvalid,
@@ -157,15 +121,12 @@ pub(super) struct CatalogSection {
 /// catalog; otherwise the bytes must be a valid catalog whose stored digest matches
 /// its entries, so a tampered row fails closed here before any data is replayed.
 pub(super) fn read_catalog_section(input: &mut impl Read) -> Result<CatalogSection, BackupError> {
-    let len = read_u32(input).map_err(catalog_section_io)?;
-    if len > MAX_CATALOG_SECTION_BYTES {
-        return Err(BackupError::corrupt(
-            BackupCorruptProblem::CatalogSectionTooLarge,
-            "backup catalog section is implausibly large",
-        ));
-    }
-    let mut bytes = vec![0u8; len as usize];
-    input.read_exact(&mut bytes).map_err(catalog_section_io)?;
+    let bytes = read_tree_backup_archive_chunk(
+        input,
+        TREE_BACKUP_MAX_CATALOG_SECTION_BYTES,
+        "catalog section",
+    )
+    .map_err(catalog_section_archive_error)?;
     let snapshot = if bytes.is_empty() {
         None
     } else {
@@ -173,13 +134,6 @@ pub(super) fn read_catalog_section(input: &mut impl Read) -> Result<CatalogSecti
         Some(CatalogMetadata::from_json(text).map_err(|_| catalog_section_invalid())?)
     };
     Ok(CatalogSection { snapshot, bytes })
-}
-
-fn catalog_section_io(error: std::io::Error) -> BackupError {
-    BackupError::corrupt(
-        BackupCorruptProblem::CatalogSectionInvalid,
-        format!("backup catalog section is truncated: {error}"),
-    )
 }
 
 fn catalog_section_invalid() -> BackupError {
@@ -191,20 +145,52 @@ fn catalog_section_invalid() -> BackupError {
 
 /// Read one framed cell, or a checksum/framing error if the stream is short.
 pub(super) fn read_cell(input: &mut impl Read) -> Result<TreeBackupCellBuf, BackupError> {
-    TreeBackupCellBuf::read_framed(input, MAX_CELL_BYTES).map_err(read_cell_error)
+    TreeBackupCellBuf::read_framed(input, TREE_BACKUP_MAX_CELL_BYTES).map_err(read_cell_error)
 }
 
-fn read_u32(input: &mut impl Read) -> std::io::Result<u32> {
-    let mut bytes = [0u8; 4];
-    input.read_exact(&mut bytes)?;
-    Ok(u32::from_be_bytes(bytes))
+fn format_header_error(error: TreeBackupArchiveReadError) -> BackupError {
+    match error {
+        TreeBackupArchiveReadError::NotBackupFile => BackupError::format_version(
+            BackupFormatProblem::NotBackupFile,
+            "not a Marrow backup file".to_string(),
+        ),
+        TreeBackupArchiveReadError::UnsupportedVersion { found, expected } => {
+            BackupError::format_version(
+                BackupFormatProblem::UnsupportedVersion { found, expected },
+                format!(
+                    "backup format version {found} is unsupported (this build writes {expected})"
+                ),
+            )
+        }
+        TreeBackupArchiveReadError::HeaderTruncated
+        | TreeBackupArchiveReadError::ChunkTruncated { .. }
+        | TreeBackupArchiveReadError::ChunkTooLarge { .. } => {
+            BackupError::format_version(BackupFormatProblem::HeaderTruncated, error.to_string())
+        }
+    }
 }
 
-fn format_version_io(error: std::io::Error) -> BackupError {
-    BackupError::format_version(
-        BackupFormatProblem::HeaderTruncated,
-        format!("backup header is truncated: {error}"),
-    )
+fn format_manifest_error(error: TreeBackupArchiveReadError) -> BackupError {
+    match error {
+        TreeBackupArchiveReadError::ChunkTooLarge { .. } => BackupError::format_version(
+            BackupFormatProblem::ManifestTooLarge,
+            "backup manifest is implausibly large".to_string(),
+        ),
+        _ => BackupError::format_version(BackupFormatProblem::HeaderTruncated, error.to_string()),
+    }
+}
+
+fn catalog_section_archive_error(error: TreeBackupArchiveReadError) -> BackupError {
+    match error {
+        TreeBackupArchiveReadError::ChunkTooLarge { .. } => BackupError::corrupt(
+            BackupCorruptProblem::CatalogSectionTooLarge,
+            "backup catalog section is implausibly large",
+        ),
+        _ => BackupError::corrupt(
+            BackupCorruptProblem::CatalogSectionInvalid,
+            format!("backup catalog section is truncated: {error}"),
+        ),
+    }
 }
 
 fn read_cell_error(error: TreeBackupCellReadError) -> BackupError {
@@ -471,12 +457,13 @@ mod tests {
 
     use super::super::{
         BackupError, BackupFormatProblem, BackupManifest, CommitDescriptor, EngineDescriptor,
+        FORMAT_VERSION,
     };
     use super::{commit_to_json, manifest_from_json, manifest_to_json};
 
     fn minimal_manifest() -> serde_json::Value {
         json!({
-            "format_version": super::FORMAT_VERSION,
+            "format_version": FORMAT_VERSION,
             "source_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
             "catalog_epoch": null,
             "catalog_digest": null,
@@ -505,7 +492,7 @@ mod tests {
     fn manifest_json_round_trips_every_field() {
         let digest = |seed: u8| format!("sha256:{}", format!("{seed:02x}").repeat(32));
         let manifest = BackupManifest {
-            format_version: super::FORMAT_VERSION,
+            format_version: FORMAT_VERSION,
             source_digest: digest(1),
             catalog_epoch: Some(7),
             catalog_digest: Some(digest(6)),

@@ -1,17 +1,118 @@
-//! Read-only evolution preview: run the discharge and assemble the witness.
+//! Read-only evolution preview facts and discharge witnesses.
 //!
-//! Preview is the analysis entry a future `check --data` or activation gate calls.
-//! It runs the discharge, then composes the witness from the discharge result and
-//! the store's metadata fingerprints. It never mutates the store. The returned
-//! diagnostics name the exact obligations that block activation; the witness reports
-//! activatability through every obligation's verdict.
+//! `evolution_preview` is the analysis-API surface. It records the checked schema
+//! fingerprints and, when given a backup archive, bounded backup cell evidence. It
+//! does not open a live store or decide activation. `preview` is the older
+//! live-store discharge entry point: it reads store metadata, runs discharge
+//! obligations, and returns the witness plus diagnostics without mutating data.
+
+use std::fmt;
+use std::path::Path;
 
 use marrow_store::StoreError;
+use marrow_store::cell::{DataCellKind, DataPathSegment};
 use marrow_store::tree::TreeStore;
+use marrow_store::tree::{
+    TREE_BACKUP_MAX_CATALOG_SECTION_BYTES, TREE_BACKUP_MAX_CELL_BYTES,
+    TREE_BACKUP_MAX_MANIFEST_BYTES, TreeBackupArchiveReadError, TreeBackupCellBuf,
+    TreeBackupCellReadError, read_tree_backup_archive_chunk, read_tree_backup_archive_header,
+};
 
 use super::discharge::{RepairDiagnostic, discharge};
 use super::witness::{CatalogFingerprint, EvolutionWitness};
+use crate::analysis::AnalysisSnapshot;
 use crate::program::CheckedProgram;
+
+const MAX_BACKUP_CATALOG_ID_SAMPLES: usize = 16;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WitnessFactSet {
+    pub source_digest: String,
+    pub evolution_digest: String,
+    pub accepted_catalog: CatalogFingerprint,
+    pub proposal_catalog: Option<CatalogFingerprint>,
+    pub backup: Option<BackupWitnessFactSet>,
+    pub live_store: LiveStorePreviewStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupWitnessFactSet {
+    pub cell_count: u64,
+    pub sample_catalog_ids: Vec<String>,
+    pub samples_truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveStorePreviewStatus {
+    Deferred,
+}
+
+#[derive(Debug)]
+pub enum EvolutionPreviewError {
+    Io(String),
+    BackupFormat(String),
+    BackupCell(TreeBackupCellReadError),
+}
+
+impl fmt::Display for EvolutionPreviewError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(message) => write!(f, "preview I/O failed: {message}"),
+            Self::BackupFormat(message) => write!(f, "backup format is invalid: {message}"),
+            Self::BackupCell(error) => write!(f, "backup cell stream is invalid: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for EvolutionPreviewError {}
+
+impl From<std::io::Error> for EvolutionPreviewError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error.to_string())
+    }
+}
+
+impl From<TreeBackupCellReadError> for EvolutionPreviewError {
+    fn from(error: TreeBackupCellReadError) -> Self {
+        Self::BackupCell(error)
+    }
+}
+
+impl From<TreeBackupArchiveReadError> for EvolutionPreviewError {
+    fn from(error: TreeBackupArchiveReadError) -> Self {
+        Self::BackupFormat(error.to_string())
+    }
+}
+
+pub fn evolution_preview(
+    snapshot: &AnalysisSnapshot,
+    backup: Option<&Path>,
+) -> Result<WitnessFactSet, EvolutionPreviewError> {
+    let (source_digest, evolution_digest) =
+        crate::catalog::source_and_evolution_digests(&snapshot.program);
+    let backup = backup.map(read_backup_witness_facts).transpose()?;
+    Ok(WitnessFactSet {
+        source_digest,
+        evolution_digest,
+        accepted_catalog: CatalogFingerprint {
+            epoch: snapshot.program.catalog.accepted_epoch.unwrap_or(0),
+            digest: snapshot
+                .program
+                .catalog
+                .accepted_digest
+                .clone()
+                .unwrap_or_default(),
+        },
+        proposal_catalog: snapshot.program.catalog.proposal.as_ref().map(|proposal| {
+            CatalogFingerprint {
+                epoch: proposal.epoch,
+                digest: proposal.digest.clone(),
+            }
+        }),
+        backup,
+        live_store: LiveStorePreviewStatus::Deferred,
+    })
+}
 
 /// Discharge every obligation against `store` and assemble the evolution witness.
 /// Strictly read-only. The witness composes the source and catalog fingerprints
@@ -60,6 +161,65 @@ pub fn preview(
         };
 
     Ok((witness, discharge.diagnostics))
+}
+
+fn read_backup_witness_facts(path: &Path) -> Result<BackupWitnessFactSet, EvolutionPreviewError> {
+    let mut file = std::fs::File::open(path)?;
+    read_tree_backup_archive_header(&mut file)?;
+    let _manifest =
+        read_tree_backup_archive_chunk(&mut file, TREE_BACKUP_MAX_MANIFEST_BYTES, "manifest")?;
+    let _catalog_section = read_tree_backup_archive_chunk(
+        &mut file,
+        TREE_BACKUP_MAX_CATALOG_SECTION_BYTES,
+        "catalog section",
+    )?;
+
+    let mut cell_count = 0u64;
+    let mut sample_catalog_ids = Vec::new();
+    let mut samples_truncated = false;
+    while let Some(cell) =
+        TreeBackupCellBuf::read_framed_optional(&mut file, TREE_BACKUP_MAX_CELL_BYTES)?
+    {
+        cell_count += 1;
+        samples_truncated |= sample_cell_catalog_ids(&cell, &mut sample_catalog_ids);
+    }
+    Ok(BackupWitnessFactSet {
+        cell_count,
+        samples_truncated,
+        sample_catalog_ids,
+    })
+}
+
+fn sample_cell_catalog_ids(cell: &TreeBackupCellBuf, samples: &mut Vec<String>) -> bool {
+    let mut truncated = false;
+    let key = cell.data_key();
+    truncated |= push_sample(samples, key.store.as_str());
+    match &key.kind {
+        DataCellKind::Node => {}
+        DataCellKind::Leaf { member } | DataCellKind::Sequence { member, .. } => {
+            truncated |= push_sample(samples, member.as_str());
+        }
+        DataCellKind::Value { path } => {
+            for segment in path {
+                if let DataPathSegment::Member(member) = segment {
+                    truncated |= push_sample(samples, member.as_str());
+                }
+            }
+        }
+    }
+    truncated
+}
+
+fn push_sample(samples: &mut Vec<String>, id: &str) -> bool {
+    if samples.iter().any(|sample| sample == id) {
+        return false;
+    }
+    if samples.len() >= MAX_BACKUP_CATALOG_ID_SAMPLES {
+        return true;
+    }
+
+    samples.push(id.to_string());
+    false
 }
 
 #[cfg(test)]

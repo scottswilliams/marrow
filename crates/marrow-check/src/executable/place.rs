@@ -201,21 +201,31 @@ impl<'a> SavedPlaceResolver<'a> {
             CheckedExpr::Field { name, span, .. }
             | CheckedExpr::OptionalField { name, span, .. } => {
                 let place = expr.saved_place()?;
-                if !matches!(place.terminal, CheckedSavedTerminal::Field { .. }) {
-                    return None;
-                }
                 let mut chain = place
                     .layers
                     .iter()
                     .map(|layer| layer.name.clone())
                     .collect::<Vec<_>>();
-                chain.push(name.clone());
-                Some(SavedMemberRef {
-                    root: place.root.clone(),
-                    chain,
-                    span: *span,
-                    kind: SavedMemberRefKind::Field,
-                })
+                match place.terminal {
+                    CheckedSavedTerminal::Field { .. } => {
+                        chain.push(name.clone());
+                        Some(SavedMemberRef {
+                            root: place.root.clone(),
+                            chain,
+                            span: *span,
+                            kind: SavedMemberRefKind::Field,
+                        })
+                    }
+                    CheckedSavedTerminal::Record if chain.last() == Some(name) => {
+                        Some(SavedMemberRef {
+                            root: place.root.clone(),
+                            chain,
+                            span: *span,
+                            kind: SavedMemberRefKind::Layer,
+                        })
+                    }
+                    _ => None,
+                }
             }
             CheckedExpr::Call { callee, .. } => {
                 let CheckedExpr::Field {
@@ -778,6 +788,7 @@ pub(super) fn checked_field_place(
         return Some(place);
     };
     place.layers.push(CheckedSavedLayer {
+        id: member.id,
         name: name.to_string(),
         catalog_id: member.catalog_id.clone(),
         args: Vec::new(),

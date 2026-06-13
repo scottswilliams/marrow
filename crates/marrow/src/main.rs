@@ -484,6 +484,17 @@ pub(crate) fn read_accepted_store_catalog(
     accepted_catalog_file_result(file_accepted, accepted, format)
 }
 
+/// Read the committed catalog artifact without consulting the saved-data store.
+/// Ordinary `check` uses this path so it is a pure source/catalog-file command;
+/// commands that explicitly inspect or mutate durable state use
+/// [`read_accepted_store_catalog`] instead.
+pub(crate) fn read_accepted_catalog_artifact(
+    dir: &str,
+    format: CheckFormat,
+) -> Result<Option<marrow_catalog::CatalogMetadata>, ExitCode> {
+    accepted_catalog_file_result(read_accepted_catalog_file(dir), None, format)
+}
+
 enum AcceptedCatalogFile {
     Missing,
     Snapshot(marrow_catalog::CatalogMetadata),

@@ -14,7 +14,13 @@ use crate::metadata::{
     decode_commit_metadata, decode_store_uid, encode_commit_metadata, encode_store_uid,
 };
 
-pub use crate::backup::{TreeBackupCell, TreeBackupCellBuf, TreeBackupCellReadError};
+pub use crate::backup::{
+    TREE_BACKUP_ARCHIVE_FORMAT_VERSION, TREE_BACKUP_ARCHIVE_MAGIC,
+    TREE_BACKUP_MAX_CATALOG_SECTION_BYTES, TREE_BACKUP_MAX_CELL_BYTES,
+    TREE_BACKUP_MAX_MANIFEST_BYTES, TreeBackupArchiveReadError, TreeBackupCell, TreeBackupCellBuf,
+    TreeBackupCellReadError, read_tree_backup_archive_chunk, read_tree_backup_archive_header,
+    write_tree_backup_archive_chunk, write_tree_backup_archive_header,
+};
 pub use crate::cell::DataPathSegment;
 pub use crate::metadata::{CommitMetadata, EngineProfile, EngineProfileDigest, StoreUid};
 

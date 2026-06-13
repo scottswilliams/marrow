@@ -41,7 +41,7 @@ use marrow_store::tree::{CommitMetadata, EngineProfile, EngineProfileDigest, Sto
 
 /// The on-disk format version. It advances only on an incompatible change to the
 /// header, manifest, or cell framing.
-pub(crate) const FORMAT_VERSION: u32 = 5;
+pub(crate) const FORMAT_VERSION: u32 = marrow_store::tree::TREE_BACKUP_ARCHIVE_FORMAT_VERSION;
 
 /// A short name identifying the engine family a backup was taken from. v0.1 has
 /// one; the layout, key-profile, and value-codec versions distinguish revisions.

@@ -139,6 +139,73 @@ fn read_only_public_entry_reports_static_footprint() {
 }
 
 #[test]
+fn entry_cost_shape_reports_counted_index_branch_as_one_range_scan() {
+    let root = temp_project("entry-cost-shape-index-count", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   shelf: string\n\
+             store ^books(id: int): Book\n\
+             \x20   index byShelf(shelf, id)\n\
+             pub fn shelfCount(shelf: string): int\n\
+             \x20   return count(^books.byShelf(shelf))\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    assert_clean(&report);
+
+    let shape = program
+        .entry_cost_shapes()
+        .into_iter()
+        .find(|shape| shape.entry == "books::shelfCount")
+        .expect("public shelfCount cost shape");
+    assert_eq!(shape.work_shape, WorkShapeClass::ReadOnly);
+    assert_eq!(shape.point_reads, 0);
+    assert_eq!(shape.range_scans, 1);
+    assert_eq!(shape.writes, 0);
+    assert_eq!(shape.index_entry_touches, 0);
+    assert_eq!(shape.commit_points, 0);
+}
+
+#[test]
+fn entry_cost_shape_counts_distinct_static_shapes_not_expression_multiplicity() {
+    let root = temp_project("entry-cost-shape-distinct-static-shapes", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             store ^books(id: int): Book\n\
+             pub fn repeated(id: int): string\n\
+             \x20   const a = ^books(id).title ?? \"\"\n\
+             \x20   const b = ^books(id).title ?? \"\"\n\
+             \x20   return a + b\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    assert_clean(&report);
+
+    let shape = program
+        .entry_cost_shapes()
+        .into_iter()
+        .find(|shape| shape.entry == "books::repeated")
+        .expect("public repeated cost shape");
+    assert_eq!(shape.work_shape, WorkShapeClass::ReadOnly);
+    assert_eq!(
+        shape.point_reads, 1,
+        "cost shape records one distinct saved member read, not two dynamic reads"
+    );
+    assert_eq!(shape.range_scans, 0);
+    assert_eq!(shape.writes, 0);
+    assert_eq!(shape.index_entry_touches, 0);
+    assert_eq!(shape.commit_points, 0);
+}
+
+#[test]
 fn transaction_wrapped_read_entry_requires_write_capable_open_after_identity_freeze() {
     let root = temp_project("effect-closure-transaction-read-open-mode", |root| {
         write(

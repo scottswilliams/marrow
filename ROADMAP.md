@@ -848,23 +848,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 Runs after the language batch so the refactor churns once over the final v0.1 surface.
 
-**W5.6 → Analysis-API innovation surface (C01, C02, C03, C08, C29, C30, G2-4).** After W5.5,
-before the wave gate. Owns: `sites_for(catalog_id)` + the UseSite table from one post-lowering
-walk (C01); the reserved StoreIndexId usage-bitmap field shape in CheckedFacts (C02,
-unpopulated); the cost-fact audit against model-ir/01's mandate + one cost-shape query + one
-known-cost conformance fixture (C03); the RenameAction type (source edits + synthesized
-evolve-rename fragment through the canonical formatter) + one SavedDataBacked test (C08);
-`evaluate_checked_read_only_expression` (synthetic-expression injection into a CheckedProgram
-context; writes/host-effects/unindexed lookups rejected with source-level codes) (C29);
-`evolution_preview(snapshot, backup: Option<&Path>) -> WitnessFactSet` (schema-only without a
-data source; counts/samples from a backup path; live-store path explicitly deferred) (C30); one
-oracle law that `marrow check` reads each source file exactly once and opens the store zero
-times (G2-4, post-W5.4). Seed: each query's failing API test. Review: every new surface is
-read-only, recomputes internally, and enters the recorded contract; no second semantic
-classifier introduced (the eval path reuses the production checker). Done: the analysis-API
-contract recorded at the wave gate includes all of the above; marrow-lsp builds green against
-head.
-
 **W5.7 → Checker field resolution.** Carries: static `check.unknown_field` for dotted field
 access on resolvable base types. Owns: infer.rs field/optional-field resolution, diagnostics.rs,
 docs/error-codes.md, and fixtures for local resource and saved-path unknown fields. Seed:

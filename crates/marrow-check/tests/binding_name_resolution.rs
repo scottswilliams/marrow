@@ -9,6 +9,7 @@ mod support_binding;
 use std::path::Path;
 
 use marrow_check::binding::SymbolKind;
+use marrow_check::build_binding_index;
 
 use support_binding::{analyze, nth_offset};
 
@@ -25,8 +26,7 @@ fn definition_of_a_local_use_is_its_binding() {
         .definition(file, use_offset)
         .expect("the use resolves to a definition");
     assert_eq!(def.kind, SymbolKind::Local, "{def:?}");
-    // The definition site is the `const k` statement, which precedes the use.
-    let def_start = source.find("const k").expect("const k");
+    let def_start = source.find("k = 7").expect("const name");
     assert_eq!(def.span.start_byte, def_start, "{def:?}");
     assert!(def.span.start_byte < use_offset, "{def:?}");
 }
@@ -85,6 +85,31 @@ fn references_of_a_param_are_its_uses_shadowing_aware() {
         !in_func.contains(&inner_use),
         "shadowed inner use excluded: refs={in_func:?} inner={inner_use}",
     );
+}
+
+#[test]
+fn parameter_definitions_expose_their_function_and_parameter_index() {
+    let source = "module m\nfn greet(count: int, title: string)\n    print(title)\n";
+    let (snapshot, paths) =
+        support::analyze_overlay("param-definition-owner", &[("src/m.mw", source)]);
+    let index = build_binding_index(&snapshot);
+    let file = &paths[0];
+
+    let use_offset = source.rfind("title").expect("parameter use") + 1;
+    let def = index
+        .definition(file, use_offset)
+        .expect("use resolves to the parameter");
+    assert_eq!(def.kind, SymbolKind::Param, "{def:?}");
+
+    let param = index
+        .parameter_definition(&def)
+        .expect("parameter binding has owner metadata");
+    let function = snapshot.program.facts.function(param.function);
+
+    assert_eq!(function.name, "greet");
+    assert_eq!(param.index, 1);
+    assert_eq!(function.params[param.index].id, param.local);
+    assert_eq!(function.params[param.index].name, "title");
 }
 
 #[test]
@@ -175,7 +200,7 @@ fn a_bare_call_goes_to_its_own_module_not_a_foreign_one() {
     let zzz_file = &paths[1];
 
     // The cursor sits on the bare call `greet()` inside `zzz::run`.
-    let call_offset = zzz.rfind("greet()").expect("bare call");
+    let call_offset = zzz.rfind("greet()").expect("bare call") + 2;
     let def = index
         .definition(zzz_file, call_offset)
         .expect("bare call resolves to a function definition");
@@ -184,4 +209,34 @@ fn a_bare_call_goes_to_its_own_module_not_a_foreign_one() {
         def.file, *zzz_file,
         "a bare call goes to its own module's `greet`, not the foreign one: {def:?}",
     );
+}
+
+#[test]
+fn a_bare_call_in_a_nested_module_resolves_inside_the_call_token() {
+    let source = "module shelf::sample\n\
+        resource Book\n    \
+        required title: string\n    \
+        required visits: int\n\
+        store ^books(id: int): Book\n\
+        pub fn touch(id: int): string\n    \
+        const title: string = ^books(id).title ?? \"\"\n    \
+        const visits: int = ^books(id).visits ?? 0\n    \
+        transaction\n        \
+        ^books(id).visits = visits + 1\n    \
+        print(title)\n    \
+        return title\n\
+        pub fn caller(): string\n    \
+        return touch(1)\n";
+    let (index, paths) = analyze(
+        "binding-nested-bare-call",
+        &[("src/shelf/sample.mw", source)],
+    );
+    let file = &paths[0];
+
+    let call_offset = source.rfind("touch(1)").expect("bare call") + 1;
+    let def = index
+        .definition(file, call_offset)
+        .expect("nested module bare call resolves to a function definition");
+    assert_eq!(def.kind, SymbolKind::Function, "{def:?}");
+    assert_eq!(def.file, *file, "{def:?}");
 }

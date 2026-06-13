@@ -1,9 +1,7 @@
 //! `marrow check` is read-only over durable state: it neither freezes durable identity
-//! nor creates or mutates the saved-data store. When a store already holds a committed
-//! accepted catalog, `check` may repair `marrow.catalog.json` from that snapshot. The
-//! durable write paths — `marrow run` over a persistent store and `marrow evolve apply`
-//! — are the contrast: each commits, so each leaves the catalog artifact and store
-//! changed.
+//! nor creates, opens, repairs, or mutates the saved-data store. The durable write
+//! paths — `marrow run` over a persistent store and `marrow evolve apply` — are the
+//! contrast: each commits, so each leaves the catalog artifact and store changed.
 
 use std::fs;
 use std::path::Path;
@@ -79,6 +77,30 @@ fn check_on_an_uncommitted_project_writes_no_catalog_and_no_store() {
     assert!(
         !store_path(&project).exists(),
         "check must not create the saved-data store"
+    );
+}
+
+#[test]
+fn check_does_not_open_a_hostile_native_store_file() {
+    let project = temp_project_uncommitted("check-ro-hostile-store-file", |root| {
+        write(root, "marrow.json", native_config());
+        write(root, "src/app.mw", COUNTER_SOURCE);
+        write(root, ".data/marrow.redb", "not a redb store");
+    });
+    let dir = project.to_str().unwrap();
+    let store_before = fs::read(store_path(&project)).expect("read hostile store");
+
+    let check = marrow(&["check", dir]);
+    assert_eq!(check.status.code(), Some(0), "{check:?}");
+
+    assert_eq!(
+        fs::read(store_path(&project)).expect("read hostile store after check"),
+        store_before,
+        "ordinary check must not open or rewrite the configured store"
+    );
+    assert!(
+        !catalog_path(&project).exists(),
+        "ordinary check must not repair catalog state from the store"
     );
 }
 
@@ -170,7 +192,7 @@ fn check_rejects_catalog_file_conflict_markers_without_creating_a_store() {
 }
 
 #[test]
-fn check_repairs_a_torn_catalog_file_from_the_committed_store_snapshot() {
+fn check_rejects_a_torn_catalog_file_without_opening_the_store_snapshot() {
     let project = temp_project_uncommitted("check-ro-torn-catalog-repair", |root| {
         write(root, "marrow.json", native_config());
         write(root, "src/app.mw", COUNTER_SOURCE);
@@ -180,20 +202,25 @@ fn check_repairs_a_torn_catalog_file_from_the_committed_store_snapshot() {
         marrow(&["run", "--entry", "app::seed", dir]).status.code(),
         Some(0)
     );
-    let snapshot = store_snapshot(&project);
+    let store_before = fs::read(store_path(&project)).expect("read store before check");
     fs::write(catalog_path(&project), "{\"epoch\":").expect("write torn catalog render");
 
     let check = marrow(&["check", dir]);
     assert_eq!(
         check.status.code(),
-        Some(0),
-        "check repairs the torn catalog file and proceeds: {check:?}"
+        Some(1),
+        "check rejects the torn catalog file without store repair: {check:?}"
     );
 
     assert_eq!(
-        rendered_catalog(&project),
-        snapshot.to_json_pretty(),
-        "the repair replaces torn file bytes with the committed store snapshot"
+        fs::read(store_path(&project)).expect("read store after check"),
+        store_before,
+        "rejecting a torn catalog file must not open the store for repair"
+    );
+    assert_eq!(
+        fs::read_to_string(catalog_path(&project)).expect("read torn catalog"),
+        "{\"epoch\":",
+        "ordinary check leaves invalid catalog bytes for the user to fix"
     );
 }
 
@@ -230,10 +257,7 @@ fn check_rejects_catalog_file_conflict_markers_even_when_a_store_snapshot_exists
 }
 
 #[test]
-fn check_on_a_committed_project_repairs_only_the_catalog_file() {
-    // Once durable state exists, `check` can repair the derived catalog artifact, but the
-    // store file's bytes are identical before and after, so a CI `check` cannot drift the
-    // committed durable state.
+fn check_on_a_committed_project_does_not_repair_a_missing_catalog_file() {
     let project = temp_project_uncommitted("check-ro-committed", |root| {
         write(root, "marrow.json", native_config());
         write(root, "src/app.mw", COUNTER_SOURCE);
@@ -246,7 +270,6 @@ fn check_on_a_committed_project_repairs_only_the_catalog_file() {
 
     let store = store_path(&project);
     let store_before = fs::read(&store).expect("read store");
-    let snapshot = store_snapshot(&project);
     if catalog_path(&project).exists() {
         fs::remove_file(catalog_path(&project)).expect("remove rendered catalog");
     }
@@ -259,15 +282,14 @@ fn check_on_a_committed_project_repairs_only_the_catalog_file() {
         store_before,
         "check left the store file bytes unchanged"
     );
-    assert_eq!(
-        rendered_catalog(&project),
-        snapshot.to_json_pretty(),
-        "check repaired the catalog artifact from the committed store snapshot"
+    assert!(
+        !catalog_path(&project).exists(),
+        "ordinary check does not reconstruct a missing catalog file from the store"
     );
 }
 
 #[test]
-fn check_repairs_same_epoch_catalog_file_drift_from_the_committed_store_snapshot() {
+fn check_preserves_a_valid_catalog_file_without_store_repair() {
     let project_a = temp_project_uncommitted("check-ro-same-epoch-drift-a", |root| {
         write(root, "marrow.json", native_config());
         write(root, "src/app.mw", COUNTER_SOURCE);
@@ -292,6 +314,7 @@ fn check_repairs_same_epoch_catalog_file_drift_from_the_committed_store_snapshot
         Some(0)
     );
 
+    let store_a_before = fs::read(store_path(&project_a)).expect("read project A store");
     let snapshot_a = store_snapshot(&project_a);
     let snapshot_b = store_snapshot(&project_b);
     assert_eq!(snapshot_a.epoch, snapshot_b.epoch);
@@ -306,13 +329,18 @@ fn check_repairs_same_epoch_catalog_file_drift_from_the_committed_store_snapshot
     assert_eq!(
         check.status.code(),
         Some(0),
-        "check repairs same-epoch file drift and proceeds: {check:?}"
+        "check binds the valid catalog artifact and proceeds: {check:?}"
     );
 
     assert_eq!(
         rendered_catalog(&project_a),
-        snapshot_a.to_json_pretty(),
-        "same-epoch drift is repaired from project A's committed store snapshot"
+        snapshot_b.to_json_pretty(),
+        "ordinary check preserves the source-tree catalog artifact"
+    );
+    assert_eq!(
+        fs::read(store_path(&project_a)).expect("read project A store after check"),
+        store_a_before,
+        "ordinary check does not inspect the store to repair same-epoch drift"
     );
 }
 

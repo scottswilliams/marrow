@@ -138,7 +138,7 @@ fn a_second_run_does_not_churn_the_accepted_catalog() {
 }
 
 #[test]
-fn check_repairs_a_missing_catalog_file_from_the_committed_store_snapshot() {
+fn run_repairs_a_missing_catalog_file_from_the_committed_store_snapshot() {
     let root = pending_native_project("run-repair-missing-catalog-file");
 
     let first = marrow_sub("run", &[root.to_str().unwrap()]);
@@ -146,11 +146,15 @@ fn check_repairs_a_missing_catalog_file_from_the_committed_store_snapshot() {
     let snapshot = store_snapshot(&root);
     fs::remove_file(catalog_file(&root)).expect("simulate kill before file render");
 
-    let check = marrow_sub("check", &[root.to_str().unwrap()]);
+    let second = marrow_sub("run", &[root.to_str().unwrap()]);
     assert_eq!(
-        check.status.code(),
+        second.status.code(),
         Some(0),
-        "check repairs the catalog file and proceeds: {check:?}"
+        "run repairs the catalog file and proceeds: {second:?}"
+    );
+    assert_eq!(
+        String::from_utf8(second.stdout).expect("stdout utf8"),
+        "ran\n"
     );
 
     assert_eq!(

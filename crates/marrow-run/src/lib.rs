@@ -51,7 +51,10 @@ mod value;
 mod write_dispatch;
 mod write_plan;
 
-pub use entry::{CheckedEntryCall, run_entry, run_entry_with_debugger, run_entry_with_host};
+pub use entry::{
+    CheckedEntryCall, evaluate_checked_read_only_expression, run_entry, run_entry_with_debugger,
+    run_entry_with_host,
+};
 pub use error::{
     CALL_DEPTH_BUDGET, RECURSION_LIMIT, RUN_ABSENT, RUN_AMBIGUOUS_FUNCTION, RUN_ASSERT,
     RUN_CAPABILITY, RUN_DECIMAL_OVERFLOW, RUN_DIVIDE_BY_ZERO, RUN_NO_ENCLOSING_LOOP, RUN_NO_VALUE,

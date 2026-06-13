@@ -61,6 +61,27 @@ pub fn parse_source(source: &str) -> ParsedSource {
     parsed
 }
 
+pub fn parse_expression(source: &str) -> (Option<Expression>, Vec<Diagnostic>) {
+    let lexed = lex_source(source);
+    let mut diagnostics = lexed.diagnostics;
+    let expression =
+        parse_expr::ExprParser::new(source, &lexed.tokens).parse_complete(&mut diagnostics);
+    if expression.is_none() && diagnostics.is_empty() {
+        diagnostics.push(Diagnostic {
+            code: PARSE_SYNTAX,
+            reason: DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
+                ExpectedSyntax::Expression,
+            )),
+            severity: Severity::Error,
+            message: "expected an expression".to_string(),
+            help: None,
+            span: SourceSpan::default(),
+        });
+    }
+    diagnostics.sort_by_key(|diagnostic| (diagnostic.span.line, diagnostic.span.start_byte));
+    (expression, diagnostics)
+}
+
 #[cfg(test)]
 mod decl_parser_corpus {
     use super::{BinaryOp, Declaration, Expression, PARSE_SYNTAX, ParsedSource, parse_source};

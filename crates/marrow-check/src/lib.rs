@@ -31,9 +31,13 @@ mod typerules;
 mod walk;
 
 pub use analysis::{
-    AnalysisIdentity, AnalysisSnapshot, AnalyzedFile, analyze_project, scope_at, type_at,
+    AnalysisIdentity, AnalysisSnapshot, AnalyzedFile, UseSite, UseSiteKind, analyze_project,
+    scope_at, type_at,
 };
-pub use binding::{BindingIndex, RenameSafety, SymbolKind, SymbolRef, build_binding_index};
+pub use binding::{
+    BindingIndex, ParameterDefinition, RenameAction, RenameSafety, SourceEdit, SymbolKind,
+    SymbolRef, build_binding_index,
+};
 pub use diagnostics::{
     AppendTargetDiagnostic, CHECK_AMBIGUOUS_CALL, CHECK_AMBIGUOUS_MATCH_ARM,
     CHECK_AMBIGUOUS_MEMBER, CHECK_ASSIGNMENT_TYPE, CHECK_BARE_MAYBE_PRESENT_READ,
@@ -45,13 +49,14 @@ pub use diagnostics::{
     CHECK_MATCH_REQUIRES_ENUM, CHECK_MISSING_RETURN, CHECK_MODULE_PATH, CHECK_MULTIPLE_SCRIPTS,
     CHECK_NEIGHBOR_UNSUPPORTED, CHECK_NEXT_ID_REQUIRES_SINGLE_INT, CHECK_NONEXHAUSTIVE_MATCH,
     CHECK_OPERATOR_TYPE, CHECK_PRIVATE_ENUM, CHECK_PRIVATE_FUNCTION, CHECK_RANGE,
-    CHECK_RANGE_VALUE, CHECK_RECURSIVE_KEYED_ENTRY, CHECK_REJECTED_SURFACE, CHECK_RETURN_TYPE,
-    CHECK_RETURN_VALUE, CHECK_STRING_ESCAPE, CHECK_THROW_TYPE, CHECK_TRY_HANDLER,
-    CHECK_UNKNOWN_ENUM_MEMBER, CHECK_UNKNOWN_TYPE, CHECK_UNRESOLVED_CALL, CHECK_UNRESOLVED_IMPORT,
-    CHECK_UNRESOLVED_NAME, CHECK_UNTYPED_VALUE, CatalogIntentDiagnostic, CatalogIntentKind,
-    CatalogPathCandidate, CheckDiagnostic, CheckReport, ConversionTarget,
-    ConversionUnsupportedSourceDiagnostic, DiagnosticPayload, EnumDiagnostic, IO_READ,
-    RejectedSurface, SCHEMA_DUPLICATE_ROOT_OWNER,
+    CHECK_RANGE_VALUE, CHECK_READ_ONLY_EXPRESSION_CONTEXT, CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT,
+    CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP, CHECK_READ_ONLY_EXPRESSION_WRITE,
+    CHECK_RECURSIVE_KEYED_ENTRY, CHECK_REJECTED_SURFACE, CHECK_RETURN_TYPE, CHECK_RETURN_VALUE,
+    CHECK_STRING_ESCAPE, CHECK_THROW_TYPE, CHECK_TRY_HANDLER, CHECK_UNKNOWN_ENUM_MEMBER,
+    CHECK_UNKNOWN_TYPE, CHECK_UNRESOLVED_CALL, CHECK_UNRESOLVED_IMPORT, CHECK_UNRESOLVED_NAME,
+    CHECK_UNTYPED_VALUE, CatalogIntentDiagnostic, CatalogIntentKind, CatalogPathCandidate,
+    CheckDiagnostic, CheckReport, ConversionTarget, ConversionUnsupportedSourceDiagnostic,
+    DiagnosticPayload, EnumDiagnostic, IO_READ, RejectedSurface, SCHEMA_DUPLICATE_ROOT_OWNER,
 };
 pub use driver::{
     ProjectSources, check_project, check_project_with_catalog, check_tests, check_tests_program,
@@ -75,12 +80,12 @@ pub use executable::{
 };
 pub use facts::PresenceProofRead;
 pub use facts::{
-    CheckedFacts, CheckedType, DirectEffectFacts, EffectClosureFacts, EntryFootprintFact,
-    EntryStoreOpenMode, EnumFact, EnumId, EnumMemberFact, EnumMemberId, FunctionFact, FunctionId,
-    HostEffect, LocalFact, LocalId, ModuleFact, ModuleId, ResourceFact, ResourceId,
-    ResourceMemberFact, ResourceMemberId, ResourceMemberKind, SavedPlaceEffect, StoreFact, StoreId,
-    StoreIdentityKeyFact, StoreIndexFact, StoreIndexId, StoreIndexKeyFact, StoreIndexKeySource,
-    StoredValueMeaning, WorkShapeClass,
+    CheckedFacts, CheckedType, DirectEffectFacts, EffectClosureFacts, EntryCostShapeFact,
+    EntryFootprintFact, EntryStoreOpenMode, EnumFact, EnumId, EnumMemberFact, EnumMemberId,
+    FunctionFact, FunctionId, HostEffect, LocalFact, LocalId, ModuleFact, ModuleId, ResourceFact,
+    ResourceId, ResourceMemberFact, ResourceMemberId, ResourceMemberKind, SavedPlaceEffect,
+    StoreFact, StoreId, StoreIdentityKeyFact, StoreIndexFact, StoreIndexId, StoreIndexKeyFact,
+    StoreIndexKeySource, StoreIndexUsageBitmap, StoredValueMeaning, WorkShapeClass,
 };
 pub use facts::{
     PresenceProofFact, PresenceProofId, PresenceProofPlace, PresenceProofSource,
@@ -91,8 +96,9 @@ pub use marrow_project::ProjectConfig;
 pub use marrow_schema::{IndexSchema, ResourceSchema, StoreSchema, Type};
 pub use program::{
     CheckedConst, CheckedEntryFunction, CheckedFunction, CheckedModule, CheckedParam,
-    CheckedProgram, CheckedRuntimeConst, CheckedRuntimeFunction, CheckedRuntimeModule,
-    CheckedRuntimeProgram, EvolveTransform, FileId, MarrowType, ProgramCatalog,
+    CheckedProgram, CheckedReadOnlyExpression, CheckedRuntimeConst, CheckedRuntimeFunction,
+    CheckedRuntimeModule, CheckedRuntimeProgram, EvolveTransform, FileId, MarrowType,
+    ProgramCatalog,
 };
 pub use resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
 

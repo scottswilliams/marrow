@@ -25,7 +25,10 @@ pub(crate) use intents::{
 pub(crate) use transform_reads::transform_old_member;
 
 pub use discharge::RepairDiagnostic;
-pub use preview::preview;
+pub use preview::{
+    BackupWitnessFactSet, EvolutionPreviewError, LiveStorePreviewStatus, WitnessFactSet,
+    evolution_preview, preview,
+};
 pub use transform_reads::{TransformReadMember, transform_read_members};
 pub use witness::{
     CatalogFingerprint, DefaultValue, DischargeCounts, EvolutionWitness, ObligationVerdict,

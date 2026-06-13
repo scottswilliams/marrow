@@ -15,8 +15,22 @@ pub(crate) fn effect_closure(
     program.facts.function_for_ref(function_ref)?;
     let mut closure = EffectClosureFacts::default();
     collect_function_closure(program, function_ref, &mut closure, &mut Vec::new());
-    closure.write_effects_reachable = !closure.stores_written.is_empty();
+    set_write_reachability(&mut closure);
     Some(closure)
+}
+
+pub(crate) fn effect_closure_for_direct(
+    program: &CheckedProgram,
+    direct: &DirectEffectFacts,
+) -> EffectClosureFacts {
+    let mut closure = EffectClosureFacts::default();
+    extend_closure(&mut closure, direct);
+    let mut visited = Vec::new();
+    for callee in &direct.user_function_calls {
+        collect_function_closure(program, *callee, &mut closure, &mut visited);
+    }
+    set_write_reachability(&mut closure);
+    closure
 }
 
 pub(super) fn call_writes_saved_data(program: &CheckedProgram, target: &CheckedCallTarget) -> bool {
@@ -120,5 +134,12 @@ fn extend_closure(closure: &mut EffectClosureFacts, direct: &DirectEffectFacts) 
     );
     closure.transactions |= direct.transactions;
     extend_unique(&mut closure.host_calls, direct.host_calls.clone());
+    closure.unindexed_collection_reads |= direct.unindexed_collection_reads;
     closure.throws |= direct.throws;
+}
+
+fn set_write_reachability(closure: &mut EffectClosureFacts) {
+    closure.write_effects_reachable = !closure.saved_writes.is_empty()
+        || !closure.stores_written.is_empty()
+        || !closure.saved_index_writes.is_empty();
 }

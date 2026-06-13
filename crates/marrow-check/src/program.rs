@@ -15,15 +15,20 @@ use std::path::{Path, PathBuf};
 use marrow_schema::ReturnPresence;
 use marrow_schema::{ScalarType, Type};
 use marrow_store::cell::CatalogId;
-use marrow_syntax::{Declaration, Expression, ParsedSource, SourceSpan, TypeRef};
+use marrow_syntax::{Declaration, Diagnostic, Expression, ParsedSource, SourceSpan, TypeRef};
 
+use crate::diagnostics::{
+    CHECK_READ_ONLY_EXPRESSION_CONTEXT, CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT,
+    CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP, CHECK_READ_ONLY_EXPRESSION_WRITE, CheckDiagnostic,
+    DiagnosticPayload,
+};
 use crate::executable::{
     CheckedBody, CheckedExecutableContext, CheckedExpr, CheckedFunctionRef,
     CheckedRuntimeValueType, checked_runtime_value_type,
 };
 use crate::facts::{
-    CheckedFacts, EffectClosureFacts, EntryFootprintFact, EntryStoreOpenMode, StoreId,
-    StoreIndexId, WorkShapeClass,
+    CheckedFacts, EffectClosureFacts, EntryCostShapeFact, EntryFootprintFact, EntryStoreOpenMode,
+    FunctionId, StoreId, StoreIndexId, WorkShapeClass,
 };
 
 /// Identifies one source file in a [`CheckedProgram`] by the index of the module
@@ -33,6 +38,37 @@ use crate::facts::{
 /// it back to a path with [`CheckedProgram::file_path`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FileId(pub u32);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedReadOnlyExpression {
+    file_id: FileId,
+    source_file: PathBuf,
+    source_digest: String,
+    read_only_context_digest: String,
+    expression: CheckedExpr,
+}
+
+impl CheckedReadOnlyExpression {
+    pub fn file_id(&self) -> FileId {
+        self.file_id
+    }
+
+    pub fn source_file(&self) -> &Path {
+        &self.source_file
+    }
+
+    pub fn source_digest(&self) -> &str {
+        &self.source_digest
+    }
+
+    pub fn read_only_context_digest(&self) -> &str {
+        &self.read_only_context_digest
+    }
+
+    pub fn expression(&self) -> &CheckedExpr {
+        &self.expression
+    }
+}
 
 /// The resolved shape of a checked project: every clean library module, in the
 /// order their files were discovered.
@@ -52,6 +88,77 @@ impl CheckedProgram {
         };
         program.rebuild_facts();
         program
+    }
+
+    pub fn checked_read_only_expression(
+        &self,
+        module: &str,
+        source: &str,
+    ) -> Result<CheckedReadOnlyExpression, Vec<CheckDiagnostic>> {
+        let Some((module_index, module)) = self
+            .modules
+            .iter()
+            .enumerate()
+            .find(|(_, candidate)| candidate.name == module)
+        else {
+            return Err(vec![CheckDiagnostic::error(
+                CHECK_READ_ONLY_EXPRESSION_CONTEXT,
+                Path::new(""),
+                SourceSpan::default(),
+                format!("module `{module}` is not present in the checked program"),
+            )]);
+        };
+        let (parsed, syntax_diagnostics) = marrow_syntax::parse_expression(source);
+        let mut diagnostics: Vec<CheckDiagnostic> = syntax_diagnostics
+            .into_iter()
+            .map(|diagnostic| syntax_expression_diagnostic(&module.source_file, diagnostic))
+            .collect();
+        let Some(parsed) = parsed else {
+            return Err(diagnostics);
+        };
+
+        let scope = module_constant_scope(module);
+        let aliases = crate::build_alias_map(&module.imports);
+        crate::infer::infer_type(
+            self,
+            &parsed,
+            &scope,
+            &aliases,
+            &module.source_file,
+            &mut diagnostics,
+        );
+        let Some(expression) =
+            crate::executable::lower_expr_for_file(self, &module.source_file, &parsed, &scope)
+        else {
+            diagnostics.push(CheckDiagnostic::error(
+                CHECK_READ_ONLY_EXPRESSION_CONTEXT,
+                &module.source_file,
+                parsed.span(),
+                "expression cannot be lowered in the checked program context",
+            ));
+            return Err(diagnostics);
+        };
+
+        let read_only_effects = crate::presence::read_only_expression_effects(self, &expression);
+        diagnostics.extend(read_only_expression_diagnostics(
+            &module.source_file,
+            &expression,
+            &read_only_effects,
+        ));
+        if diagnostics
+            .iter()
+            .any(|diagnostic| matches!(diagnostic.severity, marrow_syntax::Severity::Error))
+        {
+            return Err(diagnostics);
+        }
+
+        Ok(CheckedReadOnlyExpression {
+            file_id: FileId(module_index as u32),
+            source_file: module.source_file.clone(),
+            source_digest: self.source_digest(),
+            read_only_context_digest: self.read_only_context_digest(),
+            expression,
+        })
     }
 
     fn rebuild_facts(&mut self) {
@@ -187,37 +294,74 @@ impl CheckedProgram {
         crate::catalog::evolution_digest(self)
     }
 
+    pub fn read_only_context_digest(&self) -> String {
+        let proposal_digest = self
+            .catalog
+            .proposal
+            .as_ref()
+            .map(|proposal| proposal.digest.as_str())
+            .unwrap_or("");
+        marrow_project::sha256_digest(
+            format!(
+                "read-only-expression-v1\0{}\0{}\0{}\0{}\0{}\0{}",
+                self.source_digest(),
+                self.evolution_digest(),
+                self.catalog.accepted_epoch.unwrap_or_default(),
+                self.catalog.accepted_digest.as_deref().unwrap_or(""),
+                self.catalog
+                    .proposal
+                    .as_ref()
+                    .map(|proposal| proposal.epoch)
+                    .unwrap_or_default(),
+                proposal_digest
+            )
+            .as_bytes(),
+        )
+    }
+
     pub fn effect_closure(&self, function_ref: CheckedFunctionRef) -> Option<EffectClosureFacts> {
         crate::presence::effect_closure(self, function_ref)
     }
 
     pub fn entry_footprints(&self) -> Vec<EntryFootprintFact> {
-        self.facts
-            .functions()
-            .iter()
-            .filter(|function| function.public)
-            .filter_map(|function| {
-                let source = self
-                    .modules
-                    .get(function.module.0 as usize)?
-                    .functions
-                    .get(function.source_index as usize)?;
-                let function_ref = CheckedFunctionRef {
-                    module: function.module.0,
-                    function: function.source_index,
-                    presence: source.return_presence,
-                };
-                let closure = self.effect_closure(function_ref)?;
+        self.public_entry_refs()
+            .into_iter()
+            .filter_map(|entry_ref| {
+                let closure = self.effect_closure(entry_ref.function_ref)?;
                 let work_shape = work_shape(&closure);
-                let module = self.facts.modules().get(function.module.0 as usize)?;
                 Some(EntryFootprintFact {
-                    function: function.id,
-                    entry: runtime_entry_name(&module.name, &function.name),
+                    function: entry_ref.function,
+                    entry: entry_ref.entry,
                     write_effects_reachable: closure.write_effects_reachable,
                     stores_read: closure.stores_read,
                     stores_written: closure.stores_written,
                     indexes_touched: closure.indexes_touched,
                     work_shape,
+                })
+            })
+            .collect()
+    }
+
+    pub fn entry_cost_shapes(&self) -> Vec<EntryCostShapeFact> {
+        self.public_entry_refs()
+            .into_iter()
+            .filter_map(|entry_ref| {
+                let closure = self.effect_closure(entry_ref.function_ref)?;
+                let work_shape = work_shape(&closure);
+                let writes = closure.saved_writes.len() + closure.stores_written.len();
+                Some(EntryCostShapeFact {
+                    function: entry_ref.function,
+                    entry: entry_ref.entry,
+                    work_shape,
+                    point_reads: closure.saved_reads.len(),
+                    range_scans: closure.saved_index_reads.len(),
+                    writes,
+                    index_entry_touches: if closure.write_effects_reachable {
+                        closure.indexes_touched.len()
+                    } else {
+                        0
+                    },
+                    commit_points: commit_points(&closure, writes),
                 })
             })
             .collect()
@@ -302,6 +446,72 @@ impl CheckedProgram {
         }
         self.facts.refresh_direct_effects(&self.modules);
     }
+}
+
+fn module_constant_scope(module: &CheckedModule) -> Vec<HashMap<String, MarrowType>> {
+    vec![
+        module
+            .constants
+            .iter()
+            .map(|constant| {
+                (
+                    constant.name.clone(),
+                    constant.ty.clone().unwrap_or(MarrowType::Unknown),
+                )
+            })
+            .collect(),
+    ]
+}
+
+fn syntax_expression_diagnostic(file: &Path, diagnostic: Diagnostic) -> CheckDiagnostic {
+    CheckDiagnostic {
+        code: diagnostic.code,
+        severity: diagnostic.severity,
+        file: file.to_path_buf(),
+        message: diagnostic.message,
+        span: diagnostic.span,
+        payload: DiagnosticPayload::None,
+    }
+}
+
+fn read_only_expression_diagnostics(
+    file: &Path,
+    expression: &CheckedExpr,
+    effects: &crate::presence::ReadOnlyExpressionEffects,
+) -> Vec<CheckDiagnostic> {
+    let mut diagnostics = Vec::new();
+    if let Some(span) = effects
+        .saved_write_span
+        .or_else(|| effects.writes_reachable().then_some(expression.span()))
+    {
+        diagnostics.push(CheckDiagnostic::error(
+            CHECK_READ_ONLY_EXPRESSION_WRITE,
+            file,
+            span,
+            "checked read-only expressions cannot write saved data, allocate saved identities, or open transactions",
+        ));
+    }
+    if effects.host_effects_reachable() {
+        diagnostics.push(CheckDiagnostic::error(
+            CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT,
+            file,
+            expression.span(),
+            "checked read-only expressions cannot call host-effecting operations",
+        ));
+    }
+    if let Some(span) = effects.unindexed_lookup_span.or_else(|| {
+        effects
+            .unindexed_collection_reads_reachable()
+            .then_some(expression.span())
+    }) {
+        diagnostics.push(CheckDiagnostic::error(
+            CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP,
+            file,
+            span,
+            "checked read-only expressions cannot traverse saved collections without a declared index",
+        ));
+    }
+    diagnostics
 }
 
 struct LoweredFunctionBody {
@@ -569,6 +779,7 @@ pub struct CheckedRuntimeProgram {
     facts: CheckedFacts,
     accepted_catalog_epoch: Option<u64>,
     source_digest: String,
+    read_only_context_digest: String,
 }
 
 impl CheckedRuntimeProgram {
@@ -589,6 +800,7 @@ impl CheckedRuntimeProgram {
             facts: program.facts.clone(),
             accepted_catalog_epoch: program.catalog.accepted_epoch,
             source_digest: program.source_digest(),
+            read_only_context_digest: program.read_only_context_digest(),
         }
     }
 
@@ -618,6 +830,10 @@ impl CheckedRuntimeProgram {
 
     pub fn source_digest(&self) -> &str {
         &self.source_digest
+    }
+
+    pub fn read_only_context_digest(&self) -> &str {
+        &self.read_only_context_digest
     }
 
     pub fn file_path(&self, id: FileId) -> Option<&Path> {
@@ -685,6 +901,40 @@ fn insert_bare_entry(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PublicEntryRef {
+    function: FunctionId,
+    entry: String,
+    function_ref: CheckedFunctionRef,
+}
+
+impl CheckedProgram {
+    fn public_entry_refs(&self) -> Vec<PublicEntryRef> {
+        self.facts
+            .functions()
+            .iter()
+            .filter(|function| function.public)
+            .filter_map(|function| {
+                let source = self
+                    .modules
+                    .get(function.module.0 as usize)?
+                    .functions
+                    .get(function.source_index as usize)?;
+                let module = self.facts.modules().get(function.module.0 as usize)?;
+                Some(PublicEntryRef {
+                    function: function.id,
+                    entry: runtime_entry_name(&module.name, &function.name),
+                    function_ref: CheckedFunctionRef {
+                        module: function.module.0,
+                        function: function.source_index,
+                        presence: source.return_presence,
+                    },
+                })
+            })
+            .collect()
+    }
+}
+
 fn runtime_entry_name(module: &str, function: &str) -> String {
     if module.is_empty() {
         return function.to_string();
@@ -699,6 +949,16 @@ fn work_shape(closure: &EffectClosureFacts) -> WorkShapeClass {
         WorkShapeClass::ReadOnly
     } else {
         WorkShapeClass::ComputeOnly
+    }
+}
+
+fn commit_points(closure: &EffectClosureFacts, writes: usize) -> usize {
+    if !closure.write_effects_reachable {
+        0
+    } else if closure.transactions {
+        1
+    } else {
+        writes.max(1)
     }
 }
 

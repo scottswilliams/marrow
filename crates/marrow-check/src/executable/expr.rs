@@ -95,6 +95,7 @@ pub struct CheckedSavedKeyParam {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedSavedLayer {
+    pub id: Option<ResourceMemberId>,
     pub name: String,
     pub catalog_id: Option<String>,
     pub args: Vec<CheckedArg>,

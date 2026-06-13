@@ -170,6 +170,17 @@ pub const CHECK_IS_REQUIRES_ENUM: &str = "check.is_requires_enum";
 pub const CHECK_IS_TYPE: &str = "check.is_type";
 /// A discovered source file could not be read.
 pub const IO_READ: &str = "io.read";
+/// The checked read-only expression query was asked to evaluate in a module or
+/// program context that does not exist.
+pub const CHECK_READ_ONLY_EXPRESSION_CONTEXT: &str = "check.read_only_expression_context";
+/// A checked read-only expression attempts to write or allocate saved data.
+pub const CHECK_READ_ONLY_EXPRESSION_WRITE: &str = "check.read_only_expression_write";
+/// A checked read-only expression calls a host-effecting operation.
+pub const CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT: &str = "check.read_only_expression_host_effect";
+/// A checked read-only expression would traverse a saved collection without a
+/// declared index.
+pub const CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP: &str =
+    "check.read_only_expression_unindexed_lookup";
 /// Two stores in the project declare the same root. A saved root has one managed
 /// owner. This is a schema-model rule, but it is cross-declaration, so the
 /// project checker reports it rather than per-store schema compilation.

@@ -126,7 +126,7 @@ fn activation_env<'a, 'p>(input: ActivationEnv<'a, 'p>) -> Env<'p> {
     env
 }
 
-fn bind_module_constants(
+pub(crate) fn bind_module_constants(
     module: Option<&CheckedRuntimeModule>,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {

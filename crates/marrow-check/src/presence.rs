@@ -3,6 +3,7 @@ mod direct;
 mod effects;
 mod keys;
 mod proofs;
+mod read_only;
 mod scope;
 mod target;
 mod util;
@@ -10,9 +11,10 @@ mod walk;
 mod writes;
 
 pub(crate) use calls::maybe_present_result;
-pub(crate) use direct::direct_effects_for_block;
+pub(crate) use direct::{direct_effects_for_block, direct_effects_for_expr};
+pub(crate) use read_only::{ReadOnlyExpressionEffects, read_only_expression_effects};
 pub(crate) use target::{exists_target_in_type_scope, read_resolves_in_type_scope};
-pub(crate) use writes::effect_closure;
+pub(crate) use writes::{effect_closure, effect_closure_for_direct};
 
 #[derive(Clone, Copy)]
 pub(crate) struct TransformOldReadScope<'a> {

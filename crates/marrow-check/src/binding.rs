@@ -11,17 +11,17 @@
 //!
 //! A single-segment name resolves at the identifier token; a qualified call at
 //! the whole path span; an enum member literal is split so the enum segment and
-//! each written member-path segment resolve independently. A parameter, loop, or
-//! catch binding has no node span of its own, so its definition is recorded at
-//! the enclosing declaration.
+//! each written member-path segment resolve independently. Source-only
+//! definitions are recorded at their identifier tokens, including bindings whose
+//! AST node only carries an enclosing statement span.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use marrow_schema::Type as SchemaType;
 use marrow_syntax::{
-    Block, Declaration, EnumMember, Expression, MatchArm, ParsedSource, ResourceDecl,
-    ResourceMember, SourceSpan, Statement, StoreDecl, TypeRef,
+    Block, Declaration, EnumMember, Expression, MatchArm, ParamDecl, ParsedSource, ResourceDecl,
+    ResourceMember, SourceSpan, Statement, StoreDecl, TokenKind, TypeRef,
 };
 
 use crate::MarrowType;
@@ -29,6 +29,7 @@ use crate::analysis::span_covers;
 use crate::checks::{file_prelude, for_frame};
 use crate::enums::{enum_schema_in, resolve_enum_member_path, resolve_type};
 use crate::executable::{SavedMemberRefKind, SavedPlaceResolver, lower_expr_for_file};
+use crate::facts::{FunctionId, LocalId};
 use crate::infer::{infer_only, local_binding};
 use crate::{
     AnalysisSnapshot, CheckedProgram, Def, DefItem, Resolution, ResolvableKind, expand_alias,
@@ -98,6 +99,45 @@ struct Binding {
     definition: SymbolRef,
     references: Vec<SymbolRef>,
     safety: RenameSafety,
+    rename_target: Option<RenameTarget>,
+    parameter: Option<ParameterDefinition>,
+}
+
+#[derive(Debug, Clone)]
+enum RenameTarget {
+    CatalogPath(String),
+    EnumMember {
+        enum_name: String,
+        member_path: Vec<String>,
+    },
+}
+
+impl RenameTarget {
+    fn source(&self) -> String {
+        match self {
+            Self::CatalogPath(path) => path.clone(),
+            Self::EnumMember {
+                enum_name,
+                member_path,
+            } => format!("{enum_name}::{}", member_path.join("::")),
+        }
+    }
+
+    fn renamed_source(&self, new_name: &str) -> String {
+        match self {
+            Self::CatalogPath(path) => renamed_durable_path(path, new_name),
+            Self::EnumMember {
+                enum_name,
+                member_path,
+            } => {
+                let mut renamed = member_path.clone();
+                if let Some(last) = renamed.last_mut() {
+                    *last = new_name.to_string();
+                }
+                format!("{enum_name}::{}", renamed.join("::"))
+            }
+        }
+    }
 }
 
 /// A resolved project's binding index: definitions, their references, and
@@ -106,6 +146,30 @@ struct Binding {
 #[derive(Debug, Clone, Default)]
 pub struct BindingIndex {
     bindings: Vec<Binding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceEdit {
+    pub file: PathBuf,
+    pub span: SourceSpan,
+    pub replacement: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameAction {
+    pub edits: Vec<SourceEdit>,
+    pub evolve_rename: Option<String>,
+}
+
+/// Checked identity for a parameter symbol recorded by the binding index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParameterDefinition {
+    /// The checked function that owns the parameter.
+    pub function: FunctionId,
+    /// The parameter's checked local fact inside that function.
+    pub local: LocalId,
+    /// The parameter's ordinal in `FunctionFact::params` and the parsed signature.
+    pub index: usize,
 }
 
 /// Build the binding index for an analyzed project. Walks every clean module's
@@ -117,7 +181,7 @@ pub fn build_binding_index(snapshot: &AnalysisSnapshot) -> BindingIndex {
     // Definitions come from the parsed files, which carry source spans the
     // resolved program does not.
     for file in &snapshot.files {
-        builder.collect_definitions(&file.path, &file.parsed);
+        builder.collect_definitions(&file.path, &file.parsed, &file.source);
     }
     // Uses are resolved against the definitions, so collect them in a second pass.
     for file in &snapshot.files {
@@ -151,6 +215,44 @@ impl BindingIndex {
         self.binding_for(def)
             .map(|binding| binding.safety.clone())
             .unwrap_or(RenameSafety::SourceOnly)
+    }
+
+    /// Return the checked owner metadata for a parameter binding.
+    ///
+    /// `def` may be either the parameter definition or one of its uses. The result
+    /// joins the token-tight source symbol to its checked function fact, local fact,
+    /// and parameter ordinal so downstream tooling does not reconstruct signature
+    /// identity from source text.
+    pub fn parameter_definition(&self, def: &SymbolRef) -> Option<ParameterDefinition> {
+        self.binding_for(def)?.parameter
+    }
+
+    pub fn rename_action(&self, def: &SymbolRef, new_name: &str) -> Option<RenameAction> {
+        let binding = self.binding_for(def)?;
+        let edits = binding
+            .references
+            .iter()
+            .map(|reference| SourceEdit {
+                file: reference.file.clone(),
+                span: reference.span,
+                replacement: new_name.to_string(),
+            })
+            .collect();
+        let evolve_rename = match binding.safety {
+            RenameSafety::SourceOnly => None,
+            RenameSafety::SavedDataBacked => {
+                let target = binding.rename_target.as_ref()?;
+                let from = target.source();
+                Some(canonical_evolve_rename(
+                    &from,
+                    &target.renamed_source(new_name),
+                )?)
+            }
+        };
+        Some(RenameAction {
+            edits,
+            evolve_rename,
+        })
     }
 
     /// The binding whose definition span or any reference span covers `offset` in
@@ -240,11 +342,49 @@ impl<'p> IndexBuilder<'p> {
     /// Record a definition, returning its id. The definition is its own first
     /// reference.
     fn define(&mut self, def: SymbolRef, safety: RenameSafety) -> DefId {
+        self.define_with_parameter(def, safety, None, None)
+    }
+
+    fn define_with_durable_path(
+        &mut self,
+        def: SymbolRef,
+        safety: RenameSafety,
+        durable_path: Option<String>,
+    ) -> DefId {
+        self.define_with_rename_target(def, safety, durable_path.map(RenameTarget::CatalogPath))
+    }
+
+    fn define_with_rename_target(
+        &mut self,
+        def: SymbolRef,
+        safety: RenameSafety,
+        rename_target: Option<RenameTarget>,
+    ) -> DefId {
+        self.define_with_parameter(def, safety, rename_target, None)
+    }
+
+    fn define_parameter(
+        &mut self,
+        def: SymbolRef,
+        parameter: Option<ParameterDefinition>,
+    ) -> DefId {
+        self.define_with_parameter(def, RenameSafety::SourceOnly, None, parameter)
+    }
+
+    fn define_with_parameter(
+        &mut self,
+        def: SymbolRef,
+        safety: RenameSafety,
+        rename_target: Option<RenameTarget>,
+        parameter: Option<ParameterDefinition>,
+    ) -> DefId {
         let id = DefId(self.bindings.len());
         self.bindings.push(Binding {
             references: vec![def.clone()],
             definition: def,
             safety,
+            rename_target,
+            parameter,
         });
         id
     }
@@ -271,7 +411,7 @@ impl<'p> IndexBuilder<'p> {
 
     /// Collect every definition a file contributes: module constants, functions,
     /// resources, store-backed members, and `use` aliases.
-    fn collect_definitions(&mut self, file: &Path, parsed: &ParsedSource) {
+    fn collect_definitions(&mut self, file: &Path, parsed: &ParsedSource, source: &str) {
         let module = Self::module_name(parsed);
         let stores: Vec<&StoreDecl> = parsed
             .file
@@ -299,10 +439,13 @@ impl<'p> IndexBuilder<'p> {
         for declaration in &parsed.file.declarations {
             match declaration {
                 Declaration::Const(constant) => {
+                    let Some(span) = name_span(source, constant.span, &constant.name) else {
+                        continue;
+                    };
                     let id = self.define(
                         SymbolRef {
                             file: file.to_path_buf(),
-                            span: constant.span,
+                            span,
                             kind: SymbolKind::ModuleConst,
                         },
                         RenameSafety::SourceOnly,
@@ -314,10 +457,13 @@ impl<'p> IndexBuilder<'p> {
                         .insert(constant.name.clone(), id);
                 }
                 Declaration::Function(function) => {
+                    let Some(span) = name_span(source, function.span, &function.name) else {
+                        continue;
+                    };
                     let id = self.define(
                         SymbolRef {
                             file: file.to_path_buf(),
-                            span: function.span,
+                            span,
                             kind: SymbolKind::Function,
                         },
                         RenameSafety::SourceOnly,
@@ -328,27 +474,31 @@ impl<'p> IndexBuilder<'p> {
                 }
                 Declaration::Resource(resource) => {
                     let has_store = stores.iter().any(|store| store.resource == resource.name);
-                    self.collect_resource(file, &module, resource, has_store);
+                    self.collect_resource(file, source, &module, resource, has_store);
                 }
                 Declaration::Store(store) => {
                     if let Some(resource) = resource_decl(parsed, &store.resource) {
-                        self.collect_store(file, store, resource);
+                        self.collect_store(file, source, store, resource);
                     }
                 }
                 Declaration::Enum(enum_decl) => {
-                    let id = self.define(
-                        SymbolRef {
-                            file: file.to_path_buf(),
-                            span: enum_decl.span,
-                            kind: SymbolKind::Enum,
-                        },
-                        RenameSafety::SourceOnly,
-                    );
-                    self.module_scope
-                        .enums
-                        .insert((module.clone(), enum_decl.name.clone()), id);
+                    if let Some(span) = name_span(source, enum_decl.span, &enum_decl.name) {
+                        let id = self.define_with_durable_path(
+                            SymbolRef {
+                                file: file.to_path_buf(),
+                                span,
+                                kind: SymbolKind::Enum,
+                            },
+                            RenameSafety::SavedDataBacked,
+                            Some(enum_decl.name.clone()),
+                        );
+                        self.module_scope
+                            .enums
+                            .insert((module.clone(), enum_decl.name.clone()), id);
+                    }
                     self.collect_enum_members(
                         file,
+                        source,
                         &module,
                         &enum_decl.name,
                         &mut Vec::new(),
@@ -364,6 +514,7 @@ impl<'p> IndexBuilder<'p> {
     fn collect_enum_members(
         &mut self,
         file: &Path,
+        source: &str,
         module: &str,
         enum_name: &str,
         path: &mut Vec<String>,
@@ -371,19 +522,25 @@ impl<'p> IndexBuilder<'p> {
     ) {
         for member in members {
             path.push(member.name.clone());
-            let id = self.define(
-                SymbolRef {
-                    file: file.to_path_buf(),
-                    span: member.span,
-                    kind: SymbolKind::EnumMember,
-                },
-                RenameSafety::SourceOnly,
-            );
-            self.module_scope.enum_members.insert(
-                (module.to_string(), enum_name.to_string(), path.clone()),
-                id,
-            );
-            self.collect_enum_members(file, module, enum_name, path, &member.members);
+            if let Some(span) = name_span(source, member.span, &member.name) {
+                let id = self.define_with_rename_target(
+                    SymbolRef {
+                        file: file.to_path_buf(),
+                        span,
+                        kind: SymbolKind::EnumMember,
+                    },
+                    RenameSafety::SavedDataBacked,
+                    Some(RenameTarget::EnumMember {
+                        enum_name: enum_name.to_string(),
+                        member_path: path.clone(),
+                    }),
+                );
+                self.module_scope.enum_members.insert(
+                    (module.to_string(), enum_name.to_string(), path.clone()),
+                    id,
+                );
+            }
+            self.collect_enum_members(file, source, module, enum_name, path, &member.members);
             path.pop();
         }
     }
@@ -394,6 +551,7 @@ impl<'p> IndexBuilder<'p> {
     fn collect_resource(
         &mut self,
         file: &Path,
+        source: &str,
         module: &str,
         resource: &ResourceDecl,
         has_store: bool,
@@ -403,34 +561,61 @@ impl<'p> IndexBuilder<'p> {
         } else {
             RenameSafety::SourceOnly
         };
-        let resource_id = self.define(
+        let Some(span) = name_span(source, resource.span, &resource.name) else {
+            return;
+        };
+        let resource_id = self.define_with_durable_path(
             SymbolRef {
                 file: file.to_path_buf(),
-                span: resource.span,
+                span,
                 kind: SymbolKind::Resource,
             },
             safety,
+            has_store.then(|| resource.name.clone()),
         );
         self.module_scope
             .resources
             .insert((module.to_string(), resource.name.clone()), resource_id);
     }
 
-    fn collect_store(&mut self, file: &Path, store: &StoreDecl, resource: &ResourceDecl) {
-        self.collect_members(file, &store.root.root, &mut Vec::new(), &resource.members);
+    fn collect_store(
+        &mut self,
+        file: &Path,
+        source: &str,
+        store: &StoreDecl,
+        resource: &ResourceDecl,
+    ) {
+        self.collect_members(
+            file,
+            source,
+            &store.root.root,
+            &resource.name,
+            &mut Vec::new(),
+            &resource.members,
+        );
         for index in &store.indexes {
-            self.collect_index(file, &store.root.root, index);
+            self.collect_index(file, source, &store.root.root, index);
         }
     }
 
-    fn collect_index(&mut self, file: &Path, root: &str, index: &marrow_syntax::IndexDecl) {
-        let id = self.define(
+    fn collect_index(
+        &mut self,
+        file: &Path,
+        source: &str,
+        root: &str,
+        index: &marrow_syntax::IndexDecl,
+    ) {
+        let Some(span) = name_span(source, index.span, &index.name) else {
+            return;
+        };
+        let id = self.define_with_durable_path(
             SymbolRef {
                 file: file.to_path_buf(),
-                span: index.span,
+                span,
                 kind: SymbolKind::Index,
             },
             RenameSafety::SavedDataBacked,
+            Some(format!("^{root}.{}", index.name)),
         );
         self.module_scope
             .saved_members
@@ -443,7 +628,9 @@ impl<'p> IndexBuilder<'p> {
     fn collect_members(
         &mut self,
         file: &Path,
+        source: &str,
         root: &str,
+        resource: &str,
         chain: &mut Vec<String>,
         members: &[ResourceMember],
     ) {
@@ -451,33 +638,39 @@ impl<'p> IndexBuilder<'p> {
             match member {
                 ResourceMember::Field(field) => {
                     chain.push(field.name.clone());
-                    let id = self.define(
-                        SymbolRef {
-                            file: file.to_path_buf(),
-                            span: field.span,
-                            kind: SymbolKind::Field,
-                        },
-                        RenameSafety::SavedDataBacked,
-                    );
-                    self.module_scope
-                        .saved_members
-                        .insert((root.to_string(), chain.clone()), id);
+                    if let Some(span) = name_span(source, field.span, &field.name) {
+                        let id = self.define_with_durable_path(
+                            SymbolRef {
+                                file: file.to_path_buf(),
+                                span,
+                                kind: SymbolKind::Field,
+                            },
+                            RenameSafety::SavedDataBacked,
+                            Some(resource_member_durable_path(resource, chain)),
+                        );
+                        self.module_scope
+                            .saved_members
+                            .insert((root.to_string(), chain.clone()), id);
+                    }
                     chain.pop();
                 }
                 ResourceMember::Group(group) => {
                     chain.push(group.name.clone());
-                    let id = self.define(
-                        SymbolRef {
-                            file: file.to_path_buf(),
-                            span: group.span,
-                            kind: SymbolKind::Layer,
-                        },
-                        RenameSafety::SavedDataBacked,
-                    );
-                    self.module_scope
-                        .saved_members
-                        .insert((root.to_string(), chain.clone()), id);
-                    self.collect_members(file, root, chain, &group.members);
+                    if let Some(span) = name_span(source, group.span, &group.name) {
+                        let id = self.define_with_durable_path(
+                            SymbolRef {
+                                file: file.to_path_buf(),
+                                span,
+                                kind: SymbolKind::Layer,
+                            },
+                            RenameSafety::SavedDataBacked,
+                            Some(resource_member_durable_path(resource, chain)),
+                        );
+                        self.module_scope
+                            .saved_members
+                            .insert((root.to_string(), chain.clone()), id);
+                    }
+                    self.collect_members(file, source, root, resource, chain, &group.members);
                     chain.pop();
                 }
             }
@@ -491,22 +684,27 @@ impl<'p> IndexBuilder<'p> {
         let module = Self::module_name(parsed);
         let prelude = file_prelude(self.program, file, parsed);
 
+        let mut function_source_index = 0u32;
         for declaration in &parsed.file.declarations {
             self.collect_type_refs(file, declaration, source, &prelude.aliases, &module);
             if let Declaration::Function(function) = declaration {
-                // Parameters have no AST span, so each is defined at the function
-                // span and tracked by name.
+                let function_id = self.function_id_for_source(file, function_source_index);
+                function_source_index += 1;
                 let mut scope: Vec<HashMap<String, DefId>> = vec![HashMap::new()];
                 let mut type_scope: Vec<HashMap<String, MarrowType>> =
                     vec![prelude.module_constants.clone()];
-                for param in &function.params {
-                    let id = self.define(
+                for (param_index, param) in function.params.iter().enumerate() {
+                    let Some(span) = param_name_span(source, function.span, param) else {
+                        continue;
+                    };
+                    let parameter = self.parameter_definition(function_id, param_index);
+                    let id = self.define_parameter(
                         SymbolRef {
                             file: file.to_path_buf(),
-                            span: function.span,
+                            span,
                             kind: SymbolKind::Param,
                         },
-                        RenameSafety::SourceOnly,
+                        parameter,
                     );
                     scope[0].insert(param.name.clone(), id);
                     type_scope[0].insert(
@@ -524,6 +722,35 @@ impl<'p> IndexBuilder<'p> {
                 walker.walk_block(&function.body, &mut scope, &mut type_scope);
             }
         }
+    }
+
+    fn function_id_for_source(&self, file: &Path, source_index: u32) -> Option<FunctionId> {
+        let module = self
+            .program
+            .facts
+            .modules()
+            .iter()
+            .find(|module| module.source_file == file)?;
+        self.program
+            .facts
+            .functions()
+            .iter()
+            .find(|function| function.module == module.id && function.source_index == source_index)
+            .map(|function| function.id)
+    }
+
+    fn parameter_definition(
+        &self,
+        function: Option<FunctionId>,
+        index: usize,
+    ) -> Option<ParameterDefinition> {
+        let function = function?;
+        let local = self.program.facts.function(function).params.get(index)?.id;
+        Some(ParameterDefinition {
+            function,
+            local,
+            index,
+        })
     }
 
     fn collect_type_refs(
@@ -551,6 +778,17 @@ impl<'p> IndexBuilder<'p> {
             }
             Declaration::Store(store) => {
                 self.collect_key_type_refs(file, source, aliases, module, &store.root.keys);
+                if let Some(def) = self
+                    .module_scope
+                    .resources
+                    .get(&(module.to_string(), store.resource.clone()))
+                    .copied()
+                {
+                    let Some(span) = name_span(source, store.span, &store.resource) else {
+                        return;
+                    };
+                    self.use_of(def, file, span, SymbolKind::Resource);
+                }
             }
             Declaration::Function(function) => {
                 for param in &function.params {
@@ -859,7 +1097,10 @@ impl UseWalker<'_, '_> {
         scope: &mut [HashMap<String, DefId>],
         type_scope: &mut [HashMap<String, MarrowType>],
     ) {
-        let id = self.define_local(span);
+        let Some(name_span) = first_line_name_span(self.source, span, name) else {
+            return;
+        };
+        let id = self.define_local(name_span);
         bind(scope, name, id);
         if let Some((_, ty)) = local_binding(
             self.builder.program,
@@ -873,8 +1114,7 @@ impl UseWalker<'_, '_> {
     }
 
     /// Walk a `for` over its iterable, then its body under a fresh frame holding
-    /// the loop binding(s). The loop variables have no AST span of their own, so
-    /// each is defined at the statement span.
+    /// the loop binding(s).
     fn walk_for(
         &mut self,
         statement_span: SourceSpan,
@@ -886,9 +1126,13 @@ impl UseWalker<'_, '_> {
     ) {
         self.walk_expr(iterable, scope, type_scope);
         let mut frame = HashMap::new();
-        frame.insert(binding.first.clone(), self.define_local(statement_span));
-        if let Some(second) = &binding.second {
-            frame.insert(second.clone(), self.define_local(statement_span));
+        if let Some(span) = for_binding_name_span(self.source, statement_span, &binding.first) {
+            frame.insert(binding.first.clone(), self.define_local(span));
+        }
+        if let Some(second) = &binding.second
+            && let Some(span) = for_binding_name_span(self.source, statement_span, second)
+        {
+            frame.insert(second.clone(), self.define_local(span));
         }
         let type_frame = for_frame(
             self.builder.program,
@@ -917,7 +1161,9 @@ impl UseWalker<'_, '_> {
         type_scope: &mut Vec<HashMap<String, MarrowType>>,
     ) {
         let mut frame = HashMap::new();
-        frame.insert(name.to_string(), self.define_local(statement_span));
+        if let Some(span) = first_line_name_span(self.source, statement_span, name) {
+            frame.insert(name.to_string(), self.define_local(span));
+        }
         let mut type_frame = HashMap::new();
         type_frame.insert(
             name.to_string(),
@@ -954,7 +1200,9 @@ impl UseWalker<'_, '_> {
             }
             let mut frame = HashMap::new();
             let mut type_frame = HashMap::new();
-            frame.insert(clause.name.clone(), self.define_local(clause.block.span));
+            if let Some(span) = catch_binding_name_span(self.source, clause) {
+                frame.insert(clause.name.clone(), self.define_local(span));
+            }
             type_frame.insert(clause.name.clone(), MarrowType::Error);
             scope.push(frame);
             type_scope.push(type_frame);
@@ -990,8 +1238,7 @@ impl UseWalker<'_, '_> {
         }
     }
 
-    /// Define a function-local binding (a `const`/`var`, loop, or catch binding) at
-    /// `span` and return its id.
+    /// Define a function-local binding at its identifier token.
     fn define_local(&mut self, span: SourceSpan) -> DefId {
         self.builder.define(
             SymbolRef {
@@ -1259,10 +1506,10 @@ impl UseWalker<'_, '_> {
             self.module,
             &resolved_segments,
         ) {
-            let use_span =
-                path_tail_span(self.source, *callee_span, segments, 1).unwrap_or(*callee_span);
-            self.builder
-                .use_of(def, self.file, use_span, SymbolKind::Resource);
+            if let Some(use_span) = path_tail_span(self.source, *callee_span, segments, 1) {
+                self.builder
+                    .use_of(def, self.file, use_span, SymbolKind::Resource);
+            }
             return true;
         }
         // Marrow has no first-class functions, so a bare name in callee position
@@ -1279,8 +1526,11 @@ impl UseWalker<'_, '_> {
                 .get(&(module.name.clone(), function.name.clone()))
                 .copied()
         {
+            let Some(span) = path_tail_span(self.source, *callee_span, segments, 1) else {
+                return true;
+            };
             self.builder
-                .use_of(def, self.file, *callee_span, SymbolKind::Function);
+                .use_of(def, self.file, span, SymbolKind::Function);
             return true;
         }
         false
@@ -1305,14 +1555,21 @@ impl UseWalker<'_, '_> {
             SavedMemberRefKind::Layer => SymbolKind::Layer,
             SavedMemberRefKind::Index => SymbolKind::Index,
         };
+        let chain = reference.chain.clone();
         if let Some(def) = self
             .builder
             .module_scope
             .saved_members
-            .get(&(reference.root.clone(), reference.chain))
+            .get(&(reference.root.clone(), chain.clone()))
             .copied()
         {
-            self.builder.use_of(def, self.file, reference.span, kind);
+            let Some(name) = reference.chain.last() else {
+                return true;
+            };
+            let Some(span) = last_name_span(self.source, reference.span, name) else {
+                return true;
+            };
+            self.builder.use_of(def, self.file, span, kind);
             return true;
         }
         false
@@ -1412,7 +1669,7 @@ fn qualified_segment_spans(
     span: SourceSpan,
     segments: &[String],
 ) -> Option<Vec<SourceSpan>> {
-    let end_byte = span.end_byte.min(source.len());
+    let end_byte = span.end_byte.saturating_add(1).min(source.len());
     if span.start_byte > end_byte {
         return None;
     }
@@ -1429,6 +1686,60 @@ fn qualified_segment_spans(
     Some(spans)
 }
 
+fn param_name_span(
+    source: &str,
+    function_span: SourceSpan,
+    param: &ParamDecl,
+) -> Option<SourceSpan> {
+    let mut found = None;
+    for token in marrow_syntax::lex_source(source).tokens {
+        if token.span.start_byte < function_span.start_byte
+            || token.span.end_byte > param.ty.span.start_byte
+        {
+            continue;
+        }
+        if token.kind == TokenKind::Identifier && token.text(source) == param.name {
+            found = Some(token.span);
+        }
+    }
+    found
+}
+
+fn for_binding_name_span(
+    source: &str,
+    statement_span: SourceSpan,
+    name: &str,
+) -> Option<SourceSpan> {
+    first_line_name_span(source, statement_span, name)
+}
+
+fn catch_binding_name_span(
+    source: &str,
+    clause: &marrow_syntax::CatchClause,
+) -> Option<SourceSpan> {
+    let end = clause.block.span.start_byte.min(source.len());
+    let before_block = source.get(..end)?;
+    let catch_start = before_block.rfind("catch")?;
+    let span = first_line_span(source, source_span_at(source, catch_start, end))?;
+    name_span(source, span, &clause.name)
+}
+
+fn first_line_name_span(source: &str, span: SourceSpan, name: &str) -> Option<SourceSpan> {
+    let span = first_line_span(source, span)?;
+    name_span(source, span, name)
+}
+
+fn first_line_span(source: &str, span: SourceSpan) -> Option<SourceSpan> {
+    let start = span.start_byte.min(source.len());
+    let end = span.end_byte.saturating_add(1).min(source.len());
+    if start > end {
+        return None;
+    }
+    let text = source.get(start..end)?;
+    let line_end = start + text.find('\n').unwrap_or(text.len());
+    Some(source_span_at(source, start, line_end))
+}
+
 fn source_span_at(source: &str, start_byte: usize, end_byte: usize) -> SourceSpan {
     let prefix = &source.as_bytes()[..start_byte.min(source.len())];
     let line_start = prefix
@@ -1441,6 +1752,74 @@ fn source_span_at(source: &str, start_byte: usize, end_byte: usize) -> SourceSpa
         line: prefix.iter().filter(|&&byte| byte == b'\n').count() as u32 + 1,
         column: start_byte.saturating_sub(line_start) as u32 + 1,
     }
+}
+
+fn name_span(source: &str, span: SourceSpan, name: &str) -> Option<SourceSpan> {
+    let (start, end) = find_identifier_in_span(source, span, name)?;
+    Some(source_span_at(source, start, end))
+}
+
+fn last_name_span(source: &str, span: SourceSpan, name: &str) -> Option<SourceSpan> {
+    let (start, end) = find_last_identifier_in_span(source, span, name)?;
+    Some(source_span_at(source, start, end))
+}
+
+fn find_identifier_in_span(source: &str, span: SourceSpan, name: &str) -> Option<(usize, usize)> {
+    let end_byte = span.end_byte.saturating_add(1).min(source.len());
+    if span.start_byte > end_byte {
+        return None;
+    }
+    let text = source.get(span.start_byte..end_byte)?;
+    let mut cursor = 0;
+    while cursor <= text.len() {
+        let offset = text.get(cursor..)?.find(name)?;
+        let start = span.start_byte + cursor + offset;
+        let end = start + name.len();
+        if identifier_boundary(source.as_bytes(), start, end) {
+            return Some((start, end));
+        }
+        cursor += offset + name.len();
+    }
+    None
+}
+
+fn find_last_identifier_in_span(
+    source: &str,
+    span: SourceSpan,
+    name: &str,
+) -> Option<(usize, usize)> {
+    let end_byte = span.end_byte.min(source.len());
+    if span.start_byte > end_byte {
+        return None;
+    }
+    let text = source.get(span.start_byte..end_byte)?;
+    let mut cursor = 0;
+    let mut last = None;
+    while let Some(rest) = text.get(cursor..) {
+        let Some(offset) = rest.find(name) else {
+            break;
+        };
+        let start = span.start_byte + cursor + offset;
+        let end = start + name.len();
+        if identifier_boundary(source.as_bytes(), start, end) {
+            last = Some((start, end));
+        }
+        cursor += offset + name.len();
+    }
+    last
+}
+
+fn identifier_boundary(bytes: &[u8], start: usize, end: usize) -> bool {
+    let before = start
+        .checked_sub(1)
+        .and_then(|index| bytes.get(index))
+        .is_some_and(|byte| is_identifier_byte(*byte));
+    let after = bytes.get(end).is_some_and(|byte| is_identifier_byte(*byte));
+    !before && !after
+}
+
+fn is_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
 fn match_arm_header_span(arm: &MatchArm) -> SourceSpan {
@@ -1460,4 +1839,30 @@ fn match_arm_header_span(arm: &MatchArm) -> SourceSpan {
 
 fn span_width(span: SourceSpan) -> usize {
     span.end_byte.saturating_sub(span.start_byte)
+}
+
+fn resource_member_durable_path(resource: &str, chain: &[String]) -> String {
+    child_durable_path(resource, chain)
+}
+
+fn child_durable_path(parent: &str, chain: &[String]) -> String {
+    format!("{parent}.{}", chain.join("."))
+}
+
+fn renamed_durable_path(path: &str, new_name: &str) -> String {
+    if let Some((prefix, _)) = path.rsplit_once('.') {
+        return format!("{prefix}.{new_name}");
+    }
+    if path.starts_with('^') {
+        return format!("^{new_name}");
+    }
+    new_name.to_string()
+}
+
+fn canonical_evolve_rename(from: &str, to: &str) -> Option<String> {
+    let source = format!("module __rename_action\n\nevolve\n    rename {from} -> {to}\n");
+    let formatted = marrow_syntax::format_source(&source);
+    formatted
+        .find("evolve\n")
+        .map(|start| formatted[start..].to_string())
 }

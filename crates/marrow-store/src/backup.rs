@@ -22,6 +22,91 @@ const SEGMENT_KEY: u8 = 1;
 const MIN_KEY_FRAME_BYTES: usize = 6; // 4-byte chunk length + shortest bool key.
 const MIN_PATH_SEGMENT_FRAME_BYTES: usize = 7; // 1-byte tag + shortest key chunk.
 
+/// Identifies a Marrow backup archive before the manifest and typed cell stream.
+pub const TREE_BACKUP_ARCHIVE_MAGIC: &[u8; 8] = b"MARROWBK";
+
+/// The archive framing version shared by backup writers, restore, and read-only
+/// preview readers.
+pub const TREE_BACKUP_ARCHIVE_FORMAT_VERSION: u32 = 5;
+
+pub const TREE_BACKUP_MAX_MANIFEST_BYTES: u32 = 16 * 1024 * 1024;
+pub const TREE_BACKUP_MAX_CATALOG_SECTION_BYTES: u32 = 64 * 1024 * 1024;
+pub const TREE_BACKUP_MAX_CELL_BYTES: u32 = 256 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TreeBackupArchiveReadError {
+    NotBackupFile,
+    HeaderTruncated,
+    UnsupportedVersion { found: u32, expected: u32 },
+    ChunkTooLarge { label: &'static str },
+    ChunkTruncated { label: &'static str },
+}
+
+impl std::fmt::Display for TreeBackupArchiveReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotBackupFile => f.write_str("not a Marrow backup file"),
+            Self::HeaderTruncated => f.write_str("backup header is truncated"),
+            Self::UnsupportedVersion { found, expected } => write!(
+                f,
+                "backup format version {found} is unsupported (this build writes {expected})"
+            ),
+            Self::ChunkTooLarge { label } => {
+                write!(f, "backup {label} is implausibly large")
+            }
+            Self::ChunkTruncated { label } => write!(f, "backup {label} is truncated"),
+        }
+    }
+}
+
+impl std::error::Error for TreeBackupArchiveReadError {}
+
+pub fn write_tree_backup_archive_header(out: &mut impl Write) -> std::io::Result<()> {
+    out.write_all(TREE_BACKUP_ARCHIVE_MAGIC)?;
+    out.write_all(&TREE_BACKUP_ARCHIVE_FORMAT_VERSION.to_be_bytes())
+}
+
+pub fn read_tree_backup_archive_header(
+    input: &mut impl Read,
+) -> Result<(), TreeBackupArchiveReadError> {
+    let mut magic = [0u8; 8];
+    input
+        .read_exact(&mut magic)
+        .map_err(|_| TreeBackupArchiveReadError::HeaderTruncated)?;
+    if &magic != TREE_BACKUP_ARCHIVE_MAGIC {
+        return Err(TreeBackupArchiveReadError::NotBackupFile);
+    }
+    let version = read_archive_u32(input)?;
+    if version != TREE_BACKUP_ARCHIVE_FORMAT_VERSION {
+        return Err(TreeBackupArchiveReadError::UnsupportedVersion {
+            found: version,
+            expected: TREE_BACKUP_ARCHIVE_FORMAT_VERSION,
+        });
+    }
+    Ok(())
+}
+
+pub fn write_tree_backup_archive_chunk(out: &mut impl Write, bytes: &[u8]) -> std::io::Result<()> {
+    write_chunk(out, bytes)
+}
+
+pub fn read_tree_backup_archive_chunk(
+    input: &mut impl Read,
+    max_len: u32,
+    label: &'static str,
+) -> Result<Vec<u8>, TreeBackupArchiveReadError> {
+    let len = read_archive_u32(input)
+        .map_err(|_| TreeBackupArchiveReadError::ChunkTruncated { label })?;
+    if len > max_len {
+        return Err(TreeBackupArchiveReadError::ChunkTooLarge { label });
+    }
+    let mut bytes = vec![0u8; len as usize];
+    input
+        .read_exact(&mut bytes)
+        .map_err(|_| TreeBackupArchiveReadError::ChunkTruncated { label })?;
+    Ok(bytes)
+}
+
 /// One borrowed data-family cell in the canonical backup stream.
 #[derive(Debug, Clone)]
 pub struct TreeBackupCell<'a> {
@@ -93,6 +178,21 @@ impl TreeBackupCellBuf {
         let value = read_chunk(input, max_cell_bytes)?;
         validate_target_value(&target, &value).map_err(malformed)?;
         Ok(Self { target, value })
+    }
+
+    /// Read one framed typed backup cell, returning `None` only when the stream
+    /// is already at a clean cell boundary.
+    pub fn read_framed_optional(
+        input: &mut impl Read,
+        max_cell_bytes: u32,
+    ) -> Result<Option<Self>, TreeBackupCellReadError> {
+        let Some(target) = read_chunk_optional(input, max_cell_bytes)? else {
+            return Ok(None);
+        };
+        let target = decode_target_frame(&target)?;
+        let value = read_chunk(input, max_cell_bytes)?;
+        validate_target_value(&target, &value).map_err(malformed)?;
+        Ok(Some(Self { target, value }))
     }
 
     /// Borrow this owned cell as an opaque backup-stream cell.
@@ -328,10 +428,49 @@ fn read_chunk(
     Ok(bytes)
 }
 
+fn read_chunk_optional(
+    input: &mut impl Read,
+    max_cell_bytes: u32,
+) -> Result<Option<Vec<u8>>, TreeBackupCellReadError> {
+    let Some(len) = read_u32_optional(input)? else {
+        return Ok(None);
+    };
+    if len > max_cell_bytes {
+        return Err(TreeBackupCellReadError::CellTooLarge);
+    }
+    let mut bytes = vec![0u8; len as usize];
+    input
+        .read_exact(&mut bytes)
+        .map_err(|_| TreeBackupCellReadError::EndedEarly)?;
+    Ok(Some(bytes))
+}
+
 fn read_u32(input: &mut impl Read) -> Result<u32, TreeBackupCellReadError> {
     let mut bytes = [0u8; 4];
     input
         .read_exact(&mut bytes)
         .map_err(|_| TreeBackupCellReadError::EndedEarly)?;
+    Ok(u32::from_be_bytes(bytes))
+}
+
+fn read_u32_optional(input: &mut impl Read) -> Result<Option<u32>, TreeBackupCellReadError> {
+    let mut bytes = [0u8; 4];
+    let mut read = 0usize;
+    while read < bytes.len() {
+        match input.read(&mut bytes[read..]) {
+            Ok(0) if read == 0 => return Ok(None),
+            Ok(0) => return Err(TreeBackupCellReadError::EndedEarly),
+            Ok(n) => read += n,
+            Err(_) => return Err(TreeBackupCellReadError::EndedEarly),
+        }
+    }
+    Ok(Some(u32::from_be_bytes(bytes)))
+}
+
+fn read_archive_u32(input: &mut impl Read) -> Result<u32, TreeBackupArchiveReadError> {
+    let mut bytes = [0u8; 4];
+    input
+        .read_exact(&mut bytes)
+        .map_err(|_| TreeBackupArchiveReadError::HeaderTruncated)?;
     Ok(u32::from_be_bytes(bytes))
 }

@@ -11,17 +11,57 @@ Two halves live in `crates/marrow-check/src`:
 - **`tooling`** turns a `CheckedProgram` plus a `TreeStore` into typed saved-data facts: schema-validated path queries, paged child/walk traversal, integrity verdicts, and catalog/store epoch metadata.
 
 `CheckedProgram` also exposes the static entry footprint surface built from
-checked facts: `effect_closure`, `entry_footprints`, and
+checked facts: `effect_closure`, `entry_footprints`, `entry_cost_shapes`, and
 `entry_store_open_mode`. These queries expand lowered direct callee refs, not
-source names, and report typed store/index ids plus the `write_effects_reachable`
-bit. Store-open classification also stays write-capable for first-run catalogs,
-pending catalog proposals, and reachable transaction blocks.
+source names, and report typed store/index ids plus the
+`write_effects_reachable` bit. Store-open classification also stays
+write-capable for first-run catalogs, pending catalog proposals, and reachable
+transaction blocks.
 
 ## Analysis pipeline
 
 `analysis.rs` assembles the snapshot in two passes: pass 1 parses all files and builds the project-wide module set, saved-root owner set, and the single deferred script; pass 2 resolves imports against the full set. Ownership and uniqueness (module name, saved root, at-most-one module-less script) are therefore decided on project-wide counts, not first-seen order. A parse-error file contributes no checked module but stays in the snapshot so editor tooling still works on broken buffers; the program is best-effort, not all-or-nothing.
 
 `cursor.rs` is checker-faithful by construction: it replays the checker's own binding primitives (`file_prelude`, `for_frame`, `local_binding`, `bind`, `resolve_type`, `infer_type`, `for_each_child_expr`), so the reconstructed scope cannot drift from the one the checker builds. A binding at or after the cursor offset is not yet in scope; the tightest covering expression wins.
+
+## Analysis API contract
+
+These public surfaces are read-only and recompute from the checked program or
+snapshot until a future editor host needs caching:
+
+- `AnalysisSnapshot::sites_for(catalog_id)` filters the snapshot's `UseSite`
+  table, which is built by one post-lowering walk over runtime-lowered module
+  constants, function bodies, and evolve transform bodies. Use sites are keyed
+  by accepted or proposal catalog ids and typed as saved roots, resource
+  members, store indexes, enums, or enum members.
+- `CheckedFacts::store_indices` reserves `StoreIndexFact::usage` as a
+  `StoreIndexUsageBitmap`. The v0.1 bitmap shape is stable but unpopulated, so
+  every current index fact reports no observed read/write use.
+- `CheckedProgram::entry_cost_shapes` reports distinct static store/index
+  operation shapes per public entry from the same lowered call graph and direct
+  effects as `entry_footprints`. It is a model-audit surface, not a runtime
+  multiplicity counter: repeated reads of the same saved member are one point
+  read shape, and a counted index branch is one range-scan shape.
+- `BindingIndex::rename_action` returns source edits plus a canonical
+  `evolve rename` fragment for saved-data-backed definitions, so editor callers
+  do not synthesize catalog paths or formatter output themselves.
+- `BindingIndex::parameter_definition` maps a parameter definition or use back
+  to its checked `FunctionFact`, `LocalFact`, and parameter ordinal. Editor
+  callers use that identity to join token-tight source spans to signature facts
+  without re-parsing parameter declarations.
+- `CheckedProgram::checked_read_only_expression` parses and checks an injected
+  expression against one checked module, rejects writes, host effects, and
+  unindexed saved collection lookups with source-level diagnostic codes, and
+  returns a `CheckedReadOnlyExpression` handle. Runtime evaluation uses
+  `marrow_run::evaluate_checked_read_only_expression`, which reuses the checked
+  lowered expression and the production evaluator.
+- `evolution::evolution_preview(snapshot, backup)` returns a `WitnessFactSet`.
+  With no backup it is schema-only and marks the live-store path deferred; with
+  a backup path it streams archive cells to add bounded count and sample facts.
+  It never opens a live store.
+- Ordinary `marrow check` reads each source file through the analysis pipeline
+  and reads the fixed `marrow.catalog.json` artifact when present. It does not
+  open, repair, or create the native store.
 
 ## Tooling facts
 
@@ -33,9 +73,10 @@ Path resolution is the single chokepoint: `resolve_query_steps` validates source
 
 | File | Responsibility |
 | --- | --- |
-| `crates/marrow-check/src/analysis.rs` | Two-pass IDE analysis core: discover + overlay + parse + check into `AnalysisSnapshot`, enforce module/script/root-owner uniqueness, run the shared checker tail, compute test-resolution suppression. |
-| `crates/marrow-check/src/program.rs` | Checked-program artifact plus analysis queries for effect closure, per-entry durable footprints, and entry store-open mode. |
+| `crates/marrow-check/src/analysis.rs` | Two-pass IDE analysis core: discover + overlay + parse + check into `AnalysisSnapshot`, enforce module/script/root-owner uniqueness, run the shared checker tail, compute test-resolution suppression, and build the use-site table. |
+| `crates/marrow-check/src/program.rs` | Checked-program artifact plus analysis queries for effect closure, per-entry durable footprints, entry cost shape, entry store-open mode, and checked read-only expressions. |
 | `crates/marrow-check/src/analysis/cursor.rs` | Cursor `type_at`/`scope_at`: replay the checker's binding primitives to rebuild lexical scope, infer the tightest covering expression; records no diagnostics. |
+| `crates/marrow-check/src/evolution/preview.rs` | Schema-only and backup-backed `WitnessFactSet` preview facts for tooling. |
 | `crates/marrow-check/src/tooling/mod.rs` | Tooling facade: re-exports the data/integrity/metadata API; defines `ToolingError` (Query vs Store). |
 | `crates/marrow-check/src/tooling/data/mod.rs` | Data tooling root and shared value types (`DataQuery`, `DataChild`, `DataEntry`, `DataWalkPage`, `DataRecord`, `KeyMismatch`, `MAX_PREVIEW_ITEMS`). |
 | `crates/marrow-check/src/tooling/data/query.rs` | Path resolution: walk wire/source segments into a `StorageDataQuery` with typed `QueryError`; `data_query_under_prefix` containment. |
@@ -54,6 +95,13 @@ Path resolution is the single chokepoint: `resolve_query_steps` validates source
 ## Key types
 
 - `AnalysisSnapshot` / `AnalyzedFile` (`analysis.rs`) — the IDE view: report + best-effort `CheckedProgram` + every parsed file, error files retained.
+- `UseSite` / `UseSiteKind` (`analysis.rs`) — catalog-id references in checked
+  bodies, built from lowered expressions rather than source spelling.
+- `CheckedReadOnlyExpression` (`program.rs`) — a source-digest-bound checked
+  expression handle for runtime point evaluation.
+- `WitnessFactSet` (`evolution/preview.rs`) — schema and optional backup cell
+  facts for evolution preview tooling, with live-store preview explicitly
+  deferred.
 - `DataQuery` / `StorageDataQuery` (`tooling/data/mod.rs`, `query.rs`) — a resolved, schema-validated path; public display form vs crate-internal physical store form.
 - `QueryError` / `ToolingError` (`query_error.rs`, `tooling/mod.rs`) — typed request malformity vs store faults.
 - `DataRecord` / `DataPresence` / `DataWalkPage` / `DataChildrenPage` (`tooling/data/mod.rs`) — the paged data facts carrying truncation and resume cursors.
@@ -68,7 +116,12 @@ Path resolution is the single chokepoint: `resolve_query_steps` validates source
   `crates/marrow-store/tests/tree_store.rs`. Cursor and snapshot facts are
   covered in `crates/marrow-check/tests` (`analysis_api.rs`,
   `project_analysis_overlay_snapshot.rs`, `project_analysis_test_resolution.rs`).
-- `analyze_source_project` is crate-internal (`pub(crate)`); the public entry is `analyze_project`. Both take the accepted catalog as an `Option<&CatalogMetadata>` input the caller supplies. The convenience `check_project` binds no accepted catalog (the first-run shape); `check_project_with_catalog` takes the committed `marrow.catalog.json` artifact, with the store snapshot used only as the local crash bridge.
+- `analyze_source_project` is crate-internal (`pub(crate)`); the public entry is
+  `analyze_project`. Both take the accepted catalog as an
+  `Option<&CatalogMetadata>` input the caller supplies. The convenience
+  `check_project` binds no accepted catalog (the first-run shape);
+  `check_project_with_catalog` takes the committed `marrow.catalog.json`
+  artifact. The checker has no store-open fallback.
 
 ## Read next
 

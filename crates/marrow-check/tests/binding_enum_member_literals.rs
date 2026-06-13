@@ -181,7 +181,7 @@ fn a_nested_enum_member_literal_anchors_intermediate_segments() {
     );
 
     let top_level_category = source
-        .find("category tiger")
+        .find("tiger\n        bengal")
         .expect("top-level tiger category");
     assert!(
         category_def.span.start_byte <= top_level_category

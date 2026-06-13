@@ -3,19 +3,13 @@ use serde_json::Value;
 
 mod support;
 
-use support::{marrow_sub, native_store_path, temp_project, write};
+use support::{marrow_sub, temp_project, write};
 
 fn catalog_id(root: &support::TempProject, kind: CatalogEntryKind, path: &str) -> String {
-    let config = marrow_project::parse_config(
-        &std::fs::read_to_string(root.join("marrow.json")).expect("read config"),
+    let catalog = marrow_catalog::CatalogMetadata::from_json(
+        &std::fs::read_to_string(root.join("marrow.catalog.json")).expect("read catalog"),
     )
-    .expect("parse config");
-    let store_path = native_store_path(root, &config).expect("native store path");
-    let store = marrow_store::tree::TreeStore::open_read_only(&store_path).expect("open store");
-    let catalog = store
-        .read_catalog_snapshot()
-        .expect("read catalog")
-        .expect("committed catalog");
+    .expect("catalog parses");
     catalog
         .entries
         .iter()

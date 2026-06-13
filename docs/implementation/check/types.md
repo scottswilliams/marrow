@@ -42,7 +42,7 @@ The orchestration that sequences the passes lives in `analysis.rs`, outside this
   names, not the names inside them. Saved roots are project-wide; source names
   are module-scoped — the two namespaces never collapse.
 - **Strict typing across conversion boundaries.** An `Unknown` value flowing into a concrete typed place with a conversion boundary (`expects_conversion`) is `check.untyped_value`, not silent acceptance.
-- **Catalog identity is committed as a file artifact.** Production durable identity is the fixed `marrow.catalog.json` artifact. The store keeps a private copy as the crash bridge and transaction participant: state-establishing commands commit catalog rows with the data they describe, then render the file from that committed snapshot. Check can repair missing, torn, older, or same-epoch drifted file renders from the store copy, but never mutates durable identity or rewinds a valid file artifact that is ahead of the local store.
+- **Catalog identity is committed as a file artifact.** Production durable identity is the fixed `marrow.catalog.json` artifact. The store keeps a private copy as the crash bridge and transaction participant: state-establishing commands commit catalog rows with the data they describe, then render the file from that committed snapshot. Ordinary check reads only the file artifact and never opens the store to repair, create, or rewind catalog renders.
 
 ## Code-reality notes
 

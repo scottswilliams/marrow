@@ -215,7 +215,7 @@ fn check_project_dir(dir: &str, format: CheckFormat, data: bool) -> ExitCode {
         Ok(config) => config,
         Err(code) => return code,
     };
-    let accepted = match crate::read_accepted_store_catalog(dir, &config, format) {
+    let accepted = match crate::read_accepted_catalog_artifact(dir, format) {
         Ok(accepted) => accepted,
         Err(code) => return code,
     };

@@ -1222,6 +1222,7 @@ fn restore_refuses_a_catalog_only_target() {
     let target_dir = target.to_str().unwrap().to_string();
     let target_data_dir = target.join(".data");
     let target_store_file = target_data_dir.join("marrow.redb");
+    fs::remove_file(target.join("marrow.catalog.json")).expect("leave only the store baseline");
     let before_catalog = read_store_catalog(&target_data_dir).expect("catalog-only baseline");
     assert!(
         TreeStore::open_read_only(&target_store_file)

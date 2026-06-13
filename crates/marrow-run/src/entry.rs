@@ -2,19 +2,22 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use marrow_check::{
-    CheckedEntryFunction, CheckedFunctionRef, CheckedRuntimeFunction, CheckedRuntimeProgram,
-    CheckedRuntimeValueType,
+    CheckedEntryFunction, CheckedFunctionRef, CheckedReadOnlyExpression, CheckedRuntimeFunction,
+    CheckedRuntimeProgram, CheckedRuntimeValueType,
 };
 use marrow_store::tree::TreeStore;
 use marrow_syntax::SourceSpan;
 
-use crate::activation::{Completion, Invocation, check_argument_count, executable_body, invoke};
+use crate::activation::{
+    Completion, Invocation, bind_module_constants, check_argument_count, executable_body, invoke,
+};
 use crate::call::function_by_ref;
-use crate::env::{Context, TransactionState};
+use crate::env::{Context, Env, TransactionState};
 use crate::error::{
     RuntimeError, ambiguous_function, private_function, raise_with_transaction_escape,
-    reraise_fault_with_transaction_escape, type_error, unknown_function,
+    reraise_fault_with_transaction_escape, type_error, unknown_function, unsupported,
 };
+use crate::expr::eval_expr;
 use crate::host::{Host, StepHook};
 use crate::value::{RunOutput, RunOutputSink, Value, enum_value_from_member, value_scalar_type};
 
@@ -58,6 +61,61 @@ pub fn run_entry(
     output: &mut dyn RunOutputSink,
 ) -> Result<RunOutput, RuntimeError> {
     run_entry_with_host(store, &Host::new(), call, output)
+}
+
+pub fn evaluate_checked_read_only_expression(
+    store: &TreeStore,
+    program: &CheckedRuntimeProgram,
+    expression: &CheckedReadOnlyExpression,
+    output: &mut dyn RunOutputSink,
+) -> Result<RunOutput, RuntimeError> {
+    if expression.source_digest() != program.source_digest() {
+        return Err(unsupported(
+            "a checked read-only expression from a different checked program",
+            SourceSpan::default(),
+        ));
+    }
+    if expression.read_only_context_digest() != program.read_only_context_digest() {
+        return Err(unsupported(
+            "a checked read-only expression from a different checked program",
+            SourceSpan::default(),
+        ));
+    }
+    let module = program
+        .modules()
+        .get(expression.file_id().0 as usize)
+        .ok_or_else(|| {
+            unsupported(
+                "a checked read-only expression whose source module is missing",
+                SourceSpan::default(),
+            )
+        })?;
+    if module.source_file != expression.source_file() {
+        return Err(unsupported(
+            "a checked read-only expression whose source file no longer matches",
+            SourceSpan::default(),
+        ));
+    }
+
+    let output: Rc<RefCell<dyn RunOutputSink + '_>> =
+        Rc::new(RefCell::new(ForwardOutput { sink: output }));
+    let host = Host::new();
+    let ctx = Context {
+        program,
+        store,
+        host: &host,
+        transaction: Rc::new(RefCell::new(TransactionState::default())),
+    };
+    let mut env = Env::new(ctx, output, Some(module), None, 1);
+    env.push_scope();
+    let value = (|| {
+        bind_module_constants(Some(module), &mut env)?;
+        eval_expr(expression.expression(), &mut env)
+    })();
+    env.pop_scope();
+    value
+        .map(|value| RunOutput { value: Some(value) })
+        .map_err(|error| error.with_origin_from(program, Some(module)))
 }
 
 pub fn run_entry_with_host(

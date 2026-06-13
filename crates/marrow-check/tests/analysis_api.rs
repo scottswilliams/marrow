@@ -7,11 +7,19 @@ mod support;
 use std::path::PathBuf;
 
 use marrow_check::program::MarrowType;
-use marrow_check::{CheckedProgram, scope_at, type_at};
+use marrow_check::{
+    CatalogEntryKind, CheckedProgram, ProjectSources, StoreIndexUsageBitmap, UseSiteKind,
+    analyze_project, check_project, scope_at, type_at,
+};
 use marrow_schema::ScalarType;
+use marrow_store::cell::CatalogId;
+use marrow_store::key::SavedKey;
+use marrow_store::tree::{
+    TreeStore, write_tree_backup_archive_chunk, write_tree_backup_archive_header,
+};
 use marrow_syntax::ParsedSource;
 
-use support::analyze_overlay;
+use support::{analyze_overlay, config, temp_root, write};
 
 /// Analyze a single `src/m.mw` source and return the program plus the parse for
 /// that file, so a test can position into the buffer it controls. The source is
@@ -333,4 +341,398 @@ fn type_at_and_scope_at_emit_no_diagnostics() {
         snapshot.report.diagnostics, before,
         "queries left the report unchanged"
     );
+}
+
+#[test]
+fn sites_for_reports_saved_catalog_uses_from_lowered_bodies() {
+    let source = "module m\n\
+        resource Book\n    \
+        required title: string\n    \
+        shelf: string\n\
+        store ^books(id: int): Book\n    \
+        index byShelf(shelf, id)\n\
+        fn title(id: int): string\n    \
+        return ^books(id).title ?? \"\"\n\
+        fn on_shelf(shelf: string): int\n    \
+        return count(^books.byShelf(shelf))\n";
+    let (snapshot, paths) = analyze_overlay("analysis-use-sites", &[("src/m.mw", source)]);
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let file = &paths[0];
+
+    let store = snapshot
+        .program
+        .facts
+        .stores()
+        .iter()
+        .find(|store| store.root == "books")
+        .expect("books store");
+    let store_catalog_id = snapshot
+        .program
+        .store_catalog_id(store.id)
+        .expect("store has a catalog id")
+        .to_string();
+    let title_catalog_id = proposal_id(
+        &snapshot,
+        CatalogEntryKind::ResourceMember,
+        "m::Book::title",
+    );
+    let shelf_index_catalog_id = snapshot
+        .program
+        .facts
+        .store_indexes()
+        .iter()
+        .find(|index| index.name == "byShelf")
+        .and_then(|index| snapshot.program.store_index_catalog_id(index.id))
+        .expect("byShelf has a catalog id")
+        .to_string();
+
+    let store_sites = snapshot.sites_for(&store_catalog_id);
+    assert!(
+        store_sites.iter().any(|site| {
+            site.file == *file
+                && site.kind == UseSiteKind::SavedRoot
+                && source[site.span.start_byte..site.span.end_byte].contains("^books")
+        }),
+        "store use sites: {store_sites:#?}"
+    );
+
+    let title_sites = snapshot.sites_for(&title_catalog_id);
+    assert!(
+        title_sites.iter().any(|site| {
+            site.file == *file
+                && site.kind == UseSiteKind::ResourceMember
+                && source[site.span.start_byte..site.span.end_byte].contains(".title")
+        }),
+        "title use sites: {title_sites:#?}"
+    );
+
+    let index_sites = snapshot.sites_for(&shelf_index_catalog_id);
+    assert!(
+        index_sites.iter().any(|site| {
+            site.file == *file
+                && site.kind == UseSiteKind::StoreIndex
+                && source[site.span.start_byte..site.span.end_byte].contains("byShelf")
+        }),
+        "index use sites: {index_sites:#?}"
+    );
+}
+
+#[test]
+fn sites_for_reports_proposal_saved_layer_uses_from_lowered_bodies() {
+    let source = "module m\n\
+        resource Book\n    \
+        versions(version: int)\n        \
+        required title: string\n\
+        store ^books(id: int): Book\n\
+        fn f(id: Id(^books))\n    \
+        for n, version in ^books(id).versions\n        \
+        print(version.title)\n";
+    let (snapshot, paths) =
+        analyze_overlay("analysis-use-sites-proposal-layer", &[("src/m.mw", source)]);
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let file = &paths[0];
+    let versions_catalog_id = proposal_id(
+        &snapshot,
+        CatalogEntryKind::ResourceMember,
+        "m::Book::versions",
+    );
+
+    let version_sites = snapshot.sites_for(&versions_catalog_id);
+    assert!(
+        version_sites.iter().any(|site| {
+            site.file == *file
+                && site.kind == UseSiteKind::ResourceMember
+                && source[site.span.start_byte..site.span.end_byte].contains(".versions")
+        }),
+        "versions use sites: {version_sites:#?}"
+    );
+}
+
+#[test]
+fn sites_for_reports_accepted_saved_layer_uses_from_lowered_bodies() {
+    let source = "module m\n\
+        resource Book\n    \
+        versions(version: int)\n        \
+        required title: string\n\
+        store ^books(id: int): Book\n\
+        fn f(id: Id(^books))\n    \
+        for n, version in ^books(id).versions\n        \
+        print(version.title)\n";
+    let root = temp_root("analysis-use-sites-accepted-layer");
+    write(&root, "src/m.mw", source);
+    let (report, program) = check_project(&root, &config()).expect("baseline check");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let accepted = program.catalog.proposal.clone().expect("baseline proposal");
+    let versions_catalog_id = accepted
+        .entries
+        .iter()
+        .find(|entry| {
+            entry.kind == CatalogEntryKind::ResourceMember && entry.path == "m::Book::versions"
+        })
+        .expect("accepted versions layer")
+        .stable_id
+        .clone();
+
+    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), Some(&accepted))
+        .expect("analyze accepted source");
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let file = root.join("src/m.mw");
+
+    let version_sites = snapshot.sites_for(&versions_catalog_id);
+    assert!(
+        version_sites.iter().any(|site| {
+            site.file == file
+                && site.kind == UseSiteKind::ResourceMember
+                && source[site.span.start_byte..site.span.end_byte].contains(".versions")
+        }),
+        "versions use sites: {version_sites:#?}"
+    );
+}
+
+#[test]
+fn sites_for_reports_saved_catalog_uses_from_module_constants() {
+    let source = "module m\n\
+        enum Status\n    \
+        active\n    \
+        archived\n\
+        const DEFAULT = Status::active\n";
+    let (snapshot, paths) = analyze_overlay("analysis-use-sites-const", &[("src/m.mw", source)]);
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let file = &paths[0];
+    let active_catalog_id =
+        proposal_id(&snapshot, CatalogEntryKind::EnumMember, "m::Status::active");
+
+    let active_sites = snapshot.sites_for(&active_catalog_id);
+    assert!(
+        active_sites.iter().any(|site| {
+            site.file == *file
+                && site.kind == UseSiteKind::EnumMember
+                && source[site.span.start_byte..site.span.end_byte].contains("Status::active")
+        }),
+        "active use sites: {active_sites:#?}"
+    );
+}
+
+#[test]
+fn sites_for_reports_catalog_uses_from_evolve_transform_bodies() {
+    let baseline = "module m\n\
+        enum Status\n    \
+        active\n    \
+        archived\n\
+        resource Book\n    \
+        required title: string\n\
+        store ^books(id: int): Book\n";
+    let evolved = "module m\n\
+        enum Status\n    \
+        active\n    \
+        archived\n\
+        resource Book\n    \
+        required title: string\n    \
+        required state: Status\n\
+        store ^books(id: int): Book\n\
+        evolve\n    \
+        transform Book.state\n        \
+        return Status::active\n";
+    let root = temp_root("analysis-use-sites-transform");
+    write(&root, "src/m.mw", baseline);
+    let (baseline_report, baseline_program) =
+        check_project(&root, &config()).expect("baseline check");
+    assert!(
+        !baseline_report.has_errors(),
+        "{:#?}",
+        baseline_report.diagnostics
+    );
+    let accepted = baseline_program
+        .catalog
+        .proposal
+        .clone()
+        .expect("baseline proposal");
+    write(&root, "src/m.mw", evolved);
+    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), Some(&accepted))
+        .expect("analyze evolved source");
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+
+    let active_catalog_id = accepted
+        .entries
+        .iter()
+        .find(|entry| {
+            entry.kind == CatalogEntryKind::EnumMember && entry.path == "m::Status::active"
+        })
+        .expect("accepted active member")
+        .stable_id
+        .clone();
+    let file = root.join("src/m.mw");
+    let active_sites = snapshot.sites_for(&active_catalog_id);
+    assert!(
+        active_sites.iter().any(|site| {
+            site.file == file
+                && site.kind == UseSiteKind::EnumMember
+                && evolved[site.span.start_byte..site.span.end_byte].contains("Status::active")
+        }),
+        "active use sites: {active_sites:#?}"
+    );
+}
+
+fn proposal_id(
+    snapshot: &marrow_check::AnalysisSnapshot,
+    kind: CatalogEntryKind,
+    path: &str,
+) -> String {
+    snapshot
+        .program
+        .catalog
+        .proposal
+        .as_ref()
+        .expect("first-run analysis proposes catalog ids")
+        .entries
+        .iter()
+        .find(|entry| entry.kind == kind && entry.path == path)
+        .unwrap_or_else(|| panic!("missing proposal entry {kind:?} {path}"))
+        .stable_id
+        .clone()
+}
+
+#[test]
+fn store_index_facts_carry_reserved_empty_usage_bitmap() {
+    let source = "module m\n\
+        resource Book\n    \
+        shelf: string\n\
+        store ^books(id: int): Book\n    \
+        index byShelf(shelf, id)\n";
+    let (snapshot, _) = analyze_overlay("analysis-index-usage-bitmap", &[("src/m.mw", source)]);
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+
+    let index = snapshot
+        .program
+        .facts
+        .store_indexes()
+        .iter()
+        .find(|index| index.name == "byShelf")
+        .expect("byShelf fact");
+    assert_eq!(index.usage, StoreIndexUsageBitmap::default());
+    assert!(
+        !index.usage.any(),
+        "the reserved usage bitmap shape is present but intentionally unpopulated"
+    );
+}
+
+#[test]
+fn evolution_preview_schema_only_defers_live_store_data() {
+    let source = "module m\n\
+        resource Book\n    \
+        title: string\n\
+        store ^books(id: int): Book\n";
+    let (snapshot, _) =
+        analyze_overlay("analysis-evolution-preview-schema", &[("src/m.mw", source)]);
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+
+    let facts = marrow_check::evolution::evolution_preview(&snapshot, None)
+        .expect("schema-only evolution preview");
+
+    assert_eq!(facts.source_digest, snapshot.program.source_digest());
+    assert_eq!(facts.backup, None);
+    assert_eq!(
+        facts.live_store,
+        marrow_check::evolution::LiveStorePreviewStatus::Deferred
+    );
+}
+
+#[test]
+fn evolution_preview_reads_counts_and_samples_from_backup() {
+    let source = "module m\n\
+        resource Book\n    \
+        title: string\n\
+        store ^books(id: int): Book\n";
+    let (snapshot, _) =
+        analyze_overlay("analysis-evolution-preview-backup", &[("src/m.mw", source)]);
+    let root = support::temp_root("analysis-evolution-preview-backup-archive");
+    let archive = root.join("books.mwbackup");
+    let store = TreeStore::memory();
+    let store_id = CatalogId::new("cat_00000000000000000000000000000001").expect("store id");
+    store
+        .write_node(&store_id, &[SavedKey::Int(1)])
+        .expect("seed backup cell");
+    write_minimal_backup_archive(&archive, &store);
+
+    let facts = marrow_check::evolution::evolution_preview(&snapshot, Some(&archive))
+        .expect("backup evolution preview");
+    let backup = facts.backup.expect("backup facts");
+
+    assert_eq!(backup.cell_count, 1);
+    assert_eq!(
+        backup.sample_catalog_ids,
+        vec!["cat_00000000000000000000000000000001".to_string()]
+    );
+    assert!(!backup.samples_truncated);
+}
+
+#[test]
+fn evolution_preview_marks_backup_samples_truncated_only_after_omitting_distinct_ids() {
+    let source = "module m\n\
+        resource Book\n    \
+        title: string\n\
+        store ^books(id: int): Book\n";
+    let (snapshot, _) = analyze_overlay(
+        "analysis-evolution-preview-truncated-samples",
+        &[("src/m.mw", source)],
+    );
+    let root = support::temp_root("analysis-evolution-preview-truncated-samples-archive");
+    let archive = root.join("books.mwbackup");
+    let store = TreeStore::memory();
+    for n in 0..17 {
+        let store_id = CatalogId::new(format!("cat_{n:032}")).expect("store id");
+        store
+            .write_node(&store_id, &[SavedKey::Int(n)])
+            .expect("seed backup cell");
+    }
+    write_minimal_backup_archive(&archive, &store);
+
+    let facts = marrow_check::evolution::evolution_preview(&snapshot, Some(&archive))
+        .expect("backup evolution preview");
+    let backup = facts.backup.expect("backup facts");
+
+    assert_eq!(backup.cell_count, 17);
+    assert_eq!(backup.sample_catalog_ids.len(), 16);
+    assert!(backup.samples_truncated);
+}
+
+fn write_minimal_backup_archive(path: &std::path::Path, store: &TreeStore) {
+    let mut file = std::fs::File::create(path).expect("create backup archive");
+    write_tree_backup_archive_header(&mut file).expect("write archive header");
+    write_tree_backup_archive_chunk(&mut file, b"{}").expect("write placeholder manifest");
+    write_tree_backup_archive_chunk(&mut file, b"").expect("write empty catalog section");
+    store
+        .visit_backup_cells(|cell| {
+            cell.write_framed(&mut file).expect("write backup cell");
+            Ok(())
+        })
+        .expect("visit backup cells");
 }
