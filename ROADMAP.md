@@ -849,15 +849,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 Parser/checker/runtime files overlap heavily: the cut series is sequenced; additions follow.
 Listing order is execution order. Store crate is quiet this wave except where noted.
 
-**W4.17 ∥ Decimal formatting boundary.** Carries: one pure helper,
-`std::math::roundDecimal(value: decimal, scale: int): decimal`, rounding half-to-even to a fixed
-fractional scale. Owns: the stdlib descriptor table, std_pure.rs math arm, standard-library.md,
-and deterministic decimal fixtures. Seed: a money-style `roundDecimal(amount, 2)` fixture that
-cannot be expressed by W4.5's integer `round(decimal)`. Review: no `formatDecimal`,
-padStart/padEnd, locale-dependent rendering, canonical trailing-zero change, or display API.
-Done: decimal-to-decimal rounding exists without moving presentation formatting into the
-kernel.
-
 Wave gate: full gate; docs corpus + executable fixtures green over the post-subtraction language.
 
 ---
