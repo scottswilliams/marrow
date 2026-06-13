@@ -194,14 +194,18 @@ fn stored_value_meaning_token(
 ) -> Option<String> {
     match meaning {
         StoredValueMeaning::Scalar(scalar) => Some(scalar.name().to_string()),
-        StoredValueMeaning::Identity(store_id) => {
+        StoredValueMeaning::Identity {
+            store: store_id,
+            arity,
+            ..
+        } => {
             let store = program.facts.store(*store_id);
             let module = &program.modules[store.module.0 as usize];
             let store_id = ids.get(&CatalogKey::new(
                 CatalogEntryKind::Store,
                 store_path(&module.name, &store.root),
             ))?;
-            Some(format!("id:{store_id}:{}", store.identity_keys.len()))
+            Some(format!("id:{store_id}:{arity}"))
         }
         StoredValueMeaning::Enum { enum_id, .. } => {
             let enum_fact = program.facts.enum_(*enum_id)?;

@@ -19,7 +19,14 @@ fn v01_library_fixture_checks_and_runs_through_cli() {
     let check = marrow(&["check", &dir]);
     let seed = marrow(&["run", "--entry", "v01::library::seed", &dir]);
     let print_author = marrow(&["run", "--entry", "v01::library::printSeededAuthor", &dir]);
+    let print_author_books = marrow(&[
+        "run",
+        "--entry",
+        "v01::library::printSeededAuthorBooks",
+        &dir,
+    ]);
     let print_stdout = std::str::from_utf8(&print_author.stdout).expect("stdout utf8");
+    let books_stdout = std::str::from_utf8(&print_author_books.stdout).expect("stdout utf8");
 
     assert_eq!(check.status.code(), Some(0), "check: {check:?}");
     assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
@@ -28,5 +35,11 @@ fn v01_library_fixture_checks_and_runs_through_cli() {
         Some(0),
         "print author: {print_author:?}"
     );
+    assert_eq!(
+        print_author_books.status.code(),
+        Some(0),
+        "print author books: {print_author_books:?}"
+    );
     assert_eq!(print_stdout, "Ursula K. Le Guin\n");
+    assert_eq!(books_stdout, "A Wizard of Earthsea\n");
 }

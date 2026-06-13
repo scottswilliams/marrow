@@ -260,7 +260,7 @@ store ^orders(tags: sequence[string]): Order
 }
 
 #[test]
-fn an_identity_field_index_argument_is_an_error() {
+fn an_identity_field_index_argument_is_clean() {
     let source = "\
 resource Book
     authorId: Id(^authors)
@@ -268,14 +268,7 @@ store ^books(id: int): Book
     index byAuthor(authorId, id)
 ";
     let errors = compile_store_errors(source);
-    assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
-    assert_kind(
-        &errors[0],
-        SchemaErrorKind::NonScalarKey {
-            target: index_arg("byAuthor", "authorId"),
-            ty: Type::Identity("authors".to_string()),
-        },
-    );
+    assert!(errors.is_empty(), "identity index argument: {errors:?}");
 }
 
 #[test]

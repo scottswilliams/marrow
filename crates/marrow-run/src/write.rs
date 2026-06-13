@@ -7,8 +7,10 @@ use marrow_store::value::ValueError;
 use marrow_syntax::SourceSpan;
 
 use crate::index_maintenance::{
-    reject_field_unique_conflicts, reject_resource_unique_conflicts, stage_field_index_deletes,
-    stage_field_index_rewrites, stage_resource_index_deletes, stage_resource_index_rewrites,
+    reject_field_unique_conflicts, reject_identity_field_unique_conflicts,
+    reject_resource_unique_conflicts, stage_field_index_deletes, stage_field_index_rewrites,
+    stage_identity_field_index_rewrites, stage_resource_index_deletes,
+    stage_resource_index_rewrites,
 };
 use crate::store::{
     DataAddress, IndexAddress, LayerAddress, data_exists, max_int_data_child, max_int_record_child,
@@ -203,6 +205,7 @@ pub(crate) fn plan_identity_field_write(
     field: &str,
     keys: &[SavedKey],
     referenced_arity: usize,
+    store: &TreeStore,
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
     resolve_store_identity(place, identity)?;
@@ -210,15 +213,16 @@ pub(crate) fn plan_identity_field_write(
         code: WRITE_UNKNOWN_FIELD,
         message: format!("resource `{}` has no field `{field}`", place.resource_name),
     })?;
-    Ok(WritePlan {
-        steps: vec![
-            record_node_step(place, identity, span)?,
-            PlanStep::WriteData {
-                address: data_address(place, identity, &[], &[field.to_string()], span)?,
-                value: staged_identity_value(field, leaf, keys, referenced_arity)?,
-            },
-        ],
-    })
+    reject_identity_field_unique_conflicts(place, identity, field, keys, store, span)?;
+    let mut steps = vec![
+        record_node_step(place, identity, span)?,
+        PlanStep::WriteData {
+            address: data_address(place, identity, &[], &[field.to_string()], span)?,
+            value: staged_identity_value(field, leaf, keys, referenced_arity)?,
+        },
+    ];
+    stage_identity_field_index_rewrites(&mut steps, place, identity, field, keys, store, span)?;
+    Ok(WritePlan { steps })
 }
 
 pub(crate) fn validate_required_fields_after_field_write(

@@ -2,6 +2,7 @@
 
 use marrow_check::{
     CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedPlace, StoreIndexKeySource,
+    StoredValueMeaning,
 };
 use marrow_store::cell::CatalogId;
 use marrow_store::key::{SavedKey, encode_identity_payload};
@@ -135,6 +136,32 @@ pub(crate) fn reject_field_unique_conflicts(
     Ok(())
 }
 
+pub(crate) fn reject_identity_field_unique_conflicts(
+    place: &CheckedSavedPlace,
+    identity: &[SavedKey],
+    field: &str,
+    keys: &[SavedKey],
+    store: &TreeStore,
+    span: SourceSpan,
+) -> Result<(), WriteError> {
+    let bytes = encode_identity_payload(keys);
+    for index in &place.indexes {
+        if index.unique && index.keys.iter().any(|key| key.name == field) {
+            let new_keys = identity_field_write_index_keys(
+                &index.keys,
+                place,
+                identity,
+                field,
+                &bytes,
+                store,
+                span,
+            )?;
+            check_unique_conflict(index, identity, new_keys.as_deref(), store, span)?;
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn stage_field_index_rewrites(
     steps: &mut Vec<PlanStep>,
@@ -158,6 +185,46 @@ pub(crate) fn stage_field_index_rewrites(
         if let Some(new_keys) =
             field_write_index_keys(&index.keys, place, identity, field, value, store, span)?
         {
+            steps.push(PlanStep::WriteIndex {
+                address: index_address(index, new_keys, span)?,
+                identity: identity.to_vec(),
+                value: index_entry_value(index.unique, identity),
+            });
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn stage_identity_field_index_rewrites(
+    steps: &mut Vec<PlanStep>,
+    place: &CheckedSavedPlace,
+    identity: &[SavedKey],
+    field: &str,
+    keys: &[SavedKey],
+    store: &TreeStore,
+    span: SourceSpan,
+) -> Result<(), WriteError> {
+    let bytes = encode_identity_payload(keys);
+    for index in &place.indexes {
+        if !index.keys.iter().any(|key| key.name == field) {
+            continue;
+        }
+        if let Some(old_keys) = stored_index_keys(&index.keys, place, identity, store, span)? {
+            steps.push(PlanStep::DeleteIndex {
+                address: index_address(index, old_keys, span)?,
+                identity: identity.to_vec(),
+            });
+        }
+        if let Some(new_keys) = identity_field_write_index_keys(
+            &index.keys,
+            place,
+            identity,
+            field,
+            &bytes,
+            store,
+            span,
+        )? {
             steps.push(PlanStep::WriteIndex {
                 address: index_address(index, new_keys, span)?,
                 identity: identity.to_vec(),
@@ -207,8 +274,16 @@ fn index_keys(
                 result.push(identity[position].clone());
             }
             StoreIndexKeySource::ResourceMember(_) => {
-                let (_, saved) = value.fields.iter().find(|(name, _)| name == &key.name)?;
-                result.push(saved.as_key()?);
+                if let Some((_, saved)) = value.fields.iter().find(|(name, _)| name == &key.name) {
+                    result.push(saved.as_key()?);
+                } else {
+                    let supplied = value
+                        .identities
+                        .iter()
+                        .find(|supplied| supplied.field == key.name)?;
+                    let bytes = encode_identity_payload(&supplied.keys);
+                    result.push(key.value_meaning.stored_key(&bytes)?);
+                }
             }
         }
     }
@@ -251,12 +326,12 @@ fn stored_arg_key_with_staged(
             if let Some(bytes) =
                 staged.staged_data_value(&address.store, &address.identity, &address.path)
             {
-                return Ok(key.value_meaning.stored_key(bytes));
+                return stored_index_key(&key.value_meaning, bytes).map(Some);
             }
             let Some(bytes) = read_data(store, &address, span).map_err(runtime_store_error)? else {
                 return Ok(None);
             };
-            Ok(key.value_meaning.stored_key(&bytes))
+            stored_index_key(&key.value_meaning, &bytes).map(Some)
         }
     }
 }
@@ -303,6 +378,33 @@ fn field_write_index_keys(
             }
         })
         .collect()
+}
+
+fn identity_field_write_index_keys(
+    keys: &[CheckedSavedIndexKey],
+    place: &CheckedSavedPlace,
+    identity: &[SavedKey],
+    field: &str,
+    bytes: &[u8],
+    store: &TreeStore,
+    span: SourceSpan,
+) -> Result<Option<Vec<SavedKey>>, WriteError> {
+    keys.iter()
+        .map(|key| {
+            if key.name == field {
+                stored_index_key(&key.value_meaning, bytes).map(Some)
+            } else {
+                stored_arg_key(key, place, identity, store, span)
+            }
+        })
+        .collect()
+}
+
+fn stored_index_key(meaning: &StoredValueMeaning, bytes: &[u8]) -> Result<SavedKey, WriteError> {
+    meaning.stored_key(bytes).ok_or_else(|| WriteError {
+        code: WRITE_STORE,
+        message: "stored indexed value is not valid under its declared type".to_string(),
+    })
 }
 
 fn index_address(

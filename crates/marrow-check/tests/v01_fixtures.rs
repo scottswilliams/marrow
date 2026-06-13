@@ -1,6 +1,6 @@
 mod support;
 
-use marrow_check::check_project;
+use marrow_check::{StoreIndexKeySource, check_project};
 use marrow_schema::NodeKind;
 
 use support::{config, temp_project, write};
@@ -59,4 +59,33 @@ fn v01_library_fixture_checks_clean_and_exposes_store_identity_refs() {
         book.leaf_type(&["tags"]).expect("tags leaf").to_string(),
         "string"
     );
+
+    let module_id = program
+        .facts
+        .module_id("v01::library")
+        .expect("library facts module");
+    let books_store = program
+        .facts
+        .store_id(module_id, "books")
+        .expect("books store fact");
+    let by_author = program
+        .facts
+        .store_indexes()
+        .iter()
+        .find(|index| index.store == books_store && index.name == "byAuthor")
+        .expect("byAuthor index");
+
+    assert_eq!(by_author.keys.len(), 2);
+    assert_eq!(by_author.keys[0].name, "author");
+    assert!(matches!(
+        by_author.keys[0].source,
+        StoreIndexKeySource::ResourceMember(member_id)
+            if program
+                .facts
+                .resource_members()
+                .get(member_id.0 as usize)
+                .is_some_and(|member| member.name == "author")
+    ));
+    assert_eq!(by_author.keys[1].name, "id");
+    assert_eq!(by_author.keys[1].source, StoreIndexKeySource::IdentityKey);
 }

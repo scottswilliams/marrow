@@ -394,18 +394,16 @@ fn key_type_error(target: SchemaKeyTarget, ty: &Type, span: SourceSpan) -> Optio
 }
 
 /// The error an index argument of type `resolved` earns, sharing the orderable-key
-/// verdict ([`classify_key_type`]) with identity keys and key parameters. The one
-/// divergence: an index argument may name a field whose declared type is a `Named`
-/// (an enum the checker later resolves to its scalar), so a `Named` is accepted
-/// here where a written key would reject it. Index arguments keep their own message
-/// wording but the same kinds and codes.
+/// verdict ([`classify_key_type`]) with identity keys and key parameters. Index
+/// arguments have two declared-field exceptions: a `Named` may resolve to an enum
+/// later, and an identity field indexes by a store-prefixed identity payload.
 fn index_arg_type_key_error(
     index: &str,
     arg: &str,
     resolved: &Type,
     span: SourceSpan,
 ) -> Option<SchemaError> {
-    if let Type::Named(_) = resolved {
+    if matches!(resolved, Type::Identity(_) | Type::Named(_)) {
         return None;
     }
     let target = SchemaKeyTarget::IndexArg {

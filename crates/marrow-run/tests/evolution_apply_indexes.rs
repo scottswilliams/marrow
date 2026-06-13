@@ -9,9 +9,10 @@ mod evolution_apply_support;
 use evolution_apply_support::*;
 
 use marrow_catalog::{CatalogEntryKind, CatalogMetadata};
+use marrow_check::evolution::{RepairReason, Verdict};
 use marrow_run::evolution::{ApplyError, apply, current_engine_profile};
 use marrow_store::cell::CatalogId;
-use marrow_store::key::SavedKey;
+use marrow_store::key::{SavedKey, encode_identity_index_key, encode_identity_payload};
 use marrow_store::tree::{CommitMetadata, DataPathSegment, TreeStore};
 use marrow_store::value::{Scalar, encode_value};
 
@@ -102,6 +103,221 @@ fn proposal_index_rebuild_writes_entries_before_catalog_acceptance() {
         assert_eq!(scan.entries.len(), 1, "index entry for {isbn}");
         assert_eq!(scan.entries[0].identity, vec![SavedKey::Int(id)]);
     }
+}
+
+#[test]
+fn proposal_index_rebuild_writes_identity_field_components() {
+    let root = temp_project("apply-proposal-index-identity-field", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Author\n\
+             \x20   required name: string\n\
+             store ^authors(id: int): Author\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   authorId: Id(^authors)\n\
+             store ^books(id: int): Book\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let authors = root_place(&accepted, "authors");
+    let books = root_place(&accepted, "books");
+    let store = TreeStore::memory();
+    let author_seed = Seed {
+        store: &store,
+        place: &authors,
+    };
+    author_seed.record(1);
+    author_seed.member(1, "name", Scalar::Str("Ann".into()));
+    author_seed.record(2);
+    author_seed.member(2, "name", Scalar::Str("Bob".into()));
+
+    let book_seed = Seed {
+        store: &store,
+        place: &books,
+    };
+    let author_member = CatalogId::new(member_catalog_id(&books, "authorId")).unwrap();
+    for (book, title, author) in [(1, "A", 1), (2, "B", 2), (3, "C", 1)] {
+        book_seed.record(book);
+        book_seed.member(book, "title", Scalar::Str(title.into()));
+        store
+            .write_data_value(
+                &book_seed.store_id(),
+                &[SavedKey::Int(book)],
+                &[DataPathSegment::Member(author_member.clone())],
+                encode_identity_payload(&[SavedKey::Int(author)]),
+            )
+            .expect("seed identity field");
+    }
+
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Author\n\
+         \x20   required name: string\n\
+         store ^authors(id: int): Author\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   authorId: Id(^authors)\n\
+         store ^books(id: int): Book\n\
+         \x20   index byAuthor(authorId, id)\n",
+    );
+    let program = checked(&root);
+    let index_id =
+        CatalogId::new(proposal_catalog_id(&program, "books::^books::byAuthor")).unwrap();
+    let w = witness(&program, &store);
+    assert!(w.is_activatable(), "{w:#?}");
+
+    let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
+    assert_eq!(outcome.receipt.indexes_rebuilt, 1);
+
+    let authors_id = store_id_of(&authors);
+    let ann_key = SavedKey::Bytes(encode_identity_index_key(
+        authors_id.as_str(),
+        &[SavedKey::Int(1)],
+    ));
+    for id in [1, 3] {
+        let scan = store
+            .scan_index_tuple(&index_id, &[ann_key.clone(), SavedKey::Int(id)], 2)
+            .expect("scan author index");
+        assert_eq!(scan.entries.len(), 1, "index entry for book {id}");
+        assert_eq!(scan.entries[0].identity, vec![SavedKey::Int(id)]);
+    }
+}
+
+#[test]
+fn unique_index_over_identity_field_collision_fails_closed() {
+    let root = temp_project("apply-proposal-index-identity-field-unique", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Author\n\
+             \x20   required name: string\n\
+             store ^authors(id: int): Author\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   authorId: Id(^authors)\n\
+             store ^books(id: int): Book\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let authors = root_place(&accepted, "authors");
+    let books = root_place(&accepted, "books");
+    let store = TreeStore::memory();
+    let author_seed = Seed {
+        store: &store,
+        place: &authors,
+    };
+    author_seed.record(1);
+    author_seed.member(1, "name", Scalar::Str("Ann".into()));
+
+    let book_seed = Seed {
+        store: &store,
+        place: &books,
+    };
+    let author_member = CatalogId::new(member_catalog_id(&books, "authorId")).unwrap();
+    for (book, title) in [(1, "A"), (2, "B")] {
+        book_seed.record(book);
+        book_seed.member(book, "title", Scalar::Str(title.into()));
+        store
+            .write_data_value(
+                &book_seed.store_id(),
+                &[SavedKey::Int(book)],
+                &[DataPathSegment::Member(author_member.clone())],
+                encode_identity_payload(&[SavedKey::Int(1)]),
+            )
+            .expect("seed identity field");
+    }
+
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Author\n\
+         \x20   required name: string\n\
+         store ^authors(id: int): Author\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   authorId: Id(^authors)\n\
+         store ^books(id: int): Book\n\
+         \x20   index oneBookByAuthor(authorId) unique\n",
+    );
+    let program = checked(&root);
+    let w = witness(&program, &store);
+
+    assert!(!w.is_activatable(), "{w:#?}");
+    assert_eq!(w.counts.index_collisions, 1, "{w:#?}");
+    let error = apply(&w, &program, &store, false, None).expect_err("apply refuses");
+    assert_eq!(error, ApplyError::NotActivatable);
+}
+
+#[test]
+fn unique_index_over_malformed_identity_field_fails_closed() {
+    let root = temp_project("apply-proposal-index-identity-field-malformed", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Author\n\
+             \x20   required name: string\n\
+             store ^authors(id: int): Author\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   authorId: Id(^authors)\n\
+             store ^books(id: int): Book\n",
+        );
+    });
+    let accepted = commit_then_check(&root);
+    let books = root_place(&accepted, "books");
+    let store = TreeStore::memory();
+    let book_seed = Seed {
+        store: &store,
+        place: &books,
+    };
+    let author_member = CatalogId::new(member_catalog_id(&books, "authorId")).unwrap();
+    book_seed.record(1);
+    book_seed.member(1, "title", Scalar::Str("A".into()));
+    store
+        .write_data_value(
+            &book_seed.store_id(),
+            &[SavedKey::Int(1)],
+            &[DataPathSegment::Member(author_member)],
+            encode_identity_payload(&[SavedKey::Str("not-an-author-int".into())]),
+        )
+        .expect("seed malformed identity field");
+
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Author\n\
+         \x20   required name: string\n\
+         store ^authors(id: int): Author\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   authorId: Id(^authors)\n\
+         store ^books(id: int): Book\n\
+         \x20   index oneBookByAuthor(authorId) unique\n",
+    );
+    let program = checked(&root);
+    let w = witness(&program, &store);
+
+    assert!(!w.is_activatable(), "{w:#?}");
+    assert!(
+        w.verdicts.iter().any(|verdict| matches!(
+            verdict.verdict,
+            Verdict::RepairRequired {
+                reason: RepairReason::InvalidStoredValue
+            }
+        )),
+        "{w:#?}"
+    );
+    let error = apply(&w, &program, &store, false, None).expect_err("apply refuses");
+    assert_eq!(error, ApplyError::NotActivatable);
 }
 
 #[test]

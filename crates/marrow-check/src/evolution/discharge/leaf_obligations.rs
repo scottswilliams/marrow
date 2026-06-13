@@ -13,7 +13,8 @@ use crate::executable::{
 
 use super::enum_shrink::{EnumMembers, leaf_value_valid};
 use super::index::{
-    IndexScan, UniqueIndexPlan, classify_indexes, prospective_index_key, unique_index_plan,
+    IndexScan, ProspectiveIndexKey, UniqueIndexPlan, classify_indexes, prospective_index_key,
+    unique_index_plan,
 };
 use super::structural_backstop::for_each_entry_key;
 use super::{
@@ -43,6 +44,7 @@ pub(super) fn discharge_root(
         .iter()
         .map(|_| IndexScan::default())
         .collect();
+    let mut invalid_index_values = vec![0usize; unique_indexes.len()];
     let mut scanned = 0usize;
 
     for_each_place_record(store, place, &mut |identity| {
@@ -61,9 +63,15 @@ pub(super) fn discharge_root(
             let bytes = store.read_data_value(&store_id, identity, &leaf.path)?;
             state.record_read(bytes.as_deref(), leaf.leaf.as_ref(), enum_members, identity);
         }
-        for (probe, state) in unique_indexes.iter().zip(index_state.iter_mut()) {
-            if let Some(key) = prospective_index_key(store, &store_id, probe, identity)? {
-                state.observe(key);
+        for ((probe, state), invalid_count) in unique_indexes
+            .iter()
+            .zip(index_state.iter_mut())
+            .zip(invalid_index_values.iter_mut())
+        {
+            match prospective_index_key(store, &store_id, probe, identity)? {
+                ProspectiveIndexKey::Present(key) => state.observe(key),
+                ProspectiveIndexKey::Absent => {}
+                ProspectiveIndexKey::Invalid => *invalid_count += 1,
             }
         }
         Ok(())
@@ -74,12 +82,18 @@ pub(super) fn discharge_root(
     for (leaf, state) in leaves.into_iter().zip(leaf_state) {
         classify_leaf(leaf, state, acc)?;
     }
+    let invalid_values: HashMap<CatalogId, usize> = unique_indexes
+        .iter()
+        .map(|probe| probe.catalog_id.clone())
+        .zip(invalid_index_values)
+        .filter(|(_, count)| *count > 0)
+        .collect();
     let collisions: HashMap<CatalogId, IndexScan> = unique_indexes
         .into_iter()
         .map(|probe| probe.catalog_id)
         .zip(index_state)
         .collect();
-    classify_indexes(place, &collisions, &unprobeable, acc)?;
+    classify_indexes(place, &collisions, &unprobeable, &invalid_values, acc)?;
     discharge_keyed_layers(store, place, enum_members, acc)?;
     Ok(())
 }

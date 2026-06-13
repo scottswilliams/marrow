@@ -4,9 +4,13 @@
 //! back at the known arity. These are Tier-0 codec laws — encode/decode is a total
 //! round trip over every key type, the arity boundary fails closed on a wrong count
 //! or trailing bytes, and the encoded form is a stable fingerprint that a stored
-//! payload can be compared against byte-for-byte.
+//! payload can be compared against byte-for-byte. Identity-derived index
+//! components prefix that payload with the referenced store's stable id.
 
-use marrow_store::key::{SavedKey, decode_identity_payload_arity, encode_identity_payload};
+use marrow_store::key::{
+    SavedKey, decode_identity_index_key, decode_identity_payload_arity, encode_identity_index_key,
+    encode_identity_payload,
+};
 
 /// One identity per scalar key type, plus the byte-escape edge (an embedded `0x00`),
 /// so the round trip covers each `SavedKey` variant's encoder and decoder.
@@ -142,6 +146,48 @@ fn the_encoded_form_is_a_stable_byte_fingerprint() {
         encode_identity_payload(&[SavedKey::Bool(true), SavedKey::Str("x".into())]),
         [0x01, 0x01, 0x07, b'x', 0x00, 0x00],
     );
+}
+
+#[test]
+fn identity_index_keys_prefix_the_referenced_store() {
+    let books = "cat_00000000000000000000000000000001";
+    let authors = "cat_00000000000000000000000000000002";
+    let identity = [SavedKey::Int(7)];
+
+    let book_key = encode_identity_index_key(books, &identity);
+    let author_key = encode_identity_index_key(authors, &identity);
+
+    assert_ne!(
+        book_key, author_key,
+        "same identity payload under different stores must not collide"
+    );
+    assert_eq!(
+        decode_identity_index_key(&book_key, books, 1),
+        Some(identity.to_vec())
+    );
+    assert_eq!(
+        decode_identity_index_key(&book_key, authors, 1),
+        None,
+        "a foreign store prefix is not the same identity component"
+    );
+}
+
+#[test]
+fn identity_index_keys_preserve_identity_order_within_a_store() {
+    let store = "cat_00000000000000000000000000000003";
+    let one = encode_identity_index_key(store, &[SavedKey::Str("a".into())]);
+    let two = encode_identity_index_key(store, &[SavedKey::Str("b".into())]);
+    let composite_one = encode_identity_index_key(
+        store,
+        &[SavedKey::Int(1), SavedKey::Str("section-a".into())],
+    );
+    let composite_two = encode_identity_index_key(
+        store,
+        &[SavedKey::Int(1), SavedKey::Str("section-b".into())],
+    );
+
+    assert!(one < two);
+    assert!(composite_one < composite_two);
 }
 
 #[test]

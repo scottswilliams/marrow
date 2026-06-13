@@ -273,7 +273,9 @@ impl WriteTargetNames {
                     return rendered;
                 }
             }
-            Some(StoredValueMeaning::Identity(store_id)) => {
+            Some(StoredValueMeaning::Identity {
+                store: store_id, ..
+            }) => {
                 if let Some(store) = self.identity_stores.get(store_id)
                     && let Some(rendered) = render_identity_leaf(store, value)
                 {
@@ -506,7 +508,13 @@ mod tests {
         );
         names.member_meanings.insert(
             "member-author".to_string(),
-            StoredValueMeaning::Identity(StoreId(0)),
+            StoredValueMeaning::Identity {
+                store: StoreId(0),
+                root: "authors".to_string(),
+                store_catalog_id: Some("store-authors".to_string()),
+                arity: 1,
+                key_scalars: vec![ScalarType::Int],
+            },
         );
         let target = WriteTarget::Data {
             store: "store-books".to_string(),

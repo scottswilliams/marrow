@@ -9,7 +9,7 @@ use crate::env::Env;
 use crate::error::{Located, RUN_TYPE, RUN_UNSUPPORTED, RuntimeError, unsupported};
 use crate::expr::eval_expr;
 use crate::store::IndexAddress;
-use crate::value::{Value, identity_value, value_to_key};
+use crate::value::{Value, identity_value, value_to_index_key};
 
 pub(crate) enum ExactUniqueIndexLookupValue {
     Absent,
@@ -65,7 +65,7 @@ pub(crate) fn unique_index_lookup(
     else {
         return Ok(None);
     };
-    let keys = index_lookup_keys(args, place.span, env)?;
+    let keys = index_lookup_keys(args, place, place.span, env)?;
     Ok(Some(UniqueIndexLookup {
         address: IndexAddress::from_checked(catalog_id, keys, place.span)?,
         identity_arity: place.identity_keys.len(),
@@ -114,7 +114,11 @@ pub(crate) fn read_exact_unique_index_lookup_value(
     }
 
     let lookup = UniqueIndexLookup {
-        address: IndexAddress::from_checked(catalog_id, index_lookup_keys(args, span, env)?, span)?,
+        address: IndexAddress::from_checked(
+            catalog_id,
+            index_lookup_keys(args, place, span, env)?,
+            span,
+        )?,
         identity_arity: place.identity_keys.len(),
         index_name: name.clone(),
         root: place.root.clone(),
@@ -152,18 +156,28 @@ pub(crate) fn exact_unique_index_lookup_value(
 
 fn index_lookup_keys(
     args: &[ExecArg],
+    place: &CheckedSavedPlace,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Vec<SavedKey>, RuntimeError> {
+    let CheckedSavedTerminal::Index { name, .. } = &place.terminal else {
+        return Err(unsupported("this index lookup", span));
+    };
+    let index = place
+        .indexes
+        .iter()
+        .find(|index| index.name == *name)
+        .ok_or_else(|| unsupported("this index lookup", span))?;
     let mut keys = Vec::with_capacity(args.len());
-    for arg in args {
+    for (position, arg) in args.iter().enumerate() {
         if arg.name.is_some() {
             return Err(unsupported("an index lookup with named arguments", span));
         }
-        keys.push(
-            value_to_key(eval_expr(&arg.value, env)?)
-                .ok_or_else(|| unsupported("an index key of this type", span))?,
-        );
+        keys.push(value_to_index_key(
+            eval_expr(&arg.value, env)?,
+            &index.keys[position].value_meaning,
+            span,
+        )?);
     }
     Ok(keys)
 }

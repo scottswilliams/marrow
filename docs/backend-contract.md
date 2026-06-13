@@ -200,7 +200,9 @@ know the scalar type from checked facts, so scalar bytes carry no type tag.
 Identity leaves and unique index entries use
 `marrow_store::key::{encode_identity_payload, decode_identity_payload_arity}`.
 These payload bytes are part of the typed value contract, not raw backend
-records.
+records. Index components derived from `Id(^store)` fields use the same
+order-preserving identity payload with the referenced store's stable catalog ID
+as a prefix, so same-shaped identities from different stores cannot collide.
 
 Tree-cell references and enum-member values use catalog-backed codecs:
 

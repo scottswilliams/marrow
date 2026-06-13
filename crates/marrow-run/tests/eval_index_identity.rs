@@ -285,6 +285,84 @@ fn a_non_unique_index_in_value_position_is_rejected() {
     checker_rejects(BOOK_SHELF_VALUE, "check.untyped_value");
 }
 
+const BOOKS_BY_AUTHOR: &str = "\
+resource Author
+    required name: string
+store ^authors(id: int): Author
+
+resource Book
+    required title: string
+    authorId: Id(^authors)
+store ^books(id: int): Book
+
+    index byAuthor(authorId, id)
+
+pub fn seed()
+    const ann = Id(^authors, 1)
+    const bob = Id(^authors, 2)
+    ^authors(ann).name = \"Ann\"
+    ^authors(bob).name = \"Bob\"
+    ^books(1).title = \"A\"
+    ^books(1).authorId = ann
+    ^books(2).title = \"B\"
+    ^books(2).authorId = bob
+    ^books(3).title = \"C\"
+    ^books(3).authorId = ann
+
+fn titlesByAuthor(author: Id(^authors))
+    for id in ^books.byAuthor(author)
+        print(^books(id).title ?? \"\")
+
+pub fn titlesByAnn()
+    titlesByAuthor(Id(^authors, 1))
+
+pub fn titlesByBob()
+    titlesByAuthor(Id(^authors, 2))
+";
+
+#[test]
+fn index_over_identity_field_streams_matching_records() {
+    let program = checked_program(BOOKS_BY_AUTHOR);
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+
+    let ann =
+        run_entry(&store, checked_entry!(&program, "test::titlesByAnn")).expect("titles by ann");
+    assert_eq!(ann.output, "A\nC\n");
+
+    let bob =
+        run_entry(&store, checked_entry!(&program, "test::titlesByBob")).expect("titles by bob");
+    assert_eq!(bob.output, "B\n");
+}
+
+#[test]
+fn unique_index_over_identity_field_rejects_conflicts() {
+    let program = checked_program(
+        "resource Author\n\
+         \x20   required name: string\n\
+         store ^authors(id: int): Author\n\
+         \n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   authorId: Id(^authors)\n\
+         store ^books(id: int): Book\n\
+         \x20   index oneBookByAuthor(authorId) unique\n\
+         \n\
+         pub fn conflict()\n\
+         \x20   const ann = Id(^authors, 1)\n\
+         \x20   ^authors(ann).name = \"Ann\"\n\
+         \x20   ^books(1).title = \"A\"\n\
+         \x20   ^books(1).authorId = ann\n\
+         \x20   ^books(2).title = \"B\"\n\
+         \x20   ^books(2).authorId = ann\n",
+    );
+    let store = TreeStore::memory();
+    assert_run_error(
+        run_entry(&store, checked_entry!(&program, "test::conflict")),
+        "write.unique_conflict",
+    );
+}
+
 // --- Composite-identity index traversal ---
 
 #[test]

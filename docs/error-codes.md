@@ -191,7 +191,7 @@ Resource-schema rules. Reported during a project check alongside `check.*`.
 | `schema.key_member_collision` | A top-level field or layer shares a name with an identity key. |
 | `schema.unknown_index_arg` | An index argument does not resolve to an identity key or a top-level field. |
 | `schema.unorderable_key` | A saved key has a type with no order-preserving key encoding (currently `decimal`). |
-| `schema.nonscalar_key` | A saved key (an identity key, a keyed-layer key parameter, or an index argument) is typed as an identity, a name, or a sequence; a key must be an orderable scalar. |
+| `schema.nonscalar_key` | A saved key (an identity key or keyed-layer key parameter) is typed as an identity, a name, or a sequence; saved keys must be orderable scalars. Index arguments also reject sequences and resource-name fields, while top-level enum and `Id(^store)` fields are valid index components. |
 | `schema.non_enum_named_field` | A saved field or explicit keyed leaf has a named value type that is not a declared enum; these members store scalars, identities, or declared enum values. Direct resource names on keyed fields are typed keyed entries instead. |
 | `schema.index_missing_identity_keys` | A non-unique index does not end with all identity keys in declaration order. |
 | `schema.index_requires_keyed_root` | An index is declared on a store with no keyed root. |

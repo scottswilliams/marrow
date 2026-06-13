@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use marrow_schema::stdlib::Capability;
 use marrow_schema::{NodeKind, ScalarType, Type};
-use marrow_store::key::SavedKey;
+use marrow_store::key::{SavedKey, decode_identity_payload_arity, encode_identity_index_key};
 use marrow_store::tree::decode_tree_enum_member;
 use marrow_store::value::decode_value;
 use marrow_syntax::{ParsedSource, ResourceMember, SourceSpan, TypeRef};
@@ -252,6 +252,7 @@ impl CheckedFacts {
     ) {
         self.bind_resource_catalog_ids(modules, ids);
         self.bind_store_catalog_ids(modules, ids);
+        self.bind_value_meaning_store_catalog_ids();
         self.bind_store_index_catalog_ids(modules, ids);
         self.bind_resource_member_catalog_ids(ids);
         self.bind_enum_catalog_ids(modules, ids);
@@ -291,6 +292,30 @@ impl CheckedFacts {
             .collect();
         for (store, path) in self.stores.iter_mut().zip(store_paths) {
             store.catalog_id = catalog_id(ids, marrow_catalog::CatalogEntryKind::Store, path);
+        }
+    }
+
+    fn bind_value_meaning_store_catalog_ids(&mut self) {
+        let store_catalog_ids: Vec<Option<String>> = self
+            .stores
+            .iter()
+            .map(|store| store.catalog_id.clone())
+            .collect();
+        for store in &mut self.stores {
+            for key in &mut store.identity_keys {
+                bind_value_meaning_store_catalog_id(key.value_meaning.as_mut(), &store_catalog_ids);
+            }
+        }
+        for member in &mut self.resource_members {
+            bind_value_meaning_store_catalog_id(member.value_meaning.as_mut(), &store_catalog_ids);
+        }
+        for index in &mut self.store_indexes {
+            for key in &mut index.keys {
+                bind_value_meaning_store_catalog_id(
+                    Some(&mut key.value_meaning),
+                    &store_catalog_ids,
+                );
+            }
         }
     }
 
@@ -988,9 +1013,17 @@ impl CheckedFacts {
     ) -> Option<StoredValueMeaning> {
         match ty {
             Type::Scalar(scalar) => Some(StoredValueMeaning::Scalar(*scalar)),
-            Type::Identity(identity) => self
-                .store_for_root(identity)
-                .map(StoredValueMeaning::Identity),
+            Type::Identity(identity) => {
+                let store = self.store_for_root(identity)?;
+                let key_scalars = self.store_identity_key_scalars(store)?;
+                Some(StoredValueMeaning::Identity {
+                    store,
+                    root: identity.clone(),
+                    store_catalog_id: self.stores[store.0 as usize].catalog_id.clone(),
+                    arity: self.stores[store.0 as usize].identity_keys.len(),
+                    key_scalars,
+                })
+            }
             Type::Named(name) => {
                 let segments = split_type_path(name);
                 let enum_id = self.resolve_enum_segments(module_id, &segments, aliases)?;
@@ -1065,6 +1098,18 @@ impl CheckedFacts {
 
     fn store_for_root(&self, root: &str) -> Option<StoreId> {
         self.store_by_root(root).map(|store| store.id)
+    }
+
+    fn store_identity_key_scalars(&self, store: StoreId) -> Option<Vec<ScalarType>> {
+        self.stores
+            .get(store.0 as usize)?
+            .identity_keys
+            .iter()
+            .map(|key| match key.value_meaning.as_ref()? {
+                StoredValueMeaning::Scalar(scalar) => Some(*scalar),
+                StoredValueMeaning::Identity { .. } | StoredValueMeaning::Enum { .. } => None,
+            })
+            .collect()
     }
 
     fn member_path_ids(
@@ -1246,7 +1291,13 @@ pub enum CheckedType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoredValueMeaning {
     Scalar(ScalarType),
-    Identity(StoreId),
+    Identity {
+        store: StoreId,
+        root: String,
+        store_catalog_id: Option<String>,
+        arity: usize,
+        key_scalars: Vec<ScalarType>,
+    },
     Enum {
         enum_id: EnumId,
         members: Vec<EnumMemberId>,
@@ -1259,16 +1310,53 @@ impl StoredValueMeaning {
     /// shared by the runtime that writes index entries and the evolution discharge
     /// that derives prospective entries; a single owner keeps the two from drifting. A
     /// scalar decodes by its type, an enum decodes to its member id, and an identity
-    /// value is not a stored field, so it has no key.
+    /// decodes to a store-prefixed canonical identity component.
     pub fn stored_key(&self, bytes: &[u8]) -> Option<SavedKey> {
         match self {
             Self::Scalar(scalar) => decode_value(bytes, *scalar).and_then(|value| value.as_key()),
             Self::Enum { .. } => decode_tree_enum_member(bytes)
                 .ok()
                 .map(|member| SavedKey::Str(member.member_id().as_str().to_string())),
-            Self::Identity(_) => None,
+            Self::Identity {
+                store_catalog_id,
+                arity,
+                key_scalars,
+                ..
+            } => {
+                let store_catalog_id = store_catalog_id.as_deref()?;
+                let keys = decode_identity_payload_arity(bytes, *arity)?;
+                if keys.len() != key_scalars.len()
+                    || !keys
+                        .iter()
+                        .zip(key_scalars)
+                        .all(|(key, scalar)| key.scalar_type() == *scalar)
+                {
+                    return None;
+                }
+                Some(SavedKey::Bytes(encode_identity_index_key(
+                    store_catalog_id,
+                    &keys,
+                )))
+            }
         }
     }
+}
+
+fn bind_value_meaning_store_catalog_id(
+    meaning: Option<&mut StoredValueMeaning>,
+    store_catalog_ids: &[Option<String>],
+) {
+    let Some(StoredValueMeaning::Identity {
+        store,
+        store_catalog_id,
+        ..
+    }) = meaning
+    else {
+        return;
+    };
+    *store_catalog_id = store_catalog_ids
+        .get(store.0 as usize)
+        .and_then(|catalog_id| catalog_id.clone());
 }
 
 /// Effects directly visible in a function body. Calls to user functions are not

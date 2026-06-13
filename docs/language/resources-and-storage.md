@@ -242,7 +242,10 @@ Typed code reads non-unique index identities through direct iteration or
 `keys(...)`. It reads a unique index identity from the lookup path. Generated
 marker values are visible only through checked inspection tooling.
 
-Index arguments may name store keys or top-level fields only. Fields nested
+Index arguments may name store keys or top-level fields only. Field components
+may be orderable scalars, enums, or `Id(^store)` typed references; an identity
+field is indexed by a store-id-prefixed canonical identity payload, so
+references to stores with the same key shape remain distinct. Fields nested
 through unkeyed groups are rejected, whether written as a dotted path or as a
 bare leaf name, and indexes do not walk keyed child layers. A non-unique index
 ends with all store identity keys in declaration order so each entry is

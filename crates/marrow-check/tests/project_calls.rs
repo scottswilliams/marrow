@@ -580,6 +580,23 @@ fn partial_non_unique_index_branches_bind_the_next_index_key_until_identity_suff
 }
 
 #[test]
+fn identity_field_index_rejects_wrong_store_identity_argument() {
+    let found = check_module(
+        "identity-index-wrong-store",
+        "module m\n\
+         resource Author\n    required name: string\n\
+         store ^authors(id: int): Author\n\
+         resource Publisher\n    required name: string\n\
+         store ^publishers(id: int): Publisher\n\
+         resource Book\n    required title: string\n    authorId: Id(^authors)\n\
+         store ^books(id: int): Book\n\n    index byAuthor(authorId, id)\n\n\
+         fn f(publisher: Id(^publishers))\n    for id in ^books.byAuthor(publisher)\n        print($\"{id}\")\n",
+        "check.key_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
 fn identity_yielding_index_branches_bind_identity_and_resource_pairs() {
     let report = check_module_report(
         "index-pair-loop",

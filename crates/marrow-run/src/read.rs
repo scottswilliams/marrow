@@ -18,7 +18,7 @@ use crate::expr::eval_expr;
 use crate::path::{direct_root_place, lower};
 use crate::saved_iter::{IndexCursor, RecordCursor, count_keyed_children};
 use crate::store::{DataAddress, IndexAddress, LayerAddress};
-use crate::value::{Value, saved_key_to_value, value_to_key};
+use crate::value::{Value, saved_key_to_value, value_to_index_key};
 
 pub(crate) const INDEX_SCAN_PAGE_LIMIT: usize = 128;
 
@@ -104,13 +104,21 @@ fn iterable_index_branch(
     if args.len() > *arg_count {
         return Err(unsupported("iterating this saved path", span));
     }
+    let index = place
+        .indexes
+        .iter()
+        .find(|index| index.name == *name)
+        .ok_or_else(|| unsupported("this index lookup", span))?;
     let mut arg_keys = Vec::new();
-    for arg in args {
+    for (position, arg) in args.iter().enumerate() {
         if arg.name.is_some() {
             return Err(unsupported("an index lookup with named arguments", span));
         }
-        let key = value_to_key(eval_expr(&arg.value, env)?)
-            .ok_or_else(|| unsupported("an index key of this type", span))?;
+        let key = value_to_index_key(
+            eval_expr(&arg.value, env)?,
+            &index.keys[position].value_meaning,
+            span,
+        )?;
         arg_keys.push(key);
     }
     let identity_start = arg_count.saturating_sub(place.identity_keys.len());

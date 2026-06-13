@@ -11,6 +11,7 @@ resource Book
     tags(pos: int): string
 
 store ^books(id: int): Book
+    index byAuthor(author, id)
 
 pub fn seed()
     const author: Id(^authors) = nextId(^authors)
@@ -30,6 +31,12 @@ pub fn seededAuthorName(): string
         if const name = ^authors(author).name
             return name
     return ""
+
+pub fn printSeededAuthorBooks()
+    if const author = ^books(10).author
+        for id in ^books.byAuthor(author)
+            if const title = ^books(id).title
+                print(title)
 
 pub fn printSeededAuthor()
     print(seededAuthorName())

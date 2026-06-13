@@ -125,13 +125,13 @@ pub(super) fn prospective_index_key(
     store_id: &CatalogId,
     probe: &UniqueIndexProbe,
     identity: &[SavedKey],
-) -> Result<Option<Vec<SavedKey>>, StoreError> {
+) -> Result<ProspectiveIndexKey, StoreError> {
     let mut tuple = Vec::with_capacity(probe.columns.len());
     for column in &probe.columns {
         match column {
             IndexKeyColumn::Identity { position } => {
                 let Some(key) = identity.get(*position) else {
-                    return Ok(None);
+                    return Ok(ProspectiveIndexKey::Absent);
                 };
                 tuple.push(key.clone());
             }
@@ -146,16 +146,22 @@ pub(super) fn prospective_index_key(
                     .as_deref()
                     .or_else(|| default.as_ref().map(|value| value.encoded.as_slice()))
                 else {
-                    return Ok(None);
+                    return Ok(ProspectiveIndexKey::Absent);
                 };
                 let Some(key) = meaning.stored_key(bytes) else {
-                    return Ok(None);
+                    return Ok(ProspectiveIndexKey::Invalid);
                 };
                 tuple.push(key);
             }
         }
     }
-    Ok(Some(tuple))
+    Ok(ProspectiveIndexKey::Present(tuple))
+}
+
+pub(super) enum ProspectiveIndexKey {
+    Present(Vec<SavedKey>),
+    Absent,
+    Invalid,
 }
 
 /// Running collision state for one unique index, keyed by the canonical byte encoding of each
@@ -189,6 +195,7 @@ pub(super) fn classify_indexes(
     place: &CheckedSavedPlace,
     collisions: &HashMap<CatalogId, IndexScan>,
     unprobeable: &HashSet<CatalogId>,
+    invalid_values: &HashMap<CatalogId, usize>,
     acc: &mut Accumulator,
 ) -> Result<(), StoreError> {
     for index in &place.indexes {
@@ -202,7 +209,20 @@ pub(super) fn classify_indexes(
         let collision_tuples = collisions
             .get(&index_id)
             .map_or(0, IndexScan::collision_tuple_count);
-        let verdict = if index.unique && collision_tuples > 0 {
+        let invalid_count = invalid_values.get(&index_id).copied().unwrap_or(0);
+        let verdict = if invalid_count > 0 {
+            acc.counts.records_lacking_member += invalid_count;
+            acc.diagnostic(
+                index_id.clone(),
+                format!(
+                    "unique index `{}` has {invalid_count} record(s) whose indexed value is not valid under the current type; repair before activating",
+                    index.name
+                ),
+            );
+            Verdict::RepairRequired {
+                reason: RepairReason::InvalidStoredValue,
+            }
+        } else if index.unique && collision_tuples > 0 {
             acc.counts.index_collisions += collision_tuples;
             acc.diagnostic(
                 index_id.clone(),
@@ -357,7 +377,14 @@ mod tests {
         )
         .expect("mark changed index");
 
-        classify_indexes(&place, &HashMap::new(), &unprobeable, &mut acc).expect("classify");
+        classify_indexes(
+            &place,
+            &HashMap::new(),
+            &unprobeable,
+            &HashMap::new(),
+            &mut acc,
+        )
+        .expect("classify");
 
         let ghost = acc
             .verdicts

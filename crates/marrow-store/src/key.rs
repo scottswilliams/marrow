@@ -149,6 +149,16 @@ pub fn encode_identity_payload(identity: &[SavedKey]) -> Vec<u8> {
     bytes
 }
 
+pub fn encode_identity_index_key(store_catalog_id: &str, identity: &[SavedKey]) -> Vec<u8> {
+    let payload = encode_identity_payload(identity);
+    let mut bytes = Vec::with_capacity(1 + store_catalog_id.len() + 1 + payload.len());
+    bytes.push(0);
+    bytes.extend_from_slice(store_catalog_id.as_bytes());
+    bytes.push(0);
+    bytes.extend_from_slice(&payload);
+    bytes
+}
+
 /// Decodes a canonical identity payload, returning `None` unless it holds exactly `arity` keys.
 pub fn decode_identity_payload_arity(bytes: &[u8], arity: usize) -> Option<Vec<SavedKey>> {
     let mut keys = Vec::with_capacity(arity);
@@ -159,6 +169,22 @@ pub fn decode_identity_payload_arity(bytes: &[u8], arity: usize) -> Option<Vec<S
         rest = rest.get(used..)?;
     }
     rest.is_empty().then_some(keys)
+}
+
+pub fn decode_identity_index_key(
+    bytes: &[u8],
+    store_catalog_id: &str,
+    arity: usize,
+) -> Option<Vec<SavedKey>> {
+    let prefix_len = 1 + store_catalog_id.len() + 1;
+    let prefix = bytes.get(..prefix_len)?;
+    if prefix.first().copied()? != 0
+        || prefix.get(1..1 + store_catalog_id.len())? != store_catalog_id.as_bytes()
+        || prefix.last().copied()? != 0
+    {
+        return None;
+    }
+    decode_identity_payload_arity(bytes.get(prefix_len..)?, arity)
 }
 
 pub(crate) fn encode_key_into(key: &SavedKey, out: &mut Vec<u8>) {

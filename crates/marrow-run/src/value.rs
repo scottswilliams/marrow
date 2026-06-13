@@ -2,13 +2,14 @@
 
 use marrow_store::Decimal;
 use marrow_store::cell::CatalogId;
-use marrow_store::key::{SavedKey, decode_identity_payload_arity};
+use marrow_store::key::{SavedKey, decode_identity_payload_arity, encode_identity_index_key};
 use marrow_store::tree::{TreeEnumMember, decode_tree_enum_member, encode_tree_enum_member};
 use marrow_store::value::{SavedValue, ScalarType, decode_value, encode_value};
 use marrow_syntax::SourceSpan;
 
 use marrow_check::{
     CheckedEnumRef, CheckedFacts, CheckedRuntimeProgram, EnumId, EnumMemberId, StoreLeafKind,
+    StoredValueMeaning,
 };
 
 use crate::error::{Located, RuntimeError, type_error, unsupported};
@@ -332,6 +333,38 @@ pub(crate) fn value_to_key(value: Value) -> Option<SavedKey> {
         | Value::Resource(_)
         | Value::Identity(_)
         | Value::LocalTree(_) => None,
+    }
+}
+
+pub(crate) fn value_to_index_key(
+    value: Value,
+    meaning: &StoredValueMeaning,
+    span: SourceSpan,
+) -> Result<SavedKey, RuntimeError> {
+    match meaning {
+        StoredValueMeaning::Identity {
+            root,
+            store_catalog_id,
+            ..
+        } => {
+            let Value::Identity(identity) = value else {
+                return Err(type_error("this index key takes an identity value", span));
+            };
+            let keys = identity.into_keys_for_root(root, span)?;
+            let Some(store_catalog_id) = store_catalog_id.as_deref() else {
+                return Err(unsupported(
+                    "this identity index key before catalog activation",
+                    span,
+                ));
+            };
+            Ok(SavedKey::Bytes(encode_identity_index_key(
+                store_catalog_id,
+                &keys,
+            )))
+        }
+        StoredValueMeaning::Scalar(_) | StoredValueMeaning::Enum { .. } => {
+            value_to_key(value).ok_or_else(|| unsupported("an index key of this type", span))
+        }
     }
 }
 

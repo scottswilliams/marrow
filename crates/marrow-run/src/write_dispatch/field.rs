@@ -62,7 +62,15 @@ fn write_identity_saved_field(
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
     let keys = identity_keys_of(value, store_root, span)?;
-    let plan = plan_identity_field_write(&path.place, &path.identity, field, &keys, arity, span);
+    let plan = plan_identity_field_write(
+        &path.place,
+        &path.identity,
+        field,
+        &keys,
+        arity,
+        env.store,
+        span,
+    );
     let plan = validate_field_plan(path, &[], field, plan, env);
     env.apply_plan(plan, span)
 }

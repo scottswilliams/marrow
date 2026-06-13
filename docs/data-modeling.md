@@ -340,9 +340,11 @@ Rules the project checker enforces (reported when you `marrow check
   points to exactly one record.
 - An index requires a keyed store. A singleton has no identity for an entry to
   point to (`schema.index_requires_keyed_root`).
-- Index arguments may name identity keys or top-level fields. Nested fields
-  through unkeyed groups are rejected with `schema.nested_index_arg`, and
-  indexes do not walk keyed child layers.
+- Index arguments may name identity keys or top-level fields. Top-level
+  `Id(^store)` fields are indexed by a store-prefixed identity payload, so two
+  referenced stores with the same key shape still sort and compare as distinct
+  components. Nested fields through unkeyed groups are rejected with
+  `schema.nested_index_arg`, and indexes do not walk keyed child layers.
 
 Index entries exist only when every indexed value is populated; absent fields
 create no placeholder entry. A unique index rejects conflicts among populated
