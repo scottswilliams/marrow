@@ -620,11 +620,11 @@ impl<'a> ExprParser<'a> {
         while matches!(self.peek(), Some(TokenKind::DoubleColon)) {
             self.advance();
             let segment = *self.tokens.get(self.pos)?;
-            // A path segment is an identifier or a type keyword used as a name,
-            // such as the `bytes` in `std::bytes::length`.
+            // A path segment is an identifier or an allowed keyword used as a
+            // name, such as the `bytes` in `std::bytes::length`.
             let is_segment = match segment.kind {
                 TokenKind::Identifier => true,
-                TokenKind::Keyword(keyword) => is_callable_keyword(keyword),
+                TokenKind::Keyword(keyword) => is_path_segment_keyword(keyword),
                 _ => false,
             };
             if !is_segment {
@@ -662,6 +662,10 @@ fn is_callable_keyword(keyword: Keyword) -> bool {
             | Keyword::ErrorCode
             | Keyword::Error
     )
+}
+
+fn is_path_segment_keyword(keyword: Keyword) -> bool {
+    is_callable_keyword(keyword) || keyword == Keyword::Absent
 }
 
 fn starts_expression(kind: TokenKind) -> bool {

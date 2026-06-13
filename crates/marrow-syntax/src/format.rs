@@ -10,8 +10,8 @@
 use crate::{
     Argument, BinaryOp, Block, CatchClause, Comment, CommentMarker, CommentPlacement, ConstDecl,
     Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression, ForBinding,
-    FunctionDecl, InterpolationPart, KeyParam, MatchArm, ParamDecl, ResourceDecl, ResourceMember,
-    Statement, StoreDecl, TokenKind, TypeRef, UnaryOp,
+    FunctionDecl, FunctionReturnPresence, InterpolationPart, KeyParam, MatchArm, ParamDecl,
+    ResourceDecl, ResourceMember, Statement, StoreDecl, TokenKind, TypeRef, UnaryOp,
 };
 
 /// Precedence used to decide where parentheses are required, tightest-binding
@@ -403,7 +403,7 @@ fn format_function(source: &str, decl: &FunctionDecl) -> String {
         "{visibility}fn {}({}){}",
         decl.name,
         format_params(&decl.params),
-        format_type_annotation(&decl.return_type)
+        format_function_return_type(decl.return_presence, &decl.return_type)
     ));
     let body = format_block(source, &decl.body, 1);
     if !body.is_empty() {
@@ -590,6 +590,7 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
             Some(value) => format!("{pad}return {}", format_expression_at(value, level)),
             None => format!("{pad}return"),
         },
+        Statement::ReturnAbsent { .. } => format!("{pad}return absent"),
         Statement::Break { .. } => format!("{pad}break"),
         Statement::Continue { .. } => format!("{pad}continue"),
         Statement::Throw { value, .. } => {
@@ -775,6 +776,14 @@ fn format_type_annotation(ty: &Option<TypeRef>) -> String {
     match ty {
         Some(ty) => format!(": {ty}"),
         None => String::new(),
+    }
+}
+
+fn format_function_return_type(presence: FunctionReturnPresence, ty: &Option<TypeRef>) -> String {
+    match (presence, ty) {
+        (FunctionReturnPresence::Always, Some(ty)) => format!(": {ty}"),
+        (FunctionReturnPresence::MaybePresent, Some(ty)) => format!(": maybe {ty}"),
+        (_, None) => String::new(),
     }
 }
 

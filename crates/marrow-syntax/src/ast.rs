@@ -413,9 +413,16 @@ pub struct FunctionDecl {
     pub public: bool,
     pub name: String,
     pub params: Vec<ParamDecl>,
+    pub return_presence: FunctionReturnPresence,
     pub return_type: Option<TypeRef>,
     pub body: Block,
     pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FunctionReturnPresence {
+    Always,
+    MaybePresent,
 }
 
 /// An enum: a named, fixed set of member values, generalizing `bool`. Members may
@@ -505,6 +512,9 @@ pub enum Statement {
     },
     Return {
         value: Option<Expression>,
+        span: SourceSpan,
+    },
+    ReturnAbsent {
         span: SourceSpan,
     },
     Break {
@@ -619,6 +629,7 @@ impl Statement {
             | Self::Assign { span, .. }
             | Self::Delete { span, .. }
             | Self::Return { span, .. }
+            | Self::ReturnAbsent { span }
             | Self::Break { span, .. }
             | Self::Continue { span, .. }
             | Self::Throw { span, .. }

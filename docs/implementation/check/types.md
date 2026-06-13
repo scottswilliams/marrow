@@ -13,7 +13,7 @@ The orchestration that sequences the passes lives in `analysis.rs`, outside this
 
 `MarrowType` (`program.rs`) is the lattice every rule runs on. Inference is best-effort and total: anything unresolvable becomes `Unknown`, which *defers* every type rule, so a check never false-positives on an uncertain operand. `Invalid` marks an already-diagnosed expression; `Error` is a concrete checker-only type handled as a real mismatch. Nominal types compare by identity — resources by module-qualified name, identities by store root, enums by `{module, name}` — never by spelling.
 
-`CheckedProgram` (`program.rs`) is the artifact: a `Vec<CheckedModule>` aligned 1:1 with files, plus `CheckedFacts` and `ProgramCatalog`. Checked functions, facts, and parse declarations align *positionally* in source order (a by-name lookup would mis-attribute a duplicate-named function's body); `lower_runtime_bodies` guards this with a `debug_assert_eq`.
+`CheckedProgram` (`program.rs`) is the artifact: a `Vec<CheckedModule>` aligned 1:1 with files, plus `CheckedFacts` and `ProgramCatalog`. Checked functions carry both their return type and the typed `marrow_schema::ReturnPresence` marker that tells downstream passes whether a value-returning call can be absent. Checked functions, facts, and parse declarations align *positionally* in source order (a by-name lookup would mis-attribute a duplicate-named function's body); `lower_runtime_bodies` guards this with a `debug_assert_eq`.
 
 ## Modules
 

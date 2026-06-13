@@ -76,6 +76,38 @@ fn parses_simple_statements_in_function_bodies() {
 }
 
 #[test]
+fn parses_return_absent_as_a_distinct_statement() {
+    let parsed = parse_source(
+        "module app\n\
+         fn f(): maybe int\n\
+         \x20   return absent\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let f = parsed.file.function("f").expect("function");
+    assert!(
+        matches!(&f.body.statements[0], Statement::ReturnAbsent { .. }),
+        "{:#?}",
+        f.body.statements[0]
+    );
+}
+
+#[test]
+fn absent_is_not_a_general_expression() {
+    for source in [
+        "module app\nfn f(): int\n    return absent + 1\n",
+        "module app\nfn f()\n    absent\n",
+        "module app\nfn f()\n    absent()\n",
+    ] {
+        let parsed = parse_source(source);
+        assert!(
+            parsed.has_errors(),
+            "expected parse errors for:\n{source}\n{:#?}",
+            parsed.diagnostics
+        );
+    }
+}
+
+#[test]
 fn parses_a_type_keyword_as_a_path_segment() {
     // `bytes` is a type keyword but must be valid mid-path, as in `std::bytes::length`.
     let parsed = parse_source(

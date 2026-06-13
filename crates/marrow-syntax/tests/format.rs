@@ -359,6 +359,18 @@ fn formats_function_declaration_with_params() {
 }
 
 #[test]
+fn formats_maybe_function_return_and_return_absent() {
+    let source = "module app\n\
+         fn f(): maybe int\n\
+         \x20   return absent\n";
+
+    assert_eq!(
+        format_source(source),
+        "module app\n\nfn f(): maybe int\n    return absent\n"
+    );
+}
+
+#[test]
 fn formats_whole_file_with_blank_line_policy() {
     let source = "module shelf::books\n\
          use std::clock\n\

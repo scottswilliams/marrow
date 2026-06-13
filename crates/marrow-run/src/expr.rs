@@ -14,7 +14,7 @@ use marrow_syntax::{
     duration_unit_seconds,
 };
 
-use crate::call::eval_call;
+use crate::call::{call_target_maybe_present, eval_call, expression_absent_at_resolution_site};
 use crate::durable_read::{eval_optional_field, eval_saved_field, read_resource};
 use crate::env::Env;
 use crate::error::{
@@ -36,7 +36,7 @@ pub(crate) fn eval_coalesce(
         // `??` absorbs an absent read as ordinary control flow, not an error,
         // falling back to the default. Only an absent read falls back; schema and
         // type faults still propagate.
-        Err(error) if error.code == RUN_ABSENT && error.is_catchable() => eval_expr(default, env),
+        Err(error) if expression_absent_at_resolution_site(path, &error) => eval_expr(default, env),
         other => other,
     }
 }
@@ -122,6 +122,11 @@ fn eval_call_expr(
 ) -> Result<Value, RuntimeError> {
     match eval_call(call, args, target, span, env)? {
         Some(value) => Ok(value),
+        None if call_target_maybe_present(target) => Err(raise_fault(
+            RUN_ABSENT,
+            "maybe-present call returned absent".into(),
+            span,
+        )),
         None => Err(RuntimeError::fault(
             RUN_NO_VALUE,
             "a call to a function that returns no value cannot be used as a value".into(),

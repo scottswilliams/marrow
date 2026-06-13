@@ -8,7 +8,7 @@ One run is a tree of activations. `run_entry` resolves the entry, builds an `Env
 
 - **Entry and activation.** `run_entry*` unwraps one top-level invocation into a `RunOutput`. `invoke` binds module constants and read-only params, evaluates the body, and classifies the outcome into `Completion` (Returned/Threw/Faulted).
 - **Dispatch.** `eval_call` routes every `CheckedCallTarget` variant — saved reads, constructors, builtins, std capabilities, local collections, program functions. `eval_expr` and `eval_statement` are the two recursive walkers everything flows through; sibling modules re-enter `eval_expr` for argument and key evaluation.
-- **Control flow.** `Flow` (Normal/Return/Break/Continue/Throw) is the result of a statement or block. `eval_block` pushes/pops a scope balanced on every exit including faults; `loop_exec` maps innermost-loop Break/Continue to a `LoopStep`.
+- **Control flow.** `Flow` (Normal/Return/ReturnAbsent/Break/Continue/Throw) is the result of a statement or block. `ReturnAbsent` is only produced by checked maybe-returning functions and becomes an absent call result, not a runtime `Value`. `eval_block` pushes/pops a scope balanced on every exit including faults; `loop_exec` maps innermost-loop Break/Continue to a `LoopStep`.
 - **Values and saved data.** `Value` is the one owner of value-to-saved/key/leaf conversion and scalar-type classification. `SavedPath` (root, identity keys, layer chain, `Terminal`) is lowered once and is the consumption point for every saved read, write, delete, and exists.
 - **Errors and host.** `error` defines catchable-vs-fatal throw semantics and the stable `run.*` codes. `Host` is the capability gate (clock/env/log/filesystem/maintenance); `StepHook` is the opt-in debugger observer over a read-only `Frame`.
 
@@ -39,6 +39,7 @@ Saved-write and read execution (`write*`, `read`, `durable_read`, `group_write`,
 
 - **One error channel.** Language throws ride `RuntimeError.throw` (a boxed Error `Value`) on the `Err` path, while runtime faults raised by `raise_fault` stay as code/message until a `catch` binds them. `catchable = false` means fatal/uncatchable. `raise_fault` keeps the dotted code if it escapes; `raise` relabels an uncaught language throw as `run.uncaught_error`.
 - **`??` (`eval_coalesce`) only swallows catchable `RUN_ABSENT`.** Every other error, including fatal materialization-time absence for corrupt required saved data, propagates, so absence-default never hides a real fault; a `?.` chain short-circuits to the same absent fault.
+- **Maybe function absence is typed at the call target.** `eval_call_expr` maps a `None` function result to catchable `RUN_ABSENT` only when the checked call target has `ReturnPresence::MaybePresent`; ordinary void calls still raise `run.no_value` in value position. No option-like user value represents absence.
 - **Scopes balance on every exit, including faults**, so the `Env` is reusable after an error.
 - **Origin stamping uses only-if-none**, so the deepest frame (the real raiser) wins as a fault unwinds; `FileId` origin is the only file identity a fault carries.
 - **Identities always carry checked root provenance**, including single-key ones, so a raw scalar is never accepted as an `Id(^store)` at dynamic or host boundaries. Every key crossing into the store is guarded against its declared scalar type.

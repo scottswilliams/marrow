@@ -5,7 +5,7 @@
 //! arity, argument, return, and maybe-present checks from these rows; the runtime
 //! derives which recognized ops it must handle from the same table.
 
-use crate::ScalarType;
+use crate::{ReturnPresence, ScalarType};
 
 /// A std helper's positional parameter, in declaration order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,15 +30,6 @@ pub enum ReturnType {
     /// A `sequence[T]` of a scalar element (`std::text::split: sequence[string]`).
     Sequence(ScalarType),
     Void,
-}
-
-/// Whether a value-returning helper always yields a value or can be absent at the
-/// read site. Maybe-present results must be resolved with the same language forms
-/// as maybe-present saved reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReturnPresence {
-    Always,
-    MaybePresent,
 }
 
 /// Host capabilities a std helper may require.

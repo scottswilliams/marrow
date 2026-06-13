@@ -25,6 +25,8 @@ pub(crate) enum Flow {
     Normal,
     /// A `return`, carrying its value if it had one.
     Return(Option<Value>),
+    /// `return absent` from a maybe-returning function.
+    ReturnAbsent,
     /// A `break`, targeting the innermost loop.
     Break,
     /// A `continue`, targeting the innermost loop.

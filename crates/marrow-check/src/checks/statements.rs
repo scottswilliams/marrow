@@ -201,6 +201,7 @@ impl StatementCheck<'_> {
             } => self.check_assignment_statement(target, value, *span),
             Statement::Delete { path, .. } => self.check_delete_statement(path),
             Statement::Return { value, span } => self.check_return(value.as_ref(), *span),
+            Statement::ReturnAbsent { .. } => {}
             Statement::Throw { value, span } => self.check_throw(value, *span),
             Statement::Expr { value, .. } => {
                 self.infer(value);

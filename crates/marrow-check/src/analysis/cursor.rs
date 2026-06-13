@@ -300,6 +300,7 @@ fn collect_block_expression<'b>(
                     collect_expression(value, offset, best);
                 }
             }
+            Statement::ReturnAbsent { .. } => {}
             Statement::If {
                 condition,
                 then_block,

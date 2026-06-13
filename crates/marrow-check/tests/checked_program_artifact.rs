@@ -1,6 +1,7 @@
 mod support;
 
 use marrow_check::{MarrowType, check_project};
+use marrow_schema::ReturnPresence;
 use marrow_store::value::ScalarType;
 
 use support::{config, temp_project, write};
@@ -71,6 +72,72 @@ fn checked_functions_do_not_carry_source_bodies() {
         1,
         "runtime() must consume the checked executable body"
     );
+}
+
+#[test]
+fn function_descriptors_preserve_return_presence() {
+    let root = temp_project("program-return-presence", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             pub fn maybe_title(): maybe string\n\
+             \x20   return absent\n\n\
+             pub fn title(): string\n\
+             \x20   return \"present\"\n\n\
+             pub fn log()\n\
+             \x20   print(\"void\")\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+
+    let module = &program.modules[0];
+    let maybe = module
+        .functions
+        .iter()
+        .find(|function| function.name == "maybe_title")
+        .expect("maybe function");
+    let title = module
+        .functions
+        .iter()
+        .find(|function| function.name == "title")
+        .expect("title function");
+    let log = module
+        .functions
+        .iter()
+        .find(|function| function.name == "log")
+        .expect("log function");
+
+    assert_eq!(maybe.return_presence, ReturnPresence::MaybePresent);
+    assert_eq!(title.return_presence, ReturnPresence::Always);
+    assert_eq!(log.return_presence, ReturnPresence::Always);
+    assert!(maybe.return_type.is_some(), "{maybe:#?}");
+    assert!(title.return_type.is_some(), "{title:#?}");
+    assert!(log.return_type.is_none(), "{log:#?}");
+
+    let runtime = program.runtime();
+    let runtime_module = &runtime.modules()[0];
+    let runtime_maybe = runtime_module
+        .functions()
+        .iter()
+        .find(|function| function.name == "maybe_title")
+        .expect("runtime maybe function");
+    let runtime_title = runtime_module
+        .functions()
+        .iter()
+        .find(|function| function.name == "title")
+        .expect("runtime title function");
+    let runtime_log = runtime_module
+        .functions()
+        .iter()
+        .find(|function| function.name == "log")
+        .expect("runtime log function");
+
+    assert_eq!(runtime_maybe.return_presence, ReturnPresence::MaybePresent);
+    assert_eq!(runtime_title.return_presence, ReturnPresence::Always);
+    assert_eq!(runtime_log.return_presence, ReturnPresence::Always);
+    assert!(runtime_log.return_type.is_none(), "{runtime_log:#?}");
 }
 
 #[test]

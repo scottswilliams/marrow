@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use marrow_project::{DiscoverError, ProjectConfig, discover_test_modules};
+use marrow_schema::ReturnPresence;
 use marrow_schema::stdlib::{self, ParamType, ReturnType};
 use marrow_syntax::{SourceSpan, parse_source};
 
@@ -965,6 +966,10 @@ fn checked_function(
                 ty: MarrowType::resolve(&param.ty, names),
             })
             .collect(),
+        return_presence: match function.return_presence {
+            marrow_syntax::FunctionReturnPresence::Always => ReturnPresence::Always,
+            marrow_syntax::FunctionReturnPresence::MaybePresent => ReturnPresence::MaybePresent,
+        },
         return_type: function
             .return_type
             .as_ref()

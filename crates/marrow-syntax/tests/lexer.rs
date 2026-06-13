@@ -103,6 +103,31 @@ fn blank_lines_and_comments_do_not_close_blocks() {
 }
 
 #[test]
+fn lexes_maybe_return_and_absent_return_keywords() {
+    let source = "fn f(): maybe int\n    return absent\n";
+
+    assert_eq!(
+        kinds(source),
+        vec![
+            TokenKind::Keyword(Keyword::Fn),
+            TokenKind::Identifier,
+            TokenKind::LeftParen,
+            TokenKind::RightParen,
+            TokenKind::Colon,
+            TokenKind::Keyword(Keyword::Maybe),
+            TokenKind::Keyword(Keyword::Int),
+            TokenKind::Newline,
+            TokenKind::Indent,
+            TokenKind::Keyword(Keyword::Return),
+            TokenKind::Keyword(Keyword::Absent),
+            TokenKind::Newline,
+            TokenKind::Dedent,
+            TokenKind::Eof,
+        ]
+    );
+}
+
+#[test]
 fn preserves_doc_comments_as_tokens() {
     let source = ";; Books saved by id.\nresource Book\n    required title: string\nstore ^books(id: int): Book\n";
 

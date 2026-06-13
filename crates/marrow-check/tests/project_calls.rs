@@ -202,6 +202,114 @@ fn same_module_resource_annotation_beats_foreign_enum_fallback() {
 }
 
 #[test]
+fn user_maybe_return_call_must_be_resolved_at_the_caller() {
+    let report = check_module_report(
+        "user-maybe-return-call-sites",
+        "module m\n\
+         fn find(): maybe int\n\
+         \x20   return absent\n\n\
+         fn unresolved(): int\n\
+         \x20   return find()\n\n\
+         fn coalesced(): int\n\
+         \x20   return find() ?? -1\n\n\
+         fn guarded(): int\n\
+         \x20   if const n = find()\n\
+         \x20       return n\n\
+         \x20   return -1\n\n\
+         fn has_value(): bool\n\
+         \x20   return exists(find())\n",
+    );
+
+    let found = with_code(&report, "check.bare_maybe_present_read");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn user_maybe_return_propagates_only_through_maybe_return_sites() {
+    let report = check_module_report(
+        "user-maybe-return-propagation",
+        "module m\n\
+         fn b(): maybe int\n\
+         \x20   return absent\n\n\
+         fn a(): maybe int\n\
+         \x20   return b()\n\n\
+         fn unresolved(): int\n\
+         \x20   return a()\n\n\
+         fn resolved(): int\n\
+         \x20   return a() ?? -1\n",
+    );
+
+    let found = with_code(&report, "check.bare_maybe_present_read");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn exists_does_not_narrow_a_later_maybe_function_call() {
+    let report = check_module_report(
+        "user-maybe-return-exists-call-boundary",
+        "module m\n\
+         fn find(): maybe int\n\
+         \x20   return absent\n\n\
+         fn caller(): int\n\
+         \x20   if exists(find())\n\
+         \x20       return find()\n\
+         \x20   return -1\n",
+    );
+
+    let found = with_code(&report, "check.bare_maybe_present_read");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn maybe_return_absence_forms_are_checked_against_the_signature() {
+    let report = check_module_report(
+        "user-maybe-return-absence-forms",
+        "module m\n\
+         fn falls_through(): maybe int\n\
+         \x20   const n = 1\n\n\
+         fn plain_return(): maybe int\n\
+         \x20   return\n\n\
+         fn absent_from_plain(): int\n\
+         \x20   return absent\n\n\
+         fn absent_from_void()\n\
+         \x20   return absent\n",
+    );
+
+    assert_eq!(
+        with_code(&report, "check.missing_return").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
+    );
+    assert_eq!(
+        with_code(&report, "check.return_value").len(),
+        3,
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn saved_maybe_read_can_be_returned_from_maybe_function() {
+    let report = check_module_report(
+        "user-maybe-return-saved-read",
+        "module m\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\n\
+         fn subtitle(id: int): maybe string\n\
+         \x20   return ^books(id).subtitle\n\n\
+         fn unresolved(id: int): string\n\
+         \x20   return subtitle(id)\n\n\
+         fn resolved(id: int): string\n\
+         \x20   return subtitle(id) ?? \"missing\"\n",
+    );
+
+    let found = with_code(&report, "check.bare_maybe_present_read");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+}
+
+#[test]
 fn same_module_resource_annotation_beats_private_foreign_enum_diagnostic() {
     let root = temp_project("resource-type-before-private-foreign-enum", |root| {
         write(root, "src/a.mw", "module a\nenum Address\n    ok\n");

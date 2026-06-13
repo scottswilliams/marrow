@@ -6,6 +6,7 @@ use marrow_check::{
     CheckedArg as ExecArg, CheckedBuiltinCall, CheckedCallTarget, CheckedExpr as ExecExpr,
     CheckedFunctionRef, CheckedRuntimeFunction, CheckedRuntimeModule, CheckedRuntimeProgram,
 };
+use marrow_schema::ReturnPresence;
 use marrow_schema::stdlib::Capability;
 use marrow_syntax::SourceSpan;
 
@@ -17,7 +18,7 @@ use crate::collection::{
 use crate::durable_read::{eval_index_lookup, eval_resource_read, eval_saved_layer_read};
 use crate::env::{Context, Env};
 use crate::error::{
-    CALL_DEPTH_BUDGET, RUN_UNKNOWN_FUNCTION, RuntimeError, recursion_limit, unsupported,
+    CALL_DEPTH_BUDGET, RUN_ABSENT, RUN_UNKNOWN_FUNCTION, RuntimeError, recursion_limit, unsupported,
 };
 use crate::host_effects::{eval_clock_capability, eval_env, eval_io, eval_log};
 use crate::local_collection::eval_local_collection_read;
@@ -61,6 +62,43 @@ pub(crate) fn eval_call(
     }
 }
 
+pub(crate) fn call_target_maybe_present(target: &CheckedCallTarget) -> bool {
+    match target {
+        CheckedCallTarget::Std(std) => std.presence == ReturnPresence::MaybePresent,
+        CheckedCallTarget::Function(function) => function.presence == ReturnPresence::MaybePresent,
+        _ => false,
+    }
+}
+
+pub(crate) fn expr_call_maybe_present(expr: &ExecExpr) -> bool {
+    match expr {
+        ExecExpr::Call { target, .. } => call_target_maybe_present(target),
+        _ => false,
+    }
+}
+
+pub(crate) fn expr_return_absence_can_propagate(expr: &ExecExpr) -> bool {
+    match expr {
+        ExecExpr::Call { target, .. } => {
+            expr_call_maybe_present(expr)
+                || matches!(
+                    target,
+                    CheckedCallTarget::SavedIndexLookup
+                        | CheckedCallTarget::SavedLayerRead
+                        | CheckedCallTarget::SavedResourceRead
+                )
+        }
+        ExecExpr::SavedRoot { .. } | ExecExpr::Field { .. } | ExecExpr::OptionalField { .. } => {
+            expr.saved_place().is_some()
+        }
+        _ => false,
+    }
+}
+
+pub(crate) fn expression_absent_at_resolution_site(expr: &ExecExpr, error: &RuntimeError) -> bool {
+    error.code == RUN_ABSENT && error.is_catchable() && error.span == expr.span()
+}
+
 fn eval_program_function<'p>(
     module: &'p CheckedRuntimeModule,
     function: &'p CheckedRuntimeFunction,
@@ -70,6 +108,9 @@ fn eval_program_function<'p>(
 ) -> Result<Option<Value>, RuntimeError> {
     let values = bind_arguments(&function.params, args, span, env)?;
     let completion = invoke_function(env, module, function, &values, span)?;
+    if matches!(completion, Completion::ReturnedAbsent) {
+        return Ok(None);
+    }
     complete_call(completion)
 }
 

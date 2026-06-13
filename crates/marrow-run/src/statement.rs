@@ -5,13 +5,15 @@ use marrow_check::{
     CheckedExpr as ExecExpr, CheckedStmt as ExecStmt,
 };
 use marrow_schema::Type;
-use marrow_schema::stdlib::ReturnPresence;
 use marrow_syntax::SourceSpan;
 
-use crate::call::eval_call;
+use crate::call::{
+    eval_call, expr_call_maybe_present, expr_return_absence_can_propagate,
+    expression_absent_at_resolution_site,
+};
 use crate::call_args::default_value;
 use crate::env::{Env, Flow};
-use crate::error::{RUN_ABSENT, RuntimeError, assign_error, type_error, unsupported};
+use crate::error::{RuntimeError, assign_error, type_error, unsupported};
 use crate::exec::{eval_block, eval_match, local_target};
 use crate::expr::{eval_condition, eval_expr};
 use crate::group_write::eval_group_entry_write;
@@ -76,12 +78,21 @@ fn eval_binding_or_write_statement(
             Ok(Some(Flow::Normal))
         }
         ExecStmt::Return { value, .. } => {
-            let value = value
-                .as_ref()
-                .map(|expr| eval_expr(expr, env))
-                .transpose()?;
+            let value = match value.as_ref() {
+                Some(expr) if expr_return_absence_can_propagate(expr) => match eval_expr(expr, env)
+                {
+                    Ok(value) => Some(value),
+                    Err(error) if expression_absent_at_resolution_site(expr, &error) => {
+                        return Ok(Some(Flow::ReturnAbsent));
+                    }
+                    Err(error) => return Err(error),
+                },
+                Some(expr) => Some(eval_expr(expr, env)?),
+                None => None,
+            };
             Ok(Some(Flow::Return(value)))
         }
+        ExecStmt::ReturnAbsent { .. } => Ok(Some(Flow::ReturnAbsent)),
         ExecStmt::Expr { value, .. } => {
             eval_expr_statement(value, env)?;
             Ok(Some(Flow::Normal))
@@ -284,10 +295,10 @@ fn eval_if_const(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
-    if maybe_present_result(value) {
+    if expr_call_maybe_present(value) {
         return match eval_expr(value, env) {
             Ok(value) => eval_bound_if_const(name, value, then_block, env),
-            Err(error) if error.code == RUN_ABSENT && error.is_catchable() => {
+            Err(error) if expression_absent_at_resolution_site(value, &error) => {
                 eval_if_const_fallback(else_ifs, else_block, span, env)
             }
             Err(error) => Err(error),
@@ -328,16 +339,6 @@ fn eval_if_const_fallback(
         Some(block) => eval_block(block, env),
         None => Ok(Flow::Normal),
     }
-}
-
-fn maybe_present_result(expr: &ExecExpr) -> bool {
-    matches!(
-        expr,
-        ExecExpr::Call {
-            target: CheckedCallTarget::Std(std),
-            ..
-        } if std.presence == ReturnPresence::MaybePresent
-    )
 }
 
 fn eval_throw(value: &ExecExpr, span: SourceSpan, env: &mut Env<'_>) -> Result<Flow, RuntimeError> {

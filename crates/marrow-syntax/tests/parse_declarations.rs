@@ -2,8 +2,8 @@
 //! source order, and the reference sample's declaration shape.
 
 use marrow_syntax::{
-    Declaration, ExpectedSyntax, LexerDiagnosticReason, ParseDiagnosticReason, ResourceMember,
-    parse_source,
+    Declaration, ExpectedSyntax, FunctionReturnPresence, LexerDiagnosticReason,
+    ParseDiagnosticReason, ResourceMember, parse_source,
 };
 
 mod common;
@@ -131,6 +131,34 @@ fn parses_reference_sample_structure() {
         add.return_type.as_ref().map(|ty| ty.text.as_str()),
         Some("Id(^books)")
     );
+}
+
+#[test]
+fn parses_maybe_function_return_marker_separately_from_type() {
+    let parsed = parse_source(
+        "module app\n\
+         fn f(): maybe int\n\
+         \x20   return absent\n",
+    );
+
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let f = parsed.file.function("f").expect("function");
+    assert_eq!(f.return_presence, FunctionReturnPresence::MaybePresent);
+    assert_eq!(
+        f.return_type.as_ref().map(|ty| ty.text.as_str()),
+        Some("int")
+    );
+}
+
+#[test]
+fn maybe_is_not_a_general_parameter_type_wrapper() {
+    let parsed = parse_source(
+        "module app\n\
+         fn f(value: maybe int): int\n\
+         \x20   return 1\n",
+    );
+
+    assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
 }
 
 #[test]

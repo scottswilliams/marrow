@@ -5,6 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use marrow_schema::ReturnPresence;
 use marrow_schema::Type;
 use marrow_syntax::SourceSpan;
 
@@ -264,6 +265,12 @@ pub(crate) fn check_file_types(
                     file,
                     &function.body,
                     function.return_type.is_some(),
+                    match function.return_presence {
+                        marrow_syntax::FunctionReturnPresence::Always => ReturnPresence::Always,
+                        marrow_syntax::FunctionReturnPresence::MaybePresent => {
+                            ReturnPresence::MaybePresent
+                        }
+                    },
                     diagnostics,
                 );
                 check_block_type_annotations(&function.body, &annotation_context, diagnostics);
@@ -572,6 +579,7 @@ fn check_statement_type_annotations(
         | Statement::Assign { .. }
         | Statement::Delete { .. }
         | Statement::Return { .. }
+        | Statement::ReturnAbsent { .. }
         | Statement::Break { .. }
         | Statement::Continue { .. }
         | Statement::Throw { .. }

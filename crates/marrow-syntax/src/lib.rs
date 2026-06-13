@@ -19,9 +19,10 @@ mod token;
 pub use ast::{
     Argument, BinaryOp, Block, CatchClause, Comment, CommentMarker, CommentPlacement, ConstDecl,
     Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression, FieldDecl,
-    ForBinding, FunctionDecl, GroupDecl, IndexDecl, InterpolationPart, KeyParam, LiteralKind,
-    MatchArm, ModuleDecl, ParamDecl, ParsedSource, RangeExpr, ResourceDecl, ResourceMember,
-    SavedRoot, SourceFile, Statement, StoreDecl, TypeRef, UnaryOp, UseDecl, range_expr,
+    ForBinding, FunctionDecl, FunctionReturnPresence, GroupDecl, IndexDecl, InterpolationPart,
+    KeyParam, LiteralKind, MatchArm, ModuleDecl, ParamDecl, ParsedSource, RangeExpr, ResourceDecl,
+    ResourceMember, SavedRoot, SourceFile, Statement, StoreDecl, TypeRef, UnaryOp, UseDecl,
+    range_expr,
 };
 pub use diagnostic::{
     Diagnose, Diagnostic, DiagnosticReason, ExpectedSyntax, LexerDiagnosticReason,

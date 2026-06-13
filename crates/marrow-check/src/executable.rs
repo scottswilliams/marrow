@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use marrow_schema::ReturnPresence;
 use marrow_schema::ScalarType;
-use marrow_schema::stdlib::{Capability, ReturnPresence};
+use marrow_schema::stdlib::Capability;
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
@@ -152,4 +153,5 @@ pub struct CheckedStdCall {
 pub struct CheckedFunctionRef {
     pub module: u32,
     pub function: u32,
+    pub presence: ReturnPresence,
 }

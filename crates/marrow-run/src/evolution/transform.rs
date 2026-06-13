@@ -222,7 +222,9 @@ fn run_transform(
     .map_err(|error| error.message)?;
     match completion.0 {
         Completion::Returned(Some(value)) => Ok(value),
-        Completion::Returned(None) => Err("the transform body returned no value".to_string()),
+        Completion::Returned(None) | Completion::ReturnedAbsent => {
+            Err("the transform body returned no value".to_string())
+        }
         Completion::Threw { .. } | Completion::Faulted { .. } => {
             Err("the transform body raised an error".to_string())
         }

@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use marrow_schema::ReturnPresence;
 use marrow_schema::{ScalarType, Type};
 use marrow_store::cell::CatalogId;
 use marrow_syntax::{Declaration, Expression, ParsedSource, SourceSpan, TypeRef};
@@ -358,6 +359,7 @@ pub struct CheckedFunction {
     pub name: String,
     pub public: bool,
     pub params: Vec<CheckedParam>,
+    pub return_presence: ReturnPresence,
     pub return_type: Option<MarrowType>,
     pub span: SourceSpan,
     pub(crate) runtime_body: Option<CheckedBody>,
@@ -468,6 +470,7 @@ fn runtime_entry_functions(
             let function_ref = CheckedFunctionRef {
                 module: module_index as u32,
                 function: function_index as u32,
+                presence: function.return_presence,
             };
             let qualified = runtime_entry_name(&module.name, &function.name);
             if !function.public {
@@ -575,6 +578,7 @@ pub struct CheckedRuntimeFunction {
     pub public: bool,
     pub params: Vec<CheckedParam>,
     entry_params: Vec<CheckedRuntimeParam>,
+    pub return_presence: ReturnPresence,
     pub return_type: Option<MarrowType>,
     pub span: SourceSpan,
     body: Option<CheckedBody>,
@@ -591,6 +595,7 @@ impl CheckedRuntimeFunction {
                 .iter()
                 .map(|param| CheckedRuntimeParam::from_checked(program, param))
                 .collect(),
+            return_presence: function.return_presence,
             return_type: function.return_type.clone(),
             span: function.span,
             body: function.runtime_body.clone(),

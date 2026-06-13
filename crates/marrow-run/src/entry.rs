@@ -116,6 +116,7 @@ fn run_entry_impl<'p>(
         depth: 1,
     })? {
         (Completion::Returned(value), ..) => value,
+        (Completion::ReturnedAbsent, ..) => None,
         (
             Completion::Threw {
                 error,

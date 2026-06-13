@@ -777,6 +777,7 @@ impl UseWalker<'_, '_> {
                     self.walk_expr(value, scope);
                 }
             }
+            Statement::ReturnAbsent { .. } => {}
             Statement::Throw { value, .. } | Statement::Expr { value, .. } => {
                 self.walk_expr(value, scope);
             }

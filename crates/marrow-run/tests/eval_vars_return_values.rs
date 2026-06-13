@@ -77,6 +77,89 @@ fn a_return_value_updates_a_local_resource_field() {
 }
 
 #[test]
+fn maybe_returning_function_returns_present_value() {
+    let program = checked_program(
+        "pub fn maybe_value(flag: bool): maybe int\n\
+         \x20   if flag\n\
+         \x20       return 42\n\
+         \x20   return absent\n\n\
+         pub fn main(flag: bool): int\n\
+         \x20   return maybe_value(flag) ?? -1\n",
+    );
+
+    assert_eq!(
+        run(checked_entry!(&program, "test::main", Value::Bool(true))),
+        Ok(Some(Value::Int(42)))
+    );
+}
+
+#[test]
+fn return_absent_resolves_through_coalesce_and_if_const() {
+    let program = checked_program(
+        "pub fn missing(): maybe int\n\
+         \x20   return absent\n\n\
+         pub fn coalesced(): int\n\
+         \x20   return missing() ?? -1\n\n\
+         pub fn guarded(): int\n\
+         \x20   if const n = missing()\n\
+         \x20       return n\n\
+         \x20   return -2\n\n\
+         pub fn missing_exists(): bool\n\
+         \x20   return exists(missing())\n\n\
+         pub fn present_exists(): bool\n\
+         \x20   return exists(present())\n\n\
+         pub fn present(): maybe int\n\
+         \x20   return 7\n",
+    );
+
+    assert_eq!(
+        run(checked_entry!(&program, "test::coalesced")),
+        Ok(Some(Value::Int(-1)))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::guarded")),
+        Ok(Some(Value::Int(-2)))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::missing_exists")),
+        Ok(Some(Value::Bool(false)))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::present_exists")),
+        Ok(Some(Value::Bool(true)))
+    );
+}
+
+#[test]
+fn maybe_entry_return_absent_has_no_run_value() {
+    let program = checked_program("pub fn main(): maybe int\n    return absent\n");
+
+    assert_eq!(run(checked_entry!(&program, "test::main")), Ok(None));
+}
+
+#[test]
+fn maybe_function_propagates_absent_saved_read_without_option_value() {
+    let program = checked_program(
+        "resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\n\
+         pub fn subtitle(id: int): maybe string\n\
+         \x20   return ^books(id).subtitle\n\n\
+         pub fn subtitle_or_missing(id: int): string\n\
+         \x20   return subtitle(id) ?? \"missing\"\n",
+    );
+
+    assert_eq!(
+        run(checked_entry!(
+            &program,
+            "test::subtitle_or_missing",
+            Value::Int(1)
+        )),
+        Ok(Some(Value::Str("missing".into())))
+    );
+}
+
+#[test]
 fn a_throw_before_assignment_leaves_the_local_unchanged() {
     let program = checked_program(
         "pub fn bad(n: int): int\n    throw Error(code: \"test.error\", message: \"boom\")\npub fn main(): int\n    var n: int = 1\n    try\n        n = bad(n)\n    catch err: Error\n        print(\"caught\")\n    return n\n",

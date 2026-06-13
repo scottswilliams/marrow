@@ -200,6 +200,7 @@ fn walk_statement(
         | Statement::Var { .. }
         | Statement::Delete { .. }
         | Statement::Return { .. }
+        | Statement::ReturnAbsent { .. }
         | Statement::Break { .. }
         | Statement::Continue { .. }
         | Statement::Throw { .. }
@@ -270,6 +271,7 @@ fn statement_binding_name(statement: &Statement) -> Option<&str> {
         Statement::Assign { .. }
         | Statement::Delete { .. }
         | Statement::Return { .. }
+        | Statement::ReturnAbsent { .. }
         | Statement::Break { .. }
         | Statement::Continue { .. }
         | Statement::Throw { .. }
@@ -365,6 +367,7 @@ fn walk_loop_control_flow(
             | Statement::Assign { .. }
             | Statement::Delete { .. }
             | Statement::Return { .. }
+            | Statement::ReturnAbsent { .. }
             | Statement::Break { .. }
             | Statement::Continue { .. }
             | Statement::Throw { .. }
@@ -445,6 +448,7 @@ fn walk_loop_layer_mutations(
             | Statement::Assign { .. }
             | Statement::Delete { .. }
             | Statement::Return { .. }
+            | Statement::ReturnAbsent { .. }
             | Statement::Break { .. }
             | Statement::Continue { .. }
             | Statement::Throw { .. }
@@ -510,6 +514,7 @@ fn mutated_layer(statement: &Statement) -> Option<String> {
         | Statement::Const { .. }
         | Statement::Var { .. }
         | Statement::Return { .. }
+        | Statement::ReturnAbsent { .. }
         | Statement::Break { .. }
         | Statement::Continue { .. }
         | Statement::Throw { .. }

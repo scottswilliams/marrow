@@ -4,6 +4,8 @@
 
 use std::path::Path;
 
+use marrow_schema::ReturnPresence;
+
 use crate::{CHECK_RETURN_VALUE, CheckDiagnostic};
 
 /// Flag each `return` whose value presence does not match the declared return
@@ -12,6 +14,7 @@ pub(crate) fn check_return_values(
     file: &Path,
     body: &marrow_syntax::Block,
     returns_value: bool,
+    return_presence: ReturnPresence,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     use marrow_syntax::Statement;
@@ -30,6 +33,17 @@ pub(crate) fn check_return_values(
                     message,
                 ));
             }
+            Statement::ReturnAbsent { span } => {
+                if return_presence == ReturnPresence::MaybePresent {
+                    continue;
+                }
+                diagnostics.push(CheckDiagnostic::error(
+                    CHECK_RETURN_VALUE,
+                    file,
+                    *span,
+                    "`return absent` is only valid in a maybe-returning function",
+                ));
+            }
             Statement::If {
                 then_block,
                 else_ifs,
@@ -42,28 +56,52 @@ pub(crate) fn check_return_values(
                 else_block,
                 ..
             } => {
-                check_return_values(file, then_block, returns_value, diagnostics);
+                check_return_values(
+                    file,
+                    then_block,
+                    returns_value,
+                    return_presence,
+                    diagnostics,
+                );
                 for else_if in else_ifs {
-                    check_return_values(file, &else_if.block, returns_value, diagnostics);
+                    check_return_values(
+                        file,
+                        &else_if.block,
+                        returns_value,
+                        return_presence,
+                        diagnostics,
+                    );
                 }
                 if let Some(block) = else_block {
-                    check_return_values(file, block, returns_value, diagnostics);
+                    check_return_values(file, block, returns_value, return_presence, diagnostics);
                 }
             }
             Statement::While { body, .. }
             | Statement::For { body, .. }
             | Statement::Transaction { body, .. } => {
-                check_return_values(file, body, returns_value, diagnostics);
+                check_return_values(file, body, returns_value, return_presence, diagnostics);
             }
             Statement::Try { body, catch, .. } => {
-                check_return_values(file, body, returns_value, diagnostics);
+                check_return_values(file, body, returns_value, return_presence, diagnostics);
                 if let Some(clause) = catch {
-                    check_return_values(file, &clause.block, returns_value, diagnostics);
+                    check_return_values(
+                        file,
+                        &clause.block,
+                        returns_value,
+                        return_presence,
+                        diagnostics,
+                    );
                 }
             }
             Statement::Match { arms, .. } => {
                 for arm in arms {
-                    check_return_values(file, &arm.block, returns_value, diagnostics);
+                    check_return_values(
+                        file,
+                        &arm.block,
+                        returns_value,
+                        return_presence,
+                        diagnostics,
+                    );
                 }
             }
             Statement::Const { .. }
@@ -88,7 +126,7 @@ pub(crate) fn block_returns(block: &marrow_syntax::Block) -> bool {
 pub(crate) fn statement_returns(statement: &marrow_syntax::Statement) -> bool {
     use marrow_syntax::{Expression, Statement};
     match statement {
-        Statement::Return { .. } | Statement::Throw { .. } => true,
+        Statement::Return { .. } | Statement::ReturnAbsent { .. } | Statement::Throw { .. } => true,
         // A call may throw or loop forever, so a function ending in one is allowed.
         Statement::Expr { value, .. } => matches!(value, Expression::Call { .. }),
         Statement::If {

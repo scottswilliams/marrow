@@ -113,6 +113,7 @@ fn statement_calls_saved_writer(
         CheckedStmt::Return { value, .. } => value
             .as_ref()
             .is_some_and(|value| expr_calls_saved_writer(program, value, visiting)),
+        CheckedStmt::ReturnAbsent { .. } => false,
         CheckedStmt::If {
             condition,
             then_block,

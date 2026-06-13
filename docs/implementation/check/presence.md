@@ -2,6 +2,8 @@
 
 A post-typecheck static pass over the lowered runtime IR that proves, before runtime, that every read of maybe-present saved data is justified. It walks each function body, constant body, and lowered `evolve transform` body flow-sensitively, tracking *narrowings* from read-site constructs such as `if exists(...)`, `if const`, early-return `if not exists(...)`, loop traversal, coalesce, and unique store-index lookup. The pass emits one `PresenceProofFact` per saved read and raises `CHECK_BARE_MAYBE_PRESENT_READ` when a maybe-present read is reached without a read-site proof. A second body-local entry summarizes each block's saved reads/writes, host capabilities, throws, transactions, and user-function calls into `DirectEffectFacts`.
 
+Maybe-present call results use the same typed resolution-site check as saved reads: a `CheckedStdCall` or `CheckedFunctionRef` with `ReturnPresence::MaybePresent` is bare unless it is consumed by `??`, `if const`, `exists`, or returned from another maybe-returning function. User-function calls are not converted into persisted `ReadTarget`s or saved proof places, so a proof for one call expression never narrows a later repeated call.
+
 The pass runs near the end of `analyze_source_project` (`analysis.rs`, after lowering runtime bodies and the evolution transform-effects check). It mutates `program.facts` and pushes diagnostics; it owns no store access of its own.
 
 ## The big idea
@@ -30,7 +32,7 @@ Narrowing identity is by **span-stripped canonical key**, never by structural `C
 | `presence/writes.rs` | Recursive saved-write reachability through callee bodies, reading each function's precomputed `direct_effects.saved_writes`. |
 | `presence/proofs.rs` | Builds a `ReadProof`, assigns source/status, records the fact, emits the bare-maybe-present diagnostic. |
 | `presence/calls.rs` | Typed-call helpers: std Path-argument mask, neighbor read direction, single-arg collection-view unwrap. |
-| `presence/scope.rs` | `NameScope`: frame stack mapping names to monotonic binding ids, including the transform `old` binding when walking lowered transform bodies. |
+| `presence/scope.rs` | `NameScope`: frame stack mapping names to monotonic binding ids, including the transform `old` binding when walking lowered transform bodies and the current function's return presence for maybe-return propagation. |
 | `presence/util.rs` | `push_unique`/`extend_unique` dedup helpers for narrowing/binding lists. |
 
 Key types live mostly in `presence/target.rs` (`ReadTarget`, `ReadPlace`), `presence/keys.rs` (`ExprKey`, `SavedPathParts`), and `presence/proofs.rs` (`ReadContext`, `ReadProof`). The persisted forms — `DirectEffectFacts`, `PresenceProofFact`/`PresenceProofDraft`, `SavedPlaceEffect` — live in `facts.rs`.
@@ -42,7 +44,7 @@ Key types live mostly in `presence/target.rs` (`ReadTarget`, `ReadPlace`), `pres
 | `check_presence` | `analysis.rs` (after lowering) | Runs the flow-sensitive walk, mutating facts and pushing diagnostics. |
 | `direct_effects_for_block` | `facts.rs` `refresh_direct_effects`, `evolution/intents.rs` | Summarizes one block's effects into `DirectEffectFacts`. |
 | `read_resolves_in_type_scope` | `checks/operators.rs`, `checks/statements.rs` | Boolean test for type-checking `??` and `if const` resolution. It rebuilds enough scope for name shadowing but does not expose a comparable `ReadTarget`. |
-| `exists_target_in_type_scope` | `checks/calls.rs` | Boolean test for type-checking `exists(...)`; accepts only direct read targets, so neighbor values remain rejected. |
+| `exists_target_in_type_scope` | `checks/calls.rs` | Boolean test for type-checking `exists(...)`; accepts direct saved read targets and typed maybe-present call targets, so neighbor values remain rejected. |
 
 ## Notes on code reality
 

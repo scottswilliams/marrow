@@ -1,4 +1,5 @@
-use marrow_schema::stdlib::{self, ParamType, ReturnPresence};
+use marrow_schema::ReturnPresence;
+use marrow_schema::stdlib::{self, ParamType};
 
 use crate::facts::PresenceProofRead;
 use crate::{CheckedBuiltinCall, CheckedCallTarget, CheckedExpr};
@@ -24,6 +25,9 @@ pub(super) fn maybe_present_result(target: &CheckedCallTarget) -> bool {
     matches!(
         target,
         CheckedCallTarget::Std(std) if std.presence == ReturnPresence::MaybePresent
+    ) || matches!(
+        target,
+        CheckedCallTarget::Function(function) if function.presence == ReturnPresence::MaybePresent
     )
 }
 

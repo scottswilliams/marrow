@@ -105,6 +105,9 @@ pub enum CheckedStmt {
         value: Option<CheckedExpr>,
         span: SourceSpan,
     },
+    ReturnAbsent {
+        span: SourceSpan,
+    },
     Break {
         span: SourceSpan,
     },
@@ -222,6 +225,7 @@ impl CheckedStmt {
                 value: lower_optional_expr(value.as_ref(), context, scope)?,
                 span: *span,
             },
+            syntax::Statement::ReturnAbsent { span } => Self::ReturnAbsent { span: *span },
             syntax::Statement::Break { span } => Self::Break { span: *span },
             syntax::Statement::Continue { span } => Self::Continue { span: *span },
             syntax::Statement::Throw { value, span } => Self::Throw {
@@ -415,6 +419,7 @@ impl CheckedStmt {
             | Self::Assign { span, .. }
             | Self::Delete { span, .. }
             | Self::Return { span, .. }
+            | Self::ReturnAbsent { span }
             | Self::Break { span, .. }
             | Self::Continue { span, .. }
             | Self::Throw { span, .. }

@@ -9,7 +9,7 @@ use crate::diagnostic::{
     Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, Severity, SourceSpan,
 };
 use crate::parse_expr::{ExprParser, join_spans};
-use crate::token::{Token, TokenKind, is_qualified_name};
+use crate::token::{Keyword, Token, TokenKind, is_qualified_name};
 
 /// The end byte of the physical line containing `start`, excluding the trailing
 /// `\r`/`\n`. This matches `Line::end_byte` for a declaration's first line.
@@ -136,6 +136,15 @@ pub(super) fn reject_structural_type_tokens(
     expected: ExpectedSyntax,
     message: &'static str,
 ) -> ParseResult<()> {
+    if tokens
+        .iter()
+        .any(|token| matches!(token.kind, TokenKind::Keyword(Keyword::Maybe)))
+    {
+        return Err(ParseError::new(
+            ParseDiagnosticReason::Expected(expected),
+            "`maybe` is only valid before a function return type",
+        ));
+    }
     if tokens.iter().any(|token| token.kind == TokenKind::Equal) {
         return Err(ParseError::new(
             ParseDiagnosticReason::Expected(expected),

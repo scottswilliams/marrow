@@ -1,6 +1,7 @@
 use marrow_check::{CheckedArg as ExecArg, CheckedExpr as ExecExpr};
 use marrow_syntax::SourceSpan;
 
+use crate::call::{expr_call_maybe_present, expression_absent_at_resolution_site};
 use crate::env::Env;
 use crate::error::{RuntimeError, overflow, type_error, unsupported};
 use crate::expr::eval_expr;
@@ -19,6 +20,15 @@ pub(crate) fn eval_exists(
     let [arg] = args else {
         return Err(type_error("`exists` takes one argument", span));
     };
+    if expr_call_maybe_present(&arg.value) {
+        return match eval_expr(&arg.value, env) {
+            Ok(_) => Ok(Value::Bool(true)),
+            Err(error) if expression_absent_at_resolution_site(&arg.value, &error) => {
+                Ok(Value::Bool(false))
+            }
+            Err(error) => Err(error),
+        };
+    }
     Ok(Value::Bool(saved_path_present(&arg.value, span, env)?))
 }
 

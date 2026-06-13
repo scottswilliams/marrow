@@ -140,6 +140,38 @@ Use the absence-default `??` when absence is expected:
 const subtitle: string = ^books(id).subtitle ?? ""
 ```
 
+## Maybe Return Types
+
+A user function may return a maybe-present value by spelling `maybe` in the
+function return annotation:
+
+```mw
+fn findSubtitle(id: int): maybe string
+    return ^books(id).subtitle
+```
+
+The `maybe` marker belongs only in a function return type. It is not a general
+type wrapper for parameters, fields, saved data, keyed trees, locals, or nested
+data. `maybe string` means the function returns a `string` when present and may
+return absence as control flow; it does not create an option-like value.
+
+A maybe-returning function call is resolved at the caller with the same forms as
+maybe-present saved reads:
+
+```mw
+const subtitle = findSubtitle(id) ?? ""
+
+if const present = findSubtitle(id)
+    print(present)
+
+if exists(findSubtitle(id))
+    print("has subtitle")
+```
+
+An unresolved maybe-returning call is a compile error. Presence facts from
+`exists(findSubtitle(id))` apply to that call expression only; a later repeated call
+must resolve its own possible absence.
+
 ## Required Fields
 
 Most fields are sparse because trees are the default. Mark a field

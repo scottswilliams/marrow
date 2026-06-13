@@ -100,7 +100,46 @@ fn remove(id: Id(^books))
     delete ^books(id)
 ```
 
-Every value-returning function must return a value on every reachable path.
+Spell `maybe` before a function return type when the function may return absence
+instead of a value:
+
+```mw
+fn findSubtitle(id: int): maybe string
+    return ^books(id).subtitle
+```
+
+`maybe` is valid only in this return-type position. It is not a parameter,
+field, saved-data, local, keyed-tree, or nested-data type wrapper.
+
+Every value-returning function, including a maybe-returning function, must return
+on every reachable path. Plain fall-through is a missing-return error. Inside a
+maybe-returning function, `return absent` exits with absence:
+
+```mw
+fn pick(flag: bool): maybe int
+    if flag
+        return 1
+    return absent
+```
+
+`return absent` is valid only as the entire return expression of a
+maybe-returning function. Plain `return` in a maybe-returning function is still a
+return-value error.
+
+A maybe-returning function may propagate absence by returning a maybe-present
+saved read or another maybe-returning call:
+
+```mw
+fn inner(id: int): maybe string
+    return ^books(id).subtitle
+
+fn outer(id: int): maybe string
+    return inner(id)
+```
+
+The caller resolves the maybe-present result at its own call site with `??`, `if
+const`, or `exists(...)`. An unresolved maybe-returning call is a compile error.
+
 Functions are not overloaded by parameter type. A module has one declaration
 for a function name. The first language surface has no user-defined generic
 functions.

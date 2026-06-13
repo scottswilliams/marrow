@@ -380,6 +380,7 @@ pub(super) fn function_ref(
     Some(CheckedFunctionRef {
         module: module_index as u32,
         function: function_index as u32,
+        presence: function.return_presence,
     })
 }
 

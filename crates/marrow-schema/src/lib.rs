@@ -9,6 +9,7 @@
 mod compile;
 mod enums;
 mod errors;
+mod presence;
 mod types;
 mod validate;
 
@@ -29,6 +30,7 @@ pub use errors::{
     SchemaDuplicateTarget, SchemaError, SchemaErrorKind, SchemaKeyTarget, SchemaNameCollision,
     SchemaSavedUnknownTarget,
 };
+pub use presence::ReturnPresence;
 pub use types::{IndexSchema, KeyDef, Node, NodeKind, ResourceSchema, StoreSchema, Type};
 pub use validate::{
     check_saved_member_rules, check_saved_named_member_fields, check_saved_named_member_fields_with,

@@ -126,6 +126,12 @@ fn parses_calls_paths_and_field_access() {
 }
 
 #[test]
+fn absent_can_be_a_qualified_call_path_segment() {
+    let parsed = parse_source("fn f()\n    std::assert::absent(^books(1))\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+}
+
+#[test]
 fn open_range_arguments_parse_in_calls() {
     let parsed = parse_source(
         "fn f(start: int, end: int)\n    for id in ^posts.byDate(start.., ..end, ..=end)\n        print(id)\n",

@@ -56,6 +56,7 @@ fn collect_statement_effects(
                 collect_expr_reads(facts, value, effects);
             }
         }
+        CheckedStmt::ReturnAbsent { .. } => {}
         CheckedStmt::Expr { value, .. } => collect_expr_reads(facts, value, effects),
         CheckedStmt::If {
             condition,

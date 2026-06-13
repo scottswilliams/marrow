@@ -15,6 +15,7 @@ use crate::{
     CheckedCallTarget, CheckedCatchClause, CheckedElseIf, CheckedExpr, CheckedForBinding,
     CheckedInterpolationPart, CheckedMatchArm, CheckedProgram, CheckedStmt,
 };
+use marrow_schema::ReturnPresence;
 
 pub(crate) fn check_presence(program: &mut CheckedProgram, diagnostics: &mut Vec<CheckDiagnostic>) {
     let modules = program.modules.clone();
@@ -111,7 +112,18 @@ fn collect_statement(
             collect_delete_statement(program, path, narrowed, scope, diagnostics);
         }
         CheckedStmt::Return { value, .. } => {
-            collect_optional_bare_expr(program, value.as_ref(), narrowed, scope, diagnostics);
+            let context = match scope.return_presence() {
+                ReturnPresence::Always => ReadContext::Bare,
+                ReturnPresence::MaybePresent => ReadContext::Resolved,
+            };
+            collect_optional_expr(
+                program,
+                value.as_ref(),
+                context,
+                narrowed,
+                scope,
+                diagnostics,
+            );
         }
         CheckedStmt::If {
             condition,
@@ -193,7 +205,9 @@ fn collect_statement(
                 diagnostics,
             );
         }
-        CheckedStmt::Break { .. } | CheckedStmt::Continue { .. } => {}
+        CheckedStmt::ReturnAbsent { .. }
+        | CheckedStmt::Break { .. }
+        | CheckedStmt::Continue { .. } => {}
     }
 }
 
@@ -223,6 +237,19 @@ fn collect_optional_bare_expr(
 ) {
     if let Some(expr) = expr {
         collect_bare_expr(program, expr, narrowed, scope, diagnostics);
+    }
+}
+
+fn collect_optional_expr(
+    program: &mut CheckedProgram,
+    expr: Option<&CheckedExpr>,
+    context: ReadContext,
+    narrowed: &mut Vec<ReadTarget>,
+    scope: &mut NameScope,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if let Some(expr) = expr {
+        collect_expr(program, expr, context, narrowed, scope, diagnostics);
     }
 }
 
@@ -402,6 +429,7 @@ fn block_prevents_fallthrough(block: &CheckedBody) -> bool {
 fn statement_prevents_fallthrough(statement: &CheckedStmt) -> bool {
     match statement {
         CheckedStmt::Return { .. }
+        | CheckedStmt::ReturnAbsent { .. }
         | CheckedStmt::Throw { .. }
         | CheckedStmt::Break { .. }
         | CheckedStmt::Continue { .. } => true,

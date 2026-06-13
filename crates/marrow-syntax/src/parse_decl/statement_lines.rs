@@ -206,6 +206,15 @@ fn parse_return(
             span: keyword.span,
         });
     }
+    if matches!(
+        line.get(1).map(|token| token.kind),
+        Some(TokenKind::Keyword(Keyword::Absent))
+    ) && line.len() == 2
+    {
+        return Some(Statement::ReturnAbsent {
+            span: join_spans(keyword.span, line[1].span),
+        });
+    }
     let value = expr_of(source, &line[1..], diagnostics)?;
     Some(Statement::Return {
         span: join_spans(keyword.span, value.span()),

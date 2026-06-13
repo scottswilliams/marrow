@@ -19,7 +19,7 @@ Dispatch enters from `eval_std_call` and `eval_builtin_call` in `crates/marrow-r
 | `crates/marrow-run/src/stdlib/args.rs` | Typed arg evaluators: `eval_typed_arg` plus `eval_bytes`/`decimal`/`instant`/`date`/`duration`/`text_arg` coerce one `ExecArg` to a concrete `Value`. |
 | `crates/marrow-run/src/stdlib/assertions.rs` | `std::assert`: `isTrue`/`isFalse`/`absent`/`fail`; raises `run.assert` on failure, returns `None` on success. |
 | `crates/marrow-run/src/stdlib/conversion.rs` | Scalar/ErrorCode/bytes conversions driven by `ConversionKind`; parses via store `decode_value`/`Decimal`, splitting decimal overflow from malformed text and validating ErrorCode text through `marrow_schema::error`. |
-| `crates/marrow-run/src/stdlib/count.rs` | `count`/`exists` over saved paths and local collections; routes through specialized counters before falling back to a store child-count. |
+| `crates/marrow-run/src/stdlib/count.rs` | `count`/`exists` over saved paths, local collections, and typed maybe-present call results; routes through specialized counters before falling back to a store child-count. |
 | `crates/marrow-run/src/stdlib/error_constructor.rs` | `Error(...)`: validates named args and `code` text against `marrow_schema::error`, then builds a `Value::Resource` of `(name, value)` fields. |
 | `crates/marrow-run/src/stdlib/index_lookup.rs` | Unique-index lookup: resolves a checked `Index` terminal to an `IndexAddress`, scans, decodes the payload to an identity, answers presence/count. |
 | `crates/marrow-run/src/stdlib/math.rs` | Integer `int_remainder` (shared with the `%` remainder operator lowering) and `int_modulo` (backs `std::math::modulo` only); divide-by-zero/overflow faults, sign from divisor. |
@@ -33,6 +33,7 @@ Dispatch enters from `eval_std_call` and `eval_builtin_call` in `crates/marrow-r
 - `print` appends to `env.output` (the run's stdout buffer); `std::log` appends to the separate `host.log` sink. Output is always available; log requires the capability.
 - Conversion error taxonomy is owned downstream: `convert_to_decimal` defers overflow-vs-malformed to `marrow-store`'s `Decimal` parser.
 - Unique-index reads decode the stored payload into an identity of the expected arity and raise one canonical `run.type` corruption fault (`decode_unique_index_identity`); presence/count comes from `ExactUniqueIndexLookupValue` without materializing the record. `keys(...)` over a unique index is unsupported (`check_key_collection`).
+- `exists(maybe_call())` is intentionally call-expression-scoped: it evaluates the checked maybe-present call once and maps catchable `run.absent_element` to `false`, without creating a durable saved-path proof.
 
 Note: the `Host` struct also carries a `maintenance` capability, but this boundary never reads it — it gates managed-write maintenance ops elsewhere.
 
