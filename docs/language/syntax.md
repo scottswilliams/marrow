@@ -239,7 +239,7 @@ not implicitly convert values to strings for concatenation.
 Temporal arithmetic handles linear spans only: `instant - instant` returns
 `duration`; `instant + duration` and `instant - duration` return `instant`; and
 `duration + duration` and `duration - duration` return `duration`. Calendar math
-for dates belongs in future `std::clock` helpers, not operators.
+for dates belongs in named `std::clock` helpers, not operators.
 
 Equality requires comparable values of the same type. Ordering comparisons
 require ordered values of the same type.

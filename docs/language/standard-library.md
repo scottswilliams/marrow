@@ -69,6 +69,11 @@ std::clock::parseDuration(text: string): duration
 std::clock::formatInstant(value: instant): string
 std::clock::formatDate(value: date): string
 std::clock::formatDuration(value: duration): string
+std::clock::addDays(value: date, days: int): date
+std::clock::daysBetween(start: date, end: date): int
+std::clock::year(value: date): int
+std::clock::month(value: date): int
+std::clock::day(value: date): int
 ```
 
 Linear instant/duration arithmetic uses operators:
@@ -78,7 +83,12 @@ const later = t + 1.hour
 const elapsed = finished - started
 ```
 
-Calendar math for dates remains future `std::clock` territory.
+Date calendar arithmetic stays in named pure helpers. `addDays` moves a `date`
+by whole calendar days and raises `run.temporal_overflow` outside the supported
+0001-9999 calendar range. `daysBetween(start, end)` returns `end - start` in
+days. `year`, `month`, and `day` extract calendar components. These helpers do
+not add date dot-fields, instant or duration overloads, month/year duration
+literals, local time zone or locale behavior, or `addMonths`/`addYears`.
 
 The host clock is captured once at the start of a run, so every `now()` call in
 one run returns the same instant and `today()` the same date.

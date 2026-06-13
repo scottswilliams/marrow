@@ -206,14 +206,29 @@ pub fn date_days(year: i32, month: u32, day: u32) -> Option<i32> {
     (civil_from_days(days) == (year, month, day)).then_some(value)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DateParts {
+    pub year: i32,
+    pub month: u32,
+    pub day: u32,
+}
+
+/// The calendar components of a supported date day count.
+pub fn date_parts(days: i32) -> Option<DateParts> {
+    let (year, month, day) = civil_from_days(i64::from(days));
+    (1..=9999)
+        .contains(&year)
+        .then_some(DateParts { year, month, day })
+}
+
 /// Formats days-since-epoch as `YYYY-MM-DD`, erroring outside year 0001-9999 since a
 /// wider year is not the 4-digit form `decode_value` reads.
 fn format_date(days: i32) -> Result<String, ValueError> {
-    let (year, month, day) = civil_from_days(days as i64);
-    if !(1..=9999).contains(&year) {
-        return Err(ValueError::DateOutOfRange { days });
-    }
-    Ok(format!("{year:04}-{month:02}-{day:02}"))
+    let parts = date_parts(days).ok_or(ValueError::DateOutOfRange { days })?;
+    Ok(format!(
+        "{:04}-{:02}-{:02}",
+        parts.year, parts.month, parts.day
+    ))
 }
 
 /// Parses fixed-width canonical `YYYY-MM-DD` to days-since-epoch; unpadded fields,

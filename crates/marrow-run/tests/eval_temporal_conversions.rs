@@ -6,7 +6,9 @@ mod support;
 
 use support::*;
 
-use marrow_run::{Host, RUN_CAPABILITY, RUN_DECIMAL_OVERFLOW, RUN_TYPE, Value};
+use marrow_run::{
+    Host, RUN_CAPABILITY, RUN_DECIMAL_OVERFLOW, RUN_TEMPORAL_OVERFLOW, RUN_TYPE, Value,
+};
 use marrow_store::Decimal;
 use marrow_store::tree::TreeStore;
 
@@ -39,6 +41,96 @@ fn formats_and_parses_dates() {
     assert_eq!(
         run(checked_entry!(&program, "test::f")).unwrap(),
         Some(Value::Str("2024-02-29".into()))
+    );
+}
+
+#[test]
+fn date_calendar_helpers_cover_leap_day_and_year_boundary() {
+    let program = checked_program(
+        "pub fn leap(): string\n\
+         \x20   return std::clock::formatDate(std::clock::addDays(std::clock::parseDate(\"2024-02-28\"), 1))\n\
+         pub fn yearBoundary(): string\n\
+         \x20   return std::clock::formatDate(std::clock::addDays(std::clock::parseDate(\"2024-12-31\"), 1))\n\
+         pub fn daysForward(): int\n\
+         \x20   return std::clock::daysBetween(std::clock::parseDate(\"2024-02-28\"), std::clock::parseDate(\"2024-03-01\"))\n\
+         pub fn daysReverse(): int\n\
+         \x20   return std::clock::daysBetween(std::clock::parseDate(\"2024-03-01\"), std::clock::parseDate(\"2024-02-28\"))\n\
+         pub fn yearPart(): int\n\
+         \x20   return std::clock::year(std::clock::parseDate(\"2024-02-29\"))\n\
+         pub fn monthPart(): int\n\
+         \x20   return std::clock::month(std::clock::parseDate(\"2024-02-29\"))\n\
+         pub fn dayPart(): int\n\
+         \x20   return std::clock::day(std::clock::parseDate(\"2024-02-29\"))\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::leap")),
+        Ok(Some(Value::Str("2024-02-29".into())))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::yearBoundary")),
+        Ok(Some(Value::Str("2025-01-01".into())))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::daysForward")),
+        Ok(Some(Value::Int(2)))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::daysReverse")),
+        Ok(Some(Value::Int(-2)))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::yearPart")),
+        Ok(Some(Value::Int(2024)))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::monthPart")),
+        Ok(Some(Value::Int(2)))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::dayPart")),
+        Ok(Some(Value::Int(29)))
+    );
+}
+
+#[test]
+fn date_calendar_addition_overflow_is_catchable() {
+    let program = checked_program(
+        "pub fn upper(): string\n\
+         \x20   try\n\
+         \x20       var d: date = std::clock::addDays(std::clock::parseDate(\"9999-12-31\"), 1)\n\
+         \x20   catch err: Error\n\
+         \x20       return err.code\n\
+         \x20   return \"none\"\n\
+         pub fn lower(): string\n\
+         \x20   try\n\
+         \x20       var d: date = std::clock::addDays(std::clock::parseDate(\"0001-01-01\"), -1)\n\
+         \x20   catch err: Error\n\
+         \x20       return err.code\n\
+         \x20   return \"none\"\n\
+         pub fn normalizeInjectedDate(d: date, days: int): string\n\
+         \x20   try\n\
+         \x20       var shifted: date = std::clock::addDays(d, days)\n\
+         \x20       return std::clock::formatDate(shifted)\n\
+         \x20   catch err: Error\n\
+         \x20       return err.code\n\
+         \x20   return \"none\"\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::upper")),
+        Ok(Some(Value::Str(RUN_TEMPORAL_OVERFLOW.into())))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::lower")),
+        Ok(Some(Value::Str(RUN_TEMPORAL_OVERFLOW.into())))
+    );
+    assert_eq!(
+        run(checked_entry!(
+            &program,
+            "test::normalizeInjectedDate",
+            Value::Date(i32::MIN),
+            Value::Int(2_147_483_648)
+        )),
+        Ok(Some(Value::Str(RUN_TEMPORAL_OVERFLOW.into())))
     );
 }
 

@@ -3,13 +3,13 @@
 use marrow_check::CheckedArg as ExecArg;
 use marrow_schema::stdlib;
 use marrow_store::Decimal;
-use marrow_store::value::{SavedValue, ScalarType, decode_value};
+use marrow_store::value::{SavedValue, ScalarType, date_days, date_parts, decode_value};
 use marrow_syntax::SourceSpan;
 
 use crate::base64;
 use crate::collection::{ReadPosition, absent_read};
 use crate::env::Env;
-use crate::error::{RuntimeError, overflow, std_arity, type_error, unsupported};
+use crate::error::{RuntimeError, overflow, std_arity, temporal_overflow, type_error, unsupported};
 use crate::expr::eval_int;
 use crate::stdlib::{
     eval_bytes_arg, eval_date_arg, eval_decimal_arg, eval_duration_arg, eval_instant_arg,
@@ -602,7 +602,70 @@ fn eval_clock_std(
             "parseDuration: invalid duration text",
             span,
         ),
+        "addDays" => eval_clock_add_days(args, span, env),
+        "daysBetween" => eval_clock_days_between(args, span, env),
+        "year" | "month" | "day" => eval_clock_date_part(op, args, span, env),
         other => Err(unsupported(&format!("std::clock::{other}"), span)),
+    }
+}
+
+fn eval_clock_add_days(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [date, days] = args else {
+        return Err(std_arity("clock", "addDays", span));
+    };
+    let date = require_supported_date(eval_date_arg(date, env, span)?, span)?;
+    let days = eval_int(&days.value, env)?;
+    let result = i64::from(date)
+        .checked_add(days)
+        .ok_or_else(|| temporal_overflow(span))?;
+    let result = i32::try_from(result).map_err(|_| temporal_overflow(span))?;
+    Ok(Value::Date(require_supported_date(result, span)?))
+}
+
+fn eval_clock_days_between(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [start, end] = args else {
+        return Err(std_arity("clock", "daysBetween", span));
+    };
+    let start = require_supported_date(eval_date_arg(start, env, span)?, span)?;
+    let end = require_supported_date(eval_date_arg(end, env, span)?, span)?;
+    Ok(Value::Int(i64::from(end) - i64::from(start)))
+}
+
+fn eval_clock_date_part(
+    op: &str,
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [date] = args else {
+        return Err(std_arity("clock", op, span));
+    };
+    let parts =
+        date_parts(eval_date_arg(date, env, span)?).ok_or_else(|| temporal_overflow(span))?;
+    let value = match op {
+        "year" => i64::from(parts.year),
+        "month" => i64::from(parts.month),
+        "day" => i64::from(parts.day),
+        _ => unreachable!("date part helper dispatch only passes known ops"),
+    };
+    Ok(Value::Int(value))
+}
+
+fn require_supported_date(days: i32, span: SourceSpan) -> Result<i32, RuntimeError> {
+    let min = date_days(1, 1, 1).expect("year 0001 lower date bound is valid");
+    let max = date_days(9999, 12, 31).expect("year 9999 upper date bound is valid");
+    if (min..=max).contains(&days) {
+        Ok(days)
+    } else {
+        Err(temporal_overflow(span))
     }
 }
 

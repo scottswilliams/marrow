@@ -134,7 +134,7 @@ pub const RUN_OVERFLOW: &str = "run.overflow";
 /// Decimal arithmetic exceeded the 34-digit / 34-place decimal envelope.
 pub const RUN_DECIMAL_OVERFLOW: &str = "run.decimal_overflow";
 
-/// Temporal arithmetic exceeded the saved instant or duration envelope.
+/// Temporal arithmetic exceeded the saved date, instant, or duration envelope.
 pub const RUN_TEMPORAL_OVERFLOW: &str = "run.temporal_overflow";
 
 /// Integer division or remainder by zero.
@@ -487,7 +487,7 @@ pub(crate) fn decimal_overflow(span: SourceSpan) -> RuntimeError {
 pub(crate) fn temporal_overflow(span: SourceSpan) -> RuntimeError {
     raise_fault(
         RUN_TEMPORAL_OVERFLOW,
-        "temporal arithmetic exceeded the saved instant or duration envelope".into(),
+        "temporal arithmetic exceeded the saved date, instant, or duration envelope".into(),
         span,
     )
 }
