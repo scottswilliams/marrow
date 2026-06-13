@@ -849,15 +849,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 Parser/checker/runtime files overlap heavily: the cut series is sequenced; additions follow.
 Listing order is execution order. Store crate is quiet this wave except where noted.
 
-**W4.16 ∥ Calendar helpers.** Carries: pure std::clock helpers after W4.1 and riding W4.5 or a
-strict follow-on: `addDays(date,int): date`, `daysBetween(date,date): int`, `year(date): int`,
-`month(date): int`, and `day(date): int`. Owns: the stdlib descriptor table, std_pure.rs clock
-arms, standard-library.md, and leap-day/year-boundary fixtures. Seed: failing fixtures for
-date-plus-days, signed day distance, and date decomposition. Review: no dot-field syntax,
-instant/duration overloads, month/year duration literals, timezone or locale variants, or
-addMonths/addYears design. Done: date calendar arithmetic stays inside named pure stdlib
-functions and raises `run.temporal_overflow` at the 0001-9999 boundary.
-
 **W4.17 ∥ Decimal formatting boundary.** Carries: one pure helper,
 `std::math::roundDecimal(value: decimal, scale: int): decimal`, rounding half-to-even to a fixed
 fractional scale. Owns: the stdlib descriptor table, std_pure.rs math arm, standard-library.md,
