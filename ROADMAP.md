@@ -663,10 +663,9 @@ exit: `return absent`, with both `maybe` and `absent` added to the reserved-word
 bookkeeping); `absent` is valid only as the entire return expression inside a `maybe T`
 function; a maybe-function body may also `return <maybe-present read>` to propagate, resolved at
 the caller's call site; implicit fall-through remains a missing-return error (absence is always
-explicit), and no Option value exists at runtime. The foundation rider stands regardless: W4.5
-builds the ReturnType marker as a general function-signature fact, never a builtin-descriptor
-special case. Lane W4.13 carries the build (grammar + descriptor attachment + absent-exit form;
-resolution pass reused wholesale); language/02 amendment in W1.1.
+explicit), and no Option value exists at runtime. The ReturnType marker is a general
+function-signature fact, never a builtin-descriptor special case; grammar, descriptor attachment,
+the absent-exit form, and caller-site resolution share the existing maybe-present machinery.
 
 **40. Temporal arithmetic operators + std::clock::add deletion (C41).** Decided: option (a) —
 accept exactly the five typed operator rules — instant−instant→duration,
@@ -849,17 +848,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 Parser/checker/runtime files overlap heavily: the cut series is sequenced; additions follow.
 Listing order is execution order. Store crate is quiet this wave except where noted.
-
-**W4.13 → User-function maybe returns (C36; gate 39).** After W4.5. Owns: `maybe T` return
-spelling in the signature grammar, marker attachment for user function descriptors in
-marrow-schema, the `return absent` body exit (fall-through in a `maybe T` body stays the
-standard missing-return error), the checker
-resolution-site pass extension (reused wholesale), types.md/modules-functions.md lockstep.
-Seed: failing fixture — an unresolved maybe-result call is check.bare_maybe_present_read; `??`
-and the gate-38 guard resolve it. Review: maybe-ness cannot escape the return-to-resolution
-span (checker fact boundary, not convention); call-chain propagation probed (a:maybe calls
-b:maybe must resolve at a's call site); no Option value materialized at runtime. Done: lookup
-APIs are abstractable; spec/checker/runtime agree.
 
 **W4.14 → Commit-amplification warning (C60; v01-full).** Checker hotspot + shared
 cost-model.md. Owns:
