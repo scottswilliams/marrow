@@ -849,16 +849,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 Parser/checker/runtime files overlap heavily: the cut series is sequenced; additions follow.
 Listing order is execution order. Store crate is quiet this wave except where noted.
 
-**W4.15 → Local-saved unification rider.** Carries: the two verified local keyed-tree bug fixes
-as a W4.4 rider: single-name loops over local keyed trees bind keys, not values, and
-`keys(reversed(localTree))` yields keys in descending order. Owns: marrow-run loop_exec.rs and
-collection.rs plus the Loops doc/test surface already owned by W4.4. Seed: fixtures where
-`for key in localTree` and `keys(reversed(localTree))` currently yield values. Review: W4.4's
-two-name local loop and entries() restriction remain scoped; no presence/exists()/`??`
-unification for local reads, no local transaction write semantics, and no reopening of Deferred
-II.E5. Done: single-name local keyed-tree iteration matches saved keyed-tree iteration for key
-binding, and reversed key extraction is key-stable.
-
 **W4.16 ∥ Calendar helpers.** Carries: pure std::clock helpers after W4.1 and riding W4.5 or a
 strict follow-on: `addDays(date,int): date`, `daysBetween(date,date): int`, `year(date): int`,
 `month(date): int`, and `day(date): int`. Owns: the stdlib descriptor table, std_pure.rs clock
