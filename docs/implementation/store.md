@@ -10,7 +10,7 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 
 - **Engine contract** — the private `Backend` trait (read/write/delete/scan/begin/commit/rollback/snapshot) plus `ScanPage` and typed `StoreError`. Two engines implement it: `MemStore` (BTreeMap) and `RedbStore` (persistent). A shared `conformance` suite runs 17 laws against both.
 - **Key grammar** — `cell` defines the v0 physical key layout (placement prefix, profile, family, store id, identity, segments); `key` defines the order-preserving scalar codec used in every record-key and index-key position.
-- **Value forms** — `value` (canonical scalar codec, calendar years 0001–9999) and `decimal` (exact base-10, 34-digit/34-place envelope, half-to-even division).
+- **Value forms** — `value` (canonical scalar codec, calendar years 0001–9999) and `decimal` (exact base-10, 34-digit/34-place envelope, half-to-even division and scale rounding).
 - **Public facade** — `TreeStore` wraps a boxed `Backend` and exposes every typed write/read/navigation/transaction/snapshot/backup call other crates use.
 - **Durable stamp metadata** — `metadata` (`CommitMetadata`, `EngineProfile`, `StoreUid`, and the source digest the activation fence binds).
 - **Catalog table** — `catalog` persists the accepted `marrow_catalog::CatalogMetadata` as a header row plus one row per entry in its own physical family (`FAMILY_CATALOG`), written in the caller's transaction and invisible to data/index/meta access; a read verifies the stored header against the decoded rows, accepts the canonical order-insensitive digest or the legacy order-sensitive row-order digest, and returns a snapshot normalized to the canonical digest.
@@ -24,7 +24,7 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 | `crates/marrow-store/src/backend.rs` | `StoreError` (stable dotted codes), `ScanPage`, and the private `Backend` trait every engine implements. |
 | `crates/marrow-store/src/key.rs` | `SavedKey` and its order-preserving byte codec; identity-payload encode/decode for record identity and index entries. |
 | `crates/marrow-store/src/value.rs` | `Scalar`/`SavedValue`/`ScalarType`, language spellings, and the canonical (unordered) value codec with strict round-trip-only decode. |
-| `crates/marrow-store/src/decimal.rs` | Exact canonical base-10 `Decimal`: parse, `to_text`, checked add/sub/mul, long-division `checked_div`, floor/abs/compare. |
+| `crates/marrow-store/src/decimal.rs` | Exact canonical base-10 `Decimal`: parse, `to_text`, checked add/sub/mul, long-division `checked_div`, half-even `round_to_scale`, floor/abs/compare. |
 | `crates/marrow-store/src/cell.rs` | The v0 physical key grammar: `CatalogId` validation, `CellKey` constructors per family, `DataPathSegment`, `MetaCell` tags, key decoders, `CellRange`. |
 | `crates/marrow-store/src/codec.rs` | Shared bounds-checked reader for private length-prefixed store codecs. |
 | `crates/marrow-store/src/tree.rs` | `TreeStore` facade over a boxed `Backend`: metadata, the catalog-table read/replace surface, typed writes/reads, node-backed record navigation, child/index navigation, paged index scans, backup streaming, snapshots. |

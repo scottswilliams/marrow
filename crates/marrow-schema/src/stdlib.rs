@@ -110,6 +110,7 @@ const TABLE: &[StdOp] = &[
     row("math", "minDecimal", &[Scalar(Decimal), Scalar(Decimal)], scalar(Decimal), Always, None),
     row("math", "maxDecimal", &[Scalar(Decimal), Scalar(Decimal)], scalar(Decimal), Always, None),
     row("math", "round", &[Scalar(Decimal)], scalar(Int), Always, None),
+    row("math", "roundDecimal", &[Scalar(Decimal), Scalar(Int)], scalar(Decimal), Always, None),
     row("math", "ceiling", &[Scalar(Decimal)], scalar(Int), Always, None),
     row("math", "powInt", &[Scalar(Int), Scalar(Int)], scalar(Int), Always, None),
     row("math", "modulo", &[Scalar(Int), Scalar(Int)], scalar(Int), Always, None),

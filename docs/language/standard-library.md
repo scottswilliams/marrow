@@ -175,6 +175,7 @@ std::math::maxInt(a: int, b: int): int
 std::math::minDecimal(a: decimal, b: decimal): decimal
 std::math::maxDecimal(a: decimal, b: decimal): decimal
 std::math::round(value: decimal): int
+std::math::roundDecimal(value: decimal, scale: int): decimal
 std::math::ceiling(value: decimal): int
 std::math::powInt(base: int, exp: int): int
 std::math::modulo(a: int, b: int): int
@@ -186,6 +187,11 @@ explicit in code that needs clarity. Separate integer and decimal names avoid a
 numeric overloading rule in the language. `round` uses half-to-even. `powInt`
 requires a non-negative exponent and raises the existing integer overflow fault
 when the result does not fit in `int`.
+
+`roundDecimal(value, scale)` uses half-to-even rounding to the requested
+fractional precision, then returns the canonical decimal value. `scale` must be
+in `0..=34`; values outside that range raise `run.type`. The result is still
+canonical decimal data, so trailing zeroes are not preserved for presentation.
 
 ## `std::assert` And Testing
 

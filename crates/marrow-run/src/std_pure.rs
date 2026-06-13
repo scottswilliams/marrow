@@ -300,6 +300,7 @@ fn eval_math_std(
         "minDecimal" => eval_math_min_decimal(args, span, env),
         "maxDecimal" => eval_math_max_decimal(args, span, env),
         "round" => eval_math_round(args, span, env),
+        "roundDecimal" => eval_math_round_decimal(args, span, env),
         "ceiling" => eval_math_ceiling(args, span, env),
         "powInt" => eval_math_pow_int(args, span, env),
         other => Err(unsupported(&format!("std::math::{other}"), span)),
@@ -428,10 +429,38 @@ fn eval_math_round(
         return Err(std_arity("math", "round", span));
     };
     decimal_to_i64(
-        round_decimal_half_even(eval_decimal_arg(value, env, span)?),
+        round_decimal_half_even_to_integer(eval_decimal_arg(value, env, span)?),
         span,
     )
     .map(Value::Int)
+}
+
+fn eval_math_round_decimal(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [value, scale] = args else {
+        return Err(std_arity("math", "roundDecimal", span));
+    };
+    let value = eval_decimal_arg(value, env, span)?;
+    let scale = eval_round_decimal_scale(scale, env, span)?;
+    let rounded = value.round_to_scale(scale).ok_or_else(|| overflow(span))?;
+    Ok(Value::Decimal(rounded))
+}
+
+fn eval_round_decimal_scale(
+    arg: &ExecArg,
+    env: &mut Env<'_>,
+    span: SourceSpan,
+) -> Result<u32, RuntimeError> {
+    let scale = eval_int(&arg.value, env)?;
+    let scale = u32::try_from(scale)
+        .map_err(|_| type_error("roundDecimal scale must be in 0..=34", span))?;
+    if scale > Decimal::MAX_SCALE {
+        return Err(type_error("roundDecimal scale must be in 0..=34", span));
+    }
+    Ok(scale)
 }
 
 fn eval_math_ceiling(
@@ -490,24 +519,11 @@ fn eval_string_sequence(
     }
 }
 
-fn round_decimal_half_even(value: Decimal) -> i128 {
-    let scale = value.scale();
-    if scale == 0 {
-        return value.coefficient();
-    }
-    let divisor = 10u128.pow(scale);
-    let magnitude = value.coefficient().unsigned_abs();
-    let quotient = magnitude / divisor;
-    let remainder = magnitude % divisor;
-    let twice = remainder.saturating_mul(2);
-    let round_up = twice > divisor || (twice == divisor && quotient % 2 == 1);
-    let rounded = quotient + u128::from(round_up);
-    let signed = i128::try_from(rounded).unwrap_or(i128::MAX);
-    if value.coefficient() < 0 {
-        -signed
-    } else {
-        signed
-    }
+fn round_decimal_half_even_to_integer(value: Decimal) -> i128 {
+    value
+        .round_to_scale(0)
+        .expect("scale zero is inside the decimal envelope")
+        .coefficient()
 }
 
 fn ceiling_decimal(value: Decimal) -> i128 {

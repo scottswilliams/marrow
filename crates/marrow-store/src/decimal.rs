@@ -3,8 +3,8 @@
 //! A [`Decimal`] is `coefficient * 10^(-scale)`, kept value-canonical (no
 //! trailing-zero scale, so each value has one representation) within a
 //! 34-significant-digit / 34-fractional-place envelope. This module provides
-//! parsing, canonical formatting, exact add/sub/mul, half-to-even division, and
-//! value comparison. The same canonical form backs
+//! parsing, canonical formatting, exact add/sub/mul, half-to-even division,
+//! half-to-even scale rounding, and value comparison. The same canonical form backs
 //! [`SavedValue::Decimal`](crate::value::SavedValue), so a decimal round-trips
 //! through storage unchanged.
 
@@ -44,6 +44,9 @@ impl Decimal {
         coefficient: 0,
         scale: 0,
     };
+
+    /// Largest supported fractional scale.
+    pub const MAX_SCALE: u32 = MAX_DIGITS;
 
     /// Build a decimal from `coefficient * 10^(-scale)`, normalizing to canonical
     /// form. `None` if the normalized value falls outside the 34-digit envelope.
@@ -180,6 +183,27 @@ impl Decimal {
         } else {
             round_digits_to_envelope(digits, power.unsigned_abs(), negative, inexact)
         }
+    }
+
+    /// Round half-to-even to a target fractional scale, returning the canonical
+    /// decimal value. Scales outside the decimal envelope return `None`.
+    pub fn round_to_scale(self, scale: u32) -> Option<Decimal> {
+        if scale > MAX_DIGITS {
+            return None;
+        }
+        if self.scale <= scale {
+            return Some(self);
+        }
+        let rounded = round_least_significant_digits(
+            abs_coefficient_digits(self.coefficient),
+            (self.scale - scale) as usize,
+            false,
+        );
+        let mut coefficient = digits_to_i128(&rounded)?;
+        if self.coefficient < 0 {
+            coefficient = coefficient.checked_neg()?;
+        }
+        Decimal::from_parts(coefficient, scale)
     }
 
     /// The absolute value. Always representable (magnitude has the same digits).
@@ -774,6 +798,33 @@ mod tests {
                 .to_text(),
             format!("4{}", "0".repeat(33))
         );
+    }
+
+    #[test]
+    fn rounds_to_fractional_scale_half_even() {
+        for (input, scale, expected) in [
+            ("12.345", 2, "12.34"),
+            ("12.355", 2, "12.36"),
+            ("-2.345", 2, "-2.34"),
+            ("-2.355", 2, "-2.36"),
+            ("2.5", 0, "2"),
+            ("3.5", 0, "4"),
+            ("0.05", 1, "0"),
+            ("0.15", 1, "0.2"),
+            ("1.2", 2, "1.2"),
+        ] {
+            assert_eq!(
+                dec(input).round_to_scale(scale).unwrap().to_text(),
+                expected,
+                "{input} to scale {scale}",
+            );
+        }
+    }
+
+    #[test]
+    fn scale_rounding_rejects_scales_outside_decimal_envelope() {
+        assert!(dec("1.2").round_to_scale(Decimal::MAX_SCALE).is_some());
+        assert!(dec("1.2").round_to_scale(Decimal::MAX_SCALE + 1).is_none());
     }
 
     #[test]

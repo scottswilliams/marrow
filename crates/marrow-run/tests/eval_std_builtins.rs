@@ -5,7 +5,7 @@ mod support;
 
 use support::*;
 
-use marrow_run::{RUN_DIVIDE_BY_ZERO, Value};
+use marrow_run::{RUN_DIVIDE_BY_ZERO, RUN_TYPE, Value};
 
 #[test]
 fn std_text_builtins_operate_on_strings() {
@@ -184,6 +184,65 @@ fn std_math_gate16_builtins_round_and_bound_values() {
     assert_run_error(
         run(checked_entry!(&program, "test::pow_overflow")),
         marrow_run::RUN_OVERFLOW,
+    );
+}
+
+#[test]
+fn std_math_round_decimal_returns_canonical_decimal() {
+    let program = checked_program(
+        "pub fn money_seed(): string\n    return string(std::math::roundDecimal(12.345, 2))\n\n\
+         pub fn positive_half_up_to_even(): string\n    return string(std::math::roundDecimal(12.355, 2))\n\n\
+         pub fn negative_half_down_to_even(): string\n    return string(std::math::roundDecimal(-2.345, 2))\n\n\
+         pub fn negative_half_up_to_even(): string\n    return string(std::math::roundDecimal(-2.355, 2))\n\n\
+         pub fn zero_scale_down_to_even(): string\n    return string(std::math::roundDecimal(2.5, 0))\n\n\
+         pub fn zero_scale_up_to_even(): string\n    return string(std::math::roundDecimal(3.5, 0))\n\n\
+         pub fn no_trailing_zero_promise(): string\n    return string(std::math::roundDecimal(1.2, 2))\n",
+    );
+
+    assert_eq!(
+        run(checked_entry!(&program, "test::money_seed")).unwrap(),
+        Some(Value::Str("12.34".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::positive_half_up_to_even")).unwrap(),
+        Some(Value::Str("12.36".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::negative_half_down_to_even")).unwrap(),
+        Some(Value::Str("-2.34".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::negative_half_up_to_even")).unwrap(),
+        Some(Value::Str("-2.36".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::zero_scale_down_to_even")).unwrap(),
+        Some(Value::Str("2".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::zero_scale_up_to_even")).unwrap(),
+        Some(Value::Str("4".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::no_trailing_zero_promise")).unwrap(),
+        Some(Value::Str("1.2".into()))
+    );
+}
+
+#[test]
+fn std_math_round_decimal_rejects_invalid_scale() {
+    let program = checked_program(
+        "pub fn negative_scale(): decimal\n    return std::math::roundDecimal(1.2, -1)\n\n\
+         pub fn too_large_scale(): decimal\n    return std::math::roundDecimal(1.2, 35)\n",
+    );
+
+    assert_run_error(
+        run(checked_entry!(&program, "test::negative_scale")),
+        RUN_TYPE,
+    );
+    assert_run_error(
+        run(checked_entry!(&program, "test::too_large_scale")),
+        RUN_TYPE,
     );
 }
 
