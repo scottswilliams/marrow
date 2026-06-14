@@ -35,6 +35,7 @@ type IndexEntryVisitor<'a> =
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexEntry {
+    pub index_keys: Vec<SavedKey>,
     pub identity: Vec<SavedKey>,
     pub value: Vec<u8>,
 }
@@ -1133,7 +1134,11 @@ impl TreeStore {
             last_key = Some(key.clone());
             let identity = decode_index_identity(&key[prefix.as_bytes().len()..])
                 .map_err(|_| corrupt_cell(&key))?;
-            entries.push(IndexEntry { identity, value });
+            entries.push(IndexEntry {
+                index_keys: index_keys.to_vec(),
+                identity,
+                value,
+            });
         }
         let cursor = if page.truncated {
             last_key.map(|last_key| IndexCursor {
@@ -1261,9 +1266,14 @@ impl TreeStore {
                 continue;
             }
             last_key = Some(key.clone());
-            let (_, identity) = decode_index_entry_key(&key[full_index_prefix.as_bytes().len()..])
-                .map_err(|_| corrupt_cell(&key))?;
-            entries.push(IndexEntry { identity, value });
+            let (index_keys, identity) =
+                decode_index_entry_key(&key[full_index_prefix.as_bytes().len()..])
+                    .map_err(|_| corrupt_cell(&key))?;
+            entries.push(IndexEntry {
+                index_keys,
+                identity,
+                value,
+            });
         }
         let cursor = if page.truncated {
             last_key.map(|last_key| IndexCursor {

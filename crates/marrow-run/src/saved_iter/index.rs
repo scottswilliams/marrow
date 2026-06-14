@@ -10,7 +10,8 @@ use crate::env::{Env, Flow, TraversedLayer};
 use crate::error::{Located, RuntimeError, unsupported};
 use crate::read::{
     INDEX_SCAN_PAGE_LIMIT, IndexBranchAddress, collected_identity_value, first_index_child,
-    next_index_child,
+    next_index_child, validate_index_branch_yield, validate_scanned_index_entry,
+    validate_walked_index_identity_entries,
 };
 
 use super::{ChildCursor, LoopShape, SavedLoopRow, SavedLoopSpec, shape_row, walk_keyed_children};
@@ -53,6 +54,7 @@ impl IndexScan {
             |keys: Vec<SavedKey>, env: &mut Env<'_>| self.visit_keys(keys, env, visit);
         if self.branch.depth == 0 {
             return stream_exact_index_tuple(
+                &self.place,
                 &self.branch,
                 self.dir,
                 self.span,
@@ -82,8 +84,24 @@ impl IndexScan {
         env: &mut Env<'_>,
         visit: &mut impl FnMut(SavedLoopRow, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
     ) -> Result<ControlFlow<Flow>, RuntimeError> {
-        let identity_root = self.yields_identity.then_some(self.place.root.as_str());
-        let key = collected_identity_value(&keys, identity_root, self.span)?;
+        if self.branch.depth > 0 && self.yields_identity {
+            validate_walked_index_identity_entries(
+                &self.place,
+                &self.branch,
+                &keys,
+                self.span,
+                env,
+            )?;
+        }
+        let decoded =
+            validate_index_branch_yield(&self.place, &self.branch, &keys, self.span, env)?;
+        let key = if self.yields_identity {
+            collected_identity_value(&keys, Some(&self.place.root), self.span)?
+        } else if let Some(value) = decoded {
+            value
+        } else {
+            collected_identity_value(&keys, None, self.span)?
+        };
         let row = shape_row(self.shape, key, || {
             if self.yields_identity {
                 read_resource(&self.place, &keys, self.span, env)
@@ -134,6 +152,7 @@ impl ChildCursor for IndexCursor<'_> {
 }
 
 fn stream_exact_index_tuple(
+    place: &CheckedSavedPlace,
     branch: &IndexBranchAddress,
     dir: Direction,
     span: SourceSpan,
@@ -166,6 +185,7 @@ fn stream_exact_index_tuple(
     };
     loop {
         for entry in page.entries {
+            validate_scanned_index_entry(place, branch, &entry, span, env)?;
             match visit(entry.identity, env)? {
                 ControlFlow::Continue(()) => {}
                 ControlFlow::Break(flow) => return Ok(flow),

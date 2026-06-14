@@ -2,11 +2,11 @@
 
 use marrow_check::{
     CheckedBuiltinCall, CheckedCallTarget, CheckedExpr as ExecExpr, CheckedSavedKeyParam,
-    CheckedSavedPlace, CheckedSavedTerminal,
+    CheckedSavedPlace, CheckedSavedTerminal, StoredValueMeaning,
 };
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{DataPathSegment, IndexRangeBounds, TreeStore};
+use marrow_store::tree::{DataPathSegment, IndexEntry, IndexRangeBounds, TreeStore};
 use marrow_syntax::SourceSpan;
 
 use crate::collection::Direction;
@@ -19,7 +19,10 @@ use crate::path::{direct_root_place, guard_key_type, lower, lower_keys};
 use crate::range_expr::checked_range;
 use crate::saved_iter::{IndexCursor, RecordCursor, count_keyed_children};
 use crate::store::{DataAddress, IndexAddress, LayerAddress};
-use crate::value::{Value, saved_key_to_value, value_to_index_key, value_to_key};
+use crate::value::{
+    Value, index_key_to_value, saved_key_to_value, validate_place_identity_keys,
+    value_to_index_key, value_to_key,
+};
 
 pub(crate) const INDEX_SCAN_PAGE_LIMIT: usize = 128;
 
@@ -60,6 +63,7 @@ pub(crate) struct IndexBranchAddress {
     pub(crate) index: IndexAddress,
     pub(crate) arg_keys: Vec<SavedKey>,
     pub(crate) range: Option<IndexRangeBounds>,
+    pub(crate) key_meanings: Vec<StoredValueMeaning>,
     pub(crate) identity_start: usize,
     pub(crate) depth: usize,
     pub(crate) yields_identity: bool,
@@ -218,6 +222,11 @@ fn iterable_index_branch(
         index: IndexAddress::from_place(place, name, arg_keys.clone(), span)?,
         arg_keys,
         range,
+        key_meanings: index
+            .keys
+            .iter()
+            .map(|key| key.value_meaning.clone())
+            .collect(),
         identity_start,
         depth: if range_position.is_some() { 0 } else { depth },
         yields_identity,
@@ -320,7 +329,7 @@ pub(crate) fn count_iterable_layer(
             }
             count_record_identities(&store, arity, path.span(), env)
         }
-        IterableLayer::Index(_, branch) => count_index_branch(&branch, path.span(), env),
+        IterableLayer::Index(place, branch) => count_index_branch(place, &branch, path.span(), env),
         IterableLayer::ChildLayer => {
             let address = child_layer_prefix_address(path, env)?;
             crate::store::data_child_count(env.store, &address, path.span())
@@ -338,7 +347,7 @@ pub(crate) fn count_iterable_index_branch(
     let Some(branch) = iterable_index_branch(place, path.span(), env)? else {
         return Ok(None);
     };
-    count_index_branch(&branch, path.span(), env).map(Some)
+    count_index_branch(place, &branch, path.span(), env).map(Some)
 }
 
 pub(crate) fn iterable_index_branch_present(
@@ -351,7 +360,7 @@ pub(crate) fn iterable_index_branch_present(
     let Some(branch) = iterable_index_branch(place, path.span(), env)? else {
         return Ok(None);
     };
-    index_branch_present(&branch, path.span(), env).map(Some)
+    count_index_branch(place, &branch, path.span(), env).map(|count| Some(count > 0))
 }
 
 /// Count every record identity under a root of `arity` identity keys. A composite
@@ -378,12 +387,13 @@ fn count_record_identities(
 }
 
 fn count_index_branch(
+    place: &CheckedSavedPlace,
     branch: &IndexBranchAddress,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<usize, RuntimeError> {
     if branch.depth == 0 {
-        return count_exact_index_tuple(branch, span, env);
+        return count_exact_index_tuple(place, branch, span, env);
     }
     let cursor = IndexCursor::new(&branch.index.index, Direction::Ascending, span);
     count_keyed_children(
@@ -392,11 +402,15 @@ fn count_index_branch(
         &branch.arg_keys,
         env,
         span,
-        |_, _| Ok(1),
+        |keys, env| {
+            validate_walked_index_branch_yield(place, branch, keys, span, env)?;
+            Ok(1)
+        },
     )
 }
 
 fn count_exact_index_tuple(
+    place: &CheckedSavedPlace,
     branch: &IndexBranchAddress,
     span: SourceSpan,
     env: &Env<'_>,
@@ -416,6 +430,9 @@ fn count_exact_index_tuple(
     }
     .map_err(|error| error.located(span))?;
     loop {
+        for entry in &page.entries {
+            validate_scanned_index_entry(place, branch, entry, span, env)?;
+        }
         count = count
             .checked_add(page.entries.len())
             .ok_or_else(|| overflow(span))?;
@@ -442,32 +459,130 @@ fn count_exact_index_tuple(
     Ok(count)
 }
 
-fn index_branch_present(
+pub(crate) fn validate_index_branch_yield(
+    place: &CheckedSavedPlace,
     branch: &IndexBranchAddress,
+    keys: &[SavedKey],
     span: SourceSpan,
     env: &Env<'_>,
-) -> Result<bool, RuntimeError> {
-    if branch.depth == 0 {
-        return match &branch.range {
-            Some(range) => {
-                env.store
-                    .scan_index_range(&branch.index.index, &branch.arg_keys, range, 1)
-            }
-            None => env
-                .store
-                .scan_index_tuple(&branch.index.index, &branch.arg_keys, 1),
-        }
-        .map(|page| !page.entries.is_empty())
-        .map_err(|error| error.located(span));
+) -> Result<Option<Value>, RuntimeError> {
+    if branch.yields_identity {
+        validate_place_identity_keys(place, keys, span)?;
+        return Ok(None);
     }
-    first_index_child(
-        env.store,
-        &branch.index.index,
-        &branch.arg_keys,
-        Direction::Ascending,
-        span,
-    )
-    .map(|child| child.is_some())
+    let Some(meaning) = branch.key_meanings.get(branch.arg_keys.len()) else {
+        return Ok(None);
+    };
+    let [key] = keys else {
+        return Err(unsupported("iterating a composite non-identity key", span));
+    };
+    index_key_to_value(env.program, key, meaning, span).map(Some)
+}
+
+fn validate_walked_index_branch_yield(
+    place: &CheckedSavedPlace,
+    branch: &IndexBranchAddress,
+    keys: &[SavedKey],
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<(), RuntimeError> {
+    if !branch.yields_identity {
+        validate_index_branch_yield(place, branch, keys, span, env)?;
+        return Ok(());
+    }
+    let mut index_keys = branch.arg_keys.clone();
+    index_keys.extend_from_slice(keys);
+    validate_scanned_index_tuple_entries(place, branch, &index_keys, span, env)?;
+    let mut identity = branch
+        .arg_keys
+        .get(branch.identity_start..)
+        .map_or_else(Vec::new, |keys| keys.to_vec());
+    identity.extend_from_slice(keys);
+    validate_place_identity_keys(place, &identity, span)
+}
+
+pub(crate) fn validate_walked_index_identity_entries(
+    place: &CheckedSavedPlace,
+    branch: &IndexBranchAddress,
+    identity: &[SavedKey],
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<(), RuntimeError> {
+    let mut index_keys = branch
+        .arg_keys
+        .get(..branch.identity_start)
+        .map_or_else(Vec::new, |keys| keys.to_vec());
+    index_keys.extend_from_slice(identity);
+    validate_scanned_index_tuple_entries(place, branch, &index_keys, span, env)
+}
+
+pub(crate) fn validate_scanned_index_entry(
+    place: &CheckedSavedPlace,
+    branch: &IndexBranchAddress,
+    entry: &IndexEntry,
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<(), RuntimeError> {
+    if entry.index_keys.len() != branch.key_meanings.len() {
+        return Err(type_error(
+            "stored index entry does not match the index key shape",
+            span,
+        ));
+    }
+    for (key, meaning) in entry.index_keys.iter().zip(&branch.key_meanings) {
+        index_key_to_value(env.program, key, meaning, span)?;
+    }
+    if !branch.yields_identity {
+        return Err(type_error(
+            "stored index entry is not an identity-yielding tuple",
+            span,
+        ));
+    }
+    validate_place_identity_keys(place, &entry.identity, span)?;
+    let Some(index_identity) = entry.index_keys.get(branch.identity_start..) else {
+        return Err(type_error(
+            "stored index entry does not match the index key shape",
+            span,
+        ));
+    };
+    if index_identity != entry.identity {
+        return Err(type_error(
+            "stored index entry identity does not match the index tuple",
+            span,
+        ));
+    }
+    Ok(())
+}
+
+fn validate_scanned_index_tuple_entries(
+    place: &CheckedSavedPlace,
+    branch: &IndexBranchAddress,
+    index_keys: &[SavedKey],
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<(), RuntimeError> {
+    let mut page = env
+        .store
+        .scan_index_tuple(&branch.index.index, index_keys, INDEX_SCAN_PAGE_LIMIT)
+        .map_err(|error| error.located(span))?;
+    loop {
+        for entry in &page.entries {
+            validate_scanned_index_entry(place, branch, entry, span, env)?;
+        }
+        let Some(cursor) = page.cursor else {
+            break;
+        };
+        page = env
+            .store
+            .scan_index_tuple_after(
+                &branch.index.index,
+                index_keys,
+                &cursor,
+                INDEX_SCAN_PAGE_LIMIT,
+            )
+            .map_err(|error| error.located(span))?;
+    }
+    Ok(())
 }
 
 fn child_layer_prefix_address(

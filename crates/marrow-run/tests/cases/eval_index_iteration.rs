@@ -4,7 +4,8 @@
 use crate::support;
 use support::*;
 
-use marrow_run::{RUN_TRAVERSAL, Value};
+use marrow_run::{RUN_TRAVERSAL, RUN_TYPE, Value};
+use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 
 /// A program that indexes books by shelf and traverses the index with `keys`.
@@ -360,4 +361,50 @@ fn bounded_index_range_streams_matching_records() {
     )
     .expect("inverted");
     assert_eq!(inverted.output, "");
+}
+
+#[test]
+fn bounded_enum_range_rejects_corrupt_ranged_component() {
+    let program = checked_program(
+        "enum Status\n\
+         \x20   draft\n\
+         \x20   published\n\
+         \n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required status: Status\n\
+         store ^books(id: int): Book\n\
+         \x20   index byStatus(status, id)\n\
+         \n\
+         pub fn countDraftOrLater(): int\n\
+         \x20   return count(^books.byStatus(Status::draft..))\n\
+         \n\
+         pub fn hasDraftOrLater(): bool\n\
+         \x20   return exists(^books.byStatus(Status::draft..))\n\
+         \n\
+         pub fn printDraftOrLater()\n\
+         \x20   for id in ^books.byStatus(Status::draft..)\n\
+         \x20       print(id)\n",
+    );
+    let store = TreeStore::memory();
+    let corrupt_status = format!(
+        "{}~",
+        enum_member_catalog_id(&program, "Status", "draft").as_str()
+    );
+    store
+        .write_index_entry(
+            &index_catalog_id(&program, "books", "byStatus"),
+            &[SavedKey::Str(corrupt_status), SavedKey::Int(1)],
+            &[SavedKey::Int(1)],
+            Vec::new(),
+        )
+        .expect("corrupt enum range entry");
+
+    for entry in [
+        "test::countDraftOrLater",
+        "test::hasDraftOrLater",
+        "test::printDraftOrLater",
+    ] {
+        assert_run_error(run_entry(&store, checked_entry!(&program, entry)), RUN_TYPE);
+    }
 }

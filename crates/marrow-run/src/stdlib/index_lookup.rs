@@ -6,10 +6,10 @@ use marrow_syntax::SourceSpan;
 
 use crate::collection::absent_read;
 use crate::env::Env;
-use crate::error::{Located, RUN_TYPE, RUN_UNSUPPORTED, RuntimeError, unsupported};
+use crate::error::{Located, RUN_TYPE, RUN_UNSUPPORTED, RuntimeError, type_error, unsupported};
 use crate::expr::eval_expr;
 use crate::store::IndexAddress;
-use crate::value::{Value, identity_value, value_to_index_key};
+use crate::value::{Value, identity_value, validate_place_identity_keys, value_to_index_key};
 
 pub(crate) enum ExactUniqueIndexLookupValue {
     Absent,
@@ -43,7 +43,7 @@ pub(crate) struct UniqueIndexLookup {
     pub(crate) address: IndexAddress,
     pub(crate) identity_arity: usize,
     pub(crate) index_name: String,
-    pub(crate) root: String,
+    pub(crate) place: CheckedSavedPlace,
     pub(crate) remaining_key_depth: usize,
 }
 
@@ -70,7 +70,7 @@ pub(crate) fn unique_index_lookup(
         address: IndexAddress::from_checked(catalog_id, keys, place.span)?,
         identity_arity: place.identity_keys.len(),
         index_name: index_name.clone(),
-        root: place.root.clone(),
+        place: place.clone(),
         remaining_key_depth: index_arg_count.saturating_sub(args.len()),
     }))
 }
@@ -121,10 +121,11 @@ pub(crate) fn read_exact_unique_index_lookup_value(
         )?,
         identity_arity: place.identity_keys.len(),
         index_name: name.clone(),
-        root: place.root.clone(),
+        place: place.clone(),
         remaining_key_depth: 0,
     };
-    read_unique_index_value(&lookup.address.keys, &lookup, span, env)?
+    read_unique_index_identity(&lookup, span, env)?
+        .map(|identity| identity_value(&lookup.place.root, identity))
         .ok_or_else(|| absent_read(format!("`{name}` has no entry for that key"), span))
 }
 
@@ -142,8 +143,8 @@ pub(crate) fn exact_unique_index_lookup_value(
             span,
         ));
     }
-    read_unique_index_value(&lookup.address.keys, &lookup, span, env).map(|value| {
-        Some(value.map_or(ExactUniqueIndexLookupValue::Absent, |_| {
+    read_unique_index_identity(&lookup, span, env).map(|identity| {
+        Some(identity.map_or(ExactUniqueIndexLookupValue::Absent, |_| {
             ExactUniqueIndexLookupValue::Present
         }))
     })
@@ -163,7 +164,8 @@ pub(crate) fn read_exact_unique_index_lookup_if_present(
             span,
         ));
     }
-    read_unique_index_value(&lookup.address.keys, &lookup, span, env)
+    read_unique_index_identity(&lookup, span, env)
+        .map(|identity| identity.map(|identity| identity_value(&lookup.place.root, identity)))
 }
 
 fn index_lookup_keys(
@@ -194,16 +196,21 @@ fn index_lookup_keys(
     Ok(keys)
 }
 
-fn read_unique_index_value(
-    keys: &[SavedKey],
+pub(crate) fn read_unique_index_identity(
     lookup: &UniqueIndexLookup,
     span: SourceSpan,
     env: &Env<'_>,
-) -> Result<Option<Value>, RuntimeError> {
+) -> Result<Option<Vec<SavedKey>>, RuntimeError> {
     let page = env
         .store
-        .scan_index_tuple(&lookup.address.index, keys, 1)
+        .scan_index_tuple(&lookup.address.index, &lookup.address.keys, 2)
         .map_err(|error| error.located(span))?;
+    if page.truncated || page.entries.len() > 1 {
+        return Err(type_error(
+            "stored unique index has multiple entries for one tuple",
+            span,
+        ));
+    }
     let Some(entry) = page.entries.first() else {
         return Ok(None);
     };
@@ -213,7 +220,20 @@ fn read_unique_index_value(
         &lookup.index_name,
         span,
     )?;
-    Ok(Some(identity_value(&lookup.root, identity)))
+    validate_place_identity_keys(&lookup.place, &identity, span)?;
+    if entry.identity != identity {
+        return Err(type_error(
+            "stored unique index identity does not match the entry payload",
+            span,
+        ));
+    }
+    if entry.index_keys != lookup.address.keys {
+        return Err(type_error(
+            "stored unique index entry does not match the requested tuple",
+            span,
+        ));
+    }
+    Ok(Some(identity))
 }
 
 /// Decode a unique-index entry's stored value into the identity it points at, or the

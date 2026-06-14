@@ -4,7 +4,8 @@
 use crate::support;
 use support::*;
 
-use marrow_run::{RUN_TRAVERSAL, RUN_UNSUPPORTED, Value};
+use marrow_run::{RUN_TRAVERSAL, RUN_TYPE, RUN_UNSUPPORTED, Value};
+use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::TreeStore;
 
 // --- Unique-index identity reads ---
@@ -409,6 +410,452 @@ fn index_over_identity_field_streams_matching_records() {
     let bob =
         run_entry(&store, checked_entry!(&program, "test::titlesByBob")).expect("titles by bob");
     assert_eq!(bob.output, "B\n");
+}
+
+#[test]
+fn partial_non_unique_identity_component_traversal_yields_identity_values() {
+    let program = checked_program(
+        "resource Author\n\
+         \x20   required name: string\n\
+         store ^authors(id: int): Author\n\
+         \n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required author: Id(^authors)\n\
+         store ^books(id: int): Book\n\
+         \x20   index byAuthor(author, id)\n\
+         \n\
+         pub fn seed()\n\
+         \x20   const ann = Id(^authors, 1)\n\
+         \x20   ^authors(ann).name = \"Ann\"\n\
+         \x20   var book: Book\n\
+         \x20   book.title = \"Book\"\n\
+         \x20   book.author = ann\n\
+         \x20   ^books(7) = book\n\
+         \n\
+         pub fn authorNamesByBranch()\n\
+         \x20   for author in ^books.byAuthor\n\
+         \x20       print(^authors(author).name ?? \"\")\n",
+    );
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+
+    let outcome = run_entry(
+        &store,
+        checked_entry!(&program, "test::authorNamesByBranch"),
+    )
+    .expect("run");
+    assert_eq!(outcome.output, "Ann\n");
+}
+
+#[test]
+fn partial_non_unique_enum_component_traversal_yields_enum_values() {
+    let program = checked_program(
+        "enum Status\n\
+         \x20   draft\n\
+         \x20   published\n\
+         \n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required status: Status\n\
+         store ^books(id: int): Book\n\
+         \x20   index byStatus(status, id)\n\
+         \n\
+         pub fn seed()\n\
+         \x20   var book: Book\n\
+         \x20   book.title = \"Published\"\n\
+         \x20   book.status = Status::published\n\
+         \x20   ^books(1) = book\n\
+         \n\
+         pub fn publishedStatusesByBranch()\n\
+         \x20   for status in ^books.byStatus\n\
+         \x20       if status is Status::published\n\
+         \x20           print(\"published\")\n",
+    );
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+
+    let outcome = run_entry(
+        &store,
+        checked_entry!(&program, "test::publishedStatusesByBranch"),
+    )
+    .expect("run");
+    assert_eq!(outcome.output, "published\n");
+}
+
+#[test]
+fn malformed_unique_index_identity_payload_cannot_feed_identity_index_argument() {
+    let program = checked_program(
+        "resource Book\n\
+         \x20   required title: string\n\
+         \x20   isbn: string\n\
+         store ^books(id: int): Book\n\
+         \x20   index byIsbn(isbn) unique\n\
+         \n\
+         resource Loan\n\
+         \x20   required book: Id(^books)\n\
+         store ^loans(id: int): Loan\n\
+         \x20   index byBook(book, id)\n\
+         \n\
+         pub fn seed()\n\
+         \x20   ^books(1).title = \"Bad\"\n\
+         \x20   ^books(1).isbn = \"bad\"\n\
+         \n\
+         pub fn countLoansThroughBadIsbn(): int\n\
+         \x20   for book in ^books.byIsbn(\"bad\")\n\
+         \x20       return count(^loans.byBook(book))\n\
+         \x20   return -1\n",
+    );
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+    store
+        .write_index_entry(
+            &index_catalog_id(&program, "books", "byIsbn"),
+            &[SavedKey::Str("bad".into())],
+            &[SavedKey::Int(1)],
+            encode_identity_payload(&[SavedKey::Str("not-an-int".into())]),
+        )
+        .expect("corrupt unique index value");
+
+    assert_run_error(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::countLoansThroughBadIsbn"),
+        ),
+        RUN_TYPE,
+    );
+}
+
+#[test]
+fn malformed_non_unique_identity_suffix_cannot_yield_identity() {
+    let program = checked_program(
+        "resource Book\n\
+         \x20   required title: string\n\
+         \x20   tag: string\n\
+         store ^books(id: int): Book\n\
+         \x20   index byTag(tag, id)\n\
+         \n\
+         pub fn printBooksThroughTag()\n\
+         \x20   for book in ^books.byTag(\"x\")\n\
+         \x20       print(book)\n",
+    );
+    let store = TreeStore::memory();
+    store
+        .write_index_entry(
+            &index_catalog_id(&program, "books", "byTag"),
+            &[SavedKey::Str("x".into()), SavedKey::Str("bad".into())],
+            &[SavedKey::Str("bad".into())],
+            Vec::new(),
+        )
+        .expect("corrupt non-unique index suffix");
+
+    assert_run_error(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::printBooksThroughTag"),
+        ),
+        RUN_TYPE,
+    );
+}
+
+#[test]
+fn count_over_partial_enum_index_branch_rejects_corrupt_component() {
+    let program = checked_program(
+        "enum Status\n\
+         \x20   draft\n\
+         \x20   published\n\
+         \n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required status: Status\n\
+         store ^books(id: int): Book\n\
+         \x20   index byStatus(status, id)\n\
+         \n\
+         pub fn countStatuses(): int\n\
+         \x20   return count(^books.byStatus)\n",
+    );
+    let store = TreeStore::memory();
+    store
+        .write_index_entry(
+            &index_catalog_id(&program, "books", "byStatus"),
+            &[SavedKey::Str("not-a-member".into()), SavedKey::Int(1)],
+            &[SavedKey::Int(1)],
+            Vec::new(),
+        )
+        .expect("corrupt enum index branch");
+
+    assert_run_error(
+        run_entry(&store, checked_entry!(&program, "test::countStatuses")),
+        RUN_TYPE,
+    );
+}
+
+#[test]
+fn exact_non_unique_presence_rejects_corrupt_identity_suffix() {
+    let program = checked_program(
+        "resource Book\n\
+         \x20   required title: string\n\
+         \x20   required tag: string\n\
+         store ^books(id: int): Book\n\
+         \x20   index byTag(tag, id)\n\
+         \n\
+         pub fn hasExactTag(): bool\n\
+         \x20   return exists(^books.byTag(\"x\", 7))\n",
+    );
+    let store = TreeStore::memory();
+    store
+        .write_index_entry(
+            &index_catalog_id(&program, "books", "byTag"),
+            &[SavedKey::Str("x".into()), SavedKey::Int(7)],
+            &[SavedKey::Str("bad".into())],
+            Vec::new(),
+        )
+        .expect("corrupt exact non-unique index suffix");
+
+    assert_run_error(
+        run_entry(&store, checked_entry!(&program, "test::hasExactTag")),
+        RUN_TYPE,
+    );
+}
+
+#[test]
+fn exact_non_unique_presence_rejects_tuple_identity_mismatch() {
+    let program = checked_program(
+        "resource Book\n\
+         \x20   required title: string\n\
+         \x20   required tag: string\n\
+         store ^books(account: int, id: int): Book\n\
+         \x20   index byTag(tag, account, id)\n\
+         \n\
+         pub fn hasExactTaggedBook(): bool\n\
+         \x20   return exists(^books.byTag(\"x\", 3, 7))\n",
+    );
+    let store = TreeStore::memory();
+    store
+        .write_index_entry(
+            &index_catalog_id(&program, "books", "byTag"),
+            &[
+                SavedKey::Str("x".into()),
+                SavedKey::Int(3),
+                SavedKey::Int(7),
+            ],
+            &[SavedKey::Int(3), SavedKey::Int(8)],
+            Vec::new(),
+        )
+        .expect("corrupt exact non-unique index identity");
+
+    assert_run_error(
+        run_entry(&store, checked_entry!(&program, "test::hasExactTaggedBook")),
+        RUN_TYPE,
+    );
+}
+
+#[test]
+fn partial_composite_identity_presence_accepts_valid_branch() {
+    let program = checked_program(
+        "resource Book\n\
+         \x20   required title: string\n\
+         \x20   required tag: string\n\
+         store ^books(account: int, id: int): Book\n\
+         \x20   index byTag(tag, account, id)\n\
+         \n\
+         pub fn seed()\n\
+         \x20   var book: Book\n\
+         \x20   book.title = \"Book\"\n\
+         \x20   book.tag = \"x\"\n\
+         \x20   ^books(3, 7) = book\n\
+         \n\
+         pub fn hasTaggedBook(): bool\n\
+         \x20   return exists(^books.byTag(\"x\"))\n",
+    );
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+
+    let value = run_entry(&store, checked_entry!(&program, "test::hasTaggedBook"))
+        .expect("presence")
+        .value;
+    assert_eq!(value, Some(Value::Bool(true)));
+}
+
+#[test]
+fn walked_composite_identity_count_exhausts_exact_tuple_entries() {
+    let program = checked_program(
+        "resource Book\n\
+         \x20   required title: string\n\
+         \x20   required tag: string\n\
+         store ^books(account: int, id: int): Book\n\
+         \x20   index byTag(tag, account, id)\n\
+         \n\
+         pub fn countTaggedBooks(): int\n\
+         \x20   return count(^books.byTag(\"x\"))\n",
+    );
+    let store = TreeStore::memory();
+    let by_tag = index_catalog_id(&program, "books", "byTag");
+    store
+        .write_index_entry(
+            &by_tag,
+            &[
+                SavedKey::Str("x".into()),
+                SavedKey::Int(3),
+                SavedKey::Int(7),
+            ],
+            &[SavedKey::Int(3), SavedKey::Int(7)],
+            Vec::new(),
+        )
+        .expect("valid non-unique index entry");
+    store
+        .write_index_entry(
+            &by_tag,
+            &[
+                SavedKey::Str("x".into()),
+                SavedKey::Int(3),
+                SavedKey::Int(7),
+            ],
+            &[SavedKey::Int(3), SavedKey::Int(8)],
+            Vec::new(),
+        )
+        .expect("corrupt non-unique index sibling");
+
+    assert_run_error(
+        run_entry(&store, checked_entry!(&program, "test::countTaggedBooks")),
+        RUN_TYPE,
+    );
+}
+
+#[test]
+fn partial_enum_presence_rejects_corrupt_sibling_after_valid_branch() {
+    let program = checked_program(
+        "enum Status\n\
+         \x20   draft\n\
+         \x20   published\n\
+         \n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required status: Status\n\
+         store ^books(id: int): Book\n\
+         \x20   index byStatus(status, id)\n\
+         \n\
+         pub fn seed()\n\
+         \x20   var book: Book\n\
+         \x20   book.title = \"Published\"\n\
+         \x20   book.status = Status::published\n\
+         \x20   ^books(1) = book\n\
+         \n\
+         pub fn hasStatusBranch(): bool\n\
+         \x20   return exists(^books.byStatus)\n",
+    );
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+    let corrupt_status = format!(
+        "{}~",
+        enum_member_catalog_id(&program, "Status", "published").as_str()
+    );
+    store
+        .write_index_entry(
+            &index_catalog_id(&program, "books", "byStatus"),
+            &[SavedKey::Str(corrupt_status), SavedKey::Int(2)],
+            &[SavedKey::Int(2)],
+            Vec::new(),
+        )
+        .expect("corrupt enum index sibling");
+
+    assert_run_error(
+        run_entry(&store, checked_entry!(&program, "test::hasStatusBranch")),
+        RUN_TYPE,
+    );
+}
+
+#[test]
+fn unique_index_rejects_physical_identity_payload_mismatch() {
+    let program = checked_program(
+        "resource Book\n\
+         \x20   required title: string\n\
+         \x20   isbn: string\n\
+         store ^books(id: int): Book\n\
+         \x20   index byIsbn(isbn) unique\n\
+         \n\
+         pub fn idByIsbn(isbn: string): Id(^books)\n\
+         \x20   return ^books.byIsbn(isbn) ?? Id(^books, 0)\n\
+         \n\
+         pub fn hasIsbn(isbn: string): bool\n\
+         \x20   return exists(^books.byIsbn(isbn))\n\
+         \n\
+         pub fn countIsbn(isbn: string): int\n\
+         \x20   return count(^books.byIsbn(isbn))\n\
+         \n\
+         pub fn printByIsbn(isbn: string)\n\
+         \x20   for id in ^books.byIsbn(isbn)\n\
+         \x20       print(id)\n",
+    );
+    let store = TreeStore::memory();
+    store
+        .write_index_entry(
+            &index_catalog_id(&program, "books", "byIsbn"),
+            &[SavedKey::Str("978-0".into())],
+            &[SavedKey::Int(2)],
+            encode_identity_payload(&[SavedKey::Int(1)]),
+        )
+        .expect("corrupt unique index identity");
+
+    for entry in [
+        "test::idByIsbn",
+        "test::hasIsbn",
+        "test::countIsbn",
+        "test::printByIsbn",
+    ] {
+        assert_run_error(
+            run_entry(
+                &store,
+                checked_entry!(&program, entry, Value::Str("978-0".into())),
+            ),
+            RUN_TYPE,
+        );
+    }
+}
+
+#[test]
+fn unique_index_rejects_duplicate_physical_entries_for_one_tuple() {
+    let program = checked_program(
+        "resource Book\n\
+         \x20   required title: string\n\
+         \x20   isbn: string\n\
+         store ^books(id: int): Book\n\
+         \x20   index byIsbn(isbn) unique\n\
+         \n\
+         pub fn idByIsbn(isbn: string): Id(^books)\n\
+         \x20   return ^books.byIsbn(isbn) ?? Id(^books, 0)\n\
+         \n\
+         pub fn hasIsbn(isbn: string): bool\n\
+         \x20   return exists(^books.byIsbn(isbn))\n",
+    );
+    let store = TreeStore::memory();
+    let by_isbn = index_catalog_id(&program, "books", "byIsbn");
+    store
+        .write_index_entry(
+            &by_isbn,
+            &[SavedKey::Str("978-0".into())],
+            &[SavedKey::Int(1)],
+            encode_identity_payload(&[SavedKey::Int(1)]),
+        )
+        .expect("first unique index entry");
+    store
+        .write_index_entry(
+            &by_isbn,
+            &[SavedKey::Str("978-0".into())],
+            &[SavedKey::Int(2)],
+            encode_identity_payload(&[SavedKey::Int(2)]),
+        )
+        .expect("duplicate unique index entry");
+
+    for entry in ["test::idByIsbn", "test::hasIsbn"] {
+        assert_run_error(
+            run_entry(
+                &store,
+                checked_entry!(&program, entry, Value::Str("978-0".into())),
+            ),
+            RUN_TYPE,
+        );
+    }
 }
 
 #[test]

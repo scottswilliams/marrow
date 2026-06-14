@@ -2,14 +2,16 @@
 
 use marrow_store::Decimal;
 use marrow_store::cell::CatalogId;
-use marrow_store::key::{SavedKey, decode_identity_payload_arity, encode_identity_index_key};
+use marrow_store::key::{
+    SavedKey, decode_identity_index_key, decode_identity_payload_arity, encode_identity_index_key,
+};
 use marrow_store::tree::{TreeEnumMember, decode_tree_enum_member, encode_tree_enum_member};
 use marrow_store::value::{SavedValue, ScalarType, decode_value, encode_value};
 use marrow_syntax::SourceSpan;
 
 use marrow_check::{
-    CheckedEnumRef, CheckedFacts, CheckedRuntimeProgram, EnumId, EnumMemberId, StoreLeafKind,
-    StoredValueMeaning,
+    CheckedEnumRef, CheckedFacts, CheckedRuntimeProgram, CheckedSavedPlace, EnumId, EnumMemberId,
+    StoreLeafKind, StoredValueMeaning,
 };
 
 use crate::error::{Located, RuntimeError, type_error, unsupported};
@@ -396,15 +398,32 @@ pub(crate) fn value_to_index_key(
     span: SourceSpan,
 ) -> Result<SavedKey, RuntimeError> {
     match meaning {
+        StoredValueMeaning::Scalar(scalar) => {
+            if value_scalar_type(&value) != Some(*scalar) {
+                return Err(type_error("this index key has the wrong scalar type", span));
+            }
+            value_to_key(value).ok_or_else(|| unsupported("an index key of this type", span))
+        }
+        StoredValueMeaning::Enum { enum_id, members } => match value {
+            Value::Enum(value)
+                if value.enum_id == *enum_id && members.contains(&value.member_id) =>
+            {
+                Ok(SavedKey::Str(value.member_catalog_id))
+            }
+            Value::Enum(_) => Err(type_error("this index key takes a different enum", span)),
+            _ => Err(type_error("this index key takes an enum value", span)),
+        },
         StoredValueMeaning::Identity {
             root,
             store_catalog_id,
+            key_scalars,
             ..
         } => {
             let Value::Identity(identity) = value else {
                 return Err(type_error("this index key takes an identity value", span));
             };
             let keys = identity.into_keys_for_root(root, span)?;
+            validate_identity_key_scalars(&keys, key_scalars, span)?;
             let Some(store_catalog_id) = store_catalog_id.as_deref() else {
                 return Err(unsupported(
                     "this identity index key before catalog activation",
@@ -416,10 +435,114 @@ pub(crate) fn value_to_index_key(
                 &keys,
             )))
         }
-        StoredValueMeaning::Scalar(_) | StoredValueMeaning::Enum { .. } => {
-            value_to_key(value).ok_or_else(|| unsupported("an index key of this type", span))
+    }
+}
+
+pub(crate) fn index_key_to_value(
+    program: &CheckedRuntimeProgram,
+    key: &SavedKey,
+    meaning: &StoredValueMeaning,
+    span: SourceSpan,
+) -> Result<Value, RuntimeError> {
+    match meaning {
+        StoredValueMeaning::Scalar(scalar) => {
+            if key.scalar_type() != *scalar {
+                return Err(type_error(
+                    "stored index key has the wrong scalar type",
+                    span,
+                ));
+            }
+            Ok(saved_key_to_value(key.clone()))
+        }
+        StoredValueMeaning::Enum { members, .. } => {
+            let SavedKey::Str(member_catalog_id) = key else {
+                return Err(type_error("stored index key is not an enum member", span));
+            };
+            let member_id = members
+                .iter()
+                .copied()
+                .find(|member_id| {
+                    program
+                        .facts()
+                        .enum_member(*member_id)
+                        .and_then(|member| member.catalog_id.as_deref())
+                        == Some(member_catalog_id.as_str())
+                })
+                .ok_or_else(|| type_error("stored index key is not a valid enum member", span))?;
+            enum_value_from_member(program.facts(), member_id)
+                .map(Value::Enum)
+                .ok_or_else(|| type_error("stored index key is not a valid enum member", span))
+        }
+        StoredValueMeaning::Identity {
+            root,
+            store_catalog_id,
+            arity,
+            key_scalars,
+            ..
+        } => {
+            let SavedKey::Bytes(bytes) = key else {
+                return Err(type_error(
+                    "stored index key is not an identity value",
+                    span,
+                ));
+            };
+            let Some(store_catalog_id) = store_catalog_id.as_deref() else {
+                return Err(unsupported(
+                    "this identity index key before catalog activation",
+                    span,
+                ));
+            };
+            let keys =
+                decode_identity_index_key(bytes, store_catalog_id, *arity).ok_or_else(|| {
+                    type_error("stored index key is not a valid identity value", span)
+                })?;
+            validate_identity_key_scalars(&keys, key_scalars, span)?;
+            Ok(identity_value(root, keys))
         }
     }
+}
+
+pub(crate) fn validate_identity_key_scalars(
+    keys: &[SavedKey],
+    key_scalars: &[ScalarType],
+    span: SourceSpan,
+) -> Result<(), RuntimeError> {
+    if keys.len() != key_scalars.len()
+        || !keys
+            .iter()
+            .zip(key_scalars)
+            .all(|(key, scalar)| key.scalar_type() == *scalar)
+    {
+        return Err(type_error(
+            "stored identity keys do not match the store identity type",
+            span,
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_place_identity_keys(
+    place: &CheckedSavedPlace,
+    keys: &[SavedKey],
+    span: SourceSpan,
+) -> Result<(), RuntimeError> {
+    if keys.len() != place.identity_keys.len() {
+        return Err(type_error(
+            "stored identity keys do not match the store identity type",
+            span,
+        ));
+    }
+    for (key, declared) in keys.iter().zip(&place.identity_keys) {
+        if let Some(expected) = declared.scalar
+            && key.scalar_type() != expected
+        {
+            return Err(type_error(
+                "stored identity keys do not match the store identity type",
+                span,
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
