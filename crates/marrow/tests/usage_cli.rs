@@ -96,6 +96,18 @@ fn top_level_help_advertises_backup_read_targets() {
 }
 
 #[test]
+fn top_level_help_advertises_doctor() {
+    let output = marrow(&["--help"]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert!(
+        stdout.contains("marrow doctor [--format text|json|jsonl] <projectdir>"),
+        "{stdout}"
+    );
+}
+
+#[test]
 fn run_with_no_project_dir_is_a_usage_failure() {
     let output = marrow(&["run"]);
     assert_eq!(output.status.code(), Some(2), "{output:?}");

@@ -82,6 +82,10 @@ reported as `store.corruption`).
 cannot be applied exactly. A command run against a project whose `marrow.json`
 is unreadable reports `io.read`; an invalid `marrow.json` reports
 `config.invalid`.
+`marrow doctor` wraps existing typed project, catalog, store, fence, and data
+facts in `doctor.*` findings. Each finding carries the underlying code or typed
+facts in `data` when one exists and names an exact next command or manual
+remedy.
 
 ## How `kind` Is Assigned
 
@@ -95,7 +99,7 @@ code is stable and predictable:
 | `run`, `value` | `runtime` |
 | `store` | `storage` |
 | `io` | `io` |
-| everything else (`config`, `project`, `catalog`, `data`, `evolve`, `write`, `test`, `restore`) | `tooling` |
+| everything else (`config`, `project`, `catalog`, `data`, `doctor`, `evolve`, `write`, `test`, `restore`) | `tooling` |
 
 ## Code Reference
 
@@ -201,6 +205,25 @@ Resource-schema rules. Reported during a project check alongside `check.*`.
 | Code | Meaning |
 |---|---|
 | `catalog.merge_conflict` | `marrow.catalog.json` or another accepted-catalog metadata section contains Git conflict marker lines. Resolve the conflict and rerun the command. |
+
+### `doctor.*` — kind `tooling`
+
+Read-only triage findings from `marrow doctor`. They aggregate existing typed
+facts and never repair, render catalogs, apply evolution, or run an unbounded
+integrity scan.
+
+| Code | Meaning |
+|---|---|
+| `doctor.config_invalid` | `doctor` could not load `marrow.json`. `data.underlying_code` is usually `io.read` or `config.invalid`; fix the config and rerun the printed `marrow doctor` command. |
+| `doctor.catalog_invalid` | The accepted `marrow.catalog.json` artifact failed catalog validation, including digest mismatch or conflict-marker rejection. `data.underlying_code` carries the `catalog.*` code; restore or regenerate the artifact, then run the printed `marrow check` command. |
+| `doctor.catalog_unreadable` | The accepted catalog artifact exists but could not be read. Make it readable, then run the printed `marrow check` command. |
+| `doctor.check_failed` | The project check summary reported diagnostics or could not load source. Run the printed `marrow check` command for the full diagnostic report. |
+| `doctor.store_locked` | The configured native store exists but a read-only open reported `store.locked`. Close the process holding the store, then rerun the printed `marrow doctor` command. |
+| `doctor.store_recovery_required` | The configured native store needs a write-capable recovery open before read-only inspection. Run the printed `marrow data recover` command. |
+| `doctor.store_unavailable` | A read-only store open or metadata read failed with another `store.*` code such as corruption, format-version mismatch, or I/O failure. The finding data carries the underlying store code. |
+| `doctor.catalog_drift` | The accepted catalog artifact and store catalog snapshot differ. The finding data carries both epochs and digests so an operator can choose which artifact to restore. |
+| `doctor.fence_mismatch` | The activation fence classification does not match the checked project. `data.underlying_code` carries the `run.*` or `store.*` fence code, and `next_command` names the evolve, recovery, or rerun command to use next. |
+| `doctor.integrity_sample_failed` | The bounded saved-data integrity sample found problems or could not complete. Run the printed `marrow data integrity` command for the full read-only report. |
 
 ### `run.*` — kind `runtime`
 

@@ -30,6 +30,7 @@ Structured reports that include a `project` field render the canonical absolute 
 |---|---|---|
 | `init` | `cmd_init.rs` | Creates the quickstart scaffold in a new target directory after validating the final path component as one module-name segment. |
 | `check` | `cmd_check.rs` | Type-checks a project directory containing `marrow.json`; JSON output includes checker entry footprints. |
+| `doctor` | `cmd_doctor.rs` | Aggregates read-only operator triage findings with exact next commands, including store-open failures, catalog validation, fence/stamp classification, engine profile, and a capped integrity sample. |
 | `run` | `cmd_run.rs` | Parses run flags and repeated `--arg name=value` pairs, opens a `ProjectSession`, emits session notices, invokes the selected entry under a plain/trace/dry-run hook, and renders text output, JSON envelopes, or dry-run reports. |
 | `test` | `cmd_test.rs` | Opens a test `ProjectSession`, filters its public zero-param test cases by qualified name substring, invokes each selected test, and renders pass/fail/error reports. |
 | `fmt` | `cmd_fmt.rs` | Formats one file to stdout, or `--check`/`--write` over source roots; refuses stdin, a bare dir with no mode, and `--write` rewrites that would reduce retained comments. |
@@ -53,6 +54,7 @@ Structured reports that include a `project` field render the canonical absolute 
 | `crates/marrow/src/main.rs` | argv dispatch, broken-pipe hook, and the shared loaders, store-path resolution, format parsing, and JSON envelope helpers. |
 | `crates/marrow/src/cmd_init.rs` | `init`: validates the target directory's final path component and writes the quickstart project scaffold without overwriting an existing target. |
 | `crates/marrow/src/cmd_check.rs` | `check`; also the located runtime-fault renderer reused by `run`. |
+| `crates/marrow/src/cmd_doctor.rs` | `doctor`: read-only operator triage that aggregates config, check, catalog, store-open, stamp/fence, engine-profile, and bounded integrity-sample facts into stable `doctor.*` findings. |
 | `crates/marrow/src/cmd_run.rs` | `run`: parse flags, preserve argv argument order, render session open errors/notices, execute through `ProjectSession::invoke` under a hook, emit text output, JSON envelopes, or dry-run reports. |
 | `crates/marrow/src/cmd_test.rs` | `test`: filter session-provided test cases, invoke them through `ProjectSession::invoke`, print pass/fail/error summary. |
 | `crates/marrow/src/cmd_fmt.rs` | `fmt`: format to stdout or `--check`/`--write`. |
@@ -66,6 +68,7 @@ Structured reports that include a `project` field render the canonical absolute 
 | `crates/marrow/src/cmd_data.rs` | `data` dispatch, `roots`/`stats`/`dump`, live-or-backup read-target parsing, snapshot pinning, the streaming JSON-array envelope. |
 | `crates/marrow/src/cmd_data/get.rs` | `data get`: one path query, present/absent/children-only rendering. |
 | `crates/marrow/src/cmd_data/integrity.rs` | `data integrity`: render typed saved-data findings, including incomplete-record and dangling-reference catalog/key identity fields, and exit FAILURE when any exist. |
+| `crates/marrow-check/src/tooling/integrity.rs` | Shared integrity facts, including `sample_integrity_problems`, the bounded sample used by `doctor` so triage checks record values, completeness, and stored cells under one shared cap instead of running the full integrity scan silently. |
 | `crates/marrow/src/cmd_evolve/mod.rs` | `evolve` dispatch, `preview_cmd`, and `apply_cmd` (the apply rejects managed-artifact backup paths, creates any required recovery backup before the store mutation, publishes the catalog atomically, then renders the project-root catalog file from the committed snapshot). |
 | `crates/marrow/src/cmd_evolve/args.rs` | preview/apply grammar: preview owns `--from-backup` and `--scaffold`; apply owns `--maintenance`, repeated `--approve-retire <id>:<count>` folded into one `Approval`, and the mutually exclusive `--backup <path>` / `--no-backup` recovery decision. |
 | `crates/marrow/src/cmd_evolve/render.rs` | all evolve output, including formatter-backed scaffold source, recovery-point receipt fields, and the `ApplyError` to code/message map. |

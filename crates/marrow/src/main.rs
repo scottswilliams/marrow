@@ -9,6 +9,7 @@ mod backup;
 mod cmd_backup;
 mod cmd_check;
 mod cmd_data;
+mod cmd_doctor;
 mod cmd_evolve;
 mod cmd_fmt;
 mod cmd_init;
@@ -24,6 +25,7 @@ Marrow
 Usage:
   marrow init <projectdir>
   marrow check [--format text|json|jsonl] <projectdir>
+  marrow doctor [--format text|json|jsonl] <projectdir>
   marrow evolve preview [--from-backup <artifact>] [--scaffold] [--format text|json|jsonl] <projectdir>
   marrow evolve apply [--maintenance] [--approve-retire <catalog-id>:<count>]
     [--backup <path> | --no-backup] [--format text|json|jsonl] <projectdir>
@@ -86,6 +88,7 @@ fn utf8_args(args: &[OsString]) -> Option<Vec<String>> {
 fn dispatch(command: &str, rest: &[String]) -> ExitCode {
     match command {
         "check" => cmd_check::check(rest),
+        "doctor" => cmd_doctor::doctor(rest),
         "evolve" => cmd_evolve::evolve(rest),
         "fmt" => cmd_fmt::fmt(rest),
         "run" => cmd_run::run(rest),

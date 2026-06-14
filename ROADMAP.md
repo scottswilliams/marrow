@@ -825,7 +825,7 @@ outbox-idiom paragraph (backend-contract.md); C31 law-15 measurement-not-explana
 (foundations/01; citation matches current numbering); C38 identity-codec decode-surface note
 reserving exactly the spelling `std::identity::components` (language/05); G3-2
 encryption-as-backend-profile clause (storage-engine/01); C28 `doctor.*` finding-code-family
-reservation (decision-record note; rows enter error-codes.md only when W6.13 ships). Routing
+reservation (decision-record note; shipped rows live in error-codes.md). Routing
 clarification, not a carve-out: W1.1 owns the marrow-decisions repo only, so the marrow-repo
 items route by file owner — C25's backend-contract.md paragraph rides W2.5, C22's docs/future
 sketch fix rides W1.2, and C24's review criterion lands in the W3.1/W3.6 lane prompts.
@@ -845,15 +845,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 ## Wave 6 — Operator surface and integration (CLI; concurrent by command)
 
 Listing order is execution order. docs/cli.md integrates with the remaining operator lanes.
-
-**W6.13 ∥ marrow doctor (C28; slippable).** After W2.5 + W3.7. Owns: one cmd module aggregating
-existing typed facts — config parse, check summary, catalog digest validation, store-open probe
-(store.locked with remedy), fence/stamp classification, engine-profile tuple, bounded integrity
-sample capped at a named constant — one finding per line, stable code (the W1.1-reserved set),
-exact next command. No repair actions, no full scans, no new error families. Seed: a failing CLI
-test over a project with a held store and a drifted catalog producing both findings. Review:
-every probe path read-only; finding codes match the W1.1 reservations exactly. Done: pure
-wiring-and-rendering; may slip post-v0.1 without contract cost because the codes are reserved.
 
 **W6.14 ∥ Typed remedy payload: index synthesis (C09; v01-full).** After the Wave 5 series
 (checker quiet). Owns: one DiagnosticPayload variant (SuggestedIndex carrying the synthesized
@@ -1005,7 +996,6 @@ Every v01-foundation and post-v01-seam item, its owning lane, and the invariant 
 | C23 | bounded-cardinality reserved sentence | W1.1 batch | the index surface has a named additive extension point independent of II.C3 |
 | C24 | constraints-triangle sentence + W3.x review criterion | W1.1 batch + W3.1/W3.6 | predicate constraints will route through DataProof/CatalogOnly; one obligation model forever |
 | C25 | outbox-idiom paragraph in backend-contract.md | W2.5 | the manual pattern and the deferred engine outbox cannot be confused post-release |
-| C28 | doctor finding codes reserved (build slippable) | W1.1 + W6.13 | the triage contract cannot collide with other lanes' code assignments |
 | C29 | evaluate_checked_read_only_expression | W5.6 | one canonical checked-evaluation entry point for eval and editor hovers |
 | C30 | evolution_preview signature (schema-only / backup-backed) | W5.6 | editors wire against a stable witness-fact contract; live-store path explicitly deferred |
 | C31 | Profile arm placeholder + law-15 note | W2.8 + W1.1 | the profile surface is not foreclosed; measurement vs explanation is settled once |

@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::ops::ControlFlow;
 
 use marrow_catalog::{CatalogEntryKind, CatalogLifecycle};
 use marrow_store::StoreError;
@@ -16,7 +17,8 @@ use crate::{
 
 use super::data::{
     DataRecord, checked_places, key_mismatch, push_key, render_data_path, tooling_catalog_id,
-    validate_member_value_path, visit_data_records_in_places, visit_place_record_identities,
+    validate_member_value_path, visit_data_records_in_places, visit_data_records_in_places_until,
+    visit_place_record_identities_until,
 };
 
 const ORPHAN_INTEGRITY_HELP: &str =
@@ -48,6 +50,151 @@ pub fn count_activation_integrity_problems(
 ) -> Result<(usize, usize), StoreError> {
     let places = checked_activation_root_places(program);
     count_integrity_problems_in_places(store, program, &places, IntegrityProfile::Activation)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntegritySample {
+    pub items_checked: usize,
+    pub problems: usize,
+    pub truncated: bool,
+}
+
+pub fn sample_integrity_problems(
+    store: &TreeStore,
+    program: &CheckedProgram,
+    limit: usize,
+) -> Result<IntegritySample, StoreError> {
+    let mut sample = IntegritySample {
+        items_checked: 0,
+        problems: 0,
+        truncated: false,
+    };
+    if limit == 0 {
+        sample.truncated = true;
+        return Ok(sample);
+    }
+
+    let places = checked_places(program);
+    let mut budget = SampleBudget::new(limit);
+    sample_record_problems(store, program, &places, &mut budget, &mut sample)?;
+    if !budget.truncated {
+        sample_incomplete_problems(store, program, &places, &mut budget, &mut sample)?;
+    }
+    if !budget.truncated {
+        sample_orphan_problems(store, &places, &mut budget, &mut sample)?;
+    }
+    sample.items_checked = budget.used();
+    sample.truncated = budget.truncated;
+    Ok(sample)
+}
+
+fn sample_record_problems(
+    store: &TreeStore,
+    program: &CheckedProgram,
+    places: &[CheckedSavedPlace],
+    budget: &mut SampleBudget,
+    sample: &mut IntegritySample,
+) -> Result<(), StoreError> {
+    let flow = visit_data_records_in_places_until(places, store, |record| {
+        let ControlFlow::Continue(()) = budget.claim() else {
+            return Ok(ControlFlow::Break(()));
+        };
+        if check_record(store, program, &record, IntegrityProfile::Report)?.is_some() {
+            sample.increment_problems()?;
+        }
+        Ok(ControlFlow::Continue(()))
+    })?;
+    if flow.is_break() {
+        budget.truncated = true;
+    }
+    Ok(())
+}
+
+fn sample_incomplete_problems(
+    store: &TreeStore,
+    program: &CheckedProgram,
+    places: &[CheckedSavedPlace],
+    budget: &mut SampleBudget,
+    sample: &mut IntegritySample,
+) -> Result<(), StoreError> {
+    let mut visit_item = || Ok(budget.claim());
+    let mut report = |problem| {
+        sample_problem(problem, sample)?;
+        Ok(ControlFlow::Continue(()))
+    };
+    if visit_incomplete_records_in_places_until(
+        store,
+        program,
+        places,
+        &mut visit_item,
+        &mut report,
+    )?
+    .is_break()
+    {
+        budget.truncated = true;
+    }
+    Ok(())
+}
+
+fn sample_orphan_problems(
+    store: &TreeStore,
+    places: &[CheckedSavedPlace],
+    budget: &mut SampleBudget,
+    sample: &mut IntegritySample,
+) -> Result<(), StoreError> {
+    let schema = DeclaredSchema::from_places(places);
+    store.visit_backup_cells_until(|cell| {
+        let ControlFlow::Continue(()) = budget.claim() else {
+            return Ok(ControlFlow::Break(()));
+        };
+        if let Some(problem) = schema.classify(store, cell.data_key().clone())? {
+            sample_problem(problem, sample)?;
+        }
+        Ok(ControlFlow::Continue(()))
+    })?;
+    Ok(())
+}
+
+struct SampleBudget {
+    limit: usize,
+    visited: usize,
+    truncated: bool,
+}
+
+impl SampleBudget {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            visited: 0,
+            truncated: false,
+        }
+    }
+
+    fn claim(&mut self) -> ControlFlow<()> {
+        if self.visited == self.limit {
+            self.truncated = true;
+            ControlFlow::Break(())
+        } else {
+            self.visited += 1;
+            ControlFlow::Continue(())
+        }
+    }
+
+    fn used(&self) -> usize {
+        self.visited
+    }
+}
+
+impl IntegritySample {
+    fn increment_problems(&mut self) -> Result<(), StoreError> {
+        self.problems = self
+            .problems
+            .checked_add(1)
+            .ok_or(StoreError::LimitExceeded {
+                limit: "data integrity problem count",
+            })?;
+        Ok(())
+    }
 }
 
 fn count_integrity_problems_in_places(
@@ -308,31 +455,64 @@ fn visit_incomplete_records_in_places(
     places: &[CheckedSavedPlace],
     mut report: impl FnMut(IntegrityProblem) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
+    let mut visit_item = || Ok(ControlFlow::Continue(()));
+    let mut report_problem = |problem| {
+        report(problem)?;
+        Ok(ControlFlow::Continue(()))
+    };
+    let flow = visit_incomplete_records_in_places_until(
+        store,
+        program,
+        places,
+        &mut visit_item,
+        &mut report_problem,
+    )?;
+    if flow.is_break() {
+        return Ok(());
+    }
+    Ok(())
+}
+
+fn visit_incomplete_records_in_places_until(
+    store: &TreeStore,
+    program: &CheckedProgram,
+    places: &[CheckedSavedPlace],
+    visit_item: &mut impl FnMut() -> Result<ControlFlow<()>, StoreError>,
+    report: &mut impl FnMut(IntegrityProblem) -> Result<ControlFlow<()>, StoreError>,
+) -> Result<ControlFlow<()>, StoreError> {
     let accepted_members = accepted_member_ids(program);
     for place in places {
         let names = member_names(&place.root_members);
-        visit_place_record_identities(place, store, &mut |place, store_id, identity| {
-            if identity_has_key_mismatch(place, identity) {
-                return Ok(());
-            }
-            let context = CompletenessContext {
-                store,
-                store_id,
-                root: &place.root,
-                names: &names,
-                accepted_members: &accepted_members,
-            };
-            let mut parent_path = Vec::new();
-            check_members_complete(
-                &context,
-                identity,
-                &place.root_members,
-                &mut parent_path,
-                &mut report,
-            )
-        })?;
+        let flow =
+            visit_place_record_identities_until(place, store, &mut |place, store_id, identity| {
+                let ControlFlow::Continue(()) = visit_item()? else {
+                    return Ok(ControlFlow::Break(()));
+                };
+                if identity_has_key_mismatch(place, identity) {
+                    return Ok(ControlFlow::Continue(()));
+                }
+                let context = CompletenessContext {
+                    store,
+                    store_id,
+                    root: &place.root,
+                    names: &names,
+                    accepted_members: &accepted_members,
+                };
+                let mut parent_path = Vec::new();
+                visit_members_complete_until(
+                    &context,
+                    identity,
+                    &place.root_members,
+                    &mut parent_path,
+                    visit_item,
+                    report,
+                )
+            })?;
+        if flow.is_break() {
+            return Ok(ControlFlow::Break(()));
+        }
     }
-    Ok(())
+    Ok(ControlFlow::Continue(()))
 }
 
 fn accepted_member_ids(program: &CheckedProgram) -> HashSet<&str> {
@@ -363,64 +543,85 @@ struct CompletenessContext<'a> {
     accepted_members: &'a HashSet<&'a str>,
 }
 
-fn check_members_complete(
+fn visit_members_complete_until(
     context: &CompletenessContext<'_>,
     identity: &[SavedKey],
     members: &[CheckedSavedMember],
     parent_path: &mut Vec<DataPathSegment>,
-    report: &mut impl FnMut(IntegrityProblem) -> Result<(), StoreError>,
-) -> Result<(), StoreError> {
+    visit_item: &mut impl FnMut() -> Result<ControlFlow<()>, StoreError>,
+    report: &mut impl FnMut(IntegrityProblem) -> Result<ControlFlow<()>, StoreError>,
+) -> Result<ControlFlow<()>, StoreError> {
     for member in members {
         let Some(member_id) = tooling_catalog_id(&member.catalog_id, "resource member")? else {
             continue;
         };
         parent_path.push(DataPathSegment::Member(member_id.clone()));
-        if member.key_params.is_empty() {
+        let flow = if member.key_params.is_empty() {
             match &member.kind {
-                CheckedSavedMemberKind::Field { required } => check_field_complete(
+                CheckedSavedMemberKind::Field { .. } => visit_field_complete_until(
                     context,
                     identity,
                     member,
                     &member_id,
-                    *required,
                     parent_path,
+                    visit_item,
                     report,
                 )?,
-                CheckedSavedMemberKind::Group => check_members_complete(
+                CheckedSavedMemberKind::Group => visit_members_complete_until(
                     context,
                     identity,
                     &member.group_members,
                     parent_path,
+                    visit_item,
                     report,
                 )?,
             }
         } else if matches!(member.kind, CheckedSavedMemberKind::Group) {
-            check_keyed_group_entries(context, identity, member, 0, parent_path, report)?;
-        }
+            visit_keyed_group_entries_until(
+                context,
+                identity,
+                member,
+                0,
+                parent_path,
+                visit_item,
+                report,
+            )?
+        } else {
+            ControlFlow::Continue(())
+        };
         parent_path.pop();
+        if flow.is_break() {
+            return Ok(flow);
+        }
     }
-    Ok(())
+    Ok(ControlFlow::Continue(()))
 }
 
-fn check_field_complete(
+fn visit_field_complete_until(
     context: &CompletenessContext<'_>,
     identity: &[SavedKey],
     member: &CheckedSavedMember,
     member_id: &CatalogId,
-    required: bool,
     field_path: &[DataPathSegment],
-    report: &mut impl FnMut(IntegrityProblem) -> Result<(), StoreError>,
-) -> Result<(), StoreError> {
-    if !required || member.leaf.is_none() || !context.accepted_members.contains(member_id.as_str())
+    visit_item: &mut impl FnMut() -> Result<ControlFlow<()>, StoreError>,
+    report: &mut impl FnMut(IntegrityProblem) -> Result<ControlFlow<()>, StoreError>,
+) -> Result<ControlFlow<()>, StoreError> {
+    let CheckedSavedMemberKind::Field { required } = &member.kind else {
+        return Ok(ControlFlow::Continue(()));
+    };
+    if !*required || member.leaf.is_none() || !context.accepted_members.contains(member_id.as_str())
     {
-        return Ok(());
+        return Ok(ControlFlow::Continue(()));
     }
+    let ControlFlow::Continue(()) = visit_item()? else {
+        return Ok(ControlFlow::Break(()));
+    };
     if context
         .store
         .read_data_value(context.store_id, identity, field_path)?
         .is_some()
     {
-        return Ok(());
+        return Ok(ControlFlow::Continue(()));
     }
     let parent_path = field_path[..field_path.len() - 1].to_vec();
     report(incomplete_problem(
@@ -428,24 +629,25 @@ fn check_field_complete(
         identity,
         parent_path,
         member_id.clone(),
-    ))?;
-    Ok(())
+    ))
 }
 
-fn check_keyed_group_entries(
+fn visit_keyed_group_entries_until(
     context: &CompletenessContext<'_>,
     identity: &[SavedKey],
     member: &CheckedSavedMember,
     key_index: usize,
     parent_path: &mut Vec<DataPathSegment>,
-    report: &mut impl FnMut(IntegrityProblem) -> Result<(), StoreError>,
-) -> Result<(), StoreError> {
+    visit_item: &mut impl FnMut() -> Result<ControlFlow<()>, StoreError>,
+    report: &mut impl FnMut(IntegrityProblem) -> Result<ControlFlow<()>, StoreError>,
+) -> Result<ControlFlow<()>, StoreError> {
     if key_index == member.key_params.len() {
-        return check_members_complete(
+        return visit_members_complete_until(
             context,
             identity,
             &member.group_members,
             parent_path,
+            visit_item,
             report,
         );
     }
@@ -456,23 +658,37 @@ fn check_keyed_group_entries(
     while let Some(key) = child {
         let next_after = key.clone();
         if key_mismatch(member.key_params[key_index].scalar, &key).is_none() {
+            let ControlFlow::Continue(()) = visit_item()? else {
+                return Ok(ControlFlow::Break(()));
+            };
             parent_path.push(DataPathSegment::Key(key));
-            check_keyed_group_entries(
+            let flow = visit_keyed_group_entries_until(
                 context,
                 identity,
                 member,
                 key_index + 1,
                 parent_path,
+                visit_item,
                 report,
             )?;
             parent_path.pop();
+            if flow.is_break() {
+                return Ok(flow);
+            }
         }
         child =
             context
                 .store
                 .data_next_child(context.store_id, identity, parent_path, &next_after)?;
     }
-    Ok(())
+    Ok(ControlFlow::Continue(()))
+}
+
+fn sample_problem(
+    _problem: IntegrityProblem,
+    sample: &mut IntegritySample,
+) -> Result<(), StoreError> {
+    sample.increment_problems()
 }
 
 fn incomplete_problem(

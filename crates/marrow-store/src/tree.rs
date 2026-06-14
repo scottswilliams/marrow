@@ -1,6 +1,7 @@
 //! Typed tree-cell store facade over the private ordered-byte engine.
 
 use std::cell::RefCell;
+use std::ops::ControlFlow;
 
 use crate::backend::{Backend, ScanPage, StoreError};
 use crate::cell::{
@@ -939,18 +940,31 @@ impl TreeStore {
         &self,
         mut visit: impl for<'cell> FnMut(TreeBackupCell<'cell>) -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
+        self.visit_backup_cells_until(|cell| {
+            visit(cell)?;
+            Ok(ControlFlow::Continue(()))
+        })
+    }
+
+    /// Visit data-family cells in encoded order until the visitor stops.
+    pub fn visit_backup_cells_until(
+        &self,
+        mut visit: impl for<'cell> FnMut(TreeBackupCell<'cell>) -> Result<ControlFlow<()>, StoreError>,
+    ) -> Result<(), StoreError> {
         self.visit_family(CellKey::data_family().as_bytes(), &mut visit)
     }
 
     fn visit_family(
         &self,
         prefix: &[u8],
-        visit: &mut impl for<'cell> FnMut(TreeBackupCell<'cell>) -> Result<(), StoreError>,
+        visit: &mut impl for<'cell> FnMut(TreeBackupCell<'cell>) -> Result<ControlFlow<()>, StoreError>,
     ) -> Result<(), StoreError> {
         let mut page = self.scan(prefix, BACKUP_SCAN_PAGE)?;
         loop {
             for (key, value) in &page.entries {
-                visit(TreeBackupCell::from_raw(key, value)?)?;
+                if visit(TreeBackupCell::from_raw(key, value)?)?.is_break() {
+                    return Ok(());
+                }
             }
             if !page.truncated {
                 return Ok(());

@@ -921,10 +921,10 @@ fn record_index_signatures(
             continue;
         };
         match accepted.get(stable_id.as_str()).copied() {
-            Some(Some(accepted_signature)) => {
-                if signature.as_deref() != Some(accepted_signature.as_str()) {
-                    changed = true;
-                }
+            Some(Some(accepted_signature))
+                if signature.as_deref() != Some(accepted_signature.as_str()) =>
+            {
+                changed = true;
             }
             Some(None) if signature.is_some() => {
                 changed = true;

@@ -1,3 +1,5 @@
+use std::ops::ControlFlow;
+
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
@@ -46,27 +48,56 @@ pub(crate) fn visit_data_records_in_places(
     store: &TreeStore,
     mut visit: impl FnMut(DataRecord) -> Result<(), StoreError>,
 ) -> Result<usize, StoreError> {
-    let mut records = 0usize;
-    for place in places {
-        records = records
-            .checked_add(visit_place_records(place, store, &mut visit)?)
-            .ok_or(StoreError::LimitExceeded {
-                limit: "data record count",
-            })?;
+    match visit_data_records_in_places_until(places, store, |record| {
+        visit(record)?;
+        Ok(ControlFlow::Continue(()))
+    })? {
+        ControlFlow::Continue(records) | ControlFlow::Break(records) => Ok(records),
     }
-    Ok(records)
 }
 
-pub(crate) fn visit_place_record_identities(
+pub(crate) fn visit_data_records_in_places_until(
+    places: &[CheckedSavedPlace],
+    store: &TreeStore,
+    mut visit: impl FnMut(DataRecord) -> Result<ControlFlow<()>, StoreError>,
+) -> Result<ControlFlow<usize, usize>, StoreError> {
+    let mut records = 0usize;
+    for place in places {
+        match visit_place_records_until(place, store, &mut visit)? {
+            ControlFlow::Continue(count) => {
+                records = records
+                    .checked_add(count)
+                    .ok_or(StoreError::LimitExceeded {
+                        limit: "data record count",
+                    })?;
+            }
+            ControlFlow::Break(count) => {
+                records = records
+                    .checked_add(count)
+                    .ok_or(StoreError::LimitExceeded {
+                        limit: "data record count",
+                    })?;
+                return Ok(ControlFlow::Break(records));
+            }
+        }
+    }
+    Ok(ControlFlow::Continue(records))
+}
+
+pub(crate) fn visit_place_record_identities_until(
     place: &CheckedSavedPlace,
     store: &TreeStore,
-    visit: &mut impl FnMut(&CheckedSavedPlace, &CatalogId, &[SavedKey]) -> Result<(), StoreError>,
-) -> Result<usize, StoreError> {
+    visit: &mut impl FnMut(
+        &CheckedSavedPlace,
+        &CatalogId,
+        &[SavedKey],
+    ) -> Result<ControlFlow<()>, StoreError>,
+) -> Result<ControlFlow<usize, usize>, StoreError> {
     let Some(store_id) = tooling_catalog_id(&place.store_catalog_id, "store")? else {
-        return Ok(0);
+        return Ok(ControlFlow::Continue(0));
     };
     let mut identity = Vec::new();
-    visit_identity_record_nodes(place, &store_id, store, &mut identity, visit)
+    visit_identity_record_nodes_until(place, &store_id, store, &mut identity, visit)
 }
 
 pub(crate) fn checked_places(program: &CheckedProgram) -> Vec<CheckedSavedPlace> {
@@ -91,17 +122,17 @@ fn place_has_data(place: &CheckedSavedPlace, store: &TreeStore) -> Result<bool, 
         .map(|key| key.is_some())
 }
 
-fn visit_place_records(
+fn visit_place_records_until(
     place: &CheckedSavedPlace,
     store: &TreeStore,
-    visit: &mut impl FnMut(DataRecord) -> Result<(), StoreError>,
-) -> Result<usize, StoreError> {
+    visit: &mut impl FnMut(DataRecord) -> Result<ControlFlow<()>, StoreError>,
+) -> Result<ControlFlow<usize, usize>, StoreError> {
     let Some(store_id) = tooling_catalog_id(&place.store_catalog_id, "store")? else {
-        return Ok(0);
+        return Ok(ControlFlow::Continue(0));
     };
     let mut identity = Vec::new();
     let mut path = format!("^{}", place.root);
-    visit_identity_records(
+    visit_identity_records_until(
         place,
         &store_id,
         store,
@@ -112,15 +143,15 @@ fn visit_place_records(
     )
 }
 
-fn visit_identity_records(
+fn visit_identity_records_until(
     place: &CheckedSavedPlace,
     store_id: &CatalogId,
     store: &TreeStore,
     identity: &mut Vec<SavedKey>,
     path: &mut String,
     mismatch: Option<KeyMismatch>,
-    visit: &mut impl FnMut(DataRecord) -> Result<(), StoreError>,
-) -> Result<usize, StoreError> {
+    visit: &mut impl FnMut(DataRecord) -> Result<ControlFlow<()>, StoreError>,
+) -> Result<ControlFlow<usize, usize>, StoreError> {
     if identity.len() == place.identity_keys.len() {
         let mut data_path = Vec::new();
         let context = MemberVisit {
@@ -128,7 +159,7 @@ fn visit_identity_records(
             store,
             identity,
         };
-        return visit_members(
+        return visit_members_until(
             &context,
             &place.root_members,
             &mut data_path,
@@ -149,19 +180,33 @@ fn visit_identity_records(
             .clone()
             .or_else(|| key_mismatch(place.identity_keys[key_index].scalar, &key));
         identity.push(key);
-        records = records
-            .checked_add(visit_identity_records(
-                place,
-                store_id,
-                store,
-                identity,
-                path,
-                next_mismatch,
-                visit,
-            )?)
-            .ok_or(StoreError::LimitExceeded {
-                limit: "data record count",
-            })?;
+        match visit_identity_records_until(
+            place,
+            store_id,
+            store,
+            identity,
+            path,
+            next_mismatch,
+            visit,
+        )? {
+            ControlFlow::Continue(count) => {
+                records = records
+                    .checked_add(count)
+                    .ok_or(StoreError::LimitExceeded {
+                        limit: "data record count",
+                    })?;
+            }
+            ControlFlow::Break(count) => {
+                records = records
+                    .checked_add(count)
+                    .ok_or(StoreError::LimitExceeded {
+                        limit: "data record count",
+                    })?;
+                identity.pop();
+                path.truncate(prior_len);
+                return Ok(ControlFlow::Break(records));
+            }
+        }
         identity.pop();
         path.truncate(prior_len);
         child = record_nav::next_record_child(
@@ -172,22 +217,28 @@ fn visit_identity_records(
             &next_after,
         )?;
     }
-    Ok(records)
+    Ok(ControlFlow::Continue(records))
 }
 
-fn visit_identity_record_nodes(
+fn visit_identity_record_nodes_until(
     place: &CheckedSavedPlace,
     store_id: &CatalogId,
     store: &TreeStore,
     identity: &mut Vec<SavedKey>,
-    visit: &mut impl FnMut(&CheckedSavedPlace, &CatalogId, &[SavedKey]) -> Result<(), StoreError>,
-) -> Result<usize, StoreError> {
+    visit: &mut impl FnMut(
+        &CheckedSavedPlace,
+        &CatalogId,
+        &[SavedKey],
+    ) -> Result<ControlFlow<()>, StoreError>,
+) -> Result<ControlFlow<usize, usize>, StoreError> {
     if identity.len() == place.identity_keys.len() {
         if !store.data_subtree_exists(store_id, identity, &[])? {
-            return Ok(0);
+            return Ok(ControlFlow::Continue(0));
         }
-        visit(place, store_id, identity)?;
-        return Ok(1);
+        return match visit(place, store_id, identity)? {
+            ControlFlow::Continue(()) => Ok(ControlFlow::Continue(1)),
+            ControlFlow::Break(()) => Ok(ControlFlow::Break(0)),
+        };
     }
 
     let mut records = 0usize;
@@ -196,13 +247,24 @@ fn visit_identity_record_nodes(
     while let Some(key) = child {
         let next_after = key.clone();
         identity.push(key);
-        records = records
-            .checked_add(visit_identity_record_nodes(
-                place, store_id, store, identity, visit,
-            )?)
-            .ok_or(StoreError::LimitExceeded {
-                limit: "data record count",
-            })?;
+        match visit_identity_record_nodes_until(place, store_id, store, identity, visit)? {
+            ControlFlow::Continue(count) => {
+                records = records
+                    .checked_add(count)
+                    .ok_or(StoreError::LimitExceeded {
+                        limit: "data record count",
+                    })?;
+            }
+            ControlFlow::Break(count) => {
+                records = records
+                    .checked_add(count)
+                    .ok_or(StoreError::LimitExceeded {
+                        limit: "data record count",
+                    })?;
+                identity.pop();
+                return Ok(ControlFlow::Break(records));
+            }
+        }
         identity.pop();
         child = record_nav::next_record_child(
             store,
@@ -212,7 +274,7 @@ fn visit_identity_record_nodes(
             &next_after,
         )?;
     }
-    Ok(records)
+    Ok(ControlFlow::Continue(records))
 }
 
 struct MemberVisit<'a> {
@@ -221,42 +283,47 @@ struct MemberVisit<'a> {
     identity: &'a [SavedKey],
 }
 
-fn visit_members(
+fn visit_members_until(
     context: &MemberVisit<'_>,
     members: &[CheckedSavedMember],
     data_path: &mut Vec<DataPathSegment>,
     path: &mut String,
     mismatch: Option<KeyMismatch>,
-    visit: &mut impl FnMut(DataRecord) -> Result<(), StoreError>,
-) -> Result<usize, StoreError> {
+    visit: &mut impl FnMut(DataRecord) -> Result<ControlFlow<()>, StoreError>,
+) -> Result<ControlFlow<usize, usize>, StoreError> {
     let mut records = 0usize;
     for member in members {
-        records = records
-            .checked_add(visit_member(
-                context,
-                member,
-                data_path,
-                path,
-                mismatch.clone(),
-                visit,
-            )?)
-            .ok_or(StoreError::LimitExceeded {
-                limit: "data record count",
-            })?;
+        match visit_member_until(context, member, data_path, path, mismatch.clone(), visit)? {
+            ControlFlow::Continue(count) => {
+                records = records
+                    .checked_add(count)
+                    .ok_or(StoreError::LimitExceeded {
+                        limit: "data record count",
+                    })?;
+            }
+            ControlFlow::Break(count) => {
+                records = records
+                    .checked_add(count)
+                    .ok_or(StoreError::LimitExceeded {
+                        limit: "data record count",
+                    })?;
+                return Ok(ControlFlow::Break(records));
+            }
+        }
     }
-    Ok(records)
+    Ok(ControlFlow::Continue(records))
 }
 
-fn visit_member(
+fn visit_member_until(
     context: &MemberVisit<'_>,
     member: &CheckedSavedMember,
     data_path: &mut Vec<DataPathSegment>,
     path: &mut String,
     mismatch: Option<KeyMismatch>,
-    visit: &mut impl FnMut(DataRecord) -> Result<(), StoreError>,
-) -> Result<usize, StoreError> {
+    visit: &mut impl FnMut(DataRecord) -> Result<ControlFlow<()>, StoreError>,
+) -> Result<ControlFlow<usize, usize>, StoreError> {
     let Some(catalog_id) = tooling_catalog_id(&member.catalog_id, "resource member")? else {
-        return Ok(0);
+        return Ok(ControlFlow::Continue(0));
     };
     let prior_len = push_member(path, &member.name);
     data_path.push(DataPathSegment::Member(catalog_id.clone()));
@@ -270,9 +337,9 @@ fn visit_member(
         field_catalog_id: &catalog_id,
     };
     let records = if member.key_params.is_empty() {
-        visit_member_terminal(&cursor, data_path, path, mismatch, visit)
+        visit_member_terminal_until(&cursor, data_path, path, mismatch, visit)
     } else {
-        visit_member_keys(&cursor, data_path, path, 0, mismatch, visit)
+        visit_member_keys_until(&cursor, data_path, path, 0, mismatch, visit)
     };
     data_path.pop();
     path.truncate(prior_len);
@@ -285,16 +352,16 @@ struct MemberCursor<'a> {
     field_catalog_id: &'a CatalogId,
 }
 
-fn visit_member_keys(
+fn visit_member_keys_until(
     cursor: &MemberCursor<'_>,
     data_path: &mut Vec<DataPathSegment>,
     path: &mut String,
     key_index: usize,
     mismatch: Option<KeyMismatch>,
-    visit: &mut impl FnMut(DataRecord) -> Result<(), StoreError>,
-) -> Result<usize, StoreError> {
+    visit: &mut impl FnMut(DataRecord) -> Result<ControlFlow<()>, StoreError>,
+) -> Result<ControlFlow<usize, usize>, StoreError> {
     if key_index == cursor.member.key_params.len() {
-        return visit_member_terminal(cursor, data_path, path, mismatch, visit);
+        return visit_member_terminal_until(cursor, data_path, path, mismatch, visit);
     }
 
     let mut records = 0usize;
@@ -310,18 +377,26 @@ fn visit_member_keys(
             .clone()
             .or_else(|| key_mismatch(cursor.member.key_params[key_index].scalar, &key));
         data_path.push(DataPathSegment::Key(key));
-        records = records
-            .checked_add(visit_member_keys(
-                cursor,
-                data_path,
-                path,
-                key_index + 1,
-                next_mismatch,
-                visit,
-            )?)
-            .ok_or(StoreError::LimitExceeded {
-                limit: "data record count",
-            })?;
+        match visit_member_keys_until(cursor, data_path, path, key_index + 1, next_mismatch, visit)?
+        {
+            ControlFlow::Continue(count) => {
+                records = records
+                    .checked_add(count)
+                    .ok_or(StoreError::LimitExceeded {
+                        limit: "data record count",
+                    })?;
+            }
+            ControlFlow::Break(count) => {
+                records = records
+                    .checked_add(count)
+                    .ok_or(StoreError::LimitExceeded {
+                        limit: "data record count",
+                    })?;
+                data_path.pop();
+                path.truncate(prior_len);
+                return Ok(ControlFlow::Break(records));
+            }
+        }
         data_path.pop();
         path.truncate(prior_len);
         child = cursor.context.store.data_next_child(
@@ -331,20 +406,20 @@ fn visit_member_keys(
             &next_after,
         )?;
     }
-    Ok(records)
+    Ok(ControlFlow::Continue(records))
 }
 
-fn visit_member_terminal(
+fn visit_member_terminal_until(
     cursor: &MemberCursor<'_>,
     data_path: &mut Vec<DataPathSegment>,
     path: &mut String,
     mismatch: Option<KeyMismatch>,
-    visit: &mut impl FnMut(DataRecord) -> Result<(), StoreError>,
-) -> Result<usize, StoreError> {
+    visit: &mut impl FnMut(DataRecord) -> Result<ControlFlow<()>, StoreError>,
+) -> Result<ControlFlow<usize, usize>, StoreError> {
     match &cursor.member.kind {
         CheckedSavedMemberKind::Field { .. } => {
             let Some(leaf) = cursor.member.leaf.clone() else {
-                return Ok(0);
+                return Ok(ControlFlow::Continue(0));
             };
             let Some(value) = cursor.context.store.read_data_value(
                 cursor.context.store_id,
@@ -352,19 +427,21 @@ fn visit_member_terminal(
                 data_path,
             )?
             else {
-                return Ok(0);
+                return Ok(ControlFlow::Continue(0));
             };
-            visit(DataRecord {
+            match visit(DataRecord {
                 path: path.clone(),
                 payload: DebugDataPayload::new(value),
                 identity: cursor.context.identity.to_vec(),
                 field_catalog_id: cursor.field_catalog_id.clone(),
                 leaf,
                 key_mismatch: mismatch,
-            })?;
-            Ok(1)
+            })? {
+                ControlFlow::Continue(()) => Ok(ControlFlow::Continue(1)),
+                ControlFlow::Break(()) => Ok(ControlFlow::Break(0)),
+            }
         }
-        CheckedSavedMemberKind::Group => visit_members(
+        CheckedSavedMemberKind::Group => visit_members_until(
             &cursor.context,
             &cursor.member.group_members,
             data_path,

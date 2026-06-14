@@ -6,6 +6,7 @@ database.
 ```
 marrow init <projectdir>
 marrow check [--format text|json|jsonl] <projectdir>
+marrow doctor [--format text|json|jsonl] <projectdir>
 marrow evolve preview [--from-backup <artifact>] [--scaffold] [--format text|json|jsonl] <projectdir>
 marrow evolve apply [--maintenance] [--approve-retire <catalog-id>:<count>] \
   [--backup <path> | --no-backup] [--format text|json|jsonl] <projectdir>
@@ -42,7 +43,8 @@ machine-readable error envelope these commands emit.
 Commands that report diagnostics, saved data, or test results take `--format`:
 
 - `text` (the default) — human-readable lines. Diagnostics and findings go to
-  stderr; primary results go to stdout.
+  stderr unless a command owns a report stream such as `doctor`; primary
+  results go to stdout.
 - `json` — one JSON object for the command's structured report.
 - `jsonl` — one JSON object per line for streaming reports, ending with a
   `{"kind": "summary", …}` line where the report has many records.
@@ -134,6 +136,70 @@ $ marrow check ./proj
 $ echo $?
 1
 ```
+
+---
+
+## `marrow doctor`
+
+```
+marrow doctor [--format text|json|jsonl] <projectdir>
+```
+
+Inspect a project for operator triage without repairing or writing anything.
+`doctor` aggregates independent probes where possible:
+
+- load `marrow.json`;
+- validate the accepted `marrow.catalog.json` artifact digest;
+- run the normal project check summary;
+- open the configured native store read-only when a store file exists;
+- report store lock/recovery/open failures as findings instead of stopping
+  unrelated probes;
+- read the store UID, commit stamp, current engine profile tuple, and activation
+  fence classification;
+- sample saved-data integrity with
+  `DOCTOR_INTEGRITY_SAMPLE_LIMIT = 64` as one shared traversal cap.
+
+`doctor` never creates the native data directory, never opens a write-capable
+store handle, never renders or repairs `marrow.catalog.json`, and never runs the
+full unbounded `marrow data integrity` scan.
+
+Text and JSONL render one finding per line. Text output also prints a
+non-finding guidance line when the integrity sample is truncated, naming the
+full read-only `marrow data integrity` command to run next. JSON renders one
+envelope:
+
+```json
+{
+  "project": "/absolute/path/to/proj",
+  "status": "findings",
+  "findings": [
+    {
+      "code": "doctor.store_locked",
+      "kind": "tooling",
+      "message": "native store is locked",
+      "remedy": "close the process holding the native store, then rerun the next command",
+      "next_command": "marrow doctor ./proj",
+      "data": {
+        "underlying_code": "store.locked",
+        "message": "the store file is held open by another process (a writer or a read-only inspection): /absolute/path/to/proj/.data/marrow.redb. Close the other process, then retry",
+        "store": "/absolute/path/to/proj/.data/marrow.redb"
+      },
+      "source_span": null
+    }
+  ],
+  "store": null,
+  "fence": null,
+  "integrity_sample": { "limit": 64, "items_checked": 0, "problems": 0, "truncated": false }
+}
+```
+
+When the store opens, the JSON `store` object carries the stamp classification
+(`stamped` or `unstamped`), store UID, commit metadata, and current engine
+profile tuple. When the checked project and store are both available, `fence`
+reports the activation-fence classification.
+
+Exits `0` when no findings are reported, `1` when one or more findings are
+reported, and `2` for usage errors.
 
 ---
 
