@@ -15,6 +15,17 @@ use crate::error::RuntimeError;
 use crate::value::{RunOutputSink, Value};
 use crate::write_plan::{WriteOp, WriteTarget};
 
+/// Receives formatted `std::log` lines as the run produces them.
+pub trait LogSink {
+    fn write_log(&mut self, line: &str);
+}
+
+impl LogSink for String {
+    fn write_log(&mut self, line: &str) {
+        self.push_str(line);
+    }
+}
+
 /// The nondeterministic inputs a host or tool may capture at a run boundary.
 pub trait Nondeterminism {
     fn now_nanos(&self) -> i128;
@@ -192,7 +203,7 @@ pub struct Host {
     /// The run's log sink, when a log capability is provided. `std::log` appends
     /// formatted lines here; the command or embedding decides where they go
     /// (e.g. standard error). A run without it cannot use `std::log`.
-    pub(crate) log: Option<Rc<RefCell<String>>>,
+    pub(crate) log: Option<Rc<RefCell<dyn LogSink>>>,
     /// The run's print output sink, when the host owns program-output transport.
     pub(crate) output: Option<Rc<RefCell<dyn RunOutputSink>>>,
     /// Whether the run may touch the real filesystem through `std::io`. Marrow
@@ -210,7 +221,7 @@ impl fmt::Debug for Host {
         f.debug_struct("Host")
             .field("clock", &self.clock)
             .field("environment", &self.environment)
-            .field("log", &self.log)
+            .field("log", &self.log.as_ref().map(|_| "<log sink>"))
             .field("output", &self.output.as_ref().map(|_| "<output sink>"))
             .field("filesystem", &self.filesystem)
             .field("maintenance", &self.maintenance)
@@ -251,7 +262,11 @@ impl Host {
 
     /// `std::log` output collects into the caller-owned `sink`, so a command can
     /// flush it to standard error and a test can inspect it.
-    pub fn with_log_sink(mut self, sink: Rc<RefCell<String>>) -> Self {
+    pub fn with_log_sink<S>(mut self, sink: Rc<RefCell<S>>) -> Self
+    where
+        S: LogSink + 'static,
+    {
+        let sink: Rc<RefCell<dyn LogSink>> = sink;
         self.log = Some(sink);
         self
     }

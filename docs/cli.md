@@ -443,9 +443,11 @@ summary record:
 {"kind":"summary","total":1,"selected":1,"passed":1,"failed":0,"errored":0}
 ```
 
-Failed and errored JSON records also carry the runtime fault `code`. Passing
-result spans point at the test function declaration; failed and errored result
-spans point at the runtime fault.
+Failed and errored JSON records also carry the runtime fault `code` and an
+`output` field. `output` is the test's bounded pre-fault `print` output as a
+string, or `null` when the test produced no output. Passing records omit
+`output`. Passing result spans point at the test function declaration; failed
+and errored result spans point at the runtime fault.
 
 Exits `0` only when every test passes. It exits `1` if any test fails or errors,
 if the project does not check, or if no test is found (`test.none`).
@@ -466,8 +468,8 @@ $ echo $?
 1
 ```
 
-The implemented assertions are `std::assert::isTrue`, `isFalse`, `absent`, and
-`fail`.
+The implemented assertions are `std::assert::isTrue`, `isFalse`, `equal`,
+`absent`, and `fail`.
 
 ## `marrow data`
 

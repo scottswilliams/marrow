@@ -195,20 +195,23 @@ canonical decimal data, so trailing zeroes are not preserved for presentation.
 
 ## `std::assert` And Testing
 
-Testing helpers work in ordinary `.mw` functions. Equality and ordering remain
-normal Marrow expressions:
+Testing helpers work in ordinary `.mw` functions:
 
 ```mw
 std::assert::isTrue(condition: bool)
 std::assert::isFalse(condition: bool)
+std::assert::equal(actual: T, expected: T)
 std::assert::absent(path)
 std::assert::fail(message: string)
 ```
 
-Write equality assertions by passing a boolean condition:
+`equal` accepts scalar values of the same type and fails with
+`expected X, got Y`. It does not compare sequences, resources, trees,
+identities, enums, or errors. Other boolean and ordering assertions remain
+normal Marrow expressions:
 
 ```mw
-std::assert::isTrue(actual == expected)
+std::assert::isTrue(a < b)
 ```
 
 `absent(path)` is the testing counterpart to `exists(path)`. It does not hide

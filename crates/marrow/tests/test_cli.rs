@@ -23,7 +23,7 @@ fn mixed_outcome_project(name: &str) -> support::TempProject {
         write(
             root,
             "tests/app_test.mw",
-            "pub fn passes()\n    std::assert::isTrue(true)\n\npub fn fails()\n    std::assert::isTrue(false)\n\npub fn errors()\n    var x: decimal = 1.0\n    x = x / 0.0\n",
+            "pub fn passes()\n    print(\"passing output\")\n    std::assert::isTrue(true)\n\npub fn fails()\n    print(\"failure output\")\n    std::assert::isTrue(false)\n\npub fn errors()\n    print(\"error output\")\n    var x: decimal = 1.0\n    x = x / 0.0\n",
         );
     })
 }
@@ -337,13 +337,15 @@ fn format_json_reports_test_results_and_summary() {
     assert!(tests[0].get("status").is_none(), "{report}");
     assert!(tests[0].get("location").is_none(), "{report}");
     assert!(tests[0].get("code").is_none(), "{report}");
+    assert!(tests[0].get("output").is_none(), "{report}");
     assert_eq!(
         tests[1]["name"],
         serde_json::json!("tests::app_test::fails")
     );
     assert_eq!(tests[1]["outcome"], serde_json::json!("failed"));
     assert_eq!(tests[1]["code"], serde_json::json!("run.assertion"));
-    assert_eq!(tests[1]["span"]["line"], serde_json::json!(5));
+    assert_eq!(tests[1]["span"]["line"], serde_json::json!(7));
+    assert_eq!(tests[1]["output"], serde_json::json!("failure output\n"));
     assert!(tests[1].get("status").is_none(), "{report}");
     assert!(tests[1].get("location").is_none(), "{report}");
     assert_eq!(
@@ -352,9 +354,83 @@ fn format_json_reports_test_results_and_summary() {
     );
     assert_eq!(tests[2]["outcome"], serde_json::json!("errored"));
     assert_eq!(tests[2]["code"], serde_json::json!("run.divide_by_zero"));
-    assert_eq!(tests[2]["span"]["line"], serde_json::json!(9));
+    assert_eq!(tests[2]["span"]["line"], serde_json::json!(12));
+    assert_eq!(tests[2]["output"], serde_json::json!("error output\n"));
     assert!(tests[2].get("status").is_none(), "{report}");
     assert!(tests[2].get("location").is_none(), "{report}");
+}
+
+#[test]
+fn format_json_reports_null_output_for_failed_test_without_output() {
+    let root = temp_project("test-json-fail-no-output", |root| {
+        write(root, "marrow.json", CONFIG);
+        write(root, "src/app.mw", "module app\n");
+        write(
+            root,
+            "tests/app_test.mw",
+            "pub fn fails()\n    std::assert::isTrue(false)\n",
+        );
+    });
+    let output = run_test_args(&[
+        "--format",
+        "json",
+        root.to_str().expect("project path utf8"),
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let report = json(output.stdout);
+    let tests = report["tests"].as_array().expect("tests array");
+    assert_eq!(tests.len(), 1, "{report}");
+    assert_eq!(tests[0]["outcome"], serde_json::json!("failed"));
+    assert!(tests[0].get("output").is_some(), "{report}");
+    assert!(tests[0]["output"].is_null(), "{report}");
+}
+
+#[test]
+fn format_jsonl_bounds_failed_test_output() {
+    let printed = "x".repeat(70_000);
+    let source =
+        format!("pub fn fails()\n    print(\"{printed}\")\n    std::assert::isTrue(false)\n");
+    let root = temp_project("test-jsonl-bounded-output", |root| {
+        write(root, "marrow.json", CONFIG);
+        write(root, "src/app.mw", "module app\n");
+        write(root, "tests/app_test.mw", &source);
+    });
+    let output = run_test_args(&[
+        "--format",
+        "jsonl",
+        root.to_str().expect("project path utf8"),
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let records = jsonl(output.stdout);
+    let captured = records[0]["output"].as_str().expect("captured output");
+    assert!(captured.len() <= 64 * 1024, "{}", captured.len());
+    assert!(captured.ends_with("[output truncated]\n"), "{captured:?}");
+}
+
+#[test]
+fn format_jsonl_discards_passing_test_logs() {
+    let logged = "x".repeat(70_000);
+    let source = format!(
+        "pub fn passes()\n    std::log::info(\"{logged}\")\n    std::assert::isTrue(true)\n"
+    );
+    let root = temp_project("test-jsonl-discard-logs", |root| {
+        write(root, "marrow.json", CONFIG);
+        write(root, "src/app.mw", "module app\n");
+        write(root, "tests/app_test.mw", &source);
+    });
+    let output = run_test_args(&[
+        "--format",
+        "jsonl",
+        root.to_str().expect("project path utf8"),
+    ]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let records = jsonl(output.stdout);
+    assert_eq!(records[0]["outcome"], serde_json::json!("passed"));
+    assert!(records[0].get("output").is_none(), "{records:#?}");
 }
 
 #[test]
@@ -412,6 +488,7 @@ fn format_jsonl_streams_test_results_then_summary() {
     assert!(records[0].get("status").is_none(), "{records:#?}");
     assert!(records[0].get("location").is_none(), "{records:#?}");
     assert!(records[0].get("code").is_none(), "{records:#?}");
+    assert!(records[0].get("output").is_none(), "{records:#?}");
     assert_eq!(records[1]["kind"], serde_json::json!("test"));
     assert_eq!(
         records[1]["name"],
@@ -419,7 +496,8 @@ fn format_jsonl_streams_test_results_then_summary() {
     );
     assert_eq!(records[1]["outcome"], serde_json::json!("failed"));
     assert_eq!(records[1]["code"], serde_json::json!("run.assertion"));
-    assert_eq!(records[1]["span"]["line"], serde_json::json!(5));
+    assert_eq!(records[1]["span"]["line"], serde_json::json!(7));
+    assert_eq!(records[1]["output"], serde_json::json!("failure output\n"));
     assert!(records[1].get("status").is_none(), "{records:#?}");
     assert!(records[1].get("location").is_none(), "{records:#?}");
     assert_eq!(records[2]["kind"], serde_json::json!("test"));
@@ -429,7 +507,8 @@ fn format_jsonl_streams_test_results_then_summary() {
     );
     assert_eq!(records[2]["outcome"], serde_json::json!("errored"));
     assert_eq!(records[2]["code"], serde_json::json!("run.divide_by_zero"));
-    assert_eq!(records[2]["span"]["line"], serde_json::json!(9));
+    assert_eq!(records[2]["span"]["line"], serde_json::json!(12));
+    assert_eq!(records[2]["output"], serde_json::json!("error output\n"));
     assert!(records[2].get("status").is_none(), "{records:#?}");
     assert!(records[2].get("location").is_none(), "{records:#?}");
     assert_eq!(
@@ -490,6 +569,7 @@ fn format_jsonl_filter_reports_selected_and_total() {
     );
     assert_eq!(records[0]["outcome"], serde_json::json!("failed"));
     assert_eq!(records[0]["code"], serde_json::json!("run.assertion"));
+    assert_eq!(records[0]["output"], serde_json::json!("failure output\n"));
     assert_eq!(
         records[1],
         serde_json::json!({

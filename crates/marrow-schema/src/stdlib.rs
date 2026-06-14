@@ -12,6 +12,9 @@ use crate::{ReturnPresence, ScalarType};
 pub enum ParamType {
     /// A concrete storable scalar argument.
     Scalar(ScalarType),
+    /// Any scalar argument; helper-specific checks may constrain relationships
+    /// between multiple scalar-any parameters.
+    ScalarAny,
     /// A `sequence[T]` of scalar values.
     Sequence(ScalarType),
     /// An `Error` value (`std::log::error`), the one checker-only argument type.
@@ -54,7 +57,7 @@ pub struct StdOp {
 }
 
 use Capability::{Clock, Environment, Filesystem, Log};
-use ParamType::{Error as ErrorArg, Path, Scalar, Sequence as SequenceArg};
+use ParamType::{Error as ErrorArg, Path, Scalar, ScalarAny, Sequence as SequenceArg};
 use ReturnPresence::{Always, MaybePresent};
 use ReturnType::{Sequence, Void};
 use ScalarType::{Bool, Bytes, Date, Decimal, Duration, Instant, Int, Str};
@@ -137,6 +140,7 @@ const TABLE: &[StdOp] = &[
     row("io", "writeBytes", &[Scalar(Str), Scalar(Bytes)], Void, Always, Some(Filesystem)),
     row("assert", "isTrue", &[Scalar(Bool)], Void, Always, None),
     row("assert", "isFalse", &[Scalar(Bool)], Void, Always, None),
+    row("assert", "equal", &[ScalarAny, ScalarAny], Void, Always, None),
     row("assert", "absent", &[Path], Void, Always, None),
     row("assert", "fail", &[Scalar(Str)], Void, Always, None),
     row("log", "info", &[Scalar(Str)], Void, Always, Some(Log)),

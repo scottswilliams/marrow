@@ -846,17 +846,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 Listing order is execution order. docs/cli.md integrates with the remaining operator lanes.
 
-**W6.18 → Test observability.** Carries: two independent test-surface improvements: (A)
-`std::assert::equal(actual: T, expected: T)` for scalar types with "expected X, got Y"
-rendering; (B) a nullable `output` field in per-test JSON/JSONL records, coordinated with or
-folded into W6.2 and reusing the W6.6 output-sink seam. Owns: assert stdlib descriptors and
-runtime assertion code for A, and cmd_test JSON/JSONL record rendering for B. Seed: a scalar
-equality failure that currently needs manual boolean assertions, and a failing JSON test record
-that lacks captured print output. Review: no equality over resources/sequences/trees, no syntax
-change, no isTrue operand recovery, no text-mode output surfacing, no passing-test output
-capture, and no trace interaction change. Done: scalar assertion failures render both values and
-machine-readable failed test records can carry output when JSON/JSONL is requested.
-
 Wave gate: full gate; CLI surface frozen for the release contract.
 
 ---

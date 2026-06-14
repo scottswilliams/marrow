@@ -113,7 +113,7 @@ pub(crate) fn eval_log(
         }
     };
     env.guard_rollback_sensitive_host_effect(&format!("std::log::{op}"), span)?;
-    sink.borrow_mut().push_str(&line);
+    sink.borrow_mut().write_log(&line);
     Ok(None)
 }
 

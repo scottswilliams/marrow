@@ -308,7 +308,7 @@ pub(crate) fn std_call_return_type(segments: &[String]) -> Option<MarrowType> {
 /// The positional parameter types of a `std::module::op` helper, in order, derived
 /// from its descriptor. Known `std` modules reject unknown operations at check time;
 /// recognized descriptor rows supply their argument checks here. A `None` slot
-/// inside the list marks a non-checked path argument (`assert::absent`).
+/// inside the list marks an argument checked by a call-specific rule instead.
 pub(crate) fn std_call_params(segments: &[String]) -> Option<Vec<Option<MarrowType>>> {
     let op = std_op(segments)?;
     Some(
@@ -316,6 +316,7 @@ pub(crate) fn std_call_params(segments: &[String]) -> Option<Vec<Option<MarrowTy
             .iter()
             .map(|param| match param {
                 ParamType::Scalar(scalar) => Some(MarrowType::Primitive(*scalar)),
+                ParamType::ScalarAny => None,
                 ParamType::Sequence(element) => Some(MarrowType::Sequence(Box::new(
                     MarrowType::Primitive(*element),
                 ))),

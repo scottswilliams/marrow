@@ -4,12 +4,15 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::process::ExitCode;
 
-use marrow_run::{ProjectInvokeError, ProjectMode, ProjectSession, SessionEntry};
+use marrow_run::{ProjectInvokeError, ProjectMode, ProjectSession, RunOutputSink, SessionEntry};
 use marrow_syntax::SourceSpan;
 use serde_json::{Value, json};
 
 use crate::trace::TraceHook;
 use crate::{CheckFormat, report_simple_error, write_json};
+
+const TEST_OUTPUT_CAPTURE_LIMIT: usize = 64 * 1024;
+const TEST_OUTPUT_TRUNCATED_MARKER: &str = "\n[output truncated]\n";
 
 /// Run a project's tests: `marrow test [--trace] [--format text|json|jsonl] [--filter <substring>] <projectdir>`.
 pub(crate) fn test(args: &[String]) -> ExitCode {
@@ -124,27 +127,38 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat, filter: Option<
     // to a discard sink so it stays out of the pass/fail report.
     let nondeterminism = marrow_run::SystemNondeterminism::new();
     let host = crate::cmd_run::base_host(
-        std::rc::Rc::new(RefCell::new(String::new())),
+        std::rc::Rc::new(RefCell::new(DiscardLogSink)),
         &nondeterminism,
     );
+    let capture_output = matches!(format, CheckFormat::Json | CheckFormat::Jsonl);
     let mut passed = 0usize;
     let mut failed = 0usize;
     let mut errored = 0usize;
     let mut results = Vec::new();
     for test in selected_tests {
-        let mut program_output = |_text: &str| {};
+        let mut captured_output = TestOutputCapture::new();
+        let mut discard_output = |_text: &str| {};
+        // Machine-readable reports need bounded scratch output so failing records
+        // can include pre-fault prints; passed tests drop this state.
         // A traced test runs under the debugger entry with a hook labelled by the
         // test name, so its statements and writes are attributed to it; an untraced
         // test runs through the plain entry and pays nothing.
-        let result = if trace {
-            let mut hook = TraceHook::new(test.name.clone(), runtime_program);
-            let result = session.invoke(
-                SessionEntry::new(&test.name, &host, &mut program_output).with_hook(&mut hook),
-            );
-            hook.flush();
-            result
-        } else {
-            session.invoke(SessionEntry::new(&test.name, &host, &mut program_output))
+        let result = {
+            let program_output: &mut dyn RunOutputSink = if capture_output {
+                &mut captured_output
+            } else {
+                &mut discard_output
+            };
+            if trace {
+                let mut hook = TraceHook::new(test.name.clone(), runtime_program);
+                let result = session.invoke(
+                    SessionEntry::new(&test.name, &host, program_output).with_hook(&mut hook),
+                );
+                hook.flush();
+                result
+            } else {
+                session.invoke(SessionEntry::new(&test.name, &host, program_output))
+            }
         };
         match result {
             Ok(_) => {
@@ -154,7 +168,14 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat, filter: Option<
                 record_test_result(
                     format,
                     &mut results,
-                    test_result_record(&test.name, "passed", &test.source_file, test.span, None),
+                    test_result_record(
+                        &test.name,
+                        "passed",
+                        &test.source_file,
+                        test.span,
+                        None,
+                        None,
+                    ),
                 );
                 passed += 1;
             }
@@ -187,7 +208,14 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat, filter: Option<
                 record_test_result(
                     format,
                     &mut results,
-                    test_result_record(&test.name, status, file, error.span, Some(error.code)),
+                    test_result_record(
+                        &test.name,
+                        status,
+                        file,
+                        error.span,
+                        Some(error.code),
+                        capture_output.then(|| captured_output.report_value()),
+                    ),
                 );
                 *counter += 1;
             }
@@ -271,12 +299,75 @@ fn test_summary_record(summary: TestSummary) -> Value {
     })
 }
 
+struct DiscardLogSink;
+
+impl marrow_run::LogSink for DiscardLogSink {
+    fn write_log(&mut self, _line: &str) {}
+}
+
+struct TestOutputCapture {
+    text: String,
+    truncated: bool,
+}
+
+impl TestOutputCapture {
+    fn new() -> Self {
+        Self {
+            text: String::new(),
+            truncated: false,
+        }
+    }
+
+    fn report_value(&self) -> Value {
+        if self.text.is_empty() {
+            Value::Null
+        } else {
+            Value::String(self.text.clone())
+        }
+    }
+}
+
+impl RunOutputSink for TestOutputCapture {
+    fn write(&mut self, text: &str) {
+        if self.truncated || text.is_empty() {
+            return;
+        }
+        if self.text.len() + text.len() <= TEST_OUTPUT_CAPTURE_LIMIT {
+            self.text.push_str(text);
+            return;
+        }
+
+        let content_limit = TEST_OUTPUT_CAPTURE_LIMIT - TEST_OUTPUT_TRUNCATED_MARKER.len();
+        if self.text.len() > content_limit {
+            let end = char_boundary(&self.text, content_limit);
+            self.text.truncate(end);
+        }
+        let remaining = content_limit.saturating_sub(self.text.len());
+        let end = char_boundary(text, remaining);
+        self.text.push_str(&text[..end]);
+        self.text.push_str(TEST_OUTPUT_TRUNCATED_MARKER);
+        self.truncated = true;
+    }
+}
+
+fn char_boundary(text: &str, limit: usize) -> usize {
+    if limit >= text.len() {
+        return text.len();
+    }
+    let mut index = limit;
+    while !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
 fn test_result_record(
     name: &str,
     outcome: &str,
     file: &Path,
     span: SourceSpan,
     code: Option<&str>,
+    output: Option<Value>,
 ) -> Value {
     let mut record = serde_json::Map::from_iter([
         ("kind".into(), json!("test")),
@@ -287,6 +378,9 @@ fn test_result_record(
     ]);
     if let Some(code) = code {
         record.insert("code".into(), json!(code));
+    }
+    if let Some(output) = output {
+        record.insert("output".into(), output);
     }
     Value::Object(record)
 }

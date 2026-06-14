@@ -265,10 +265,13 @@ pub(crate) fn report_session_open_error(
 /// and filesystem, with `std::log` output collected into `log`. The maintenance
 /// capability is added by `run` only when the operator passed `--maintenance`, so it
 /// stays local to that command rather than the shared base.
-pub(crate) fn base_host(
-    log: std::rc::Rc<RefCell<String>>,
+pub(crate) fn base_host<S>(
+    log: std::rc::Rc<RefCell<S>>,
     nondeterminism: &impl Nondeterminism,
-) -> marrow_run::Host {
+) -> marrow_run::Host
+where
+    S: marrow_run::LogSink + 'static,
+{
     marrow_run::Host::new()
         .with_nondeterminism(nondeterminism)
         .with_system_environment()

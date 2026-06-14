@@ -547,8 +547,44 @@ fn an_unknown_op_in_a_closed_pure_module_is_flagged_at_check() {
 fn an_unknown_op_in_std_assert_is_flagged_at_check() {
     let found = check_module(
         "std-assert-unknown-op",
-        "module m\nfn f()\n    std::assert::equal(1, 1)\n",
+        "module m\nfn f()\n    std::assert::bogus(1)\n",
         "check.unresolved_call",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn std_assert_equal_accepts_same_scalar_type_arguments() {
+    let report = check_module_report(
+        "std-assert-equal-scalars",
+        "module m\nfn f()\n    std::assert::equal(1, 1)\n    std::assert::equal(\"a\", \"a\")\n    std::assert::equal(true, false)\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
+fn std_assert_equal_rejects_mismatched_scalar_types() {
+    let found = check_module(
+        "std-assert-equal-mismatch",
+        "module m\nfn f()\n    std::assert::equal(1, \"1\")\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn std_assert_equal_rejects_non_scalar_arguments() {
+    let found = check_module(
+        "std-assert-equal-sequence",
+        "module m\nfn f(xs: sequence[int])\n    std::assert::equal(xs, xs)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+
+    let found = check_module(
+        "std-assert-equal-identity",
+        "module m\nresource Book\n    title: string\nstore ^books(id: int): Book\n\nfn f(id: Id(^books))\n    std::assert::equal(id, id)\n",
+        "check.call_argument",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
 }

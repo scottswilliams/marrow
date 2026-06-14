@@ -43,6 +43,27 @@ fn std_assert_is_false_passes_and_fails() {
 }
 
 #[test]
+fn std_assert_equal_passes_and_renders_scalar_mismatches() {
+    let program = checked_program(
+        "pub fn ok()\n    std::assert::equal(1, 1)\n    std::assert::equal(\"same\", \"same\")\n",
+    );
+    assert_eq!(run(checked_entry!(&program, "test::ok")), Ok(None));
+
+    let program = checked_program("pub fn bad_int()\n    std::assert::equal(1, 2)\n");
+    let error = run_expecting_error(checked_entry!(&program, "test::bad_int"));
+    assert_eq!(error.code, RUN_ASSERT);
+    let (_code, message) = error_throw_fields(&error);
+    assert_eq!(message, "expected 2, got 1");
+
+    let program =
+        checked_program("pub fn bad_str()\n    std::assert::equal(\"actual\", \"expected\")\n");
+    let error = run_expecting_error(checked_entry!(&program, "test::bad_str"));
+    assert_eq!(error.code, RUN_ASSERT);
+    let (_code, message) = error_throw_fields(&error);
+    assert_eq!(message, "expected \"expected\", got \"actual\"");
+}
+
+#[test]
 fn std_assert_fail_raises_with_its_message() {
     let program = checked_program("pub fn bad()\n    std::assert::fail(\"boom\")\n");
     let error = run_expecting_error(checked_entry!(&program, "test::bad"));
@@ -92,6 +113,10 @@ fn std_assert_rejects_misused_arguments() {
     );
     checker_rejects(
         "pub fn bad()\n    std::assert::fail(42)\n",
+        "check.call_argument",
+    );
+    checker_rejects(
+        "pub fn bad()\n    std::assert::equal(1, \"1\")\n",
         "check.call_argument",
     );
 }

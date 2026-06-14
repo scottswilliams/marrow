@@ -67,7 +67,9 @@ pub use error::{
     RUN_RECURSION, RUN_STORE, RUN_TEMPORAL_OVERFLOW, RUN_TRAVERSAL, RUN_TYPE, RUN_UNBOUND_NAME,
     RUN_UNCAUGHT_THROW, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RuntimeError,
 };
-pub use host::{FixedNondeterminism, Frame, Host, Nondeterminism, StepHook, SystemNondeterminism};
+pub use host::{
+    FixedNondeterminism, Frame, Host, LogSink, Nondeterminism, StepHook, SystemNondeterminism,
+};
 pub use project_session::{
     ProjectInvokeError, ProjectMode, ProjectOpen, ProjectSession, ProjectSessionError,
     ProjectSessionNotice, ProjectTestCase, SessionEntry, StoreStamp,

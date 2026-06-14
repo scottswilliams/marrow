@@ -173,6 +173,10 @@ fn check_builtin_call(
         return MarrowType::Error;
     }
     check_builtin_call_args(env, segments, args, arg_types);
+    if segments == ["std", "assert", "equal"] {
+        check_assert_equal_args(&label, arg_types, env.span, env.file, env.diagnostics);
+        return std_call_return_type(segments).unwrap_or(MarrowType::Unknown);
+    }
     if let Some(params) = std_call_params(segments) {
         check_args_against(
             &label,
@@ -187,6 +191,50 @@ fn check_builtin_call(
         .or_else(|| conversion_return_type(segments))
         .or_else(|| builtin_return_type(segments))
         .unwrap_or(MarrowType::Unknown)
+}
+
+fn check_assert_equal_args(
+    label: &str,
+    arg_types: &[MarrowType],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if arg_types.len() != 2 {
+        diagnostics.push(call_diagnostic(
+            file,
+            span,
+            format!(
+                "`{label}` expects 2 argument(s), but {} were given",
+                arg_types.len(),
+            ),
+        ));
+        return;
+    }
+    match (&arg_types[0], &arg_types[1]) {
+        (MarrowType::Primitive(actual), MarrowType::Primitive(expected)) if actual == expected => {}
+        (MarrowType::Primitive(_), MarrowType::Primitive(_)) => {
+            let (expected, found) = mismatch_display(&arg_types[0], &arg_types[1]);
+            diagnostics.push(call_diagnostic(
+                file,
+                span,
+                format!("argument to `{label}` expects `{expected}`, but found `{found}`"),
+            ));
+        }
+        (MarrowType::Unknown, _) | (_, MarrowType::Unknown) => {}
+        (actual, expected) => {
+            let found = if matches!(actual, MarrowType::Primitive(_)) {
+                marrow_type_name(expected)
+            } else {
+                marrow_type_name(actual)
+            };
+            diagnostics.push(call_diagnostic(
+                file,
+                span,
+                format!("argument to `{label}` expects a scalar, but found `{found}`"),
+            ));
+        }
+    }
 }
 
 fn check_unknown_std_operation(env: &mut CallEnv<'_>, segments: &[String]) {
