@@ -1,7 +1,7 @@
 use crate::common;
 use marrow_syntax::{
     Block, Comment, CommentMarker, CommentPlacement, Declaration, EvolveDecl, Statement,
-    format_expression, format_source, parse_source,
+    format_expression, format_preserves_comments, format_source, parse_source,
 };
 /// Format a single-declaration `module app` source through `format_source` and
 /// return just that declaration's canonical text. `format_source` wraps the file
@@ -743,6 +743,114 @@ fn preserves_top_level_and_member_line_comments() {
 }
 
 #[test]
+fn preserves_top_level_header_trailing_comments() {
+    let source = "module app ; module rationale\n\
+         use common ; use rationale\n\
+         const Max:int=5 ; const rationale\n\
+         ;; Stored books.\n\
+         resource Book ; resource rationale\n\
+         \x20   title: string\n\
+         store ^books: Book ; store rationale\n\
+         evolve ; evolve rationale\n\
+         \x20   rename Book.title -> Book.name\n\
+         enum Status ; enum rationale\n\
+         \x20   active\n\
+         fn run() ; function rationale\n\
+         \x20   return\n";
+    let expected = "module app ; module rationale\n\
+         \n\
+         use common ; use rationale\n\
+         \n\
+         const Max: int = 5 ; const rationale\n\
+         \n\
+         ;; Stored books.\n\
+         resource Book ; resource rationale\n\
+         \x20   title: string\n\
+         \n\
+         store ^books: Book ; store rationale\n\
+         \n\
+         evolve ; evolve rationale\n\
+         \x20   rename Book.title -> Book.name\n\
+         \n\
+         enum Status ; enum rationale\n\
+         \x20   active\n\
+         \n\
+         fn run() ; function rationale\n\
+         \x20   return\n";
+
+    assert_eq!(format_source(source), expected);
+    let once = format_source(source);
+    assert_eq!(format_source(&once), once);
+}
+
+#[test]
+fn preserves_member_header_trailing_comments() {
+    let source = "module app\n\
+         resource Book\n\
+         \x20   ;; Shared details.\n\
+         \x20   details ; group rationale\n\
+         \x20       ;; Display title.\n\
+         \x20       required title: string ; field rationale\n\
+         store ^books: Book\n\
+         \x20   ;; Lookup by title.\n\
+         \x20   index byTitle(title) ; index rationale\n\
+         enum Status\n\
+         \x20   ;; Live states.\n\
+         \x20   category live ; category rationale\n\
+         \x20       ;; Selectable state.\n\
+         \x20       active ; member rationale\n";
+    let expected = "module app\n\
+         \n\
+         resource Book\n\
+         \x20   ;; Shared details.\n\
+         \x20   details ; group rationale\n\
+         \x20       ;; Display title.\n\
+         \x20       required title: string ; field rationale\n\
+         \n\
+         store ^books: Book\n\
+         \x20   ;; Lookup by title.\n\
+         \x20   index byTitle(title) ; index rationale\n\
+         \n\
+         enum Status\n\
+         \x20   ;; Live states.\n\
+         \x20   category live ; category rationale\n\
+         \x20       ;; Selectable state.\n\
+         \x20       active ; member rationale\n";
+
+    assert_eq!(format_source(source), expected);
+    let once = format_source(source);
+    assert_eq!(format_source(&once), once);
+}
+
+#[test]
+fn preserves_trailing_comments_on_multiline_top_level_headers() {
+    let source = "module app\n\
+         const Info = save(\n\
+         \x20   title: \"x\",\n\
+         ) ; const rationale\n\
+         fn f(\n\
+         \x20   ;; the book to file\n\
+         \x20   book: int,\n\
+         ) ; function rationale\n\
+         \x20   return\n";
+    let expected = "module app\n\
+         \n\
+         const Info = save(\n\
+         \x20   title: \"x\",\n\
+         ) ; const rationale\n\
+         \n\
+         fn f(\n\
+         \x20   ;; the book to file\n\
+         \x20   book: int,\n\
+         ) ; function rationale\n\
+         \x20   return\n";
+
+    assert_eq!(format_source(source), expected);
+    let once = format_source(source);
+    assert_eq!(format_source(&once), once);
+}
+
+#[test]
 fn keeps_standalone_doc_paragraph_separate_from_following_declaration_docs() {
     let source = "module app\n\
          ;; Module overview.\n\
@@ -780,6 +888,186 @@ fn preserves_multiline_trailing_comma_calls() {
          \x20   )\n";
 
     assert_eq!(format_source(source), expected);
+}
+
+#[test]
+fn preserves_trailing_comments_on_multiline_statements() {
+    let source = "module app\n\
+         fn run()\n\
+         \x20   throw Error(\n\
+         \x20       code: \"book.absent\",\n\
+         \x20       message: \"missing book\",\n\
+         \x20   ) ; retained rationale\n";
+    let expected = "module app\n\
+         \n\
+         fn run()\n\
+         \x20   throw Error(\n\
+         \x20       code: \"book.absent\",\n\
+         \x20       message: \"missing book\",\n\
+         \x20   ) ; retained rationale\n";
+
+    assert_eq!(format_source(source), expected);
+
+    let body = reparsed_run_body(source);
+    assert_eq!(
+        comment_facts(&body.comments),
+        vec![(
+            "retained rationale",
+            CommentPlacement::Trailing,
+            CommentMarker::Line,
+        )]
+    );
+    let once = format_source(source);
+    assert_eq!(format_source(&once), once);
+}
+
+#[test]
+fn preserves_trailing_comments_on_compound_statement_headers() {
+    let source = "module app\n\
+         fn run()\n\
+         \x20   if isReady(\n\
+         \x20       value: 1,\n\
+         \x20   ) ; header rationale\n\
+         \x20       return\n";
+    let expected = "module app\n\
+         \n\
+         fn run()\n\
+         \x20   if isReady(\n\
+         \x20       value: 1,\n\
+         \x20   ) ; header rationale\n\
+         \x20       return\n";
+
+    assert_eq!(format_source(source), expected);
+
+    let body = reparsed_run_body(source);
+    assert_eq!(
+        comment_facts(&body.comments),
+        vec![(
+            "header rationale",
+            CommentPlacement::Trailing,
+            CommentMarker::Line,
+        )]
+    );
+    let once = format_source(source);
+    assert_eq!(format_source(&once), once);
+}
+
+#[test]
+fn preserves_trailing_comments_on_if_clauses() {
+    let source = "module app\n\
+         fn run()\n\
+         \x20   if ready ; if rationale\n\
+         \x20       return\n\
+         \x20   else if fallback ; elseif rationale\n\
+         \x20       return\n\
+         \x20   else ; else rationale\n\
+         \x20       return\n";
+    let expected = "module app\n\
+         \n\
+         fn run()\n\
+         \x20   if ready ; if rationale\n\
+         \x20       return\n\
+         \x20   else if fallback ; elseif rationale\n\
+         \x20       return\n\
+         \x20   else ; else rationale\n\
+         \x20       return\n";
+
+    assert_eq!(format_source(source), expected);
+
+    let body = reparsed_run_body(source);
+    assert_eq!(
+        comment_facts(&body.comments),
+        vec![
+            (
+                "if rationale",
+                CommentPlacement::Trailing,
+                CommentMarker::Line
+            ),
+            (
+                "elseif rationale",
+                CommentPlacement::Trailing,
+                CommentMarker::Line,
+            ),
+            (
+                "else rationale",
+                CommentPlacement::Trailing,
+                CommentMarker::Line,
+            ),
+        ]
+    );
+    let once = format_source(source);
+    assert_eq!(format_source(&once), once);
+}
+
+#[test]
+fn preserves_trailing_comments_on_try_catch_headers() {
+    let source = "module app\n\
+         fn run()\n\
+         \x20   try ; try rationale\n\
+         \x20       return\n\
+         \x20   catch err: Error ; catch rationale\n\
+         \x20       return\n";
+    let expected = "module app\n\
+         \n\
+         fn run()\n\
+         \x20   try ; try rationale\n\
+         \x20       return\n\
+         \x20   catch err: Error ; catch rationale\n\
+         \x20       return\n";
+
+    assert_eq!(format_source(source), expected);
+
+    let body = reparsed_run_body(source);
+    assert_eq!(
+        comment_facts(&body.comments),
+        vec![
+            (
+                "try rationale",
+                CommentPlacement::Trailing,
+                CommentMarker::Line,
+            ),
+            (
+                "catch rationale",
+                CommentPlacement::Trailing,
+                CommentMarker::Line,
+            ),
+        ]
+    );
+    let once = format_source(source);
+    assert_eq!(format_source(&once), once);
+}
+
+#[test]
+fn preserves_trailing_comments_on_match_arm_headers() {
+    let source = "module app\n\
+         fn run()\n\
+         \x20   match status\n\
+         \x20       active ; active rationale\n\
+         \x20           return\n\
+         \x20       inactive\n\
+         \x20           return\n";
+    let expected = "module app\n\
+         \n\
+         fn run()\n\
+         \x20   match status\n\
+         \x20       active ; active rationale\n\
+         \x20           return\n\
+         \x20       inactive\n\
+         \x20           return\n";
+
+    assert_eq!(format_source(source), expected);
+
+    let body = reparsed_run_body(source);
+    assert_eq!(
+        comment_facts(&body.comments),
+        vec![(
+            "active rationale",
+            CommentPlacement::Trailing,
+            CommentMarker::Line,
+        )]
+    );
+    let once = format_source(source);
+    assert_eq!(format_source(&once), once);
 }
 
 #[test]
@@ -846,6 +1134,83 @@ fn preserves_evolve_step_comments() {
     );
     let once = format_source(source);
     assert_eq!(format_source(&once), once);
+}
+
+#[test]
+fn preserves_trailing_comments_on_multiline_evolve_defaults() {
+    let source = "module app\n\
+         evolve\n\
+         \x20   default Book.info = save(\n\
+         \x20       title: \"x\",\n\
+         \x20   ) ; default rationale\n";
+    let expected = "module app\n\
+         \n\
+         evolve\n\
+         \x20   default Book.info = save(\n\
+         \x20       title: \"x\",\n\
+         \x20   ) ; default rationale\n";
+
+    assert_eq!(format_source(source), expected);
+
+    let evolve = reparsed_evolve_decl(source);
+    assert_eq!(
+        comment_facts(&evolve.comments),
+        vec![(
+            "default rationale",
+            CommentPlacement::Trailing,
+            CommentMarker::Line,
+        )]
+    );
+    let once = format_source(source);
+    assert_eq!(format_source(&once), once);
+}
+
+#[test]
+fn preserves_trailing_comments_on_multiline_evolve_transform_targets() {
+    let source = "module app\n\
+         evolve\n\
+         \x20   transform choose(\n\
+         \x20       value: 1,\n\
+         \x20   ) ; transform rationale\n\
+         \x20       return\n";
+    let expected = "module app\n\
+         \n\
+         evolve\n\
+         \x20   transform choose(\n\
+         \x20       value: 1,\n\
+         \x20   ) ; transform rationale\n\
+         \x20       return\n";
+
+    assert_eq!(format_source(source), expected);
+
+    let evolve = reparsed_evolve_decl(source);
+    assert_eq!(
+        comment_facts(&evolve.comments),
+        vec![(
+            "transform rationale",
+            CommentPlacement::Trailing,
+            CommentMarker::Line,
+        )]
+    );
+    let once = format_source(source);
+    assert_eq!(format_source(&once), once);
+}
+
+#[test]
+fn comment_preservation_guard_rejects_unstable_rewrites() {
+    let source = "module app\n\
+         evolve\n\
+         \x20   default Book.info = save(\n\
+         \x20       title: \"x\",\n\
+         \x20   ) ; default rationale\n";
+    let unstable_rewrite = "module app\n\
+         \n\
+         evolve\n\
+         \x20   default Book.info = save( ; default rationale\n\
+         \x20   title: \"x\",\n\
+         )\n";
+
+    assert!(!format_preserves_comments(source, unstable_rewrite));
 }
 
 #[test]

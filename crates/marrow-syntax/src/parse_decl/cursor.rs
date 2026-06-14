@@ -28,19 +28,7 @@ impl<'a> DeclParser<'a> {
         let end = self.header_end();
         let (content_end, trailing_comment) = match self.tokens[self.pos..end].last() {
             Some(token) if is_line_comment(token.kind) => {
-                let marker = match token.kind {
-                    TokenKind::DocComment => CommentMarker::Doc,
-                    _ => CommentMarker::Line,
-                };
-                (
-                    end - 1,
-                    Some(comment_from_token(
-                        self.source,
-                        *token,
-                        CommentPlacement::Trailing,
-                        marker,
-                    )),
-                )
+                (end - 1, self.comment_from_header(*token))
             }
             _ => (end, None),
         };
@@ -50,6 +38,30 @@ impl<'a> DeclParser<'a> {
             self.advance();
         }
         (line, trailing_comment)
+    }
+
+    pub(super) fn peek_header_trailing_comment(&self) -> Option<Comment> {
+        let end = self.header_end();
+        self.tokens
+            .get(self.pos..end)
+            .and_then(|tokens| tokens.last())
+            .and_then(|token| self.comment_from_header(*token))
+    }
+
+    fn comment_from_header(&self, token: Token) -> Option<Comment> {
+        if !is_line_comment(token.kind) {
+            return None;
+        }
+        let marker = match token.kind {
+            TokenKind::DocComment => CommentMarker::Doc,
+            _ => CommentMarker::Line,
+        };
+        Some(comment_from_token(
+            self.source,
+            token,
+            CommentPlacement::Trailing,
+            marker,
+        ))
     }
 
     pub(super) fn header_end(&self) -> usize {

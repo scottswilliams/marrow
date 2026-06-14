@@ -29,7 +29,7 @@ A value the grammar cannot structure yields `None` plus a `parse.syntax` diagnos
 
 ## Formatter
 
-`format_source` re-parses the source string (it does not take an AST) then renders canonical `.mw`; it is idempotent. It re-emits retained comments from the AST and keeps a parse/format structural fingerprint over the documented corpus. `format_preserves_comments` is the write-safety predicate used by the CLI before replacing a file. `format_declaration` and `format_expression` are public node-level renderers (`format_statement` is crate-private); note `format_declaration(source, decl)` still also takes the source `&str` for any statement body it carries, while only `format_expression(expr)` renders from an AST node alone.
+`format_source` re-parses the source string (it does not take an AST) then renders canonical `.mw`; it is idempotent. It re-emits retained comments from the AST and keeps a parse/format structural fingerprint over the documented corpus. `format_preserves_comments` is the write-safety predicate used by the CLI before replacing a file. `format_declaration` and `format_expression` are public node-level renderers; note `format_declaration(source, decl)` still also takes the source `&str` for any statement body it carries, while only `format_expression(expr)` renders from an AST node alone.
 
 ## Modules
 

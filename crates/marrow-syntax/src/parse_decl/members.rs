@@ -108,7 +108,8 @@ impl<'a> DeclParser<'a> {
                     let span = self.header_span();
                     let err = self.content_span();
                     let member_docs = self.take_docs_for_current_item(&mut docs, &mut comments);
-                    let header = self.take_header_line();
+                    let (header, trailing_comment) = self.take_header_line_with_trailing_comment();
+                    comments.extend(trailing_comment);
                     if matches!(kind, TokenKind::Keyword(Keyword::Index)) {
                         if let Some(index) =
                             self.parse_index_member(allow_indexes, span, err, member_docs, header)
@@ -240,7 +241,8 @@ impl<'a> DeclParser<'a> {
                     let span = self.header_span();
                     let err = self.content_span();
                     let member_docs = self.take_docs_for_current_item(&mut docs, &mut comments);
-                    let header = self.take_header_line();
+                    let (header, trailing_comment) = self.take_header_line_with_trailing_comment();
+                    comments.extend(trailing_comment);
                     match enum_member_name(self.source, header) {
                         Ok((name, category)) => {
                             // A member's children are the indented block that

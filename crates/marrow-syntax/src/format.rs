@@ -41,13 +41,18 @@ pub fn format_source(source: &str) -> String {
             span: module.span,
             text: format!("module {}", module.name),
             kind: FormatSectionKind::Item,
+            trailing_comment_line: TrailingCommentLine::Last,
         });
     }
     for comment in &file.comments {
         sections.push(FormatSection {
             span: comment.span,
-            text: format_comment(comment),
-            kind: FormatSectionKind::Comment,
+            text: match comment.placement {
+                CommentPlacement::OwnLine => format_comment(comment),
+                CommentPlacement::Trailing => format_trailing_comment(comment),
+            },
+            kind: FormatSectionKind::Comment(comment.placement),
+            trailing_comment_line: TrailingCommentLine::Last,
         });
     }
     for use_decl in &file.uses {
@@ -55,12 +60,15 @@ pub fn format_source(source: &str) -> String {
             span: use_decl.span,
             text: format!("use {}", use_decl.name),
             kind: FormatSectionKind::Use,
+            trailing_comment_line: TrailingCommentLine::Last,
         });
     }
     for declaration in &file.declarations {
+        let text = format_declaration(source, declaration);
         sections.push(FormatSection {
             span: declaration_span(declaration),
-            text: format_declaration(source, declaration),
+            trailing_comment_line: declaration_trailing_comment_line(declaration),
+            text,
             kind: FormatSectionKind::Item,
         });
     }
@@ -69,6 +77,7 @@ pub fn format_source(source: &str) -> String {
         return String::new();
     }
     sections.sort_by_key(|section| section.span.start_byte);
+    let sections = merge_trailing_comment_sections(sections);
     let mut out = String::new();
     for (index, section) in sections.iter().enumerate() {
         if index > 0 {
@@ -81,12 +90,14 @@ pub fn format_source(source: &str) -> String {
 }
 
 /// Whether replacing `source` with `formatted` would preserve every comment
-/// token's marker and normalized text and leave both files parseable.
+/// token's marker and normalized text, leave both files parseable, and produce
+/// stable formatter output.
 pub fn format_preserves_comments(source: &str, formatted: &str) -> bool {
     let parsed_source = crate::parse_source(source);
     let parsed_formatted = crate::parse_source(formatted);
     !parsed_source.has_errors()
         && !parsed_formatted.has_errors()
+        && format_source(formatted) == formatted
         && normalized_comment_tokens(source) == normalized_comment_tokens(formatted)
 }
 
@@ -94,13 +105,64 @@ struct FormatSection {
     span: crate::SourceSpan,
     text: String,
     kind: FormatSectionKind,
+    trailing_comment_line: TrailingCommentLine,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FormatSectionKind {
-    Comment,
+    Comment(CommentPlacement),
     Use,
     Item,
+}
+
+fn merge_trailing_comment_sections(sections: Vec<FormatSection>) -> Vec<FormatSection> {
+    let mut merged: Vec<FormatSection> = Vec::new();
+    for section in sections {
+        if matches!(
+            section.kind,
+            FormatSectionKind::Comment(CommentPlacement::Trailing)
+        ) && let Some(previous) = merged.last_mut()
+        {
+            append_trailing_comment_text(
+                &mut previous.text,
+                &section.text,
+                previous.trailing_comment_line,
+            );
+        } else {
+            merged.push(section);
+        }
+    }
+    merged
+}
+
+fn declaration_trailing_comment_line(declaration: &Declaration) -> TrailingCommentLine {
+    match declaration {
+        Declaration::Const(_) => TrailingCommentLine::Last,
+        Declaration::Resource(decl) => TrailingCommentLine::Line(decl.docs.len()),
+        Declaration::Store(decl) => TrailingCommentLine::Line(decl.docs.len()),
+        Declaration::Function(decl) => {
+            TrailingCommentLine::Line(format_function_header_last_line(decl))
+        }
+        Declaration::Enum(decl) => TrailingCommentLine::Line(decl.docs.len()),
+        Declaration::Evolve(_) => TrailingCommentLine::Line(0),
+    }
+}
+
+fn format_function_header_last_line(decl: &FunctionDecl) -> usize {
+    let param_lines = if decl.params.iter().any(|param| !param.docs.is_empty()) {
+        1 + decl
+            .params
+            .iter()
+            .map(|param| param.docs.len() + 1)
+            .sum::<usize>()
+    } else {
+        0
+    };
+    decl.docs.len() + param_lines
+}
+
+fn line_count(text: &str) -> usize {
+    text.bytes().filter(|byte| *byte == b'\n').count() + 1
 }
 
 fn section_separator(prev: &FormatSection, next: &FormatSection) -> &'static str {
@@ -110,7 +172,7 @@ fn section_separator(prev: &FormatSection, next: &FormatSection) -> &'static str
     {
         return "\n";
     }
-    if prev.kind == FormatSectionKind::Comment && next.span.line == prev.span.line + 1 {
+    if matches!(prev.kind, FormatSectionKind::Comment(_)) && next.span.line == prev.span.line + 1 {
         return "\n";
     }
     "\n\n"
@@ -165,11 +227,16 @@ pub fn format_declaration(source: &str, declaration: &Declaration) -> String {
 
 fn format_evolve(source: &str, decl: &EvolveDecl) -> String {
     let mut out = String::from("evolve");
-    let body = format_body(
+    let body = format_body_lines(
         &decl.comments,
-        decl.steps
-            .iter()
-            .map(|step| (step.span(), format_evolve_step(source, step))),
+        decl.steps.iter().map(|step| {
+            let text = format_evolve_step(source, step);
+            FormattedBodyLine {
+                span: step.span(),
+                trailing_comment_line: evolve_step_trailing_comment_line(step),
+                text,
+            }
+        }),
     );
     if !body.is_empty() {
         out.push('\n');
@@ -183,25 +250,37 @@ fn format_evolve_step(source: &str, step: &EvolveStep) -> String {
     match step {
         EvolveStep::Rename { from, to, .. } => format!(
             "{step_pad}rename {} -> {}",
-            format_expression(from),
-            format_expression(to)
+            format_expression_at(from, 1),
+            format_expression_at(to, 1)
         ),
         EvolveStep::Default { target, value, .. } => format!(
             "{step_pad}default {} = {}",
-            format_expression(target),
-            format_expression(value)
+            format_expression_at(target, 1),
+            format_expression_at(value, 1)
         ),
         EvolveStep::Retire { target, .. } => {
-            format!("{step_pad}retire {}", format_expression(target))
+            format!("{step_pad}retire {}", format_expression_at(target, 1))
         }
         EvolveStep::Transform { target, body, .. } => {
-            let mut out = format!("{step_pad}transform {}", format_expression(target));
+            let mut out = format!("{step_pad}transform {}", format_expression_at(target, 1));
             let body = format_block(source, body, 2);
             if !body.is_empty() {
                 out.push('\n');
                 out.push_str(&body);
             }
             out
+        }
+    }
+}
+
+fn evolve_step_trailing_comment_line(step: &EvolveStep) -> TrailingCommentLine {
+    match step {
+        EvolveStep::Transform { target, .. } => {
+            let header = format!("{INDENT}transform {}", format_expression_at(target, 1));
+            TrailingCommentLine::Line(line_count(&header).saturating_sub(1))
+        }
+        EvolveStep::Rename { .. } | EvolveStep::Default { .. } | EvolveStep::Retire { .. } => {
+            TrailingCommentLine::Last
         }
     }
 }
@@ -276,44 +355,52 @@ fn format_enum_member(member: &EnumMember, level: usize) -> String {
 }
 
 fn format_resource_body(members: &[ResourceMember], comments: &[Comment], level: usize) -> String {
-    format_body(
+    format_body_lines(
         comments,
-        members
-            .iter()
-            .map(|member| (member.span(), format_resource_member(member, level))),
+        members.iter().map(|member| FormattedBodyLine {
+            span: member.span(),
+            text: format_resource_member(member, level),
+            trailing_comment_line: resource_member_trailing_comment_line(member),
+        }),
     )
 }
 
 fn format_store_body(indexes: &[crate::IndexDecl], comments: &[Comment], level: usize) -> String {
-    format_body(
+    format_body_lines(
         comments,
-        indexes
-            .iter()
-            .map(|index| (index.span, format_index_decl(index, level))),
+        indexes.iter().map(|index| FormattedBodyLine {
+            span: index.span,
+            text: format_index_decl(index, level),
+            trailing_comment_line: TrailingCommentLine::Line(index.docs.len()),
+        }),
     )
 }
 
 fn format_enum_body(members: &[EnumMember], comments: &[Comment], level: usize) -> String {
-    format_body(
+    format_body_lines(
         comments,
-        members
-            .iter()
-            .map(|member| (member.span, format_enum_member(member, level))),
+        members.iter().map(|member| FormattedBodyLine {
+            span: member.span,
+            text: format_enum_member(member, level),
+            trailing_comment_line: TrailingCommentLine::Line(member.docs.len()),
+        }),
     )
 }
 
-/// Merge body comments with already-formatted items by source position. Own-line
-/// comments become standalone lines; trailing comments attach to the matching
-/// item line.
-fn format_body(
+fn resource_member_trailing_comment_line(member: &ResourceMember) -> TrailingCommentLine {
+    match member {
+        ResourceMember::Field(field) => TrailingCommentLine::Line(field.docs.len()),
+        ResourceMember::Group(group) => TrailingCommentLine::Line(group.docs.len()),
+    }
+}
+
+fn format_body_lines(
     comments: &[Comment],
-    items: impl Iterator<Item = (crate::SourceSpan, String)>,
+    items: impl Iterator<Item = FormattedBodyLine>,
 ) -> String {
     let mut lines = Vec::new();
     let mut comments = comments.iter().peekable();
-    let items: Vec<FormattedBodyLine> = items
-        .map(|(span, text)| FormattedBodyLine { span, text })
-        .collect();
+    let items: Vec<FormattedBodyLine> = items.collect();
 
     for (index, item) in items.iter().enumerate() {
         while let Some(comment) = comments.peek() {
@@ -335,7 +422,11 @@ fn format_body(
             && comment.span.start_byte > item.span.start_byte
             && comment.span.start_byte < next_start
         {
-            append_trailing_comment(&mut text, comments.next().expect("peeked"));
+            append_trailing_comment(
+                &mut text,
+                comments.next().expect("peeked"),
+                item.trailing_comment_line,
+            );
         }
         lines.push(text);
     }
@@ -350,6 +441,13 @@ fn format_body(
 struct FormattedBodyLine {
     span: crate::SourceSpan,
     text: String,
+    trailing_comment_line: TrailingCommentLine,
+}
+
+#[derive(Clone, Copy)]
+enum TrailingCommentLine {
+    Last,
+    Line(usize),
 }
 
 fn format_resource_member(member: &ResourceMember, level: usize) -> String {
@@ -485,21 +583,19 @@ pub(crate) fn format_block(source: &str, block: &Block, level: usize) -> String 
             }
         }
 
-        let mut text = format_statement(source, statement, level);
-        // A trailing comment falls between this statement's start and the next
-        // statement's; append it to this statement's last line.
         let next_start = block
             .statements
             .get(i + 1)
             .map_or(usize::MAX, |next| next.span().start_byte);
-        if let Some(comment) = comments.peek()
-            && comment.placement == CommentPlacement::Trailing
-            && comment.span.start_byte > stmt_span.start_byte
-            && comment.span.start_byte < next_start
-        {
-            let comment = comments.next().expect("peeked");
-            append_trailing_comment(&mut text, comment);
+        let mut statement_comments = Vec::new();
+        while let Some(comment) = comments.peek() {
+            if comment_belongs_to_statement(comment, stmt_span, next_start) {
+                statement_comments.push(comments.next().expect("peeked"));
+            } else {
+                break;
+            }
         }
+        let text = format_statement_with_comments(source, statement, &statement_comments, level);
         lines.push(text);
     }
 
@@ -511,7 +607,26 @@ pub(crate) fn format_block(source: &str, block: &Block, level: usize) -> String 
     lines.join("\n")
 }
 
-fn append_trailing_comment(text: &mut String, comment: &Comment) {
+fn comment_belongs_to_statement(
+    comment: &Comment,
+    stmt_span: crate::SourceSpan,
+    next_start: usize,
+) -> bool {
+    if comment.span.start_byte <= stmt_span.start_byte {
+        return false;
+    }
+    match comment.placement {
+        CommentPlacement::Trailing => comment.span.start_byte < next_start,
+        CommentPlacement::OwnLine => comment.span.start_byte < stmt_span.end_byte,
+    }
+}
+
+fn append_trailing_comment(text: &mut String, comment: &Comment, line: TrailingCommentLine) {
+    let suffix = format_trailing_comment(comment);
+    append_trailing_comment_text(text, &suffix, line);
+}
+
+fn format_trailing_comment(comment: &Comment) -> String {
     let mut suffix = String::new();
     suffix.push(' ');
     suffix.push_str(comment_marker_str(comment.marker));
@@ -519,11 +634,33 @@ fn append_trailing_comment(text: &mut String, comment: &Comment) {
         suffix.push(' ');
         suffix.push_str(&comment.text);
     }
-    if let Some(index) = text.find('\n') {
-        text.insert_str(index, &suffix);
-    } else {
-        text.push_str(&suffix);
+    suffix
+}
+
+fn append_trailing_comment_text(text: &mut String, suffix: &str, line: TrailingCommentLine) {
+    match line {
+        TrailingCommentLine::Last => text.push_str(suffix),
+        TrailingCommentLine::Line(line) => {
+            if let Some(index) = line_end_index(text, line) {
+                text.insert_str(index, suffix);
+            } else {
+                text.push_str(suffix);
+            }
+        }
     }
+}
+
+fn line_end_index(text: &str, target_line: usize) -> Option<usize> {
+    let mut line = 0usize;
+    for (index, byte) in text.bytes().enumerate() {
+        if byte == b'\n' {
+            if line == target_line {
+                return Some(index);
+            }
+            line += 1;
+        }
+    }
+    None
 }
 
 /// Render an own-line comment, preserving its original column.
@@ -551,9 +688,70 @@ fn comment_marker_str(marker: CommentMarker) -> &'static str {
     }
 }
 
-pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize) -> String {
+fn append_first_trailing_comment(text: &mut String, comments: &[&Comment]) {
+    if let Some(comment) = comments
+        .iter()
+        .copied()
+        .find(|comment| comment.placement == CommentPlacement::Trailing)
+    {
+        append_trailing_comment(text, comment, TrailingCommentLine::Last);
+    }
+}
+
+fn append_trailing_comment_between(
+    text: &mut String,
+    comments: &[&Comment],
+    start_byte: usize,
+    end_byte: usize,
+) {
+    if let Some(comment) = comments
+        .iter()
+        .copied()
+        .find(|comment| trailing_comment_between(comment, start_byte, end_byte))
+    {
+        append_trailing_comment(text, comment, TrailingCommentLine::Last);
+    }
+}
+
+fn trailing_comment_between(comment: &Comment, start_byte: usize, end_byte: usize) -> bool {
+    comment.placement == CommentPlacement::Trailing
+        && comment.span.start_byte > start_byte
+        && comment.span.start_byte < end_byte
+}
+
+fn format_header_block(
+    ctx: StatementFormatContext<'_, '_>,
+    mut header: String,
+    body: &Block,
+) -> String {
+    append_trailing_comment_between(
+        &mut header,
+        ctx.comments,
+        ctx.start_byte,
+        body.span.start_byte,
+    );
+    format!(
+        "{header}\n{}",
+        format_block(ctx.source, body, ctx.level + 1)
+    )
+}
+
+#[derive(Clone, Copy)]
+struct StatementFormatContext<'source, 'comments> {
+    source: &'source str,
+    comments: &'comments [&'comments Comment],
+    start_byte: usize,
+    level: usize,
+}
+
+fn format_statement_with_comments(
+    source: &str,
+    statement: &Statement,
+    comments: &[&Comment],
+    level: usize,
+) -> String {
     let pad = INDENT.repeat(level);
-    match statement {
+    let mut text = match statement {
         Statement::Const {
             name, ty, value, ..
         } => format!(
@@ -602,172 +800,331 @@ pub(crate) fn format_statement(source: &str, statement: &Statement, level: usize
             then_block,
             else_ifs,
             else_block,
-            ..
-        } => format_if(
-            source,
-            condition.as_ref(),
-            then_block,
-            else_ifs,
-            else_block.as_ref(),
-            level,
-        ),
+            span,
+        } => {
+            let ctx = StatementFormatContext {
+                source,
+                comments,
+                start_byte: span.start_byte,
+                level,
+            };
+            return format_if(
+                ctx,
+                condition.as_ref(),
+                then_block,
+                else_ifs,
+                else_block.as_ref(),
+            );
+        }
         Statement::IfConst {
             name,
             value,
             then_block,
             else_ifs,
             else_block,
-            ..
-        } => format_if_const(
-            source,
-            name,
-            value,
-            then_block,
-            else_ifs,
-            else_block.as_ref(),
-            level,
-        ),
+            span,
+        } => {
+            let ctx = StatementFormatContext {
+                source,
+                comments,
+                start_byte: span.start_byte,
+                level,
+            };
+            return format_if_const(ctx, name, value, then_block, else_ifs, else_block.as_ref());
+        }
         Statement::While {
-            condition, body, ..
-        } => format!(
-            "{pad}while {}\n{}",
-            format_opt_expression_at(condition.as_ref(), level),
-            format_block(source, body, level + 1)
-        ),
+            condition,
+            body,
+            span,
+        } => {
+            let header = format!(
+                "{pad}while {}",
+                format_opt_expression_at(condition.as_ref(), level)
+            );
+            let ctx = StatementFormatContext {
+                source,
+                comments,
+                start_byte: span.start_byte,
+                level,
+            };
+            return format_header_block(ctx, header, body);
+        }
         Statement::For {
             binding,
             iterable,
             step,
             body,
-            ..
-        } => format_for(source, binding, iterable, step.as_ref(), body, level),
-        Statement::Transaction { body, .. } => {
-            format!(
-                "{pad}transaction\n{}",
-                format_block(source, body, level + 1)
-            )
+            span,
+        } => {
+            let ctx = StatementFormatContext {
+                source,
+                comments,
+                start_byte: span.start_byte,
+                level,
+            };
+            return format_for(ctx, binding, iterable, step.as_ref(), body);
         }
-        Statement::Try { body, catch, .. } => format_try(source, body, catch.as_ref(), level),
+        Statement::Transaction { body, span } => {
+            let ctx = StatementFormatContext {
+                source,
+                comments,
+                start_byte: span.start_byte,
+                level,
+            };
+            return format_header_block(ctx, format!("{pad}transaction"), body);
+        }
+        Statement::Try { body, catch, span } => {
+            let ctx = StatementFormatContext {
+                source,
+                comments,
+                start_byte: span.start_byte,
+                level,
+            };
+            return format_try(ctx, body, catch.as_ref());
+        }
         Statement::Match {
-            scrutinee, arms, ..
-        } => format_match(source, scrutinee.as_ref(), arms, level),
-    }
+            scrutinee,
+            arms,
+            span,
+        } => {
+            let ctx = StatementFormatContext {
+                source,
+                comments,
+                start_byte: span.start_byte,
+                level,
+            };
+            return format_match(ctx, scrutinee.as_ref(), arms, *span);
+        }
+    };
+    append_first_trailing_comment(&mut text, comments);
+    text
 }
 
 fn format_if(
-    source: &str,
+    ctx: StatementFormatContext<'_, '_>,
     condition: Option<&Expression>,
     then_block: &Block,
     else_ifs: &[ElseIf],
     else_block: Option<&Block>,
-    level: usize,
 ) -> String {
-    let pad = INDENT.repeat(level);
-    let mut out = format!(
-        "{pad}if {}\n{}",
-        format_opt_expression_at(condition, level),
-        format_block(source, then_block, level + 1)
+    let pad = INDENT.repeat(ctx.level);
+    let mut header = format!("{pad}if {}", format_opt_expression_at(condition, ctx.level));
+    append_trailing_comment_between(
+        &mut header,
+        ctx.comments,
+        ctx.start_byte,
+        then_block.span.start_byte,
     );
+    let mut out = format!(
+        "{header}\n{}",
+        format_block(ctx.source, then_block, ctx.level + 1)
+    );
+    let mut previous_end = then_block.span.end_byte;
     for else_if in else_ifs {
-        out.push_str(&format!(
-            "\n{pad}else if {}\n{}",
-            format_opt_expression_at(else_if.condition.as_ref(), level),
-            format_block(source, &else_if.block, level + 1)
-        ));
+        let mut header = format!(
+            "{pad}else if {}",
+            format_opt_expression_at(else_if.condition.as_ref(), ctx.level)
+        );
+        append_trailing_comment_between(
+            &mut header,
+            ctx.comments,
+            previous_end,
+            else_if.block.span.start_byte,
+        );
+        out.push('\n');
+        out.push_str(&header);
+        out.push('\n');
+        out.push_str(&format_block(ctx.source, &else_if.block, ctx.level + 1));
+        previous_end = else_if.block.span.end_byte;
     }
     if let Some(else_block) = else_block {
-        out.push_str(&format!(
-            "\n{pad}else\n{}",
-            format_block(source, else_block, level + 1)
-        ));
+        let mut header = format!("{pad}else");
+        append_trailing_comment_between(
+            &mut header,
+            ctx.comments,
+            previous_end,
+            else_block.span.start_byte,
+        );
+        out.push('\n');
+        out.push_str(&header);
+        out.push('\n');
+        out.push_str(&format_block(ctx.source, else_block, ctx.level + 1));
     }
     out
 }
 
 fn format_if_const(
-    source: &str,
+    ctx: StatementFormatContext<'_, '_>,
     name: &str,
     value: &Expression,
     then_block: &Block,
     else_ifs: &[ElseIf],
     else_block: Option<&Block>,
-    level: usize,
 ) -> String {
-    let pad = INDENT.repeat(level);
-    let mut out = format!(
-        "{pad}if const {name} = {}\n{}",
-        format_expression_at(value, level),
-        format_block(source, then_block, level + 1)
+    let pad = INDENT.repeat(ctx.level);
+    let mut header = format!(
+        "{pad}if const {name} = {}",
+        format_expression_at(value, ctx.level)
     );
+    append_trailing_comment_between(
+        &mut header,
+        ctx.comments,
+        ctx.start_byte,
+        then_block.span.start_byte,
+    );
+    let mut out = format!(
+        "{header}\n{}",
+        format_block(ctx.source, then_block, ctx.level + 1)
+    );
+    let mut previous_end = then_block.span.end_byte;
     for else_if in else_ifs {
-        out.push_str(&format!(
-            "\n{pad}else if {}\n{}",
-            format_opt_expression_at(else_if.condition.as_ref(), level),
-            format_block(source, &else_if.block, level + 1)
-        ));
+        let mut header = format!(
+            "{pad}else if {}",
+            format_opt_expression_at(else_if.condition.as_ref(), ctx.level)
+        );
+        append_trailing_comment_between(
+            &mut header,
+            ctx.comments,
+            previous_end,
+            else_if.block.span.start_byte,
+        );
+        out.push('\n');
+        out.push_str(&header);
+        out.push('\n');
+        out.push_str(&format_block(ctx.source, &else_if.block, ctx.level + 1));
+        previous_end = else_if.block.span.end_byte;
     }
     if let Some(else_block) = else_block {
-        out.push_str(&format!(
-            "\n{pad}else\n{}",
-            format_block(source, else_block, level + 1)
-        ));
+        let mut header = format!("{pad}else");
+        append_trailing_comment_between(
+            &mut header,
+            ctx.comments,
+            previous_end,
+            else_block.span.start_byte,
+        );
+        out.push('\n');
+        out.push_str(&header);
+        out.push('\n');
+        out.push_str(&format_block(ctx.source, else_block, ctx.level + 1));
     }
     out
 }
 
 fn format_for(
-    source: &str,
+    ctx: StatementFormatContext<'_, '_>,
     binding: &ForBinding,
     iterable: &Expression,
     step: Option<&Expression>,
     body: &Block,
-    level: usize,
 ) -> String {
-    let pad = INDENT.repeat(level);
+    let pad = INDENT.repeat(ctx.level);
     let binding = match &binding.second {
         Some(second) => format!("{}, {second}", binding.first),
         None => binding.first.clone(),
     };
     let step = match step {
-        Some(step) => format!(" by {}", format_expression_at(step, level)),
+        Some(step) => format!(" by {}", format_expression_at(step, ctx.level)),
         None => String::new(),
     };
-    format!(
-        "{pad}for {binding} in {}{step}\n{}",
-        format_expression_at(iterable, level),
-        format_block(source, body, level + 1)
-    )
+    let header = format!(
+        "{pad}for {binding} in {}{step}",
+        format_expression_at(iterable, ctx.level)
+    );
+    format_header_block(ctx, header, body)
 }
 
-fn format_try(source: &str, body: &Block, catch: Option<&CatchClause>, level: usize) -> String {
-    let pad = INDENT.repeat(level);
-    let mut out = format!("{pad}try\n{}", format_block(source, body, level + 1));
+fn format_try(
+    ctx: StatementFormatContext<'_, '_>,
+    body: &Block,
+    catch: Option<&CatchClause>,
+) -> String {
+    let pad = INDENT.repeat(ctx.level);
+    let mut header = format!("{pad}try");
+    append_trailing_comment_between(
+        &mut header,
+        ctx.comments,
+        ctx.start_byte,
+        body.span.start_byte,
+    );
+    let mut out = format!(
+        "{header}\n{}",
+        format_block(ctx.source, body, ctx.level + 1)
+    );
     if let Some(catch) = catch {
-        out.push_str(&format!(
-            "\n{pad}catch {}{}\n{}",
+        let mut header = format!(
+            "{pad}catch {}{}",
             catch.name,
-            format_type_annotation(&catch.ty),
-            format_block(source, &catch.block, level + 1)
-        ));
+            format_type_annotation(&catch.ty)
+        );
+        append_trailing_comment_between(
+            &mut header,
+            ctx.comments,
+            body.span.end_byte,
+            catch.block.span.start_byte,
+        );
+        out.push('\n');
+        out.push_str(&header);
+        out.push('\n');
+        out.push_str(&format_block(ctx.source, &catch.block, ctx.level + 1));
     }
     out
 }
 
 fn format_match(
-    source: &str,
+    ctx: StatementFormatContext<'_, '_>,
     scrutinee: Option<&Expression>,
     arms: &[MatchArm],
-    level: usize,
+    span: crate::SourceSpan,
 ) -> String {
-    let pad = INDENT.repeat(level);
-    let arm_pad = INDENT.repeat(level + 1);
-    let mut out = format!("{pad}match {}", format_opt_expression_at(scrutinee, level));
+    let pad = INDENT.repeat(ctx.level);
+    let arm_pad = INDENT.repeat(ctx.level + 1);
+    let mut out = format!(
+        "{pad}match {}",
+        format_opt_expression_at(scrutinee, ctx.level)
+    );
+    let first_arm_start = arms
+        .first()
+        .map_or(span.end_byte, |arm| arm.span.start_byte);
+    append_trailing_comment_between(&mut out, ctx.comments, span.start_byte, first_arm_start);
+    let arm_comments: Vec<&Comment> = ctx
+        .comments
+        .iter()
+        .copied()
+        .filter(|comment| !trailing_comment_between(comment, span.start_byte, first_arm_start))
+        .collect();
+    let mut comments = arm_comments.into_iter().peekable();
     for arm in arms {
-        out.push_str(&format!(
-            "\n{arm_pad}{}\n{}",
-            arm.path.join("::"),
-            format_block(source, &arm.block, level + 2)
-        ));
+        while let Some(comment) = comments.peek() {
+            if comment.placement == CommentPlacement::OwnLine
+                && comment.span.start_byte < arm.span.start_byte
+            {
+                out.push('\n');
+                out.push_str(&format_block_comment(
+                    comments.next().expect("peeked"),
+                    ctx.level + 1,
+                ));
+            } else {
+                break;
+            }
+        }
+        let mut header = format!("{arm_pad}{}", arm.path.join("::"));
+        if let Some(comment) = comments.peek()
+            && trailing_comment_between(comment, arm.span.start_byte, arm.block.span.start_byte)
+        {
+            append_trailing_comment(
+                &mut header,
+                comments.next().expect("peeked"),
+                TrailingCommentLine::Last,
+            );
+        }
+        out.push('\n');
+        out.push_str(&header);
+        out.push('\n');
+        out.push_str(&format_block(ctx.source, &arm.block, ctx.level + 2));
+    }
+    for comment in comments {
+        out.push('\n');
+        out.push_str(&format_block_comment(comment, ctx.level + 1));
     }
     out
 }

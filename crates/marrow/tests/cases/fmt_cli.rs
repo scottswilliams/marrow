@@ -221,6 +221,93 @@ fn fmt_write_refuses_to_destroy_evolve_doc_comment_markers() {
 }
 
 #[test]
+fn fmt_write_preserves_multiline_evolve_trailing_comment_placement() {
+    let source = "module app\n\
+         evolve\n\
+         \x20   default Book.info = save(\n\
+         \x20       title: \"x\",\n\
+         \x20   ) ; default rationale\n";
+    let expected = "module app\n\
+         \n\
+         evolve\n\
+         \x20   default Book.info = save(\n\
+         \x20       title: \"x\",\n\
+         \x20   ) ; default rationale\n";
+    let path = temp_source("write-evolve-multiline-comment", source);
+    let output = run_fmt(&["--write", path.to_str().unwrap()]);
+    let written = fs::read_to_string(&path).expect("read back");
+    let check = run_fmt(&["--check", path.to_str().unwrap()]);
+    fs::remove_file(&path).ok();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(written, expected);
+    assert_eq!(check.status.code(), Some(0), "{check:?}");
+}
+
+#[test]
+fn fmt_write_preserves_header_trailing_comments() {
+    let source = "module app ; module rationale\n\
+         const Max:int=5 ; const rationale\n\
+         resource Book ; resource rationale\n\
+         \x20   details ; group rationale\n\
+         \x20       required title: string ; field rationale\n\
+         store ^books: Book\n\
+         \x20   index byTitle(title) ; index rationale\n";
+    let expected = "module app ; module rationale\n\
+         \n\
+         const Max: int = 5 ; const rationale\n\
+         \n\
+         resource Book ; resource rationale\n\
+         \x20   details ; group rationale\n\
+         \x20       required title: string ; field rationale\n\
+         \n\
+         store ^books: Book\n\
+         \x20   index byTitle(title) ; index rationale\n";
+    let path = temp_source("write-header-comments", source);
+    let output = run_fmt(&["--write", path.to_str().unwrap()]);
+    let written = fs::read_to_string(&path).expect("read back");
+    let check = run_fmt(&["--check", path.to_str().unwrap()]);
+    fs::remove_file(&path).ok();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(written, expected);
+    assert_eq!(check.status.code(), Some(0), "{check:?}");
+}
+
+#[test]
+fn fmt_write_preserves_multiline_top_level_header_comments() {
+    let source = "module app\n\
+         const Info = save(\n\
+         \x20   title: \"x\",\n\
+         ) ; const rationale\n\
+         fn f(\n\
+         \x20   ;; the book to file\n\
+         \x20   book: int,\n\
+         ) ; function rationale\n\
+         \x20   return\n";
+    let expected = "module app\n\
+         \n\
+         const Info = save(\n\
+         \x20   title: \"x\",\n\
+         ) ; const rationale\n\
+         \n\
+         fn f(\n\
+         \x20   ;; the book to file\n\
+         \x20   book: int,\n\
+         ) ; function rationale\n\
+         \x20   return\n";
+    let path = temp_source("write-multiline-header-comments", source);
+    let output = run_fmt(&["--write", path.to_str().unwrap()]);
+    let written = fs::read_to_string(&path).expect("read back");
+    let check = run_fmt(&["--check", path.to_str().unwrap()]);
+    fs::remove_file(&path).ok();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(written, expected);
+    assert_eq!(check.status.code(), Some(0), "{check:?}");
+}
+
+#[test]
 fn fmt_write_refuses_to_destroy_statement_doc_comment_markers() {
     let source = "module app\n\
          fn main()\n\

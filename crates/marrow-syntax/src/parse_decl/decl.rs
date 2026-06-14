@@ -96,43 +96,59 @@ impl<'a> DeclParser<'a> {
             Some(TokenKind::Indent) => self.report_stray_indented_lines(),
             Some(TokenKind::Keyword(Keyword::Module)) if self.keyword_introduces_decl() => {
                 self.flush_docs_as_comments(docs, &mut file.comments);
+                let trailing_comment = self.peek_header_trailing_comment();
                 self.parse_module(file, saw_top_level_item);
+                file.comments.extend(trailing_comment);
             }
             Some(TokenKind::Keyword(Keyword::Use)) if self.keyword_introduces_decl() => {
                 self.flush_docs_as_comments(docs, &mut file.comments);
+                let trailing_comment = self.peek_header_trailing_comment();
                 self.parse_use(file);
+                file.comments.extend(trailing_comment);
             }
             Some(TokenKind::Keyword(Keyword::Const)) if self.keyword_introduces_decl() => {
+                let trailing_comment = self.peek_header_trailing_comment();
                 let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
                 let decl = self.parse_const(decl_docs);
                 file.declarations.push(Declaration::Const(decl));
+                file.comments.extend(trailing_comment);
             }
             Some(TokenKind::Keyword(Keyword::Resource)) if self.keyword_introduces_decl() => {
+                let trailing_comment = self.peek_header_trailing_comment();
                 let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
                 let resource = self.parse_resource(decl_docs);
                 file.declarations.push(Declaration::Resource(resource));
+                file.comments.extend(trailing_comment);
             }
             Some(TokenKind::Keyword(Keyword::Store)) if self.keyword_introduces_decl() => {
+                let trailing_comment = self.peek_header_trailing_comment();
                 let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
                 let store = self.parse_store(decl_docs);
                 file.declarations.push(Declaration::Store(store));
+                file.comments.extend(trailing_comment);
             }
             // `evolve` needs no trailing-space gate: its header is the bare
             // keyword, with the steps in the indented block below.
             Some(TokenKind::Keyword(Keyword::Evolve)) => {
                 self.flush_docs_as_comments(docs, &mut file.comments);
+                let trailing_comment = self.peek_header_trailing_comment();
                 let evolve = self.parse_evolve();
                 file.declarations.push(Declaration::Evolve(evolve));
+                file.comments.extend(trailing_comment);
             }
             _ if self.starts_enum_header() => {
+                let trailing_comment = self.peek_header_trailing_comment();
                 let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
                 let decl = self.parse_enum(decl_docs);
                 file.declarations.push(Declaration::Enum(decl));
+                file.comments.extend(trailing_comment);
             }
             _ if self.starts_function_header() => {
+                let trailing_comment = self.peek_header_trailing_comment();
                 let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
                 let function = self.parse_function(decl_docs);
                 file.declarations.push(Declaration::Function(function));
+                file.comments.extend(trailing_comment);
             }
             // `type` is not a keyword in Marrow; it lexes as an identifier.
             Some(TokenKind::Identifier)
