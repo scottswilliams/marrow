@@ -1,19 +1,19 @@
 use super::calls::{maybe_present_result, std_path_arg_mask};
 use super::effects::{
-    condition_narrowings, invalidate_key_bindings, invalidate_removed_narrowings,
-    invalidate_saved_narrowings, invalidate_written_target, negated_exists_narrowings,
+    condition_narrowings, invalidate_removed_narrowings, negated_exists_narrowings, saved_targets,
+    targets_invalidated_by_key_bindings, targets_invalidated_by_written_target,
     traversal_narrowing,
 };
 use super::keys::saved_place_key;
 use super::proofs::{PresenceRecorder, ReadContext, read_proof, record_read};
 use super::scope::NameScope;
 use super::target::{ReadTarget, read_target_with_scope, saved_path_read_target_with_scope};
-use super::writes::call_writes_saved_data;
+use super::writes::{call_writes_saved_data, expr_calls_saved_writer};
 use crate::executable::CheckedExecutableContext;
 use crate::{
     CheckDiagnostic, CheckedArg, CheckedBinaryOp, CheckedBody, CheckedBuiltinCall,
     CheckedCallTarget, CheckedCatchClause, CheckedElseIf, CheckedExpr, CheckedForBinding,
-    CheckedInterpolationPart, CheckedMatchArm, CheckedProgram, CheckedStmt,
+    CheckedInterpolationPart, CheckedMatchArm, CheckedProgram, CheckedStmt, MarrowType,
 };
 use marrow_schema::ReturnPresence;
 
@@ -42,6 +42,7 @@ pub(crate) fn check_presence(program: &mut CheckedProgram, diagnostics: &mut Vec
                     };
                     let mut scope = NameScope::default();
                     let mut narrowed = Vec::new();
+                    let mut events = InvalidationLog::default();
                     collect_expr(
                         program_view,
                         &value,
@@ -49,6 +50,7 @@ pub(crate) fn check_presence(program: &mut CheckedProgram, diagnostics: &mut Vec
                         &mut narrowed,
                         &mut scope,
                         &mut recorder,
+                        &mut events,
                     );
                 }
             }
@@ -74,25 +76,104 @@ fn collect_block(
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
 ) {
-    collect_block_with_bindings(program, block, &[], narrowed, scope, recorder);
+    let mut events = InvalidationLog::default();
+    collect_block_with_bindings(program, block, &[], narrowed, scope, recorder, &mut events);
 }
 
 fn collect_block_with_bindings(
     program: &CheckedProgram,
     block: &CheckedBody,
-    initial_bindings: &[String],
+    initial_bindings: &[BlockBinding<'_>],
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
     scope.push_frame();
     for binding in initial_bindings {
-        scope.bind(binding);
+        scope.bind_with_type(binding.name, binding.ty.clone());
     }
     for statement in block.statements() {
-        collect_statement(program, statement, narrowed, scope, recorder);
+        collect_statement(program, statement, narrowed, scope, recorder, events);
     }
     scope.pop_frame();
+}
+
+struct BlockBinding<'a> {
+    name: &'a str,
+    ty: Option<MarrowType>,
+}
+
+impl<'a> BlockBinding<'a> {
+    fn typed(name: &'a str, ty: Option<MarrowType>) -> Self {
+        Self { name, ty }
+    }
+}
+
+#[derive(Default)]
+struct InvalidationLog {
+    tracked: Vec<ReadTarget>,
+    invalidated: Vec<ReadTarget>,
+}
+
+impl InvalidationLog {
+    fn tracking(tracked: Vec<ReadTarget>) -> Self {
+        Self {
+            tracked,
+            invalidated: Vec::new(),
+        }
+    }
+
+    fn record(&mut self, targets: Vec<ReadTarget>) {
+        if self.tracked.is_empty() {
+            return;
+        }
+        let targets = targets
+            .into_iter()
+            .filter(|target| self.tracked.contains(target))
+            .collect();
+        super::util::extend_unique(&mut self.invalidated, targets);
+    }
+
+    fn removed(&mut self, before: &[ReadTarget], after: &[ReadTarget]) {
+        self.record(
+            before
+                .iter()
+                .filter(|target| !after.contains(target))
+                .cloned()
+                .collect(),
+        );
+    }
+}
+
+fn remove_invalidated(narrowed: &mut Vec<ReadTarget>, invalidated: &[ReadTarget]) {
+    narrowed.retain(|target| !invalidated.contains(target));
+}
+
+fn invalidate_key_bindings(
+    narrowed: &mut Vec<ReadTarget>,
+    events: &mut InvalidationLog,
+    bindings: &[u32],
+) {
+    let invalidated = targets_invalidated_by_key_bindings(narrowed, bindings);
+    events.record(invalidated.clone());
+    remove_invalidated(narrowed, &invalidated);
+}
+
+fn invalidate_written_target(
+    narrowed: &mut Vec<ReadTarget>,
+    events: &mut InvalidationLog,
+    written: &ReadTarget,
+) {
+    let invalidated = targets_invalidated_by_written_target(narrowed, written);
+    events.record(invalidated.clone());
+    remove_invalidated(narrowed, &invalidated);
+}
+
+fn invalidate_saved_targets(narrowed: &mut Vec<ReadTarget>, events: &mut InvalidationLog) {
+    let invalidated = saved_targets(narrowed);
+    events.record(invalidated.clone());
+    remove_invalidated(narrowed, &invalidated);
 }
 
 fn collect_statement(
@@ -101,31 +182,50 @@ fn collect_statement(
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
     match statement {
-        CheckedStmt::Const { name, value, .. } => {
-            collect_bare_expr(program, value, narrowed, scope, recorder);
-            scope.bind(name);
+        CheckedStmt::Const {
+            name,
+            binding_type,
+            value,
+            ..
+        } => {
+            collect_bare_expr(program, value, narrowed, scope, recorder, events);
+            scope.bind_with_type(name, binding_type.clone());
         }
         CheckedStmt::Throw { value, .. } | CheckedStmt::Expr { value, .. } => {
-            collect_bare_expr(program, value, narrowed, scope, recorder);
+            collect_bare_expr(program, value, narrowed, scope, recorder, events);
         }
-        CheckedStmt::Var { name, value, .. } => {
-            collect_optional_bare_expr(program, value.as_ref(), narrowed, scope, recorder);
-            scope.bind(name);
+        CheckedStmt::Var {
+            name,
+            binding_type,
+            value,
+            ..
+        } => {
+            collect_optional_bare_expr(program, value.as_ref(), narrowed, scope, recorder, events);
+            scope.bind_with_type(name, binding_type.clone());
         }
         CheckedStmt::Assign { target, value, .. } => {
-            collect_assignment_statement(program, target, value, narrowed, scope, recorder);
+            collect_assignment_statement(program, target, value, narrowed, scope, recorder, events);
         }
         CheckedStmt::Delete { path, .. } => {
-            collect_delete_statement(program, path, narrowed, scope, recorder);
+            collect_delete_statement(program, path, narrowed, scope, recorder, events);
         }
         CheckedStmt::Return { value, .. } => {
             let context = match scope.return_presence() {
                 ReturnPresence::Always => ReadContext::Bare,
                 ReturnPresence::MaybePresent => ReadContext::Resolved,
             };
-            collect_optional_expr(program, value.as_ref(), context, narrowed, scope, recorder);
+            collect_optional_expr(
+                program,
+                value.as_ref(),
+                context,
+                narrowed,
+                scope,
+                recorder,
+                events,
+            );
         }
         CheckedStmt::If {
             condition,
@@ -144,9 +244,11 @@ fn collect_statement(
             narrowed,
             scope,
             recorder,
+            events,
         ),
         CheckedStmt::IfConst {
             name,
+            binding_type,
             value,
             then_block,
             else_ifs,
@@ -155,6 +257,7 @@ fn collect_statement(
         } => collect_if_const_statement(
             IfConstStatementParts {
                 name,
+                binding_type: binding_type.as_ref(),
                 value,
                 then_block,
                 else_ifs,
@@ -164,12 +267,34 @@ fn collect_statement(
             narrowed,
             scope,
             recorder,
+            events,
         ),
         CheckedStmt::While {
             condition, body, ..
         } => {
-            collect_optional_bare_expr(program, condition.as_ref(), narrowed, scope, recorder);
-            collect_block(program, body, narrowed, scope, recorder);
+            collect_optional_bare_expr(
+                program,
+                condition.as_ref(),
+                narrowed,
+                scope,
+                recorder,
+                events,
+            );
+            let outer_start = narrowed.clone();
+            let mut body_narrowed = outer_start.clone();
+            let mut body_events = InvalidationLog::tracking(outer_start.clone());
+            collect_block_with_bindings(
+                program,
+                body,
+                &[],
+                &mut body_narrowed,
+                scope,
+                recorder,
+                &mut body_events,
+            );
+            events.record(body_events.invalidated.clone());
+            *narrowed = outer_start;
+            remove_invalidated(narrowed, &body_events.invalidated);
         }
         CheckedStmt::For {
             binding,
@@ -188,17 +313,32 @@ fn collect_statement(
             narrowed,
             scope,
             recorder,
+            events,
         ),
         CheckedStmt::Transaction { body, .. } => {
-            collect_block(program, body, narrowed, scope, recorder);
+            collect_block_with_bindings(program, body, &[], narrowed, scope, recorder, events);
         }
-        CheckedStmt::Try { body, catch, .. } => {
-            collect_try_statement(program, body, catch.as_ref(), narrowed, scope, recorder)
-        }
+        CheckedStmt::Try { body, catch, .. } => collect_try_statement(
+            program,
+            body,
+            catch.as_ref(),
+            narrowed,
+            scope,
+            recorder,
+            events,
+        ),
         CheckedStmt::Match {
             scrutinee, arms, ..
         } => {
-            collect_match_statement(program, scrutinee.as_ref(), arms, narrowed, scope, recorder);
+            collect_match_statement(
+                program,
+                scrutinee.as_ref(),
+                arms,
+                narrowed,
+                scope,
+                recorder,
+                events,
+            );
         }
         CheckedStmt::ReturnAbsent { .. }
         | CheckedStmt::Break { .. }
@@ -212,8 +352,17 @@ fn collect_bare_expr(
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
-    collect_expr(program, expr, ReadContext::Bare, narrowed, scope, recorder);
+    collect_expr(
+        program,
+        expr,
+        ReadContext::Bare,
+        narrowed,
+        scope,
+        recorder,
+        events,
+    );
 }
 
 fn collect_optional_bare_expr(
@@ -222,9 +371,10 @@ fn collect_optional_bare_expr(
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
     if let Some(expr) = expr {
-        collect_bare_expr(program, expr, narrowed, scope, recorder);
+        collect_bare_expr(program, expr, narrowed, scope, recorder, events);
     }
 }
 
@@ -235,9 +385,10 @@ fn collect_optional_expr(
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
     if let Some(expr) = expr {
-        collect_expr(program, expr, context, narrowed, scope, recorder);
+        collect_expr(program, expr, context, narrowed, scope, recorder, events);
     }
 }
 
@@ -248,14 +399,15 @@ fn collect_assignment_statement(
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
     let assigned = super::keys::assigned_bindings(target, scope);
     let written = read_target_with_scope(program, target, scope);
-    collect_write_target(program, target, narrowed, scope, recorder);
-    collect_bare_expr(program, value, narrowed, scope, recorder);
-    invalidate_key_bindings(narrowed, assigned);
+    collect_write_target(program, target, narrowed, scope, recorder, events);
+    collect_bare_expr(program, value, narrowed, scope, recorder, events);
+    invalidate_key_bindings(narrowed, events, &assigned);
     if let Some(written) = written {
-        invalidate_written_target(narrowed, &written);
+        invalidate_written_target(narrowed, events, &written);
     }
 }
 
@@ -265,11 +417,12 @@ fn collect_delete_statement(
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
     let written = read_target_with_scope(program, path, scope);
-    collect_write_target(program, path, narrowed, scope, recorder);
+    collect_write_target(program, path, narrowed, scope, recorder, events);
     if let Some(written) = written {
-        invalidate_written_target(narrowed, &written);
+        invalidate_written_target(narrowed, events, &written);
     }
 }
 
@@ -286,8 +439,9 @@ fn collect_if_statement(
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
-    collect_optional_bare_expr(program, parts.condition, narrowed, scope, recorder);
+    collect_optional_bare_expr(program, parts.condition, narrowed, scope, recorder, events);
     collect_guarded_block(
         program,
         parts.condition,
@@ -295,6 +449,7 @@ fn collect_if_statement(
         narrowed,
         scope,
         recorder,
+        events,
     );
     for else_if in parts.else_ifs {
         collect_optional_bare_expr(
@@ -303,6 +458,7 @@ fn collect_if_statement(
             narrowed,
             scope,
             recorder,
+            events,
         );
         collect_guarded_block(
             program,
@@ -311,10 +467,11 @@ fn collect_if_statement(
             narrowed,
             scope,
             recorder,
+            events,
         );
     }
     if let Some(block) = parts.else_block {
-        collect_block(program, block, narrowed, scope, recorder);
+        collect_block_with_bindings(program, block, &[], narrowed, scope, recorder, events);
     }
     if parts.else_ifs.is_empty()
         && parts.else_block.is_none()
@@ -330,6 +487,7 @@ fn collect_if_statement(
 
 struct IfConstStatementParts<'a> {
     name: &'a str,
+    binding_type: Option<&'a MarrowType>,
     value: &'a CheckedExpr,
     then_block: &'a CheckedBody,
     else_ifs: &'a [CheckedElseIf],
@@ -342,6 +500,7 @@ fn collect_if_const_statement(
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
     collect_expr(
         program,
@@ -350,20 +509,26 @@ fn collect_if_const_statement(
         narrowed,
         scope,
         recorder,
+        events,
     );
     let mut branch_narrowed = narrowed.to_vec();
-    if let Some(target) = read_target_with_scope(program, parts.value, scope) {
+    if !expr_calls_saved_writer(program, parts.value)
+        && let Some(target) = read_target_with_scope(program, parts.value, scope)
+    {
         super::util::extend_unique(&mut branch_narrowed, vec![target]);
     }
     let branch_start = branch_narrowed.clone();
+    let binding = BlockBinding::typed(parts.name, parts.binding_type.cloned());
     collect_block_with_bindings(
         program,
         parts.then_block,
-        &[parts.name.to_string()],
+        &[binding],
         &mut branch_narrowed,
         scope,
         recorder,
+        events,
     );
+    events.removed(&branch_start, &branch_narrowed);
     invalidate_removed_narrowings(narrowed, &branch_start, &branch_narrowed);
     for else_if in parts.else_ifs {
         collect_optional_bare_expr(
@@ -372,6 +537,7 @@ fn collect_if_const_statement(
             narrowed,
             scope,
             recorder,
+            events,
         );
         collect_guarded_block(
             program,
@@ -380,10 +546,11 @@ fn collect_if_const_statement(
             narrowed,
             scope,
             recorder,
+            events,
         );
     }
     if let Some(block) = parts.else_block {
-        collect_block(program, block, narrowed, scope, recorder);
+        collect_block_with_bindings(program, block, &[], narrowed, scope, recorder, events);
     }
 }
 
@@ -394,6 +561,7 @@ fn collect_guarded_block(
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
     let mut branch_narrowed = narrowed.to_vec();
     if let Some(condition) = condition {
@@ -403,7 +571,16 @@ fn collect_guarded_block(
         );
     }
     let branch_start = branch_narrowed.clone();
-    collect_block(program, block, &mut branch_narrowed, scope, recorder);
+    collect_block_with_bindings(
+        program,
+        block,
+        &[],
+        &mut branch_narrowed,
+        scope,
+        recorder,
+        events,
+    );
+    events.removed(&branch_start, &branch_narrowed);
     invalidate_removed_narrowings(narrowed, &branch_start, &branch_narrowed);
 }
 
@@ -475,6 +652,7 @@ fn collect_for_statement(
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
     collect_expr(
         program,
@@ -483,8 +661,9 @@ fn collect_for_statement(
         narrowed,
         scope,
         recorder,
+        events,
     );
-    collect_optional_bare_expr(program, parts.step, narrowed, scope, recorder);
+    collect_optional_bare_expr(program, parts.step, narrowed, scope, recorder, events);
     scope.push_frame();
     scope.bind(&parts.binding.first);
     if let Some(second) = &parts.binding.second {
@@ -495,9 +674,19 @@ fn collect_for_statement(
         super::util::extend_unique(&mut body_narrowed, vec![target]);
     }
     let body_start = body_narrowed.clone();
+    let mut body_events = InvalidationLog::tracking(body_start.clone());
     for statement in parts.body.statements() {
-        collect_statement(program, statement, &mut body_narrowed, scope, recorder);
+        collect_statement(
+            program,
+            statement,
+            &mut body_narrowed,
+            scope,
+            recorder,
+            &mut body_events,
+        );
     }
+    events.record(body_events.invalidated.clone());
+    remove_invalidated(narrowed, &body_events.invalidated);
     invalidate_removed_narrowings(narrowed, &body_start, &body_narrowed);
     scope.pop_frame();
 }
@@ -509,14 +698,40 @@ fn collect_try_statement(
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
-    collect_block(program, body, narrowed, scope, recorder);
+    let body_start = narrowed.clone();
+    let mut body_narrowed = body_start.clone();
+    let mut body_events = InvalidationLog::tracking(body_start.clone());
+    collect_block_with_bindings(
+        program,
+        body,
+        &[],
+        &mut body_narrowed,
+        scope,
+        recorder,
+        &mut body_events,
+    );
+    events.record(body_events.invalidated.clone());
+    remove_invalidated(narrowed, &body_events.invalidated);
     if let Some(catch) = catch {
         scope.push_frame();
         scope.bind(&catch.name);
+        let catch_start = narrowed.clone();
+        let mut catch_narrowed = catch_start.clone();
+        let mut catch_events = InvalidationLog::tracking(catch_start.clone());
         for statement in catch.block.statements() {
-            collect_statement(program, statement, narrowed, scope, recorder);
+            collect_statement(
+                program,
+                statement,
+                &mut catch_narrowed,
+                scope,
+                recorder,
+                &mut catch_events,
+            );
         }
+        events.record(catch_events.invalidated.clone());
+        remove_invalidated(narrowed, &catch_events.invalidated);
         scope.pop_frame();
     }
 }
@@ -528,12 +743,22 @@ fn collect_match_statement(
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
-    collect_optional_bare_expr(program, scrutinee, narrowed, scope, recorder);
+    collect_optional_bare_expr(program, scrutinee, narrowed, scope, recorder, events);
     for arm in arms {
         let mut arm_narrowed = narrowed.clone();
         let arm_start = arm_narrowed.clone();
-        collect_block(program, &arm.block, &mut arm_narrowed, scope, recorder);
+        collect_block_with_bindings(
+            program,
+            &arm.block,
+            &[],
+            &mut arm_narrowed,
+            scope,
+            recorder,
+            events,
+        );
+        events.removed(&arm_start, &arm_narrowed);
         invalidate_removed_narrowings(narrowed, &arm_start, &arm_narrowed);
     }
 }
@@ -544,8 +769,9 @@ fn collect_write_target(
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
-    collect_path_key_exprs(program, expr, narrowed, scope, recorder);
+    collect_path_key_exprs(program, expr, narrowed, scope, recorder, events);
 }
 
 fn collect_expr(
@@ -555,14 +781,15 @@ fn collect_expr(
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
     if let Some(read) = read_proof(program, expr, context, narrowed.as_slice(), scope) {
         record_read(program, expr, read, context, recorder);
-        collect_path_key_exprs(program, expr, narrowed, scope, recorder);
+        collect_path_key_exprs(program, expr, narrowed, scope, recorder, events);
         return;
     }
     if saved_place_key(expr, scope).is_some() {
-        collect_path_key_exprs(program, expr, narrowed, scope, recorder);
+        collect_path_key_exprs(program, expr, narrowed, scope, recorder, events);
         return;
     }
     if let CheckedExpr::Call {
@@ -582,7 +809,9 @@ fn collect_expr(
                 "maybe-present value must be resolved at the read site",
             ));
         }
-        collect_call_expr(program, callee, args, target, narrowed, scope, recorder);
+        collect_call_expr(
+            program, callee, args, target, narrowed, scope, recorder, events,
+        );
         return;
     }
 
@@ -593,10 +822,12 @@ fn collect_expr(
             target,
             ..
         } => {
-            collect_call_expr(program, callee, args, target, narrowed, scope, recorder);
+            collect_call_expr(
+                program, callee, args, target, narrowed, scope, recorder, events,
+            );
         }
         CheckedExpr::Field { base, .. } => {
-            collect_bare_expr(program, base, narrowed, scope, recorder);
+            collect_bare_expr(program, base, narrowed, scope, recorder, events);
         }
         CheckedExpr::OptionalField { base, .. } => collect_expr(
             program,
@@ -605,14 +836,15 @@ fn collect_expr(
             narrowed,
             scope,
             recorder,
+            events,
         ),
         CheckedExpr::Unary { operand, .. } => {
-            collect_bare_expr(program, operand, narrowed, scope, recorder);
+            collect_bare_expr(program, operand, narrowed, scope, recorder, events);
         }
         CheckedExpr::Binary {
             op, left, right, ..
         } => {
-            collect_binary_expr(program, *op, left, right, narrowed, scope, recorder);
+            collect_binary_expr(program, *op, left, right, narrowed, scope, recorder, events);
         }
         CheckedExpr::Range {
             start, end, step, ..
@@ -621,11 +853,11 @@ fn collect_expr(
                 .into_iter()
                 .flatten()
             {
-                collect_bare_expr(program, part, narrowed, scope, recorder);
+                collect_bare_expr(program, part, narrowed, scope, recorder, events);
             }
         }
         CheckedExpr::Interpolation { parts, .. } => {
-            collect_interpolation_expr(program, parts, narrowed, scope, recorder);
+            collect_interpolation_expr(program, parts, narrowed, scope, recorder, events);
         }
         CheckedExpr::Literal { .. } | CheckedExpr::Name { .. } | CheckedExpr::SavedRoot { .. } => {}
     }
@@ -639,6 +871,7 @@ fn collect_call_expr(
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
     if matches!(target, CheckedCallTarget::IdentityConstructor(_)) {
         collect_args(
@@ -648,15 +881,16 @@ fn collect_call_expr(
             narrowed,
             scope,
             recorder,
+            events,
         );
         return;
     }
     match builtin_of(target) {
         Some(CheckedBuiltinCall::Exists) => {
-            collect_exists_args(program, args, narrowed, scope, recorder);
+            collect_exists_args(program, args, narrowed, scope, recorder, events);
         }
         Some(CheckedBuiltinCall::Append) => {
-            collect_append_args(program, args, narrowed, scope, recorder);
+            collect_append_args(program, args, narrowed, scope, recorder, events);
         }
         Some(builtin) if builtin.reads_attached_data() => {
             collect_args(
@@ -666,9 +900,12 @@ fn collect_call_expr(
                 narrowed,
                 scope,
                 recorder,
+                events,
             );
         }
-        _ => collect_plain_call(program, callee, args, target, narrowed, scope, recorder),
+        _ => collect_plain_call(
+            program, callee, args, target, narrowed, scope, recorder, events,
+        ),
     }
 }
 
@@ -688,6 +925,7 @@ fn collect_exists_args(
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
     if let Some(arg) = args.first() {
         collect_expr(
@@ -697,6 +935,7 @@ fn collect_exists_args(
             narrowed,
             scope,
             recorder,
+            events,
         );
     }
     collect_args(
@@ -706,6 +945,7 @@ fn collect_exists_args(
         narrowed,
         scope,
         recorder,
+        events,
     );
 }
 
@@ -715,9 +955,10 @@ fn collect_append_args(
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
     if let Some(target) = args.first() {
-        collect_write_target(program, &target.value, narrowed, scope, recorder);
+        collect_write_target(program, &target.value, narrowed, scope, recorder, events);
     }
     collect_args(
         program,
@@ -726,6 +967,7 @@ fn collect_append_args(
         narrowed,
         scope,
         recorder,
+        events,
     );
 }
 
@@ -737,16 +979,17 @@ fn collect_plain_call(
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
     let writes_saved = call_writes_saved_data(program, target);
-    collect_bare_expr(program, callee, narrowed, scope, recorder);
+    collect_bare_expr(program, callee, narrowed, scope, recorder, events);
     if let Some(path_args) = std_path_arg_mask(target) {
-        collect_std_args(program, args, &path_args, narrowed, scope, recorder);
+        collect_std_args(program, args, &path_args, narrowed, scope, recorder, events);
     } else {
-        collect_call_args(program, args, narrowed, scope, recorder);
+        collect_call_args(program, args, narrowed, scope, recorder, events);
     }
     if writes_saved {
-        invalidate_saved_narrowings(narrowed);
+        invalidate_saved_targets(narrowed, events);
     }
 }
 
@@ -756,9 +999,10 @@ fn collect_call_args(
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
     for arg in args {
-        collect_bare_expr(program, &arg.value, narrowed, scope, recorder);
+        collect_bare_expr(program, &arg.value, narrowed, scope, recorder, events);
     }
 }
 
@@ -769,9 +1013,12 @@ fn collect_args(
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
     for arg in args {
-        collect_expr(program, &arg.value, context, narrowed, scope, recorder);
+        collect_expr(
+            program, &arg.value, context, narrowed, scope, recorder, events,
+        );
     }
 }
 
@@ -783,14 +1030,23 @@ fn collect_binary_expr(
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
     let left_context = if op == CheckedBinaryOp::Coalesce {
         ReadContext::Resolved
     } else {
         ReadContext::Bare
     };
-    collect_expr(program, left, left_context, narrowed, scope, recorder);
-    collect_bare_expr(program, right, narrowed, scope, recorder);
+    collect_expr(
+        program,
+        left,
+        left_context,
+        narrowed,
+        scope,
+        recorder,
+        events,
+    );
+    collect_bare_expr(program, right, narrowed, scope, recorder, events);
 }
 
 fn collect_interpolation_expr(
@@ -799,10 +1055,11 @@ fn collect_interpolation_expr(
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
     for part in parts {
         if let CheckedInterpolationPart::Expr(expr) = part {
-            collect_bare_expr(program, expr, narrowed, scope, recorder);
+            collect_bare_expr(program, expr, narrowed, scope, recorder, events);
         }
     }
 }
@@ -813,6 +1070,7 @@ fn collect_path_key_exprs(
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
     match expr {
         CheckedExpr::Call { target, args, .. }
@@ -822,7 +1080,7 @@ fn collect_path_key_exprs(
                 record_read(program, expr, read, ReadContext::Resolved, recorder);
             }
             if let Some(arg) = args.first() {
-                collect_path_key_exprs(program, &arg.value, narrowed, scope, recorder);
+                collect_path_key_exprs(program, &arg.value, narrowed, scope, recorder, events);
             }
             collect_args(
                 program,
@@ -831,6 +1089,7 @@ fn collect_path_key_exprs(
                 narrowed,
                 scope,
                 recorder,
+                events,
             );
         }
         CheckedExpr::Call {
@@ -839,15 +1098,23 @@ fn collect_path_key_exprs(
             target,
             ..
         } => {
-            collect_path_key_exprs(program, callee, narrowed, scope, recorder);
+            collect_path_key_exprs(program, callee, narrowed, scope, recorder, events);
             if let Some(path_args) = std_path_arg_mask(target) {
-                collect_std_args(program, args, &path_args, narrowed, scope, recorder);
+                collect_std_args(program, args, &path_args, narrowed, scope, recorder, events);
             } else {
-                collect_args(program, args, ReadContext::Bare, narrowed, scope, recorder);
+                collect_args(
+                    program,
+                    args,
+                    ReadContext::Bare,
+                    narrowed,
+                    scope,
+                    recorder,
+                    events,
+                );
             }
         }
         CheckedExpr::Field { base, .. } | CheckedExpr::OptionalField { base, .. } => {
-            collect_path_key_exprs(program, base, narrowed, scope, recorder);
+            collect_path_key_exprs(program, base, narrowed, scope, recorder, events);
         }
         CheckedExpr::Literal { .. }
         | CheckedExpr::Name { .. }
@@ -866,6 +1133,7 @@ fn collect_std_args(
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
 ) {
     for (index, arg) in args.iter().enumerate() {
         let context = if path_args.get(index).copied().unwrap_or(false)
@@ -875,6 +1143,8 @@ fn collect_std_args(
         } else {
             ReadContext::Bare
         };
-        collect_expr(program, &arg.value, context, narrowed, scope, recorder);
+        collect_expr(
+            program, &arg.value, context, narrowed, scope, recorder, events,
+        );
     }
 }

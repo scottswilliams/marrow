@@ -615,14 +615,7 @@ fn restore_replace_count_includes_node_only_records() {
         "fixture has a live record identity with no value records"
     );
 
-    let restore = marrow(&[
-        "restore",
-        "--replace",
-        "--count",
-        "0",
-        &dir,
-        &archive_arg,
-    ]);
+    let restore = marrow(&["restore", "--replace", "--count", "0", &dir, &archive_arg]);
 
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
     assert_eq!(text_code(&restore), "restore.not_empty");

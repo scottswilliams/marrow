@@ -578,7 +578,7 @@ fn for_loop_over_composite_root_narrows_identity_reads() {
              fn f()\n\
              \x20   for id in ^books\n\
              \x20       const book: Book = ^books(id)\n\
-             \x20       write(book.title)\n",
+             \x20       print(book.title)\n",
         );
     });
 
@@ -602,7 +602,7 @@ fn exact_non_unique_index_loop_over_composite_root_narrows_identity_reads() {
              fn f()\n\
              \x20   for id in ^books.byShelf(\"fiction\")\n\
              \x20       const book: Book = ^books(id)\n\
-             \x20       write(book.title)\n",
+             \x20       print(book.title)\n",
         );
     });
 
@@ -624,7 +624,7 @@ fn non_unique_index_prefix_loop_does_not_narrow_record_identity_reads() {
              fn f()\n\
              \x20   for id in ^books.byCategory\n\
              \x20       const book: Book = ^books(id)\n\
-             \x20       write(book.title)\n",
+             \x20       print(book.title)\n",
     );
 }
 
@@ -638,7 +638,7 @@ fn for_loop_over_composite_root_does_not_narrow_sparse_field_reads() {
              store ^books(author: string, ordinal: int): Book\n\
              fn f()\n\
              \x20   for id in ^books\n\
-             \x20       write(^books(id).subtitle)\n",
+             \x20       print(^books(id).subtitle)\n",
     );
 }
 

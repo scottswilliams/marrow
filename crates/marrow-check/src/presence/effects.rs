@@ -4,9 +4,10 @@ use super::scope::NameScope;
 use super::target::{ReadPlace, ReadTarget, ReadTargetValue, read_target_with_scope};
 use super::util::extend_unique;
 use super::writes::expr_calls_saved_writer;
+use crate::facts::{PresenceProofRead, SavedPlaceEffect};
 use crate::{
     CheckedBinaryOp, CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedForBinding,
-    CheckedProgram, CheckedUnaryOp,
+    CheckedProgram, CheckedSavedPlace, CheckedSavedTerminal, CheckedUnaryOp,
 };
 
 pub(super) fn condition_narrowings(
@@ -30,6 +31,9 @@ pub(super) fn negated_exists_narrowings(
     else {
         return Vec::new();
     };
+    if expr_calls_saved_writer(program, operand) {
+        return Vec::new();
+    }
     exists_target(program, operand, scope).into_iter().collect()
 }
 
@@ -47,9 +51,14 @@ fn condition_effects(
         CheckedExpr::Call { target, .. }
             if *target == CheckedCallTarget::Builtin(CheckedBuiltinCall::Exists) =>
         {
+            let writes_saved = expr_calls_saved_writer(program, expr);
             ConditionEffects {
-                narrowings: exists_target(program, expr, scope).into_iter().collect(),
-                writes_saved: expr_calls_saved_writer(program, expr),
+                narrowings: if writes_saved {
+                    Vec::new()
+                } else {
+                    exists_target(program, expr, scope).into_iter().collect()
+                },
+                writes_saved,
             }
         }
         CheckedExpr::Binary {
@@ -103,10 +112,9 @@ pub(super) fn traversal_narrowing(
         return None;
     }
     let path = traversal_key_path(iterable, two_name_loop)?;
-    let mut target = read_target_with_scope(program, path, scope)?;
-    if !matches!(target.place, ReadPlace::Saved { .. }) {
-        return None;
-    }
+    let mut target = read_target_with_scope(program, path, scope)
+        .filter(|target| matches!(target.place, ReadPlace::Saved { .. }))
+        .or_else(|| index_record_traversal_target(program, path))?;
     let key = binding_key(&binding.first, scope)?;
     target.keys.push(key.text);
     target.key_types.push(key.ty);
@@ -131,16 +139,55 @@ fn traversal_key_path(expr: &CheckedExpr, two_name_loop: bool) -> Option<&Checke
     Some(expr)
 }
 
-pub(super) fn invalidate_key_bindings(narrowed: &mut Vec<ReadTarget>, bindings: Vec<u32>) {
-    if bindings.is_empty() {
-        return;
+fn index_record_traversal_target(
+    program: &CheckedProgram,
+    path: &CheckedExpr,
+) -> Option<ReadTarget> {
+    let place = path.saved_place()?;
+    if !index_traversal_yields_identity(place) {
+        return None;
     }
-    narrowed.retain(|target| {
-        !target
-            .key_bindings
-            .iter()
-            .any(|binding| bindings.contains(binding))
-    });
+    let store = program.facts.store_by_root(&place.root)?;
+    Some(ReadTarget {
+        place: ReadPlace::Saved {
+            root: place.root.clone(),
+            members: Vec::new(),
+            effect: SavedPlaceEffect {
+                resource: store.resource,
+                members: Vec::new(),
+            },
+        },
+        keys: Vec::new(),
+        key_types: Vec::new(),
+        key_bindings: Vec::new(),
+        read: PresenceProofRead::Direct,
+        value: ReadTargetValue::Value,
+    })
+}
+
+pub(super) fn index_traversal_yields_identity(place: &CheckedSavedPlace) -> bool {
+    let CheckedSavedTerminal::Index {
+        name, args, unique, ..
+    } = &place.terminal
+    else {
+        return false;
+    };
+    if place.identity_keys.is_empty() {
+        return false;
+    }
+    let Some(index) = place
+        .indexes
+        .iter()
+        .find(|index| index.name == name.as_str())
+    else {
+        return false;
+    };
+    let index_key_count = index.keys.len();
+    if *unique {
+        return args.len() == index_key_count;
+    }
+    let identity_start = index_key_count.saturating_sub(place.identity_keys.len());
+    args.len() >= identity_start
 }
 
 pub(super) fn invalidate_removed_narrowings(
@@ -155,17 +202,52 @@ pub(super) fn invalidate_removed_narrowings(
     }
 }
 
-pub(super) fn invalidate_written_target(narrowed: &mut Vec<ReadTarget>, written: &ReadTarget) {
-    narrowed.retain(|target| !written_target_invalidates(written, target));
+pub(super) fn invalidate_saved_narrowings(narrowed: &mut Vec<ReadTarget>) {
+    let invalidated = saved_targets(narrowed);
+    narrowed.retain(|target| !invalidated.contains(target));
 }
 
-pub(super) fn invalidate_saved_narrowings(narrowed: &mut Vec<ReadTarget>) {
-    narrowed.retain(|target| {
-        !matches!(
-            target.place,
-            ReadPlace::Saved { .. } | ReadPlace::StoreIndex { .. }
-        )
-    });
+pub(super) fn targets_invalidated_by_key_bindings(
+    targets: &[ReadTarget],
+    bindings: &[u32],
+) -> Vec<ReadTarget> {
+    if bindings.is_empty() {
+        return Vec::new();
+    }
+    targets
+        .iter()
+        .filter(|target| {
+            target
+                .key_bindings
+                .iter()
+                .any(|binding| bindings.contains(binding))
+        })
+        .cloned()
+        .collect()
+}
+
+pub(super) fn targets_invalidated_by_written_target(
+    targets: &[ReadTarget],
+    written: &ReadTarget,
+) -> Vec<ReadTarget> {
+    targets
+        .iter()
+        .filter(|target| written_target_invalidates(written, target))
+        .cloned()
+        .collect()
+}
+
+pub(super) fn saved_targets(targets: &[ReadTarget]) -> Vec<ReadTarget> {
+    targets
+        .iter()
+        .filter(|target| {
+            matches!(
+                target.place,
+                ReadPlace::Saved { .. } | ReadPlace::StoreIndex { .. }
+            )
+        })
+        .cloned()
+        .collect()
 }
 
 fn written_target_invalidates(written: &ReadTarget, target: &ReadTarget) -> bool {
@@ -183,7 +265,7 @@ fn written_target_invalidates(written: &ReadTarget, target: &ReadTarget) -> bool
             },
         ) => {
             written_root == target_root
-                && related_prefix(&written.keys, &target.keys)
+                && saved_keys_may_overlap(written_root, written, target)
                 && related_prefix(written_members, target_members)
         }
         (
@@ -211,6 +293,65 @@ fn written_target_invalidates(written: &ReadTarget, target: &ReadTarget) -> bool
         (ReadPlace::StoreIndex { .. }, ReadPlace::Saved { .. }) => false,
         (ReadPlace::TransformOld { .. }, _) | (_, ReadPlace::TransformOld { .. }) => false,
     }
+}
+
+fn saved_keys_may_overlap(root: &str, written: &ReadTarget, target: &ReadTarget) -> bool {
+    if identity_splice_key(root, written) || identity_splice_key(root, target) {
+        return true;
+    }
+    written
+        .keys
+        .iter()
+        .zip(&target.keys)
+        .enumerate()
+        .all(|(index, (written_key, target_key))| {
+            saved_key_may_alias(
+                written_key,
+                written.key_types.get(index),
+                target_key,
+                target.key_types.get(index),
+            )
+        })
+}
+
+fn saved_key_may_alias(
+    written_key: &str,
+    written_type: Option<&Option<crate::MarrowType>>,
+    target_key: &str,
+    target_type: Option<&Option<crate::MarrowType>>,
+) -> bool {
+    if written_key == target_key {
+        return true;
+    }
+    !distinct_identity_key_types(written_type, target_type)
+}
+
+fn distinct_identity_key_types(
+    left: Option<&Option<crate::MarrowType>>,
+    right: Option<&Option<crate::MarrowType>>,
+) -> bool {
+    let Some(left) = identity_type_root(left) else {
+        return false;
+    };
+    let Some(right) = identity_type_root(right) else {
+        return false;
+    };
+    left != right
+}
+
+fn identity_type_root(ty: Option<&Option<crate::MarrowType>>) -> Option<&str> {
+    match ty {
+        Some(Some(crate::MarrowType::Identity(root))) => Some(root.as_str()),
+        _ => None,
+    }
+}
+
+fn identity_splice_key(root: &str, target: &ReadTarget) -> bool {
+    target.keys.len() == 1
+        && matches!(
+            target.key_types.first(),
+            Some(Some(crate::MarrowType::Identity(identity_root))) if identity_root == root
+        )
 }
 
 fn slice_prefix<T: PartialEq>(prefix: &[T], full: &[T]) -> bool {
