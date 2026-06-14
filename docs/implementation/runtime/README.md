@@ -9,7 +9,7 @@ The runtime is the final pipeline stage. It takes a checked project session or a
 - **Activations.** Each call is an `invoke` (`activation.rs`) that builds an `Env`, binds constants and params, evaluates the body, and classifies the outcome into a `Completion` (Returned / Threw / Faulted). Transaction state is shared (`Rc<RefCell>`) across all activations so callee writes join the caller's open transaction.
 - **The store bridge.** Reads, writes, and `exists` go through one saved-path lowering pass: `lower` produces a `SavedPath` with a `Terminal` (`path.rs`), and every read/write/delete consumes it. Writes are always **plan-then-commit**: build a full `WritePlan` of typed `PlanStep`s, then commit atomically — no write-as-you-go.
 
-## Phase order of one run
+## Run order
 
 1. `ProjectSession::open` (`project_session.rs`) checks a project for `run` or `test`, binds accepted catalog identity, and admits the configured store before any write-capable run invocation.
 2. `ProjectSession::invoke` builds a `CheckedEntryCall` and selects the admitted run store or a fresh test store, then calls `run_entry*` (`entry.rs`) to resolve the entry, canonicalize and type-check args, and start the top activation.
@@ -32,7 +32,7 @@ The runtime never re-resolves names or re-parses op strings: the checker stamps 
 
 ## Read next
 
-- `project_session.rs` — `ProjectSession::open` / `ProjectSession::invoke`: the unstable project admission and invocation boundary.
+- `project_session.rs` — `ProjectSession::open` / `ProjectSession::invoke`: the project admission and invocation boundary.
 - `entry.rs` — `run_entry` / `CheckedEntryCall::new`: how one admitted entry starts.
 - `activation.rs` — `invoke`: the body-execution kernel and `Completion` classification.
 - `call.rs` — `eval_call`: the central dispatcher every call routes through.

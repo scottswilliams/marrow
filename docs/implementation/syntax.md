@@ -1,6 +1,11 @@
 # Syntax: `.mw` Text to AST
 
-`marrow-syntax` is the compiler front end. It turns `.mw` source into a `SourceFile` AST plus a span-sorted list of typed `Diagnostic`s, and renders an AST back to canonical source. It decides syntactic shape only; all meaning (type/name resolution, enum/match validity, evolve semantics) is deferred to later crates. Zero dependencies — it is the most upstream crate.
+`marrow-syntax` is the compiler front end. It turns `.mw` source into a
+`SourceFile` AST plus a span-sorted list of typed `Diagnostic`s, and renders an
+AST back to canonical source. This page maps parser and formatter ownership; the
+language syntax contract lives in `docs/language/syntax.md`. Meaning
+(type/name resolution, enum/match validity, evolve semantics) is deferred to
+later crates. Zero dependencies — it is the most upstream crate.
 
 ## Pipeline
 

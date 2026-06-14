@@ -30,11 +30,6 @@ same tree-cell contract, but it is not a production `^` durability profile.
 Neither engine parses `.mw`, resolves schemas, distinguishes fields from
 indexes, owns catalog identity, or constructs Marrow physical keys.
 
-Backend profiles may grow future residency, tiering, and durability fields, but
-those facts remain engine-profile facts. Source still declares `^` saved roots;
-a memory-resident or tiered durable backend does not get a separate source
-sigil.
-
 Deterministic simulation grows by substituting the runtime nondeterminism
 provider at host/tool boundaries, not by teaching backends to read clocks or
 entropy. Tree-cell backends remain deterministic stores of typed facts; runtime
@@ -199,10 +194,10 @@ rebuilds the snapshot from its rows and verifies the stored header against the
 decoded entries. The canonical catalog digest sorts entries by declaration kind
 tag, canonical path, stable ID, aliases, lifecycle tag, accepted store-key shape,
 accepted store-index shape, and accepted structural signature before hashing, so
-declaration order does not change the digest. Reads also accept a legacy
-order-sensitive row-order header digest when it matches the decoded rows, then
-return the snapshot with the canonical digest. A tampered catalog row — even one
-that decodes into a structurally valid entry — fails closed as
+declaration order does not change the digest. The accepted contract is the
+canonical digest; the decoder also recognizes a matching row-order header digest
+and returns the snapshot with the canonical digest. A tampered catalog row —
+even one that decodes into a structurally valid entry — fails closed as
 `store.corruption`.
 
 Malformed tree-cell metadata, malformed node markers, malformed tree-cell

@@ -1,6 +1,10 @@
 # Saved-data reads and ordered iteration
 
-The read half of the runtime-to-store bridge. Given a type-checked saved place or local collection, it resolves a physical store address, reads or decodes one entry, or streams ordered iteration over record identities, index branches, unique lookups, and keyed child layers. Every `for` loop over saved data, every `keys`/`values`/`entries`/`reversed`, and every `count`/`exists` over a layer flows through here. It translates each `CheckedSavedPlace` into `TreeStore` tree-walk and index-scan calls and folds store `SavedKey`s back into runtime `Value`s.
+The read half of the runtime-to-store bridge. Given a type-checked saved place
+or local collection, it resolves a physical store address, reads or decodes one
+entry, or streams ordered iteration over record identities, index branches,
+unique lookups, and keyed child layers. This page maps implementation ownership;
+the user-facing iteration contract lives in `docs/language/builtins.md`.
 
 One invariant organizes the whole subsystem: **durable saved data is never materialized as a `Value`.** Streaming over saved data happens only inside a `for` loop, which runs a `SavedLoopPlan`; calling `keys`/`values`/`entries`/`reversed` directly on a saved place is instead rejected with `durable_collection_value`, a `run.unsupported` fault. So unbounded store data is always iterated, never collected. See `collection.rs` `eval_materialized` / `durable_collection_value` (the rejection) and `saved_iter.rs` `SavedLoopSpec` (the streaming path).
 

@@ -12,7 +12,9 @@ Narrowing identity is by **span-stripped canonical key**, never by structural `C
 
 ## Parts
 
-- **Flow driver** (`walk.rs`): threads the narrowed set and `NameScope`, classifies each read's `ReadContext`, dispatches builtins, records proofs.
+- **Flow driver** (`presence/walk.rs`): threads the narrowed set and
+  `NameScope`, classifies each read's `ReadContext`, dispatches builtins,
+  records proofs.
 - **Narrowing algebra** (`effects.rs`): what `exists`/`&&` and loop traversals narrow, and the invalidation rules that expire narrowings.
 - **Canonical key** (`keys.rs`): the one owner of the span-free key format.
 - **Read resolution** (`target.rs`): expression to `ReadTarget`/`ReadPlace`, and then to a persisted `PresenceProofPlace`. Type-check-only callers use boolean predicates from the same resolver rather than comparable proof targets.
@@ -31,6 +33,7 @@ Narrowing identity is by **span-stripped canonical key**, never by structural `C
 | `presence/target.rs` | Resolves an expression to a `ReadTarget`/`ReadPlace` and maps it to a persisted `PresenceProofPlace`. Saved-place proof identity consumes checked-place effects from `executable/place.rs`; transform `old.<member>` resolution delegates the top-level read-member rule to `evolution/transform_reads.rs`. |
 | `presence/writes.rs` | Recursive effect closure through direct callee refs, reading each function's precomputed `DirectEffectFacts` and exposing `write_effects_reachable`. |
 | `presence/proofs.rs` | Builds a `ReadProof`, assigns source/status, records the fact, emits the bare-maybe-present diagnostic. |
+| `presence/read_only.rs` | Checks injected read-only expressions against the allowed runtime surface. |
 | `presence/calls.rs` | Typed-call helpers: std Path-argument mask, neighbor read direction, single-arg collection-view unwrap. |
 | `presence/scope.rs` | `NameScope`: frame stack mapping names to monotonic binding ids, including the transform `old` binding when walking lowered transform bodies and the current function's return presence for maybe-return propagation. |
 | `presence/util.rs` | `push_unique`/`extend_unique` dedup helpers for narrowing/binding lists. |
@@ -49,7 +52,15 @@ Key types live mostly in `presence/target.rs` (`ReadTarget`, `ReadPlace`), `pres
 
 ## Tests
 
-`crates/marrow-check/tests` (the `catalog_presence_*`, `discharge_*`, and project statement files) drive real `.mw` fixtures through `check_project` and assert `presence_proofs()` source/status/place and presence/absence of `CHECK_BARE_MAYBE_PRESENT_READ`. `catalog_presence_narrowing.rs` checks that `if exists`, `if const`, and early-return `if not exists` narrow only when their control flow is sound, and that mutations expire narrowings. The discharge tests cover store-index, traversal, coalesce, and the absence of declaration-only required-field proofs.
+`crates/marrow-check/tests` (the `catalog_presence_*`, `discharge_*`, and
+project statement files) drive real `.mw` fixtures through `check_project` and
+assert `presence_proofs()` source/status/place and presence/absence of
+`CHECK_BARE_MAYBE_PRESENT_READ`.
+`crates/marrow-check/tests/cases/catalog_presence_narrowing.rs` checks that
+`if exists`, `if const`, and early-return `if not exists` narrow only when their
+control flow is sound, and that mutations expire narrowings. The discharge tests
+cover store-index, traversal, coalesce, and the absence of declaration-only
+required-field proofs.
 
 ## Read next
 

@@ -22,7 +22,12 @@ transaction blocks.
 
 `analysis.rs` assembles the snapshot in two passes: pass 1 parses all files and builds the project-wide module set, saved-root owner set, and the single deferred script; pass 2 resolves imports against the full set. Ownership and uniqueness (module name, saved root, at-most-one module-less script) are therefore decided on project-wide counts, not first-seen order. A parse-error file contributes no checked module but stays in the snapshot so editor tooling still works on broken buffers; the program is best-effort, not all-or-nothing.
 
-`cursor.rs` is checker-faithful by construction: it replays the checker's own binding primitives (`file_prelude`, `for_frame`, `local_binding`, `bind`, `resolve_type`, `infer_type`, `for_each_child_expr`), so the reconstructed scope cannot drift from the one the checker builds. A binding at or after the cursor offset is not yet in scope; the tightest covering expression wins.
+`cursor.rs` is checker-faithful by construction: it replays the checker's own
+binding primitives (`file_prelude`, `for_frame`, `local_binding`, `bind`,
+`resolve_type`, `infer_type`, `for_each_child_expr`), so the reconstructed scope
+cannot drift from the one the checker builds. A binding at or after the cursor
+offset is outside the scope at that offset; the tightest covering expression
+wins.
 
 ## Analysis API contract
 
@@ -31,16 +36,16 @@ snapshot-scoped, and version-aware. It exposes checker facts and
 checker-faithful derived views; it does not parse language structure a second
 time, infer facts from diagnostic prose, or open, repair, or create stores
 during ordinary check. These public surfaces recompute from the checked program
-or snapshot until a future editor host needs caching:
+or snapshot:
 
 - `AnalysisSnapshot::sites_for(catalog_id)` filters the snapshot's `UseSite`
   table, which is built by one post-lowering walk over runtime-lowered module
   constants, function bodies, and evolve transform bodies. Use sites are keyed
   by accepted or proposal catalog ids and typed as saved roots, resource
   members, store indexes, enums, or enum members.
-- `CheckedFacts::store_indices` reserves `StoreIndexFact::usage` as a
-  `StoreIndexUsageBitmap`. The v0.1 bitmap shape is stable but unpopulated, so
-  every current index fact reports no observed read/write use.
+- `CheckedFacts::store_indices` carries `StoreIndexFact::usage` as a
+  `StoreIndexUsageBitmap`; every current index fact reports no observed
+  read/write use.
 - `CheckedProgram::entry_cost_shapes` reports distinct static store/index
   operation shapes per public entry from the same lowered call graph and direct
   effects as `entry_footprints`. It is a model-audit surface, not a runtime
@@ -102,7 +107,7 @@ Path resolution is the single chokepoint: `resolve_query_steps` validates source
 | `crates/marrow-check/src/tooling/data/render.rs` | Path/key rendering helpers (catalog-id to source name, canonical `SavedKey` text). |
 | `crates/marrow-check/src/tooling/integrity.rs` | Integrity verdicts: per-value decode/key-type/enum-member checks, identity referent-existence verdicts, required-field completeness for existing records/keyed entries, and orphan classification as typed `IntegrityProblem` with stable codes. |
 | `crates/marrow-check/src/tooling/metadata.rs` | `ToolingCatalogMetadata` (program digest + catalog epoch vs store epochs) and `store_is_newer_than_program` staleness predicate. |
-| `crates/marrow-check/src/test_support.rs` | Feature-gated test-only fact-lookup helpers; not in normal or release builds. |
+| `crates/marrow-check/src/test_support.rs` | Feature-gated test support fact-lookup helpers; not in normal or release builds. |
 
 ## Key types
 
@@ -120,14 +125,8 @@ Path resolution is the single chokepoint: `resolve_query_steps` validates source
 - `IntegrityProblem` / `IntegrityOutcome` (`integrity.rs`) — a typed finding implementing `Diagnose`, tagged stored-value vs structure/orphan findings, with catalog/key identity attached to incomplete data and dangling identity references.
 - `ToolingCatalogMetadata` (`metadata.rs`) — the version snapshot read for staleness gating.
 
-## Notes
+## Entry points
 
-- Saved-data tooling (integrity/children/walk/get) has no in-crate unit tests;
-  it is exercised end-to-end from `crates/marrow/tests`
-  (`data_cli_integrity.rs`, `data_cli_get.rs`, `data_cli_inventory.rs`) and
-  `crates/marrow-store/tests/tree_store.rs`. Cursor and snapshot facts are
-  covered in `crates/marrow-check/tests` (`analysis_api.rs`,
-  `project_analysis_overlay_snapshot.rs`, `project_analysis_test_resolution.rs`).
 - `analyze_source_project` is crate-internal (`pub(crate)`); the public entry is
   `analyze_project`. Both take the accepted catalog as an
   `Option<&CatalogMetadata>` input the caller supplies. The convenience

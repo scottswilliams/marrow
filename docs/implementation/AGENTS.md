@@ -12,10 +12,9 @@ Rules for this directory:
   change to the code it describes** — a module, type, pass, invariant, or data
   flow added, removed, renamed, or reshaped. Rewrite the stale lines and delete
   what no longer holds; make the smallest edit that makes the map true again.
-- It is imperative these pages never accrue agentic sediment. Never append
-  notes, history, migration narration, or duplicate lines. A page is a thin
-  map, not a changelog; if an edit makes it longer without making it truer, cut
-  instead.
+- It is imperative these pages never accrue agentic sediment. Never append stale
+  narration, duplicate lines, or changelog prose. A page is a thin map; if an
+  edit makes it longer without making it truer, cut instead.
 - Keep it a map, not a tutorial: reference files by repo-relative path and
   symbols by name, no line numbers, no slop.
 - Design and contract law lives elsewhere: `docs/language/` for the language,

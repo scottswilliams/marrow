@@ -24,6 +24,7 @@ Identity refs (`CheckedFunctionRef`/`ResourceRef`/`EnumRef`) use positional `ptr
 | `crates/marrow-check/src/executable/runtime_value.rs` | `CheckedRuntimeValueType` and resource-constructor IR; `MarrowType` → runtime value-type conversion. |
 | `crates/marrow-check/src/executable/stmt.rs` | `CheckedBody`/`CheckedStmt`; statement lowering via grouped helpers (binding/write, branch, loop, effect, match) with scope threading. |
 | `crates/marrow-check/src/executable/syntax_parts.rs` | Leaf parts: args/arg-mode, literals, operators, interpolation, for-bindings, match arms, else-if, catch clauses. |
+| `crates/marrow-check/src/executable/walk.rs` | Read-only walks over lowered expressions and statements for downstream facts. |
 
 ## Read next
 

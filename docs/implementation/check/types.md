@@ -24,12 +24,13 @@ The orchestration that sequences the passes lives in `analysis.rs`, outside this
 | `crates/marrow-check/src/diagnostics.rs` | The diagnostic vocabulary: `check.*` codes, the typed `DiagnosticPayload`, `CheckDiagnostic`/`CheckReport`, and the `ConversionTarget` table. |
 | `crates/marrow-check/src/program.rs` | The `CheckedProgram`/`CheckedRuntimeProgram` artifacts, the `MarrowType` lattice and `from_resolved` placement, `FileId`, runtime-body lowering. |
 | `crates/marrow-check/src/resolve.rs` | The one module/visibility-aware name resolver: `resolve` → `Resolution`/`Def`/`DefItem`; `resolve_store_by_root` for project-wide saved roots. |
-| `crates/marrow-check/src/checks/` | The type-check driver, split by concern: `driver` (resolved-file pass, file prelude, type-annotation checks), `statements` (`StatementCheck` dispatch, block/function scope), `calls` (`check_call`: builtin/std/constructor/user), `operators` (operator/condition/assign/return/throw checks), `ranges` (range-for step/direction rules), `collections` (for-loop frames, saved-path/index-branch key and value typing), `saved_keys` (key-argument typing), `required_fields` (straight-line local resource required-field assignment), `returns` (return placement, divergence), and `diagnostics` (the shared error constructors). `mod.rs` re-exports the cross-crate API. |
+| `crates/marrow-check/src/checks/` | Type-check driver modules by concern; `checks/mod.rs` re-exports the cross-crate API. |
 | `crates/marrow-check/src/infer.rs` | Expression type inference (`infer_type`/`infer_only`): literals, scope lookup, saved-path/leaf/group/index resolution (`saved_call_type`), enum member-path typing. |
 | `crates/marrow-check/src/typerules.rs` | Pure lattice rules: `type_compatible`, `expects_conversion`, `as_primitive`, numeric/ordered/steppable predicates, literal-range envelope, mismatch display. |
 | `crates/marrow-check/src/rules.rs` | Structural (syntax-only) rules: try-handler presence, loop control-flow, loop saved-write cost warnings, catch-type, assignment-target validity, read-only parameters, const-constant-expr. |
 | `crates/marrow-check/src/facts.rs` | Read-only typed fact tables (`CheckedFacts`) with newtyped ids, `CheckedType`, `StoredValueMeaning` (durable-key decoding), presence proofs, effect summaries, catalog binding. |
 | `crates/marrow-check/src/enums.rs` | Enum resolution and `match`/`is` checking: cross-module signature normalization, `resolve_enum_member_path`, exhaustiveness/duplicate-arm, `resolve_type`. |
+| `crates/marrow-check/src/keyed_entries.rs` | Project-aware keyed resource-layer normalization, plus named enum field validation and diagnostics that schema compilation cannot decide alone. |
 | `crates/marrow-check/src/binding.rs` | The editor binding index: definition→reference map with scope/shadowing/alias awareness, reusing resolve/infer; `RenameSafety` (SourceOnly vs SavedDataBacked). |
 | `crates/marrow-check/src/durable_path.rs` | Classification of decoded `^root(key).field` store-path text: `parse_path`/`display_path`, `SavedKey` parsing, `StoreLeafKind`, `identity_leaf_key_mismatch`. |
 | `crates/marrow-check/src/walk.rs` | Single owner of immediate-child enumeration of an `Expression` (`for_each_child_expr`), so read-only passes recurse without re-spelling tree shape. |
@@ -46,7 +47,10 @@ The orchestration that sequences the passes lives in `analysis.rs`, outside this
 
 ## Code-reality notes
 
-- `resolve.rs` `is_public` treats every `Resource` as cross-module visible and `pub`-gates functions (enum visibility is separate, owned by `enums.rs`). A non-`pub` resource is still reachable by qualified path — resources are not yet visibility-gated.
+- `resolve.rs` `is_public` treats every `Resource` as cross-module visible and
+  `pub`-gates functions. Enum visibility is separate, owned by
+  `crates/marrow-check/src/enums.rs`. A non-`pub` resource remains reachable by
+  qualified path.
 - `durable_path.rs` is a self-contained, publicly exported classifier whose consumers are tooling/runtime outside the crate; it couples to the spine only via `resolve_store_by_root` and `EnumId`. Read it as an adjacent utility, not part of the inference core.
 
 ## Read next

@@ -1,6 +1,15 @@
 # Standard library boundary
 
-The runtime evaluates a checked `std::<module>::<op>` call or a language builtin (`print`, `count`, `exists`, conversions, `Error(...)`, index lookup) into a `Value` or a host effect. The checker has already resolved each call to a typed target — `CheckedStdCall` carrying `requires_capability: Option<Capability>`, or a `CheckedBuiltinCall` / `CheckedCallTarget` variant — against the single descriptor table in `crates/marrow-schema/src/stdlib.rs`. This boundary never re-parses op-name strings to decide arity, types, or which capability is needed; it branches on the typed kind.
+The runtime evaluates a checked `std::<module>::<op>` call or a language builtin
+(`print`, `count`, `exists`, conversions, `Error(...)`, index lookup) into a
+`Value` or a host effect. The language-facing standard-library contract lives in
+`docs/language/standard-library.md`; this page maps the runtime boundary. The
+checker has already resolved each call to a typed target: `CheckedStdCall`
+carrying `requires_capability: Option<Capability>`, or a `CheckedBuiltinCall` /
+`CheckedCallTarget` variant, against the single descriptor table in
+`crates/marrow-schema/src/stdlib.rs`. This boundary never re-parses op-name
+strings to decide arity, types, or which capability is needed; it branches on
+the typed kind.
 
 Dispatch enters from `eval_std_call` and `eval_builtin_call` in `crates/marrow-run/src/call.rs`. `eval_std_call` matches `requires_capability`: `Some(Clock)`, `Some(Context)`, `Some(Environment)`, `Some(Log)`, and `Some(Filesystem)` route to host-effect handlers; `Some(Maintenance)` is rejected as unsupported at this boundary; `None` routes to `eval_assert` for module `assert` and otherwise to `eval_std`. Pure helpers compute in place and never touch `env.host`. Host-effect helpers read their capability off `Env`'s `Host` — `clock`/`context`/`environment`/`log` are `Option` fields, and filesystem access is the `bool` `Host.filesystem` flag — and raise `run.capability` when it is absent.
 

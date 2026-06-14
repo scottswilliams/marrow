@@ -1,6 +1,14 @@
 # Managed Writes
 
-The write half of the runtime: every managed mutation is planned in full, then committed atomically. The statement evaluator dispatches each write kind to a per-kind module that lowers the syntactic target to a checked `SavedPath`, builds a `WritePlan` of typed `PlanStep`s over resolved store addresses, then commits that plan through `TreeStore`. All type, identity, required-field, and unique-index checks run during planning, so a `WriteError` aborts before any cell changes. Generated-index teardown/rewrite and a catalog-epoch metadata stamp fold into the same plan; the whole plan runs inside the active transaction (or its own).
+The write half of the runtime: every managed mutation is assembled in full, then
+committed atomically. The statement evaluator dispatches each write kind to a
+per-kind module that lowers the syntactic target to a checked `SavedPath`, builds
+a `WritePlan` of typed `PlanStep`s over resolved store addresses, then commits
+that plan through `TreeStore`. All type, identity, required-field, and
+unique-index checks run during planning, so a `WriteError` aborts before any
+cell changes. Generated-index teardown/rewrite and a catalog-epoch metadata
+stamp fold into the same plan; the whole plan runs inside the active transaction
+(or its own).
 
 ## The shape
 

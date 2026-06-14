@@ -6,9 +6,9 @@ single structured view of a checked project that the runtime, evolution,
 catalog, and editor tooling all read against. Everything downstream resolves
 names and types against this artifact, never against source spelling.
 
-## Phase order
+## Pipeline order
 
-`analysis::analyze_source_project` sequences the whole pipeline; each phase mutates or extends the program in place:
+`analysis::analyze_source_project` sequences the whole pipeline; each step mutates or extends the program in place:
 
 1. **discover + parse** — overlay-or-disk read of source roots and tests into parse trees; error files are retained so editors keep working on broken buffers.
 2. **normalize named signatures and keyed layers** — `normalize_program_named_types` re-resolves every named signature slot (params/returns/constants) against the whole program, *before any pass reads parameter types*, so cross-module enum/resource identity compares like-for-like at calls. `normalize_resource_layers` then rewrites explicit keyed fields whose value type names a resource into keyed resource layers before facts or saved-place checks read the tree shape.
@@ -42,6 +42,6 @@ Evolution discharge and the analysis/tooling surface sit beside this spine, cons
 - `crates/marrow-check/src/lib.rs` — the crate root: module declarations and the public re-export surface, nothing else.
 - `crates/marrow-check/src/driver.rs` — `check_project` and `check_tests*`, the per-file structural check, and the name/path/builtin resolution helpers shared with the type passes.
 - `crates/marrow-check/src/diagnostics.rs` — the diagnostic vocabulary: the `check.*` codes, the typed `DiagnosticPayload`, and `CheckDiagnostic` / `CheckReport`.
-- `crates/marrow-check/src/analysis.rs` — `analyze_source_project`, the phase orchestrator.
+- `crates/marrow-check/src/analysis.rs` — `analyze_source_project`, the pipeline orchestrator.
 - `crates/marrow-check/src/program.rs` — `CheckedProgram`, `MarrowType`, `lower_runtime_bodies`.
 - `crates/marrow-check/src/resolve.rs` — `resolve`, the single name resolver every consumer routes through.

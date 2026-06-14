@@ -2,11 +2,20 @@
 
 The CLI is wiring and rendering, not semantics. Commands resolve a project directory to the config, checked program, and durable state they actually need, then print diagnostics, program output, or a tooling report in the formats that command owns. `check`, `evolve`, `test`, and `data` keep their structured `text`/`json`/`jsonl` reports; `run` keeps `text`/`json`; trace, backup, and restore are text-only. All meaning — parse, type-check, run/test admission, evolution verdicts, store keys, value decoding — is decided downstream in `marrow-project`, `marrow-check`, `marrow-run`, and `marrow-store` and only consumed here.
 
-Two crates: `marrow-project` owns the `marrow.json` schema, source/test discovery, and the digest helper. `marrow` is the binary that dispatches argv to one `cmd_*` module.
+Three crates meet here: `marrow-project` owns the `marrow.json` schema,
+source/test discovery, and the digest helper; `marrow-check::project_io` owns
+project/catalog IO shared by CLI callers; `marrow` is the binary that dispatches
+argv to one `cmd_*` module and renders command results.
 
 ## The shared spine
 
-`main::main` installs a broken-pipe panic hook (a `Broken pipe` payload exits 0, every other panic defers to the default hook), then dispatches `argv[1]` to one command on a worker thread with a large stack (`run_on_worker_stack`). The parser and runtime recurse over untrusted source on that stack, sized so their fixed depth limits (`check.nesting_limit`, `run.depth`) always trip before it overflows. Commands that read an existing project call the shared loaders in `main.rs`:
+`main::main` installs a broken-pipe panic hook: a `Broken pipe` payload exits 0,
+and every other panic defers to the default hook. It then dispatches `argv[1]`
+to one command on a worker thread with a large stack (`run_on_worker_stack`).
+The parser and runtime recurse over untrusted source on that stack, sized so
+their fixed depth limits (`check.nesting_limit`, `run.depth`) always trip before
+it overflows. Commands that read an existing project call CLI wrappers in
+`main.rs` over shared project IO from `marrow-check::project_io`:
 
 - `load_config` / `load_checked_project` — dir to `ProjectConfig`, then to a `CheckedProgram` bound against an accepted catalog supplied by the caller.
 - `native_store_path` / `resolve_store_path` / `open_store_for_inspection` — locate and open the configured store; inspection uses `open_read_only`, while write-capable commands opt into the write-open path.
@@ -47,11 +56,17 @@ Structured reports that include a `project` field render the canonical absolute 
 | `crates/marrow-project/src/lib.rs` | `marrow.json` parse+validate, path-containment and plain-test-path checks, module-name derivation, `.mw` source/test discovery. |
 | `crates/marrow-project/src/digest.rs` | `sha256_digest`: `sha256:<hex>` over bytes, used for catalog and analyzed-source integrity digests. |
 
+### Project and catalog IO (`marrow-check`)
+
+| File | Responsibility |
+|---|---|
+| `crates/marrow-check/src/project_io.rs` | Shared project loaders, accepted-catalog artifact reads, store-backed accepted-catalog reads, and merge-conflict/error mapping for CLI callers. |
+
 ### CLI core (`marrow`)
 
 | File | Responsibility |
 |---|---|
-| `crates/marrow/src/main.rs` | argv dispatch, broken-pipe hook, and the shared loaders, store-path resolution, format parsing, and JSON envelope helpers. |
+| `crates/marrow/src/main.rs` | argv dispatch, broken-pipe hook, CLI wrappers around shared project IO, store-path resolution, format parsing, and JSON envelope helpers. |
 | `crates/marrow/src/cmd_init.rs` | `init`: validates the target directory's final path component and writes the quickstart project scaffold without overwriting an existing target. |
 | `crates/marrow/src/cmd_check.rs` | `check`; also the located runtime-fault renderer reused by `run`. |
 | `crates/marrow/src/cmd_doctor.rs` | `doctor`: read-only operator triage that aggregates config, check, catalog, store-open, stamp/fence, engine-profile, and bounded integrity-sample facts into stable `doctor.*` findings. |
@@ -83,7 +98,29 @@ Structured reports that include a `project` field render the canonical absolute 
 ## Load-bearing invariants
 
 - **Path containment.** Every project-relative path (source roots, `dataDir`, tests) is rejected if empty, absolute, or containing `..`, because each is later `Path::join`ed onto the project root. Test paths additionally reject glob metacharacters, so discovery is plain file-or-directory selection rather than pattern matching. `parse_config` double-parses (raw `Value` then typed `RawConfig`) to catch non-object roots and unknown-key spans.
-- **Run admission, arguments, and envelopes.** `ProjectSession::open` owns run admission. A clean project with a pending durable identity has its baseline frozen into the store the first time a real `run` opens it write-capable; a memory-backed project with a durable surface refuses with `run.durable_store_required` rather than running an identity nothing stamps, and a plain script runs over memory. On native schema drift, a zero-record-mutation change is auto-applied through the production apply path, which publishes the advanced catalog snapshot in the apply transaction; the session then re-checks and re-fences. Any backfill/transform/destructive change fences naming `evolve apply` instead. `run --dry-run` takes the same checked path but opens native stores read-only for classification: it reports would-freeze, would-apply, or would-fence as tooling content, does not freeze or auto-apply, and does not execute the entry when the fence would not pass. The redb file lock forces real apply paths to drop the first handle before reopening. A store holding records under no accepted catalog is refused as populated-but-unstamped. `SessionEntry` carries the selected entry name plus raw text argument pairs into `CheckedEntryCall`, where the checked signature decodes scalars, enums, scalar/enum sequences, and single-key identities or rejects unsupported surfaces with `run.entry_argument`. `cmd_run.rs` captures program stdout only for `--format json`, renders the pre-stable result envelope with the session-owned store stamp, and emits `committed` only when the invocation advanced the store commit.
+- **Run admission.** `ProjectSession::open` owns run admission. A clean project
+  with a pending durable identity has its baseline frozen into the store the
+  first time a real `run` opens it write-capable; a memory-backed project with a
+  durable surface refuses with `run.durable_store_required`, and a plain script
+  runs over memory.
+- **Run drift handling.** On native schema drift, a zero-record-mutation change
+  is auto-applied through the production apply path, which publishes the
+  advanced catalog snapshot in the apply transaction; the session then
+  re-checks and re-fences. Any backfill/transform/destructive change fences
+  naming `evolve apply` instead. The redb file lock forces real apply paths to
+  drop the first handle before reopening. A store holding records under no
+  accepted catalog is refused as populated-but-unstamped.
+- **Dry-run classification.** `run --dry-run` takes the same checked path but
+  opens native stores read-only for classification: it reports would-freeze,
+  would-apply, or would-fence as tooling content, does not freeze or auto-apply,
+  and does not execute the entry when the fence would not pass.
+- **Arguments and envelopes.** `SessionEntry` carries the selected entry name
+  plus raw text argument pairs into `CheckedEntryCall`, where the checked
+  signature decodes scalars, enums, scalar/enum sequences, and single-key
+  identities or rejects unsupported surfaces with `run.entry_argument`.
+  `cmd_run.rs` captures program stdout only for `--format json`, renders the
+  result envelope with the session-owned store stamp, and emits `committed` only
+  when the invocation advanced the store commit.
 - **Restore is all-or-nothing.** The whole replay runs in one transaction; any checksum/framing/verify failure rolls the target back to its prior state. Restore targets are empty-only by default; counted replace mode first confirms the live record count from `--replace --count N`, then clears and replays inside the restore transaction. Restore carries data cells only (indexes are rebuilt), replays bytes verbatim only when `EngineDescriptor` matches exactly, and proves the data compiles against the schema via the `verify` closure before commit. Raw byte validity is never enough.
 - **Backup-backed reads are non-activating.** `data roots|stats|dump|integrity|get --backup` loads the current config and source, validates the backup prologue and carried catalog through the restore contract, replays the archive into `TreeStore::memory`, verifies the mounted data against the checked schema, and then inspects that memory store. It does not open the configured native store, take the store lock, read `marrow.catalog.json`, render a catalog file, or write durable state. `evolve preview --from-backup` uses the same in-memory data mount for its witness but still compares the current source-tree catalog artifact with the backup identity, so a project that has advanced past the backup reports the typed restore drift refusal instead of previewing across catalog histories.
 - **Evolve apply.** `evolve apply` reads accepted identity from `marrow.catalog.json`, with the durable-state loader using the store snapshot as the crash bridge for commands that inspect or write the store. It freezes a pending baseline into the store, then previews the witness. A Retire-bearing witness requires `--backup <path>` or `--no-backup`; the backup path must not resolve under managed project paths (`marrow.json`, `marrow.catalog.json`, source roots, test paths, or the native data directory/store file), then uses the shared typed backup artifact writer and validates the archive before apply establishes any missing store UID or stages evolution work. The apply publishes the activated catalog snapshot, advances the epoch, and commits the data in one transaction; after commit, the CLI renders the project-root file from the committed store snapshot.
@@ -92,7 +129,11 @@ Structured reports that include a `project` field render the canonical absolute 
 ## Read next
 
 - `crates/marrow-project/src/lib.rs` — `parse_config`, `check_under_root`, `expected_module_name`: the config schema and path-containment guarantee.
-- `crates/marrow/src/main.rs` — `load_checked_project`, `resolve_store_path`, `read_accepted_catalog_artifact`, `read_accepted_store_catalog`, `establish_store_baseline`: the shared spine behind every command's first lines.
+- `crates/marrow-check/src/project_io.rs` — shared project/catalog loading used by CLI commands.
+- `crates/marrow/src/main.rs` — `load_checked_project`, `resolve_store_path`,
+  `read_accepted_catalog_artifact`, `read_accepted_store_catalog`,
+  `establish_store_baseline`: CLI wrappers and rendering boundaries around the
+  shared loaders.
 - `crates/marrow-run/src/project_session.rs` — `ProjectSession::open`, run/test admission, fence, drift auto-apply, test-case discovery, and `ProjectSession::invoke`.
 - `crates/marrow/src/cmd_run.rs` — run flag parsing, session notice/error rendering, hook selection, and report emission.
 - `crates/marrow/src/cmd_evolve/mod.rs` — `apply_cmd`: read store identity, freeze baseline when needed, preview, enforce recovery-point choice for Retire witnesses, apply (which publishes the catalog atomically).

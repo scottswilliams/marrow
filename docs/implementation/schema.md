@@ -31,7 +31,10 @@ Every `compile_*` entry returns the schema **and** a `Vec<SchemaError>` together
 
 Two single-source tables live here so checker and runtime never grow parallel copies:
 
-- **`presence.rs`** — the shared `ReturnPresence` marker (`Always` or `MaybePresent`) used by stdlib descriptors and checked user-function descriptors. It is not tied to stdlib; it is the one typed result-presence vocabulary exported by the schema crate.
+- **`crates/marrow-schema/src/presence.rs`** — the shared `ReturnPresence`
+  marker (`Always` or `MaybePresent`) used by stdlib descriptors and checked
+  user-function descriptors. It is not tied to stdlib; it is the one typed
+  result-presence vocabulary exported by the schema crate.
 - **`stdlib.rs`** — one `StdOp` row per `std::<module>::<op>`: param types, return type, result presence, and an optional runtime `Capability` (`Clock`, `Context`, `Environment`, `Log`, `Filesystem`, or `Maintenance`). `lookup` types calls in the checker; the runtime dispatches off the same rows. Rows with no capability are pure except for `std::assert`, which routes to the assert handler by module name. Calls under a known std module that are absent from the table are checker errors, not runtime extension hooks.
 - **`error.rs`** — the one descriptor of the builtin `Error` shape (`code`/`message` required, `help`/`data` optional) plus the shared error-code grammar. `fields` / `field` serve checker field-typing and runtime construction validation; `is_error_code_text` serves `ErrorCode` conversion and `Error.code`.
 
@@ -59,6 +62,8 @@ Two single-source tables live here so checker and runtime never grow parallel co
 - `member_node` / `sequence_leaf` (`compile.rs`) — the single owner of member→`Node` lowering and sequence desugaring.
 - `classify_key_type` / `index_arg_type_key_error` (`validate.rs`) — the orderable-scalar allowlist and the one index-arg divergence.
 - `compile_store` (`compile.rs`) / `check_store_index` (`validate.rs`) — keyed-root requirement and the trailing-identity-key rule for non-unique indexes.
-- `EnumSchema::walk_member_path` (`enums.rs`) / `flatten_enum_members` (`compile.rs`) — the shared value/`is`/`match` path walk and category⟺has-children enforcement.
+- `EnumSchema::walk_member_path` (`crates/marrow-schema/src/enums.rs`) /
+  `flatten_enum_members` (`compile.rs`) — the shared value/`is`/`match` path
+  walk and category⟺has-children enforcement.
 - `StoreSchema::single_int_root` (`types.rs`) — the checker's single-int-root `nextId` gate (the runtime re-checks the same contract via `single_int_identity` in `marrow-run`); `next_id_shape` is the matching rejection-message helper, single-sourced and reused verbatim by the runtime.
 - `TABLE` / `StdOp` / `lookup` (`stdlib.rs`) — the row shape that keeps std typing and dispatch single-sourced.

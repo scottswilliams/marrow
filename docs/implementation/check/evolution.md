@@ -47,7 +47,8 @@ and repair still needs the snapshot fixed before activation.
 | `crates/marrow-check/src/evolution/preview.rs` | The analysis entry point: runs discharge, then composes the `EvolutionWitness` from the discharge result plus store commit metadata, engine-profile digest, layout epoch, and source/evolution digests. |
 | `crates/marrow-check/src/evolution/transform_reads.rs` | Resolves a transform's read `CatalogId`s to `TransformReadMember` (name, leaf kind) — the one rule discharge and apply share so check and run never drift. |
 
-The evolution module root is `mod.rs`; there is no top-level `evolution.rs`.
+The evolution module root is `crates/marrow-check/src/evolution/mod.rs`; there
+is no separate top-level file for that module.
 
 ## Read next
 
