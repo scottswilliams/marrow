@@ -604,7 +604,15 @@ impl StatementCheck<'_> {
             self.diagnostics,
             self.transform_old,
         );
-        check_for_entries_support(self.file, binding, iterable, self.diagnostics);
+        check_for_entries_support(
+            self.program,
+            self.file,
+            binding,
+            iterable,
+            self.scope,
+            self.aliases,
+            self.diagnostics,
+        );
         if !is_saved_index_branch_path(self.program, iterable, self.scope, self.file)
             && !is_saved_key_range_path(self.program, iterable, self.scope, self.file)
         {

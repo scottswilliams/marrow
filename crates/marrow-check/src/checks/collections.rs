@@ -302,19 +302,22 @@ fn is_non_pair_collection_wrapper(iterable: &marrow_syntax::Expression) -> bool 
 }
 
 pub(super) fn check_for_entries_support(
+    program: &CheckedProgram,
     file: &Path,
     binding: &marrow_syntax::ForBinding,
     iterable: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let Some(arg) = two_name_entries_loop_arg(binding, iterable) else {
         check_entries_value_position(file, iterable, diagnostics);
         return;
     };
-    check_entries_loop_arg(file, arg, diagnostics);
+    check_entries_loop_arg(program, file, arg, scope, aliases, diagnostics);
 }
 
-pub(super) fn check_entries_value_position(
+pub(crate) fn check_entries_value_position(
     file: &Path,
     expr: &marrow_syntax::Expression,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -378,8 +381,11 @@ fn two_name_entries_loop_arg<'a>(
 }
 
 fn check_entries_loop_arg(
+    program: &CheckedProgram,
     file: &Path,
     arg: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     if is_any_collection_wrapper(arg) && !has_collection_unsupported(diagnostics, file, arg.span())
@@ -387,11 +393,50 @@ fn check_entries_loop_arg(
         diagnostics.push(entries_unsupported(
             file,
             arg.span(),
-            "`entries(...)` loop heads require a path or local keyed tree",
+            "`entries(...)` loop heads require a path or local collection",
         ));
         return;
     }
     check_entries_value_position(file, arg, diagnostics);
+    match entries_loop_arg_status(program, arg, scope, aliases, file) {
+        EntriesLoopArgStatus::Supported | EntriesLoopArgStatus::Unknown => {}
+        EntriesLoopArgStatus::Unsupported => {
+            if !has_collection_unsupported(diagnostics, file, arg.span()) {
+                diagnostics.push(entries_unsupported(
+                    file,
+                    arg.span(),
+                    "`entries(...)` loop heads require a path or local collection",
+                ));
+            }
+        }
+    }
+}
+
+enum EntriesLoopArgStatus {
+    Supported,
+    Unsupported,
+    Unknown,
+}
+
+fn entries_loop_arg_status(
+    program: &CheckedProgram,
+    arg: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+) -> EntriesLoopArgStatus {
+    if saved_path_key_type(program, arg, scope, file).is_some() {
+        return if is_saved_index_branch_path(program, arg, scope, file) {
+            EntriesLoopArgStatus::Unsupported
+        } else {
+            EntriesLoopArgStatus::Supported
+        };
+    }
+    match local_iterable_type(program, arg, scope, aliases, file, false) {
+        MarrowType::LocalTree { .. } | MarrowType::Sequence(_) => EntriesLoopArgStatus::Supported,
+        MarrowType::Unknown => EntriesLoopArgStatus::Unknown,
+        _ => EntriesLoopArgStatus::Unsupported,
+    }
 }
 
 fn is_any_collection_wrapper(expr: &marrow_syntax::Expression) -> bool {

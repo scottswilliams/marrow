@@ -578,6 +578,43 @@ fn entries_loop_heads_reject_nested_and_pass_through_wrappers() {
 }
 
 #[test]
+fn entries_loop_heads_reject_non_collection_arguments() {
+    for (name, iterable) in [
+        ("entries-binary", "entries(x + 1)"),
+        ("reversed-entries-binary", "reversed(entries(x + 1))"),
+    ] {
+        let found = check_module(
+            name,
+            &format!(
+                "module m\n\
+                 fn f()\n    var x = 1\n    for key, value in {iterable}\n        print($\"{{key}}: {{value}}\")\n",
+            ),
+            "check.collection_unsupported",
+        );
+        assert_eq!(found.len(), 1, "{name}: {found:#?}");
+    }
+}
+
+#[test]
+fn top_level_entries_const_reports_loop_head_only() {
+    let root = temp_project("entries-const-value", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             store ^books(id: int): Book\n\
+             const rows = entries(^books)\n",
+        );
+    });
+
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    let found = with_code(&report, "check.collection_unsupported");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+}
+
+#[test]
 fn local_keyed_tree_two_name_loops_bind_key_and_value() {
     let report = check_module_report(
         "local-tree-two-name-loop",

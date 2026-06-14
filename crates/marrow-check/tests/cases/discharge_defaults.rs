@@ -1,10 +1,11 @@
 use crate::support;
 use crate::support_discharge;
+use marrow_check::check_project;
 use marrow_check::evolution::{RejectedDefault, RepairReason, Verdict, preview};
 use marrow_store::tree::TreeStore;
 use marrow_store::value::{Scalar, encode_value};
 
-use support::{temp_project, write};
+use support::{config, temp_project, with_code, write};
 use support_discharge::*;
 
 /// Adding an optional sparse field over existing records is a no-op. The store
@@ -298,6 +299,27 @@ fn non_constant_default_fails_closed_with_transform_hint() {
             .any(|diagnostic| diagnostic.catalog_id.as_str() == pages_id),
         "{diagnostics:#?}"
     );
+}
+
+#[test]
+fn entries_default_value_is_rejected_as_loop_head_only() {
+    let root = temp_project("discharge-default-entries-value", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   required pages: int\n\
+             store ^books(id: int): Book\n\
+             evolve\n\
+             \x20   default Book.pages = entries(^books)\n",
+        );
+    });
+
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    let found = with_code(&report, "check.collection_unsupported");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
 }
 
 /// A newly-required member with no default and records missing it cannot attach

@@ -13,7 +13,7 @@ use marrow_syntax::{
     Block, CatchClause, Expression, FunctionDecl, InterpolationPart, Statement, format_expression,
 };
 
-use crate::checks::check_range_value;
+use crate::checks::{check_entries_value_position, check_range_value};
 use crate::typerules::check_literal_range;
 use crate::walk::for_each_child_expr;
 use crate::{CHECK_COMMIT_AMPLIFICATION, CHECK_TRY_HANDLER, CheckDiagnostic};
@@ -74,6 +74,7 @@ pub(crate) fn check_const_value(file: &Path, value: &Expression, out: &mut Vec<C
         ));
     }
     check_literal_ranges(file, value, out);
+    check_entries_value_position(file, value, out);
     check_range_value(file, value, out);
 }
 
