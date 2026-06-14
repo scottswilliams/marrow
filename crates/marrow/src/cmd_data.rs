@@ -154,7 +154,7 @@ fn report_no_store_to_recover(
         },
         CheckFormat::Json | CheckFormat::Jsonl => {
             write_json(json!({
-                "project": dir,
+                "project": crate::project_json_path(dir),
                 "status": "absent",
                 "store": path.map(|path| path.display().to_string()),
             }));
@@ -168,7 +168,7 @@ fn report_recovered_store(dir: &str, path: &std::path::Path, format: CheckFormat
         CheckFormat::Text => println!("store open/repair completed: {}", path.display()),
         CheckFormat::Json | CheckFormat::Jsonl => {
             write_json(json!({
-                "project": dir,
+                "project": crate::project_json_path(dir),
                 "status": "opened",
                 "store": path.display().to_string(),
             }));
@@ -210,7 +210,7 @@ fn data_roots(args: &[String]) -> ExitCode {
         // jsonl carries no streaming meaning for roots, so it emits the same
         // single object as json, keeping one uniform `--format` flag.
         CheckFormat::Json | CheckFormat::Jsonl => {
-            write_json(json!({ "project": dir, "roots": roots }));
+            write_json(json!({ "project": crate::project_json_path(&dir), "roots": roots }));
         }
     }
     ExitCode::SUCCESS
@@ -255,7 +255,11 @@ fn data_stats(args: &[String]) -> ExitCode {
             println!("records: {records}");
         }
         CheckFormat::Json | CheckFormat::Jsonl => {
-            write_json(json!({ "project": dir, "roots": roots, "records": records }));
+            write_json(json!({
+                "project": crate::project_json_path(&dir),
+                "roots": roots,
+                "records": records,
+            }));
         }
     }
     ExitCode::SUCCESS
@@ -326,7 +330,7 @@ fn render_dump_json(
     match store {
         Some(store) => write_dump_json(dir, program, store),
         None => {
-            write_json(json!({ "project": dir, "records": [] }));
+            write_json(json!({ "project": crate::project_json_path(dir), "records": [] }));
             Ok(())
         }
     }
@@ -358,7 +362,8 @@ fn write_dump_json(
         &mut out,
         |out| {
             write!(out, "\"project\":").expect("write dump JSON");
-            serde_json::to_writer(out, dir).expect("serialize project path");
+            serde_json::to_writer(out, &crate::project_json_path(dir))
+                .expect("serialize project path");
         },
         "records",
         |emit| {

@@ -88,10 +88,31 @@ pub(crate) fn marrow(args: &[&str]) -> Output {
         .expect("run marrow")
 }
 
+/// Invoke the `marrow` binary from a chosen working directory.
+#[allow(dead_code)]
+pub(crate) fn marrow_in(cwd: impl AsRef<Path>, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .expect("run marrow")
+}
+
 /// Invoke the `marrow` binary with a leading subcommand followed by `args`.
 #[allow(dead_code)]
 pub(crate) fn marrow_sub(cmd: &str, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .arg(cmd)
+        .args(args)
+        .output()
+        .expect("run marrow subcommand")
+}
+
+/// Invoke the `marrow` binary with a leading subcommand from a chosen working directory.
+#[allow(dead_code)]
+pub(crate) fn marrow_sub_in(cwd: impl AsRef<Path>, cmd: &str, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .current_dir(cwd)
         .arg(cmd)
         .args(args)
         .output()

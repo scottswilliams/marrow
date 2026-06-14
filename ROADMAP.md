@@ -847,18 +847,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 Listing order is execution order. docs/cli.md integrates in lane order: W6.6.
 
-**W6.8 ∥ Operations page + truth-sweep remainder (III.B1 + III.C4 residue).** Owns:
-docs/operations.md (single-writer model, deploy choreography for the one-epoch window, store
-growth + backup-restore repack, full-scan notes, a Security section — at-rest delegation, 0600
-modes, the encryption-as-profile pointer (G3-2), the no-captivity sentence — the backup format
-is the named canonical exit (C51), the branch-workflow subsection — backup→restore→work→discard,
-the commit-epoch lineage interpretation, diff/merge named as deferred (C14), one README sentence
-— docs-tone locked),
-project-field rendering pick (canonical absolute path) code+docs. Serve items moot. Seed: the
-page's claims each traced to a test or ADR. Review: neutral
-reference tone; every limit paired with its named growth-path ADR. Done: the persona's first
-operational questions all have documented answers.
-
 **W6.9 → Worked unhappy-path guide (III.B5; after W2.6, W3.7, and W6.5 — shared
 data-evolution.md).** Owns: data-evolution.md
 "Maintenance Migration And Repair, Worked" — leaf retype, store re-key (via the identity

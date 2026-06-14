@@ -35,6 +35,8 @@ point at the [language reference](language/) for the exact rules.
   its validation rules.
 - [Data Inspection And Repair Tools](data-tools.md) — `marrow data` inspection
   commands and the explicit recover command in depth.
+- [Operations](operations.md) — native-store writer model, deploy choreography,
+  backup/restore repack, branch stores, and security boundaries.
 - [Tooling Surfaces](tooling-surfaces.md) — support levels and boundaries for
   debug, admin, and production tool surfaces.
 - [Errors](error-codes.md) — CLI exit codes, the machine-readable error

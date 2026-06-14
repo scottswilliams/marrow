@@ -53,6 +53,10 @@ is text-only and fails closed with non-text formats.
 With `--trace`, the trace is a separate text stream on stderr while the test
 report stays on stdout.
 
+Structured JSON reports that include a `project` field render the canonical
+absolute project directory, equivalent to `std::fs::canonicalize(<projectdir>)`,
+not the raw directory argument.
+
 ---
 
 ## `marrow init`
@@ -114,7 +118,7 @@ $ marrow check ./proj
 ok: ./proj checked
 
 $ marrow check --format json ./proj
-{"project":"./proj","status":"failed","diagnostics":[{"code":"parse.syntax", …}]}
+{"project":"/absolute/path/to/proj","status":"failed","diagnostics":[{"code":"parse.syntax", …}]}
 ```
 
 A failing check returns exit `1`:
@@ -310,7 +314,7 @@ substring; a filter that selects nothing fails with `test.none`.
 Under `--format json`, stdout is one test report envelope:
 
 ```json
-{"project":"./proj","tests":[{"kind":"test","name":"tests::smoke_test::add_runs","outcome":"passed","file":"tests/smoke_test.mw","span":{"line":1,"column":1}}],"summary":{"total":1,"selected":1,"passed":1,"failed":0,"errored":0}}
+{"project":"/absolute/path/to/proj","tests":[{"kind":"test","name":"tests::smoke_test::add_runs","outcome":"passed","file":"tests/smoke_test.mw","span":{"line":1,"column":1}}],"summary":{"total":1,"selected":1,"passed":1,"failed":0,"errored":0}}
 ```
 
 Under `--format jsonl`, stdout is one test-result record per line followed by a
@@ -398,7 +402,7 @@ roots: 1
 records: 2
 
 $ marrow data stats --format json ./proj
-{"project":"./proj","records":2,"roots":1}
+{"project":"/absolute/path/to/proj","records":2,"roots":1}
 ```
 
 ### `data dump`

@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::Path;
 
 mod support;
@@ -305,7 +306,11 @@ fn format_json_reports_test_results_and_summary() {
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let report = json(output.stdout);
-    assert_eq!(report["project"], serde_json::json!(root.to_str().unwrap()));
+    let project = fs::canonicalize(&root)
+        .expect("canonical project path")
+        .display()
+        .to_string();
+    assert_eq!(report["project"], serde_json::json!(project));
     assert_eq!(
         report["summary"],
         serde_json::json!({
@@ -350,6 +355,34 @@ fn format_json_reports_test_results_and_summary() {
     assert_eq!(tests[2]["span"]["line"], serde_json::json!(9));
     assert!(tests[2].get("status").is_none(), "{report}");
     assert!(tests[2].get("location").is_none(), "{report}");
+}
+
+#[test]
+fn format_json_reports_canonical_absolute_project_for_relative_path() {
+    let root = temp_project("test-json-canonical-project", |root| {
+        write(root, "marrow.json", CONFIG);
+        write(root, "src/app.mw", "module app\n");
+        write(
+            root,
+            "tests/app_test.mw",
+            "pub fn passes()\n    std::assert::isTrue(true)\n",
+        );
+    });
+    let cwd = root.parent().expect("temp project parent");
+    let relative = root
+        .file_name()
+        .expect("temp project name")
+        .to_str()
+        .expect("utf8 project name");
+    let output = support::marrow_sub_in(cwd, "test", &["--format", "json", relative]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let report = json(output.stdout);
+    let expected = fs::canonicalize(&root)
+        .expect("canonical project path")
+        .display()
+        .to_string();
+    assert_eq!(report["project"], serde_json::json!(expected));
 }
 
 #[test]

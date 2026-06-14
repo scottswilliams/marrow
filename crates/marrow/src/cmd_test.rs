@@ -294,7 +294,7 @@ fn report_test_results(dir: &str, format: CheckFormat, results: &[Value], summar
             );
         }
         CheckFormat::Json => write_json(json!({
-            "project": dir,
+            "project": crate::project_json_path(dir),
             "tests": results,
             "summary": test_summary_record(summary),
         })),

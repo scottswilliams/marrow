@@ -2,6 +2,8 @@
 //! formats are asserted as parsed JSON/JSONL fields; the text format is a render
 //! contract pinned by explicitly-marked prose.
 
+use std::fs;
+
 use marrow_store::key::SavedKey;
 
 mod support;
@@ -184,8 +186,32 @@ fn data_roots_format_json_emits_a_structured_envelope() {
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let value = json(output);
-    assert_eq!(value["project"], serde_json::json!(dir));
+    let project = fs::canonicalize(&dir)
+        .expect("canonical project path")
+        .display()
+        .to_string();
+    assert_eq!(value["project"], serde_json::json!(project));
     assert_eq!(value["roots"], serde_json::json!(["counter"]));
+}
+
+#[test]
+fn data_roots_format_json_reports_canonical_absolute_project_for_relative_path() {
+    let (project, _dir) = seeded_project("data-roots-canonical-project");
+    let cwd = project.parent().expect("temp project parent");
+    let relative = project
+        .file_name()
+        .expect("temp project name")
+        .to_str()
+        .expect("utf8 project name");
+    let output = support::marrow_in(cwd, &["data", "roots", "--format", "json", relative]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let value = support::json(output.stdout);
+    let expected = fs::canonicalize(&project)
+        .expect("canonical project path")
+        .display()
+        .to_string();
+    assert_eq!(value["project"], serde_json::json!(expected));
 }
 
 #[test]

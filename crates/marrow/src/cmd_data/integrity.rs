@@ -82,7 +82,7 @@ fn report_empty_integrity(dir: &str, format: CheckFormat) {
     match format {
         CheckFormat::Text => println!("ok: {dir} integrity verified (0 records)"),
         CheckFormat::Json => write_json(json!({
-            "project": dir,
+            "project": crate::project_json_path(dir),
             "records": 0,
             "problems": [],
         })),
@@ -133,7 +133,8 @@ fn write_integrity_json(
         &mut out,
         |out| {
             write!(out, "\"project\":").expect("write integrity JSON");
-            serde_json::to_writer(&mut *out, dir).expect("serialize project path");
+            serde_json::to_writer(&mut *out, &crate::project_json_path(dir))
+                .expect("serialize project path");
             write!(out, ",\"records\":{records}").expect("write integrity JSON");
         },
         "problems",

@@ -1,3 +1,5 @@
+use std::fs;
+
 use serde_json::Value;
 
 mod support;
@@ -42,6 +44,33 @@ fn checks_a_clean_project_directory() {
     let records = support::jsonl(output.stdout);
     assert_eq!(records.last().unwrap()["kind"], "summary");
     assert_eq!(records.last().unwrap()["status"], "ok");
+}
+
+#[test]
+fn format_json_reports_canonical_absolute_project_for_relative_path() {
+    let root = temp_project("proj-json-canonical-project", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+        );
+        write(root, "src/main.mw", "fn main()\n    return\n");
+    });
+    let cwd = root.parent().expect("temp project parent");
+    let relative = root
+        .file_name()
+        .expect("temp project name")
+        .to_str()
+        .expect("utf8 project name");
+    let output = support::marrow_sub_in(cwd, "check", &["--format", "json", relative]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let value = support::json(output.stdout);
+    let expected = fs::canonicalize(&root)
+        .expect("canonical project path")
+        .display()
+        .to_string();
+    assert_eq!(value["project"], serde_json::json!(expected));
 }
 
 #[test]

@@ -218,7 +218,7 @@ marrow data stats --format json .
 ```
 
 ```text
-{"project":".","records":12,"roots":1}
+{"project":"/absolute/path/to/shelf","records":12,"roots":1}
 ```
 
 `marrow data` inspection commands are read-only; `marrow data recover` is the

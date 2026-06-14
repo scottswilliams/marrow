@@ -217,7 +217,7 @@ fn project_envelope(
     program: Option<&marrow_check::CheckedProgram>,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut envelope = serde_json::Map::from_iter([
-        ("project".into(), json!(target)),
+        ("project".into(), json!(project_json_path(target))),
         ("status".into(), json!(status)),
     ]);
     if let Some(program) = program {
@@ -227,6 +227,13 @@ fn project_envelope(
         );
     }
     envelope
+}
+
+pub(crate) fn project_json_path(dir: &str) -> String {
+    std::fs::canonicalize(dir)
+        .expect("loaded project directory has a canonical path")
+        .display()
+        .to_string()
 }
 
 fn entry_footprint_records(program: &marrow_check::CheckedProgram) -> Vec<serde_json::Value> {

@@ -75,6 +75,10 @@ Each subcommand accepts `--format text` (default), `--format json`, or
 accepted. Text is for reading; `json`/`jsonl` carry exact bytes losslessly via
 base64, for machine consumers. An unknown format name exits `2`.
 
+Structured JSON reports that include a `project` field render the canonical
+absolute project directory, equivalent to `std::fs::canonicalize(<projectdir>)`,
+not the raw directory argument.
+
 ## `marrow data roots`
 
 Lists the project's saved roots.
@@ -88,11 +92,11 @@ $ marrow data roots ./project
 the same single object):
 
 ```json
-{"project":"./project","roots":["counter"]}
+{"project":"/absolute/path/to/project","roots":["counter"]}
 ```
 
-`project` echoes the directory argument as given; `roots` is the bare root name
-without the `^`. An empty store prints `(no saved data)` in text and
+`roots` is the bare root name without the `^`. An empty store prints `(no saved
+data)` in text and
 `"roots":[]` in JSON.
 
 ## `marrow data stats`
@@ -106,7 +110,7 @@ records: 1
 ```
 
 ```json
-{"project":"./project","records":1,"roots":1}
+{"project":"/absolute/path/to/project","records":1,"roots":1}
 ```
 
 The record count is a full store scan; it is exact, not an estimate.
@@ -136,7 +140,7 @@ render as one member identity, for example `app::Status::archived`.
 path plus base64 of the value bytes:
 
 ```json
-{"project":"./project","records":[{"path":"^counter(1).value","value_b64":"NDI="}]}
+{"project":"/absolute/path/to/project","records":[{"path":"^counter(1).value","value_b64":"NDI="}]}
 ```
 
 `--format jsonl` streams one record object per line, then a summary line:
@@ -276,7 +280,7 @@ prints a single `ok:` line to stdout. `--format json` wraps the findings in an
 envelope; `--format jsonl` streams one envelope per finding plus a summary:
 
 ```json
-{"project":"./project","records":1,"problems":[{"code":"data.decode","help":null,"kind":"tooling","message":"stored value is not a canonical int form","source_span":{"path":"^counter(1).value"}}]}
+{"project":"/absolute/path/to/project","records":1,"problems":[{"code":"data.decode","help":null,"kind":"tooling","message":"stored value is not a canonical int form","source_span":{"path":"^counter(1).value"}}]}
 ```
 
 ```jsonl
@@ -321,7 +325,7 @@ store open/repair completed: ./project/.data/marrow.redb
 `--format json` and `jsonl` emit the same single status object:
 
 ```json
-{"project":"./project","status":"opened","store":"./project/.data/marrow.redb"}
+{"project":"/absolute/path/to/project","status":"opened","store":"./project/.data/marrow.redb"}
 ```
 
 ## Deferred: `diff` and `load`
