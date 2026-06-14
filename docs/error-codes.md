@@ -366,9 +366,11 @@ Source-native data-evolution preview/apply faults.
 ### `restore.*` — kind `tooling`
 
 Faults from `marrow restore` when a backup cannot be replayed into the project's
-store. `marrow backup` reports `io.write` for a file it cannot write, a
-`store.*` code for a read fault, or `backup.store_uid_missing` when an existing
-store predates the required physical store UID stamp.
+store, and from backup-backed data inspection or evolution preview when the
+artifact cannot be mounted as the selected read target. `marrow backup` reports
+`io.write` for a file it cannot write, a `store.*` code for a read fault, or
+`backup.store_uid_missing` when an existing store predates the required physical
+store UID stamp.
 
 | Code | Meaning |
 |---|---|
@@ -378,7 +380,7 @@ store predates the required physical store UID stamp.
 | `restore.engine_recompile_required` | The backup was written under a different engine, layout, or value codec. A cross-engine restore is a future engine recompile. |
 | `restore.source_mismatch` | The backup was written from a program whose schema does not match this project. The message prints backup source digest and project source digest. |
 | `restore.catalog_mismatch` | The backup's catalog does not match this project's accepted catalog. The message prints backup catalog epoch/digest and project catalog epoch/digest. |
-| `restore.data_invalid` | The replayed data does not validate against the project schema, including orphaned managed cells; the restore was rolled back. |
+| `restore.data_invalid` | The replayed data does not validate against the project schema, including orphaned managed cells; restore rolls back, and backup-backed read targets refuse the mount. |
 
 ## Typed Errors In Running Programs
 

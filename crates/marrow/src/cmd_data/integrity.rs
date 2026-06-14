@@ -7,19 +7,16 @@ use marrow_store::tree::DataPathSegment;
 use marrow_store::tree::TreeStore;
 use serde_json::json;
 
-use crate::{CheckFormat, envelope, load_checked_project_with_format, write_json};
+use crate::{CheckFormat, envelope, write_json};
 
 pub(super) fn data_integrity(args: &[String]) -> ExitCode {
-    let (dir, format) = match super::one_positional_with_format("data integrity", args) {
-        Ok(parsed) => parsed,
-        Err(code) => return code,
-    };
-    let (config, program) = match load_checked_project_with_format(&dir, format) {
-        Ok(checked) => checked,
-        Err(code) => return code,
-    };
-    let store = match crate::open_store_for_inspection(&dir, &config, format) {
-        Ok(store) => store,
+    let super::DataReadTarget {
+        dir,
+        format,
+        program,
+        store,
+    } = match super::load_data_read_target_from_args("data integrity", args) {
+        Ok(target) => target,
         Err(code) => return code,
     };
     let _snapshot = match super::pin_snapshot(&store, format) {

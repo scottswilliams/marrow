@@ -86,6 +86,32 @@ fn data_integrity_passes_on_a_healthy_seeded_project() {
 }
 
 #[test]
+fn data_integrity_reads_backup_while_live_store_is_locked() {
+    let (project, dir) = seeded_project("data-integrity-backup");
+    let archive = support::backup_artifact(&project, "counter.mwbackup");
+    let archive_arg = archive.to_str().expect("backup path utf8");
+
+    let live = support::marrow(&["data", "integrity", "--format", "json", &dir]);
+    assert_eq!(live.status.code(), Some(0), "{live:?}");
+    let live = support::json(live.stdout);
+
+    let _writer = TreeStore::open(&project.join(".data").join("marrow.redb"))
+        .expect("hold the native writer open");
+    let backup = support::marrow(&[
+        "data",
+        "integrity",
+        "--backup",
+        archive_arg,
+        "--format",
+        "json",
+        &dir,
+    ]);
+
+    assert_eq!(backup.status.code(), Some(0), "{backup:?}");
+    assert_eq!(support::json(backup.stdout), live);
+}
+
+#[test]
 fn data_integrity_reports_required_field_completeness_and_repair() {
     let (project, dir) = seeded_project("data-integrity-incomplete-repair");
     let place = checked_place(&project, "counter");

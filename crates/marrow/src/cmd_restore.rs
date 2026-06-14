@@ -35,23 +35,9 @@ pub(crate) fn restore(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
 
-    let file = match File::open(&input) {
-        Ok(file) => file,
-        Err(error) => {
-            report_simple_error(
-                "io.read",
-                &format!("could not open {input}: {error}"),
-                format,
-            );
-            return ExitCode::FAILURE;
-        }
-    };
-    let mut reader = BufReader::new(file);
-    let prologue = match read_backup_prologue(&mut reader) {
-        Ok(prologue) => prologue,
-        Err(error) => {
-            return report_backup_error(error, format);
-        }
+    let (mut reader, prologue) = match read_backup_artifact(&input, format) {
+        Ok(backup) => backup,
+        Err(code) => return code,
     };
 
     // Restore binds the project against the catalog the backup carries, so the replayed
@@ -92,18 +78,6 @@ pub(crate) fn restore(args: &[String]) -> ExitCode {
         }
     };
 
-    // Restore validates the whole replayed store before commit, including orphan
-    // cells under dropped roots or members, against the restored catalog.
-    let verify = |restore_program: &marrow_check::CheckedProgram, store: &TreeStore| {
-        match marrow_check::tooling::count_activation_integrity_problems(store, restore_program) {
-            Ok((_, 0)) => Ok(()),
-            Ok((_, problems)) => Err(BackupError::DataInvalid(format!(
-                "restored data has {problems} schema problem(s); the backup does not match this project"
-            ))),
-            Err(error) => Err(BackupError::Store(error)),
-        }
-    };
-
     let mut nondeterminism = SystemNondeterminism::new();
     match restore_backup_with_prologue(
         &program,
@@ -112,7 +86,7 @@ pub(crate) fn restore(args: &[String]) -> ExitCode {
         &mut reader,
         target_mode,
         &mut nondeterminism,
-        verify,
+        verify_restored_data,
     ) {
         Ok(report) => {
             report_restore_text(&input, &report);
@@ -123,6 +97,83 @@ pub(crate) fn restore(args: &[String]) -> ExitCode {
             target_files.cleanup_created();
             report_backup_error(error, format)
         }
+    }
+}
+
+pub(crate) fn mount_backup_for_inspection(
+    dir: &str,
+    config: &marrow_project::ProjectConfig,
+    input: &str,
+    format: CheckFormat,
+) -> Result<(marrow_check::CheckedProgram, TreeStore), ExitCode> {
+    let (mut reader, prologue) = read_backup_artifact(input, format)?;
+    let program = check_against_backup_catalog(dir, config, &prologue, format)?;
+    let store = TreeStore::memory();
+    let mut nondeterminism = SystemNondeterminism::new();
+    restore_backup_with_prologue(
+        &program,
+        &store,
+        prologue,
+        &mut reader,
+        RestoreTargetMode::EmptyOnly,
+        &mut nondeterminism,
+        verify_restored_data,
+    )
+    .map_err(|error| report_backup_error(error, format))?;
+    Ok((program, store))
+}
+
+pub(crate) fn mount_backup_for_evolution_preview(
+    dir: &str,
+    config: &marrow_project::ProjectConfig,
+    input: &str,
+    format: CheckFormat,
+) -> Result<(marrow_check::CheckedProgram, TreeStore), ExitCode> {
+    let (mut reader, prologue) = read_backup_artifact(input, format)?;
+    let program = check_project_with_backup_catalog(dir, config, &prologue, format)?;
+    reject_current_catalog_mismatch(dir, &prologue, format)?;
+    let mut nondeterminism = SystemNondeterminism::new();
+    let store = crate::backup::mount_backup_for_evolution_preview(
+        &program,
+        prologue,
+        &mut reader,
+        &mut nondeterminism,
+    )
+    .map_err(|error| report_backup_error(error, format))?;
+    Ok((program, store))
+}
+
+fn read_backup_artifact(
+    input: &str,
+    format: CheckFormat,
+) -> Result<(BufReader<File>, BackupPrologue), ExitCode> {
+    let file = match File::open(input) {
+        Ok(file) => file,
+        Err(error) => {
+            report_simple_error(
+                "io.read",
+                &format!("could not open {input}: {error}"),
+                format,
+            );
+            return Err(ExitCode::FAILURE);
+        }
+    };
+    let mut reader = BufReader::new(file);
+    let prologue =
+        read_backup_prologue(&mut reader).map_err(|error| report_backup_error(error, format))?;
+    Ok((reader, prologue))
+}
+
+fn verify_restored_data(
+    restore_program: &marrow_check::CheckedProgram,
+    store: &TreeStore,
+) -> Result<(), BackupError> {
+    match marrow_check::tooling::count_activation_integrity_problems(store, restore_program) {
+        Ok((_, 0)) => Ok(()),
+        Ok((_, problems)) => Err(BackupError::DataInvalid(format!(
+            "restored data has {problems} schema problem(s); the backup does not match this project"
+        ))),
+        Err(error) => Err(BackupError::Store(error)),
     }
 }
 
@@ -388,6 +439,23 @@ fn check_against_backup_catalog(
     prologue: &BackupPrologue,
     format: CheckFormat,
 ) -> Result<marrow_check::CheckedProgram, ExitCode> {
+    let program = check_project_with_backup_catalog(dir, config, prologue, format)?;
+    let project_source_digest = program.source_digest();
+    if prologue.source_digest() != project_source_digest {
+        return Err(report_backup_error(
+            BackupError::source_mismatch(prologue.source_digest(), project_source_digest.as_str()),
+            format,
+        ));
+    }
+    Ok(program)
+}
+
+fn check_project_with_backup_catalog(
+    dir: &str,
+    config: &marrow_project::ProjectConfig,
+    prologue: &BackupPrologue,
+    format: CheckFormat,
+) -> Result<marrow_check::CheckedProgram, ExitCode> {
     let (report, program) =
         marrow_check::check_project_with_catalog(Path::new(dir), config, prologue.catalog())
             .map_err(|error| {
@@ -398,13 +466,6 @@ fn check_against_backup_catalog(
                 );
                 ExitCode::FAILURE
             })?;
-    let project_source_digest = program.source_digest();
-    if prologue.source_digest() != project_source_digest {
-        return Err(report_backup_error(
-            BackupError::source_mismatch(prologue.source_digest(), project_source_digest.as_str()),
-            format,
-        ));
-    }
     if report.has_errors() {
         report_project(dir, &report, format);
         return Err(ExitCode::FAILURE);

@@ -11,6 +11,7 @@ pub(super) enum ParseStop {
 pub(super) struct PreviewArgs {
     pub(super) format: CheckFormat,
     pub(super) scaffold: bool,
+    pub(super) from_backup: Option<String>,
     pub(super) dir: String,
 }
 
@@ -28,6 +29,7 @@ pub(super) fn preview_args(args: &[String]) -> Result<PreviewArgs, ParseStop> {
     Ok(PreviewArgs {
         format: parsed.format,
         scaffold: parsed.scaffold,
+        from_backup: parsed.from_backup,
         dir: parsed.dir,
     })
 }
@@ -50,6 +52,7 @@ struct CommonArgs {
     maintenance: bool,
     approval: Option<Approval>,
     scaffold: bool,
+    from_backup: Option<String>,
     backup: Option<String>,
     no_backup: bool,
 }
@@ -74,6 +77,7 @@ fn common(args: &[String], command: Command) -> Result<CommonArgs, ParseStop> {
     let mut saw_format = false;
     let mut maintenance = false;
     let mut scaffold = false;
+    let mut from_backup = None;
     let mut backup = None;
     let mut no_backup = false;
     let mut retires: Vec<(CatalogId, usize)> = Vec::new();
@@ -86,6 +90,17 @@ fn common(args: &[String], command: Command) -> Result<CommonArgs, ParseStop> {
                     .map_err(|_| ParseStop::Usage)?;
             }
             (Command::Preview, "--scaffold") => scaffold = true,
+            (Command::Preview, "--from-backup") => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    eprintln!("missing value for --from-backup");
+                    return Err(ParseStop::Usage);
+                };
+                if from_backup.replace(value.to_string()).is_some() {
+                    eprintln!("duplicate --from-backup");
+                    return Err(ParseStop::Usage);
+                }
+            }
             (Command::Apply, "--backup") => {
                 index += 1;
                 let Some(value) = args.get(index) else {
@@ -131,6 +146,13 @@ fn common(args: &[String], command: Command) -> Result<CommonArgs, ParseStop> {
                 );
                 return Err(ParseStop::Usage);
             }
+            (Command::Apply, "--from-backup") => {
+                eprintln!(
+                    "{} does not accept preview-only backup flags",
+                    command.name()
+                );
+                return Err(ParseStop::Usage);
+            }
             (_, "--help" | "-h") => {
                 super::print_help();
                 return Err(ParseStop::Help);
@@ -162,6 +184,7 @@ fn common(args: &[String], command: Command) -> Result<CommonArgs, ParseStop> {
         maintenance,
         approval: build_approval(retires),
         scaffold,
+        from_backup,
         backup,
         no_backup,
     })

@@ -5,6 +5,7 @@
 use std::fs;
 
 use marrow_store::key::SavedKey;
+use marrow_store::tree::TreeStore;
 
 mod support;
 mod support_data;
@@ -125,6 +126,154 @@ fn data_dump_prints_each_record_as_path_and_value() {
     let stdout = String::from_utf8(output.stdout).expect("utf8");
     // Render contract: one `<path>\t<value>` line for the single record, pinned exactly.
     assert_eq!(stdout, "^counter(1).value\t42\n", "{stdout}");
+}
+
+#[test]
+fn data_inventory_reads_backup_while_live_store_is_locked() {
+    let (project, dir) = seeded_project("data-backup-inventory");
+    let archive = support::backup_artifact(&project, "counter.mwbackup");
+    let archive_arg = archive.to_str().expect("backup path utf8");
+
+    let live_dump = support::marrow(&["data", "dump", "--format", "json", &dir]);
+    let live_roots = support::marrow(&["data", "roots", "--format", "json", &dir]);
+    let live_stats = support::marrow(&["data", "stats", "--format", "json", &dir]);
+    assert_eq!(live_dump.status.code(), Some(0), "{live_dump:?}");
+    assert_eq!(live_roots.status.code(), Some(0), "{live_roots:?}");
+    assert_eq!(live_stats.status.code(), Some(0), "{live_stats:?}");
+    let live_dump = support::json(live_dump.stdout);
+    let live_roots = support::json(live_roots.stdout);
+    let live_stats = support::json(live_stats.stdout);
+
+    let _writer = TreeStore::open(&project.join(".data").join("marrow.redb"))
+        .expect("hold the native writer open");
+    let locked_live = support::marrow(&["data", "dump", "--format", "json", &dir]);
+    assert_eq!(locked_live.status.code(), Some(1), "{locked_live:?}");
+    let locked_error = support::json(locked_live.stdout);
+    assert_eq!(locked_error["code"], serde_json::json!("store.locked"));
+
+    let backup_dump = support::marrow(&[
+        "data",
+        "dump",
+        "--backup",
+        archive_arg,
+        "--format",
+        "json",
+        &dir,
+    ]);
+    let backup_roots = support::marrow(&[
+        "data",
+        "roots",
+        "--backup",
+        archive_arg,
+        "--format",
+        "json",
+        &dir,
+    ]);
+    let backup_stats = support::marrow(&[
+        "data",
+        "stats",
+        "--backup",
+        archive_arg,
+        "--format",
+        "json",
+        &dir,
+    ]);
+
+    assert_eq!(backup_dump.status.code(), Some(0), "{backup_dump:?}");
+    assert_eq!(backup_roots.status.code(), Some(0), "{backup_roots:?}");
+    assert_eq!(backup_stats.status.code(), Some(0), "{backup_stats:?}");
+    assert_eq!(support::json(backup_dump.stdout), live_dump);
+    assert_eq!(support::json(backup_roots.stdout), live_roots);
+    assert_eq!(support::json(backup_stats.stdout), live_stats);
+}
+
+#[test]
+fn data_backup_dump_ignores_live_catalog_artifact_while_live_store_is_locked() {
+    for catalog_state in ["corrupt", "drifted", "absent"] {
+        let (project, dir) = seeded_project(&format!("data-backup-live-catalog-{catalog_state}"));
+        let live_dump = support::marrow(&["data", "dump", "--format", "json", &dir]);
+        assert_eq!(live_dump.status.code(), Some(0), "{live_dump:?}");
+        let live_dump = support::json(live_dump.stdout);
+
+        let archive = support::backup_artifact(&project, &format!("{catalog_state}.mwbackup"));
+        let archive_arg = archive.to_str().expect("backup path utf8");
+        let catalog_path = project.join("marrow.catalog.json");
+        match catalog_state {
+            "corrupt" => fs::write(&catalog_path, "{ not catalog json")
+                .expect("write corrupt catalog artifact"),
+            "drifted" => {
+                let accepted = fs::read_to_string(&catalog_path).expect("read catalog artifact");
+                let accepted = marrow_catalog::CatalogMetadata::from_json(&accepted)
+                    .expect("parse catalog artifact");
+                let drifted =
+                    marrow_catalog::CatalogMetadata::new(accepted.epoch + 1, accepted.entries);
+                fs::write(&catalog_path, drifted.to_json_pretty())
+                    .expect("write drifted catalog artifact");
+            }
+            "absent" => fs::remove_file(&catalog_path).expect("remove catalog artifact"),
+            other => panic!("unknown catalog state {other}"),
+        }
+
+        let _writer = TreeStore::open(&project.join(".data").join("marrow.redb"))
+            .expect("hold the native writer open");
+        let backup_dump = support::marrow(&[
+            "data",
+            "dump",
+            "--backup",
+            archive_arg,
+            "--format",
+            "json",
+            &dir,
+        ]);
+
+        assert_eq!(
+            backup_dump.status.code(),
+            Some(0),
+            "{catalog_state}: {backup_dump:?}"
+        );
+        assert_eq!(support::json(backup_dump.stdout), live_dump);
+    }
+}
+
+#[test]
+fn data_backup_flag_usage_is_tight() {
+    let cases: &[(&[&str], &str)] = &[
+        (
+            &[
+                "data",
+                "dump",
+                "--backup",
+                "one.mwbackup",
+                "--backup",
+                "two.mwbackup",
+                "proj",
+            ],
+            "duplicate --backup",
+        ),
+        (&["data", "roots", "--backup"], "missing value for --backup"),
+        (
+            &["data", "recover", "--backup", "state.mwbackup", "proj"],
+            "unknown data recover option: --backup",
+        ),
+        (
+            &[
+                "data",
+                "stats",
+                "--backup",
+                "state.mwbackup",
+                "proj",
+                "extra",
+            ],
+            "marrow data stats accepts one project directory",
+        ),
+    ];
+
+    for (args, expected) in cases {
+        let output = support::marrow(args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+        let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+        assert!(stderr.contains(expected), "{args:?}: {stderr}");
+    }
 }
 
 #[test]

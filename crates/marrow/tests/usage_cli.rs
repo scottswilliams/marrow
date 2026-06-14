@@ -66,6 +66,36 @@ fn help_does_not_advertise_removed_server_commands() {
 }
 
 #[test]
+fn top_level_help_advertises_backup_read_targets() {
+    let output = marrow(&["--help"]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert!(
+        stdout.contains(
+            "marrow data <roots|stats|dump|integrity> [--backup <artifact>] [--format text|json|jsonl] <projectdir>"
+        ),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("marrow data recover [--format text|json|jsonl] <projectdir>"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(
+            "marrow data get [--backup <artifact>] [--format text|json|jsonl] <projectdir> <path>"
+        ),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(
+            "marrow evolve preview [--from-backup <artifact>] [--scaffold] [--format text|json|jsonl] <projectdir>"
+        ),
+        "{stdout}"
+    );
+}
+
+#[test]
 fn run_with_no_project_dir_is_a_usage_failure() {
     let output = marrow(&["run"]);
     assert_eq!(output.status.code(), Some(2), "{output:?}");

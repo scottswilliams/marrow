@@ -695,6 +695,13 @@ Managed cells under roots or members the current source/catalog does not declare
 are rejected as data-attached integrity failures; restore never treats
 raw saved paths as the production backup contract.
 
+Backup-backed inspection is not restore. `marrow data ... --backup` and
+`marrow evolve preview --from-backup` validate the same artifact framing,
+catalog section, engine/value-codec identity, data checksum, and trailing-byte
+contract, then replay the data into an ephemeral memory store. That mount is a
+read target only: it never opens or locks the configured native store, never
+renders a catalog artifact, and never writes durable state.
+
 ## Transactions
 
 A transaction makes multiple saved writes commit or roll back together:

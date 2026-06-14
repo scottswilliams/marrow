@@ -57,6 +57,161 @@ fn one_positional_with_format(
     Ok((dir, format))
 }
 
+struct DataReadArgs {
+    dir: String,
+    format: CheckFormat,
+    backup: Option<String>,
+}
+
+struct DataReadTarget {
+    dir: String,
+    format: CheckFormat,
+    program: CheckedProgram,
+    store: Option<TreeStore>,
+}
+
+fn one_positional_with_format_and_backup(
+    command: &str,
+    args: &[String],
+) -> Result<DataReadArgs, ExitCode> {
+    let mut dir = None;
+    let mut format = CheckFormat::Text;
+    let mut saw_format = false;
+    let mut backup = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--format" => {
+                crate::parse_format_flag(args, &mut index, &mut saw_format, &mut format)?;
+            }
+            "--backup" => {
+                parse_backup_flag(args, &mut index, &mut backup)?;
+            }
+            "--help" | "-h" => {
+                print!(
+                    "Usage:\n  marrow {command} [--backup <artifact>] [--format text|json|jsonl] <projectdir>\n"
+                );
+                return Err(ExitCode::SUCCESS);
+            }
+            value if value.starts_with('-') => {
+                return Err(crate::unknown_option(command, value));
+            }
+            value => {
+                crate::take_single_target(&mut dir, value, command, "project directory")?;
+            }
+        }
+        index += 1;
+    }
+    let dir = dir.ok_or_else(|| {
+        eprintln!("missing project directory");
+        ExitCode::from(2)
+    })?;
+    Ok(DataReadArgs {
+        dir,
+        format,
+        backup,
+    })
+}
+
+fn dir_and_path_args_with_backup(
+    command: &str,
+    path_label: &str,
+    args: &[String],
+) -> Result<(String, String, CheckFormat, Option<String>), ExitCode> {
+    let mut positionals = Vec::new();
+    let mut format = CheckFormat::Text;
+    let mut saw_format = false;
+    let mut backup = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--format" => {
+                crate::parse_format_flag(args, &mut index, &mut saw_format, &mut format)?;
+            }
+            "--backup" => {
+                parse_backup_flag(args, &mut index, &mut backup)?;
+            }
+            "--help" | "-h" => {
+                print!(
+                    "Usage:\n  marrow {command} [--backup <artifact>] [--format text|json|jsonl] <projectdir> <{path_label}>\n"
+                );
+                return Err(ExitCode::SUCCESS);
+            }
+            value if value.starts_with('-') => return Err(crate::unknown_option(command, value)),
+            value => positionals.push(value.to_string()),
+        }
+        index += 1;
+    }
+    match positionals.as_slice() {
+        [dir, path] => Ok((dir.clone(), path.clone(), format, backup)),
+        [] | [_] => {
+            eprintln!("marrow {command} requires a project directory and a {path_label}");
+            Err(ExitCode::from(2))
+        }
+        _ => {
+            eprintln!("marrow {command} accepts one project directory and one {path_label}");
+            Err(ExitCode::from(2))
+        }
+    }
+}
+
+fn parse_backup_flag(
+    args: &[String],
+    index: &mut usize,
+    backup: &mut Option<String>,
+) -> Result<(), ExitCode> {
+    if backup.is_some() {
+        eprintln!("duplicate --backup");
+        return Err(ExitCode::from(2));
+    }
+    *index += 1;
+    let Some(value) = args.get(*index) else {
+        eprintln!("missing value for --backup");
+        return Err(ExitCode::from(2));
+    };
+    *backup = Some(value.to_string());
+    Ok(())
+}
+
+fn load_data_read_target_from_args(
+    command: &str,
+    args: &[String],
+) -> Result<DataReadTarget, ExitCode> {
+    let DataReadArgs {
+        dir,
+        format,
+        backup,
+    } = one_positional_with_format_and_backup(command, args)?;
+    load_data_read_target(dir, format, backup)
+}
+
+fn load_data_read_target(
+    dir: String,
+    format: CheckFormat,
+    backup: Option<String>,
+) -> Result<DataReadTarget, ExitCode> {
+    if let Some(backup) = backup {
+        let config = load_config_with_format(&dir, format)?;
+        let (program, store) =
+            crate::cmd_restore::mount_backup_for_inspection(&dir, &config, &backup, format)?;
+        return Ok(DataReadTarget {
+            dir,
+            format,
+            program,
+            store: Some(store),
+        });
+    }
+
+    let (config, program) = load_checked_project_with_format(&dir, format)?;
+    let store = open_store_for_inspection(&dir, &config, format)?;
+    Ok(DataReadTarget {
+        dir,
+        format,
+        program,
+        store,
+    })
+}
+
 fn report_store_error(error: StoreError, format: CheckFormat) -> ExitCode {
     report_simple_error(error.code(), &error.to_string(), format);
     ExitCode::FAILURE
@@ -92,12 +247,12 @@ pub(crate) fn data(args: &[String]) -> ExitCode {
             print!(
                 "\
 Usage:
-  marrow data roots [--format text|json|jsonl] <projectdir> list the saved roots
-  marrow data stats [--format text|json|jsonl] <projectdir> count roots and records
-  marrow data dump [--format text|json|jsonl] <projectdir> dump every (path, value)
-  marrow data integrity [--format text|json|jsonl] <dir>   verify checked saved values decode
+  marrow data roots [--backup <artifact>] [--format text|json|jsonl] <projectdir> list the saved roots
+  marrow data stats [--backup <artifact>] [--format text|json|jsonl] <projectdir> count roots and records
+  marrow data dump [--backup <artifact>] [--format text|json|jsonl] <projectdir> dump every (path, value)
+  marrow data integrity [--backup <artifact>] [--format text|json|jsonl] <dir>   verify checked saved values decode
   marrow data recover [--format text|json|jsonl] <dir>     repair an unclean native store open
-  marrow data get [--format text|json|jsonl] <projectdir> <path> read one path's value
+  marrow data get [--backup <artifact>] [--format text|json|jsonl] <projectdir> <path> read one path's value
 
 Inspection of a project's saved data. `recover` is the only write-capable data
 command; the other subcommands never create or modify the store.
@@ -179,16 +334,13 @@ fn report_recovered_store(dir: &str, path: &std::path::Path, format: CheckFormat
 }
 
 fn data_roots(args: &[String]) -> ExitCode {
-    let (dir, format) = match one_positional_with_format("data roots", args) {
-        Ok(parsed) => parsed,
-        Err(code) => return code,
-    };
-    let (config, program) = match load_checked_project_with_format(&dir, format) {
-        Ok(checked) => checked,
-        Err(code) => return code,
-    };
-    let store = match open_store_for_inspection(&dir, &config, format) {
-        Ok(store) => store,
+    let DataReadTarget {
+        dir,
+        format,
+        program,
+        store,
+    } = match load_data_read_target_from_args("data roots", args) {
+        Ok(target) => target,
         Err(code) => return code,
     };
     let roots = match &store {
@@ -218,16 +370,13 @@ fn data_roots(args: &[String]) -> ExitCode {
 }
 
 fn data_stats(args: &[String]) -> ExitCode {
-    let (dir, format) = match one_positional_with_format("data stats", args) {
-        Ok(parsed) => parsed,
-        Err(code) => return code,
-    };
-    let (config, program) = match load_checked_project_with_format(&dir, format) {
-        Ok(checked) => checked,
-        Err(code) => return code,
-    };
-    let store = match open_store_for_inspection(&dir, &config, format) {
-        Ok(store) => store,
+    let DataReadTarget {
+        dir,
+        format,
+        program,
+        store,
+    } = match load_data_read_target_from_args("data stats", args) {
+        Ok(target) => target,
         Err(code) => return code,
     };
     // One snapshot spans both passes, so the root count and the record count describe
@@ -267,16 +416,13 @@ fn data_stats(args: &[String]) -> ExitCode {
 }
 
 fn data_dump(args: &[String]) -> ExitCode {
-    let (dir, format) = match one_positional_with_format("data dump", args) {
-        Ok(parsed) => parsed,
-        Err(code) => return code,
-    };
-    let (config, program) = match load_checked_project_with_format(&dir, format) {
-        Ok(checked) => checked,
-        Err(code) => return code,
-    };
-    let store = match open_store_for_inspection(&dir, &config, format) {
-        Ok(store) => store,
+    let DataReadTarget {
+        dir,
+        format,
+        program,
+        store,
+    } = match load_data_read_target_from_args("data dump", args) {
+        Ok(target) => target,
         Err(code) => return code,
     };
     // One snapshot spans the count and the dump traversal, so the emitted records

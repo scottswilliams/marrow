@@ -6,15 +6,16 @@ database.
 ```
 marrow init <projectdir>
 marrow check [--format text|json|jsonl] <projectdir>
-marrow evolve preview [--scaffold] [--format text|json|jsonl] <projectdir>
+marrow evolve preview [--from-backup <artifact>] [--scaffold] [--format text|json|jsonl] <projectdir>
 marrow evolve apply [--maintenance] [--approve-retire <catalog-id>:<count>] \
   [--backup <path> | --no-backup] [--format text|json|jsonl] <projectdir>
 marrow fmt [--check | --write] <file.mw | projectdir>
 marrow run [--entry <entry>] [--arg name=value]... [--maintenance] \
   [--trace] [--dry-run] [--format text|json] <projectdir>
 marrow test [--trace] [--format text|json|jsonl] <projectdir>
-marrow data <roots|stats|dump|integrity|recover> [--format text|json|jsonl] <projectdir>
-marrow data get [--format text|json|jsonl] <projectdir> <path>
+marrow data <roots|stats|dump|integrity> [--backup <artifact>] [--format text|json|jsonl] <projectdir>
+marrow data recover [--format text|json|jsonl] <projectdir>
+marrow data get [--backup <artifact>] [--format text|json|jsonl] <projectdir> <path>
 marrow backup <projectdir> <output-file>
 marrow restore [--replace --count N] <projectdir> <backup-file>
 marrow --version
@@ -139,17 +140,21 @@ $ echo $?
 ## `marrow evolve`
 
 ```
-marrow evolve preview [--scaffold] [--format text|json|jsonl] <projectdir>
+marrow evolve preview [--from-backup <artifact>] [--scaffold] [--format text|json|jsonl] <projectdir>
 marrow evolve apply [--maintenance] [--approve-retire <catalog-id>:<count>] \
   [--backup <path> | --no-backup] [--format text|json|jsonl] <projectdir>
 ```
 
 `evolve preview` opens the configured store read-only, discharges source,
 accepted catalog metadata, store snapshot, and engine metadata into an exact
-witness, then reports the counts and blocking diagnostics. With `--scaffold`,
-text output is formatter-produced `.mw` source containing one ready-to-paste
-`evolve` block per repairable obligation; it never edits project source. JSON
-and JSONL keep the preview envelope and include the scaffold string.
+witness, then reports the counts and blocking diagnostics. With
+`--from-backup <artifact>`, preview validates the backup artifact, mounts it in
+memory, and derives the witness from that point-in-time data instead of opening
+the configured store; the mount is read-only and does not restore, activate, or
+write catalog files. With `--scaffold`, text output is formatter-produced `.mw`
+source containing one ready-to-paste `evolve` block per repairable obligation;
+it never edits project source. JSON and JSONL keep the preview envelope and
+include the scaffold string.
 
 `evolve apply` recomputes that preview witness over the live project and store,
 requires an exact match, checks the activation window, and commits the data work
@@ -418,6 +423,10 @@ saved data on disk reports as empty. `recover` is the only write-capable `data`
 subcommand: it opens an existing native store so the backend can replay an
 interrupted commit. `get` is exact-path and point-bounded. `dump` is
 snapshot-bound and must stream or page rather than materializing unbounded data.
+`roots`, `stats`, `dump`, `integrity`, and `get` also accept
+`--backup <artifact>` to inspect a validated backup through an ephemeral
+in-memory mount instead of opening the configured store; `recover` does not
+accept that flag.
 See [data-tools.md](data-tools.md) for full output shapes and the path syntax.
 These commands are not production app APIs and not a production backup/restore
 format.

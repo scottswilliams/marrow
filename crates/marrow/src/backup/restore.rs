@@ -146,6 +146,37 @@ pub(crate) fn restore_backup_with_prologue(
     }
 }
 
+pub(crate) fn mount_backup_for_evolution_preview(
+    program: &CheckedProgram,
+    prologue: BackupPrologue,
+    input: &mut impl Read,
+    nondeterminism: &mut impl Nondeterminism,
+) -> Result<TreeStore, BackupError> {
+    let BackupPrologue { manifest, section } = prologue;
+    let preview_program = restore_program_for_evolution_preview(program, &manifest)?;
+    let store = TreeStore::memory();
+    store.begin()?;
+    let replay_result = replay(
+        &preview_program,
+        &store,
+        &manifest,
+        &section,
+        input,
+        nondeterminism,
+        &verify_evolution_preview_mount,
+    );
+    match replay_result {
+        Ok(_) => {
+            store.commit()?;
+            Ok(store)
+        }
+        Err(error) => {
+            let _ = store.rollback();
+            Err(error)
+        }
+    }
+}
+
 fn prepare_restore_target(
     program: &CheckedProgram,
     store: &TreeStore,
@@ -269,6 +300,28 @@ fn restore_program(
     program: &CheckedProgram,
     manifest: &BackupManifest,
 ) -> Result<CheckedProgram, BackupError> {
+    validate_engine_and_commit(manifest)?;
+    let project_source_digest = program.source_digest();
+    if manifest.source_digest != project_source_digest {
+        return Err(BackupError::source_mismatch(
+            &manifest.source_digest,
+            project_source_digest.as_str(),
+        ));
+    }
+    validate_catalog_fingerprint(program, manifest)?;
+    Ok(program.clone())
+}
+
+fn restore_program_for_evolution_preview(
+    program: &CheckedProgram,
+    manifest: &BackupManifest,
+) -> Result<CheckedProgram, BackupError> {
+    validate_engine_and_commit(manifest)?;
+    validate_catalog_fingerprint(program, manifest)?;
+    Ok(program.clone())
+}
+
+fn validate_engine_and_commit(manifest: &BackupManifest) -> Result<(), BackupError> {
     let current = EngineDescriptor::current(&current_engine_profile());
     if manifest.engine != current {
         return Err(BackupError::EngineRecompileRequired(
@@ -277,17 +330,16 @@ fn restore_program(
                 .to_string(),
         ));
     }
-    let project_source_digest = program.source_digest();
-    if manifest.source_digest != project_source_digest {
-        return Err(BackupError::source_mismatch(
-            &manifest.source_digest,
-            project_source_digest.as_str(),
-        ));
-    }
     if let Some(commit) = &manifest.commit {
         commit.validate_manifest_binding(manifest)?;
     }
+    Ok(())
+}
 
+fn validate_catalog_fingerprint(
+    program: &CheckedProgram,
+    manifest: &BackupManifest,
+) -> Result<(), BackupError> {
     let backup_catalog = CatalogFingerprintRef::from_parts(
         manifest.catalog_epoch,
         manifest.catalog_digest.as_deref(),
@@ -302,7 +354,7 @@ fn restore_program(
             project_catalog,
         ));
     }
-    Ok(program.clone())
+    Ok(())
 }
 
 fn replay(
@@ -442,6 +494,19 @@ fn restore_cell(store: &TreeStore, cell: &TreeBackupCellBuf) -> Result<(), Backu
 fn has_trailing_bytes(input: &mut impl Read) -> Result<bool, BackupError> {
     let mut byte = [0u8; 1];
     Ok(input.read(&mut byte)? != 0)
+}
+
+fn verify_evolution_preview_mount(
+    restore_program: &CheckedProgram,
+    store: &TreeStore,
+) -> Result<(), BackupError> {
+    match marrow_check::tooling::count_integrity_problems(store, restore_program) {
+        Ok((_, 0)) => Ok(()),
+        Ok((_, problems)) => Err(BackupError::DataInvalid(format!(
+            "backup data has {problems} schema problem(s); the backup does not match this project"
+        ))),
+        Err(error) => Err(BackupError::Store(error)),
+    }
 }
 
 /// An index rebuild over restored data fails only on a store fault: a malformed catalog

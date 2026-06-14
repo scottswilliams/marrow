@@ -7,24 +7,26 @@ use marrow_check::tooling::{
 };
 use serde_json::json;
 
-use crate::{CheckFormat, load_checked_project_with_format, write_json};
+use crate::{CheckFormat, write_json};
 
 pub(super) fn data_get(args: &[String]) -> ExitCode {
-    let (dir, path_text, format) = match crate::dir_and_path_args("data get", "path", args) {
-        Ok(parsed) => parsed,
-        Err(code) => return code,
-    };
+    let (dir, path_text, format, backup) =
+        match super::dir_and_path_args_with_backup("data get", "path", args) {
+            Ok(parsed) => parsed,
+            Err(code) => return code,
+        };
     let parsed_segments = match parse_path(&path_text) {
-        Ok(segments) => segments,
+        Ok(parsed) => parsed,
         Err(error) => {
             eprintln!("marrow data get: {}", error.message);
             return ExitCode::from(2);
         }
     };
-    let (config, program) = match load_checked_project_with_format(&dir, format) {
-        Ok(checked) => checked,
-        Err(code) => return code,
-    };
+    let super::DataReadTarget { program, store, .. } =
+        match super::load_data_read_target(dir, format, backup) {
+            Ok(target) => target,
+            Err(code) => return code,
+        };
     let query = match resolve_source_text_data_query(&program, &parsed_segments) {
         Ok(Some(query)) => query,
         // Durable identity that was never committed — a never-run project or a
@@ -47,10 +49,6 @@ pub(super) fn data_get(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
         Err(ToolingError::Store(error)) => return super::report_store_error(error, format),
-    };
-    let store = match crate::open_store_for_inspection(&dir, &config, format) {
-        Ok(store) => store,
-        Err(code) => return code,
     };
     let (value, presence) = match &store {
         Some(store) => match read_data_query(store, &query) {

@@ -24,14 +24,15 @@ Marrow
 Usage:
   marrow init <projectdir>
   marrow check [--format text|json|jsonl] <projectdir>
-  marrow evolve preview [--scaffold] [--format text|json|jsonl] <projectdir>
+  marrow evolve preview [--from-backup <artifact>] [--scaffold] [--format text|json|jsonl] <projectdir>
   marrow evolve apply [--maintenance] [--approve-retire <catalog-id>:<count>]
     [--backup <path> | --no-backup] [--format text|json|jsonl] <projectdir>
   marrow fmt [--check | --write] <file.mw | projectdir>
   marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] [--format text|json] <projectdir>
   marrow test [--trace] [--format text|json|jsonl] <projectdir>
-  marrow data <roots|stats|dump|integrity|recover> <projectdir>
-  marrow data get <projectdir> <path>
+  marrow data <roots|stats|dump|integrity> [--backup <artifact>] [--format text|json|jsonl] <projectdir>
+  marrow data recover [--format text|json|jsonl] <projectdir>
+  marrow data get [--backup <artifact>] [--format text|json|jsonl] <projectdir> <path>
   marrow backup <projectdir> <output-file>
   marrow restore [--replace --count N] <projectdir> <backup-file>
   marrow --version
@@ -370,46 +371,6 @@ pub(crate) fn report_simple_error_with_data(
             "data": data,
             "source_span": null,
         })),
-    }
-}
-
-/// Parse `marrow <command> [--format ...] <projectdir> <path>`; `path_label` names
-/// the second argument in usage and errors.
-pub(crate) fn dir_and_path_args(
-    command: &str,
-    path_label: &str,
-    args: &[String],
-) -> Result<(String, String, CheckFormat), ExitCode> {
-    let mut positionals = Vec::new();
-    let mut format = CheckFormat::Text;
-    let mut saw_format = false;
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--format" => {
-                parse_format_flag(args, &mut index, &mut saw_format, &mut format)?;
-            }
-            "--help" | "-h" => {
-                print!(
-                    "Usage:\n  marrow {command} [--format text|json|jsonl] <projectdir> <{path_label}>\n"
-                );
-                return Err(ExitCode::SUCCESS);
-            }
-            value if value.starts_with('-') => return Err(unknown_option(command, value)),
-            value => positionals.push(value.to_string()),
-        }
-        index += 1;
-    }
-    match positionals.as_slice() {
-        [dir, path] => Ok((dir.clone(), path.clone(), format)),
-        [] | [_] => {
-            eprintln!("marrow {command} requires a project directory and a {path_label}");
-            Err(ExitCode::from(2))
-        }
-        _ => {
-            eprintln!("marrow {command} accepts one project directory and one {path_label}");
-            Err(ExitCode::from(2))
-        }
     }
 }
 

@@ -15,6 +15,8 @@ The v0.1 tooling contract is:
 - render durable places from checked/catalog facts, not by decoding physical
   engine keys into source-shaped paths;
 - keep operator/admin full-store scans explicit;
+- allow inspection subcommands to use a validated backup artifact as the read
+  target without opening the live store;
 - report typed data findings such as `data.decode`, `data.key_type`,
   `data.dangling_ref`, `data.incomplete`, and `data.orphan`;
 - surface tree-cell store faults through the `store.*` family;
@@ -34,12 +36,22 @@ activates. It is a separate command pair, not a `data` subcommand — see
 Within `data`, `recover` is the explicit write-capable native-store repair/open
 verb. The other subcommands only read.
 
-Inspection subcommands never create or modify the store. They open the
-configured native store read-only, and if no store file exists yet they report
-an empty result rather than creating one: `roots` and `dump` print
+Inspection subcommands never create or modify the store. By default they open
+the configured native store read-only, and if no store file exists yet they
+report an empty result rather than creating one: `roots` and `dump` print
 `(no saved data)`, `stats` reports zero roots and records, `integrity` reports
 `ok` over zero records, and `get` prints `(absent)`. The data directory is left
 untouched — no `marrow.redb` is written.
+
+`roots`, `stats`, `dump`, `integrity`, and `get` accept
+`--backup <artifact>`. The flag selects the backup as the read target for the
+checked project, validates it through the restore artifact contract, replays it
+into memory, and inspects that memory store. It does not open the configured
+native store, take its file lock, render `marrow.catalog.json`, or write durable
+state. Backup validation reports the same typed `restore.*` refusals as restore
+for unsupported format, corrupt chunks, engine/value-codec mismatch,
+source/catalog mismatch, and invalid data. `data recover` does not accept
+`--backup` because recover is specifically a native-store repair/open command.
 
 A command that traverses the store more than once — `dump`, `stats`, and
 `integrity` each make several passes — pins one store snapshot for the whole
@@ -52,11 +64,13 @@ run under `marrow run --maintenance`.
 
 ## What needs source, what does not
 
-Inspection subcommands load and check the project first; the check itself opens
-the store read-only to bind the accepted-catalog snapshot. The checked facts
-provide root/member catalog IDs, key arity, and leaf types before the command
-reads the tree-cell store. If the source does not check, the command fails with
-the check diagnostic and exits non-zero before reading any data cells.
+Inspection subcommands load and check the project first; the live-store path
+opens the store read-only to bind the accepted-catalog snapshot. With
+`--backup`, the check binds to the accepted catalog carried by the backup and
+does not open the live store. The checked facts provide root/member catalog IDs,
+key arity, and leaf types before the command reads tree-cell data. If the source
+does not check, the command fails with the check diagnostic and exits non-zero
+before reading any data cells.
 
 `recover` is different: it reads only `marrow.json` and the configured native
 store binding, then opens the existing store write-capably. It does not load or

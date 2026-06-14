@@ -846,19 +846,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 Listing order is execution order. docs/cli.md integrates with the remaining operator lanes.
 
-**W6.12 → Backup as read target (C15).** After W3.8 (formats settled) and W6.11 (shared
-cmd_evolve module). Owns: the backend-source
-extension point in the data-loader opening chain; `--backup <artifact>` on marrow data
-dump/get/roots/stats/integrity (ephemeral MemStore mount via the existing restore-validation
-path — read-only, non-activating, codec-version-checked, no lock); `evolve preview
---from-backup` (witness re-derived against the past epoch; drifted state = typed refusal); the
-storage-engine/05 amendment text landed via gate 52. Explicitly excluded: run --at, test --seed,
-writable rehearsal, emit-backup hook (all deferred). Seed: failing CLI test — dump --backup over
-an artifact matches dump over the restored store, with the live store held open by another
-process. Review: no durable write on any mount path; gate-7 lock contract untouched (no file
-lock taken). Done: point-in-time inspection and preview rehearsal work without restore
-choreography.
-
 **W6.13 ∥ marrow doctor (C28; slippable).** After W2.5 + W3.7. Owns: one cmd module aggregating
 existing typed facts — config parse, check summary, catalog digest validation, store-open probe
 (store.locked with remedy), fence/stamp classification, engine-profile tuple, bounded integrity

@@ -8,7 +8,7 @@ use marrow_check::evolution::{EvolutionWitness, Verdict, preview};
 use marrow_run::SystemNondeterminism;
 use marrow_run::evolution::{ApplyError, apply};
 
-use crate::{load_checked_project_with_format, report_simple_error};
+use crate::{load_checked_project_with_format, load_config_with_format, report_simple_error};
 
 mod args;
 mod render;
@@ -40,11 +40,29 @@ fn preview_cmd(raw_args: &[String]) -> ExitCode {
         Err(args::ParseStop::Help) => return ExitCode::SUCCESS,
         Err(args::ParseStop::Usage) => return ExitCode::from(2),
     };
-    let Ok((config, program)) = load_checked_project_with_format(&input.dir, input.format) else {
-        return ExitCode::FAILURE;
-    };
-    let Ok(store) = store::preview_store(&input.dir, &config, input.format) else {
-        return ExitCode::FAILURE;
+    let (program, store) = if let Some(backup) = &input.from_backup {
+        let config = match load_config_with_format(&input.dir, input.format) {
+            Ok(config) => config,
+            Err(code) => return code,
+        };
+        match crate::cmd_restore::mount_backup_for_evolution_preview(
+            &input.dir,
+            &config,
+            backup,
+            input.format,
+        ) {
+            Ok(target) => target,
+            Err(code) => return code,
+        }
+    } else {
+        let Ok((config, program)) = load_checked_project_with_format(&input.dir, input.format)
+        else {
+            return ExitCode::FAILURE;
+        };
+        let Ok(store) = store::preview_store(&input.dir, &config, input.format) else {
+            return ExitCode::FAILURE;
+        };
+        (program, store)
     };
     let labels = render::SourceLabels::from_program(&program);
     match preview(&program, &store) {
@@ -322,7 +340,7 @@ fn print_help() {
     print!(
         "\
 Usage:
-  marrow evolve preview [--scaffold] [--format text|json|jsonl] <projectdir>
+  marrow evolve preview [--from-backup <artifact>] [--scaffold] [--format text|json|jsonl] <projectdir>
   marrow evolve apply [--maintenance] [--approve-retire <catalog-id>:<count>] \
     [--backup <path> | --no-backup] \
     [--format text|json|jsonl] <projectdir>

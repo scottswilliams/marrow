@@ -6,6 +6,8 @@
 mod support;
 mod support_data;
 
+use marrow_store::tree::TreeStore;
+
 use support_data::{json, marrow, native_project, seeded_project};
 
 /// The human-rendered placeholders `data get` prints in its default text format for a
@@ -38,6 +40,33 @@ fn data_get_reads_a_path_value_and_reports_absence() {
 
     // A path that does not parse fails before touching the store: a usage error.
     assert_eq!(malformed.status.code(), Some(2), "{malformed:?}");
+}
+
+#[test]
+fn data_get_reads_backup_while_live_store_is_locked() {
+    let (project, dir) = seeded_project("data-get-backup");
+    let archive = support::backup_artifact(&project, "counter.mwbackup");
+    let archive_arg = archive.to_str().expect("backup path utf8");
+
+    let live = support::marrow(&["data", "get", "--format", "json", &dir, "^counter(1).value"]);
+    assert_eq!(live.status.code(), Some(0), "{live:?}");
+    let live = support::json(live.stdout);
+
+    let _writer = TreeStore::open(&project.join(".data").join("marrow.redb"))
+        .expect("hold the native writer open");
+    let backup = support::marrow(&[
+        "data",
+        "get",
+        "--backup",
+        archive_arg,
+        "--format",
+        "json",
+        &dir,
+        "^counter(1).value",
+    ]);
+
+    assert_eq!(backup.status.code(), Some(0), "{backup:?}");
+    assert_eq!(support::json(backup.stdout), live);
 }
 
 #[test]

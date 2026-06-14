@@ -1,5 +1,6 @@
 use std::fs;
 
+use marrow_store::tree::TreeStore;
 use marrow_store::value::Scalar;
 
 mod support;
@@ -7,9 +8,9 @@ mod support_evolve;
 
 use support::{marrow, write};
 use support_evolve::{
-    REQUIRED_BASELINE_SOURCE, REQUIRED_DEFAULT_SOURCE, REQUIRED_NO_DEFAULT_SOURCE, commit_catalog,
-    member_catalog_id, native_books_project, native_store_path, open_native_store, root_place,
-    seed_member, seed_title_only,
+    REQUIRED_BASELINE_SOURCE, REQUIRED_DEFAULT_SOURCE, REQUIRED_NO_DEFAULT_SOURCE,
+    accepted_catalog, commit_catalog, member_catalog_id, native_books_project, native_store_path,
+    open_native_store, root_place, seed_member, seed_title_only,
 };
 
 #[test]
@@ -49,6 +50,118 @@ fn evolve_preview_reports_the_exact_witness_counts() {
         "{witness}"
     );
     assert!(witness["accepted_epoch"].is_number(), "{witness}");
+}
+
+#[test]
+fn evolve_preview_from_backup_uses_backup_state_while_live_store_is_locked() {
+    let root = native_books_project("evolve-preview-from-backup", REQUIRED_BASELINE_SOURCE);
+    let program = commit_catalog(&root);
+    let place = root_place(&program, "books");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &place, 1, "Dune");
+    }
+    let archive = support::backup_artifact(&root, "before-pages.mwbackup");
+    let archive_arg = archive.to_str().expect("backup path utf8");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &place, 2, "Hyperion");
+    }
+    write(&root, "src/books.mw", REQUIRED_DEFAULT_SOURCE);
+
+    let _writer = TreeStore::open(&native_store_path(&root)).expect("hold live store writer open");
+    let output = marrow(&[
+        "evolve",
+        "preview",
+        "--from-backup",
+        archive_arg,
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let witness = support::json(output.stdout);
+    assert_eq!(witness["status"], serde_json::json!("activatable"));
+    assert_eq!(
+        witness["records_to_backfill"],
+        serde_json::json!(1),
+        "preview must count the one backed-up record, not the two-record live store: {witness}"
+    );
+}
+
+#[test]
+fn evolve_preview_from_backup_rejects_current_catalog_drift_with_restore_code() {
+    let root = native_books_project(
+        "evolve-preview-backup-catalog-drift",
+        REQUIRED_BASELINE_SOURCE,
+    );
+    let program = commit_catalog(&root);
+    let place = root_place(&program, "books");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &place, 1, "Dune");
+    }
+    let archive = support::backup_artifact(&root, "baseline.mwbackup");
+    let archive_arg = archive.to_str().expect("backup path utf8");
+    let accepted = accepted_catalog(&root);
+    let drifted = marrow_catalog::CatalogMetadata::new(accepted.epoch + 1, accepted.entries);
+    fs::write(root.join("marrow.catalog.json"), drifted.to_json_pretty())
+        .expect("write drifted catalog artifact");
+
+    let output = marrow(&[
+        "evolve",
+        "preview",
+        "--from-backup",
+        archive_arg,
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error = support::json(output.stdout);
+    assert_eq!(error["code"], serde_json::json!("restore.catalog_mismatch"));
+}
+
+#[test]
+fn evolve_preview_from_backup_flag_usage_is_tight() {
+    let cases: &[(&[&str], &str)] = &[
+        (
+            &[
+                "evolve",
+                "preview",
+                "--from-backup",
+                "one.mwbackup",
+                "--from-backup",
+                "two.mwbackup",
+                "proj",
+            ],
+            "duplicate --from-backup",
+        ),
+        (
+            &["evolve", "preview", "--from-backup"],
+            "missing value for --from-backup",
+        ),
+        (
+            &[
+                "evolve",
+                "preview",
+                "--from-backup",
+                "state.mwbackup",
+                "proj",
+                "extra",
+            ],
+            "evolve preview accepts one project directory",
+        ),
+    ];
+
+    for (args, expected) in cases {
+        let output = marrow(args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+        let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+        assert!(stderr.contains(expected), "{args:?}: {stderr}");
+    }
 }
 
 #[test]

@@ -98,6 +98,20 @@ pub(crate) fn marrow_in(cwd: impl AsRef<Path>, args: &[&str]) -> Output {
         .expect("run marrow")
 }
 
+#[allow(dead_code)]
+pub(crate) fn backup_artifact(root: impl AsRef<Path>, file_name: &str) -> PathBuf {
+    let root = root.as_ref();
+    commit_catalog_if_clean(root);
+    let archive = root.join(file_name);
+    let output = marrow(&[
+        "backup",
+        root.to_str().expect("project path utf8"),
+        archive.to_str().expect("backup path utf8"),
+    ]);
+    assert_eq!(output.status.code(), Some(0), "backup: {output:?}");
+    archive
+}
+
 /// Invoke the `marrow` binary with a leading subcommand followed by `args`.
 #[allow(dead_code)]
 pub(crate) fn marrow_sub(cmd: &str, args: &[&str]) -> Output {
