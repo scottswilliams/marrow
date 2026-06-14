@@ -27,6 +27,22 @@ A project directory contains a `marrow.json`; see
 [project-config.md](project-config.md) for its fields. Every subcommand accepts
 `--help` (or `-h`) and prints its own usage.
 
+## Version
+
+```
+marrow --version
+```
+
+Print the CLI version and the storage engine profile tuple this binary writes:
+
+```console
+$ marrow --version
+marrow 0.1.0 engine-profile=(key=v0, layout-epoch=0, digest=77944eb86c08b665)
+```
+
+The tuple names the key profile version, layout epoch, and engine-profile
+digest. It is the same profile used by activation fencing and commit stamps.
+
 ## Exit Codes
 
 | Code | Meaning |

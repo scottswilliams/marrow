@@ -1,12 +1,23 @@
 # Freeze-Gate Evidence
 
-This ledger is the storage-engine/04 gate-35 evidence packet. It stays active
-until W7.2 assembles the final clean-worktree packet and flips LayoutEpoch 0.
+This ledger is the storage-engine/04 gate-35 evidence packet for the accepted
+LayoutEpoch 0 release contract. It records producing-lane evidence, reviewer
+verdict requirements, and the verification commands required before the v0.1
+tag.
 
 Each producing lane records the evidence families it owns. After that lane
-lands on `main`, the lane cleanup commit records the integrating commit and
-reviewer verdicts for those rows. W7.2 adds the final fresh full-workspace run,
-including the explicit `CARGO_TARGET_DIR`, before storage-engine/04 is flipped.
+lands on `main`, the integrated-lane table records the producing commit. The
+final W7.2 soundness and idiom/spec reviews are the release-contract review for
+the assembled packet; W7.4 repeats the fresh full-workspace gate before the tag.
+
+## Status
+
+| Item | State |
+|---|---|
+| storage-engine/04 | Accepted for the v0.1 release contract. |
+| LayoutEpoch | `0` frozen. |
+| Engine profile | `key=v0`, `layout-epoch=0`, `digest=77944eb86c08b665`. |
+| W7.2 assembly run | Green in `/Users/scottwilliams/Dev/.worktrees/marrow-roadmap/W7.2/marrow` with `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.cargo-targets/marrow-roadmap/W7.2-final`; workspace tests report zero ignored tests. |
 
 ## Seeded Evidence
 
@@ -22,11 +33,41 @@ including the explicit `CARGO_TARGET_DIR`, before storage-engine/04 is flipped.
 
 | Lane | Integrated Commit | Reviewer Verdicts | Broad Gates |
 |---|---|---|---|
-| W2.2 | `ea6ce9cadf0ec84cfaa5070c703329fefd9c43ce` | Boyle soundness PASS; Hume idiom/spec PASS. | `cargo build --workspace`; `cargo test --workspace`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `python3 tools/docs_lint.py`; `git diff --check` |
+| W2.2 | `ea6ce9cadf0ec84cfaa5070c703329fefd9c43ce` | Boyle soundness PASS; Hume idiom/spec PASS; W7.2 soundness PASS (release-contract re-review); Final W7.2 idiom/spec PASS. | `cargo build --workspace`; `cargo test --workspace`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `python3 tools/docs_lint.py`; `git diff --check` |
+| W2.4 | `4b0415dd27827410cc12e719fd2c04dced5fe8bd` | W7.2 soundness PASS (release-contract re-review); Final W7.2 idiom/spec PASS. | Atomic backup/fmt write paths and owner-only artifact mode suites are included in the W7.2 assembly run. |
+| W2.8 | `f0caffaec951a911976aa9958bbc3ae30d7fcdc6` | W7.2 soundness PASS (release-contract re-review); Final W7.2 idiom/spec PASS. | Linear navigation, key ordering, byte fingerprints, and bounded-scan suites are included in the W7.2 assembly run. |
+| W3.2 | `2a3b3fbf26a26943138f865985f1824c647ad3dd` | W7.2 soundness PASS (release-contract re-review); Final W7.2 idiom/spec PASS. | Commit-id density and reader/writer contract suites are included in the W7.2 assembly run. |
+| W3.4 | `d6b0dfab55faa66216eb2607e44983af9ae4543e` | W7.2 soundness PASS (release-contract re-review); Final W7.2 idiom/spec PASS. | Activation-stamp, backup-manifest, and restore identity suites are included in the W7.2 assembly run. |
+| W3.8 | `023bcbcf68eb3efec8edbe77a03321dcd2aef934` | W7.2 soundness PASS (release-contract re-review); Final W7.2 idiom/spec PASS. | Multi-epoch evolution and epoch-mismatch restore suites are included in the W7.2 assembly run. |
+| W4.7/W4.8 | `f21b9eefb37c63165540eb1681776fc6feb27fa4` / `c6e90842edb32d99d027f053958d65651bfe172b` | W7.2 soundness PASS (release-contract re-review); Final W7.2 idiom/spec PASS. | Reverse/bounded saved-read and conformance-corpus suites are included in the W7.2 assembly run. |
+
+## W7.2 Assembly Commands
+
+Focused version contract check:
+
+```sh
+CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.cargo-targets/marrow-roadmap/W7.2-build cargo test -p marrow --test main usage_cli::version_prints_engine_profile_tuple --manifest-path /Users/scottwilliams/Dev/.worktrees/marrow-roadmap/W7.2/marrow/Cargo.toml
+```
+
+Result: pass, `1 passed; 0 failed; 0 ignored; 0 measured; 380 filtered out`.
+
+The final W7.2 assembly commands were run fresh:
+
+```sh
+CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.cargo-targets/marrow-roadmap/W7.2-final cargo build --workspace --all-targets --manifest-path /Users/scottwilliams/Dev/.worktrees/marrow-roadmap/W7.2/marrow/Cargo.toml
+CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.cargo-targets/marrow-roadmap/W7.2-final cargo test --workspace --all-targets --manifest-path /Users/scottwilliams/Dev/.worktrees/marrow-roadmap/W7.2/marrow/Cargo.toml
+CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.cargo-targets/marrow-roadmap/W7.2-final cargo clippy --workspace --all-targets --manifest-path /Users/scottwilliams/Dev/.worktrees/marrow-roadmap/W7.2/marrow/Cargo.toml -- -D warnings
+CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.cargo-targets/marrow-roadmap/W7.2-final cargo fmt --all --manifest-path /Users/scottwilliams/Dev/.worktrees/marrow-roadmap/W7.2/marrow/Cargo.toml -- --check
+python3 tools/docs_lint.py
+git diff --check
+```
+
+Result: build pass; full workspace tests pass with zero ignored tests; clippy
+passes with `-D warnings`; docs lint and whitespace checks pass.
 
 ## Final Assembly Rules
 
-The W7.2 assembly run is green only when every fixture in the five gate-35
+The W7.4 tag gate is green only when every fixture in the five gate-35
 families passes in one fresh clean worktree with zero ignored tests inside those
 families. Deterministic crash kill points must pass every time, and bounded
 crash soak must show zero both-or-invisible violations.
@@ -37,7 +78,7 @@ The final packet records:
 - the integrating `main` commit for each family;
 - reviewer verdicts for the lane and final integration review;
 - the suite names run for each family;
-- the fresh W7.2 full-workspace command with explicit `CARGO_TARGET_DIR`.
+- the fresh full-workspace tag-gate commands with explicit `CARGO_TARGET_DIR`.
 
-Any red family blocks storage-engine/04 acceptance and the v0.1 tag until a fix
+Any red family found during the W7.4 tag gate blocks the v0.1 tag until a fix
 lane lands and the entire affected family reruns fresh.

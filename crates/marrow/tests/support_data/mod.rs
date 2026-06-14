@@ -148,6 +148,27 @@ pub(crate) fn write_tree_value(
         .expect("write tree-cell value");
 }
 
+pub(crate) fn write_tree_values(
+    project: &Path,
+    place: &CheckedSavedPlace,
+    identities: impl IntoIterator<Item = Vec<SavedKey>>,
+    path: &[DataPathSegment],
+    value: &[u8],
+) {
+    let store_dir = project.join(".data");
+    fs::create_dir_all(&store_dir).expect("create store dir");
+    let store = TreeStore::open(&store_dir.join("marrow.redb")).expect("open native store");
+    let store_id = checked_catalog_id(&place.store_catalog_id);
+    for identity in identities {
+        store
+            .write_node(&store_id, &identity)
+            .expect("write tree-cell node");
+        store
+            .write_data_value(&store_id, &identity, path, value.to_vec())
+            .expect("write tree-cell value");
+    }
+}
+
 pub(crate) fn delete_tree_path(
     project: &Path,
     root: &str,

@@ -590,28 +590,26 @@ documenting the optional line once.
 
 ### Group F — End-gates
 
-**35. storage-engine/04 → Accepted (evidence protocol).** Decided: protocol fixed now; the flip
-is pre-authorized and needs no further sitting. Evidence packet: the freeze-gate ledger (started
-in W2.2) holds one entry per family storage-engine/04 names — conformance (17-law suite plus
+**35. storage-engine/04 — Accepted.** W7.2 flips storage-engine/04 to Accepted
+for the v0.1 release contract and freezes LayoutEpoch 0. Evidence packet: the
+freeze-gate ledger holds one entry per family storage-engine/04 names —
+conformance (17-law suite plus
 reverse/bounded-scan, identity-component, and CommitId-density laws; W2.8/W3.2/W4.7/W4.8),
 ordering (key-codec property round-trips plus byte-fingerprint goldens; W2.2/W2.8),
 crash/recovery (kill-during-commit plus torn-write reopen; W2.2), backup (atomic write,
 all-or-nothing refusal, epoch-mismatch restore refusal; W2.4/W3.8), evolution (multi-epoch
-lifecycle; W3.8) — each entry naming its suites, producing lane, integrating commit, reviewer
-verdicts, and one fresh clean-worktree full-workspace run at W7.2 assembly with explicit
-CARGO_TARGET_DIR; W2.9 hostile-input results ride as supporting evidence, not a sixth gate.
+lifecycle; W3.8) — each entry naming its suites, producing lane, integrating commit, final
+release-contract reviewer verdicts, and the fresh clean-worktree full-workspace tag-gate run
+with explicit CARGO_TARGET_DIR; W2.9 hostile-input results ride as supporting evidence, not a
+sixth gate.
 Green threshold: every fixture in all five families passes in that single fresh run with zero
 `#[ignore]` members inside the families; deterministic kill points pass 100% and the bounded
 soak shows zero both-or-invisible violations — a reproduced violation is red, an unreproduced
 environmental flake is investigated and rerun, never waved through; if W4.8 (the named slippable
 language lane) slips, its bounded-scan laws follow it and do not block the freeze, since
-read-path laws add no bytes. On all-green, W7.2 flips storage-engine/04 to Accepted in
-marrow-decisions with an appended Evidence note (date, families, suite names, marrow commit
-hash) and LayoutEpoch 0 is frozen — every later byte-format change is a LayoutEpoch recompile,
-never an in-place edit. Any red family: no flip, no freeze, and the v0.1 tag is blocked; a
-defect lane fixes it, the entire family re-runs fresh (not just the failing case), and the
-packet is re-assembled — byte changes made by the fix are permitted precisely because nothing is
-frozen until the post-fix green packet.
+read-path laws add no bytes. Every later byte-format change is a LayoutEpoch recompile, never an
+in-place edit. Any red family found before the v0.1 tag blocks the tag; a defect lane fixes it,
+the entire family re-runs fresh (not just the failing case), and the packet is re-assembled.
 
 **36. foundations/03 self-deletion timing.** Decided: approved with a single trigger: the v0.1
 tag — the alternative completion-note path is dropped, since the tag itself is the completion
@@ -851,31 +849,6 @@ Wave gate: full gate; CLI surface frozen for the release contract.
 ---
 
 ## Wave 7 — Release proof
-
-**W7.2 → Release contract (III.B2; gates 33, 35, 37, 45).** Owns: `--version` engine-profile
-tuple,
-docs/stability.md (stable: dotted codes, exit codes, backup format, marrow.json, catalog schema
-as versioned ABI; not stable: store bytes across recompiles, message prose; the G1-5 Rust-API
-row — all six workspace crate APIs unstable, marrow-lsp a coordinated consumer, the future
-embedding contract one facade surface, never the internal crates; the G1-6 profile-ordering
-sentence — the gate-37 decided sentence, verbatim, in the not-yet-stable/future-surfaces
-section; the two G2-6 law-backed sentences — one fsync per transaction per W2.2,
-constant-memory evolution staging per W3.4, each landing only after its lane passes review; the
-C45 cell-codec single-interchange sentence; the C48 reserved-field reference; the C51 forward
-reference to the gated JSONL export; the gate-45 `parent_snapshot_digest` field marked
-reserved/semantics-undefined; the C07 raises-field
-note — the G3-3 egress-regime table lands in W6.8's Security section, its one home), platform
-statement
-(unix-only — Linux and macOS; the entropy panic stays as the documented unix-only constraint, no
-diagnostic plumbing), distribution statement (tagged v0.1.0 source release +
-`cargo install --locked --path crates/marrow`; binaries and crates.io publication named as the
-post-v0.1 fast-follow),
-**storage-engine/04 flipped to Accepted on the assembled evidence packet** (the five families
-and their producing lanes exactly per the gate-35 protocol) with LayoutEpoch 0
-frozen — the flip executes per the gate-35 protocol, pre-authorized on the green five-family
-ledger, no further sitting; any red family blocks the flip and the tag. Seed: a version-output
-test. Review: every stability sentence traces to a closed lane's evidence; no
-implementation-quality claim enters the contract. Done: the release is a defined promise.
 
 **W7.3 ∥ Docs-truth + absence pass.** Owns: every docs/implementation page re-verified against
 code; the cumulative absence/sibling scan for every removed pattern (serve, lsp, protocol.*,

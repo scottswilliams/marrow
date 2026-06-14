@@ -64,6 +64,29 @@ fn help_does_not_advertise_removed_server_commands() {
 }
 
 #[test]
+fn version_prints_engine_profile_tuple() {
+    let output = marrow(&["--version"]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(
+        output.stderr.is_empty(),
+        "unexpected stderr: {:?}",
+        output.stderr
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    let profile = marrow_run::evolution::current_engine_profile();
+    assert_eq!(
+        stdout,
+        format!(
+            "marrow 0.1.0 engine-profile=(key=v{}, layout-epoch={}, digest={})\n",
+            profile.key_profile_version(),
+            profile.layout_epoch(),
+            profile.digest_hex()
+        )
+    );
+}
+
+#[test]
 fn top_level_help_advertises_backup_read_targets() {
     let output = marrow(&["--help"]);
 

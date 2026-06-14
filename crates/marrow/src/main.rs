@@ -101,7 +101,14 @@ fn dispatch(command: &str, rest: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         "--version" | "-V" | "version" => {
-            println!("marrow {}", env!("CARGO_PKG_VERSION"));
+            let profile = marrow_run::evolution::current_engine_profile();
+            println!(
+                "marrow {} engine-profile=(key=v{}, layout-epoch={}, digest={})",
+                env!("CARGO_PKG_VERSION"),
+                profile.key_profile_version(),
+                profile.layout_epoch(),
+                profile.digest_hex()
+            );
             ExitCode::SUCCESS
         }
         other => {

@@ -2240,7 +2240,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "W2.8 scale smoke; run explicitly with --ignored"]
     fn linear_navigation_scale_smoke() {
         let store_id = catalog("cat_00000000000000000000000000000001");
         let counts = BackendCounts::default();

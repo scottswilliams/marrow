@@ -1,6 +1,12 @@
 # Installing Marrow
 
-Marrow is unreleased. Install from source.
+Marrow v0.1.0 is distributed as a tagged source release. Install from source.
+
+## Supported Platforms
+
+Marrow v0.1 supports Unix targets only: Linux and macOS. Non-Unix builds are
+outside the v0.1 contract; the stable-id entropy backstop may panic there rather
+than report a Marrow diagnostic.
 
 ## From Source
 
@@ -12,18 +18,28 @@ Requirements:
 ```sh
 git clone https://github.com/scottswilliams/marrow
 cd marrow
+git checkout v0.1.0
 cargo install --locked --path crates/marrow
 marrow --version
 ```
 
-The installed command is `marrow`.
+The installed command is `marrow`. The v0.1.0 version output includes the
+current engine profile:
+
+```console
+$ marrow --version
+marrow 0.1.0 engine-profile=(key=v0, layout-epoch=0, digest=77944eb86c08b665)
+```
 
 ## Build Without Installing
 
 ```sh
-cargo build --release -p marrow
+cargo build --release -p marrow --locked
 ./target/release/marrow --version
 ```
+
+Prebuilt binaries and crates.io publication are post-v0.1 fast-follow channels,
+not v0.1 release channels.
 
 ## Data Directories
 

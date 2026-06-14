@@ -8,6 +8,8 @@ architecture.
 - [Quickstart](quickstart.md) — create a project, write a resource, run it,
   inspect the saved data, and run a test.
 - [Install](install.md) — source builds and data directories.
+- [Stability Contract](stability.md) — v0.1 stable surfaces, unstable surfaces,
+  platform support, and distribution channels.
 
 ## Guides
 
@@ -58,8 +60,10 @@ point at the [language reference](language/) for the exact rules.
 - [Future](future/) — selected future surfaces whose designed contracts are not
   implemented yet.
 
-Marrow is unreleased. If implementation and language references disagree,
-treat the disagreement as implementation work, not as a competing design.
+Marrow v0.1 release promises are named in the
+[Stability Contract](stability.md). If implementation and language references
+disagree, treat the disagreement as implementation work, not as a competing
+design.
 
 ## Scope And Security
 

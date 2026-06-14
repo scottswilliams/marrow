@@ -10,7 +10,7 @@ use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 use support_data::{
     checked_place, field_path, json, marrow, native_project, seeded_project, write_record_node,
-    write_tree_value,
+    write_tree_values,
 };
 
 #[test]
@@ -405,15 +405,8 @@ fn data_commands_page_through_large_native_store() {
     let dir = project.to_str().unwrap().to_string();
     let place = checked_place(&project, "counter");
     let value_path = field_path(&place, "value");
-    for id in 1..=RECORDS {
-        write_tree_value(
-            &project,
-            "counter",
-            &[SavedKey::Int(id as i64)],
-            &value_path,
-            b"7".to_vec(),
-        );
-    }
+    let identities = (1..=RECORDS).map(|id| vec![SavedKey::Int(id as i64)]);
+    write_tree_values(&project, &place, identities, &value_path, b"7");
 
     let stats = marrow(&["data", "stats", "--format", "json", &dir]);
     let dump = marrow(&["data", "dump", "--format", "jsonl", &dir]);
