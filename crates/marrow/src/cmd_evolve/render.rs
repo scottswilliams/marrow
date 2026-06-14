@@ -1,36 +1,83 @@
 use std::collections::HashMap;
 
-use marrow_check::evolution::{EvolutionWitness, RepairDiagnostic, Verdict};
+use marrow_catalog::CatalogEntryKind;
+use marrow_check::evolution::{
+    EvolutionWitness, RejectedDefault, RepairDiagnostic, RepairReason, Verdict,
+};
 use marrow_run::evolution::{ApplyError, ApplyOutcome};
 
 use crate::{CheckFormat, report_simple_error, report_simple_error_with_data, write_json};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum RecoveryPoint {
+    None,
+    Backup { path: String },
+    NoBackup,
+}
+
 pub(super) struct SourceLabels {
-    by_catalog_id: HashMap<String, String>,
+    by_catalog_id: HashMap<String, SourceTarget>,
+}
+
+struct SourceTarget {
+    display: String,
+    scaffold: String,
 }
 
 impl SourceLabels {
     pub(super) fn from_program(program: &marrow_check::CheckedProgram) -> Self {
-        Self {
-            by_catalog_id: program
-                .catalog
-                .accepted_entries
-                .iter()
-                .map(|entry| (entry.stable_id.clone(), source_label(&entry.path)))
-                .collect(),
+        let mut by_catalog_id = HashMap::new();
+        for entry in &program.catalog.accepted_entries {
+            by_catalog_id.insert(
+                entry.stable_id.clone(),
+                SourceTarget::new(&entry.path, entry.kind),
+            );
         }
+        if let Some(proposal) = &program.catalog.proposal {
+            for entry in &proposal.entries {
+                by_catalog_id
+                    .entry(entry.stable_id.clone())
+                    .or_insert_with(|| SourceTarget::new(&entry.path, entry.kind));
+            }
+        }
+        Self { by_catalog_id }
     }
 
     fn catalog_id(&self, catalog_id: &str) -> String {
         self.by_catalog_id.get(catalog_id).map_or_else(
             || catalog_id.to_string(),
-            |label| format!("{catalog_id} ({label})"),
+            |target| format!("{catalog_id} ({})", target.display),
         )
+    }
+
+    fn scaffold_target(&self, catalog_id: &str) -> String {
+        self.by_catalog_id
+            .get(catalog_id)
+            .map_or_else(|| catalog_id.to_string(), |target| target.scaffold.clone())
+    }
+}
+
+impl SourceTarget {
+    fn new(path: &str, kind: CatalogEntryKind) -> Self {
+        Self {
+            display: source_label(path),
+            scaffold: scaffold_target(path, kind),
+        }
     }
 }
 
 fn source_label(path: &str) -> String {
     path.replace("::", ".")
+}
+
+fn scaffold_target(path: &str, kind: CatalogEntryKind) -> String {
+    let local: Vec<&str> = path.split("::").skip(1).collect();
+    match (kind, local.as_slice()) {
+        (CatalogEntryKind::Store, [root]) => format!("^{root}"),
+        (CatalogEntryKind::StoreIndex, [root, index]) => format!("^{root}.{index}"),
+        (_, []) => source_label(path),
+        (_, segments) => segments.join("."),
+    }
 }
 
 fn nothing_to_discharge(witness: &EvolutionWitness) -> bool {
@@ -54,8 +101,15 @@ pub(super) fn preview(
     diagnostics: &[RepairDiagnostic],
     labels: &SourceLabels,
     format: CheckFormat,
+    scaffold: bool,
 ) {
     match format {
+        CheckFormat::Text if scaffold => {
+            print!("{}", scaffold_source(witness, labels));
+            if !witness.is_activatable() {
+                render_blocking_text(witness, diagnostics, labels);
+            }
+        }
         CheckFormat::Text => {
             println!("evolution preview");
             println!(
@@ -87,19 +141,72 @@ pub(super) fn preview(
                 render_blocking_text(witness, diagnostics, labels);
             }
         }
-        CheckFormat::Json | CheckFormat::Jsonl => write_json(serde_json::json!({
-            "kind": "evolve_preview",
-            "status": if witness.is_activatable() { "activatable" } else { "blocked" },
-            "source_digest": witness.source_digest,
-            "accepted_epoch": witness.accepted_catalog.epoch,
-            "proposal_epoch": witness.proposal_catalog.as_ref().map(|catalog| catalog.epoch),
-            "records_scanned": witness.counts.scanned_records,
-            "records_to_backfill": witness.counts.records_to_backfill,
-            "records_to_transform": witness.counts.records_to_transform,
-            "nothing_to_discharge": nothing_to_discharge(witness),
-            "diagnostics": diagnostics.iter().map(|diagnostic| &diagnostic.message).collect::<Vec<_>>(),
-            "blocking": blocking_json(witness, diagnostics, labels),
-        })),
+        CheckFormat::Json | CheckFormat::Jsonl => {
+            let mut object = serde_json::Map::from_iter([
+                ("kind".to_string(), serde_json::json!("evolve_preview")),
+                (
+                    "status".to_string(),
+                    serde_json::json!(if witness.is_activatable() {
+                        "activatable"
+                    } else {
+                        "blocked"
+                    }),
+                ),
+                (
+                    "source_digest".to_string(),
+                    serde_json::json!(witness.source_digest),
+                ),
+                (
+                    "accepted_epoch".to_string(),
+                    serde_json::json!(witness.accepted_catalog.epoch),
+                ),
+                (
+                    "proposal_epoch".to_string(),
+                    serde_json::json!(
+                        witness
+                            .proposal_catalog
+                            .as_ref()
+                            .map(|catalog| catalog.epoch)
+                    ),
+                ),
+                (
+                    "records_scanned".to_string(),
+                    serde_json::json!(witness.counts.scanned_records),
+                ),
+                (
+                    "records_to_backfill".to_string(),
+                    serde_json::json!(witness.counts.records_to_backfill),
+                ),
+                (
+                    "records_to_transform".to_string(),
+                    serde_json::json!(witness.counts.records_to_transform),
+                ),
+                (
+                    "nothing_to_discharge".to_string(),
+                    serde_json::json!(nothing_to_discharge(witness)),
+                ),
+                (
+                    "diagnostics".to_string(),
+                    serde_json::json!(
+                        diagnostics
+                            .iter()
+                            .map(|diagnostic| &diagnostic.message)
+                            .collect::<Vec<_>>()
+                    ),
+                ),
+                (
+                    "blocking".to_string(),
+                    serde_json::json!(blocking_json(witness, diagnostics, labels)),
+                ),
+            ]);
+            if scaffold {
+                object.insert(
+                    "scaffold".to_string(),
+                    serde_json::json!(scaffold_source(witness, labels)),
+                );
+            }
+            write_json(serde_json::Value::Object(object));
+        }
     }
 }
 
@@ -146,6 +253,9 @@ fn render_blocking_text(
     for report in blocking_reports(witness, diagnostics, labels) {
         eprintln!("{}: {}", report.code, report.message);
     }
+    eprintln!(
+        "hint: run `marrow evolve preview --scaffold <projectdir>` to print parseable evolve blocks"
+    );
 }
 
 #[derive(Debug, Clone)]
@@ -220,6 +330,75 @@ fn blocking_reports(
     reports
 }
 
+fn scaffold_source(witness: &EvolutionWitness, labels: &SourceLabels) -> String {
+    let blocks: Vec<String> = witness
+        .verdicts
+        .iter()
+        .filter_map(|obligation| {
+            scaffold_block(obligation.catalog_id.as_str(), &obligation.verdict, labels)
+        })
+        .collect();
+    if blocks.is_empty() {
+        return String::new();
+    }
+    let raw = blocks.join("\n");
+    let formatted = marrow_syntax::format_source(&raw);
+    debug_assert!(
+        !marrow_syntax::parse_source(&formatted).has_errors(),
+        "evolve scaffold must parse after formatting"
+    );
+    formatted
+}
+
+fn scaffold_block(catalog_id: &str, verdict: &Verdict, labels: &SourceLabels) -> Option<String> {
+    match verdict {
+        Verdict::DestructiveDecisionRequired { populated } => {
+            Some(retire_scaffold(catalog_id, *populated, labels))
+        }
+        Verdict::RepairRequired { reason } => repair_scaffold(catalog_id, reason, labels),
+        _ => None,
+    }
+}
+
+fn repair_scaffold(
+    catalog_id: &str,
+    reason: &RepairReason,
+    labels: &SourceLabels,
+) -> Option<String> {
+    match reason {
+        RepairReason::MissingRequiredMember
+        | RepairReason::DefaultRejected {
+            reason: RejectedDefault::TypeMismatch | RejectedDefault::NotEncodable,
+        } => Some(default_scaffold(catalog_id, labels)),
+        RepairReason::DefaultRejected {
+            reason: RejectedDefault::NotConstant,
+        }
+        | RepairReason::TypeChangeRequiresTransform
+        | RepairReason::UndecodableTransformInput => Some(transform_scaffold(catalog_id, labels)),
+        RepairReason::PopulatedDropRequiresRetire | RepairReason::RetireRequired { .. } => {
+            Some(retire_scaffold(catalog_id, 0, labels))
+        }
+        _ => None,
+    }
+}
+
+fn retire_scaffold(catalog_id: &str, populated: usize, labels: &SourceLabels) -> String {
+    let target = labels.scaffold_target(catalog_id);
+    format!(
+        "evolve\n    retire {target}\n    ; approve with marrow evolve apply --maintenance --approve-retire {catalog_id}:{populated} (--backup <backup-file> | --no-backup) <projectdir>\n"
+    )
+}
+
+fn default_scaffold(catalog_id: &str, labels: &SourceLabels) -> String {
+    let target = labels.scaffold_target(catalog_id);
+    format!("evolve\n    default {target} = 0\n")
+}
+
+fn transform_scaffold(catalog_id: &str, labels: &SourceLabels) -> String {
+    let target = labels.scaffold_target(catalog_id);
+    format!("evolve\n    transform {target}\n        return 0\n")
+}
+
 fn generic_blocking_report() -> BlockingReport {
     BlockingReport {
         code: "evolve.repair_required",
@@ -234,13 +413,13 @@ fn generic_blocking_report() -> BlockingReport {
 fn approval_required_message(catalog_id: &str, populated: usize, labels: &SourceLabels) -> String {
     let display_id = labels.catalog_id(catalog_id);
     format!(
-        "catalog id {display_id} retires {populated} populated record(s); rerun with --maintenance --approve-retire {catalog_id}:{populated}"
+        "catalog id {display_id} retires {populated} populated record(s); rerun with --maintenance --approve-retire {catalog_id}:{populated} --backup <backup-file> (or --no-backup to opt out)"
     )
 }
 
 /// Report a committed evolution apply: the activated epoch, the fresh commit id, and the
 /// per-kind record counts the receipt proves.
-pub(super) fn apply_success(outcome: &ApplyOutcome, format: CheckFormat) {
+pub(super) fn apply_success(outcome: &ApplyOutcome, recovery: &RecoveryPoint, format: CheckFormat) {
     let receipt = &outcome.receipt;
     let nothing_to_apply = receipt.store_commit_id_before == Some(receipt.commit_id)
         && receipt.records_backfilled == 0
@@ -252,6 +431,7 @@ pub(super) fn apply_success(outcome: &ApplyOutcome, format: CheckFormat) {
             println!("nothing to apply");
             println!("catalog epoch: {}", receipt.catalog_epoch);
             println!("commit id: {}", receipt.commit_id);
+            render_recovery_text(recovery);
         }
         CheckFormat::Text => {
             println!("applied evolution");
@@ -261,20 +441,69 @@ pub(super) fn apply_success(outcome: &ApplyOutcome, format: CheckFormat) {
             println!("records transformed: {}", receipt.records_transformed);
             println!("records retired: {}", receipt.records_retired);
             println!("indexes rebuilt: {}", receipt.indexes_rebuilt);
+            render_recovery_text(recovery);
         }
         CheckFormat::Json | CheckFormat::Jsonl => {
-            write_json(serde_json::json!({
-                "kind": "evolve_apply",
-                "status": "applied",
-                "catalog_epoch": receipt.catalog_epoch,
-                "commit_id": receipt.commit_id,
-                "records_backfilled": receipt.records_backfilled,
-                "records_transformed": receipt.records_transformed,
-                "records_retired": receipt.records_retired,
-                "indexes_rebuilt": receipt.indexes_rebuilt,
-            }));
+            let mut object = serde_json::Map::from_iter([
+                ("kind".to_string(), serde_json::json!("evolve_apply")),
+                ("status".to_string(), serde_json::json!("applied")),
+                (
+                    "catalog_epoch".to_string(),
+                    serde_json::json!(receipt.catalog_epoch),
+                ),
+                (
+                    "commit_id".to_string(),
+                    serde_json::json!(receipt.commit_id),
+                ),
+                (
+                    "records_backfilled".to_string(),
+                    serde_json::json!(receipt.records_backfilled),
+                ),
+                (
+                    "records_transformed".to_string(),
+                    serde_json::json!(receipt.records_transformed),
+                ),
+                (
+                    "records_retired".to_string(),
+                    serde_json::json!(receipt.records_retired),
+                ),
+                (
+                    "indexes_rebuilt".to_string(),
+                    serde_json::json!(receipt.indexes_rebuilt),
+                ),
+            ]);
+            if let Some(value) = recovery_json(recovery) {
+                object.insert("recovery_point".to_string(), value);
+            }
+            write_json(serde_json::Value::Object(object));
         }
     }
+}
+
+fn render_recovery_text(recovery: &RecoveryPoint) {
+    match recovery {
+        RecoveryPoint::None => {}
+        RecoveryPoint::Backup { path } => println!("recovery point: backup {path}"),
+        RecoveryPoint::NoBackup => println!("recovery point: no-backup"),
+    }
+}
+
+fn recovery_json(recovery: &RecoveryPoint) -> Option<serde_json::Value> {
+    match recovery {
+        RecoveryPoint::None => None,
+        RecoveryPoint::Backup { path } => {
+            Some(serde_json::json!({ "kind": "backup", "path": path }))
+        }
+        RecoveryPoint::NoBackup => Some(serde_json::json!({ "kind": "no_backup" })),
+    }
+}
+
+pub(super) fn requires_backup(format: CheckFormat) {
+    report_simple_error(
+        "evolve.requires_backup",
+        "destructive retire apply requires --backup <path> or explicit --no-backup",
+        format,
+    );
 }
 
 pub(super) fn apply_error(error: ApplyError, labels: &SourceLabels, format: CheckFormat) {

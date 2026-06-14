@@ -807,9 +807,8 @@ applies are excluded, because per data-evolution.md a transform may not read the
 replaces and backfill populates only records that lack the member — these writes fill absent
 cells and never delete or overwrite populated ones, so the pre-apply data survives in the store.
 The durable classification rule is recorded with the decision: the recovery-point gate binds to
-witness outcomes that delete or overwrite populated stored cells — in v0.1 exactly Retire — and
-any future evolution verb with that property joins the gated class by this rule, not by a fresh
-argument.
+witness outcomes that can delete stored cells — in v0.1 exactly Retire — and any future evolution
+verb with that property joins the gated class by this rule, not by a fresh argument.
 
 **52. Innovation ADR-amendment batch (sixteen items).** Decided: approve all sixteen items as
 one batch, no carve-outs: C44 dense-CommitId wording (storage-engine/01; code-true — commit_id =
@@ -846,21 +845,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 ## Wave 6 — Operator surface and integration (CLI; concurrent by command)
 
 Listing order is execution order. docs/cli.md integrates with the remaining operator lanes.
-
-**W6.11 → Evolve operator surface (C26 + C33; gate 51; v01-full).** After W3.5 (apply.rs
-reshaped); sequenced with W6.5 if files overlap. Owns: cmd_evolve render.rs --scaffold
-(per-obligation ready-to-paste evolve blocks through the production formatter; retire +
---approve-retire comment; default/transform skeletons with parseable placeholder holes;
-blocking-diagnostic footer pointing at --scaffold) and the recovery-point gate (--backup /
---no-backup on applies whose witness contains a Retire outcome; backup completes and validates
-before any store mutation; `evolve.requires_backup` code + its error-codes.md row, single-row
-convention; the --no-backup opt-out recorded in the apply receipt/log). Seeds: a blocked preview
-emits a scaffold that parses by construction; a Transform-only (or Default-only) apply proceeds
-without `--backup` while a Retire-bearing apply without it exits `evolve.requires_backup` with
-the store unchanged and the opt-out recorded in the apply receipt/log. Review: soundness lens
-verifies backup-before-mutation ordering; no source editing or AST write-back in --scaffold; the
-Transform/Default exclusion and the populated-cell-deletion classification rule are asserted.
-Done: the compiler writes the migration; the destructive edge is fail-closed.
 
 **W6.12 → Backup as read target (C15).** After W3.8 (formats settled) and W6.11 (shared
 cmd_evolve module). Owns: the backend-source

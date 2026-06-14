@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use marrow_check::{CheckedProgram, CheckedSavedPlace, ProjectConfig, check_project};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::tree::{DataPathSegment, StoreUid, TreeStore};
 use marrow_store::value::{Scalar, ScalarType, decode_value, encode_value};
 
 use crate::support::{TempProject, temp_project_uncommitted as temp_project, write};
@@ -34,8 +34,18 @@ pub(crate) fn commit_catalog(root: impl AsRef<Path>) -> CheckedProgram {
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 
     let store = open_native_store(root);
+    store
+        .write_store_uid(
+            &StoreUid::new("store_00000000000000000000000000000001".to_string())
+                .expect("valid fixture store uid"),
+        )
+        .expect("write fixture store uid");
     marrow_run::evolution::commit_catalog_baseline(&store, &program)
         .expect("commit catalog baseline");
+    if let Some(snapshot) = store.read_catalog_snapshot().expect("read store catalog") {
+        fs::write(root.join("marrow.catalog.json"), snapshot.to_json_pretty())
+            .expect("render catalog file");
+    }
 
     let accepted = store
         .read_catalog_snapshot()

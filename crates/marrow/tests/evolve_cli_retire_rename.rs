@@ -1,16 +1,125 @@
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+
 use marrow_store::tree::TreeStore;
 use marrow_store::value::{Scalar, ScalarType};
 
 mod support;
 mod support_evolve;
 
-use support::{marrow, write};
+use support::{TempProject, marrow, unique_temp_path, write};
 use support_evolve::{
     BLOCK_BASELINE_SOURCE, RENAME_BLOCK_DELETED_SOURCE, RENAME_BLOCK_SOURCE, RENAME_SOURCE,
     RETIRE_BASELINE_SOURCE, RETIRE_BLOCK_DELETED_SOURCE, RETIRE_BLOCK_SOURCE, RETIRE_SOURCE,
     accepted_catalog, commit_catalog, member_catalog_id, native_books_project, native_store_path,
     open_native_store, read_scalar, root_place, seed_member, seed_title_only, store_epoch,
 };
+
+struct RetireBackupFixture {
+    root: TempProject,
+    accepted_place: marrow_check::CheckedSavedPlace,
+    subtitle_id: String,
+    epoch_before: Option<u64>,
+    catalog_before: Option<String>,
+    source_before: String,
+}
+
+fn populated_retire_backup_fixture(name: &str) -> RetireBackupFixture {
+    populated_retire_backup_fixture_with_config(name, support::native_config())
+}
+
+fn populated_retire_backup_fixture_with_config(name: &str, config: &str) -> RetireBackupFixture {
+    let root = native_books_project(name, RETIRE_BASELINE_SOURCE);
+    write(&root, "marrow.json", config);
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(
+            &store,
+            &accepted_place,
+            1,
+            "subtitle",
+            Scalar::Str("sub".into()),
+        );
+    }
+    let epoch_before = store_epoch(&root);
+    let catalog_before = fs::read_to_string(root.join("marrow.catalog.json")).ok();
+    write(&root, "src/books.mw", RETIRE_SOURCE);
+    let source_before = fs::read_to_string(root.join("src/books.mw")).expect("source before");
+    RetireBackupFixture {
+        root,
+        accepted_place,
+        subtitle_id,
+        epoch_before,
+        catalog_before,
+        source_before,
+    }
+}
+
+fn assert_retire_backup_path_refused(fixture: &RetireBackupFixture, backup_path: &Path) {
+    let output = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        &format!("{}:1", fixture.subtitle_id),
+        "--backup",
+        backup_path.to_str().expect("backup path utf8"),
+        "--format",
+        "json",
+        fixture.root.to_str().unwrap(),
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let record = support::json(output.stdout);
+    assert_eq!(
+        record["code"],
+        serde_json::json!("evolve.backup_path_managed")
+    );
+    assert_ne!(
+        record["kind"],
+        serde_json::json!("evolve_apply"),
+        "managed-path refusal must not render a success receipt: {record}"
+    );
+    assert_retire_fixture_unchanged(fixture);
+}
+
+fn assert_retire_fixture_unchanged(fixture: &RetireBackupFixture) {
+    assert_eq!(
+        store_epoch(&fixture.root),
+        fixture.epoch_before,
+        "managed-path refusal must not advance the store"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("marrow.catalog.json"))
+            .ok()
+            .as_ref(),
+        fixture.catalog_before.as_ref(),
+        "managed-path refusal must not advance the catalog file"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("src/books.mw")).expect("source after"),
+        fixture.source_before,
+        "managed-path refusal must not edit source"
+    );
+    let store =
+        TreeStore::open(&native_store_path(&fixture.root)).expect("live store remains usable");
+    assert_eq!(
+        read_scalar(
+            &store,
+            &fixture.accepted_place,
+            1,
+            "subtitle",
+            ScalarType::Str,
+        ),
+        Some(Scalar::Str("sub".into())),
+        "retired data survives the managed-path refusal"
+    );
+}
 
 #[test]
 fn evolve_apply_accepts_two_repeated_approve_retire_flags() {
@@ -69,6 +178,7 @@ fn evolve_apply_accepts_two_repeated_approve_retire_flags() {
         &format!("{subtitle_id}:1"),
         "--approve-retire",
         &format!("{notes_id}:1"),
+        "--no-backup",
         "--format",
         "json",
         root.to_str().unwrap(),
@@ -154,6 +264,7 @@ fn evolve_apply_counts_and_deletes_a_retired_member_in_each_owning_root() {
         "--maintenance",
         "--approve-retire",
         &format!("{subtitle_id}:1"),
+        "--no-backup",
         "--format",
         "json",
         root.to_str().unwrap(),
@@ -166,6 +277,517 @@ fn evolve_apply_counts_and_deletes_a_retired_member_in_each_owning_root() {
         read_scalar(&store, &library_place, 2, "subtitle", ScalarType::Str),
         None,
         "the retired cell in the second owning root was deleted"
+    );
+}
+
+#[test]
+fn retire_apply_requires_backup_or_explicit_opt_out_before_mutation() {
+    let root = native_books_project(
+        "evolve-apply-retire-requires-backup",
+        RETIRE_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(
+            &store,
+            &accepted_place,
+            1,
+            "subtitle",
+            Scalar::Str("sub".into()),
+        );
+    }
+    let epoch_before = store_epoch(&root);
+    let catalog_path = root.join("marrow.catalog.json");
+    let catalog_before = fs::read_to_string(&catalog_path).ok();
+    write(&root, "src/books.mw", RETIRE_SOURCE);
+
+    let output = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        &format!("{subtitle_id}:1"),
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let record = support::json(output.stdout);
+    assert_eq!(record["code"], serde_json::json!("evolve.requires_backup"));
+    assert_eq!(
+        store_epoch(&root),
+        epoch_before,
+        "backup refusal must not advance the store"
+    );
+    assert_eq!(
+        fs::read_to_string(&catalog_path).ok(),
+        catalog_before,
+        "backup refusal must not advance the catalog file"
+    );
+    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    assert_eq!(
+        read_scalar(&store, &accepted_place, 1, "subtitle", ScalarType::Str),
+        Some(Scalar::Str("sub".into())),
+        "retired data survives the fail-closed refusal"
+    );
+}
+
+#[test]
+fn retire_apply_requires_recovery_choice_for_zero_count_retire() {
+    let root = native_books_project(
+        "evolve-apply-retire-zero-count-requires-backup",
+        RETIRE_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+    }
+    let epoch_before = store_epoch(&root);
+    let catalog_path = root.join("marrow.catalog.json");
+    let catalog_before = fs::read_to_string(&catalog_path).ok();
+    write(&root, "src/books.mw", RETIRE_SOURCE);
+
+    let output = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        &format!("{subtitle_id}:0"),
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let record = support::json(output.stdout);
+    assert_eq!(record["code"], serde_json::json!("evolve.requires_backup"));
+    assert!(
+        record.get("recovery_point").is_none(),
+        "a recovery refusal is not an apply receipt: {record}"
+    );
+    assert_eq!(
+        store_epoch(&root),
+        epoch_before,
+        "zero-count retire backup refusal must not advance the store"
+    );
+    assert_eq!(
+        fs::read_to_string(&catalog_path).ok(),
+        catalog_before,
+        "zero-count retire backup refusal must not advance the catalog file"
+    );
+
+    let apply = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        &format!("{subtitle_id}:0"),
+        "--no-backup",
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
+
+    assert_eq!(apply.status.code(), Some(0), "{apply:?}");
+    let receipt = support::json(apply.stdout);
+    assert_eq!(receipt["records_retired"], serde_json::json!(0));
+    assert_eq!(
+        receipt["recovery_point"],
+        serde_json::json!({ "kind": "no_backup" }),
+        "the zero-count retire still records the explicit recovery opt-out: {receipt}"
+    );
+}
+
+#[test]
+fn retire_apply_no_backup_opt_out_is_recorded_in_json_receipt() {
+    let root = native_books_project("evolve-apply-retire-no-backup", RETIRE_BASELINE_SOURCE);
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(
+            &store,
+            &accepted_place,
+            1,
+            "subtitle",
+            Scalar::Str("sub".into()),
+        );
+    }
+    write(&root, "src/books.mw", RETIRE_SOURCE);
+
+    let output = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        &format!("{subtitle_id}:1"),
+        "--no-backup",
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let record = support::json(output.stdout);
+    assert_eq!(record["records_retired"], serde_json::json!(1));
+    assert_eq!(
+        record["recovery_point"],
+        serde_json::json!({ "kind": "no_backup" }),
+        "the explicit opt-out is part of the rendered receipt: {record}"
+    );
+    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    assert_eq!(
+        read_scalar(&store, &accepted_place, 1, "subtitle", ScalarType::Str),
+        None,
+        "explicit opt-out permits the approved retire"
+    );
+}
+
+#[test]
+fn retire_apply_refuses_backup_path_that_is_live_store_file_before_mutation() {
+    let root = native_books_project(
+        "evolve-apply-retire-backup-live-store-refused",
+        RETIRE_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(
+            &store,
+            &accepted_place,
+            1,
+            "subtitle",
+            Scalar::Str("sub".into()),
+        );
+    }
+    let epoch_before = store_epoch(&root);
+    let catalog_path = root.join("marrow.catalog.json");
+    let catalog_before = fs::read_to_string(&catalog_path).ok();
+    write(&root, "src/books.mw", RETIRE_SOURCE);
+    let backup_path = native_store_path(&root);
+
+    let output = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        &format!("{subtitle_id}:1"),
+        "--backup",
+        backup_path.to_str().expect("backup path utf8"),
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let record = support::json(output.stdout);
+    assert_eq!(
+        record["code"],
+        serde_json::json!("evolve.backup_path_managed")
+    );
+    assert_ne!(
+        record["kind"],
+        serde_json::json!("evolve_apply"),
+        "managed-path refusal must not render a success receipt: {record}"
+    );
+    assert_eq!(
+        store_epoch(&root),
+        epoch_before,
+        "managed-path refusal must not advance the store"
+    );
+    assert_eq!(
+        fs::read_to_string(&catalog_path).ok(),
+        catalog_before,
+        "managed-path refusal must not advance the catalog file"
+    );
+    let store = TreeStore::open(&backup_path).expect("live store remains usable");
+    assert_eq!(
+        read_scalar(&store, &accepted_place, 1, "subtitle", ScalarType::Str),
+        Some(Scalar::Str("sub".into())),
+        "retired data survives the managed-path refusal"
+    );
+}
+
+#[test]
+fn retire_apply_refuses_backup_path_that_is_committed_catalog_artifact_before_mutation() {
+    let root = native_books_project(
+        "evolve-apply-retire-backup-catalog-refused",
+        RETIRE_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(
+            &store,
+            &accepted_place,
+            1,
+            "subtitle",
+            Scalar::Str("sub".into()),
+        );
+    }
+    let epoch_before = store_epoch(&root);
+    let catalog_path = root.join("marrow.catalog.json");
+    let catalog_before = fs::read_to_string(&catalog_path).expect("catalog artifact before");
+    write(&root, "src/books.mw", RETIRE_SOURCE);
+
+    let output = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        &format!("{subtitle_id}:1"),
+        "--backup",
+        catalog_path.to_str().expect("backup path utf8"),
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let record = support::json(output.stdout);
+    assert_eq!(
+        record["code"],
+        serde_json::json!("evolve.backup_path_managed")
+    );
+    assert_eq!(
+        store_epoch(&root),
+        epoch_before,
+        "catalog-path refusal must not advance the store"
+    );
+    assert_eq!(
+        fs::read_to_string(&catalog_path).expect("catalog artifact after"),
+        catalog_before,
+        "catalog-path refusal must not replace the committed catalog artifact"
+    );
+    let store = TreeStore::open(&native_store_path(&root)).expect("live store remains usable");
+    assert_eq!(
+        read_scalar(&store, &accepted_place, 1, "subtitle", ScalarType::Str),
+        Some(Scalar::Str("sub".into())),
+        "retired data survives the managed-path refusal"
+    );
+}
+
+#[test]
+fn retire_apply_refuses_backup_path_under_source_root_before_mutation() {
+    let fixture = populated_retire_backup_fixture("evolve-apply-retire-backup-source-refused");
+    let backup_path = fixture.root.join("src/books.mw");
+
+    assert_retire_backup_path_refused(&fixture, &backup_path);
+}
+
+#[cfg(unix)]
+#[test]
+fn retire_apply_refuses_backup_symlink_inside_source_root_before_mutation() {
+    let fixture =
+        populated_retire_backup_fixture("evolve-apply-retire-backup-source-symlink-refused");
+    let outside_target = unique_temp_path("evolve-backup-symlink-target.mwbackup");
+    fs::write(&outside_target, b"outside before").expect("outside symlink target");
+    let backup_path = fixture.root.join("src/recovery-link.mwbackup");
+    std::os::unix::fs::symlink(&outside_target, &backup_path).expect("backup symlink");
+
+    assert_retire_backup_path_refused(&fixture, &backup_path);
+    assert!(
+        fs::symlink_metadata(&backup_path)
+            .expect("backup symlink metadata")
+            .file_type()
+            .is_symlink(),
+        "managed-path refusal must not replace the symlink inside source"
+    );
+    assert_eq!(
+        fs::read(&outside_target).expect("outside target after"),
+        b"outside before",
+        "managed-path refusal must not overwrite through the symlink"
+    );
+}
+
+#[test]
+fn retire_apply_refuses_backup_path_that_is_project_config_before_mutation() {
+    let fixture = populated_retire_backup_fixture("evolve-apply-retire-backup-config-refused");
+    let backup_path = fixture.root.join("marrow.json");
+    let config_before = fs::read_to_string(&backup_path).expect("config before");
+
+    assert_retire_backup_path_refused(&fixture, &backup_path);
+    assert_eq!(
+        fs::read_to_string(&backup_path).expect("config after"),
+        config_before,
+        "managed-path refusal must not replace marrow.json"
+    );
+}
+
+#[test]
+fn retire_apply_refuses_backup_path_under_configured_test_path_before_mutation() {
+    let fixture = populated_retire_backup_fixture_with_config(
+        "evolve-apply-retire-backup-test-refused",
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "tests": ["tests"] }"#,
+    );
+    let backup_path = fixture.root.join("tests/smoke.mw");
+    write(&fixture.root, "tests/smoke.mw", "fn smoke()\n    return\n");
+    let test_before = fs::read_to_string(&backup_path).expect("test before");
+
+    assert_retire_backup_path_refused(&fixture, &backup_path);
+    assert_eq!(
+        fs::read_to_string(&backup_path).expect("test after"),
+        test_before,
+        "managed-path refusal must not replace configured tests"
+    );
+}
+
+#[test]
+fn retire_apply_refuses_backup_path_under_native_data_dir_before_mutation() {
+    let fixture = populated_retire_backup_fixture("evolve-apply-retire-backup-data-dir-refused");
+    let backup_path = fixture.root.join(".data/recovery.mwbackup");
+    assert!(
+        !backup_path.exists(),
+        "test expects a missing backup target"
+    );
+
+    assert_retire_backup_path_refused(&fixture, &backup_path);
+    assert!(
+        !backup_path.exists(),
+        "managed-path refusal must not create a backup inside the native data dir"
+    );
+}
+
+#[test]
+fn retire_apply_backup_writes_valid_archive_then_applies() {
+    let root = native_books_project("evolve-apply-retire-with-backup", RETIRE_BASELINE_SOURCE);
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(
+            &store,
+            &accepted_place,
+            1,
+            "subtitle",
+            Scalar::Str("sub".into()),
+        );
+    }
+    let catalog_before =
+        fs::read_to_string(root.join("marrow.catalog.json")).expect("read catalog before");
+    write(&root, "src/books.mw", RETIRE_SOURCE);
+    let backup_path = root.join("before-retire.mwbackup");
+    let backup_arg = backup_path.to_str().expect("backup path utf8");
+
+    let output = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        &format!("{subtitle_id}:1"),
+        "--backup",
+        backup_arg,
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let record = support::json(output.stdout);
+    assert_eq!(record["records_retired"], serde_json::json!(1));
+    assert_eq!(
+        record["recovery_point"],
+        serde_json::json!({ "kind": "backup", "path": backup_arg }),
+        "the rendered receipt records the backup path: {record}"
+    );
+    assert!(backup_path.exists(), "backup artifact is published");
+    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    assert_eq!(
+        read_scalar(&store, &accepted_place, 1, "subtitle", ScalarType::Str),
+        None,
+        "retire applies after the backup is written"
+    );
+
+    let restore_root = native_books_project(
+        "evolve-apply-retire-backup-restores",
+        RETIRE_BASELINE_SOURCE,
+    );
+    write(&restore_root, "marrow.catalog.json", &catalog_before);
+
+    let restore = marrow(&["restore", restore_root.to_str().unwrap(), backup_arg]);
+
+    assert_eq!(restore.status.code(), Some(0), "restore: {restore:?}");
+    let restored = TreeStore::open(&native_store_path(&restore_root)).expect("open restored store");
+    assert_eq!(
+        read_scalar(&restored, &accepted_place, 1, "subtitle", ScalarType::Str),
+        Some(Scalar::Str("sub".into())),
+        "the recovery archive preserves the pre-retire data"
+    );
+}
+
+#[test]
+fn retire_apply_backup_failure_exits_before_mutating_store() {
+    let root = native_books_project("evolve-apply-retire-backup-fails", RETIRE_BASELINE_SOURCE);
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(
+            &store,
+            &accepted_place,
+            1,
+            "subtitle",
+            Scalar::Str("sub".into()),
+        );
+    }
+    let epoch_before = store_epoch(&root);
+    write(&root, "src/books.mw", RETIRE_SOURCE);
+    let backup_path = unique_temp_path("evolve-backup-failure.mwbackup");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .env("MARROW_TEST_BACKUP_FAIL_AFTER_BYTES", "0")
+        .args([
+            "evolve",
+            "apply",
+            "--maintenance",
+            "--approve-retire",
+            &format!("{subtitle_id}:1"),
+            "--backup",
+            backup_path.to_str().expect("backup path utf8"),
+            "--format",
+            "json",
+            root.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run marrow");
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let record = support::json(output.stdout);
+    assert_eq!(record["code"], serde_json::json!("io.write"));
+    assert!(
+        !backup_path.exists(),
+        "failed backup must not publish the target artifact"
+    );
+    assert_eq!(
+        store_epoch(&root),
+        epoch_before,
+        "apply must not advance the store after a backup write failure"
+    );
+    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    assert_eq!(
+        read_scalar(&store, &accepted_place, 1, "subtitle", ScalarType::Str),
+        Some(Scalar::Str("sub".into())),
+        "retired cell survives backup failure"
     );
 }
 
@@ -260,6 +882,7 @@ fn evolve_apply_advances_accepted_catalog_in_lockstep_for_retire() {
         "--maintenance",
         "--approve-retire",
         &format!("{subtitle_id}:1"),
+        "--no-backup",
         root.to_str().unwrap(),
     ]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -437,6 +1060,7 @@ fn run_succeeds_after_retire_apply_with_block_present_or_deleted() {
         "--maintenance",
         "--approve-retire",
         &format!("{subtitle_id}:1"),
+        "--no-backup",
         root.to_str().unwrap(),
     ]);
     assert_eq!(apply.status.code(), Some(0), "retire apply: {apply:?}");

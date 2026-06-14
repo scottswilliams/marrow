@@ -879,7 +879,10 @@ compatibly widened in the members it reads.
 The intent is checked against the source and the accepted catalog; it does not
 itself rewrite stored data. A change that backfills, transforms, or destructively
 drops stored data is applied explicitly with `evolve apply`; a change that mutates
-no stored record is applied automatically when the project next runs.
+no stored record is applied automatically when the project next runs. An explicit
+Retire-bearing apply requires a recovery choice: `--backup <path>` writes and
+validates a typed backup before mutation, while `--no-backup` records the
+operator's opt-out in the apply receipt.
 
 ## Passing Resource Values
 

@@ -24,7 +24,9 @@ Marrow
 Usage:
   marrow init <projectdir>
   marrow check [--format text|json|jsonl] <projectdir>
-  marrow evolve <preview|apply> [--format text|json|jsonl] <projectdir>
+  marrow evolve preview [--scaffold] [--format text|json|jsonl] <projectdir>
+  marrow evolve apply [--maintenance] [--approve-retire <catalog-id>:<count>]
+    [--backup <path> | --no-backup] [--format text|json|jsonl] <projectdir>
   marrow fmt [--check | --write] <file.mw | projectdir>
   marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] [--format text|json] <projectdir>
   marrow test [--trace] [--format text|json|jsonl] <projectdir>

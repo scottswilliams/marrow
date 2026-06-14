@@ -214,12 +214,20 @@ fn evolve_preview_reports_destructive_approval_requirement() {
         "{stderr}"
     );
     assert!(
+        stderr.contains("--backup <backup-file>") && stderr.contains("--no-backup"),
+        "retire approval guidance must include the recovery choice: {stderr}"
+    );
+    assert!(
         !String::from_utf8(text.stdout)
             .expect("stdout")
             .contains("evolve.approval_required"),
         "the blocking report belongs on stderr, not stdout"
     );
     assert!(stderr.contains(APPROVE_RETIRE_HINT), "{stderr}");
+    assert!(
+        stderr.contains("marrow evolve preview --scaffold"),
+        "blocked preview should point at the scaffold command: {stderr}"
+    );
 
     let json = marrow(&[
         "evolve",
@@ -245,4 +253,96 @@ fn evolve_preview_reports_destructive_approval_requirement() {
         "{report:#?}"
     );
     assert_eq!(report["data"]["populated"], serde_json::json!(1));
+}
+
+#[test]
+fn evolve_preview_scaffold_emits_parseable_formatted_evolve_blocks() {
+    let root = native_books_project(
+        "evolve-preview-scaffold",
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   subtitle: string\n\
+         \x20   required price: int\n\
+         store ^books(id: int): Book\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books");
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(
+            &store,
+            &accepted_place,
+            1,
+            "subtitle",
+            Scalar::Str("Appendix".into()),
+        );
+        seed_member(&store, &accepted_place, 1, "price", Scalar::Int(3));
+    }
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required pages: int\n\
+         \x20   required price: string\n\
+         store ^books(id: int): Book\n\
+         evolve\n\
+         \x20   retire Book.subtitle\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+
+    let output = marrow(&["evolve", "preview", "--scaffold", root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let scaffold = String::from_utf8(output.stdout).expect("scaffold utf8");
+    let parsed = marrow_syntax::parse_source(&scaffold);
+    assert!(
+        !parsed.has_errors(),
+        "scaffold must parse through the production parser: {:#?}\n{scaffold}",
+        parsed.diagnostics
+    );
+    assert_eq!(
+        scaffold,
+        marrow_syntax::format_source(&scaffold),
+        "scaffold should already be in production formatter shape"
+    );
+    assert!(
+        scaffold.contains("evolve\n    retire Book.subtitle"),
+        "retire block should be ready to paste: {scaffold}"
+    );
+    assert!(
+        scaffold.contains(&format!(
+            "; approve with marrow evolve apply --maintenance --approve-retire {subtitle_id}:1 (--backup <backup-file> | --no-backup)"
+        )),
+        "retire scaffold should name the exact approval count and recovery choice: {scaffold}"
+    );
+    assert!(
+        scaffold.contains("evolve\n    default Book.pages = 0"),
+        "missing required member should get a parseable default skeleton: {scaffold}"
+    );
+    assert!(
+        scaffold.contains("evolve\n    transform Book.price\n        return 0"),
+        "type-change repair should get a parseable transform skeleton: {scaffold}"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("src/books.mw")).expect("read source"),
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required pages: int\n\
+         \x20   required price: string\n\
+         store ^books(id: int): Book\n\
+         evolve\n\
+         \x20   retire Book.subtitle\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+        "--scaffold must not edit source"
+    );
 }

@@ -6,7 +6,9 @@ database.
 ```
 marrow init <projectdir>
 marrow check [--format text|json|jsonl] <projectdir>
-marrow evolve <preview|apply> [--format text|json|jsonl] <projectdir>
+marrow evolve preview [--scaffold] [--format text|json|jsonl] <projectdir>
+marrow evolve apply [--maintenance] [--approve-retire <catalog-id>:<count>] \
+  [--backup <path> | --no-backup] [--format text|json|jsonl] <projectdir>
 marrow fmt [--check | --write] <file.mw | projectdir>
 marrow run [--entry <entry>] [--arg name=value]... [--maintenance] \
   [--trace] [--dry-run] [--format text|json] <projectdir>
@@ -137,14 +139,17 @@ $ echo $?
 ## `marrow evolve`
 
 ```
-marrow evolve preview [--format text|json|jsonl] <projectdir>
+marrow evolve preview [--scaffold] [--format text|json|jsonl] <projectdir>
 marrow evolve apply [--maintenance] [--approve-retire <catalog-id>:<count>] \
-  [--format text|json|jsonl] <projectdir>
+  [--backup <path> | --no-backup] [--format text|json|jsonl] <projectdir>
 ```
 
 `evolve preview` opens the configured store read-only, discharges source,
 accepted catalog metadata, store snapshot, and engine metadata into an exact
-witness, then reports the counts and blocking diagnostics.
+witness, then reports the counts and blocking diagnostics. With `--scaffold`,
+text output is formatter-produced `.mw` source containing one ready-to-paste
+`evolve` block per repairable obligation; it never edits project source. JSON
+and JSONL keep the preview envelope and include the scaffold string.
 
 `evolve apply` recomputes that preview witness over the live project and store,
 requires an exact match, checks the activation window, and commits the data work
@@ -153,11 +158,17 @@ baseline durable identity first when the project has none yet, then applies the
 evolution against the accepted catalog. The advanced accepted catalog rows commit
 in that same store transaction as the data work and the slim commit stamp, so
 the catalog never advances without the data behind it; after that commit, the
-CLI renders `marrow.catalog.json` from the committed store snapshot. The command
-output still renders receipt counts for defaults, transforms, retires, and
-rebuilt indexes, but those counts are not persisted in commit metadata.
-Destructive retire needs `--maintenance` and an approval whose catalog ID and
-populated count match the preview.
+CLI renders `marrow.catalog.json` from the committed store snapshot. Any
+Retire-bearing apply also requires either `--backup <path>` or `--no-backup`: a
+backup is written through the typed atomic backup path and validated before
+apply mutates the store, while `--no-backup` records the explicit opt-out in the
+rendered receipt. Evolve refuses backup paths that resolve to managed project
+artifacts or subtrees: `marrow.json`, `marrow.catalog.json`, source roots, test
+paths, and the native data directory/store file. The command output still
+renders receipt counts for defaults, transforms, retires, rebuilt indexes, and
+recovery-point choice, but those counts are not persisted in commit metadata.
+Destructive retire also needs `--maintenance` and an approval whose catalog ID
+and populated count match the preview.
 
 ---
 

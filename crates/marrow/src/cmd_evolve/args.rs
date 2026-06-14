@@ -10,6 +10,7 @@ pub(super) enum ParseStop {
 
 pub(super) struct PreviewArgs {
     pub(super) format: CheckFormat,
+    pub(super) scaffold: bool,
     pub(super) dir: String,
 }
 
@@ -17,6 +18,8 @@ pub(super) struct ApplyArgs {
     pub(super) format: CheckFormat,
     pub(super) maintenance: bool,
     pub(super) approval: Option<Approval>,
+    pub(super) backup: Option<String>,
+    pub(super) no_backup: bool,
     pub(super) dir: String,
 }
 
@@ -24,6 +27,7 @@ pub(super) fn preview_args(args: &[String]) -> Result<PreviewArgs, ParseStop> {
     let parsed = common(args, Command::Preview)?;
     Ok(PreviewArgs {
         format: parsed.format,
+        scaffold: parsed.scaffold,
         dir: parsed.dir,
     })
 }
@@ -34,6 +38,8 @@ pub(super) fn apply_args(args: &[String]) -> Result<ApplyArgs, ParseStop> {
         format: parsed.format,
         maintenance: parsed.maintenance,
         approval: parsed.approval,
+        backup: parsed.backup,
+        no_backup: parsed.no_backup,
         dir: parsed.dir,
     })
 }
@@ -43,6 +49,9 @@ struct CommonArgs {
     dir: String,
     maintenance: bool,
     approval: Option<Approval>,
+    scaffold: bool,
+    backup: Option<String>,
+    no_backup: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -64,6 +73,9 @@ fn common(args: &[String], command: Command) -> Result<CommonArgs, ParseStop> {
     let mut format = CheckFormat::Text;
     let mut saw_format = false;
     let mut maintenance = false;
+    let mut scaffold = false;
+    let mut backup = None;
+    let mut no_backup = false;
     let mut retires: Vec<(CatalogId, usize)> = Vec::new();
     let mut dir = None;
     let mut index = 0;
@@ -72,6 +84,25 @@ fn common(args: &[String], command: Command) -> Result<CommonArgs, ParseStop> {
             (_, "--format") => {
                 crate::parse_format_flag(args, &mut index, &mut saw_format, &mut format)
                     .map_err(|_| ParseStop::Usage)?;
+            }
+            (Command::Preview, "--scaffold") => scaffold = true,
+            (Command::Apply, "--backup") => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    eprintln!("missing value for --backup");
+                    return Err(ParseStop::Usage);
+                };
+                if backup.replace(value.to_string()).is_some() {
+                    eprintln!("duplicate --backup");
+                    return Err(ParseStop::Usage);
+                }
+            }
+            (Command::Apply, "--no-backup") => {
+                if no_backup {
+                    eprintln!("duplicate --no-backup");
+                    return Err(ParseStop::Usage);
+                }
+                no_backup = true;
             }
             (Command::Apply, "--maintenance") => maintenance = true,
             (Command::Apply, "--approve-retire") => {
@@ -85,6 +116,17 @@ fn common(args: &[String], command: Command) -> Result<CommonArgs, ParseStop> {
             (Command::Preview, "--maintenance" | "--approve-retire") => {
                 eprintln!(
                     "{} does not accept apply-only approval flags",
+                    command.name()
+                );
+                return Err(ParseStop::Usage);
+            }
+            (Command::Preview, "--backup" | "--no-backup") => {
+                eprintln!("{} does not accept apply-only backup flags", command.name());
+                return Err(ParseStop::Usage);
+            }
+            (Command::Apply, "--scaffold") => {
+                eprintln!(
+                    "{} does not accept preview-only scaffold flags",
                     command.name()
                 );
                 return Err(ParseStop::Usage);
@@ -110,11 +152,18 @@ fn common(args: &[String], command: Command) -> Result<CommonArgs, ParseStop> {
         eprintln!("missing project directory");
         return Err(ParseStop::Usage);
     };
+    if backup.is_some() && no_backup {
+        eprintln!("--backup and --no-backup are mutually exclusive");
+        return Err(ParseStop::Usage);
+    }
     Ok(CommonArgs {
         format,
         dir,
         maintenance,
         approval: build_approval(retires),
+        scaffold,
+        backup,
+        no_backup,
     })
 }
 

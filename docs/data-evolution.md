@@ -392,8 +392,8 @@ blocks `evolve preview` and `evolve apply`.
 There is no dedicated `marrow repair` command. Repair is a maintenance run of
 your own code, verified before and after with `marrow data integrity`.
 
-The recovery-point gate binds to witness outcomes that delete or overwrite
-populated stored cells; in v0.1 exactly Retire.
+The recovery-point gate binds to Retire-bearing apply witnesses. Operators must
+choose a validated backup or an explicit no-backup receipt before mutation.
 
 ## Maintenance Migration And Repair, Worked
 

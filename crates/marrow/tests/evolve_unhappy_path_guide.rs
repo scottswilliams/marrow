@@ -134,6 +134,7 @@ fn worked_leaf_retype_migrates_then_retires_old_leaf_bytes() {
         "--maintenance",
         "--approve-retire",
         &format!("{old_pages_id}:1"),
+        "--no-backup",
         "--format",
         "json",
         dir,

@@ -347,6 +347,8 @@ Source-native data-evolution preview/apply faults.
 | `evolve.maintenance_required` | A destructive retire was reached without the maintenance gate. |
 | `evolve.approval_required` | A destructive retire needs an approval naming the catalog ID and populated count from preview. |
 | `evolve.approval_mismatch` | The supplied destructive approval did not match the exact preview witness. |
+| `evolve.requires_backup` | A Retire-bearing apply did not name `--backup <path>` or explicit `--no-backup`. Apply refuses before approval checks or evolution work. |
+| `evolve.backup_path_managed` | `evolve apply --backup` named a managed project artifact or subtree: `marrow.json`, `marrow.catalog.json`, source roots, test paths, or the native data directory/store file. Apply refuses before backup creation or evolution work. |
 | `evolve.transform_faulted` | A checked transform body faulted while running against real data, so apply rolled back. |
 
 ### `test.*` — kind `tooling`

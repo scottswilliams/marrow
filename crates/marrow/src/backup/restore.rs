@@ -87,6 +87,16 @@ pub(crate) fn read_backup_prologue(input: &mut impl Read) -> Result<BackupProlog
     Ok(BackupPrologue { manifest, section })
 }
 
+/// Validate a backup archive without replaying it into a store. This is the same
+/// manifest, catalog-section, state-digest, archive-checksum, and trailing-byte
+/// contract restore enforces before commit, used by writers that need proof the
+/// artifact is readable before continuing with another mutation.
+pub(crate) fn validate_backup_archive(input: &mut impl Read) -> Result<(), BackupError> {
+    let prologue = read_backup_prologue(input)?;
+    let BackupPrologue { manifest, section } = prologue;
+    validate_archive_stream(&manifest, &section, input)
+}
+
 /// Restore the backup whose `prologue` was already read from `input` into `store`.
 /// The target must be empty unless counted replace mode was requested. `program`
 /// must be bound to the backup's catalog (see [`BackupPrologue::catalog`]). The
@@ -320,26 +330,7 @@ fn replay(
             .expect("digest sink is infallible");
         restore_cell(store, &cell)?;
     }
-    if state_digest.finish() != manifest.state_digest {
-        return Err(BackupError::corrupt(
-            BackupCorruptProblem::StateDigestMismatch,
-            "backup state digest does not match its data stream".to_string(),
-        ));
-    }
-    if checksum != manifest.archive_checksum {
-        return Err(BackupError::corrupt(
-            BackupCorruptProblem::ChecksumMismatch,
-            "backup integrity checksum does not match its manifest".to_string(),
-        ));
-    }
-    // Count and checksum matched, so any byte past the last cell is junk the backup
-    // did not write: a truncated, doubled, or tampered file.
-    if has_trailing_bytes(input)? {
-        return Err(BackupError::corrupt(
-            BackupCorruptProblem::TrailingBytes,
-            "backup carries trailing bytes after its cell stream".to_string(),
-        ));
-    }
+    validate_stream_integrity(manifest, state_digest.finish(), checksum, input)?;
 
     // Indexes are derived, so rebuild them from the replayed records rather than
     // trusting bytes that could disagree. The rebuild runs inside this open
@@ -362,6 +353,51 @@ fn replay(
         record_count: manifest.record_count,
         receipt: RestoreReceipt::EmptyOnly,
     })
+}
+
+fn validate_archive_stream(
+    manifest: &BackupManifest,
+    section: &CatalogSection,
+    input: &mut impl Read,
+) -> Result<(), BackupError> {
+    let mut checksum = checksum_manifest(CHECKSUM_SEED, manifest);
+    checksum = checksum_catalog_section(checksum, &section.bytes);
+    let mut state_digest = Sha256Digest::new();
+    for _ in 0..manifest.record_count {
+        let cell = archive::read_cell(input)?;
+        checksum = checksum_cell(checksum, cell.as_ref());
+        cell.as_ref()
+            .write_framed(&mut DigestSink(&mut state_digest))
+            .expect("digest sink is infallible");
+    }
+    validate_stream_integrity(manifest, state_digest.finish(), checksum, input)
+}
+
+fn validate_stream_integrity(
+    manifest: &BackupManifest,
+    state_digest: String,
+    checksum: u64,
+    input: &mut impl Read,
+) -> Result<(), BackupError> {
+    if state_digest != manifest.state_digest {
+        return Err(BackupError::corrupt(
+            BackupCorruptProblem::StateDigestMismatch,
+            "backup state digest does not match its data stream".to_string(),
+        ));
+    }
+    if checksum != manifest.archive_checksum {
+        return Err(BackupError::corrupt(
+            BackupCorruptProblem::ChecksumMismatch,
+            "backup integrity checksum does not match its manifest".to_string(),
+        ));
+    }
+    if has_trailing_bytes(input)? {
+        return Err(BackupError::corrupt(
+            BackupCorruptProblem::TrailingBytes,
+            "backup carries trailing bytes after its cell stream".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 struct DigestSink<'a>(&'a mut Sha256Digest);

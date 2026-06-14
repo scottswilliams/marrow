@@ -27,13 +27,15 @@
 //! here; the two operations live in their own modules.
 
 mod archive;
+mod artifact;
 mod create;
 mod restore;
 
+pub(crate) use artifact::create_backup_artifact;
 pub(crate) use create::create_backup;
 pub(crate) use restore::{
     BackupPrologue, RestoreReceipt, RestoreReport, RestoreTargetMode, read_backup_prologue,
-    restore_backup_with_prologue,
+    restore_backup_with_prologue, validate_backup_archive,
 };
 
 use marrow_run::Nondeterminism;
