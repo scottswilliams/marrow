@@ -151,6 +151,84 @@ fn unique_index_presence_and_count_follow_the_lookup_value() {
 }
 
 #[test]
+fn unique_index_conflict_message_includes_index_name_and_key_preview() {
+    let program = checked_program(BOOK_ISBN);
+    let store = TreeStore::memory();
+    run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::register",
+            Value::Int(42),
+            Value::Str("Mort".into()),
+            Value::Str("978-0".into()),
+        ),
+    )
+    .expect("register first book");
+
+    let error = run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::register",
+            Value::Int(43),
+            Value::Str("Pyramids".into()),
+            Value::Str("978-0".into()),
+        ),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "write.unique_conflict");
+    assert_eq!(
+        error.message,
+        "unique index `byIsbn` already holds key(s) (\"978-0\") for another identity"
+    );
+}
+
+#[test]
+fn unique_index_conflict_key_previews_are_bounded() {
+    let program = checked_program(BOOK_ISBN);
+    let store = TreeStore::memory();
+    let mut isbn = "978-".to_string();
+    isbn.push_str(&"x".repeat(96));
+    isbn.push_str("-tail-marker");
+    run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::register",
+            Value::Int(42),
+            Value::Str("Mort".into()),
+            Value::Str(isbn.clone()),
+        ),
+    )
+    .expect("register first book");
+
+    let error = run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::register",
+            Value::Int(43),
+            Value::Str("Pyramids".into()),
+            Value::Str(isbn),
+        ),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "write.unique_conflict");
+    assert!(error.message.contains("unique index `byIsbn`"));
+    assert!(
+        error.message.contains("(\"978-"),
+        "message must include the bounded key prefix: {}",
+        error.message
+    );
+    assert!(
+        !error.message.contains("tail-marker"),
+        "message must not contain the unbounded key tail: {}",
+        error.message
+    );
+}
+
+#[test]
 fn unique_index_lookup_iteration_yields_the_stored_identity() {
     let program = checked_program(BOOK_ISBN);
     let store = TreeStore::memory();

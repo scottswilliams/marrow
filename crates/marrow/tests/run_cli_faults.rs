@@ -103,6 +103,9 @@ fn an_uncaught_unique_conflict_surfaces_its_write_code() {
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert_eq!(parse_fault(&output.stderr).code, "write.unique_conflict");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("unique index `byIsbn`"), "{stderr}");
+    assert!(stderr.contains("(\"978-0\")"), "{stderr}");
 }
 
 #[test]

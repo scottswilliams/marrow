@@ -15,7 +15,7 @@ use crate::stdlib::{
     eval_bytes_arg, eval_date_arg, eval_decimal_arg, eval_duration_arg, eval_instant_arg,
     eval_text, int_modulo, int_remainder,
 };
-use crate::value::{Value, canonical_scalar_text, saved_value_to_value};
+use crate::value::{Value, canonical_scalar_text, diagnostic_text_preview, saved_value_to_value};
 
 pub(crate) fn eval_std(
     module: &str,
@@ -602,22 +602,34 @@ fn eval_clock_std(
             span,
         ),
         "formatDate" => format_scalar(SavedValue::Date(eval_date_arg(unary()?, env, span)?), span),
-        "parseDate" => parse_clock(
-            &eval_text(unary()?, env, span)?,
-            ScalarType::Date,
-            "parseDate: invalid date text",
-            span,
-        ),
+        "parseDate" => {
+            let text = eval_text(unary()?, env, span)?;
+            parse_clock(
+                &text,
+                ScalarType::Date,
+                &format!(
+                    "parseDate: invalid date text {}",
+                    diagnostic_text_preview(&text)
+                ),
+                span,
+            )
+        }
         "formatDuration" => format_scalar(
             SavedValue::Duration(eval_duration_arg(unary()?, env, span)?),
             span,
         ),
-        "parseDuration" => parse_clock(
-            &eval_text(unary()?, env, span)?,
-            ScalarType::Duration,
-            "parseDuration: invalid duration text",
-            span,
-        ),
+        "parseDuration" => {
+            let text = eval_text(unary()?, env, span)?;
+            parse_clock(
+                &text,
+                ScalarType::Duration,
+                &format!(
+                    "parseDuration: invalid duration text {}",
+                    diagnostic_text_preview(&text)
+                ),
+                span,
+            )
+        }
         "addDays" => eval_clock_add_days(args, span, env),
         "daysBetween" => eval_clock_days_between(args, span, env),
         "year" | "month" | "day" => eval_clock_date_part(op, args, span, env),

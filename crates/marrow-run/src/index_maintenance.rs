@@ -10,7 +10,7 @@ use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_syntax::SourceSpan;
 
 use crate::store::{DataAddress, IndexAddress, read_data};
-use crate::value::LeafValue;
+use crate::value::{LeafValue, diagnostic_saved_key_tuple_preview};
 use crate::write::{ResourceValue, WRITE_STORE, WRITE_UNIQUE_CONFLICT, WriteError};
 use crate::write_plan::PlanStep;
 
@@ -442,8 +442,9 @@ fn check_unique_conflict(
         return Err(WriteError {
             code: WRITE_UNIQUE_CONFLICT,
             message: format!(
-                "unique index `{}` already holds those key(s) for another identity",
-                index.name
+                "unique index `{}` already holds key(s) {} for another identity",
+                index.name,
+                diagnostic_saved_key_tuple_preview(new_keys)
             ),
         });
     }

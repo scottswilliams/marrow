@@ -14,6 +14,8 @@ use marrow_check::{
 
 use crate::error::{Located, RuntimeError, type_error, unsupported};
 
+const DIAGNOSTIC_PREVIEW_SCALAR_LIMIT: usize = 64;
+
 /// A runtime value: the scalars a pure function manipulates plus the in-memory
 /// and saved-tree shapes the data features produce (sequences, resource trees,
 /// identities).
@@ -184,6 +186,58 @@ pub(crate) fn saved_key_preview(key: &SavedKey) -> String {
         SavedKey::Int(n) => n.to_string(),
         SavedKey::Bool(b) => b.to_string(),
         SavedKey::Str(s) => s.clone(),
+        SavedKey::Date(d) => format!("date({d})"),
+        SavedKey::Duration(n) => format!("duration({n})"),
+        SavedKey::Instant(n) => format!("instant({n})"),
+        SavedKey::Bytes(bytes) => format!("bytes[{}]", bytes.len()),
+    }
+}
+
+pub(crate) fn diagnostic_text_preview(text: &str) -> String {
+    let mut rendered = String::from("\"");
+    let mut truncated = false;
+    for (index, ch) in text.chars().enumerate() {
+        if index == DIAGNOSTIC_PREVIEW_SCALAR_LIMIT {
+            truncated = true;
+            break;
+        }
+        rendered.extend(ch.escape_default());
+    }
+    if truncated {
+        rendered.push_str("...");
+    }
+    rendered.push('"');
+    rendered
+}
+
+pub(crate) fn diagnostic_value_preview(value: &Value) -> Option<String> {
+    Some(match value {
+        Value::Int(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Str(text) => diagnostic_text_preview(text),
+        Value::Date(d) => format!("date({d})"),
+        Value::Instant(n) => format!("instant({n})"),
+        Value::Duration(n) => format!("duration({n})"),
+        Value::Decimal(decimal) => decimal.to_text(),
+        Value::Bytes(bytes) => format!("bytes[{}]", bytes.len()),
+        Value::Enum(_)
+        | Value::Sequence(_)
+        | Value::LocalTree(_)
+        | Value::Resource(_)
+        | Value::Identity(_) => return None,
+    })
+}
+
+pub(crate) fn diagnostic_saved_key_tuple_preview(keys: &[SavedKey]) -> String {
+    let rendered: Vec<String> = keys.iter().map(diagnostic_saved_key_preview).collect();
+    format!("({})", rendered.join(", "))
+}
+
+fn diagnostic_saved_key_preview(key: &SavedKey) -> String {
+    match key {
+        SavedKey::Int(n) => n.to_string(),
+        SavedKey::Bool(b) => b.to_string(),
+        SavedKey::Str(text) => diagnostic_text_preview(text),
         SavedKey::Date(d) => format!("date({d})"),
         SavedKey::Duration(n) => format!("duration({n})"),
         SavedKey::Instant(n) => format!("instant({n})"),

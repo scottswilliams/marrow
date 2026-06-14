@@ -846,14 +846,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 Listing order is execution order. docs/cli.md integrates with the remaining operator lanes.
 
-**W6.17 → Value echo diagnostics.** Carries: bounded offending-value prose at three verified
-runtime sites: conversion errors in stdlib/conversion.rs, unique-index conflicts in
-index_maintenance.rs, and parseDuration/parseDate in std_pure.rs. Owns: those message
-construction sites and focused CLI/runtime fixtures. Seed: each site currently reports the
-failure without the rejected value or key. Review: prose-only message changes; no RuntimeError
-struct, envelope, data-payload, sensitive-taint, saved-read absent, or new egress-surface change.
-Done: messages include bounded scalar/key previews while structured payload work remains W6.6.
-
 **W6.18 → Test observability.** Carries: two independent test-surface improvements: (A)
 `std::assert::equal(actual: T, expected: T)` for scalar types with "expected X, got Y"
 rendering; (B) a nullable `output` field in per-test JSON/JSONL records, coordinated with or

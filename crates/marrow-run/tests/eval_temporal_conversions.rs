@@ -681,7 +681,7 @@ fn decimal_conversion_distinguishes_malformed_text_from_envelope_overflow() {
 }
 
 #[test]
-fn a_conversion_error_message_is_grammar_independent() {
+fn a_conversion_error_message_includes_the_rejected_string() {
     // The message must not embed an article, so it reads correctly for
     // vowel-initial type names (not 'requires a int value').
     let program = checked_program("pub fn n(v: string): int\n    return int(v)\n");
@@ -693,6 +693,59 @@ fn a_conversion_error_message_is_grammar_independent() {
         ))
         .unwrap_err()
         .message,
-        "cannot convert this value to int"
+        "cannot convert value \"nope\" to int"
+    );
+}
+
+#[test]
+fn conversion_error_string_previews_are_bounded() {
+    let program = checked_program("pub fn n(v: string): int\n    return int(v)\n");
+    let mut raw = "prefix-".to_string();
+    raw.push_str(&"x".repeat(96));
+    raw.push_str("-tail-marker");
+    let error = run(checked_entry!(&program, "test::n", Value::Str(raw))).unwrap_err();
+
+    assert_eq!(error.code, RUN_TYPE);
+    assert!(error.message.starts_with("cannot convert value \"prefix-"));
+    assert!(
+        !error.message.contains("tail-marker"),
+        "message must not contain the unbounded tail: {}",
+        error.message
+    );
+}
+
+#[test]
+fn conversion_error_message_includes_a_bounded_bytes_preview() {
+    let program = checked_program("pub fn s(v: bytes): string\n    return string(v)\n");
+    assert_eq!(
+        run(checked_entry!(
+            &program,
+            "test::s",
+            Value::Bytes(vec![0xff])
+        ))
+        .unwrap_err()
+        .message,
+        "cannot convert value bytes[1] to string"
+    );
+}
+
+#[test]
+fn parse_date_and_duration_errors_include_the_rejected_text() {
+    let program = checked_program(
+        "pub fn d(): date\n    return std::clock::parseDate(\"2023-02-29\")\n\
+         pub fn span(): duration\n    return std::clock::parseDuration(\"nonsense\")\n",
+    );
+
+    assert_eq!(
+        run(checked_entry!(&program, "test::d"))
+            .unwrap_err()
+            .message,
+        "parseDate: invalid date text \"2023-02-29\""
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::span"))
+            .unwrap_err()
+            .message,
+        "parseDuration: invalid duration text \"nonsense\""
     );
 }
