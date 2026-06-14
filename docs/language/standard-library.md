@@ -18,10 +18,9 @@ runtime platform:
 - Functions have concrete signatures; Marrow does not use overloading to make
   library calls work.
 
-The first standard library does not include HTTP clients, process execution,
+The v0.1 standard library does not include HTTP clients, process execution,
 directory walking, regular expressions, localized formatting, JSON object
-mapping, or backend-specific storage APIs. Those can be host libraries or
-separate extensions after the language/database kernel is stable.
+mapping, or backend-specific storage APIs.
 
 The Marrow language does not require every host module. Pure helpers are
 available in normal CLI runs. Host functions in `std::clock`, `std::context`,
@@ -95,8 +94,7 @@ one run returns the same instant and `today()` the same date.
 Saved `instant` values use a canonical UTC representation. The library surface
 uses canonical text. `today()` returns the current UTC calendar date, not a
 host-local date. Local time zone presentation and localized formatting belong
-in host libraries or a separate standard-library extension, not in the
-language/database kernel.
+in host libraries, not in the language/database kernel.
 
 ## `std::io`
 

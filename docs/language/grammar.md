@@ -405,9 +405,9 @@ arguments. General range enumeration still requires both endpoints (`lo..hi` or
 such as `start..=`, and `by` steps inside saved-key arguments.
 
 `??` is deliberately non-associative: `a ?? b ?? c` is rejected. Layer defaults
-one read at a time, using parentheses or local bindings when a later extension
-needs nested defaults. It binds looser than additive expressions and tighter than
-ranges and comparisons: `count ?? 0 < 5` is `(count ?? 0) < 5`,
+one read at a time; use parentheses or local bindings for nested defaults. It
+binds looser than additive expressions and tighter than ranges and comparisons:
+`count ?? 0 < 5` is `(count ?? 0) < 5`,
 `start ?? 1 .. n` is `(start ?? 1) .. n`, and `x ?? y + 1` is `x ?? (y + 1)`.
 Its left operand must be a maybe-present read — a path read (including a keyed
 child such as `^patients(id).visits(date)`), a `?.` chain, or a maybe-present

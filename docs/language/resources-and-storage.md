@@ -65,8 +65,7 @@ store cannot claim `^books` with a different shape. Use nested layers, indexes,
 or a separate root instead.
 
 Saved roots are project-wide in v0.1. Any module may read or write any saved
-root through its declared store shape; this is a first-version simplification,
-not a visibility gate.
+root through its declared store shape; saved roots are not visibility gates.
 
 A store declaration may omit identity keys when the root itself is addressed
 directly:
@@ -336,8 +335,8 @@ structural names: a record key such as `"byShelf"` does not collide with an
 index named `byShelf`.
 
 Managed resource members use declared identifiers. Ordinary code cannot use
-quoted field segments; quoted maintenance paths belong to future operator
-maintenance syntax rather than ordinary expression grammar.
+quoted field segments; the ordinary expression and operator grammar do not
+accept them.
 
 Ordinary code may read declared index trees. Ordinary code does not write them;
 repair and derived rebuild are explicit data-evolution tooling work.

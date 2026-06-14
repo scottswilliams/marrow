@@ -13,7 +13,7 @@ module shelf::books
 
 `::` separates code namespaces. Dots are for data fields.
 
-The first module layout is one file per module under project source roots.
+The v0.1 module layout is one file per module under project source roots.
 For example, module `shelf::books` lives at `shelf/books.mw` below one source
 root. The `module` declaration must match the source-root-relative path.
 
@@ -54,7 +54,7 @@ name instead.
 An imported short module name also cannot collide with a module-level
 function, constant, enum, or resource in the current module.
 
-The first import surface has no wildcard imports, renamed imports, or path
+The v0.1 import surface has no wildcard imports, renamed imports, or path
 imports.
 
 ## Visibility
@@ -68,8 +68,8 @@ fn normalize(title: string): string
 fn rebuildIndex()
 ```
 
-Marrow does not add separate `private` or `internal` keywords in the first
-module system. Keep the boundary simple: public or module-private.
+Marrow does not add separate `private` or `internal` keywords in v0.1. Keep the
+boundary simple: public or module-private.
 
 Project and CLI entrypoints in module files use `pub fn`.
 
@@ -141,8 +141,7 @@ The caller resolves the maybe-present result at its own call site with `??`, `if
 const`, or `exists(...)`. An unresolved maybe-returning call is a compile error.
 
 Functions are not overloaded by parameter type. A module has one declaration
-for a function name. The first language surface has no user-defined generic
-functions.
+for a function name. v0.1 has no user-defined generic functions.
 
 Functions may read or write local data, saved data, output, and other effectful
 operations. Marrow does not split functions into a separate `proc` construct.

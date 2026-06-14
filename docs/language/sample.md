@@ -1,7 +1,7 @@
 # Reference Sample
 
-This small shelf project exercises the main Marrow language/database surface.
-It is the sample shape used by docs, conformance tests, and tool output.
+This small shelf project exercises the main Marrow language/database surface in
+one runnable module.
 
 ```mw
 module shelf::sample

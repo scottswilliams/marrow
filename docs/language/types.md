@@ -48,8 +48,8 @@ underscores.
 `Error` is a builtin resource-shaped type for thrown errors. It is not a
 scalar and it is not a managed saved resource.
 
-Marrow does not include user-defined type aliases in the first language
-surface. Use resources for named tree shapes and `Id(^store)` for saved store
+Marrow does not include user-defined type aliases in v0.1. Use resources for
+named tree shapes and `Id(^store)` for saved store
 identities.
 
 An `enum` is a named, fixed set of values — the user-defined generalization of
