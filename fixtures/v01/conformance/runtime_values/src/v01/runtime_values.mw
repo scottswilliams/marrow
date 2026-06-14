@@ -1,0 +1,27 @@
+module v01::runtime_values
+
+const Base: int = 40
+const Offset = 2
+const Label = "answer"
+
+pub fn moduleConstantLabel(): string
+    return $"{Label}={Base + Offset}"
+
+resource Book
+    required title: string
+    tags: sequence[string]
+
+store ^books(id: int): Book
+
+pub fn identityLoopOutput(): string
+    ^books(2).title = "Sourcery"
+    ^books(1).title = "Mort"
+    const tag: int = append(^books(1).tags, "fiction")
+    var output: string = ""
+    for id in ^books
+        if const title = ^books(id).title
+            output = output + string(title) + ";"
+    for pos in ^books(1).tags
+        if const item = ^books(1).tags(pos)
+            output = output + string(item) + ";"
+    return output

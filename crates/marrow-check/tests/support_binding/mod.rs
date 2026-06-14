@@ -4,11 +4,6 @@
 //! the project-wide binding index over the resulting snapshot. This module owns
 //! that setup so the focused suites assert against one index builder, not their
 //! own copies.
-//!
-//! Each test binary includes this module, so not every binary exercises every
-//! helper; the `dead_code` allowance keeps the shared surface intact.
-
-#![allow(dead_code)]
 
 use std::path::PathBuf;
 

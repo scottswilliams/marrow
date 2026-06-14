@@ -1,0 +1,537 @@
+//! Scalar value evaluation: arithmetic, decimal and bytes literals, base64,
+//! local sequences and trees, and the std math decimal helpers.
+
+use crate::support;
+use support::*;
+
+use marrow_run::{RUN_DECIMAL_OVERFLOW, RUN_DIVIDE_BY_ZERO, RUN_UNSUPPORTED, Value};
+use marrow_store::tree::TreeStore;
+
+#[test]
+#[should_panic(expected = "runtime tests require a clean checked program")]
+fn runtime_test_helper_rejects_checker_error_programs() {
+    checked_program_with_imports(
+        "pub fn stamp(s: string): string\n    return clock::formatDate(clock::parseDate(s))\n",
+        &[],
+    );
+}
+
+#[test]
+fn evaluates_arithmetic_over_parameters() {
+    assert_eq!(
+        eval_source(
+            "pub fn add(a: int, b: int): int\n    return a + b\n",
+            "add",
+            vec![Value::Int(2), Value::Int(40)]
+        ),
+        Ok(Some(Value::Int(42)))
+    );
+}
+
+#[test]
+fn respects_arithmetic_precedence() {
+    // 2 + 3 * 4 == 14, not 20.
+    assert_eq!(
+        eval_source("pub fn f(): int\n    return 2 + 3 * 4\n", "f", Vec::new()),
+        Ok(Some(Value::Int(14)))
+    );
+}
+
+#[test]
+fn evaluates_decimal_literals_and_arithmetic() {
+    // Decimal `+`, `*`, and `-` over decimal operands, rendered to text.
+    let program = checked_program(
+        "pub fn f(): string\n    return $\"{1.5 + 2.5} {1.5 * 2.0} {5.5 - 0.5}\"\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::f")).unwrap(),
+        Some(Value::Str("4 3 5".into()))
+    );
+}
+
+#[test]
+fn negates_a_decimal() {
+    // Unary `-` on a decimal, and a subtraction that produces a negative decimal.
+    let program = checked_program("pub fn f(): string\n    return $\"{-1.5} {0.0 - 2.5}\"\n");
+    assert_eq!(
+        run(checked_entry!(&program, "test::f")).unwrap(),
+        Some(Value::Str("-1.5 -2.5".into()))
+    );
+}
+
+#[test]
+fn division_yields_a_decimal() {
+    // `/` always yields a decimal, even for integer operands (1/2 = 0.5).
+    let program =
+        checked_program("pub fn f(): string\n    return $\"{1 / 2} {7 / 2} {1.0 / 4.0}\"\n");
+    assert_eq!(
+        run(checked_entry!(&program, "test::f")).unwrap(),
+        Some(Value::Str("0.5 3.5 0.25".into()))
+    );
+}
+
+#[test]
+fn decimal_division_rounds_half_even() {
+    // 1/3 rounds half-even to 34 significant digits.
+    let program = checked_program("pub fn f(): string\n    return $\"{1 / 3}\"\n");
+    assert_eq!(
+        run(checked_entry!(&program, "test::f")).unwrap(),
+        Some(Value::Str(format!("0.{}", "3".repeat(34))))
+    );
+}
+
+#[test]
+fn decimal_multiplication_must_fit_exactly() {
+    let program = checked_program(
+        "pub fn f(): decimal\n    return 0.123456789012345678 * 0.123456789012345678\n",
+    );
+    assert_run_error(
+        run(checked_entry!(&program, "test::f")),
+        RUN_DECIMAL_OVERFLOW,
+    );
+}
+
+#[test]
+fn decimal_division_by_zero_is_a_runtime_error() {
+    let program = checked_program("pub fn f(): decimal\n    return 1.0 / 0.0\n");
+    assert_run_error(run(checked_entry!(&program, "test::f")), RUN_DIVIDE_BY_ZERO);
+}
+
+#[test]
+fn compares_decimal_values() {
+    // Ordering and equality compare by value (1.50 equals 1.5).
+    let program = checked_program(
+        "pub fn f(): string\n    return $\"{1.5 < 2.0} {1.50 == 1.5} {2.5 > 3.0}\"\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::f")).unwrap(),
+        Some(Value::Str("true true false".into()))
+    );
+}
+
+#[test]
+fn decimal_round_trips_through_saved_data() {
+    // A decimal field saves and loads unchanged.
+    let program = checked_program(
+        "resource Account\n\
+         \x20   balance: decimal\nstore ^accts(id: int): Account\n\
+         \n\
+         pub fn seed()\n\
+         \x20   ^accts(1).balance = 9.99\n\
+         \n\
+         pub fn balance(): string\n\
+         \x20   return $\"{^accts(1).balance ?? 0.0}\"\n",
+    );
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed runs");
+    assert_eq!(
+        run_entry(&store, checked_entry!(&program, "test::balance"))
+            .unwrap()
+            .value,
+        Some(Value::Str("9.99".into()))
+    );
+}
+
+#[test]
+fn evaluates_bytes_literals_and_equality() {
+    let program = checked_program(
+        "pub fn same(): bool\n    return b\"abc\" == b\"abc\"\n\n\
+         pub fn different(): bool\n    return b\"abc\" == b\"abd\"\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::same")).unwrap(),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::different")).unwrap(),
+        Some(Value::Bool(false))
+    );
+}
+
+#[test]
+fn bytes_escapes_are_decoded() {
+    let program = checked_program(
+        "pub fn f(): bytes\n    return b\"slash \\\\ quote \\\" line\\n carriage\\r tab\\t hex \\x00\\x7f\\xff café\"\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::f")).unwrap(),
+        Some(Value::Bytes(
+            b"slash \\ quote \" line\n carriage\r tab\t hex \x00\x7f\xff caf\xc3\xa9".to_vec()
+        ))
+    );
+}
+
+#[test]
+fn malformed_bytes_escapes_are_rejected() {
+    for source in [
+        "pub fn f(): bytes\n    return b\"\\q\"\n",
+        "pub fn f(): bytes\n    return b\"\\x0g\"\n",
+        "pub fn f(): bytes\n    return b\"\\x0\"\n",
+    ] {
+        let program = checked_program(source);
+        let result = run(checked_entry!(&program, "test::f"));
+        assert_run_error(result, RUN_UNSUPPORTED);
+    }
+}
+
+#[test]
+fn compares_bytes_by_byte_order() {
+    let program = checked_program(
+        "pub fn f(): bool\n    return b\"a\" < b\"b\"\n\n\
+         pub fn g(): bool\n    return b\"ab\" > b\"a\"\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::f")).unwrap(),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::g")).unwrap(),
+        Some(Value::Bool(true))
+    );
+}
+
+#[test]
+fn bytes_round_trip_through_saved_data() {
+    let program = checked_program(
+        "resource Blob\n\
+         \x20   data: bytes\nstore ^blobs(id: int): Blob\n\
+         \n\
+         pub fn seed()\n\
+         \x20   ^blobs(1).data = b\"xy\"\n\
+         \n\
+         pub fn matches(): bool\n\
+         \x20   return (^blobs(1).data ?? b\"\") == b\"xy\"\n",
+    );
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed runs");
+    assert_eq!(
+        run_entry(&store, checked_entry!(&program, "test::matches"))
+            .unwrap()
+            .value,
+        Some(Value::Bool(true))
+    );
+}
+
+#[test]
+fn converts_string_to_bytes_and_measures_length() {
+    let program = checked_program(
+        "pub fn short(): int\n    return std::bytes::length(bytes(\"hi\"))\n\n\
+         pub fn utf8(): int\n    return std::bytes::length(bytes(\"café\"))\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::short")).unwrap(),
+        Some(Value::Int(2))
+    );
+    // `café` is 4 characters but 5 UTF-8 bytes; std::bytes::length counts bytes.
+    assert_eq!(
+        run(checked_entry!(&program, "test::utf8")).unwrap(),
+        Some(Value::Int(5))
+    );
+}
+
+#[test]
+fn bytes_conversion_equals_a_bytes_literal() {
+    let program = checked_program("pub fn f(): bool\n    return bytes(\"xy\") == b\"xy\"\n");
+    assert_eq!(
+        run(checked_entry!(&program, "test::f")).unwrap(),
+        Some(Value::Bool(true))
+    );
+}
+
+#[test]
+fn base64_encodes_with_padding() {
+    let program = checked_program(
+        "pub fn a(): string\n    return std::bytes::base64Encode(b\"hello\")\n\n\
+         pub fn b(): string\n    return std::bytes::base64Encode(b\"a\")\n\n\
+         pub fn c(): string\n    return std::bytes::base64Encode(b\"ab\")\n\n\
+         pub fn d(): string\n    return std::bytes::base64Encode(b\"abc\")\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::a")).unwrap(),
+        Some(Value::Str("aGVsbG8=".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::b")).unwrap(),
+        Some(Value::Str("YQ==".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::c")).unwrap(),
+        Some(Value::Str("YWI=".into()))
+    );
+    // An exact 3-byte group needs no padding.
+    assert_eq!(
+        run(checked_entry!(&program, "test::d")).unwrap(),
+        Some(Value::Str("YWJj".into()))
+    );
+}
+
+#[test]
+fn base64_decodes_and_round_trips() {
+    let program = checked_program(
+        "pub fn known(): bool\n    return std::bytes::base64Decode(\"aGVsbG8=\") == b\"hello\"\n\n\
+         pub fn round(): bool\n    return std::bytes::base64Decode(std::bytes::base64Encode(b\"hi there\")) == b\"hi there\"\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::known")).unwrap(),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::round")).unwrap(),
+        Some(Value::Bool(true))
+    );
+}
+
+#[test]
+fn base64_decode_rejects_invalid_text() {
+    // Invalid characters, and `=` padding outside the final group.
+    let program = checked_program(
+        "pub fn bad_chars(): bytes\n    return std::bytes::base64Decode(\"!!!!\")\n\n\
+         pub fn early_pad(): bytes\n    return std::bytes::base64Decode(\"AAA=AAAA\")\n",
+    );
+    assert!(run(checked_entry!(&program, "test::bad_chars")).is_err());
+    assert!(run(checked_entry!(&program, "test::early_pad")).is_err());
+}
+
+#[test]
+fn splits_a_string_and_iterates_the_sequence() {
+    // `std::text::split` yields a sequence the `for` loop iterates in order.
+    let program = checked_program(
+        "pub fn f(): string\n\
+         \x20   var result = \"\"\n\
+         \x20   for word in std::text::split(\"a,b,c\", \",\")\n\
+         \x20       result = result + word\n\
+         \x20   return result\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::f")).unwrap(),
+        Some(Value::Str("abc".into()))
+    );
+}
+
+#[test]
+fn iterates_a_sequence_counting_its_elements() {
+    let program = checked_program(
+        "pub fn split_count(): int\n\
+         \x20   var n = 0\n\
+         \x20   for word in std::text::split(\"a,b,c,d\", \",\")\n\
+         \x20       n = n + 1\n\
+         \x20   return n\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::split_count")).unwrap(),
+        Some(Value::Int(4))
+    );
+}
+
+#[test]
+fn append_on_a_local_sequence_is_checker_rejected() {
+    checker_rejects(
+        "pub fn grow(): int\n\
+         \x20   var order: sequence[int]\n\
+         \x20   const first: int = append(order, 10)\n\
+         \x20   const second: int = append(order, 20)\n\
+         \x20   var total = first * 100 + second * 10 + count(order)\n\
+         \x20   for value in order\n\
+         \x20       total = total + value\n\
+         \x20   return total\n",
+        "check.untyped_value",
+    );
+}
+
+#[test]
+fn reads_and_writes_a_local_sequence_by_position() {
+    let program = checked_program(
+        "pub fn seq_index(): int\n\
+         \x20   var xs: sequence[int]\n\
+         \x20   xs(1) = 10\n\
+         \x20   xs(1) = xs(1) + 5\n\
+         \x20   return xs(1)\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::seq_index")).unwrap(),
+        Some(Value::Int(15))
+    );
+}
+
+#[test]
+fn two_name_loop_over_a_local_keyed_tree_binds_key_and_value() {
+    let program = checked_program(
+        "pub fn keyed(): string\n\
+         \x20   var scores(playerId: string): int\n\
+         \x20   scores(\"p2\") = 20\n\
+         \x20   scores(\"p1\") = 10\n\
+         \x20   var out: string = \"\"\n\
+         \x20   for playerId, score in scores\n\
+         \x20       out = $\"{out}{playerId}={score};\"\n\
+         \x20   return out\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::keyed")).unwrap(),
+        Some(Value::Str("p1=10;p2=20;".into()))
+    );
+}
+
+#[test]
+fn two_name_reversed_loop_over_a_local_keyed_tree_binds_descending_pairs() {
+    let program = checked_program(
+        "pub fn keyed(): string\n\
+         \x20   var scores(playerId: string): int\n\
+         \x20   scores(\"p2\") = 20\n\
+         \x20   scores(\"p1\") = 10\n\
+         \x20   var out: string = \"\"\n\
+         \x20   for playerId, score in reversed(scores)\n\
+         \x20       const typedPlayer: string = playerId\n\
+         \x20       const typedScore: int = score\n\
+         \x20       out = $\"{out}{playerId}={score};\"\n\
+         \x20   return out\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::keyed")).unwrap(),
+        Some(Value::Str("p2=20;p1=10;".into()))
+    );
+}
+
+#[test]
+fn single_name_loop_over_a_local_keyed_tree_binds_keys() {
+    let program = checked_program(
+        "pub fn keyed(): string\n\
+         \x20   var scores(playerId: string): int\n\
+         \x20   scores(\"p2\") = 20\n\
+         \x20   scores(\"p1\") = 10\n\
+         \x20   var out: string = \"\"\n\
+         \x20   for playerId in scores\n\
+         \x20       const typed: string = playerId\n\
+         \x20       out = $\"{out}{playerId};\"\n\
+         \x20   return out\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::keyed")).unwrap(),
+        Some(Value::Str("p1;p2;".into()))
+    );
+}
+
+#[test]
+fn keys_over_reversed_local_keyed_tree_yields_descending_keys() {
+    let program = checked_program(
+        "pub fn keyed(): string\n\
+         \x20   var scores(playerId: string): int\n\
+         \x20   scores(\"p2\") = 20\n\
+         \x20   scores(\"p1\") = 10\n\
+         \x20   var out: string = \"\"\n\
+         \x20   for playerId in keys(reversed(scores))\n\
+         \x20       const typed: string = playerId\n\
+         \x20       out = $\"{out}{playerId};\"\n\
+         \x20   return out\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::keyed")).unwrap(),
+        Some(Value::Str("p2;p1;".into()))
+    );
+}
+
+#[test]
+fn reversed_loop_over_a_local_keyed_tree_binds_descending_keys() {
+    let program = checked_program(
+        "pub fn keyed(): string\n\
+         \x20   var scores(playerId: string): int\n\
+         \x20   scores(\"p2\") = 20\n\
+         \x20   scores(\"p1\") = 10\n\
+         \x20   var out: string = \"\"\n\
+         \x20   for playerId in reversed(scores)\n\
+         \x20       const typed: string = playerId\n\
+         \x20       out = $\"{out}{playerId};\"\n\
+         \x20   return out\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::keyed")).unwrap(),
+        Some(Value::Str("p2;p1;".into()))
+    );
+}
+
+#[test]
+fn reversed_local_keyed_tree_materializes_a_key_sequence() {
+    let program = checked_program(
+        "pub fn keyed(): string\n\
+         \x20   var scores(playerId: string): int\n\
+         \x20   scores(\"p2\") = 20\n\
+         \x20   scores(\"p1\") = 10\n\
+         \x20   const players = reversed(scores)\n\
+         \x20   var out: string = \"\"\n\
+         \x20   for playerId in players\n\
+         \x20       const typed: string = playerId\n\
+         \x20       out = $\"{out}{playerId};\"\n\
+         \x20   return out\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::keyed")).unwrap(),
+        Some(Value::Str("p2;p1;".into()))
+    );
+}
+
+#[test]
+fn local_keyed_tree_value_and_entry_views_stay_value_based() {
+    let program = checked_program(
+        "pub fn keyed(): string\n\
+         \x20   var scores(playerId: string): int\n\
+         \x20   scores(\"p2\") = 20\n\
+         \x20   scores(\"p1\") = 10\n\
+         \x20   var out: string = \"\"\n\
+         \x20   for score in values(scores)\n\
+         \x20       const typedScore: int = score\n\
+         \x20       out = $\"{out}v{score};\"\n\
+         \x20   for score in reversed(values(scores))\n\
+         \x20       const typedScore: int = score\n\
+         \x20       out = $\"{out}rv{score};\"\n\
+         \x20   for playerId, score in entries(scores)\n\
+         \x20       const typedPlayer: string = playerId\n\
+         \x20       const typedScore: int = score\n\
+         \x20       out = $\"{out}e{playerId}={score};\"\n\
+         \x20   for playerId, score in reversed(entries(scores))\n\
+         \x20       const typedPlayer: string = playerId\n\
+         \x20       const typedScore: int = score\n\
+         \x20       out = $\"{out}re{playerId}={score};\"\n\
+         \x20   return out\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::keyed")).unwrap(),
+        Some(Value::Str(
+            "v10;v20;rv20;rv10;ep1=10;ep2=20;rep2=20;rep1=10;".into()
+        ))
+    );
+}
+
+#[test]
+fn reads_and_writes_a_multi_key_local_tree() {
+    let program = checked_program(
+        "pub fn keyed(day: date): int\n\
+         \x20   var counts(day: date, category: string): int\n\
+         \x20   counts(day, \"open\") = 3\n\
+         \x20   return counts(day, \"open\")\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::keyed", Value::Date(1))).unwrap(),
+        Some(Value::Int(3))
+    );
+}
+
+#[test]
+fn std_math_decimal_helpers() {
+    // absDecimal yields a decimal; floor rounds toward negative infinity to an int.
+    let program = checked_program(
+        "pub fn a(): string\n    return $\"{std::math::absDecimal(-2.5)}\"\n\n\
+         pub fn up(): int\n    return std::math::floor(2.7)\n\n\
+         pub fn down(): int\n    return std::math::floor(-2.7)\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::a")).unwrap(),
+        Some(Value::Str("2.5".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::up")).unwrap(),
+        Some(Value::Int(2))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::down")).unwrap(),
+        Some(Value::Int(-3))
+    );
+}

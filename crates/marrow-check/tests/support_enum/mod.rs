@@ -4,11 +4,6 @@
 //! carries rather than its rendered prose. This module owns the one payload
 //! assertion so the focused suites share a single oracle instead of each copying
 //! it.
-//!
-//! Each test binary includes this module, so not every binary exercises the
-//! helper; the `dead_code` allowance keeps the shared surface intact.
-
-#![allow(dead_code)]
 
 use marrow_check::{CheckDiagnostic, DiagnosticPayload, EnumDiagnostic};
 

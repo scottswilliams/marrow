@@ -1,0 +1,7 @@
+use v01::runtime_values
+
+pub fn moduleConstantsAreBound()
+    std::assert::equal(v01::runtime_values::moduleConstantLabel(), "answer=42")
+
+pub fn identityOrientedCollectionLoops()
+    std::assert::equal(v01::runtime_values::identityLoopOutput(), "Mort;Sourcery;fiction;")

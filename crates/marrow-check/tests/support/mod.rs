@@ -7,11 +7,6 @@
 //!
 //! [`TempProject`] removes its directory on drop, so a test never cleans up by
 //! hand and a panicking assertion still releases the directory.
-//!
-//! Each test binary includes this module, so not every binary exercises every
-//! helper; the crate-wide `dead_code` allowance keeps the shared surface intact.
-
-#![allow(dead_code)]
 
 use std::fs;
 use std::ops::Deref;

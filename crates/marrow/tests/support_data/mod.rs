@@ -1,7 +1,3 @@
-// Each data_cli test binary includes this whole module but uses only the helpers
-// its cases need, so a helper unused by one binary is not dead across the split.
-#![allow(dead_code)]
-
 use std::fs;
 use std::path::Path;
 

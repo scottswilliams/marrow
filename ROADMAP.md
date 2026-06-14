@@ -852,18 +852,6 @@ Wave gate: full gate; CLI surface frozen for the release contract.
 
 ## Wave 7 — Release proof
 
-**W7.1 R11 test re-architecture (removals "Collapse the 500-fold inline schema duplication" and
-"Fold 176 integration-test binaries"; the latter P3 — may slip without contract cost).** Owns:
-the corpus constant in marrow-check test support (~60 verbatim cases; split-form after W1.7),
-fixtures/v01 confirmation, migration of remaining runtime value suites and CLI semantic
-re-tests into the fixtures/v01 conformance corpus with same-commit deletion of the Rust
-originals (behavior inventory per suite; surviving crates/marrow tests are boundary-only),
-then one tests/main.rs per crate (dead_code allowances removed, support compiled once;
-docs/freeze-gate-evidence.md verification commands updated in the same commits). Seed:
-suite-shape tidy checks. Review: golden/semantic coverage does not drop; behavior inventories
-complete; golden updates reviewed as contract changes. Done: suite shape matches
-docs/testing-architecture.md.
-
 **W7.2 → Release contract (III.B2; gates 33, 35, 37, 45).** Owns: `--version` engine-profile
 tuple,
 docs/stability.md (stable: dotted codes, exit codes, backup format, marrow.json, catalog schema

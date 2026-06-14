@@ -12,12 +12,9 @@ use crate::support::{TempProject, temp_project_uncommitted as temp_project, writ
 // The saved-place fact lookups are owned by marrow-check behind its `test-support`
 // feature, so the CLI evolution suites resolve a member or store catalog id through the
 // same helpers the discharge and apply suites do.
-#[allow(unused_imports)]
 pub(crate) use marrow_check::test_support::{
     member_catalog_id, root_place, store_id_of as store_catalog_id,
 };
-
-#[allow(dead_code)]
 fn config(root: impl AsRef<Path>) -> ProjectConfig {
     let text = fs::read_to_string(root.as_ref().join("marrow.json")).expect("read config");
     marrow_project::parse_config(&text).expect("parse config")
@@ -26,7 +23,6 @@ fn config(root: impl AsRef<Path>) -> ProjectConfig {
 /// Freeze a project's baseline durable identity into its store, the way a
 /// state-establishing run does, and return the program re-bound against the accepted
 /// store snapshot that mirrors the committed catalog artifact.
-#[allow(dead_code)]
 pub(crate) fn commit_catalog(root: impl AsRef<Path>) -> CheckedProgram {
     let root = root.as_ref();
     let config = config(root);
@@ -56,20 +52,14 @@ pub(crate) fn commit_catalog(root: impl AsRef<Path>) -> CheckedProgram {
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     program
 }
-
-#[allow(dead_code)]
 pub(crate) fn native_store_path(root: impl AsRef<Path>) -> PathBuf {
     root.as_ref().join(".data").join("marrow.redb")
 }
-
-#[allow(dead_code)]
 pub(crate) fn open_native_store(root: impl AsRef<Path>) -> TreeStore {
     let path = native_store_path(root);
     fs::create_dir_all(path.parent().unwrap()).expect("create data dir");
     TreeStore::open(&path).expect("open native store")
 }
-
-#[allow(dead_code)]
 pub(crate) fn seed_title_only(store: &TreeStore, place: &CheckedSavedPlace, id: i64, title: &str) {
     let store_id = store_catalog_id(place);
     store
@@ -85,8 +75,6 @@ pub(crate) fn seed_title_only(store: &TreeStore, place: &CheckedSavedPlace, id: 
         )
         .expect("write title");
 }
-
-#[allow(dead_code)]
 pub(crate) fn seed_member(
     store: &TreeStore,
     place: &CheckedSavedPlace,
@@ -105,8 +93,6 @@ pub(crate) fn seed_member(
         )
         .expect("write member");
 }
-
-#[allow(dead_code)]
 pub(crate) fn read_scalar(
     store: &TreeStore,
     place: &CheckedSavedPlace,
@@ -125,8 +111,6 @@ pub(crate) fn read_scalar(
         .expect("read member")
         .map(|bytes| decode_value(&bytes, ty).expect("decode value"))
 }
-
-#[allow(dead_code)]
 pub(crate) fn read_scalar_by_catalog_id(
     store: &TreeStore,
     place: &CheckedSavedPlace,
@@ -146,8 +130,6 @@ pub(crate) fn read_scalar_by_catalog_id(
         .expect("read member")
         .map(|bytes| decode_value(&bytes, ty).expect("decode value"))
 }
-
-#[allow(dead_code)]
 pub(crate) fn native_books_project(name: &str, source: &str) -> TempProject {
     temp_project(name, |root| {
         write(root, "marrow.json", crate::support::native_config());
@@ -157,7 +139,6 @@ pub(crate) fn native_books_project(name: &str, source: &str) -> TempProject {
 
 /// The accepted catalog snapshot a project's store holds as the crash bridge. Reading
 /// it here is the typed oracle for tests that inspect the committed durable identity.
-#[allow(dead_code)]
 pub(crate) fn accepted_catalog(root: impl AsRef<Path>) -> marrow_catalog::CatalogMetadata {
     let store = TreeStore::open_read_only(&native_store_path(root)).expect("open store read-only");
     store
@@ -165,8 +146,6 @@ pub(crate) fn accepted_catalog(root: impl AsRef<Path>) -> marrow_catalog::Catalo
         .expect("read store catalog snapshot")
         .expect("project has an accepted catalog")
 }
-
-#[allow(dead_code)]
 pub(crate) fn accepted_catalog_entry_id(root: impl AsRef<Path>, path: &str) -> String {
     accepted_catalog(root)
         .entries
@@ -175,10 +154,8 @@ pub(crate) fn accepted_catalog_entry_id(root: impl AsRef<Path>, path: &str) -> S
         .unwrap_or_else(|| panic!("accepted catalog entry `{path}`"))
         .stable_id
 }
-
-#[allow(dead_code)]
 pub(crate) fn store_epoch(root: impl AsRef<Path>) -> Option<u64> {
-    let store = TreeStore::open(&native_store_path(root)).expect("reopen native store");
+    let store = TreeStore::open_read_only(&native_store_path(root)).expect("reopen native store");
     store
         .read_commit_metadata()
         .expect("read store commit")
@@ -188,105 +165,99 @@ pub(crate) fn store_epoch(root: impl AsRef<Path>) -> Option<u64> {
 // The before/after `module books` evolution sources live in the repo-root corpus, so
 // the same fixture is not re-declared as an inline string here and in the runtime
 // crate. The baseline/default/subtitle/retire shapes are shared with marrow-run.
-#[allow(dead_code)]
-pub(crate) const REQUIRED_DEFAULT_SOURCE: &str =
-    include_str!("../../../../fixtures/v01/evolution/books_required_default.mw");
-
-#[allow(dead_code)]
-pub(crate) const REQUIRED_NO_DEFAULT_SOURCE: &str =
-    include_str!("../../../../fixtures/v01/evolution/books_required_no_default.mw");
-
-#[allow(dead_code)]
-pub(crate) const REQUIRED_BASELINE_SOURCE: &str =
-    include_str!("../../../../fixtures/v01/evolution/books_required_baseline.mw");
-
-#[allow(dead_code)]
-pub(crate) const OPTIONAL_PAGES_BASELINE_SOURCE: &str =
-    include_str!("../../../../fixtures/v01/evolution/books_optional_pages_baseline.mw");
-
-#[allow(dead_code)]
-pub(crate) const OPTIONAL_PAGES_DEFAULT_INDEX_SOURCE: &str =
-    include_str!("../../../../fixtures/v01/evolution/books_optional_pages_default_index.mw");
-
-#[allow(dead_code)]
-pub(crate) const PRICE_BASELINE_SOURCE: &str =
-    include_str!("../../../../fixtures/v01/evolution/books_price_baseline.mw");
-
-#[allow(dead_code)]
-pub(crate) const PRICE_CENTS_TRANSFORM_SOURCE: &str =
-    include_str!("../../../../fixtures/v01/evolution/books_price_cents_transform.mw");
-
-#[allow(dead_code)]
-pub(crate) const RETIRE_SOURCE: &str =
-    include_str!("../../../../fixtures/v01/evolution/books_retire_subtitle.mw");
-
-#[allow(dead_code)]
-pub(crate) const RETIRE_BASELINE_SOURCE: &str =
-    include_str!("../../../../fixtures/v01/evolution/books_subtitle_baseline.mw");
-
-#[allow(dead_code)]
-pub(crate) const RENAME_SOURCE: &str =
-    include_str!("../../../../fixtures/v01/evolution/books_rename_subtitle.mw");
+pub(crate) const REQUIRED_DEFAULT_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_required_default.mw"
+));
+pub(crate) const REQUIRED_NO_DEFAULT_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_required_no_default.mw"
+));
+pub(crate) const REQUIRED_BASELINE_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_required_baseline.mw"
+));
+pub(crate) const OPTIONAL_PAGES_DEFAULT_INDEX_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_optional_pages_default_index.mw"
+));
+pub(crate) const RETIRE_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_retire_subtitle.mw"
+));
+pub(crate) const RETIRE_BASELINE_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_subtitle_baseline.mw"
+));
+pub(crate) const RENAME_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_rename_subtitle.mw"
+));
 
 // Baseline with a runnable zero-arg entry: a `subtitle` member a later rename/retire
 // consumes, plus a `seed` that writes through the store so the fence is exercised.
-#[allow(dead_code)]
-pub(crate) const BLOCK_BASELINE_SOURCE: &str =
-    include_str!("../../../../fixtures/v01/evolution/books_seed_subtitle_baseline.mw");
+pub(crate) const BLOCK_BASELINE_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_seed_subtitle_baseline.mw"
+));
 
 // The renamed source with the consumed rename block present.
-#[allow(dead_code)]
-pub(crate) const RENAME_BLOCK_SOURCE: &str =
-    include_str!("../../../../fixtures/v01/evolution/books_seed_rename_block.mw");
+pub(crate) const RENAME_BLOCK_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_seed_rename_block.mw"
+));
 
 // The renamed source with the consumed rename block removed: the rename is already
 // recorded in the accepted catalog, so the block is transient and safe to delete.
-#[allow(dead_code)]
-pub(crate) const RENAME_BLOCK_DELETED_SOURCE: &str =
-    include_str!("../../../../fixtures/v01/evolution/books_seed_rename_block_deleted.mw");
+pub(crate) const RENAME_BLOCK_DELETED_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_seed_rename_block_deleted.mw"
+));
 
 // The retired source with the consumed retire block present.
-#[allow(dead_code)]
-pub(crate) const RETIRE_BLOCK_SOURCE: &str =
-    include_str!("../../../../fixtures/v01/evolution/books_seed_retire_block.mw");
+pub(crate) const RETIRE_BLOCK_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_seed_retire_block.mw"
+));
 
 // The retired source with the consumed retire block removed.
-#[allow(dead_code)]
-pub(crate) const RETIRE_BLOCK_DELETED_SOURCE: &str =
-    include_str!("../../../../fixtures/v01/evolution/books_seed_retire_block_deleted.mw");
-
-#[allow(dead_code)]
-pub(crate) const BRANCH_WORKFLOW_BASELINE_SOURCE: &str =
-    include_str!("../../../../fixtures/v01/evolution/branch_workflow_baseline.mw");
-
-#[allow(dead_code)]
-pub(crate) const BRANCH_WORKFLOW_EVOLVED_SOURCE: &str =
-    include_str!("../../../../fixtures/v01/evolution/branch_workflow_evolved.mw");
-
-#[allow(dead_code)]
-pub(crate) const LEAF_RETYPE_BASELINE_SOURCE: &str =
-    include_str!("../../../../fixtures/v01/evolution/leaf_retype_baseline.mw");
-
-#[allow(dead_code)]
-pub(crate) const LEAF_RETYPE_TRANSFORM_SOURCE: &str =
-    include_str!("../../../../fixtures/v01/evolution/leaf_retype_transform.mw");
-
-#[allow(dead_code)]
-pub(crate) const LEAF_RETYPE_RETIRE_OLD_SOURCE: &str =
-    include_str!("../../../../fixtures/v01/evolution/leaf_retype_retire_old.mw");
-
-#[allow(dead_code)]
-pub(crate) const STORE_REKEY_BASELINE_SOURCE: &str =
-    include_str!("../../../../fixtures/v01/evolution/store_rekey_baseline.mw");
-
-#[allow(dead_code)]
-pub(crate) const STORE_REKEY_STRING_TARGET_SOURCE: &str =
-    include_str!("../../../../fixtures/v01/evolution/store_rekey_string_target.mw");
-
-#[allow(dead_code)]
-pub(crate) const ORPHAN_REPAIR_SOURCE: &str =
-    include_str!("../../../../fixtures/v01/evolution/orphan_repair_source.mw");
-
-#[allow(dead_code)]
-pub(crate) const ORPHAN_REPAIRED_TARGET_SOURCE: &str =
-    include_str!("../../../../fixtures/v01/evolution/orphan_repaired_target.mw");
+pub(crate) const RETIRE_BLOCK_DELETED_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_seed_retire_block_deleted.mw"
+));
+pub(crate) const BRANCH_WORKFLOW_BASELINE_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/branch_workflow_baseline.mw"
+));
+pub(crate) const BRANCH_WORKFLOW_EVOLVED_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/branch_workflow_evolved.mw"
+));
+pub(crate) const LEAF_RETYPE_BASELINE_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/leaf_retype_baseline.mw"
+));
+pub(crate) const LEAF_RETYPE_TRANSFORM_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/leaf_retype_transform.mw"
+));
+pub(crate) const LEAF_RETYPE_RETIRE_OLD_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/leaf_retype_retire_old.mw"
+));
+pub(crate) const STORE_REKEY_BASELINE_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/store_rekey_baseline.mw"
+));
+pub(crate) const STORE_REKEY_STRING_TARGET_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/store_rekey_string_target.mw"
+));
+pub(crate) const ORPHAN_REPAIR_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/orphan_repair_source.mw"
+));
+pub(crate) const ORPHAN_REPAIRED_TARGET_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/orphan_repaired_target.mw"
+));

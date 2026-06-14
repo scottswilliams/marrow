@@ -1,7 +1,5 @@
 //! Shared conversion-diagnostic oracle for the conversion checker suites.
 
-#![allow(dead_code)]
-
 use marrow_check::{
     ConversionTarget, ConversionUnsupportedSourceDiagnostic, DiagnosticPayload, MarrowType,
 };

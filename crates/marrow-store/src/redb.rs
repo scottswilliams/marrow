@@ -13,6 +13,7 @@ use std::ops::Bound;
 use std::os::unix::fs::OpenOptionsExt;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use redb::{
     Database, DatabaseError, Durability, ReadOnlyDatabase, ReadTransaction, ReadableDatabase,
@@ -35,6 +36,7 @@ const MARROW_REDB_DURABILITY: Durability = Durability::Immediate;
 const DELETE_BATCH_LIMIT: usize = 256;
 #[cfg(unix)]
 const STORE_SYMLINK_HOP_LIMIT: usize = 40;
+static OPEN_PANIC_HOOK: Mutex<()> = Mutex::new(());
 
 impl<'a> traversal::ScanEntry
     for (
@@ -171,13 +173,32 @@ fn is_torn_body(error: &std::io::Error) -> bool {
 /// the closure itself maps redb open errors through [`map_open_error`]. A no-op
 /// panic hook is installed for the duration of the open so an expected redb open
 /// panic does not print its message and backtrace, then the previous hook is
-/// restored — every other panic in the process still reports normally. The hook is
-/// process-global, so concurrent in-process store opens would have to serialize
-/// this swap; the CLI paths call it synchronously.
+/// restored. The hook is process-global, so concurrent in-process opens serialize
+/// the swap, and panics from other threads still delegate to the hook that was
+/// installed before the open.
 fn catch_open<T>(open: impl FnOnce() -> Result<T, StoreError>) -> Result<T, StoreError> {
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
+    let hook_guard = OPEN_PANIC_HOOK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    catch_open_locked(open, &hook_guard)
+}
+
+fn catch_open_locked<T>(
+    open: impl FnOnce() -> Result<T, StoreError>,
+    _hook_guard: &MutexGuard<'_, ()>,
+) -> Result<T, StoreError> {
+    let open_thread = std::thread::current().id();
+    let previous_hook = Arc::new(std::panic::take_hook());
+    let delegate_hook = Arc::clone(&previous_hook);
+    std::panic::set_hook(Box::new(move |info| {
+        if std::thread::current().id() != open_thread {
+            delegate_hook(info);
+        }
+    }));
     let caught = std::panic::catch_unwind(AssertUnwindSafe(open));
+    drop(std::panic::take_hook());
+    let previous_hook =
+        Arc::try_unwrap(previous_hook).unwrap_or_else(|hook| Box::new(move |info| hook(info)));
     std::panic::set_hook(previous_hook);
     match caught {
         Ok(result) => result,
@@ -803,14 +824,15 @@ impl Backend for RedbStore {
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use redb::{Database, ReadableDatabase, TableDefinition};
 
     use super::{
-        DELETE_BATCH_LIMIT, DatabaseHandle, FORMAT_VERSION, META, RedbStore, TABLE, catch_open,
-        map_open_error,
+        DELETE_BATCH_LIMIT, DatabaseHandle, FORMAT_VERSION, META, OPEN_PANIC_HOOK, RedbStore,
+        TABLE, catch_open, catch_open_locked, map_open_error,
     };
     use crate::backend::{Backend, StoreError};
     use crate::conformance;
@@ -866,6 +888,45 @@ mod tests {
             Err(StoreError::Corruption { .. }) => {}
             other => panic!("expected corruption from a caught open panic, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn catch_open_preserves_the_panic_hook_for_other_threads() {
+        let hook_guard = OPEN_PANIC_HOOK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let seen = Arc::new(AtomicUsize::new(0));
+        let previous_hook = std::panic::take_hook();
+        let seen_hook = Arc::clone(&seen);
+        std::panic::set_hook(Box::new(move |_| {
+            seen_hook.fetch_add(1, Ordering::SeqCst);
+        }));
+
+        let result: Result<(), StoreError> = catch_open_locked(
+            || {
+                std::thread::spawn(|| {
+                    let _ = std::panic::catch_unwind(|| {
+                        panic!("unrelated test panic");
+                    });
+                })
+                .join()
+                .expect("panic was caught in the thread");
+                Ok(())
+            },
+            &hook_guard,
+        );
+
+        let installed_hook = std::panic::take_hook();
+        drop(installed_hook);
+        std::panic::set_hook(previous_hook);
+        drop(hook_guard);
+
+        result.expect("catch open succeeds");
+        assert_eq!(
+            seen.load(Ordering::SeqCst),
+            1,
+            "unrelated thread panics must keep the existing hook"
+        );
     }
 
     /// A non-panicking closure passes its result through unchanged, so the backstop

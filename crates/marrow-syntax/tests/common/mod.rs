@@ -1,11 +1,6 @@
 //! Shared helpers for the integration tests: one reader over the fenced `mw`
 //! code blocks in the language reference, so the lexer, parser, and formatter
 //! suites all filter the same source of documented examples.
-
-// Each test binary that includes this module uses a different subset of its
-// helpers; allow the unused-in-this-binary items rather than splitting per suite.
-#![allow(dead_code)]
-
 use std::path::Path;
 
 use marrow_syntax::{Diagnostic, DiagnosticReason, LexerDiagnosticReason, ParseDiagnosticReason};

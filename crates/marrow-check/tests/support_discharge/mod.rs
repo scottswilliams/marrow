@@ -8,11 +8,7 @@
 //! that predates a new member or index; the catalog-evolution cases pin a hand-built accepted
 //! catalog the current source has moved away from.
 //!
-//! This module is the single owner of that seeding-and-verdict plumbing. Each discharge
-//! binary includes it, so not every binary exercises every helper; the `dead_code`
-//! allowance keeps the shared surface intact across the split.
-
-#![allow(dead_code)]
+//! This module is the single owner of that seeding-and-verdict plumbing.
 
 use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogMetadata};
 use marrow_check::evolution::{EvolutionWitness, Verdict, preview};
@@ -28,10 +24,7 @@ pub use marrow_check::evolution::{RepairDiagnostic, RepairReason};
 // behind its `test-support` feature, so the discharge suites resolve member, index, enum,
 // and proposal catalog ids through the same helpers the apply and CLI evolution suites do
 // rather than carrying a copy. The discharge fixtures use the same single-`src`-root config,
-// so `checked`/`commit_then_check`/`root_place` resolve through this import too. Each split
-// discharge binary includes this module and exercises a subset, so the unused re-exports in
-// any one binary are expected, mirroring the crate-wide `dead_code` allowance above.
-#[allow(unused_imports)]
+// so `checked`/`commit_then_check`/`root_place` resolve through this import too.
 pub use marrow_check::test_support::{
     accepted_catalog_id, checked, commit_then_check, deep_member_catalog_id, enum_catalog_id,
     enum_member_catalog_id, group_member_catalog_id, index_catalog_id, keyed_leaf_catalog_id,

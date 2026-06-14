@@ -2,21 +2,18 @@ use std::fs;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-#[allow(dead_code)]
+static TEMP_PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub(crate) fn json(stdout: Vec<u8>) -> serde_json::Value {
     serde_json::from_slice(&stdout).expect("json output")
 }
-
-#[allow(dead_code)]
 pub(crate) fn jsonl(stdout: Vec<u8>) -> Vec<serde_json::Value> {
     let text = String::from_utf8(stdout).expect("jsonl utf8");
     text.lines()
         .map(|line| serde_json::from_str(line).expect("jsonl record"))
         .collect()
 }
-
-#[allow(dead_code)]
 pub(crate) fn json_records_in_stderr(stderr: Vec<u8>) -> Vec<serde_json::Value> {
     let text = String::from_utf8(stderr).expect("stderr utf8");
     text.lines()
@@ -24,8 +21,6 @@ pub(crate) fn json_records_in_stderr(stderr: Vec<u8>) -> Vec<serde_json::Value> 
         .map(|line| serde_json::from_str(line).expect("json stderr record"))
         .collect()
 }
-
-#[allow(dead_code)]
 pub(crate) fn codes(records: &[serde_json::Value]) -> Vec<&str> {
     records
         .iter()
@@ -35,20 +30,22 @@ pub(crate) fn codes(records: &[serde_json::Value]) -> Vec<&str> {
 
 /// A process-unique temporary path under the system temp dir. The directory is
 /// not created; callers that need an existing directory go through
-/// [`temp_dir`]. The timestamp and pid keep names from colliding when tests run
-/// in parallel or in quick succession.
-#[allow(dead_code)]
+/// [`temp_dir`]. The timestamp, pid, and process-local serial keep names from
+/// colliding when tests run in parallel or in quick succession.
 pub(crate) fn unique_temp_path(name: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock after unix epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()))
+    let serial = TEMP_PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "marrow-{name}-{}-{nanos}-{serial}",
+        std::process::id()
+    ))
 }
 
 /// A freshly created, process-unique temporary directory wrapped in a guard that
 /// removes it on drop (including on panic).
-#[allow(dead_code)]
 pub(crate) fn temp_dir(name: &str) -> TempProject {
     let root = unique_temp_path(name);
     fs::create_dir_all(&root).expect("create temp dir");
@@ -58,7 +55,6 @@ pub(crate) fn temp_dir(name: &str) -> TempProject {
 /// Write a single `.mw` source file at a process-unique path and return it. The
 /// file lives until the test process exits; single-file cases do not need a
 /// directory guard.
-#[allow(dead_code)]
 pub(crate) fn temp_source(name: &str, source: &str) -> PathBuf {
     let stem = unique_temp_path(name);
     // Append rather than replace the extension: a `name` containing a dot must
@@ -72,7 +68,6 @@ pub(crate) fn temp_source(name: &str, source: &str) -> PathBuf {
 }
 
 /// Write `contents` to `root/relative`, creating parent directories.
-#[allow(dead_code)]
 pub(crate) fn write(root: impl AsRef<Path>, relative: &str, contents: &str) {
     let path = root.as_ref().join(relative);
     fs::create_dir_all(path.parent().unwrap()).expect("create dirs");
@@ -80,7 +75,6 @@ pub(crate) fn write(root: impl AsRef<Path>, relative: &str, contents: &str) {
 }
 
 /// Invoke the `marrow` binary with the given arguments.
-#[allow(dead_code)]
 pub(crate) fn marrow(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_marrow"))
         .args(args)
@@ -89,7 +83,6 @@ pub(crate) fn marrow(args: &[&str]) -> Output {
 }
 
 /// Invoke the `marrow` binary from a chosen working directory.
-#[allow(dead_code)]
 pub(crate) fn marrow_in(cwd: impl AsRef<Path>, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_marrow"))
         .current_dir(cwd)
@@ -97,8 +90,6 @@ pub(crate) fn marrow_in(cwd: impl AsRef<Path>, args: &[&str]) -> Output {
         .output()
         .expect("run marrow")
 }
-
-#[allow(dead_code)]
 pub(crate) fn backup_artifact(root: impl AsRef<Path>, file_name: &str) -> PathBuf {
     let root = root.as_ref();
     commit_catalog_if_clean(root);
@@ -113,7 +104,6 @@ pub(crate) fn backup_artifact(root: impl AsRef<Path>, file_name: &str) -> PathBu
 }
 
 /// Invoke the `marrow` binary with a leading subcommand followed by `args`.
-#[allow(dead_code)]
 pub(crate) fn marrow_sub(cmd: &str, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_marrow"))
         .arg(cmd)
@@ -123,7 +113,6 @@ pub(crate) fn marrow_sub(cmd: &str, args: &[&str]) -> Output {
 }
 
 /// Invoke the `marrow` binary with a leading subcommand from a chosen working directory.
-#[allow(dead_code)]
 pub(crate) fn marrow_sub_in(cwd: impl AsRef<Path>, cmd: &str, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_marrow"))
         .current_dir(cwd)
@@ -137,7 +126,6 @@ pub(crate) fn marrow_sub_in(cwd: impl AsRef<Path>, cmd: &str, args: &[&str]) -> 
 /// spaces, so a path fragment or a prose word never parses as the code. This is the
 /// one oracle for "is this segment the dotted code" shared by every CLI surface that
 /// prints `... code: message` without a structured envelope.
-#[allow(dead_code)]
 pub(crate) fn is_code(token: &str) -> bool {
     token.contains('.')
         && !token.contains(' ')
@@ -151,7 +139,6 @@ pub(crate) fn is_code(token: &str) -> bool {
 /// every segment before it is the location, and every segment after it is the message.
 /// This is the one position-finding contract shared by the located and bare fault
 /// grammars.
-#[allow(dead_code)]
 pub(crate) fn find_code_segment<'a>(segments: &[&'a str]) -> (usize, &'a str) {
     let index = segments
         .iter()
@@ -164,7 +151,6 @@ pub(crate) fn find_code_segment<'a>(segments: &[&'a str]) -> (usize, &'a str) {
 /// trailing two `:`-delimited fields are the numeric line and column; the rest, which
 /// may itself contain `:` on some paths, is the file. Callers that need only part of
 /// the result discard the fields they do not assert on.
-#[allow(dead_code)]
 pub(crate) fn parse_location(location: &str) -> (String, u32, u32) {
     let mut fields = location.rsplitn(3, ':');
     let column: u32 = fields
@@ -183,7 +169,6 @@ pub(crate) fn parse_location(location: &str) -> (String, u32, u32) {
 /// and `line`; a bare fault carries only the `code`. Domain-specific unpacking (a
 /// thrown-code bracket payload, a per-test outcome label) belongs in the calling test,
 /// not here.
-#[allow(dead_code)]
 pub(crate) struct ParsedResult {
     pub(crate) file: Option<String>,
     pub(crate) line: Option<u32>,
@@ -195,7 +180,6 @@ pub(crate) struct ParsedResult {
 /// everything before it is the `file:line:col` location, and a line whose code leads
 /// with no preceding segments is bare and carries no origin. This is the one grammar
 /// contract `marrow run` and `marrow test` share.
-#[allow(dead_code)]
 pub(crate) fn parse_result_line(line: &str) -> ParsedResult {
     let segments: Vec<&str> = line.trim().split(": ").collect();
     let (code_index, code) = find_code_segment(&segments);
@@ -218,7 +202,6 @@ pub(crate) fn parse_result_line(line: &str) -> ParsedResult {
 
 /// The canonical native-store config selecting `src` and a `.data` store, with
 /// no default entry. Tests that need a default entry write their own config.
-#[allow(dead_code)]
 pub(crate) const fn native_config() -> &'static str {
     r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#
 }
@@ -226,7 +209,6 @@ pub(crate) const fn native_config() -> &'static str {
 /// The canonical native-store seed source: a `Counter` resource whose `seed`
 /// transaction writes one record. Pairs with [`native_config`] for tests that
 /// need a stored root to read back.
-#[allow(dead_code)]
 pub(crate) const fn counter_source() -> &'static str {
     "module app\n\
      \n\
@@ -249,7 +231,6 @@ pub(crate) struct TempProject {
 }
 
 impl TempProject {
-    #[allow(dead_code)]
     pub(crate) fn path(&self) -> &Path {
         &self.root
     }
@@ -279,7 +260,6 @@ impl Drop for TempProject {
 /// catalog through the production writer, so read-only commands see a committed
 /// catalog. Use [`temp_project_uncommitted`] when a test must observe the
 /// pending state before a flow commits it.
-#[allow(dead_code)]
 pub(crate) fn temp_project(name: &str, build: impl FnOnce(&Path)) -> TempProject {
     let project = temp_dir(name);
     build(&project.root);
@@ -289,7 +269,6 @@ pub(crate) fn temp_project(name: &str, build: impl FnOnce(&Path)) -> TempProject
 
 /// Build a project in a self-cleaning temp directory without committing its
 /// catalog, leaving any proposed durable identity pending.
-#[allow(dead_code)]
 pub(crate) fn temp_project_uncommitted(name: &str, build: impl FnOnce(&Path)) -> TempProject {
     let project = temp_dir(name);
     build(&project.root);
@@ -300,7 +279,6 @@ pub(crate) fn temp_project_uncommitted(name: &str, build: impl FnOnce(&Path)) ->
 /// then render the committed catalog file the way a state-establishing run does. A
 /// project that does not check cleanly, proposes no catalog change, or configures no
 /// durable store is left untouched.
-#[allow(dead_code)]
 pub(crate) fn commit_catalog_if_clean(root: impl AsRef<Path>) {
     let root = root.as_ref();
     let Ok(config_text) = fs::read_to_string(root.join("marrow.json")) else {
@@ -339,7 +317,6 @@ pub(crate) fn commit_catalog_if_clean(root: impl AsRef<Path>) {
 /// The native store file path a project's config selects, or `None` for an explicit
 /// memory store. Mirrors the CLI's own resolution so fixtures and the binary agree on where
 /// the store lives.
-#[allow(dead_code)]
 pub(crate) fn native_store_path(
     root: &Path,
     config: &marrow_project::ProjectConfig,
@@ -359,7 +336,6 @@ pub(crate) fn native_store_path(
 /// The accepted store catalog id of a checked root member, addressed by name. CLI
 /// tests that write cells under the live store resolve member ids through the same
 /// checked facts the runtime uses, never by spelling the id.
-#[allow(dead_code)]
 pub(crate) fn member_catalog_id(
     members: &[marrow_check::CheckedSavedMember],
     name: &str,

@@ -1,9 +1,4 @@
-//! Shared helpers for the store integration-test binaries.
-//!
-//! Each test binary that pulls this in via `mod common` uses only the subset of
-//! helpers it needs, so unused-helper warnings here are expected.
-#![allow(dead_code)]
-
+//! Shared helpers for the store integration tests.
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};

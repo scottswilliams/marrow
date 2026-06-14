@@ -5,11 +5,6 @@
 //! This module is the single owner of that setup: snippet checking, catalog
 //! commit, saved-path construction over checked facts, store reads/writes, and
 //! the run/error oracles.
-//!
-//! Each test binary includes this module, so not every binary exercises every
-//! helper; the crate-wide `dead_code` allowance keeps the shared surface intact.
-
-#![allow(dead_code)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -565,12 +560,18 @@ pub fn eval_source(
 /// The sample's `add` shape: allocate an id, build a local resource field by
 /// field, and save it. The runtime snippet fixtures live in the repo-root corpus,
 /// so no `.mw` shape is re-declared as an inline string across crates.
-pub const BOOK_ADD: &str = include_str!("../../../../fixtures/v01/runtime/books_add.mw");
+pub const BOOK_ADD: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/runtime/books_add.mw"
+));
 
 /// Extract the single `mw` code block from the canonical sample, so the
 /// integration test runs the exact published source.
 pub fn sample_source() -> String {
-    let doc = include_str!("../../../../docs/language/sample.md");
+    let doc = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/language/sample.md"
+    ));
     doc.split("```mw")
         .nth(1)
         .and_then(|rest| rest.split("```").next())
@@ -581,27 +582,42 @@ pub fn sample_source() -> String {
 /// A composite-identity store indexed by status. The non-unique index ends with
 /// both identity keys, so traversal must descend both levels per entry and
 /// reconstruct the full `Id(^enrollments)` (not just the first key component).
-pub const ENROLLMENT_STATUS: &str =
-    include_str!("../../../../fixtures/v01/runtime/enrollment_status.mw");
+pub const ENROLLMENT_STATUS: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/runtime/enrollment_status.mw"
+));
 
 /// Iterating a primary keyed root yields identities. Two-name loops pair the
 /// identity with the materialized record value. The trailing blank line lets a
 /// test append function declarations after the split resource/store block.
-pub const BOOK_PRIMARY_SCHEMA: &str =
-    include_str!("../../../../fixtures/v01/runtime/books_primary_schema.mw");
+pub const BOOK_PRIMARY_SCHEMA: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/runtime/books_primary_schema.mw"
+));
 
-pub const BOOK_TAGS_SCHEMA: &str =
-    include_str!("../../../../fixtures/v01/runtime/books_tags_schema.mw");
+pub const BOOK_TAGS_SCHEMA: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/runtime/books_tags_schema.mw"
+));
 
-pub const BOOK_SHELF_SCHEMA: &str =
-    include_str!("../../../../fixtures/v01/runtime/books_shelf_schema.mw");
+pub const BOOK_SHELF_SCHEMA: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/runtime/books_shelf_schema.mw"
+));
 
-pub const BOOK_ISBN_SCHEMA: &str =
-    include_str!("../../../../fixtures/v01/runtime/books_isbn_schema.mw");
+pub const BOOK_ISBN_SCHEMA: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/runtime/books_isbn_schema.mw"
+));
 
-pub const BOOK_SHELF_INDEX_SCHEMA: &str =
-    include_str!("../../../../fixtures/v01/runtime/books_shelf_index_schema.mw");
+pub const BOOK_SHELF_INDEX_SCHEMA: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/runtime/books_shelf_index_schema.mw"
+));
 
 /// `count(path)` over the four presence shapes: a scalar field, a child-bearing
 /// layer, and absent paths.
-pub const BOOK_COUNT: &str = include_str!("../../../../fixtures/v01/runtime/books_count.mw");
+pub const BOOK_COUNT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/runtime/books_count.mw"
+));

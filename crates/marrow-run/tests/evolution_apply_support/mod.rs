@@ -7,12 +7,6 @@
 //! contracts. The witness is the only input that crosses the check->run boundary, so
 //! every drift dimension is exercised by mutating the witness or the store and proving
 //! apply aborts before committing a write.
-//!
-//! Each invariant-focused split file includes this module, so not every binary
-//! exercises every helper; the crate-wide `dead_code` allowance keeps the shared
-//! surface intact.
-
-#![allow(dead_code)]
 
 use std::fs;
 use std::ops::Deref;
@@ -30,9 +24,6 @@ use marrow_store::value::{Scalar, decode_value, encode_value};
 // behind its `test-support` feature, so the apply suites query the same helpers the
 // discharge suites do rather than carrying a copy. The `config`/`checked`/
 // `commit_then_check`/`root_place` names the apply tests call resolve through this glob.
-// Each split binary uses a subset, so unused re-exports are expected, as with the
-// crate-wide `dead_code` allowance.
-#[allow(unused_imports)]
 pub use marrow_check::test_support::{
     checked, commit_then_check, group_member_catalog_id, index_catalog_id, member_catalog_id,
     nested_member_catalog_id, proposal_catalog_id, root_place, store_id_of, test_config as config,
@@ -41,14 +32,22 @@ pub use marrow_check::test_support::{
 // The before/after `module books` evolution sources live in the repo-root corpus, so
 // the apply suites and the CLI evolution suites load one canonical fixture rather than
 // re-declaring the same shape as an inline string per crate.
-const BOOKS_BASELINE: &str =
-    include_str!("../../../../fixtures/v01/evolution/books_required_baseline.mw");
-const BOOKS_REQUIRED_DEFAULT: &str =
-    include_str!("../../../../fixtures/v01/evolution/books_required_default.mw");
-const BOOKS_SUBTITLE_BASELINE: &str =
-    include_str!("../../../../fixtures/v01/evolution/books_subtitle_baseline.mw");
-const BOOKS_RETIRE_SUBTITLE: &str =
-    include_str!("../../../../fixtures/v01/evolution/books_retire_subtitle.mw");
+const BOOKS_BASELINE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_required_baseline.mw"
+));
+const BOOKS_REQUIRED_DEFAULT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_required_default.mw"
+));
+const BOOKS_SUBTITLE_BASELINE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_subtitle_baseline.mw"
+));
+const BOOKS_RETIRE_SUBTITLE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_retire_subtitle.mw"
+));
 
 /// A temporary project directory removed when the value is dropped.
 ///
