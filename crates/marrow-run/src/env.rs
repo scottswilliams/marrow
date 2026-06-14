@@ -492,6 +492,7 @@ impl<'p> Env<'p> {
         for step in &plan.steps {
             match step {
                 PlanStep::WriteNode { address } => self.guard_record_node_write(address, span)?,
+                PlanStep::WriteDataNode { address } => self.guard_data_write(address, span)?,
                 PlanStep::WriteData { address, .. } => self.guard_data_write(address, span)?,
                 PlanStep::DeleteData { address } => self.guard_data_delete(address, span)?,
                 PlanStep::DeleteRecordSubtree { address } => {
@@ -520,6 +521,7 @@ impl<'p> Env<'p> {
                     self.guard_index_subtree_delete(address, span)?
                 }
                 PlanStep::WriteNode { .. }
+                | PlanStep::WriteDataNode { .. }
                 | PlanStep::WriteData { .. }
                 | PlanStep::DeleteData { .. }
                 | PlanStep::DeleteRecordSubtree { .. }
@@ -769,6 +771,7 @@ fn changed_catalog_ids(steps: &[PlanStep]) -> (Vec<CatalogId>, Vec<CatalogId>) {
     for step in steps {
         match step {
             PlanStep::WriteNode { address }
+            | PlanStep::WriteDataNode { address }
             | PlanStep::WriteData { address, .. }
             | PlanStep::DeleteData { address }
             | PlanStep::DeleteRecordSubtree { address } => {

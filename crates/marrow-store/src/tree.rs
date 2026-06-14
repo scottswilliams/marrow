@@ -265,6 +265,23 @@ impl TreeStore {
         )
     }
 
+    pub fn write_data_node(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+    ) -> Result<(), StoreError> {
+        if path.is_empty() {
+            return Err(StoreError::InvalidTransaction {
+                message: "data path node writes require a non-empty path".to_string(),
+            });
+        }
+        self.write_cell(
+            CellKey::data_path_prefix(store, identity, path).as_bytes(),
+            NODE_MARKER.to_vec(),
+        )
+    }
+
     pub fn read_data_value(
         &self,
         store: &CatalogId,
@@ -2352,6 +2369,65 @@ mod tests {
         assert!(!store.is_empty().expect("is_empty"));
     }
 
+    #[test]
+    fn data_path_node_marks_presence_without_payload_bytes() {
+        let store_id = catalog("cat_00000000000000000000000000000001");
+        let member = catalog("cat_00000000000000000000000000000002");
+        let identity = [SavedKey::Int(1)];
+        let member_path = [DataPathSegment::Member(member.clone())];
+        let entry_path = [
+            DataPathSegment::Member(member),
+            DataPathSegment::Key(SavedKey::Int(7)),
+        ];
+        let source = TreeStore::memory();
+        source.write_node(&store_id, &identity).expect("write node");
+        source
+            .write_data_node(&store_id, &identity, &entry_path)
+            .expect("write data path node");
+
+        assert!(
+            source
+                .data_subtree_exists(&store_id, &identity, &entry_path)
+                .expect("entry exists")
+        );
+        assert_eq!(
+            source
+                .read_data_value(&store_id, &identity, &entry_path)
+                .expect("read data value"),
+            None
+        );
+        assert_eq!(
+            source
+                .data_first_child(&store_id, &identity, &member_path)
+                .expect("first child"),
+            Some(SavedKey::Int(7))
+        );
+
+        let cells = collect_backup_cells(&source);
+        assert!(cells.iter().any(|cell| {
+            matches!(
+                cell.data_key().kind,
+                DataCellKind::PathNode { ref path } if path.as_slice() == entry_path
+            ) && cell.value() == NODE_MARKER
+        }));
+
+        let restored = TreeStore::memory();
+        for cell in &cells {
+            replay_backup_cell(&restored, cell).expect("restore cell");
+        }
+        assert!(
+            restored
+                .data_subtree_exists(&store_id, &identity, &entry_path)
+                .expect("restored entry exists")
+        );
+        assert_eq!(
+            restored
+                .read_data_value(&store_id, &identity, &entry_path)
+                .expect("read restored value"),
+            None
+        );
+    }
+
     /// A backup carries every data-family cell and nothing else, and replaying that
     /// stream into a fresh store reproduces it byte-for-byte. Index cells are derived
     /// and rebuilt on restore, so they stay out of the stream; commit metadata stays
@@ -2615,6 +2691,9 @@ mod tests {
         let target = cell.data_key();
         match &target.kind {
             DataCellKind::Node => store.write_node(&target.store, &target.identity),
+            DataCellKind::PathNode { path } => {
+                store.write_data_node(&target.store, &target.identity, path)
+            }
             DataCellKind::Leaf { member } => store.write_leaf(
                 &target.store,
                 &target.identity,

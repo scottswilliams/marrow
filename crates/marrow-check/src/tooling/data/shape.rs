@@ -157,6 +157,34 @@ pub(crate) fn validate_member_value_path(
     }
 }
 
+pub(crate) fn validate_member_path_node(
+    members: &[CheckedSavedMember],
+    path: &[DataPathSegment],
+) -> Result<(), &'static str> {
+    let Some(DataPathSegment::Member(catalog)) = path.first() else {
+        return Err("a saved path shape the schema does not declare");
+    };
+    let Some(member) = members
+        .iter()
+        .find(|member| member.catalog_id.as_deref() == Some(catalog.as_str()))
+    else {
+        return Err("a saved member the schema no longer declares");
+    };
+    let Some(rest) = rest_after_member_keys(member, &path[1..]) else {
+        return Err("a saved member key shape the schema does not declare");
+    };
+    match &member.kind {
+        CheckedSavedMemberKind::Field { .. } => {
+            Err("a saved field node path the schema does not declare")
+        }
+        CheckedSavedMemberKind::Group if rest.is_empty() && !member.key_params.is_empty() => Ok(()),
+        CheckedSavedMemberKind::Group if rest.is_empty() => {
+            Err("a saved plain group node path the schema does not declare")
+        }
+        CheckedSavedMemberKind::Group => validate_member_path_node(&member.group_members, rest),
+    }
+}
+
 pub(crate) fn path_can_match(path: &[DataPathSegment], filter: &[DataPathSegment]) -> bool {
     path.starts_with(filter) || filter.starts_with(path)
 }

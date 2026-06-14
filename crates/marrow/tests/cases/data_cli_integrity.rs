@@ -19,7 +19,7 @@ use support::write;
 use support_data::{
     checked_place, checked_program, delete_tree_path, encode_identity_keys, field_path,
     integrity_problem, json, keyed_field_path, marrow, member_path_catalog_id, native_project,
-    seeded_project, write_orphan_cell, write_record_node, write_tree_value,
+    seeded_project, write_orphan_cell, write_record_node, write_tree_node, write_tree_value,
     write_tree_value_without_node,
 };
 use support_evolve::{
@@ -225,6 +225,83 @@ fn data_integrity_reports_missing_required_child_per_keyed_entry() {
     assert_eq!(
         problem["source_span"]["path"],
         serde_json::json!("^logs(1).sessions(7).note"),
+        "{value}"
+    );
+}
+
+#[test]
+fn data_integrity_accepts_a_keyed_group_entry_node() {
+    let project = support::temp_dir("data-integrity-keyed-group-node");
+    write(&project, "marrow.json", NATIVE_STORE_CONFIG);
+    write(
+        &project,
+        "src/app.mw",
+        "module app\n\n\
+         resource Post\n\
+         \x20\x20\x20\x20markers(seq: int)\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20note: string\n\
+         store ^posts(id: int): Post\n",
+    );
+    let dir = project.to_str().unwrap().to_string();
+    let place = checked_place(&project, "posts");
+    let marker_id = member_path_catalog_id(&place, &["markers"]);
+    let marker_path = vec![
+        DataPathSegment::Member(marker_id),
+        DataPathSegment::Key(SavedKey::Int(1)),
+    ];
+
+    write_tree_node(&project, "posts", &[SavedKey::Int(1)], &marker_path);
+
+    let output = marrow(&["data", "integrity", "--format", "json", &dir]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(json(output)["problems"], serde_json::json!([]));
+}
+
+#[test]
+fn data_integrity_reports_path_nodes_outside_keyed_group_entries() {
+    let project = support::temp_dir("data-integrity-invalid-path-nodes");
+    write(&project, "marrow.json", NATIVE_STORE_CONFIG);
+    write(
+        &project,
+        "src/app.mw",
+        "module app\n\n\
+         resource Item\n\
+         \x20\x20\x20\x20label: string\n\
+         \x20\x20\x20\x20tags(seq: int): string\n\
+         \x20\x20\x20\x20meta\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20note: string\n\
+         store ^items(id: int): Item\n",
+    );
+    let dir = project.to_str().unwrap().to_string();
+    let place = checked_place(&project, "items");
+    let label_path = vec![DataPathSegment::Member(member_path_catalog_id(
+        &place,
+        &["label"],
+    ))];
+    let tag_path = vec![
+        DataPathSegment::Member(member_path_catalog_id(&place, &["tags"])),
+        DataPathSegment::Key(SavedKey::Int(1)),
+    ];
+    let meta_path = vec![DataPathSegment::Member(member_path_catalog_id(
+        &place,
+        &["meta"],
+    ))];
+
+    write_record_node(&project, "items", &[SavedKey::Int(1)]);
+    write_tree_node(&project, "items", &[SavedKey::Int(1)], &label_path);
+    write_tree_node(&project, "items", &[SavedKey::Int(1)], &tag_path);
+    write_tree_node(&project, "items", &[SavedKey::Int(1)], &meta_path);
+
+    let output = marrow(&["data", "integrity", "--format", "json", &dir]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let value = json(output);
+    let problems = value["problems"].as_array().expect("problems");
+    assert_eq!(problems.len(), 3, "{value}");
+    assert!(
+        problems
+            .iter()
+            .all(|problem| problem["code"] == serde_json::json!("data.orphan")),
         "{value}"
     );
 }

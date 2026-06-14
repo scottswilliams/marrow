@@ -531,7 +531,7 @@ mod tests {
 
         assert_eq!(
             manifest["format_version"],
-            json!(5),
+            json!(6),
             "this incompatible manifest shape changes the manifest and commit descriptor byte surface"
         );
         for field in [

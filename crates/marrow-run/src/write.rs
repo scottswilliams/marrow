@@ -488,10 +488,12 @@ pub(crate) fn plan_layer_group_write(
             None => {}
         }
     }
+    let entry = DataAddress::layer_prefix(place, identity, layers, span).map_err(store_error)?;
     let mut steps = vec![PlanStep::DeleteData {
-        address: DataAddress::layer_prefix(place, identity, layers, span).map_err(store_error)?,
+        address: entry.clone(),
     }];
     steps.push(record_node_step(place, identity, span)?);
+    steps.push(PlanStep::WriteDataNode { address: entry });
     for (path, bytes) in to_write {
         steps.push(PlanStep::WriteData {
             address: data_address(place, identity, layers, &path, span)?,

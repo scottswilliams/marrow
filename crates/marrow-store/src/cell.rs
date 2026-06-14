@@ -303,6 +303,9 @@ fn decode_saved_keys(mut bytes: &[u8]) -> Result<Vec<SavedKey>, MalformedKey> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DataCellKind {
     Node,
+    PathNode {
+        path: Vec<DataPathSegment>,
+    },
     Leaf {
         member: CatalogId,
     },
@@ -328,6 +331,7 @@ impl DataCellKey {
     pub fn path(&self) -> Vec<DataPathSegment> {
         match &self.kind {
             DataCellKind::Node => Vec::new(),
+            DataCellKind::PathNode { path } => path.clone(),
             DataCellKind::Leaf { member } | DataCellKind::Sequence { member, .. } => {
                 vec![DataPathSegment::Member(member.clone())]
             }
@@ -380,7 +384,11 @@ fn decode_data_cell_kind(mut bytes: &[u8]) -> Option<DataCellKind> {
     let mut path = Vec::new();
     loop {
         let Some(tag) = bytes.first().copied() else {
-            return path.is_empty().then_some(DataCellKind::Node);
+            return if path.is_empty() {
+                Some(DataCellKind::Node)
+            } else {
+                Some(DataCellKind::PathNode { path })
+            };
         };
         match tag {
             DATA_VALUE_END => {
@@ -578,6 +586,22 @@ mod tests {
     }
 
     #[test]
+    fn decodes_a_data_path_node_without_exposing_a_value_cell() {
+        let store = store_id("");
+        let member = member_id();
+        let identity = vec![SavedKey::Int(1)];
+        let path = vec![
+            DataPathSegment::Member(member),
+            DataPathSegment::Key(SavedKey::Int(10)),
+        ];
+        let key = CellKey::data_path_prefix(&store, &identity, &path);
+        let cell = decode_data_cell_key(key.as_bytes()).expect("decode path node");
+        assert_eq!(cell.store, store);
+        assert_eq!(cell.identity, identity);
+        assert_eq!(cell.kind, DataCellKind::PathNode { path });
+    }
+
+    #[test]
     fn decodes_a_leaf_cell_and_a_bare_node_cell() {
         let store = store_id("");
         let member = member_id();
@@ -640,6 +664,14 @@ mod tests {
                         member: member.clone(),
                         position: SequencePosition::new(42),
                     },
+                },
+            ),
+            (
+                CellKey::data_path_prefix(&store, &identity, &path),
+                DataCellKey {
+                    store: store.clone(),
+                    identity: identity.clone(),
+                    kind: DataCellKind::PathNode { path: path.clone() },
                 },
             ),
             (

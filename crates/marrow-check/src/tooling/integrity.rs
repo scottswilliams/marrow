@@ -17,8 +17,8 @@ use crate::{
 
 use super::data::{
     DataRecord, checked_places, key_mismatch, push_key, render_data_path, tooling_catalog_id,
-    validate_member_value_path, visit_data_records_in_places, visit_data_records_in_places_until,
-    visit_place_record_identities_until,
+    validate_member_path_node, validate_member_value_path, visit_data_records_in_places,
+    visit_data_records_in_places_until, visit_place_record_identities_until,
 };
 
 const ORPHAN_INTEGRITY_HELP: &str =
@@ -791,10 +791,14 @@ impl DeclaredSchema {
                 "a saved root identity shape the schema does not declare",
             )));
         }
-        if matches!(kind, DataCellKind::Node) {
-            return Ok(None);
-        }
-        if let Err(reason) = validate_member_value_path(&root.members, &path) {
+        let validated = match kind {
+            DataCellKind::Node => return Ok(None),
+            DataCellKind::PathNode { .. } => validate_member_path_node(&root.members, &path),
+            DataCellKind::Leaf { .. }
+            | DataCellKind::Sequence { .. }
+            | DataCellKind::Value { .. } => validate_member_value_path(&root.members, &path),
+        };
+        if let Err(reason) = validated {
             return Ok(Some(root.orphan(&identity, &path, reason)));
         }
         if store

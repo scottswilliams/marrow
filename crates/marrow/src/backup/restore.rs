@@ -482,6 +482,9 @@ fn restore_cell(store: &TreeStore, cell: &TreeBackupCellBuf) -> Result<(), Backu
     let target = cell.data_key();
     match &target.kind {
         DataCellKind::Node => store.write_node(&target.store, &target.identity)?,
+        DataCellKind::PathNode { path } => {
+            store.write_data_node(&target.store, &target.identity, path)?
+        }
         DataCellKind::Leaf { member } => store.write_leaf(
             &target.store,
             &target.identity,

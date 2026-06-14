@@ -48,6 +48,9 @@ pub(crate) enum PlanStep {
     WriteNode {
         address: DataAddress,
     },
+    WriteDataNode {
+        address: DataAddress,
+    },
     WriteData {
         address: DataAddress,
         value: Vec<u8>,
@@ -137,7 +140,9 @@ impl WritePlan {
 
     pub fn steps(&self) -> impl Iterator<Item = (WriteOp, WriteTarget, Option<&[u8]>)> {
         self.steps.iter().map(|step| match step {
-            PlanStep::WriteNode { address } => (WriteOp::Write, data_target(address), None),
+            PlanStep::WriteNode { address } | PlanStep::WriteDataNode { address } => {
+                (WriteOp::Write, data_target(address), None)
+            }
             PlanStep::WriteData { address, value } => {
                 (WriteOp::Write, data_target(address), Some(value.as_slice()))
             }
@@ -175,6 +180,9 @@ fn apply_steps(steps: Vec<PlanStep>, store: &TreeStore) -> Result<(), StoreError
         match step {
             PlanStep::WriteNode { address } => {
                 store.write_node(&address.store, &address.identity)?
+            }
+            PlanStep::WriteDataNode { address } => {
+                store.write_data_node(&address.store, &address.identity, &address.path)?
             }
             PlanStep::WriteData { address, value } => {
                 store.write_data_value(&address.store, &address.identity, &address.path, value)?

@@ -196,6 +196,13 @@ fn sample_cell_catalog_ids(cell: &TreeBackupCellBuf, samples: &mut Vec<String>) 
     truncated |= push_sample(samples, key.store.as_str());
     match &key.kind {
         DataCellKind::Node => {}
+        DataCellKind::PathNode { path } => {
+            for segment in path {
+                if let DataPathSegment::Member(member) = segment {
+                    truncated |= push_sample(samples, member.as_str());
+                }
+            }
+        }
         DataCellKind::Leaf { member } | DataCellKind::Sequence { member, .. } => {
             truncated |= push_sample(samples, member.as_str());
         }

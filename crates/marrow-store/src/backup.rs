@@ -17,6 +17,7 @@ const KIND_NODE: u8 = 0;
 const KIND_LEAF: u8 = 1;
 const KIND_SEQUENCE: u8 = 2;
 const KIND_VALUE: u8 = 3;
+const KIND_PATH_NODE: u8 = 4;
 const SEGMENT_MEMBER: u8 = 0;
 const SEGMENT_KEY: u8 = 1;
 const MIN_KEY_FRAME_BYTES: usize = 6; // 4-byte chunk length + shortest bool key.
@@ -27,7 +28,7 @@ pub const TREE_BACKUP_ARCHIVE_MAGIC: &[u8; 8] = b"MARROWBK";
 
 /// The archive framing version shared by backup writers, restore, and read-only
 /// preview readers.
-pub const TREE_BACKUP_ARCHIVE_FORMAT_VERSION: u32 = 5;
+pub const TREE_BACKUP_ARCHIVE_FORMAT_VERSION: u32 = 6;
 
 pub const TREE_BACKUP_MAX_MANIFEST_BYTES: u32 = 16 * 1024 * 1024;
 pub const TREE_BACKUP_MAX_CATALOG_SECTION_BYTES: u32 = 64 * 1024 * 1024;
@@ -255,8 +256,11 @@ fn decode_and_validate(key: &[u8], value: &[u8]) -> Result<DataCellKey, StoreErr
 }
 
 fn validate_target_value(target: &DataCellKey, value: &[u8]) -> Result<(), &'static str> {
-    if matches!(target.kind, DataCellKind::Node) && value != NODE_MARKER {
-        return Err("backup node cell has a malformed marker");
+    match target.kind {
+        DataCellKind::Node | DataCellKind::PathNode { .. } if value != NODE_MARKER => {
+            return Err("backup node cell has a malformed marker");
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -266,6 +270,10 @@ fn encode_target_frame(target: &DataCellKey) -> Vec<u8> {
     out.push(TARGET_VERSION_V0);
     match &target.kind {
         DataCellKind::Node => out.push(KIND_NODE),
+        DataCellKind::PathNode { path } => {
+            out.push(KIND_PATH_NODE);
+            encode_path(path, &mut out);
+        }
         DataCellKind::Leaf { member } => {
             out.push(KIND_LEAF);
             encode_catalog_id(member, &mut out);
@@ -308,6 +316,13 @@ type FrameReader<'a> = BoundedReader<'a, TreeBackupCellReadError>;
 fn decode_kind(frame: &mut FrameReader<'_>) -> Result<DataCellKind, TreeBackupCellReadError> {
     match frame.take_u8()? {
         KIND_NODE => Ok(DataCellKind::Node),
+        KIND_PATH_NODE => {
+            let path = read_path(frame)?;
+            if path.is_empty() {
+                return Err(TreeBackupCellReadError::MalformedCell);
+            }
+            Ok(DataCellKind::PathNode { path })
+        }
         KIND_LEAF => Ok(DataCellKind::Leaf {
             member: read_catalog_id(frame)?,
         }),

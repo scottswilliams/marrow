@@ -144,6 +144,33 @@ pub fn read_nested_reply(): Reply
     return ^posts(1).comments(1).replies(1) ?? fallback
 ";
 
+const POST_TYPED_KEYED_MARKERS: &str = "\
+module test
+resource Marker
+    note: string
+resource Post
+    markers(seq: int): Marker
+store ^posts(id: int): Post
+
+pub fn save_empty_marker()
+    var marker: Marker
+    ^posts(1).markers(1) = marker
+
+pub fn marker_exists(): bool
+    return exists(^posts(1).markers(1))
+
+pub fn read_marker(): Marker
+    var fallback: Marker
+    fallback.note = \"missing\"
+    return ^posts(1).markers(1) ?? fallback
+
+pub fn marker_count(): int
+    var total = 0
+    for seq in keys(^posts(1).markers)
+        total = total + 1
+    return total
+";
+
 #[test]
 fn deleting_a_sparse_field_inside_an_unkeyed_group_is_allowed() {
     // Field delete descends unkeyed-group layers. Sparse descendants may still be
@@ -253,6 +280,23 @@ fn typed_keyed_resource_entry_write_read_materializes_value() {
             ),
         ]))
     );
+}
+
+#[test]
+fn typed_keyed_resource_entry_write_preserves_empty_entry_presence() {
+    let program = checked_program(POST_TYPED_KEYED_MARKERS);
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::save_empty_marker")).expect("save");
+
+    let exists =
+        run_entry(&store, checked_entry!(&program, "test::marker_exists")).expect("exists");
+    assert_eq!(exists.value, Some(Value::Bool(true)));
+
+    let marker = run_entry(&store, checked_entry!(&program, "test::read_marker")).expect("read");
+    assert_eq!(marker.value, Some(Value::Resource(vec![])));
+
+    let count = run_entry(&store, checked_entry!(&program, "test::marker_count")).expect("count");
+    assert_eq!(count.value, Some(Value::Int(1)));
 }
 
 #[test]

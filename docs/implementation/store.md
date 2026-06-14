@@ -14,7 +14,7 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 - **Public facade** — `TreeStore` wraps a boxed `Backend` and exposes every typed write/read/navigation/transaction/snapshot/backup call other crates use.
 - **Durable stamp metadata** — `metadata` (`CommitMetadata`, `EngineProfile`, `StoreUid`, and the source digest the activation fence binds).
 - **Catalog table** — `catalog` persists the accepted `marrow_catalog::CatalogMetadata` as a header row plus one row per entry in its own physical family (`FAMILY_CATALOG`), written in the caller's transaction and invisible to data/index/meta access; a read verifies the stored header against the decoded rows, accepts the canonical order-insensitive digest or the legacy order-sensitive row-order digest, and returns a snapshot normalized to the canonical digest.
-- **Backup** — `backup` streams data-family node and value cells; index cells are rebuilt and commit metadata is restamped from the manifest on restore, never archived.
+- **Backup** — `backup` streams data-family record nodes, keyed group-entry path nodes, and value cells; index cells are rebuilt and commit metadata is restamped from the manifest on restore, never archived.
 
 ## Modules
 
@@ -51,8 +51,8 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 
 ## Read next
 
-- `crates/marrow-store/src/tree.rs` — `TreeStore::memory` / `open` / `open_read_only` to construct; `write_data_value` / `read_data_value` / `delete_data_subtree` for the write/read primitives.
+- `crates/marrow-store/src/tree.rs` — `TreeStore::memory` / `open` / `open_read_only` to construct; `write_data_node` / `write_data_value` / `read_data_value` / `delete_data_subtree` for the write/read primitives. A data path node is a hidden group-entry presence cell at the path prefix; payload reads only use the value-suffixed key.
 - `crates/marrow-store/src/tree.rs` — `scan_children_until` / `next_child_after` / `for_each_page_entry`: the one paged-scan-plus-decode engine all navigation routes through.
-- `crates/marrow-store/src/cell.rs` — `decode_data_cell_key` / `CellKey::data_path_value` / `family`: the authoritative v0 key grammar.
+- `crates/marrow-store/src/cell.rs` — `decode_data_cell_key` / `CellKey::data_path_prefix` / `CellKey::data_path_value` / `family`: the authoritative v0 key grammar.
 - `crates/marrow-store/src/key.rs` — `encode_key_into` / `encode_escaped_bytes`: why stored byte order equals typed key order.
 - `crates/marrow-store/src/redb.rs` — `RedbStore::mutate` / `commit` / `rollback`: the flat joined transaction model behind atomic rollback on the persistent engine.

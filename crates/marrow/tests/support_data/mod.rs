@@ -169,6 +169,25 @@ pub(crate) fn write_tree_values(
     }
 }
 
+pub(crate) fn write_tree_node(
+    project: &Path,
+    root: &str,
+    identity: &[SavedKey],
+    path: &[DataPathSegment],
+) {
+    let place = checked_place(project, root);
+    let store_dir = project.join(".data");
+    fs::create_dir_all(&store_dir).expect("create store dir");
+    let store = TreeStore::open(&store_dir.join("marrow.redb")).expect("open native store");
+    let store_id = checked_catalog_id(&place.store_catalog_id);
+    store
+        .write_node(&store_id, identity)
+        .expect("write tree-cell node");
+    store
+        .write_data_node(&store_id, identity, path)
+        .expect("write tree-cell path node");
+}
+
 pub(crate) fn delete_tree_path(
     project: &Path,
     root: &str,
