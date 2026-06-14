@@ -1,6 +1,6 @@
 # Runtime (marrow-run)
 
-The runtime is the final pipeline stage. It takes a `CheckedRuntimeProgram` (already parsed and type-checked by marrow-check), a `TreeStore`, and an optional `Host`, and runs a named entry function. There is no bytecode or separate IR: the runtime is a tree-walking interpreter directly over the checked AST, so the `Checked*` types *are* the executable form and the checker's proofs make many runtime branches defensive-only.
+The runtime is the final pipeline stage. It takes a checked project session or a lower-level `CheckedRuntimeProgram`, a `TreeStore`, and an optional `Host`, and runs a named entry function. There is no bytecode or separate IR: the runtime is a tree-walking interpreter directly over the checked AST, so the `Checked*` types *are* the executable form and the checker's proofs make many runtime branches defensive-only.
 
 ## The shared model
 
@@ -11,15 +11,17 @@ The runtime is the final pipeline stage. It takes a `CheckedRuntimeProgram` (alr
 
 ## Phase order of one run
 
-1. `run_entry*` (`entry.rs`) resolves the entry, canonicalizes and type-checks args, and starts the top activation.
-2. `eval_call` (`call.rs`) dispatches every saved read, constructor, builtin, std capability, local-collection, and program-function call.
-3. `eval_statement` / `eval_expr` (`statement.rs`, `expr.rs`) walk the body; saved reads stream through the read bridge, saved writes build and commit plans, stdlib calls branch on the checker-stamped `Capability`.
-4. Evolution gating wraps a run but lives in the `marrow` CLI, not the runtime: `marrow run` (`cmd_run.rs`) calls `fence` and, on store drift, `try_auto_apply` before `run_entry`; `marrow evolve apply` (`cmd_evolve`) commits the witness's durable rewrite. The runtime exports these from `evolution/`, but `run_entry` never calls them.
+1. `ProjectSession::open` (`project_session.rs`) checks a project for `run` or `test`, binds accepted catalog identity, and admits the configured store before any write-capable run invocation.
+2. `ProjectSession::invoke` builds a `CheckedEntryCall` and selects the admitted run store or a fresh test store, then calls `run_entry*` (`entry.rs`) to resolve the entry, canonicalize and type-check args, and start the top activation.
+3. `eval_call` (`call.rs`) dispatches every saved read, constructor, builtin, std capability, local-collection, and program-function call.
+4. `eval_statement` / `eval_expr` (`statement.rs`, `expr.rs`) walk the body; saved reads stream through the read bridge, saved writes build and commit plans, stdlib calls branch on the checker-stamped `Capability`.
+5. Evolution admission for `run` lives in `project_session.rs`: the session freezes a pending baseline, fences on `(source_digest, accepted_epoch, engine_profile)`, auto-applies zero-record-mutation drift through the production apply path, and refuses unstamped populated stores before invocation.
 
-## The five areas
+## The six areas
 
 | Area | Spine | One-line responsibility |
 | --- | --- | --- |
+| Project sessions | `project_session.rs` | Load and check run/test projects, bind catalog identity, admit stores through the activation fence, and invoke entries through one session path. |
 | [Evaluator core](evaluator.md) | `entry.rs`, `activation.rs`, `call.rs`, `expr.rs`, `statement.rs`, `exec.rs`, `loop_exec.rs`, `env.rs`, `error.rs`, `host.rs`, `path.rs` | Walk the checked AST: values, control flow, calls, loops, the error channel, the host boundary, and saved-path lowering. |
 | [Reads and iteration](saved-data.md) | `read.rs`, `durable_read.rs`, `saved_iter.rs` (+ `saved_iter/`), `collection.rs`, `local_collection.rs` | Resolve a checked place to a store address; decode one entry or stream ordered iteration for `for`/`keys`/`values`/`entries`/`count`. Durable data is never materialized as a `Value`. |
 | [Managed writes](writes.md) | `write.rs`, `write_plan.rs`, `write_dispatch/`, `group_write.rs`, `transaction.rs`, `index_maintenance.rs`, `store.rs` | Lower a write target to a `SavedPath`, build a typed `WritePlan` (data + generated indexes + metadata stamp), and commit it atomically inside the active transaction. |
@@ -30,7 +32,8 @@ The runtime never re-resolves names or re-parses op strings: the checker stamps 
 
 ## Read next
 
-- `entry.rs` — `run_entry` / `CheckedEntryCall::new`: how a run starts.
+- `project_session.rs` — `ProjectSession::open` / `ProjectSession::invoke`: the unstable project admission and invocation boundary.
+- `entry.rs` — `run_entry` / `CheckedEntryCall::new`: how one admitted entry starts.
 - `activation.rs` — `invoke`: the body-execution kernel and `Completion` classification.
 - `call.rs` — `eval_call`: the central dispatcher every call routes through.
 - `path.rs` — `lower` / `SavedPath::read` / `SavedPath::write`: the one saved-path pass behind every data feature.

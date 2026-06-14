@@ -12,7 +12,7 @@ authors.workspace = true
 marrow-catalog = { path = "../marrow-catalog" }
 marrow-check = { path = "../marrow-check" }
 marrow-schema = { path = "../marrow-schema" }
-marrow-store = { path = "../marrow-store" }
+marrow-store = { path = "../marrow-store", features = ["native"] }
 marrow-syntax = { path = "../marrow-syntax" }
 sha2 = { version = "0.11", default-features = false }
 
@@ -20,8 +20,6 @@ sha2 = { version = "0.11", default-features = false }
 # The shared fact-lookup family lives behind marrow-check's test-support feature; the
 # crate is already a normal dependency, so this only flips the feature for tests.
 marrow-check = { path = "../marrow-check", features = ["test-support"] }
-# Tests run the reference sample against the native (redb) backend too.
-marrow-store = { path = "../marrow-store", features = ["native"] }
 
 [lints]
 workspace = true

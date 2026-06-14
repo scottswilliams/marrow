@@ -16,6 +16,10 @@
 //! The evaluator is carved into sibling modules along the call spine
 //! (`expr`/`call`/`exec`/`read`/`write_dispatch`/`path`) plus its leaf
 //! supports (`error`/`value`/`host`/`env`/`stdlib`/`collection`).
+//! `ProjectSession` is the unstable project invocation boundary used by the CLI:
+//! it checks a project, admits the configured store, fences and auto-applies run
+//! evolution when allowed, and invokes entries for `marrow run` and `marrow test`
+//! through one runtime path.
 
 pub mod base64;
 pub(crate) mod write;
@@ -39,6 +43,7 @@ mod local_collection;
 mod loop_exec;
 mod neighbor;
 mod path;
+mod project_session;
 mod range_expr;
 mod read;
 mod saved_iter;
@@ -63,5 +68,9 @@ pub use error::{
     RUN_UNSUPPORTED, RuntimeError,
 };
 pub use host::{FixedNondeterminism, Frame, Host, Nondeterminism, StepHook, SystemNondeterminism};
+pub use project_session::{
+    ProjectInvokeError, ProjectMode, ProjectOpen, ProjectSession, ProjectSessionError,
+    ProjectSessionNotice, ProjectTestCase, SessionEntry,
+};
 pub use value::{IdentityValue, RunOutput, RunOutputSink, Value};
 pub use write_plan::{WriteDataSegment, WriteOp, WriteTarget};

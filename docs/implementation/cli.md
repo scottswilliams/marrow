@@ -1,6 +1,6 @@
 # CLI and project discovery
 
-The CLI is wiring and rendering, not semantics. Commands resolve a project directory to the config, checked program, and durable state they actually need, then print diagnostics, program output, or a tooling report in the formats that command owns. `check`, `evolve`, `test`, and `data` keep their structured `text`/`json`/`jsonl` reports; `run --dry-run` keeps `text`/`json`; trace, backup, and restore are text-only. All meaning — parse, type-check, evolution verdicts, store keys, value decoding — is decided downstream in `marrow-check`, `marrow-run`, and `marrow-store` and only consumed here.
+The CLI is wiring and rendering, not semantics. Commands resolve a project directory to the config, checked program, and durable state they actually need, then print diagnostics, program output, or a tooling report in the formats that command owns. `check`, `evolve`, `test`, and `data` keep their structured `text`/`json`/`jsonl` reports; `run --dry-run` keeps `text`/`json`; trace, backup, and restore are text-only. All meaning — parse, type-check, run/test admission, evolution verdicts, store keys, value decoding — is decided downstream in `marrow-project`, `marrow-check`, `marrow-run`, and `marrow-store` and only consumed here.
 
 Two crates: `marrow-project` owns the `marrow.json` schema, source/test discovery, and the digest helper. `marrow` is the binary that dispatches argv to one `cmd_*` module.
 
@@ -19,6 +19,8 @@ Two crates: `marrow-project` owns the `marrow.json` schema, source/test discover
   surface typed `store.*` codes.
 - `establish_store_baseline` — freeze a project's first proposed identity into a write-capable store in one transaction (catalog rows, epoch, engine profile, commit metadata via `marrow_run::evolution::commit_catalog_baseline`), then rebind the program against the now-accepted snapshot. Runs only over an empty store with a pending non-empty proposal; a project past its baseline never churns.
 
+`marrow run` and `marrow test` use `marrow-run::ProjectSession` for project checking, catalog binding, store admission, and entry invocation. The command modules parse flags, choose hooks, and render the resulting reports.
+
 Stream separation is load-bearing: a program's own `print` output owns stdout; run tooling reports such as trace and dry-run plans go to stderr, so a stdout JSON consumer never sees interleaving. Trace is text-only and streams directly. `marrow test --format json|jsonl` owns stdout for its structured test-result report, with text trace output kept on stderr. Exit codes are 0 success, 1 failure, 2 usage.
 Structured reports that include a `project` field render the canonical absolute project directory through `project_json_path`.
 
@@ -28,8 +30,8 @@ Structured reports that include a `project` field render the canonical absolute 
 |---|---|---|
 | `init` | `cmd_init.rs` | Creates the quickstart scaffold in a new target directory after validating the final path component as one module-name segment. |
 | `check` | `cmd_check.rs` | Type-checks a project directory containing `marrow.json`; JSON output includes checker entry footprints. |
-| `run` | `cmd_run.rs` | Freezes identity, opens and fences the store (auto-applies zero-mutation schema drift), executes the entry under a plain/trace/dry-run hook. |
-| `test` | `cmd_test.rs` | Collects public zero-param fns in test modules, optionally filters by qualified name substring, runs each selected test over a fresh in-memory store; assert fault is FAIL, any other is ERROR, rendered as text/json/jsonl test-result reports. |
+| `run` | `cmd_run.rs` | Parses run flags, opens a `ProjectSession`, emits session notices, invokes the selected entry under a plain/trace/dry-run hook, and renders the report. |
+| `test` | `cmd_test.rs` | Opens a test `ProjectSession`, filters its public zero-param test cases by qualified name substring, invokes each selected test, and renders pass/fail/error reports. |
 | `fmt` | `cmd_fmt.rs` | Formats one file to stdout, or `--check`/`--write` over source roots; refuses stdin, a bare dir with no mode, and `--write` rewrites that would reduce retained comments. |
 | `data <roots\|stats\|dump\|integrity\|recover\|get>` | `cmd_data.rs`, `cmd_data/` | Store inspection plus explicit recovery; read-only views pin one `ReadSnapshot` so multi-pass output describes one store version, while `recover` performs only a write-capable store open. |
 | `evolve <preview\|apply>` | `cmd_evolve/` | Read-only preview vs managed-write apply; apply gates destructive obligations and commits data plus catalog rows atomically. |
@@ -51,8 +53,8 @@ Structured reports that include a `project` field render the canonical absolute 
 | `crates/marrow/src/main.rs` | argv dispatch, broken-pipe hook, and the shared loaders, store-path resolution, format parsing, and JSON envelope helpers. |
 | `crates/marrow/src/cmd_init.rs` | `init`: validates the target directory's final path component and writes the quickstart project scaffold without overwriting an existing target. |
 | `crates/marrow/src/cmd_check.rs` | `check`; also the located runtime-fault renderer reused by `run`. |
-| `crates/marrow/src/cmd_run.rs` | `run`: fence, auto-apply, re-check, execute under a hook, emit the report. |
-| `crates/marrow/src/cmd_test.rs` | `test`: discover, filter, and run test fns, print pass/fail/error summary. |
+| `crates/marrow/src/cmd_run.rs` | `run`: parse flags, render session open errors/notices, execute through `ProjectSession::invoke` under a hook, emit the report. |
+| `crates/marrow/src/cmd_test.rs` | `test`: filter session-provided test cases, invoke them through `ProjectSession::invoke`, print pass/fail/error summary. |
 | `crates/marrow/src/cmd_fmt.rs` | `fmt`: format to stdout or `--check`/`--write`. |
 | `crates/marrow/src/trace.rs` | `TraceHook` (a `StepHook`) and `WriteTargetNames` mapping catalog ids to store/member/index names. |
 | `crates/marrow/src/dry_run.rs` | `DryRunHook` recording managed writes during isolated dry-run execution. |
@@ -77,7 +79,7 @@ Structured reports that include a `project` field render the canonical absolute 
 ## Load-bearing invariants
 
 - **Path containment.** Every project-relative path (source roots, `dataDir`, tests) is rejected if empty, absolute, or containing `..`, because each is later `Path::join`ed onto the project root. Test paths additionally reject glob metacharacters, so discovery is plain file-or-directory selection rather than pattern matching. `parse_config` double-parses (raw `Value` then typed `RawConfig`) to catch non-object roots and unknown-key spans.
-- **Run baseline and auto-apply.** A clean project with a pending durable identity has its baseline frozen into the store the first time `run` opens it write-capable; a memory-backed project with a durable surface refuses with `run.durable_store_required` rather than running an identity nothing stamps, and a plain script runs over memory. On native schema-drift a zero-record-mutation change is auto-applied through the production apply path, which publishes the advanced catalog snapshot in the apply transaction; the run then re-checks and re-fences. Any backfill/transform/destructive change fences naming `evolve apply` instead. The redb file lock forces `auto_apply_then_reopen` to drop its first handle before reopening. A store holding records under no accepted catalog is refused as populated-but-unstamped.
+- **Run baseline and auto-apply.** `ProjectSession::open` owns run admission. A clean project with a pending durable identity has its baseline frozen into the store the first time `run` opens it write-capable; a memory-backed project with a durable surface refuses with `run.durable_store_required` rather than running an identity nothing stamps, and a plain script runs over memory. On native schema-drift a zero-record-mutation change is auto-applied through the production apply path, which publishes the advanced catalog snapshot in the apply transaction; the session then re-checks and re-fences. Any backfill/transform/destructive change fences naming `evolve apply` instead. The redb file lock forces the session to drop its first handle before reopening. A store holding records under no accepted catalog is refused as populated-but-unstamped.
 - **Restore is all-or-nothing.** The whole replay runs in one transaction; any checksum/framing/verify failure rolls the target back to its prior state. Restore targets are empty-only by default; counted replace mode first confirms the live record count from `--replace --count N`, then clears and replays inside the restore transaction. Restore carries data cells only (indexes are rebuilt), replays bytes verbatim only when `EngineDescriptor` matches exactly, and proves the data compiles against the schema via the `verify` closure before commit. Raw byte validity is never enough.
 - **Evolve apply.** `evolve apply` reads accepted identity from `marrow.catalog.json`, with the durable-state loader using the store snapshot as the crash bridge for commands that inspect or write the store. It freezes a pending baseline into the store, then applies the witness's durable work. The apply publishes the activated catalog snapshot, advances the epoch, and commits the data in one transaction; after commit, the CLI renders the project-root file from the committed store snapshot.
 - **Render-only prose.** Integrity, evolve, and restore code assert stable dotted codes and typed verdicts/problems; diagnostic prose is never matched semantically.
@@ -86,7 +88,8 @@ Structured reports that include a `project` field render the canonical absolute 
 
 - `crates/marrow-project/src/lib.rs` — `parse_config`, `check_under_root`, `expected_module_name`: the config schema and path-containment guarantee.
 - `crates/marrow/src/main.rs` — `load_checked_project`, `resolve_store_path`, `read_accepted_catalog_artifact`, `read_accepted_store_catalog`, `establish_store_baseline`: the shared spine behind every command's first lines.
-- `crates/marrow/src/cmd_run.rs` — `open_run_store`, `auto_apply_then_reopen`, `execute`: fence, drift auto-apply, and the execution/report split.
+- `crates/marrow-run/src/project_session.rs` — `ProjectSession::open`, run/test admission, fence, drift auto-apply, test-case discovery, and `ProjectSession::invoke`.
+- `crates/marrow/src/cmd_run.rs` — run flag parsing, session notice/error rendering, hook selection, and report emission.
 - `crates/marrow/src/cmd_evolve/mod.rs` — `apply_cmd`: read store identity, freeze baseline, preview, apply (which publishes the catalog atomically).
 - `crates/marrow/src/backup/restore.rs` — `read_backup_prologue` / `restore_backup_with_prologue`: catalog-section fingerprint gate, empty-only or counted replace target gate, transactional catalog+data replay, and verify-before-commit rollback.
 - `crates/marrow/src/trace.rs` — `WriteTargetNames::from_program`, `render_write_target`: catalog ids to human names, shared by trace and dry-run.

@@ -1,6 +1,8 @@
 mod support;
 
-use support::{json_records_in_stderr, marrow, temp_project, write};
+use std::process::{Command, Output};
+
+use support::{json_records_in_stderr, marrow, temp_project, unique_temp_path, write};
 
 /// A native-store project whose entry writes one field inside a `transaction`,
 /// plus a reader that dumps the store and a second writer for the dry-vs-real
@@ -36,6 +38,14 @@ fn native_project(name: &str) -> support::TempProject {
         );
         write(root, "src/app.mw", SRC);
     })
+}
+
+fn marrow_with_env(args: &[&str], key: &str, value: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .args(args)
+        .env(key, value)
+        .output()
+        .expect("run marrow with env")
 }
 
 fn faulting_dry_run_project(name: &str) -> support::TempProject {
@@ -128,6 +138,34 @@ fn dry_run_leaves_saved_data_unchanged() {
     assert_eq!(
         before_json["records"], after_json["records"],
         "dry run must leave saved data unchanged: the same records read back"
+    );
+}
+
+#[test]
+fn dry_run_temp_dir_create_failure_uses_path_aware_io_error() {
+    let project = native_project("dryrun-tempdir-file");
+    let dir = project.to_str().unwrap().to_string();
+    let tmp_file = unique_temp_path("dryrun-tmpdir-file");
+    std::fs::write(&tmp_file, "not a directory").expect("write TMPDIR file");
+
+    let output = marrow_with_env(
+        &["run", "--dry-run", &dir],
+        "TMPDIR",
+        tmp_file.to_str().expect("utf8 temp path"),
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.starts_with("io.read: failed to read "),
+        "dry-run temp-dir creation must use the path-aware I/O renderer: {stderr}"
+    );
+    assert!(
+        stderr.contains("marrow-dry-run-store-"),
+        "the attempted temp path, not only the temp root, should be rendered: {stderr}"
+    );
+    assert!(
+        !stderr.contains("run.dry_run_isolation"),
+        "ordinary temp-dir I/O failures must not collapse to allocation exhaustion: {stderr}"
     );
 }
 

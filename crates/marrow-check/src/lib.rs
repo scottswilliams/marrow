@@ -21,6 +21,7 @@ mod infer;
 mod keyed_entries;
 mod presence;
 pub mod program;
+mod project_io;
 mod rejected_surface;
 pub mod resolve;
 mod rules;
@@ -100,6 +101,11 @@ pub use program::{
     CheckedProgram, CheckedReadOnlyExpression, CheckedRuntimeConst, CheckedRuntimeFunction,
     CheckedRuntimeModule, CheckedRuntimeProgram, EvolveTransform, FileId, MarrowType,
     ProgramCatalog,
+};
+pub use project_io::{
+    ProjectIoError, check_project_against, load_config, native_store_path,
+    read_accepted_catalog_artifact, read_accepted_catalog_with_store,
+    recheck_against_store_catalog, render_accepted_catalog_file, resolve_store_path,
 };
 pub use resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
 

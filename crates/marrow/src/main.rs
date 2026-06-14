@@ -411,27 +411,43 @@ pub(crate) fn dir_and_path_args(
     }
 }
 
+fn report_project_io_error(dir: &str, error: marrow_check::ProjectIoError, format: CheckFormat) {
+    match error {
+        marrow_check::ProjectIoError::Io { path, error } => {
+            report_io_error(&path.display().to_string(), &error, format);
+        }
+        marrow_check::ProjectIoError::Check { report } => {
+            report_project(dir, &report, format);
+        }
+        marrow_check::ProjectIoError::CheckLoad {
+            code,
+            path,
+            message,
+        } => {
+            report_simple_error(code, &format!("{}: {message}", path.display()), format);
+        }
+        error => {
+            report_simple_error(error.code(), &error.message(), format);
+        }
+    }
+}
+
+pub(crate) fn project_io_exit(
+    dir: &str,
+    error: marrow_check::ProjectIoError,
+    format: CheckFormat,
+) -> ExitCode {
+    report_project_io_error(dir, error, format);
+    ExitCode::FAILURE
+}
+
 /// The native backend's redb file path, or `Ok(None)` for an explicit memory store.
 /// No filesystem side effects.
 pub(crate) fn native_store_path(
     dir: &str,
     config: &marrow_project::ProjectConfig,
 ) -> Result<Option<PathBuf>, ExitCode> {
-    match &config.store {
-        marrow_project::StoreConfig {
-            backend: marrow_project::StoreBackend::Memory,
-            ..
-        } => Ok(None),
-        marrow_project::StoreConfig {
-            backend: marrow_project::StoreBackend::Native,
-            data_dir,
-        } => {
-            let data_dir = data_dir
-                .as_deref()
-                .expect("parse_config guarantees a native store has a dataDir");
-            Ok(Some(Path::new(dir).join(data_dir).join("marrow.redb")))
-        }
-    }
+    Ok(marrow_check::native_store_path(Path::new(dir), config))
 }
 
 /// Like [`native_store_path`], but creates the data directory so the store can be
@@ -441,16 +457,8 @@ pub(crate) fn resolve_store_path(
     config: &marrow_project::ProjectConfig,
     format: CheckFormat,
 ) -> Result<Option<PathBuf>, ExitCode> {
-    let Some(path) = native_store_path(dir, config)? else {
-        return Ok(None);
-    };
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| {
-            report_io_error(&parent.display().to_string(), &error, format);
-            ExitCode::FAILURE
-        })?;
-    }
-    Ok(Some(path))
+    marrow_check::resolve_store_path(Path::new(dir), config)
+        .map_err(|error| project_io_exit(dir, error, format))
 }
 
 /// Open the project's store read-only, or `Ok(None)` if it holds no saved data on
@@ -484,119 +492,28 @@ pub(crate) fn load_config_with_format(
     dir: &str,
     format: CheckFormat,
 ) -> Result<marrow_project::ProjectConfig, ExitCode> {
-    let config_path = Path::new(dir).join("marrow.json");
-    let config_text = std::fs::read_to_string(&config_path).map_err(|error| {
-        report_io_error(&config_path.display().to_string(), &error, format);
-        ExitCode::FAILURE
-    })?;
-    marrow_project::parse_config(&config_text).map_err(|error| {
-        report_simple_error(error.code, &error.message, format);
-        ExitCode::FAILURE
-    })
+    marrow_check::load_config(Path::new(dir)).map_err(|error| project_io_exit(dir, error, format))
 }
 
 /// Read the project's accepted-catalog snapshot from its committed source-tree file
-/// or its store crash bridge. The store is opened read-only and never created: a
-/// project on the in-memory backend, or one whose native store file does not exist
-/// yet, has no store-side crash bridge. A committed store snapshot repairs missing,
-/// stale, or torn file renders, while conflict markers remain source-tree conflicts
-/// the user must resolve.
+/// or its store crash bridge.
 pub(crate) fn read_accepted_store_catalog(
     dir: &str,
     config: &marrow_project::ProjectConfig,
     format: CheckFormat,
 ) -> Result<Option<marrow_catalog::CatalogMetadata>, ExitCode> {
-    let file_accepted = read_accepted_catalog_file(dir);
-    if let AcceptedCatalogFile::Invalid(error) = &file_accepted
-        && error.code == marrow_catalog::CATALOG_MERGE_CONFLICT
-    {
-        report_simple_error(error.code, &error.message, format);
-        return Err(ExitCode::FAILURE);
-    }
-    let Some(store) = open_store_for_inspection(dir, config, format)? else {
-        return accepted_catalog_file_result(file_accepted, None, format);
-    };
-    let accepted = store.read_catalog_snapshot().map_err(|error| {
-        report_simple_error(error.code(), &error.to_string(), format);
-        ExitCode::FAILURE
-    })?;
-    if let Some(snapshot) = &accepted
-        && store_snapshot_repairs_file(&file_accepted, snapshot)
-    {
-        render_accepted_catalog_file(dir, snapshot, format)?;
-        return Ok(accepted);
-    }
-    accepted_catalog_file_result(file_accepted, accepted, format)
+    let store = open_store_for_inspection(dir, config, format)?;
+    marrow_check::read_accepted_catalog_with_store(Path::new(dir), store.as_ref())
+        .map_err(|error| project_io_exit(dir, error, format))
 }
 
 /// Read the committed catalog artifact without consulting the saved-data store.
-/// Ordinary `check` uses this path so it is a pure source/catalog-file command;
-/// commands that explicitly inspect or mutate durable state use
-/// [`read_accepted_store_catalog`] instead.
 pub(crate) fn read_accepted_catalog_artifact(
     dir: &str,
     format: CheckFormat,
 ) -> Result<Option<marrow_catalog::CatalogMetadata>, ExitCode> {
-    accepted_catalog_file_result(read_accepted_catalog_file(dir), None, format)
-}
-
-enum AcceptedCatalogFile {
-    Missing,
-    Snapshot(marrow_catalog::CatalogMetadata),
-    Invalid(marrow_catalog::CatalogError),
-    ReadError {
-        path: PathBuf,
-        error: std::io::Error,
-    },
-}
-
-fn read_accepted_catalog_file(dir: &str) -> AcceptedCatalogFile {
-    let path = accepted_catalog_file_path(dir);
-    let json = match std::fs::read_to_string(&path) {
-        Ok(json) => json,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return AcceptedCatalogFile::Missing;
-        }
-        Err(error) => return AcceptedCatalogFile::ReadError { path, error },
-    };
-    match marrow_catalog::CatalogMetadata::from_json(&json) {
-        Ok(snapshot) => AcceptedCatalogFile::Snapshot(snapshot),
-        Err(error) => AcceptedCatalogFile::Invalid(error),
-    }
-}
-
-fn accepted_catalog_file_result(
-    file_accepted: AcceptedCatalogFile,
-    fallback: Option<marrow_catalog::CatalogMetadata>,
-    format: CheckFormat,
-) -> Result<Option<marrow_catalog::CatalogMetadata>, ExitCode> {
-    match file_accepted {
-        AcceptedCatalogFile::Missing => Ok(fallback),
-        AcceptedCatalogFile::Snapshot(snapshot) => Ok(Some(snapshot)),
-        AcceptedCatalogFile::Invalid(error) => {
-            report_simple_error(error.code, &error.message, format);
-            Err(ExitCode::FAILURE)
-        }
-        AcceptedCatalogFile::ReadError { path, error } => {
-            report_io_error(&path.display().to_string(), &error, format);
-            Err(ExitCode::FAILURE)
-        }
-    }
-}
-
-fn store_snapshot_repairs_file(
-    file_accepted: &AcceptedCatalogFile,
-    store_snapshot: &marrow_catalog::CatalogMetadata,
-) -> bool {
-    match file_accepted {
-        AcceptedCatalogFile::Missing | AcceptedCatalogFile::Invalid(_) => true,
-        AcceptedCatalogFile::ReadError { error, .. } => {
-            error.kind() == std::io::ErrorKind::InvalidData
-        }
-        AcceptedCatalogFile::Snapshot(file) => {
-            file != store_snapshot && store_snapshot.epoch >= file.epoch
-        }
-    }
+    marrow_check::read_accepted_catalog_artifact(Path::new(dir))
+        .map_err(|error| project_io_exit(dir, error, format))
 }
 
 pub(crate) fn render_accepted_catalog_file_from_store(
@@ -611,33 +528,8 @@ pub(crate) fn render_accepted_catalog_file_from_store(
     else {
         return Ok(());
     };
-    render_accepted_catalog_file(dir, &snapshot, format)
-}
-
-fn render_accepted_catalog_file(
-    dir: &str,
-    snapshot: &marrow_catalog::CatalogMetadata,
-    format: CheckFormat,
-) -> Result<(), ExitCode> {
-    let path = accepted_catalog_file_path(dir);
-    let desired = snapshot.to_json_pretty();
-    match std::fs::read_to_string(&path) {
-        Ok(current) if current == desired => return Ok(()),
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            report_io_error(&path.display().to_string(), &error, format);
-            return Err(ExitCode::FAILURE);
-        }
-    }
-    std::fs::write(&path, desired).map_err(|error| {
-        report_io_error(&path.display().to_string(), &error, format);
-        ExitCode::FAILURE
-    })
-}
-
-fn accepted_catalog_file_path(dir: &str) -> PathBuf {
-    Path::new(dir).join(marrow_project::CATALOG_FILE_NAME)
+    marrow_check::render_accepted_catalog_file(Path::new(dir), &snapshot)
+        .map_err(|error| project_io_exit(dir, error, format))
 }
 
 /// Load the config and check the project. On any failure (config, unreadable
@@ -654,29 +546,14 @@ pub(crate) fn load_checked_project_with_format(
 ) -> Result<(marrow_project::ProjectConfig, marrow_check::CheckedProgram), ExitCode> {
     let config = load_config_with_format(dir, format)?;
     let accepted = read_accepted_store_catalog(dir, &config, format)?;
-    let (report, program) =
-        marrow_check::check_project_with_catalog(Path::new(dir), &config, accepted.as_ref())
-            .map_err(|error| {
-                report_simple_error(
-                    error.code,
-                    &format!("{}: {}", error.path.display(), error.message),
-                    format,
-                );
-                ExitCode::FAILURE
-            })?;
-    if report.has_errors() {
-        report_project(dir, &report, format);
-        return Err(ExitCode::FAILURE);
-    }
+    let program = marrow_check::check_project_against(Path::new(dir), &config, accepted.as_ref())
+        .map_err(|error| project_io_exit(dir, error, format))?;
     Ok((config, program))
 }
 
 /// Freeze a project's pending durable identity into the write `store` as its baseline,
 /// then re-check the program against the now-accepted store snapshot so the caller binds
-/// the frozen identity. A store that already holds an accepted catalog, or a program
-/// proposing none, writes nothing and the program is returned unchanged — a project past
-/// its baseline never churns the catalog rows or the commit stamp. Shared by the
-/// state-establishing flows (`run` and `evolve apply`).
+/// the frozen identity.
 pub(crate) fn establish_store_baseline(
     dir: &str,
     config: &marrow_project::ProjectConfig,
@@ -696,36 +573,15 @@ pub(crate) fn establish_store_baseline(
 }
 
 /// Re-check the project binding durable identity against the store's accepted catalog
-/// snapshot. Called after a baseline commit so the caller binds the freshly accepted
-/// epoch rather than the pending one it loaded.
+/// snapshot.
 pub(crate) fn recheck_against_store_catalog(
     dir: &str,
     config: &marrow_project::ProjectConfig,
     store: &marrow_store::tree::TreeStore,
     format: CheckFormat,
 ) -> Result<marrow_check::CheckedProgram, ExitCode> {
-    let accepted = store.read_catalog_snapshot().map_err(|error| {
-        report_simple_error(error.code(), &error.to_string(), format);
-        ExitCode::FAILURE
-    })?;
-    if let Some(snapshot) = &accepted {
-        render_accepted_catalog_file(dir, snapshot, format)?;
-    }
-    let (report, program) =
-        marrow_check::check_project_with_catalog(Path::new(dir), config, accepted.as_ref())
-            .map_err(|error| {
-                report_simple_error(
-                    error.code,
-                    &format!("{}: {}", error.path.display(), error.message),
-                    format,
-                );
-                ExitCode::FAILURE
-            })?;
-    if report.has_errors() {
-        report_project(dir, &report, format);
-        return Err(ExitCode::FAILURE);
-    }
-    Ok(program)
+    marrow_check::recheck_against_store_catalog(Path::new(dir), config, store)
+        .map_err(|error| project_io_exit(dir, error, format))
 }
 
 #[derive(Clone, Copy)]

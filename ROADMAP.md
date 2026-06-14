@@ -847,20 +847,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 Listing order is execution order. docs/cli.md integrates in lane order: W6.6.
 
-**W6.10 → Invocation spine extraction (G1-1; v01-full).** After W3.5 and W6.1 (the cmd_run.rs
-Text sweep lands before the spine extraction); **strictly before W6.6.**
-Owns: a new module inside marrow-run exposing ProjectSession::open(root, mode) and
-session.invoke(entry), absorbing the cmd_run.rs check→identity-freeze→open→fence→auto-apply→
-unstamped-refusal choreography; the admission token is the existing
-(source_digest, accepted_epoch, engine_profile) triple fence_run already assembles (no second
-versioning concept); marrow run and marrow test become thin renderers; the marrow-run crate-root
-doc rewrite. No new crate, no new
-public promises (API unstable per G1-5). Seed: one new test — an in-process open of a drifted
-store returns the same typed fence refusal code the CLI renders. Review: CLI behavior
-byte-identical over the existing run/test suites; no path opens a store without crossing the
-admission module. Done: one invoke function both transports call; W6.6 inherits a thin
-cmd_run.rs.
-
 **W6.6 → Dry-run stability then entry invocation (III.B4 then III.E1; both own cmd_run.rs —
 sequenced; after W6.10's spine extraction).** III.B4: dry-run classifies via check, skips
 identity freeze and auto-apply, reports would-freeze/would-apply — report content, not errors: a

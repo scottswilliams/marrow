@@ -1,0 +1,853 @@
+use std::fmt;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use marrow_check::evolution::preview;
+use marrow_check::{CheckReport, CheckedProgram, CheckedRuntimeProgram, ProjectConfig};
+use marrow_store::StoreError;
+use marrow_store::cell::CatalogId;
+use marrow_store::tree::{StoreUid, TreeStore};
+use marrow_syntax::SourceSpan;
+
+use crate::entry::{CheckedEntryCall, run_entry_with_debugger, run_entry_with_host};
+use crate::evolution::{
+    AutoApplyOutcome, FenceError, RunObligation, commit_catalog_baseline, current_engine_profile,
+    fence, try_auto_apply,
+};
+use crate::host::{Host, Nondeterminism, StepHook, SystemNondeterminism};
+use crate::value::{RunOutput, RunOutputSink};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectMode {
+    Run,
+    Test,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectOpen {
+    mode: ProjectMode,
+    entry_override: Option<String>,
+    isolate_writes: bool,
+}
+
+impl ProjectOpen {
+    pub fn run() -> Self {
+        Self {
+            mode: ProjectMode::Run,
+            entry_override: None,
+            isolate_writes: false,
+        }
+    }
+
+    pub fn test() -> Self {
+        Self {
+            mode: ProjectMode::Test,
+            entry_override: None,
+            isolate_writes: false,
+        }
+    }
+
+    pub fn with_entry_override(mut self, entry: impl Into<String>) -> Self {
+        self.entry_override = Some(entry.into());
+        self
+    }
+
+    pub fn with_isolated_writes(mut self) -> Self {
+        self.isolate_writes = true;
+        self
+    }
+}
+
+impl From<ProjectMode> for ProjectOpen {
+    fn from(mode: ProjectMode) -> Self {
+        match mode {
+            ProjectMode::Run => Self::run(),
+            ProjectMode::Test => Self::test(),
+        }
+    }
+}
+
+pub struct ProjectSession {
+    root: PathBuf,
+    config: ProjectConfig,
+    program: CheckedProgram,
+    runtime: CheckedRuntimeProgram,
+    kind: SessionKind,
+    notices: Vec<ProjectSessionNotice>,
+}
+
+impl fmt::Debug for ProjectSession {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProjectSession")
+            .field("root", &self.root)
+            .field("kind", &self.kind)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug)]
+enum SessionKind {
+    Run { entry: String, store: RunStore },
+    Test { cases: Vec<ProjectTestCase> },
+}
+
+enum RunStore {
+    Memory(TreeStore),
+    Native {
+        path: PathBuf,
+        store: Option<TreeStore>,
+    },
+}
+
+impl fmt::Debug for RunStore {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Memory(_) => formatter.write_str("Memory"),
+            Self::Native { path, store } => formatter
+                .debug_struct("Native")
+                .field("path", path)
+                .field("open", &store.is_some())
+                .finish(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectTestCase {
+    pub name: String,
+    pub source_file: PathBuf,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectSessionNotice {
+    AutoApplied { from_epoch: u64, to_epoch: u64 },
+}
+
+impl ProjectSessionNotice {
+    pub fn message(&self) -> String {
+        match self {
+            Self::AutoApplied {
+                from_epoch,
+                to_epoch,
+            } => {
+                format!("auto-applied evolution: catalog epoch {from_epoch} -> {to_epoch}")
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum ProjectSessionError {
+    Io {
+        path: PathBuf,
+        error: std::io::Error,
+    },
+    Config {
+        code: &'static str,
+        message: String,
+    },
+    Catalog {
+        code: &'static str,
+        message: String,
+    },
+    Check {
+        report: CheckReport,
+    },
+    CheckLoad {
+        code: &'static str,
+        path: PathBuf,
+        message: String,
+    },
+    Store(StoreError),
+    Fence(FenceError),
+    NoEntry,
+    DurableStoreRequired,
+    UnstampedStore,
+    SchemaDrift {
+        message: String,
+    },
+    DryRunIsolationExhausted,
+    DryRunIsolation {
+        path: PathBuf,
+        error: StoreError,
+    },
+}
+
+impl ProjectSessionError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Io { .. } => marrow_check::IO_READ,
+            Self::Config { code, .. } => code,
+            Self::Catalog { code, .. } => code,
+            Self::Check { .. } => "check.failed",
+            Self::CheckLoad { code, .. } => code,
+            Self::Store(error) => error.code(),
+            Self::Fence(error) => error.code(),
+            Self::NoEntry => "run.no_entry",
+            Self::DurableStoreRequired => "run.durable_store_required",
+            Self::UnstampedStore => "run.store_unstamped",
+            Self::SchemaDrift { .. } => "run.schema_drift",
+            Self::DryRunIsolationExhausted => "run.dry_run_isolation",
+            Self::DryRunIsolation { error, .. } => error.code(),
+        }
+    }
+
+    pub fn message(&self) -> String {
+        match self {
+            Self::Io { error, .. } => error.to_string(),
+            Self::Config { message, .. } => message.clone(),
+            Self::Catalog { message, .. } => message.clone(),
+            Self::Check { .. } => "project failed to check".to_string(),
+            Self::CheckLoad { path, message, .. } => format!("{}: {message}", path.display()),
+            Self::Store(error) => error.to_string(),
+            Self::Fence(error) => error.message(),
+            Self::NoEntry => {
+                "no entry to run; pass --entry <name> or set `run.defaultEntry` in marrow.json"
+                    .to_string()
+            }
+            Self::DurableStoreRequired => {
+                "a durable store is required to establish accepted identity; configure a native store in marrow.json".to_string()
+            }
+            Self::UnstampedStore => {
+                "store has saved records but no catalog activation stamp; run `marrow evolve preview` to inspect the required work and `marrow evolve apply` before running this accepted catalog".to_string()
+            }
+            Self::SchemaDrift { message } => message.clone(),
+            Self::DryRunIsolationExhausted => {
+                "could not allocate a temporary dry-run store directory".to_string()
+            }
+            Self::DryRunIsolation { error, .. } => error.to_string(),
+        }
+    }
+}
+
+impl From<marrow_check::ProjectIoError> for ProjectSessionError {
+    fn from(error: marrow_check::ProjectIoError) -> Self {
+        match error {
+            marrow_check::ProjectIoError::Io { path, error } => Self::Io { path, error },
+            marrow_check::ProjectIoError::Config { code, message } => {
+                Self::Config { code, message }
+            }
+            marrow_check::ProjectIoError::Catalog { code, message } => {
+                Self::Catalog { code, message }
+            }
+            marrow_check::ProjectIoError::Check { report } => Self::Check { report },
+            marrow_check::ProjectIoError::CheckLoad {
+                code,
+                path,
+                message,
+            } => Self::CheckLoad {
+                code,
+                path,
+                message,
+            },
+            marrow_check::ProjectIoError::Store(error) => Self::Store(error),
+        }
+    }
+}
+
+impl From<StoreError> for ProjectSessionError {
+    fn from(error: StoreError) -> Self {
+        Self::Store(error)
+    }
+}
+
+#[derive(Debug)]
+pub enum ProjectInvokeError {
+    Runtime(crate::RuntimeError),
+    Session(ProjectSessionError),
+}
+
+impl ProjectInvokeError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Runtime(error) => error.code,
+            Self::Session(error) => error.code(),
+        }
+    }
+
+    pub fn message(&self) -> String {
+        match self {
+            Self::Runtime(error) => error.message.clone(),
+            Self::Session(error) => error.message(),
+        }
+    }
+
+    pub fn runtime(self) -> Option<crate::RuntimeError> {
+        match self {
+            Self::Runtime(error) => Some(error),
+            Self::Session(_) => None,
+        }
+    }
+
+    pub fn session(self) -> Option<ProjectSessionError> {
+        match self {
+            Self::Runtime(_) => None,
+            Self::Session(error) => Some(error),
+        }
+    }
+}
+
+impl From<crate::RuntimeError> for ProjectInvokeError {
+    fn from(error: crate::RuntimeError) -> Self {
+        Self::Runtime(error)
+    }
+}
+
+impl From<ProjectSessionError> for ProjectInvokeError {
+    fn from(error: ProjectSessionError) -> Self {
+        Self::Session(error)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionWrites {
+    Commit,
+    Isolate,
+}
+
+pub struct SessionEntry<'a> {
+    name: &'a str,
+    host: &'a Host,
+    output: &'a mut dyn RunOutputSink,
+    hook: Option<&'a mut dyn StepHook>,
+    writes: SessionWrites,
+}
+
+impl<'a> SessionEntry<'a> {
+    pub fn new(name: &'a str, host: &'a Host, output: &'a mut dyn RunOutputSink) -> Self {
+        Self {
+            name,
+            host,
+            output,
+            hook: None,
+            writes: SessionWrites::Commit,
+        }
+    }
+
+    pub fn with_hook(mut self, hook: &'a mut dyn StepHook) -> Self {
+        self.hook = Some(hook);
+        self
+    }
+
+    pub fn with_isolated_writes(mut self) -> Self {
+        self.writes = SessionWrites::Isolate;
+        self
+    }
+}
+
+impl ProjectSession {
+    pub fn open(
+        root: impl AsRef<Path>,
+        mode: impl Into<ProjectOpen>,
+    ) -> Result<Self, ProjectSessionError> {
+        let open = mode.into();
+        let root = root.as_ref().to_path_buf();
+        let (config, program) = load_checked_for_session(&root)?;
+        match open.mode {
+            ProjectMode::Run => open_run_session(root, config, program, open),
+            ProjectMode::Test => open_test_session(root, config, program),
+        }
+    }
+
+    pub fn config(&self) -> &ProjectConfig {
+        &self.config
+    }
+
+    pub fn program(&self) -> &CheckedProgram {
+        &self.program
+    }
+
+    pub fn runtime_program(&self) -> &CheckedRuntimeProgram {
+        &self.runtime
+    }
+
+    pub fn run_entry(&self) -> Option<&str> {
+        match &self.kind {
+            SessionKind::Run { entry, .. } => Some(entry),
+            SessionKind::Test { .. } => None,
+        }
+    }
+
+    pub fn test_cases(&self) -> &[ProjectTestCase] {
+        match &self.kind {
+            SessionKind::Run { .. } => &[],
+            SessionKind::Test { cases } => cases,
+        }
+    }
+
+    pub fn notices(&self) -> &[ProjectSessionNotice] {
+        &self.notices
+    }
+
+    pub fn invoke(&self, invocation: SessionEntry<'_>) -> Result<RunOutput, ProjectInvokeError> {
+        let call = CheckedEntryCall::new(&self.runtime, invocation.name, Vec::new())?;
+        match &self.kind {
+            SessionKind::Run { store, .. } => match (store, invocation.writes) {
+                (RunStore::Memory(store), _) => invoke_store(store, &call, invocation),
+                (
+                    RunStore::Native {
+                        store: Some(store), ..
+                    },
+                    SessionWrites::Commit,
+                ) => invoke_store(store, &call, invocation),
+                (RunStore::Native { path, .. }, SessionWrites::Isolate)
+                | (RunStore::Native { path, store: None }, SessionWrites::Commit) => {
+                    let isolated = isolated_store(path)?;
+                    invoke_store(&isolated.store, &call, invocation)
+                }
+            },
+            SessionKind::Test { .. } => {
+                let store = TreeStore::memory();
+                invoke_store(&store, &call, invocation)
+            }
+        }
+    }
+}
+
+fn invoke_store(
+    store: &TreeStore,
+    call: &CheckedEntryCall<'_>,
+    invocation: SessionEntry<'_>,
+) -> Result<RunOutput, ProjectInvokeError> {
+    if let Some(hook) = invocation.hook {
+        Ok(run_entry_with_debugger(
+            store,
+            invocation.host,
+            hook,
+            call,
+            invocation.output,
+        )?)
+    } else {
+        Ok(run_entry_with_host(
+            store,
+            invocation.host,
+            call,
+            invocation.output,
+        )?)
+    }
+}
+
+fn open_run_session(
+    root: PathBuf,
+    config: ProjectConfig,
+    program: CheckedProgram,
+    open: ProjectOpen,
+) -> Result<ProjectSession, ProjectSessionError> {
+    let entry = open
+        .entry_override
+        .clone()
+        .or_else(|| config.default_entry.clone())
+        .ok_or(ProjectSessionError::NoEntry)?;
+    let mut notices = Vec::new();
+    let store = open_run_store(&root, &config, program, open.isolate_writes, &mut notices)?;
+    let program = store.program;
+    let runtime = program.runtime();
+    Ok(ProjectSession {
+        root,
+        config,
+        program,
+        runtime,
+        kind: SessionKind::Run {
+            entry,
+            store: store.store,
+        },
+        notices,
+    })
+}
+
+fn open_test_session(
+    root: PathBuf,
+    config: ProjectConfig,
+    program: CheckedProgram,
+) -> Result<ProjectSession, ProjectSessionError> {
+    let program = bind_test_identity(&root, &config, program)?;
+    let source_module_count = program.modules.len();
+    let (test_report, program) = marrow_check::check_tests_program(&root, &config, program)
+        .map_err(|error| ProjectSessionError::CheckLoad {
+            code: error.code,
+            path: error.path,
+            message: error.message,
+        })?;
+    if test_report.has_errors() {
+        return Err(ProjectSessionError::Check {
+            report: test_report,
+        });
+    }
+    let cases = program.modules[source_module_count..]
+        .iter()
+        .flat_map(|module| {
+            module
+                .functions
+                .iter()
+                .filter(|function| function.public && function.params.is_empty())
+                .map(|function| ProjectTestCase {
+                    name: format!("{}::{}", module.name, function.name),
+                    source_file: module.source_file.clone(),
+                    span: function.span,
+                })
+        })
+        .collect();
+    let runtime = program.runtime();
+    Ok(ProjectSession {
+        root,
+        config,
+        program,
+        runtime,
+        kind: SessionKind::Test { cases },
+        notices: Vec::new(),
+    })
+}
+
+struct OpenRunStore {
+    program: CheckedProgram,
+    store: RunStore,
+}
+
+struct NativeRunStore {
+    path: PathBuf,
+    store: TreeStore,
+}
+
+fn open_run_store(
+    root: &Path,
+    config: &ProjectConfig,
+    program: CheckedProgram,
+    isolate_writes: bool,
+    notices: &mut Vec<ProjectSessionNotice>,
+) -> Result<OpenRunStore, ProjectSessionError> {
+    let Some(store) = open_store_file(root, config)? else {
+        return open_memory_store(program);
+    };
+    let program = establish_store_baseline(root, config, &store.store, program)?;
+    match fence_run(&program, &store.store) {
+        Ok(()) => finish_open(program, store, isolate_writes),
+        Err(FenceError::SchemaDrift) => {
+            auto_apply_then_reopen(root, program, store, isolate_writes, notices)
+        }
+        Err(error) => Err(ProjectSessionError::Fence(error)),
+    }
+}
+
+fn open_memory_store(program: CheckedProgram) -> Result<OpenRunStore, ProjectSessionError> {
+    if pending_baseline(&program) {
+        return Err(ProjectSessionError::DurableStoreRequired);
+    }
+    Ok(OpenRunStore {
+        program,
+        store: RunStore::Memory(TreeStore::memory()),
+    })
+}
+
+fn open_store_file(
+    root: &Path,
+    config: &ProjectConfig,
+) -> Result<Option<NativeRunStore>, ProjectSessionError> {
+    let Some(path) = resolve_store_path(root, config)? else {
+        return Ok(None);
+    };
+    let store = TreeStore::open(&path)?;
+    let mut nondeterminism = SystemNondeterminism::new();
+    ensure_store_uid(&store, &mut nondeterminism)?;
+    Ok(Some(NativeRunStore { path, store }))
+}
+
+fn finish_open(
+    program: CheckedProgram,
+    store: NativeRunStore,
+    isolate_writes: bool,
+) -> Result<OpenRunStore, ProjectSessionError> {
+    if populated_unstamped_store(&program, &store.store)? {
+        return Err(ProjectSessionError::UnstampedStore);
+    }
+    let NativeRunStore { path, store } = store;
+    Ok(OpenRunStore {
+        program,
+        store: RunStore::Native {
+            path,
+            store: (!isolate_writes).then_some(store),
+        },
+    })
+}
+
+fn auto_apply_then_reopen(
+    root: &Path,
+    program: CheckedProgram,
+    store: NativeRunStore,
+    isolate_writes: bool,
+    notices: &mut Vec<ProjectSessionNotice>,
+) -> Result<OpenRunStore, ProjectSessionError> {
+    let witness = preview(&program, &store.store)
+        .map_err(ProjectSessionError::Store)?
+        .0;
+    let from_epoch = witness
+        .store_catalog
+        .as_ref()
+        .map(|catalog| catalog.epoch)
+        .unwrap_or(witness.accepted_catalog.epoch);
+    let to_epoch = witness
+        .proposal_catalog
+        .as_ref()
+        .map(|catalog| catalog.epoch)
+        .unwrap_or(witness.accepted_catalog.epoch);
+    match try_auto_apply(&witness, &program, &store.store) {
+        Ok(AutoApplyOutcome::Applied) => {
+            notices.push(ProjectSessionNotice::AutoApplied {
+                from_epoch,
+                to_epoch,
+            });
+        }
+        Ok(AutoApplyOutcome::MustFence(obligation)) => {
+            return Err(ProjectSessionError::SchemaDrift {
+                message: fence_message(&obligation),
+            });
+        }
+        Err(_) => {
+            return Err(ProjectSessionError::SchemaDrift {
+                message: "store changed under the auto-apply probe; re-run to recompute the evolution against current data".to_string(),
+            });
+        }
+    }
+    drop(store);
+
+    let (config, program) = load_checked_for_session(root)?;
+    let Some(store) = open_store_file(root, &config)? else {
+        return open_memory_store(program);
+    };
+    fence_run(&program, &store.store).map_err(ProjectSessionError::Fence)?;
+    finish_open(program, store, isolate_writes)
+}
+
+fn fence_message(obligation: &RunObligation) -> String {
+    let base = "store was stamped under a different schema at this catalog epoch";
+    let cause = match obligation {
+        RunObligation::Backfill { records } => format!(
+            "; the change backfills {records} record(s). Run `marrow evolve apply` to discharge it."
+        ),
+        RunObligation::Transform { records } => format!(
+            "; the change rewrites {records} record(s). Run `marrow evolve apply` to discharge it."
+        ),
+        RunObligation::DestructiveDrop { populated } => format!(
+            "; the change drops {populated} populated record(s). Run `marrow evolve apply --maintenance` and confirm the retire to discharge it."
+        ),
+        RunObligation::Repair => "; the change cannot be discharged against the stored data. Run `marrow evolve preview` to see the required repair.".to_string(),
+        RunObligation::ZeroMutation { .. } => String::new(),
+    };
+    format!("{base}{cause}")
+}
+
+fn load_checked_for_session(
+    root: &Path,
+) -> Result<(ProjectConfig, CheckedProgram), ProjectSessionError> {
+    let config = marrow_check::load_config(root)?;
+    let accepted = {
+        let store = open_store_for_inspection(root, &config)?;
+        marrow_check::read_accepted_catalog_with_store(root, store.as_ref())?
+    };
+    let program = marrow_check::check_project_against(root, &config, accepted.as_ref())?;
+    Ok((config, program))
+}
+
+fn open_store_for_inspection(
+    root: &Path,
+    config: &ProjectConfig,
+) -> Result<Option<TreeStore>, ProjectSessionError> {
+    let Some(path) = marrow_check::native_store_path(root, config) else {
+        return Ok(None);
+    };
+    if !path.exists() {
+        return Ok(None);
+    }
+    TreeStore::open_read_only(&path)
+        .map(Some)
+        .map_err(ProjectSessionError::Store)
+}
+
+fn bind_test_identity(
+    root: &Path,
+    config: &ProjectConfig,
+    program: CheckedProgram,
+) -> Result<CheckedProgram, ProjectSessionError> {
+    if program.catalog.accepted_epoch.is_some() {
+        return Ok(program);
+    }
+    let Some(proposal) = program.catalog.proposal.clone() else {
+        return Ok(program);
+    };
+    if proposal.entries.is_empty() {
+        return Ok(program);
+    }
+    let (report, bound) = marrow_check::check_project_with_catalog(root, config, Some(&proposal))
+        .map_err(|error| ProjectSessionError::CheckLoad {
+        code: error.code,
+        path: error.path,
+        message: error.message,
+    })?;
+    if report.has_errors() {
+        return Err(ProjectSessionError::Check { report });
+    }
+    Ok(bound)
+}
+
+fn resolve_store_path(
+    root: &Path,
+    config: &ProjectConfig,
+) -> Result<Option<PathBuf>, ProjectSessionError> {
+    marrow_check::resolve_store_path(root, config).map_err(ProjectSessionError::from)
+}
+
+fn establish_store_baseline(
+    root: &Path,
+    config: &ProjectConfig,
+    store: &TreeStore,
+    program: CheckedProgram,
+) -> Result<CheckedProgram, ProjectSessionError> {
+    if !commit_catalog_baseline(store, &program)? {
+        return Ok(program);
+    }
+    marrow_check::recheck_against_store_catalog(root, config, store)
+        .map_err(ProjectSessionError::from)
+}
+
+fn fence_run(program: &CheckedProgram, store: &TreeStore) -> Result<(), FenceError> {
+    fence(
+        program.catalog.accepted_epoch,
+        &program.source_digest(),
+        &current_engine_profile(),
+        store,
+    )
+}
+
+fn pending_baseline(program: &CheckedProgram) -> bool {
+    program.catalog.accepted_epoch.is_none()
+        && program
+            .catalog
+            .proposal
+            .as_ref()
+            .is_some_and(|proposal| !proposal.entries.is_empty())
+}
+
+fn populated_unstamped_store(
+    program: &CheckedProgram,
+    store: &TreeStore,
+) -> Result<bool, StoreError> {
+    if pending_baseline(program) {
+        return Ok(!store.is_empty()?);
+    }
+    if program.catalog.accepted_epoch.is_none() || store.read_commit_metadata()?.is_some() {
+        return Ok(false);
+    }
+    for module in &program.modules {
+        for saved in &module.stores {
+            if saved_root_holds_records(program, store, &saved.root)? {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn saved_root_holds_records(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    root: &str,
+) -> Result<bool, StoreError> {
+    let Some(place) = marrow_check::checked_saved_root_place(program, root, SourceSpan::default())
+    else {
+        return Ok(false);
+    };
+    let Some(raw_store_id) = place.store_catalog_id else {
+        return Ok(false);
+    };
+    let Ok(store_id) = CatalogId::new(raw_store_id) else {
+        return Ok(false);
+    };
+    store.record_identity_exists_under(&store_id, &[], place.identity_keys.len())
+}
+
+fn ensure_store_uid(
+    store: &TreeStore,
+    nondeterminism: &mut impl Nondeterminism,
+) -> Result<StoreUid, StoreError> {
+    if let Some(uid) = store.read_store_uid()? {
+        return Ok(uid);
+    }
+    let uid = mint_store_uid(nondeterminism);
+    store.write_store_uid(&uid)?;
+    Ok(uid)
+}
+
+fn mint_store_uid(nondeterminism: &mut impl Nondeterminism) -> StoreUid {
+    let mut uid = String::with_capacity("store_".len() + 32);
+    uid.push_str("store_");
+    for byte in nondeterminism.entropy_u128().to_be_bytes() {
+        use std::fmt::Write as _;
+        write!(&mut uid, "{byte:02x}").expect("writing to a string cannot fail");
+    }
+    StoreUid::new(uid).expect("store uid encoding is valid")
+}
+
+struct IsolatedStore {
+    store: TreeStore,
+    _dir: TempStoreDir,
+}
+
+struct TempStoreDir {
+    path: PathBuf,
+}
+
+impl Drop for TempStoreDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn isolated_store(source_path: &Path) -> Result<IsolatedStore, ProjectSessionError> {
+    let temp_dir = create_temp_store_dir().map_err(|error| match error {
+        TempStoreDirError::Io { path, error } => ProjectSessionError::Io { path, error },
+        TempStoreDirError::Exhausted => ProjectSessionError::DryRunIsolationExhausted,
+    })?;
+    let isolated_path = temp_dir.path.join("marrow.redb");
+    fs::copy(source_path, &isolated_path).map_err(|error| ProjectSessionError::Io {
+        path: source_path.to_path_buf(),
+        error,
+    })?;
+    let store =
+        TreeStore::open(&isolated_path).map_err(|error| ProjectSessionError::DryRunIsolation {
+            path: isolated_path.clone(),
+            error,
+        })?;
+    Ok(IsolatedStore {
+        store,
+        _dir: temp_dir,
+    })
+}
+
+enum TempStoreDirError {
+    Io {
+        path: PathBuf,
+        error: std::io::Error,
+    },
+    Exhausted,
+}
+
+fn create_temp_store_dir() -> Result<TempStoreDir, TempStoreDirError> {
+    let temp_root = std::env::temp_dir();
+    for attempt in 0..100 {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let path = temp_root.join(format!(
+            "marrow-dry-run-store-{}-{nanos}-{attempt}",
+            std::process::id()
+        ));
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(TempStoreDir { path }),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(TempStoreDirError::Io { path, error }),
+        }
+    }
+    Err(TempStoreDirError::Exhausted)
+}
