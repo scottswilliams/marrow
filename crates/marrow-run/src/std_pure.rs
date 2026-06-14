@@ -485,11 +485,23 @@ fn eval_math_pow_int(
     if exp < 0 {
         return Err(type_error("powInt exponent must be non-negative", span));
     }
-    Ok(Value::Int(
-        eval_int(&base.value, env)?
-            .checked_pow(exp as u32)
-            .ok_or_else(|| overflow(span))?,
-    ))
+    let base = eval_int(&base.value, env)?;
+    let value = match u32::try_from(exp) {
+        Ok(exp) => base.checked_pow(exp).ok_or_else(|| overflow(span))?,
+        Err(_) => match base {
+            -1 => {
+                if exp % 2 == 0 {
+                    1
+                } else {
+                    -1
+                }
+            }
+            0 => 0,
+            1 => 1,
+            _ => return Err(overflow(span)),
+        },
+    };
+    Ok(Value::Int(value))
 }
 
 fn eval_text_index(

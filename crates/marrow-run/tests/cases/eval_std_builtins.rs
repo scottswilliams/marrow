@@ -186,6 +186,50 @@ fn std_math_gate16_builtins_round_and_bound_values() {
 }
 
 #[test]
+fn std_math_pow_int_large_exponents_do_not_truncate() {
+    let program = checked_program(
+        "pub fn wrap_to_zero(): int\n    return std::math::powInt(2, 4294967296)\n\n\
+         pub fn wrap_to_one(): int\n    return std::math::powInt(2, 4294967297)\n",
+    );
+
+    assert_run_error(
+        run(checked_entry!(&program, "test::wrap_to_zero")),
+        marrow_run::RUN_OVERFLOW,
+    );
+    assert_run_error(
+        run(checked_entry!(&program, "test::wrap_to_one")),
+        marrow_run::RUN_OVERFLOW,
+    );
+}
+
+#[test]
+fn std_math_pow_int_large_bounded_results_are_exact() {
+    let program = checked_program(
+        "pub fn one(): int\n    return std::math::powInt(1, 4294967296)\n\n\
+         pub fn zero(): int\n    return std::math::powInt(0, 4294967296)\n\n\
+         pub fn negative_one_even(): int\n    return std::math::powInt(-1, 4294967296)\n\n\
+         pub fn negative_one_odd(): int\n    return std::math::powInt(-1, 4294967297)\n",
+    );
+
+    assert_eq!(
+        run(checked_entry!(&program, "test::one")).unwrap(),
+        Some(Value::Int(1))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::zero")).unwrap(),
+        Some(Value::Int(0))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::negative_one_even")).unwrap(),
+        Some(Value::Int(1))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::negative_one_odd")).unwrap(),
+        Some(Value::Int(-1))
+    );
+}
+
+#[test]
 fn std_math_round_decimal_returns_canonical_decimal() {
     let program = checked_program(
         "pub fn money_seed(): string\n    return string(std::math::roundDecimal(12.345, 2))\n\n\
