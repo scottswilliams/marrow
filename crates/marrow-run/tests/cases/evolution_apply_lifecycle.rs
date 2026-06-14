@@ -9,8 +9,7 @@ use evolution_apply_support::*;
 use marrow_check::{CHECK_CATALOG_INTENT, CheckReport, check_project_with_catalog};
 use marrow_run::evolution::{ApplyError, Approval, apply, commit_catalog_baseline};
 use marrow_store::cell::CatalogId;
-use marrow_store::key::SavedKey;
-use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::tree::TreeStore;
 use marrow_store::value::Scalar;
 
 const BASELINE: &str = "module books\n\
@@ -270,7 +269,6 @@ fn second_epoch_witness_fails_closed_when_records_change_mid_chain() {
     let accepted = publish_baseline(&root, &store, BASELINE);
     let place = root_place(&accepted, "books");
     let store_id = store_id_of(&place);
-    let title_id = member_catalog_id(&place, "title");
     let seed = Seed {
         store: &store,
         place: &place,
@@ -288,18 +286,8 @@ fn second_epoch_witness_fails_closed_when_records_change_mid_chain() {
     let rating_id = proposal_catalog_id(&with_rating, "books::Book::rating");
     let stale_witness = witness(&with_rating, &store);
 
-    store
-        .write_node(&store_id, &[SavedKey::Int(2)])
-        .expect("record 2");
-    let title_member = CatalogId::new(title_id).unwrap();
-    store
-        .write_data_value(
-            &store_id,
-            &[SavedKey::Int(2)],
-            &[DataPathSegment::Member(title_member)],
-            marrow_store::value::encode_value(&Scalar::Str("Hyperion".into())).unwrap(),
-        )
-        .expect("write title");
+    seed.record(2);
+    seed.member(2, "title", Scalar::Str("Hyperion".into()));
     seed.member_by_id(2, &pages_id, Scalar::Int(0));
 
     let result = apply(&stale_witness, &with_rating, &store, false, None);

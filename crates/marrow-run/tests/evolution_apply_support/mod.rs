@@ -97,9 +97,7 @@ pub fn index_has_children(store: &TreeStore, index: &CatalogId) -> bool {
         .is_some()
 }
 
-/// A minimal seeded store rooted at one single-key-identity saved place, identical to
-/// the discharge harness: a record is its `id` key; a member is seeded at the bound
-/// member catalog id exactly as the runtime write path does.
+/// Seeds saved data for an accepted place through the same tree shape runtime writes use.
 pub struct Seed<'a> {
     pub store: &'a TreeStore,
     pub place: &'a CheckedSavedPlace,
@@ -111,9 +109,8 @@ impl Seed<'_> {
     }
 
     pub fn record(&self, id: i64) {
-        self.store
-            .write_node(&self.store_id(), &[SavedKey::Int(id)])
-            .expect("write node");
+        let store_id = self.store_id();
+        write_identity_node(self.store, &store_id, &[SavedKey::Int(id)]);
     }
 
     pub fn member(&self, id: i64, member: &str, value: Scalar) {
@@ -121,17 +118,64 @@ impl Seed<'_> {
     }
 
     pub fn member_by_id(&self, id: i64, member_catalog_id: &str, value: Scalar) {
+        let store_id = self.store_id();
         let member_id = CatalogId::new(member_catalog_id).expect("member id");
+        let identity = [SavedKey::Int(id)];
+        let path = [DataPathSegment::Member(member_id)];
+        self.write_value(&store_id, &identity, &path, value);
+    }
+
+    pub fn singleton_member(&self, member: &str, value: Scalar) {
+        let store_id = self.store_id();
+        write_identity_node(self.store, &store_id, &[]);
+        let member_id = CatalogId::new(member_catalog_id(self.place, member)).expect("member id");
+        let path = [DataPathSegment::Member(member_id)];
+        self.write_value(&store_id, &[], &path, value);
+    }
+
+    pub fn nested_member_by_id(
+        &self,
+        id: i64,
+        group_member_id: &str,
+        member_id: &str,
+        value: Scalar,
+    ) {
+        let store_id = self.store_id();
+        let identity = [SavedKey::Int(id)];
+        let path = [
+            DataPathSegment::Member(CatalogId::new(group_member_id).expect("group member id")),
+            DataPathSegment::Member(CatalogId::new(member_id).expect("member id")),
+        ];
+        self.write_value(&store_id, &identity, &path, value);
+    }
+
+    pub fn delete_member_by_id(&self, id: i64, member_id: &str) {
+        let store_id = self.store_id();
+        let identity = [SavedKey::Int(id)];
+        let path = [DataPathSegment::Member(
+            CatalogId::new(member_id).expect("member id"),
+        )];
+        self.store
+            .delete_data_subtree(&store_id, &identity, &path)
+            .expect("delete member subtree");
+    }
+
+    fn write_value(
+        &self,
+        store_id: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+        value: Scalar,
+    ) {
         let bytes = encode_value(&value).expect("encode value");
         self.store
-            .write_data_value(
-                &self.store_id(),
-                &[SavedKey::Int(id)],
-                &[DataPathSegment::Member(member_id)],
-                bytes,
-            )
+            .write_data_value(store_id, identity, path, bytes)
             .expect("write member value");
     }
+}
+
+fn write_identity_node(store: &TreeStore, store_id: &CatalogId, identity: &[SavedKey]) {
+    store.write_node(store_id, identity).expect("write node");
 }
 
 pub const INT: marrow_store::value::ScalarType = marrow_store::value::ScalarType::Int;

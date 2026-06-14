@@ -178,15 +178,11 @@ fn explicit_store_retire_deletes_store_data() {
     let theme_id = CatalogId::new(member_catalog_id(&settings_place, "theme")).unwrap();
 
     let store = TreeStore::memory();
-    store.write_node(&settings_store_id, &[]).unwrap();
-    store
-        .write_data_value(
-            &settings_store_id,
-            &[],
-            &[DataPathSegment::Member(theme_id.clone())],
-            encode_value(&Scalar::Str("dark".into())).unwrap(),
-        )
-        .unwrap();
+    let seed = Seed {
+        store: &store,
+        place: &settings_place,
+    };
+    seed.singleton_member("theme", Scalar::Str("dark".into()));
 
     write(
         &root,
@@ -419,22 +415,13 @@ fn nested_group_retire_fails_closed() {
 
     let store = TreeStore::memory();
     let store_id = store_id_of(&accepted_place);
-    // Seed two records each carrying a `meta.note` cell at the nested member path.
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
     for id in [1, 2] {
-        store
-            .write_node(&store_id, &[SavedKey::Int(id)])
-            .expect("write node");
-        store
-            .write_data_value(
-                &store_id,
-                &[SavedKey::Int(id)],
-                &[
-                    DataPathSegment::Member(CatalogId::new(meta_id.clone()).unwrap()),
-                    DataPathSegment::Member(CatalogId::new(note_id.clone()).unwrap()),
-                ],
-                encode_value(&Scalar::Str(format!("note-{id}"))).expect("encode"),
-            )
-            .expect("write nested member");
+        seed.record(id);
+        seed.nested_member_by_id(id, &meta_id, &note_id, Scalar::Str(format!("note-{id}")));
     }
 
     // Retire the nested leaf; the accepted catalog still names it.

@@ -164,16 +164,12 @@ fn an_empty_drop_that_becomes_populated_before_the_stamp_fails_closed() {
     // The fixture seeds two subtitle cells; clear them so the retire targets an empty
     // member and classifies as zero-mutation, exactly the auto-apply case.
     let store_id = store_id_of(&place);
+    let seed = Seed {
+        store: &store,
+        place: &place,
+    };
     for id in [1, 2] {
-        store
-            .delete_data_subtree(
-                &store_id,
-                &[marrow_store::key::SavedKey::Int(id)],
-                &[marrow_store::tree::DataPathSegment::Member(
-                    marrow_store::cell::CatalogId::new(subtitle_id.clone()).expect("subtitle id"),
-                )],
-            )
-            .expect("clear seeded subtitle cells");
+        seed.delete_member_by_id(id, &subtitle_id);
     }
     let w = witness(&program, &store);
     assert_eq!(
@@ -186,10 +182,6 @@ fn an_empty_drop_that_becomes_populated_before_the_stamp_fails_closed() {
         "with no subtitle cells the retire is a zero-mutation drop",
     );
     // A concurrent writer repopulates the dropped member after the witness was taken.
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
     seed.member_by_id(1, &subtitle_id, Scalar::Str("resurrected".into()));
 
     let result = try_auto_apply(&w, &program, &store);
