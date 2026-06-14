@@ -390,8 +390,9 @@ pub enum EnumDiagnostic {
 /// and accepted static sources. Interpolation unsupported-source diagnostics
 /// carry the source type that interpolation cannot render directly. Reserved
 /// catalog path reuse diagnostics carry the reused source identity and reserved
-/// stable id. Catalog-intent diagnostics carry structured intent facts. Type mismatch
-/// diagnostics carry the expected and found types.
+/// stable id. Catalog-intent diagnostics carry structured intent facts.
+/// Suggested-index diagnostics carry the source declaration that admits a hidden
+/// lookup. Type mismatch diagnostics carry the expected and found types.
 /// Other diagnostics carry [`DiagnosticPayload::None`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DiagnosticPayload {
@@ -446,6 +447,8 @@ pub enum DiagnosticPayload {
     /// `check.catalog_intent`: a path-only evolve intent names more than one
     /// catalog/source entity and cannot pick a semantic target.
     CatalogIntent(CatalogIntentDiagnostic),
+    /// `check.collection_unsupported`: a lookup names no declared index.
+    SuggestedIndex { declaration: String },
     /// `check.return_type` or `check.assignment_type`: incompatible known types.
     TypeMismatch {
         expected: MarrowType,

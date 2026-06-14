@@ -846,15 +846,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 Listing order is execution order. docs/cli.md integrates with the remaining operator lanes.
 
-**W6.14 ∥ Typed remedy payload: index synthesis (C09; v01-full).** After the Wave 5 series
-(checker quiet). Owns: one DiagnosticPayload variant (SuggestedIndex carrying the synthesized
-admitting declaration), populated at the hidden-scan rejection site via with_payload(); one CLI
-render line ("add: index byShelf(shelf, id)"); fixtures. The ??/exists and rename producers and
-the marrow-lsp code action are deferred. Seed: failing fixture — the no-matching-index rejection
-carries the exact declaration for a two-field lookup. Review: fires only at explicit rejection
-(law 15 intact); the synthesized declaration always compiles when pasted. Done: the language's
-defining error carries its machine-applicable fix.
-
 **W6.16 → Records vocabulary.** Carries: rename `records` to `cells` in `marrow data stats`
 text/JSON and `data dump` summary JSON after W6.5 retires `check --data`. Owns:
 data stats/dump renderers, data_cli_inventory.rs and data dump/paged render-contract tests,

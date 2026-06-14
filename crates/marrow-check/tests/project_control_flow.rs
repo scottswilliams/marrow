@@ -312,6 +312,94 @@ fn generated_index_branch_member_paths_are_rejected() {
         "check.collection_unsupported",
     );
     assert_eq!(found.len(), 3, "{found:#?}");
+    assert!(
+        found
+            .iter()
+            .all(|diagnostic| diagnostic.payload == DiagnosticPayload::None),
+        "{found:#?}"
+    );
+}
+
+#[test]
+fn missing_index_lookup_suggests_the_admitting_declaration() {
+    let source_without_index = "module m\n\
+         resource Book\n    shelf: string\n\
+         store ^books(id: int): Book\n\n\
+         fn countByShelf(shelf: string)\n    const n = count(^books.byShelf(shelf))\n";
+    let report = check_module_report("missing-index-lookup-suggestion", source_without_index);
+    let found = with_code(&report, "check.collection_unsupported");
+
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    let DiagnosticPayload::SuggestedIndex { declaration } = &found[0].payload else {
+        panic!(
+            "expected suggested index payload, got {:#?}",
+            found[0].payload
+        );
+    };
+    assert_eq!(declaration, "index byShelf(shelf, id)");
+
+    let source_with_index = "module m\n\
+         resource Book\n    shelf: string\n\
+         store ^books(id: int): Book\n    index byShelf(shelf, id)\n\n\
+         fn countByShelf(shelf: string)\n    const n = count(^books.byShelf(shelf))\n";
+    assert_clean(&check_module_report(
+        "missing-index-lookup-suggestion-pasted",
+        source_with_index,
+    ));
+}
+
+#[test]
+fn missing_index_lookup_suppresses_unpasteable_suggestions() {
+    let identity_key_name = check_module_report(
+        "missing-index-identity-key-name",
+        "module m\n\
+         resource Book\n    shelf: string\n\
+         store ^books(id: int): Book\n\n\
+         fn countByShelf(shelf: string)\n    const n = count(^books.id(shelf))\n",
+    );
+    assert_no_suggested_index(&identity_key_name);
+
+    let incompatible_parameter = check_module_report(
+        "missing-index-incompatible-parameter",
+        "module m\n\
+         resource Book\n    shelf: string\n\
+         store ^books(id: int): Book\n\n\
+         fn countByShelf(shelf: int)\n    const n = count(^books.byShelf(shelf))\n",
+    );
+    assert_no_suggested_index(&incompatible_parameter);
+
+    let incompatible_shadow = check_module_report(
+        "missing-index-incompatible-shadow",
+        "module m\n\
+         resource Book\n    shelf: string\n\
+         store ^books(id: int): Book\n\n\
+         fn countByShelf()\n    const shelf: int = 1\n    const n = count(^books.byShelf(shelf))\n",
+    );
+    assert_no_suggested_index(&incompatible_shadow);
+}
+
+#[test]
+fn missing_index_lookup_in_value_context_has_no_suggested_index() {
+    let report = check_module_report(
+        "missing-index-value-context",
+        "module m\n\
+         resource Book\n    required isbn: string\n\
+         store ^books(id: int): Book\n\n\
+         fn lookup(isbn: string, fallback: Id(^books)): Id(^books)\n    return ^books.byIsbn(isbn) ?? fallback\n",
+    );
+
+    assert_no_suggested_index(&report);
+}
+
+fn assert_no_suggested_index(report: &marrow_check::CheckReport) {
+    assert!(
+        report.diagnostics.iter().all(|diagnostic| !matches!(
+            &diagnostic.payload,
+            DiagnosticPayload::SuggestedIndex { .. }
+        )),
+        "{:#?}",
+        report.diagnostics
+    );
 }
 
 #[test]

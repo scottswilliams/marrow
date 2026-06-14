@@ -113,6 +113,60 @@ pub fn main()
 }
 
 #[test]
+fn check_text_renders_suggested_index_add_line() {
+    let dir = project_with_source(
+        "suggested-index-add-line",
+        "src/app.mw",
+        "module app\n\
+         resource Book\n\
+         \x20   shelf: string\n\
+         store ^books(id: int): Book\n\
+         pub fn countByShelf(shelf: string)\n\
+         \x20   const n = count(^books.byShelf(shelf))\n",
+    );
+
+    let output = support::marrow_sub("check", &[dir.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        output.stdout.is_empty(),
+        "unexpected stdout: {:?}",
+        output.stdout
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("check.collection_unsupported"), "{stderr}");
+    assert!(
+        stderr
+            .lines()
+            .any(|line| line == "add: index byShelf(shelf, id)"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn check_text_does_not_render_suggested_index_for_coalesce_value_context() {
+    let dir = project_with_source(
+        "suggested-index-deferred-coalesce",
+        "src/app.mw",
+        "module app\n\
+         resource Book\n\
+         \x20   required isbn: string\n\
+         store ^books(id: int): Book\n\
+         pub fn lookup(isbn: string, fallback: Id(^books)): Id(^books)\n\
+         \x20   return ^books.byIsbn(isbn) ?? fallback\n",
+    );
+
+    let output = support::marrow_sub("check", &[dir.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        !stderr.lines().any(|line| line.starts_with("add: ")),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn check_reports_parse_diagnostics() {
     let dir = project_with_source("invalid", "src/app.mw", "module app\n\tpub fn main()\n");
 

@@ -11,6 +11,7 @@ use crate::facts::{
 };
 use crate::program::{CheckedProgram, MarrowType};
 use crate::resolve::resolve_store_by_root;
+use crate::typerules::type_compatible;
 use crate::{StoreLeafKind, resolve_resource_schema_type};
 
 use super::{
@@ -26,6 +27,7 @@ pub(crate) struct SavedPlaceResolver<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SavedAccessRejection {
     GeneratedIndexBranch,
+    NoMatchingIndex { declaration: String },
     KeyedRootMemberWithoutIdentity(String),
 }
 
@@ -72,7 +74,15 @@ impl<'a> SavedPlaceResolver<'a> {
     }
 
     pub(crate) fn access_rejection(&self, expr: &CheckedExpr) -> Option<SavedAccessRejection> {
-        saved_access_rejection(expr)
+        saved_access_rejection(self.program, expr, SuggestedIndexContext::Disabled)
+    }
+
+    pub(crate) fn access_rejection_with_suggested_index(
+        &self,
+        expr: &CheckedExpr,
+        scope: &[HashMap<String, MarrowType>],
+    ) -> Option<SavedAccessRejection> {
+        saved_access_rejection(self.program, expr, SuggestedIndexContext::Enabled { scope })
     }
 
     pub(crate) fn is_saved_path(&self, expr: &CheckedExpr) -> bool {
@@ -446,7 +456,9 @@ impl<'a> SavedPlaceResolver<'a> {
 
 pub(crate) fn accepted_saved_place(expr: &CheckedExpr) -> Option<&CheckedSavedPlace> {
     let place = expr.saved_place()?;
-    saved_access_rejection(expr).is_none().then_some(place)
+    saved_access_rejection_without_program(expr)
+        .is_none()
+        .then_some(place)
 }
 
 pub(crate) fn checked_saved_place_effect(
@@ -500,7 +512,31 @@ fn checked_saved_member_names(place: &CheckedSavedPlace) -> Vec<&str> {
     names
 }
 
-fn saved_access_rejection(expr: &CheckedExpr) -> Option<SavedAccessRejection> {
+#[derive(Clone, Copy)]
+enum SuggestedIndexContext<'a> {
+    Disabled,
+    Enabled {
+        scope: &'a [HashMap<String, MarrowType>],
+    },
+}
+
+fn saved_access_rejection_without_program(expr: &CheckedExpr) -> Option<SavedAccessRejection> {
+    saved_access_rejection_program_optional(None, expr, SuggestedIndexContext::Disabled)
+}
+
+fn saved_access_rejection(
+    program: &CheckedProgram,
+    expr: &CheckedExpr,
+    suggested_index: SuggestedIndexContext<'_>,
+) -> Option<SavedAccessRejection> {
+    saved_access_rejection_program_optional(Some(program), expr, suggested_index)
+}
+
+fn saved_access_rejection_program_optional(
+    program: Option<&CheckedProgram>,
+    expr: &CheckedExpr,
+    suggested_index: SuggestedIndexContext<'_>,
+) -> Option<SavedAccessRejection> {
     match expr {
         CheckedExpr::Field { base, name, .. } | CheckedExpr::OptionalField { base, name, .. } => {
             if matches!(expr, CheckedExpr::OptionalField { .. })
@@ -520,30 +556,44 @@ fn saved_access_rejection(expr: &CheckedExpr) -> Option<SavedAccessRejection> {
                     root.clone(),
                 ));
             }
-            saved_access_rejection(base)
+            saved_access_rejection_program_optional(program, base, suggested_index)
         }
-        CheckedExpr::Call { callee, .. } => {
+        CheckedExpr::Call { callee, args, .. } => {
+            if let (Some(program), SuggestedIndexContext::Enabled { scope }) =
+                (program, suggested_index)
+                && let Some(declaration) = suggested_index_declaration(program, callee, args, scope)
+            {
+                return Some(SavedAccessRejection::NoMatchingIndex { declaration });
+            }
             if matches!(callee.as_ref(), CheckedExpr::Call { .. }) && index_branch(callee).is_some()
             {
                 return Some(SavedAccessRejection::GeneratedIndexBranch);
             }
             match callee.as_ref() {
                 CheckedExpr::SavedRoot { .. } => None,
-                _ => saved_access_rejection(callee),
+                _ => saved_access_rejection_program_optional(program, callee, suggested_index),
             }
         }
-        CheckedExpr::Unary { operand, .. } => saved_access_rejection(operand),
+        CheckedExpr::Unary { operand, .. } => {
+            saved_access_rejection_program_optional(program, operand, suggested_index)
+        }
         CheckedExpr::Binary { left, right, .. } => {
-            saved_access_rejection(left).or_else(|| saved_access_rejection(right))
+            saved_access_rejection_program_optional(program, left, suggested_index).or_else(|| {
+                saved_access_rejection_program_optional(program, right, suggested_index)
+            })
         }
         CheckedExpr::Range {
             start, end, step, ..
         } => [start.as_deref(), end.as_deref(), step.as_deref()]
             .into_iter()
             .flatten()
-            .find_map(saved_access_rejection),
+            .find_map(|expr| {
+                saved_access_rejection_program_optional(program, expr, suggested_index)
+            }),
         CheckedExpr::Interpolation { parts, .. } => parts.iter().find_map(|part| match part {
-            super::CheckedInterpolationPart::Expr(expr) => saved_access_rejection(expr),
+            super::CheckedInterpolationPart::Expr(expr) => {
+                saved_access_rejection_program_optional(program, expr, suggested_index)
+            }
             super::CheckedInterpolationPart::Text { .. } => None,
         }),
         CheckedExpr::Literal { .. } | CheckedExpr::Name { .. } | CheckedExpr::SavedRoot { .. } => {
@@ -565,6 +615,83 @@ fn saved_root_index<'p>(base: &'p CheckedExpr, name: &str) -> Option<&'p Checked
 fn index_branch(expr: &CheckedExpr) -> Option<&CheckedSavedPlace> {
     let place = expr.saved_place()?;
     matches!(place.terminal, CheckedSavedTerminal::Index { .. }).then_some(place)
+}
+
+fn suggested_index_declaration(
+    program: &CheckedProgram,
+    callee: &CheckedExpr,
+    args: &[CheckedArg],
+    scope: &[HashMap<String, MarrowType>],
+) -> Option<String> {
+    let CheckedExpr::Field { base, name, .. } = callee else {
+        return None;
+    };
+    let CheckedExpr::SavedRoot { .. } = base.as_ref() else {
+        return None;
+    };
+    let place = base.saved_place()?;
+    if place.identity_keys.is_empty()
+        || place.indexes.iter().any(|index| index.name == *name)
+        || place.identity_keys.iter().any(|key| key.name == *name)
+        || root_member_named(place, name)
+    {
+        return None;
+    }
+    let mut keys = Vec::with_capacity(args.len() + place.identity_keys.len());
+    for arg in args {
+        keys.push(suggested_index_arg_key(program, place, arg, scope)?);
+    }
+    if keys.is_empty() {
+        return None;
+    }
+    for key in &place.identity_keys {
+        if !keys.iter().any(|name| name == &key.name) {
+            keys.push(key.name.clone());
+        }
+    }
+    Some(format!("index {}({})", name, keys.join(", ")))
+}
+
+fn suggested_index_arg_key(
+    program: &CheckedProgram,
+    place: &CheckedSavedPlace,
+    arg: &CheckedArg,
+    scope: &[HashMap<String, MarrowType>],
+) -> Option<String> {
+    if arg.name.is_some() {
+        return None;
+    }
+    let CheckedExpr::Name { segments, .. } = &arg.value else {
+        return None;
+    };
+    let [name] = segments.as_slice() else {
+        return None;
+    };
+    let member = root_plain_field(place, name)?;
+    let expected = SavedPlaceResolver::new(program).leaf_type(member.leaf.as_ref()?)?;
+    let actual = scoped_name_type(scope, name)?;
+    (type_compatible(&expected, actual) == Some(true)).then(|| member.name.clone())
+}
+
+fn root_member_named(place: &CheckedSavedPlace, name: &str) -> bool {
+    place.root_members.iter().any(|member| member.name == name)
+}
+
+fn root_plain_field<'p>(
+    place: &'p CheckedSavedPlace,
+    name: &str,
+) -> Option<&'p CheckedSavedMember> {
+    place
+        .root_members
+        .iter()
+        .find(|member| member.name == name && member.is_plain_field())
+}
+
+fn scoped_name_type<'a>(
+    scope: &'a [HashMap<String, MarrowType>],
+    name: &str,
+) -> Option<&'a MarrowType> {
+    scope.iter().rev().find_map(|frame| frame.get(name))
 }
 
 fn checked_range_expr(expr: &CheckedExpr) -> bool {

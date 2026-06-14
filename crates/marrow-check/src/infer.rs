@@ -420,6 +420,7 @@ fn infer_type_with_read_scope_inner(
                 arg_types.push(infer_call_arg_type(CallArgInfer {
                     program,
                     callee,
+                    arg_name: arg.name.as_deref(),
                     arg: &arg.value,
                     scope,
                     aliases,
@@ -578,9 +579,35 @@ fn reject_saved_access(
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> bool {
-    let Some(rejection) = checked_expr(program, expr, scope, file)
-        .and_then(|expr| SavedPlaceResolver::new(program).access_rejection(&expr))
-    else {
+    reject_saved_access_inner(program, expr, scope, file, diagnostics, false)
+}
+
+fn reject_saved_access_with_suggested_index(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> bool {
+    reject_saved_access_inner(program, expr, scope, file, diagnostics, true)
+}
+
+fn reject_saved_access_inner(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+    suggested_index: bool,
+) -> bool {
+    let Some(rejection) = checked_expr(program, expr, scope, file).and_then(|expr| {
+        let resolver = SavedPlaceResolver::new(program);
+        if suggested_index {
+            resolver.access_rejection_with_suggested_index(&expr, scope)
+        } else {
+            resolver.access_rejection(&expr)
+        }
+    }) else {
         return false;
     };
     match rejection {
@@ -590,6 +617,15 @@ fn reject_saved_access(
             expr.span(),
             "generated index branches do not expose resource members or chained calls",
         )),
+        SavedAccessRejection::NoMatchingIndex { declaration } => diagnostics.push(
+            CheckDiagnostic::error(
+                CHECK_COLLECTION_UNSUPPORTED,
+                file,
+                expr.span(),
+                "lookup has no matching declared index",
+            )
+            .with_payload(DiagnosticPayload::SuggestedIndex { declaration }),
+        ),
         SavedAccessRejection::KeyedRootMemberWithoutIdentity(root) => {
             diagnostics.push(key_type_diagnostic(
                 file,
@@ -604,6 +640,7 @@ fn reject_saved_access(
 struct CallArgInfer<'a, 'd> {
     program: &'a CheckedProgram,
     callee: &'a marrow_syntax::Expression,
+    arg_name: Option<&'a str>,
     arg: &'a marrow_syntax::Expression,
     scope: &'a [HashMap<String, MarrowType>],
     aliases: &'a HashMap<String, Vec<String>>,
@@ -613,6 +650,18 @@ struct CallArgInfer<'a, 'd> {
 }
 
 fn infer_call_arg_type(input: CallArgInfer<'_, '_>) -> MarrowType {
+    if input.arg_name.is_none()
+        && callee_accepts_missing_index_suggestion(input.callee)
+        && reject_saved_access_with_suggested_index(
+            input.program,
+            input.arg,
+            input.scope,
+            input.file,
+            input.diagnostics,
+        )
+    {
+        return MarrowType::Unknown;
+    }
     if checked_expr(input.program, input.callee, input.scope, input.file)
         .is_some_and(|callee| SavedPlaceResolver::new(input.program).is_saved_path_callee(&callee))
         && let Some(ty) = infer_saved_key_range_arg_type(
@@ -635,6 +684,13 @@ fn infer_call_arg_type(input: CallArgInfer<'_, '_>) -> MarrowType {
         input.file,
         input.diagnostics,
         input.transform_old,
+    )
+}
+
+fn callee_accepts_missing_index_suggestion(callee: &marrow_syntax::Expression) -> bool {
+    matches!(
+        callee,
+        marrow_syntax::Expression::Name { segments, .. } if segments.as_slice() == ["count"]
     )
 }
 

@@ -448,6 +448,7 @@ impl TestResolutionSuppression {
             | DiagnosticPayload::InterpolationUnsupportedSource { .. }
             | DiagnosticPayload::ReservedCatalogPathReuse { .. }
             | DiagnosticPayload::CatalogIntent(_)
+            | DiagnosticPayload::SuggestedIndex { .. }
             | DiagnosticPayload::TypeMismatch { .. }
             | DiagnosticPayload::None => false,
         }

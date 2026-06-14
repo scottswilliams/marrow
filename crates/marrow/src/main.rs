@@ -197,6 +197,9 @@ fn report_project_with_footprints(
                         diagnostic.code,
                         diagnostic.message
                     );
+                    if let Some(line) = check_diagnostic_payload_text(diagnostic) {
+                        eprintln!("{line}");
+                    }
                 }
                 if !report.has_errors() {
                     let warnings = report
@@ -353,6 +356,15 @@ fn check_diagnostic_record(diagnostic: &marrow_check::CheckDiagnostic) -> serde_
         Some(diagnostic.severity.as_str()),
         None,
     )
+}
+
+fn check_diagnostic_payload_text(diagnostic: &marrow_check::CheckDiagnostic) -> Option<String> {
+    match &diagnostic.payload {
+        marrow_check::DiagnosticPayload::SuggestedIndex { declaration } => {
+            Some(format!("add: {declaration}"))
+        }
+        _ => None,
+    }
 }
 
 pub(crate) fn report_simple_error(code: &str, message: &str, format: CheckFormat) {

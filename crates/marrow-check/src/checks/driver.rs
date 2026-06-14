@@ -93,6 +93,7 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
                 | DiagnosticPayload::InterpolationUnsupportedSource { .. }
                 | DiagnosticPayload::ReservedCatalogPathReuse { .. }
                 | DiagnosticPayload::CatalogIntent(_)
+                | DiagnosticPayload::SuggestedIndex { .. }
                 | DiagnosticPayload::TypeMismatch { .. }
                 | DiagnosticPayload::None => true,
             });
