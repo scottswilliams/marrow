@@ -225,31 +225,31 @@ fn rejects_structural_equal_inside_type_annotations() {
 fn parser_preserves_type_spellings_for_downstream_resolution() {
     let parsed = parse_source(
         "module app\n\
-         fn f(rows: map[string, int]): map[string, int]\n\
+         fn f(rows: FutureBox[string, int]): FutureBox[string, int]\n\
          \x20   return 1\n\
          resource Book\n\
-         \x20   scores(k: map[string, int]): sequence[]\n",
+         \x20   scores(k: FutureBox[string, int]): sequence[]\n",
     );
     assert!(!parsed.has_errors(), "{:#?}", parsed.diagnostics);
 
     let function = parsed.file.function("f").expect("function f");
-    assert_eq!(function.params[0].ty.text, "map[string,int]");
+    assert_eq!(function.params[0].ty.text, "FutureBox[string,int]");
     assert_eq!(
         function.return_type.as_ref().map(|ty| ty.text.as_str()),
-        Some("map[string,int]")
+        Some("FutureBox[string,int]")
     );
 
     let book = parsed.file.resource("Book").expect("Book resource");
     let ResourceMember::Field(scores) = &book.members[0] else {
         panic!("expected scores field, got {:#?}", book.members[0]);
     };
-    assert_eq!(scores.keys[0].ty.text, "map[string,int]");
+    assert_eq!(scores.keys[0].ty.text, "FutureBox[string,int]");
     assert_eq!(scores.ty.text, "sequence[]");
 }
 
 #[test]
 fn reserved_word_as_parameter_name_is_rejected() {
-    let parsed = parse_source("fn f(at: int)\n    return\n");
+    let parsed = parse_source("fn f(while: int)\n    return\n");
     assert_eq!(parsed.diagnostics.len(), 1, "{:#?}", parsed.diagnostics);
     assert!(
         parsed.diagnostics[0].reason

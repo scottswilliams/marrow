@@ -2,6 +2,8 @@ from pathlib import Path
 import re
 import sys
 
+import w7_absence_scan
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -38,18 +40,14 @@ def has_phrase(text, phrase):
 
 def check_data_evolution_outcome_names(path, text, failures):
     canonical = [
-        "Nothing",
-        "Default",
-        "Transform",
-        "Approve",
         "NoOp",
         "CatalogOnly",
+        "IndexDropped",
         "DataProof",
-        "CompatibilityLensRequired",
+        "Default",
         "DerivedRebuild",
-        "TypedTransformRequired",
+        "Transform",
         "DestructiveDecisionRequired",
-        "EngineRecompileRequired",
         "RepairRequired",
     ]
     if rel(path) == "docs/implementation/check/evolution.md":
@@ -60,31 +58,24 @@ def check_data_evolution_outcome_names(path, text, failures):
             )
 
     aliases = {
-        r"\bIndexDropped\b": "use the canonical evolution outcome vocabulary",
-        r"\bDefault\s*\{\s*value\s*\}": (
-            "use CompatibilityLensRequired or the Default obligation"
-        ),
-        r"\bTransform\s*\{\s*reads\s*\}": (
-            "use TypedTransformRequired or the Transform obligation"
-        ),
-        r"\bDestructiveDecisionRequired\s*\{": "name DestructiveDecisionRequired without payload prose",
-        r"\bRepairRequired\s*\{": "name RepairRequired without payload prose",
+        r"\bCompatibilityLensRequired\b": "use Default when naming the current verdict",
+        r"\bTypedTransformRequired\b": "use Transform when naming the current verdict",
+        r"\bEngineRecompileRequired\b": "this outcome no longer exists in the current verdict",
+        r"`Nothing`": "use NoOp when naming the current verdict",
+        r"`Approve`": "use DestructiveDecisionRequired when naming the current blocking verdict",
         r"\bNo Op\b": "use NoOp when naming the internal outcome",
         r"\bIndex Rebuild\b": "use DerivedRebuild when naming the internal outcome",
         r"\bData Proof\b": "use DataProof when naming the internal outcome",
         r"\bCatalog Only\b": "use CatalogOnly when naming the internal outcome",
         r"\bCompatibility Lens Required\b": (
-            "use CompatibilityLensRequired when naming the internal outcome"
+            "use Default when naming the current verdict"
         ),
         r"\bDerived Rebuild\b": "use DerivedRebuild when naming the internal outcome",
         r"\bTyped Transform Required\b": (
-            "use TypedTransformRequired when naming the internal outcome"
+            "use Transform when naming the current verdict"
         ),
         r"\bDestructive Decision Required\b": (
             "use DestructiveDecisionRequired when naming the internal outcome"
-        ),
-        r"\bEngine Recompile Required\b": (
-            "use EngineRecompileRequired when naming the internal outcome"
         ),
         r"\bRepair Required\b": "use RepairRequired when naming the internal outcome",
     }
@@ -173,6 +164,14 @@ def main():
         print("docs_lint failed:")
         for failure in failures:
             print(f"- {failure}")
+        return 1
+
+    stale_hits = w7_absence_scan.collect_hits()
+    if stale_hits:
+        print("docs_lint failed:")
+        print("- W7 absence scan found stale removed-surface spelling:")
+        for hit in stale_hits:
+            print(f"  {hit.path}:{hit.line_no}: {hit.pattern_id}: {hit.text}")
         return 1
 
     print("docs_lint passed")

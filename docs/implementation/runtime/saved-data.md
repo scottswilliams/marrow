@@ -38,11 +38,6 @@ One invariant organizes the whole subsystem: **durable saved data is never mater
 - **`append` reads before it writes.** It computes `next_layer_pos` from the store tail, then plans and applies a leaf write at that 1-based position through `crate::write` (`plan_layer_leaf_write`) and `Env::apply_plan`; it lives in this read area because position allocation is fundamentally a tail read.
 - **Local sequences are 1-based and dense; `LocalTree`s stay sorted on insert** so their enumeration matches saved ascending order. Composite local-tree keys enumerate only the first column.
 
-## Discrepancies with the code
-
-- Child-layer prefix address construction is duplicated: `ChildLayerScan::new` (streaming) and `read.rs` `child_layer_prefix_address` (counting) carry near-identical lower/last-layer/push-`LayerAddress` logic with no shared helper.
-- Two unique-index readers exist: `eval_index_lookup` delegates to `stdlib::read_exact_unique_index_lookup_value` for value reads, while `saved_iter/unique.rs` re-implements scan+decode for iteration. They share `decode_unique_index_identity` but not the tuple scan.
-
 ## Read next
 
 - `saved_iter.rs` — `walk_keyed_children` and `SavedLoopPlan::new`: the recursive depth-bounded walk and four-way scan selection; understand these and the four scan modules become thin.

@@ -3,9 +3,9 @@
 //!
 //! The crate's surface is the AST (`ast`), the diagnostic types (`diagnostic`),
 //! the token model (`token`), the canonical string-literal decoder (`literal`),
-//! and the two entry points `lex_source`/`parse_source`. Everything else (the
-//! lexer and the expression/declaration parsers) is an internal carve of one
-//! pipeline.
+//! and the public entry points `lex_source`/`parse_source`/`parse_expression`.
+//! Everything else (the lexer and the expression/declaration parsers) is an
+//! internal carve of one pipeline.
 
 mod ast;
 mod diagnostic;
@@ -180,7 +180,7 @@ mod decl_parser_corpus {
             "resource Book\n    title: string\nstore ^books(): Book\n",
             "resource Book\nstore ^books: Book\n",
             "resource\n    title: string\n",
-            "resource Book at books\n    title: string\n",
+            "resource Book extra\n    title: string\n",
             "resource Book\n    required missing\nstore ^books: Book\n",
             "resource Book\n    name: string\n        nested: int\nstore ^books: Book\n",
             // functions and parameters
@@ -202,7 +202,7 @@ mod decl_parser_corpus {
             // statement bodies that exercise StmtParser delegation
             "fn main()\n    foo +\n",
             "fn main()\n    const x: int\n",
-            "fn touch(id: int)\n    ^events(id).at = now\n",
+            "fn touch(id: int)\n    ^events(id).status = now\n",
             "fn run()\n    log(level: 1, 2)\n",
             "fn classify(n: int)\n    if n < 0\n        return\n    else if n > 0\n        return\n    else\n        return\n",
             // interleaved blank lines and doc comments inside a resource body

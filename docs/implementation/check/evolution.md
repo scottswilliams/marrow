@@ -7,13 +7,14 @@ The shape is three stages. **Intents** turn each `evolve` block step into a type
 ## The verdict vocabulary
 
 `Verdict` (in `witness.rs`) is the transport contract that crosses crates.
-The ADR vocabulary has four user obligations — `Nothing`, `Default`,
-`Transform`, and `Approve` — and nine internal outcome names: `NoOp`,
-`CatalogOnly`, `DataProof`, `CompatibilityLensRequired`, `DerivedRebuild`,
-`TypedTransformRequired`, `DestructiveDecisionRequired`,
-`EngineRecompileRequired`, and `RepairRequired`. Discharge may activate only
-outcomes whose obligation has been proven or supplied; `is_activatable` is true
-iff every verdict can activate without more developer input.
+The current verdict variants are `NoOp`, `CatalogOnly`, `IndexDropped`,
+`DataProof`, `Default`, `DerivedRebuild`, `Transform`,
+`DestructiveDecisionRequired`, and `RepairRequired`. Discharge may activate only
+outcomes whose obligation apply can derive from the witness: no-op, identity-only
+rename, dropped derived index, proven data claim, checked constant default,
+derived index rebuild, or checked transform. `is_activatable` is false for the
+two blocking variants: destructive approval still needs scoped operator input,
+and repair still needs the snapshot fixed before activation.
 
 `RepairReason` is the typed fail-closed cause: missing required member, rejected default, invalid stored value, unique-index collision or unprobeability, retire required (a dropped member an index still reads, or `PopulatedDropRequiresRetire` for a populated drop with no retire intent), undecodable transform input, a type/key-shape change that needs a transform, and `StructuralDivergence` — the default-deny backstop.
 

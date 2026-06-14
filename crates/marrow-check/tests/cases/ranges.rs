@@ -91,17 +91,6 @@ fn a_non_steppable_endpoint_is_a_check_error() {
 }
 
 #[test]
-fn a_decimal_range_is_not_steppable() {
-    let codes = codes(&module(
-        "    for x in 0.0..1.0 by 0.25\n        var y: decimal = x\n",
-    ));
-    assert!(
-        codes.iter().any(|c| c == "check.operator_type"),
-        "{codes:?}"
-    );
-}
-
-#[test]
 fn an_instant_range_without_by_is_a_check_error() {
     let codes = codes(&module(
         "    for t in std::clock::now()..std::clock::now()\n        var x = t\n",

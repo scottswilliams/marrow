@@ -27,14 +27,14 @@ fn reports_unknown_types_in_signatures_and_consts() {
 fn reports_unknown_types_for_parser_migrated_signature_spellings() {
     let found = check_module(
         "unknown-type-migrated-signature-spellings",
-        "module m\nfn f(rows: map[string, int]): map[string, int]\n    return 1\n",
+        "module m\nfn f(rows: FutureBox[string, int]): FutureBox[string, int]\n    return 1\n",
         "check.unknown_type",
     );
     assert_eq!(found.len(), 2, "{found:#?}");
     assert!(
         found.iter().all(|diagnostic| diagnostic.payload
             == DiagnosticPayload::UnknownType(marrow_schema::Type::Named(
-                "map[string,int]".into()
+                "FutureBox[string,int]".into()
             ))
             && diagnostic.span.line == 2),
         "{found:#?}"

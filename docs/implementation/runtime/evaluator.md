@@ -46,11 +46,6 @@ Saved-write and read execution (`write*`, `read`, `durable_read`, `group_write`,
 - **Loop-traversal guards** dynamically reject a write that mutates a layer a loop is actively iterating (`run.traversal`), backing the static check for paths the checker cannot prove.
 - **Maintenance-only operations** (drop a whole root, delete a lone required field) are gated by the `Host.maintenance` capability; an ordinary `marrow run` never sets it.
 
-## Notes on code reality
-
-- `lib.rs`'s module doc sketches the spine as `expr`/`call`/`exec`/`read`/`write_dispatch`/`path` plus leaf supports; the real module set is larger and partly renamed (`statement`, `loop_exec`, `activation`, `call_args`, `durable_read`, `group_write`, `local_collection`, `saved_iter`, `write_plan`/`write_dispatch`, `transaction`, `store`, `index_maintenance`, `neighbor`, `evolution`, `base64`). Treat the doc as a sketch, not a file list.
-- `BinaryOp::RangeExclusive`/`RangeInclusive` are unreachable in `eval_binary` (they return unsupported); ranges are consumed only structurally by `loop_exec`, so a range used as a plain value expression is intentionally a runtime-unsupported fault.
-
 ## Read next
 
 - `crates/marrow-run/src/activation.rs` — `invoke` / `activation_completion`: where `Flow` becomes a `Completion` and origin/throw/fault classification lives.

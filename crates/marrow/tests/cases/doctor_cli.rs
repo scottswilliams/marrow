@@ -7,7 +7,7 @@ use marrow_store::key::SavedKey;
 use support::{json, marrow};
 use support_data::{
     checked_place, delete_tree_path, field_path, integrity_problem, marrow as data_marrow,
-    seeded_project, write_orphan_cell, write_tree_value, write_tree_values,
+    seeded_project, write_orphan_cell, write_tree_values,
 };
 
 const EXPECTED_INTEGRITY_SAMPLE_LIMIT: u64 = 64;
@@ -256,15 +256,9 @@ fn doctor_text_reports_truncated_clean_sample() {
     let (project, dir) = seeded_project("doctor-text-truncated-sample");
     let place = checked_place(&project, "counter");
     let value_path = field_path(&place, "value");
-    for id in 1..=EXPECTED_INTEGRITY_SAMPLE_LIMIT + 1 {
-        write_tree_value(
-            &project,
-            "counter",
-            &[SavedKey::Int(id as i64)],
-            &value_path,
-            b"42".to_vec(),
-        );
-    }
+    let identities =
+        (1..=EXPECTED_INTEGRITY_SAMPLE_LIMIT + 1).map(|id| vec![SavedKey::Int(id as i64)]);
+    write_tree_values(&project, &place, identities, &value_path, b"42");
     write_orphan_cell(
         &project,
         "cat_000000000000000000000000deadbeef",

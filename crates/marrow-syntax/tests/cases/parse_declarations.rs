@@ -337,8 +337,8 @@ const : int = 1
 #[test]
 fn reserved_word_as_const_name_is_rejected() {
     // A const name, like a parameter, member, or key name, is an `identifier`,
-    // so a reserved word (`at`) in any of those positions is a parse error.
-    let parsed = parse_source("module app\nconst at = 5\n");
+    // so a reserved word (`while`) in any of those positions is a parse error.
+    let parsed = parse_source("module app\nconst while = 5\n");
     assert!(
         parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
             == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::ConstName))),

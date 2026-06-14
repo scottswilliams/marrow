@@ -40,6 +40,29 @@ The first implementation target is deliberately small:
 - no alternate language modes in the default product;
 - no bundled external database adapters.
 
+## Scope And Security
+
+Marrow treats project source, `marrow.json`, `marrow.catalog.json`, native store
+files, backup archives, CLI arguments, and host-provided environment, filesystem,
+clock, log, and output channels as untrusted inputs. The compiler and runtime
+fail closed with typed diagnostics or `run.*` / `store.*` faults; they do not
+claim process sandboxing for code that an embedding chooses to run.
+
+Store and backup checksums detect accidental corruption, truncation, or a file
+from the wrong project state. They are not authentication, tamper proofing,
+encryption, or an authorization boundary.
+
+Host capabilities are the determinism and embedding boundary:
+
+| Capability | Runtime boundary |
+|---|---|
+| none | deterministic helper or assertion; no host access |
+| `Clock` | caller-supplied run timestamp |
+| `Environment` | caller-supplied environment map |
+| `Log` | caller-supplied log sink |
+| `Filesystem` | real filesystem access through `std::io` |
+| `Maintenance` | explicit repair/admin operations only |
+
 ## License
 
 Apache-2.0

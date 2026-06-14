@@ -49,7 +49,10 @@ End to end, source text to committed saved data:
   │  compile_resource / compile_store / compile_enum   (marrow-schema)
   ▼  ResourceSchema / StoreSchema / EnumSchema
   │  check_project (marrow-check):
-  │     normalize → resolve+infer → facts → bind_catalog → lower → presence
+  │     normalize named signatures + keyed layers
+  │     → facts → resolve+infer → facts → evolve intents
+  │     → bind_catalog → check evolve types
+  │     → lower → transform effects → presence
   ▼  CheckedProgram / CheckedRuntimeProgram
   │  run_entry  (marrow-run, over a TreeStore + Host)
   ▼  evaluate entry; managed writes → WritePlan → commit

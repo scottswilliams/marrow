@@ -8,7 +8,7 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 
 ## Parts
 
-- **Engine contract** — the private `Backend` trait (read/write/delete/scan/begin/commit/rollback/snapshot) plus `ScanPage` and typed `StoreError`. Two engines implement it: `MemStore` (BTreeMap) and `RedbStore` (persistent). A shared `conformance` suite runs 17 laws against both.
+- **Engine contract** — the private `Backend` trait (read/write/delete/scan/begin/commit/rollback/snapshot) plus `ScanPage` and typed `StoreError`. Two engines implement it: `MemStore` (BTreeMap) and `RedbStore` (persistent). A shared `conformance` suite runs 19 laws against both.
 - **Key grammar** — `cell` defines the v0 physical key layout (placement prefix, profile, family, store id, identity, segments); `key` defines the order-preserving scalar codec used in every record-key and index-key position.
 - **Value forms** — `value` (canonical scalar codec, calendar years 0001–9999) and `decimal` (exact base-10, 34-digit/34-place envelope, half-to-even division and scale rounding).
 - **Public facade** — `TreeStore` wraps a boxed `Backend` and exposes every typed write/read/navigation/transaction/snapshot/backup call other crates use.
@@ -34,7 +34,7 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 | `crates/marrow-store/src/redb.rs` | `RedbStore`: persistent `Backend` with explicit immediate-durability redb transactions, format-version stamp plus parent-directory sync on fresh creation, joined transaction depth, batched prefix delete, pinned read snapshots. |
 | `crates/marrow-store/src/traversal.rs` | Shared prefix-scan page driver both engines feed to build a bounded, prefix-clipped, truncation-flagged `ScanPage`. |
 | `crates/marrow-store/src/backup.rs` | `TreeBackupCell(Buf)`: data-only backup cell, framed target+value codec, FNV-64 checksum, bounded read guards. |
-| `crates/marrow-store/src/conformance.rs` | Private `Backend` conformance suite (`run_all`): 17 laws run by both engines. |
+| `crates/marrow-store/src/conformance.rs` | Private `Backend` conformance suite (`run_all`): 19 laws run by both engines. |
 
 ## Invariants worth knowing before you touch bytes
 

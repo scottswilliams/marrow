@@ -374,7 +374,7 @@ Type names have one source spelling: `int`, `decimal`, `bool`, `string`,
 Marrow parser-reserved words are:
 
 ```text
-module use pub fn resource store at index unique
+module use pub fn resource store index unique
 required
 enum evolve match is
 const var if else while for in break continue return delete merge

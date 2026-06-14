@@ -11,13 +11,14 @@ names and types against this artifact, never against source spelling.
 `analysis::analyze_source_project` sequences the whole pipeline; each phase mutates or extends the program in place:
 
 1. **discover + parse** — overlay-or-disk read of source roots and tests into parse trees; error files are retained so editors keep working on broken buffers.
-2. **normalize named signatures** — `normalize_program_named_types` re-resolves every named signature slot (params/returns/constants) against the whole program, *before any pass reads parameter types*, so cross-module enum/resource identity compares like-for-like at calls.
+2. **normalize named signatures and keyed layers** — `normalize_program_named_types` re-resolves every named signature slot (params/returns/constants) against the whole program, *before any pass reads parameter types*, so cross-module enum/resource identity compares like-for-like at calls. `normalize_resource_layers` then rewrites explicit keyed fields whose value type names a resource into keyed resource layers before facts or saved-place checks read the tree shape.
 3. **resolve + type-check** — `check_resolved_files` runs import resolution and the statement/expression type pass together: it resolves every reference to a `Def`, walks each body inferring `MarrowType` (best-effort, total; unresolvable becomes `Unknown` and defers every rule), and emits typed `CheckDiagnostic`s.
-4. **facts** — `rebuild_facts_with_sources` assembles the read-only `CheckedFacts` tables: newtyped ids over modules/functions/resources/stores/indexes/members/enums, durable-key decoding, direct-effect summaries, and entry footprint queries.
-5. **catalog bind** — `bind_catalog` reconciles every durable declaration against the persisted accepted catalog, carrying stable ids forward across renames and proposing an advanced catalog.
-6. **evolve-intent type check** — `check_evolve_types` types every `evolve` block's `default` and `transform` steps against current source; the transform purity check waits for lowering (`check_transform_effects`).
-7. **lower** — `lower_runtime_bodies` turns checked bodies into the syntax-free `Checked*` IR the runtime evaluates, filling each function's and transform's `runtime_body`.
-8. **presence** — `check_presence`, a flow-sensitive pass over the lowered IR, proves every read of maybe-present saved data is justified before runtime (after the evolution transform-effects check).
+4. **facts, twice** — `rebuild_facts_with_sources` assembles the read-only `CheckedFacts` tables before resolution so name/type passes can query durable ids and schema paths, then rebuilds them after `check_resolved_files` so direct effects, entry footprints, and typed places reflect the resolved bodies.
+5. **evolve intents** — `collect_evolve_intents` extracts rename/retire/default/transform declarations from the parsed sources before catalog binding, so identity reconciliation sees the requested lifecycle moves.
+6. **catalog bind** — `bind_catalog` reconciles every durable declaration against the persisted accepted catalog, carrying stable ids forward across renames and proposing an advanced catalog.
+7. **evolve-intent type check** — `check_evolve_types` types every `evolve` block's `default` and `transform` steps against current source.
+8. **lower and transform effects** — `lower_runtime_bodies` turns checked bodies into the syntax-free `Checked*` IR the runtime evaluates, filling each function's and transform's `runtime_body`; `check_transform_effects` then proves transform bodies stay inside their allowed pure read surface.
+9. **presence** — `check_presence`, a flow-sensitive pass over the lowered IR, proves every read of maybe-present saved data is justified before runtime.
 
 Evolution discharge and the analysis/tooling surface sit beside this spine, consuming the finished `CheckedProgram` read-only.
 

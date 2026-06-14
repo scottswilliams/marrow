@@ -1,6 +1,6 @@
 # Runtime (marrow-run)
 
-The runtime is the final pipeline stage. It takes a checked project session or a lower-level `CheckedRuntimeProgram`, a `TreeStore`, and an optional `Host`, and runs a named entry function. There is no bytecode or separate IR: the runtime is a tree-walking interpreter directly over the checked AST, so the `Checked*` types *are* the executable form and the checker's proofs make many runtime branches defensive-only.
+The runtime is the final pipeline stage. It takes a checked project session or a lower-level `CheckedRuntimeProgram`, a `TreeStore`, and a `Host`, and runs a named entry function. The no-host convenience entry builds `Host::new()`, which grants no capabilities; explicit-host entry points receive the caller's capability bundle. There is no bytecode or separate IR: the runtime is a tree-walking interpreter directly over the checked AST, so the `Checked*` types *are* the executable form and the checker's proofs make many runtime branches defensive-only.
 
 ## The shared model
 

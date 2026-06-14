@@ -25,11 +25,11 @@ fn parses_split_store_declaration() {
 }
 
 #[test]
-fn removed_resource_at_points_to_split_resource_and_store() {
+fn resource_header_with_extra_tokens_is_rejected() {
     let parsed = parse_source(concat!(
         "module app\n",
         "resource Book ",
-        "at ^books(id: int)\n",
+        "extra\n",
         "    required title: string\n",
         "    shelf: string\n",
         "    index byShelf(shelf, id)\n",
@@ -37,7 +37,7 @@ fn removed_resource_at_points_to_split_resource_and_store() {
 
     assert!(
         parsed.has_errors(),
-        "expected removed saved-resource sugar to be rejected"
+        "expected resource headers with extra tokens to be rejected"
     );
     let diagnostic = parsed
         .diagnostics
@@ -48,29 +48,29 @@ fn removed_resource_at_points_to_split_resource_and_store() {
                     ExpectedSyntax::ResourceName,
                 ))
         })
-        .expect("resource-at diagnostic");
+        .expect("resource-head diagnostic");
     assert!(
-        diagnostic.message.contains("store ^books(id: int): Book"),
+        diagnostic.message.contains("resource header"),
         "{diagnostic:?}"
     );
 }
 
 #[test]
-fn malformed_removed_resource_at_keeps_a_valid_split_store_hint() {
+fn malformed_resource_header_reports_the_resource_rule() {
     for source in [
-        "module app\nresource Book at books\n    title: string\n",
-        concat!("module app\nresource Book ", "at ^\n    title: string\n",),
+        "module app\nresource Book extra\n    title: string\n",
+        concat!("module app\nresource Book ", "^\n    title: string\n",),
         concat!(
             "module app\nresource Book ",
-            "at ^books()\n    title: string\n",
+            "^books()\n    title: string\n",
         ),
         concat!(
             "module app\nresource Book ",
-            "at ^books(id:)\n    title: string\n",
+            "^books(id:)\n    title: string\n",
         ),
         concat!(
             "module app\nresource Book ",
-            "at ^books extra\n    title: string\n",
+            "^books extra\n    title: string\n",
         ),
     ] {
         let parsed = parse_source(source);
@@ -83,10 +83,10 @@ fn malformed_removed_resource_at_keeps_a_valid_split_store_hint() {
                         ExpectedSyntax::ResourceName,
                     ))
             })
-            .expect("resource-at diagnostic");
+            .expect("resource-head diagnostic");
 
         assert!(
-            diagnostic.message.contains("store ^root: Book"),
+            diagnostic.message.contains("resource header"),
             "{diagnostic:?}"
         );
     }
@@ -214,12 +214,12 @@ fn header_helper_errors_report_specific_expected_parts() {
         (
             concat!(
                 "module app\nresource Book ",
-                "at books\n    title: string\n",
+                "extra books\n    title: string\n",
             ),
             ExpectedSyntax::ResourceName,
         ),
         (
-            concat!("module app\nresource Book ", "at ^\n    title: string\n",),
+            concat!("module app\nresource Book ", "^\n    title: string\n",),
             ExpectedSyntax::ResourceName,
         ),
         ("module app\nstore books: Book\n", ExpectedSyntax::StoreRoot),
@@ -274,7 +274,7 @@ fn rejects_malformed_index_field_paths() {
 
 #[test]
 fn reserved_word_as_resource_member_name_is_rejected() {
-    let parsed = parse_source("resource R\n    at: int\n");
+    let parsed = parse_source("resource R\n    while: int\n");
     assert_eq!(parsed.diagnostics.len(), 1, "{:#?}", parsed.diagnostics);
     assert!(
         parsed.diagnostics[0].reason
@@ -288,7 +288,7 @@ fn reserved_word_as_resource_member_name_is_rejected() {
 
 #[test]
 fn reserved_word_as_key_parameter_name_is_rejected() {
-    let parsed = parse_source("resource R\n    e(at: string): int\n");
+    let parsed = parse_source("resource R\n    e(while: string): int\n");
     assert!(
         has_reason(
             &parsed.diagnostics,

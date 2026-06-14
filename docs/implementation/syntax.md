@@ -4,12 +4,14 @@
 
 ## Pipeline
 
-`parse_source(&str) -> ParsedSource` is the one entry point. It runs two stages and merges their diagnostics:
+`parse_source(&str) -> ParsedSource` is the file entry point. It runs two stages and merges their diagnostics:
 
 1. `lex_source` — text to a flat token stream. The lexer maintains an indent stack and an `open_delimiters` counter, synthesizing `INDENT`/`DEDENT`/`NEWLINE` layout tokens (not lexical characters) and suppressing them inside `(`/`[`. Tabs and obsolete operators (`&&`, `||`, `!`, `#`) and the reserved `~` are lexer diagnostics.
 2. `DeclParser::parse` — tokens to declarations/statements/expressions via recursive descent.
 
-Diagnostics from both stages are concatenated and sorted by `(line, start_byte)`. Output uses the `parse.syntax` code, except that the expression and statement parsers each carry a descent-depth counter and stop at `NESTING_DEPTH_LIMIT` (256) with a located `check.nesting_limit`, so deeply nested source fails closed rather than overflowing the stack. Tests assert on the typed `reason`, never prose.
+`parse_expression(&str) -> (Option<Expression>, Vec<Diagnostic>)` is the expression-only public entry point used by callers that already know they are parsing one expression. It runs the same lexer, then feeds the token stream straight to `ExprParser::parse_complete`.
+
+Diagnostics from each entry are sorted by `(line, start_byte)`. Output uses the `parse.syntax` code, except that the expression and statement parsers each carry a descent-depth counter and stop at `NESTING_DEPTH_LIMIT` (256) with a located `check.nesting_limit`, so deeply nested source fails closed rather than overflowing the stack. Tests assert on the typed `reason`, never prose.
 
 ## Three parser layers, one token stream
 
@@ -33,7 +35,7 @@ A value the grammar cannot structure yields `None` plus a `parse.syntax` diagnos
 
 | File | Responsibility |
 | --- | --- |
-| `crates/marrow-syntax/src/lib.rs` | Crate root; re-exports the public surface and defines `parse_source` (lex, parse, merge+sort diagnostics). |
+| `crates/marrow-syntax/src/lib.rs` | Crate root; re-exports the public surface and defines `parse_source` (file parse) plus `parse_expression` (single-expression parse). |
 | `crates/marrow-syntax/src/lexer.rs` | The lexer: line splitting, indentation, `INDENT`/`DEDENT`/`NEWLINE`, numbers/durations/strings/bytes/interpolation/punctuation, tab/operator rejection. |
 | `crates/marrow-syntax/src/token.rs` | `Token`/`TokenKind`/`Keyword`/`LexedSource`, the keyword table, `duration_unit_seconds`, lexical predicates (`is_identifier`, `is_qualified_name`, `tokens_in_range`). |
 | `crates/marrow-syntax/src/parse_decl/` | The declaration and statement parsers, split by concern: `decl` (top-level dispatch and declaration bodies), `cursor` (shared `DeclParser` navigation and diagnostics), `members` (resource/store/enum member bodies), `evolve` (evolution steps), `head` and `params` (token-slice declaration heads), `stmt` (`StmtParser` and compound-statement framing), `statement_lines` (single-statement-line parsers), `tokens` (low-level token-slice helpers); `mod.rs` holds the shared types and re-exports `DeclParser`. |
@@ -43,11 +45,6 @@ A value the grammar cannot structure yields `None` plus a `parse.syntax` diagnos
 | `crates/marrow-syntax/src/literal.rs` | Canonical string-literal decoder (`decode_string_literal`/`decode_string_escapes`, `StringLiteralError`) — single owner of the five escapes. |
 | `crates/marrow-syntax/src/format.rs` | The formatter: `format_source` (re-parses then renders), per-node renderers, minimal precedence parens, comment re-emission. |
 
-## Discrepancies (code reality)
-
-- `format_source` re-parses rather than consuming a caller-held AST, so a caller already holding a `ParsedSource` pays for a second parse.
-- `StoreDecl` is produced only by explicit `store ^root: Resource` declarations. `resource` declarations describe shapes and never synthesize saved roots.
-- `EnumDecl.public` is parsed and round-tripped but visibility is not enforced here; the flag is inert until a later crate.
 ## Read next
 
 - `crates/marrow-syntax/src/lib.rs` — `parse_source` (the whole pipeline in one function).

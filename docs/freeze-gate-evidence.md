@@ -18,6 +18,7 @@ the assembled packet; W7.4 repeats the fresh full-workspace gate before the tag.
 | LayoutEpoch | `0` frozen. |
 | Engine profile | `key=v0`, `layout-epoch=0`, `digest=77944eb86c08b665`. |
 | W7.2 assembly run | Green in `/Users/scottwilliams/Dev/.worktrees/marrow-roadmap/W7.2/marrow` with `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.cargo-targets/marrow-roadmap/W7.2-final`; workspace tests report zero ignored tests. |
+| W7.3 docs-truth run | Green in `/Users/scottwilliams/Dev/.worktrees/marrow-roadmap/W7.3/marrow`; soundness and idiom/spec re-reviews passed after adversarial scanner probes. |
 
 ## Seeded Evidence
 
@@ -64,6 +65,57 @@ git diff --check
 
 Result: build pass; full workspace tests pass with zero ignored tests; clippy
 passes with `-D warnings`; docs lint and whitespace checks pass.
+
+## W7.3 Docs-Truth Commands
+
+Seeded stale-spelling check, before the scanner implementation, proved the
+recorded seed was active:
+
+```sh
+python3 tools/w7_absence_scan.py --assert-seed at-sugar
+```
+
+Result: failed with `seed at-sugar was not detected`.
+
+After implementation, the same seed is detected without any real stale hits:
+
+```sh
+python3 tools/w7_absence_scan.py --assert-seed at-sugar
+```
+
+Result: `w7_absence_scan seed at-sugar detected __seed__/w7_absence_seed.mw:2`.
+
+The clean cumulative removed-surface scan is:
+
+```sh
+python3 tools/w7_absence_scan.py
+```
+
+Result: `w7_absence_scan passed`.
+
+The scanner's built-in probe suite covers every removed-pattern family named by
+W7.3:
+
+```sh
+python3 tools/w7_absence_scan.py --assert-probes
+```
+
+Result: `w7_absence_scan probe suite detected 29 pattern families`.
+The suite includes reviewed false-negative probes for Rust-side `write`
+variants and string fixtures, parser-path stale syntax, evidence fields, glob
+grammar, and incidental stale CLI/concat spellings in crate test paths.
+
+Release tidy pins the release-target dependency count and the release binary
+size envelope:
+
+```sh
+python3 tools/release_tidy.py --target-dir /Users/scottwilliams/Dev/.cargo-targets/marrow-roadmap/W7.3-release-tidy
+```
+
+Recorded result on `aarch64-apple-darwin`: `dependency_count=28`,
+`binary_bytes=5859632`, `binary_baseline_bytes=5860128`,
+`binary_max_bytes=7325160`, and
+`binary_sha256=243ddc7470212281e4601a24162539157d257cbea409eed25105dfecf3873bfe`.
 
 ## Final Assembly Rules
 

@@ -182,10 +182,10 @@ fn unterminated_quoted_field_segment_does_not_panic() {
 
 #[test]
 fn keyword_field_name_reports_a_parse_error() {
-    // `at` remains a reserved word. Used as a bare field
+    // `if` is a reserved word. Used as a bare field
     // name it violates `field_name = identifier`, so the parser
     // must report it rather than silently dropping the statement.
-    let source = "fn touch(id: int)\n    ^events(id).at = now\n";
+    let source = "fn touch(id: int)\n    ^events(id).if = now\n";
     let parsed = parse_source(source);
     let diagnostic = parsed
         .diagnostics
@@ -197,10 +197,10 @@ fn keyword_field_name_reports_a_parse_error() {
                 parsed.diagnostics
             )
         });
-    // The diagnostic points at the offending `.at`.
+    // The diagnostic points at the offending `.if`.
     assert_eq!(
         &source[diagnostic.span.start_byte..diagnostic.span.end_byte],
-        ".at"
+        ".if"
     );
 }
 
@@ -209,7 +209,7 @@ fn keyword_field_name_reports_once_not_also_expected_a_statement() {
     // A line that fails because of a keyword field name carries the specific
     // diagnostic only: the generic "expected a statement" fallback must not also
     // fire on the same line.
-    let source = "fn touch(id: int)\n    ^events(id).at = now\n";
+    let source = "fn touch(id: int)\n    ^events(id).if = now\n";
     let parsed = parse_source(source);
     let on_offending_line: Vec<_> = parsed
         .diagnostics
@@ -230,7 +230,7 @@ fn keyword_field_name_reports_once_not_also_expected_a_statement() {
 
 #[test]
 fn quoted_keyword_field_name_reports_a_parse_error() {
-    let parsed = parse_source("const At = ^events(id).\"at\"\n");
+    let parsed = parse_source("const Bad = ^events(id).\"if\"\n");
     assert!(
         parsed.diagnostics.iter().any(|diagnostic| diagnostic
             .message
@@ -243,10 +243,10 @@ fn quoted_keyword_field_name_reports_a_parse_error() {
 
 #[test]
 fn const_value_keyword_field_reports_once_not_also_expected_an_expression() {
-    // `a.at` fails because `at` is a keyword used as a field name. The const
+    // `a.if` fails because `if` is a keyword used as a field name. The const
     // value path drains that specific diagnostic, so the generic "expected an
     // expression" fallback must not also fire: the line reports exactly once.
-    let parsed = parse_source("const Bad = a.at\n");
+    let parsed = parse_source("const Bad = a.if\n");
     assert_eq!(
         parsed.diagnostics.len(),
         1,
@@ -264,7 +264,7 @@ fn const_value_keyword_field_reports_once_not_also_expected_an_expression() {
 fn if_condition_keyword_field_reports_once_not_also_expected_an_expression() {
     // The same single-report guard applies to header expressions: an `if`
     // condition that fails on a keyword field name carries only that diagnostic.
-    let parsed = parse_source("fn f()\n    if a.at\n        return\n");
+    let parsed = parse_source("fn f()\n    if a.if\n        return\n");
     let on_offending_line: Vec<_> = parsed
         .diagnostics
         .iter()

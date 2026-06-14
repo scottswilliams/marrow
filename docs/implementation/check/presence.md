@@ -8,7 +8,7 @@ The pass runs near the end of `analyze_source_project` (`analysis.rs`, after low
 
 ## The big idea
 
-Narrowing identity is by **span-stripped canonical key**, never by structural `CheckedExpr` equality. Two textually equal reads carry different spans, so `keys.rs` folds each read to a tagged string plus the scope binding ids it reads. A narrowing keyed on binding ids expires when any read binding is reassigned, when an overlapping saved write occurs (overlap is by key/member prefix in either direction), or when a branch it lived in joins back. Branch narrowings work on a cloned narrowed set and never escape to the join point. Effect identity always uses stable schema ids (`SavedPlaceEffect` = `ResourceId` + `ResourceMemberId` path); an unresolvable path yields no proof rather than a string-keyed one.
+Narrowing identity is by **span-stripped canonical key**, never by structural `CheckedExpr` equality. Two textually equal reads carry different spans, so `keys.rs` owns the canonical read and binding key formats used for narrowing and invalidation. A narrowing keyed on binding ids expires when any read binding is reassigned, when an overlapping saved write occurs (overlap is by key/member prefix in either direction), or when a branch it lived in joins back. Branch narrowings work on a cloned narrowed set and never escape to the join point. Effect identity always uses stable schema ids (`SavedPlaceEffect` = `ResourceId` + `ResourceMemberId` path); an unresolvable path yields no proof rather than a string-keyed one.
 
 ## Parts
 
@@ -46,13 +46,6 @@ Key types live mostly in `presence/target.rs` (`ReadTarget`, `ReadPlace`), `pres
 | `effect_closure` | `program.rs`, presence narrowing | Expands direct callee refs into a unified transitive summary and the write-reachability bit. |
 | `read_resolves_in_type_scope` | `checks/operators.rs`, `checks/statements.rs` | Boolean test for type-checking `??` and `if const` resolution. It rebuilds enough scope for name shadowing but does not expose a comparable `ReadTarget`. |
 | `exists_target_in_type_scope` | `checks/calls.rs` | Boolean test for type-checking `exists(...)`; accepts direct saved read targets and typed maybe-present call targets, so neighbor values remain rejected. |
-
-## Notes on code reality
-
-- `effect_closure` (`writes.rs`) reads each callee's precomputed `DirectEffectFacts`, so direct effects must be refreshed *before* the presence walk relies on them.
-- Type-check read predicates rebuild a `NameScope` from type frames only to answer yes/no for `??`, `if const`, and `exists`. The full `ReadTarget` values used for narrowing and proof identity are produced by the real flow-sensitive walk's `NameScope`.
-- Transform `old.<member>` reads use the synthetic transform `old` binding in `NameScope`; the shared transform-read owner resolves whether the named member is a top-level plain field and whether it is required or maybe-present.
-- `keys.rs` claims `expression_key` is the sole canonical-form owner, yet `binding_key` in the same file independently formats the identical `binding:{id}:{name}` string — a second, consistent producer of that text.
 
 ## Tests
 

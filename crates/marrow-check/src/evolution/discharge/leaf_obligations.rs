@@ -486,7 +486,7 @@ fn collect_keyed_leaves(
         // would need an unknown entry key. A leaf reached through a keyed ancestor carries no
         // static path: the per-entry scan finds its cell by descending each entry's key, so its
         // obligation path is empty and a retype of it is probed per entry, not by a flat subtree
-        // check that would look under the wrong shape. A keyed-leaf-map or keyed group at the
+        // check that would look under the wrong shape. A keyed leaf or keyed group at the
         // root or inside an unkeyed group does carry its full member path, so a retype probe
         // finds old data a shape change left under a different path.
         let mut static_path = prefix.to_vec();

@@ -123,37 +123,10 @@ pub(super) fn parse_resource_head(source: &str, tokens: &[Token]) -> ParseResult
     if rest.is_empty() {
         return Ok(name);
     }
-    if matches!(
-        rest.first().map(|token| token.kind),
-        Some(TokenKind::Keyword(Keyword::At))
-    ) {
-        let has_complete_saved_root =
-            matches!(rest.get(1).map(|token| token.kind), Some(TokenKind::Caret))
-                && matches!(
-                    rest.get(2).map(|token| token.kind),
-                    Some(TokenKind::Identifier)
-                )
-                && (rest.len() == 3 || parse_paren_key_params(source, &rest[3..]).is_ok());
-        let saved_root = if has_complete_saved_root {
-            source[rest[1].span.start_byte..rest.last().unwrap().span.end_byte]
-                .trim()
-                .to_string()
-        } else {
-            "^root".to_string()
-        };
-        Err(ParseError::new(
-            ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceName),
-            format!(
-                "`resource {name} at ...` is not valid; use split declarations: \
-                 `resource {name}` and `store {saved_root}: {name}`"
-            ),
-        ))
-    } else {
-        Err(ParseError::new(
-            ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceName),
-            "a resource header is just `resource Name`",
-        ))
-    }
+    Err(ParseError::new(
+        ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceName),
+        "a resource header is just `resource Name`",
+    ))
 }
 
 /// Parse a store header's tokens after the `store` keyword:
