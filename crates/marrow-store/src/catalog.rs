@@ -190,11 +190,7 @@ fn decode_entry(stable_id: &str, bytes: &[u8]) -> Result<EntryRow, StoreError> {
     let lifecycle = decode_lifecycle(cursor.take_u8()?)?;
     let accepted_key_shape = take_optional_text(&mut cursor)?;
     let accepted_struct = take_optional_text(&mut cursor)?;
-    let accepted_index_shape = if cursor.is_empty() {
-        None
-    } else {
-        take_optional_text(&mut cursor)?
-    };
+    let accepted_index_shape = take_optional_text(&mut cursor)?;
     if !cursor.is_empty() {
         return Err(corrupt_catalog("catalog entry has trailing bytes"));
     }
@@ -332,8 +328,8 @@ mod tests {
     use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 
     use super::{
-        ENTRY_ROW, HEADER_ROW, ROW_VALUE_VERSION_V0, encode_entry, put_text, read_catalog_snapshot,
-        read_catalog_snapshot_digest, replace_catalog_snapshot,
+        ENTRY_ROW, HEADER_ROW, ROW_VALUE_VERSION_V0, encode_entry, encode_header, put_text,
+        read_catalog_snapshot, read_catalog_snapshot_digest, replace_catalog_snapshot,
     };
     use crate::backend::Backend;
     use crate::mem::MemStore;
@@ -495,6 +491,42 @@ mod tests {
         bytes.extend_from_slice(&1u32.to_be_bytes());
         bytes.push(0xff);
         backend.write(&entry_key(id), bytes).expect("corrupt row");
+        assert_corruption(read_catalog_snapshot(&backend));
+    }
+
+    #[test]
+    fn a_short_entry_row_without_index_shape_is_corruption() {
+        let mut backend = MemStore::default();
+        let id = stable_id(1);
+        let snapshot = CatalogMetadata::new(
+            7,
+            vec![CatalogEntry {
+                kind: CatalogEntryKind::StoreIndex,
+                path: "books.byTitle".to_string(),
+                stable_id: id.clone(),
+                aliases: Vec::new(),
+                lifecycle: CatalogLifecycle::Active,
+                accepted_key_shape: None,
+                accepted_index_shape: None,
+                accepted_struct: None,
+            }],
+        );
+        backend
+            .write(&header_key(), encode_header(&snapshot).expect("header"))
+            .expect("seed header");
+
+        let mut bytes = vec![ROW_VALUE_VERSION_V0];
+        bytes.extend_from_slice(&0u64.to_be_bytes());
+        bytes.push(CatalogEntryKind::StoreIndex.tag());
+        put_text("books.byTitle", &mut bytes).expect("path");
+        bytes.extend_from_slice(&0u32.to_be_bytes()); // no aliases
+        bytes.push(CatalogLifecycle::Active.tag());
+        bytes.push(0); // no key shape
+        bytes.push(0); // no structural signature
+        backend
+            .write(&entry_key(&id), bytes)
+            .expect("seed short entry");
+
         assert_corruption(read_catalog_snapshot(&backend));
     }
 

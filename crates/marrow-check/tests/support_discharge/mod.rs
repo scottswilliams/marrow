@@ -27,8 +27,8 @@ pub use marrow_check::evolution::{RepairDiagnostic, RepairReason};
 // so `checked`/`commit_then_check`/`root_place` resolve through this import too.
 pub use marrow_check::test_support::{
     accepted_catalog_id, checked, commit_then_check, deep_member_catalog_id, enum_catalog_id,
-    enum_member_catalog_id, group_member_catalog_id, index_catalog_id, keyed_leaf_catalog_id,
-    member_catalog_id, nested_member_catalog_id, new_member_proposal_id, root_place,
+    enum_member_catalog_id, group_member_catalog_id, keyed_leaf_catalog_id, member_catalog_id,
+    nested_member_catalog_id, new_member_proposal_id, root_place,
 };
 
 /// A valid `cat_<32 lowercase hex>` stable id keyed by a small fixture number, so a
@@ -86,6 +86,16 @@ pub fn store_entry(path: &str, stable_id: &str, accepted_key_shape: &str) -> Cat
     CatalogEntry {
         accepted_key_shape: Some(accepted_key_shape.to_string()),
         ..entry(CatalogEntryKind::Store, path, stable_id)
+    }
+}
+
+/// A store-index catalog entry that records the declaration shape its derived cells were
+/// accepted under. Hand-built accepted catalogs use this for source-declared indexes; dropped
+/// index tests keep the same shape so only source absence drives the obligation.
+pub fn store_index_entry(path: &str, stable_id: &str, accepted_index_shape: &str) -> CatalogEntry {
+    CatalogEntry {
+        accepted_index_shape: Some(accepted_index_shape.to_string()),
+        ..entry(CatalogEntryKind::StoreIndex, path, stable_id)
     }
 }
 
@@ -168,18 +178,6 @@ impl<'a> Seed<'a> {
                 bytes,
             )
             .expect("write member value");
-    }
-
-    pub fn index_entry(&self, index: &str, key: Scalar, id: i64) {
-        let index_id = CatalogId::new(index_catalog_id(self.place, index)).expect("index id");
-        self.store
-            .write_index_entry(
-                &index_id,
-                &[key.as_key().expect("index key")],
-                &[SavedKey::Int(id)],
-                Vec::new(),
-            )
-            .expect("write index entry");
     }
 
     /// Seed a leaf inside a keyed layer entry, at the path the runtime writes:

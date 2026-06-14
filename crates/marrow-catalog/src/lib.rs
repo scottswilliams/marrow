@@ -110,6 +110,10 @@ impl CatalogMetadata {
             }
             if let Some(shape) = &entry.accepted_index_shape {
                 reject_nul("accepted index shape", shape)?;
+            } else if entry.kind == CatalogEntryKind::StoreIndex {
+                return Err(CatalogError::new(
+                    "store index catalog entry must record an accepted index shape",
+                ));
             }
             if let Some(signature) = &entry.accepted_struct {
                 reject_nul("accepted structural signature", signature)?;

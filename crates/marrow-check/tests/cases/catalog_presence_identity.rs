@@ -123,6 +123,49 @@ fn proposed_ids_use_128_bit_random_shape() {
 }
 
 #[test]
+fn caller_supplied_catalog_rejects_store_index_without_shape() {
+    let root = temp_project("catalog-index-shape-required", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             store ^books(id: int): Book\n\
+             \x20   index byTitle(title) unique\n",
+        );
+    });
+    let accepted = catalog(vec![
+        entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+        entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+        entry(
+            CatalogEntryKind::ResourceMember,
+            "books::Book::title",
+            "member-title",
+            &[],
+        ),
+        entry(
+            CatalogEntryKind::StoreIndex,
+            "books::^books::byTitle",
+            "index-by-title",
+            &[],
+        ),
+    ]);
+
+    let (report, _program) =
+        check_project_with_catalog(&root, &config(), Some(&accepted)).expect("check");
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_CATALOG_INTENT),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn evolve_rename_reads_the_stored_id_rather_than_recomputing_it() {
     // A rename carries the accepted entry's id onto the new path unchanged; the id
     // is read from storage, never re-derived from the new (or old) path.

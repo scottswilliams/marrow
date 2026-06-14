@@ -266,6 +266,21 @@ fn catalog_binding(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> CatalogBinding {
     let source_entries = source_catalog_entries(program);
+    if let Some(catalog) = accepted
+        && let Err(error) = catalog.validate()
+    {
+        diagnostics.push(catalog_diagnostic(
+            first_source_file(&source_entries),
+            format!("accepted catalog metadata is not valid: {}", error.message),
+        ));
+        return CatalogBinding {
+            accepted_epoch: None,
+            accepted_digest: None,
+            ids: HashMap::new(),
+            leaf_token_ids: HashMap::new(),
+            proposal: None,
+        };
+    }
     let mut ids = HashMap::new();
     let proposal = match accepted {
         Some(catalog) => bind_against_accepted(
@@ -810,17 +825,14 @@ fn record_store_key_shapes(
     )
 }
 
-/// Record each store index's declaration shape into its proposal entry. Unlike store and member
-/// signatures, an accepted same-path index with no recorded shape is treated as changed once:
-/// old catalogs cannot prove their derived cells match the current declaration, so apply must
-/// rebuild or probe before freezing the signature forward.
+/// Record each store index's declaration shape into its proposal entry.
 fn record_store_index_shapes(
     program: &CheckedProgram,
     entries: &mut [CatalogEntry],
     ids: &HashMap<CatalogKey, String>,
     accepted: Option<&CatalogMetadata>,
 ) -> bool {
-    record_index_signatures(
+    record_signatures(
         entries,
         store_index_shapes(program, ids),
         accepted_field(accepted, CatalogEntryKind::StoreIndex, |entry| {
@@ -876,7 +888,7 @@ fn accepted_field<'a>(
 /// and report whether any is a real change. A signature differing from a *known* accepted one is
 /// a real change; backfilling an entry with no recorded accepted signature (minted before
 /// signatures, or fresh this cycle) is not, since its durable shape is unchanged. This is the one
-/// implementation of the record-or-diff rule the store-key and member-structure recorders share.
+/// implementation of the record-or-diff rule for source-derived accepted shape fields.
 fn record_signatures(
     entries: &mut [CatalogEntry],
     pairs: impl IntoIterator<Item = (String, Option<String>)>,
@@ -898,38 +910,6 @@ fn record_signatures(
             && accepted_signature != Some(&signature)
         {
             changed = true;
-        }
-        *field(&mut entries[i]) = signature;
-    }
-    changed
-}
-
-fn record_index_signatures(
-    entries: &mut [CatalogEntry],
-    pairs: impl IntoIterator<Item = (String, Option<String>)>,
-    accepted: HashMap<&str, &Option<String>>,
-    field: impl Fn(&mut CatalogEntry) -> &mut Option<String>,
-) -> bool {
-    let index: HashMap<String, usize> = entries
-        .iter()
-        .enumerate()
-        .map(|(i, entry)| (entry.stable_id.clone(), i))
-        .collect();
-    let mut changed = false;
-    for (stable_id, signature) in pairs {
-        let Some(&i) = index.get(stable_id.as_str()) else {
-            continue;
-        };
-        match accepted.get(stable_id.as_str()).copied() {
-            Some(Some(accepted_signature))
-                if signature.as_deref() != Some(accepted_signature.as_str()) =>
-            {
-                changed = true;
-            }
-            Some(None) if signature.is_some() => {
-                changed = true;
-            }
-            _ => {}
         }
         *field(&mut entries[i]) = signature;
     }

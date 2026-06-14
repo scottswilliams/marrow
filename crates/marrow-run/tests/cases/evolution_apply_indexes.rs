@@ -6,33 +6,12 @@
 use crate::evolution_apply_support;
 use evolution_apply_support::*;
 
-use marrow_catalog::{CatalogEntryKind, CatalogMetadata};
 use marrow_check::evolution::{RepairReason, Verdict};
 use marrow_run::evolution::{ApplyError, apply, current_engine_profile};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::{SavedKey, encode_identity_index_key, encode_identity_payload};
 use marrow_store::tree::{CommitMetadata, DataPathSegment, TreeStore};
 use marrow_store::value::{Scalar, encode_value};
-
-fn checked_with_missing_index_shape(
-    root: &std::path::Path,
-    index_path: &str,
-) -> marrow_check::CheckedProgram {
-    let catalog_path = root.join("marrow.catalog.json");
-    let mut catalog = CatalogMetadata::from_json(
-        &std::fs::read_to_string(&catalog_path).expect("read accepted catalog"),
-    )
-    .expect("accepted catalog parses");
-    let entry = catalog
-        .entries
-        .iter_mut()
-        .find(|entry| entry.kind == CatalogEntryKind::StoreIndex && entry.path == index_path)
-        .expect("store index entry");
-    entry.accepted_index_shape = None;
-    let catalog = CatalogMetadata::new(catalog.epoch, catalog.entries);
-    std::fs::write(&catalog_path, catalog.to_json_pretty()).expect("write accepted catalog");
-    checked(root)
-}
 
 fn stamp_clean_commit(store: &TreeStore, program: &marrow_check::CheckedProgram) {
     let profile = current_engine_profile();
@@ -540,131 +519,6 @@ fn unique_index_over_transform_target_fails_closed() {
     assert!(!w.is_activatable(), "{w:#?}");
     let error = apply(&w, &program, &store, false, None).expect_err("apply refuses");
     assert_eq!(error, ApplyError::NotActivatable);
-}
-
-/// A unique index accepted before index-shape signatures rebuilds its entries once and stamps the
-/// advanced catalog that freezes the current signature.
-#[test]
-fn legacy_unique_index_shape_rebuild_writes_entries_and_stamps() {
-    let root = temp_project("apply-index-rebuild", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   required isbn: string\n\
-             store ^books(id: int): Book\n\
-             \x20   index byIsbn(isbn) unique\n\
-             pub fn add(isbn: string): Id(^books)\n\
-             \x20   return nextId(^books)\n",
-        );
-    });
-    commit_then_check(&root);
-    let program = checked_with_missing_index_shape(&root, "books::^books::byIsbn");
-    let place = root_place(&program, "books");
-    let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
-    // Records exist with distinct member values but no index cells were written.
-    seed.record(1);
-    seed.member(1, "isbn", Scalar::Str("111".into()));
-    seed.record(2);
-    seed.member(2, "isbn", Scalar::Str("222".into()));
-
-    let witness = witness(&program, &store);
-    let index_id = CatalogId::new(index_catalog_id(&place, "byIsbn")).unwrap();
-    store
-        .write_index_entry(
-            &index_id,
-            &[SavedKey::Str("stale".into())],
-            &[SavedKey::Int(99)],
-            Vec::new(),
-        )
-        .expect("seed stale index entry");
-
-    let outcome = apply(&witness, &program, &store, false, None).expect("apply");
-    assert_eq!(outcome.receipt.indexes_rebuilt, 1);
-
-    let one = store
-        .scan_index_tuple(&index_id, &[SavedKey::Str("111".into())], 2)
-        .expect("scan");
-    assert_eq!(one.entries.len(), 1, "the rebuilt index holds 111");
-    assert_eq!(one.entries[0].identity, vec![SavedKey::Int(1)]);
-    let two = store
-        .scan_index_tuple(&index_id, &[SavedKey::Str("222".into())], 2)
-        .expect("scan");
-    assert_eq!(two.entries.len(), 1, "the rebuilt index holds 222");
-    let stale = store
-        .scan_index_tuple(&index_id, &[SavedKey::Str("stale".into())], 2)
-        .expect("scan stale");
-    assert!(
-        stale.entries.is_empty(),
-        "a rebuild must delete stale index entries"
-    );
-}
-
-/// A non-unique index accepted before index-shape signatures rebuilds its entries. The discharge
-/// must issue a derived rebuild for the affected index, so apply writes the index entries rather
-/// than stamping success over a silently empty index.
-#[test]
-fn legacy_non_unique_index_shape_rebuild_writes_entries() {
-    let root = temp_project("apply-nonunique-index", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   required genre: string\n\
-             store ^books(id: int): Book\n\
-             \x20   index byGenre(genre, id)\n\
-             pub fn add(genre: string): Id(^books)\n\
-             \x20   return nextId(^books)\n",
-        );
-    });
-    commit_then_check(&root);
-    let program = checked_with_missing_index_shape(&root, "books::^books::byGenre");
-    let place = root_place(&program, "books");
-    let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
-    seed.record(1);
-    seed.member(1, "genre", Scalar::Str("scifi".into()));
-    seed.record(2);
-    seed.member(2, "genre", Scalar::Str("scifi".into()));
-
-    let w = witness(&program, &store);
-    let outcome = apply(&w, &program, &store, false, None).expect("apply");
-    assert_eq!(
-        outcome.receipt.indexes_rebuilt, 1,
-        "the non-unique index rebuilds"
-    );
-
-    // A non-unique index ends with the identity keys, so each record publishes exactly
-    // one entry under its full `(genre, id)` tuple.
-    let index_id = CatalogId::new(index_catalog_id(&place, "byGenre")).unwrap();
-    for id in [1, 2] {
-        let scan = store
-            .scan_index_tuple(
-                &index_id,
-                &[SavedKey::Str("scifi".into()), SavedKey::Int(id)],
-                8,
-            )
-            .expect("scan");
-        let identities: Vec<_> = scan
-            .entries
-            .iter()
-            .map(|entry| entry.identity.clone())
-            .collect();
-        assert_eq!(
-            identities,
-            vec![vec![SavedKey::Int(id)]],
-            "a new non-unique index must hold record {id}, not be silently empty"
-        );
-    }
 }
 
 #[test]

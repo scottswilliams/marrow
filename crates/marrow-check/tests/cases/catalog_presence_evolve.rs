@@ -20,6 +20,17 @@ fn entry(
     literal_entry(kind, canonical_path, &derived_id(label), aliases)
 }
 
+fn store_index_entry(
+    canonical_path: &str,
+    label: &str,
+    accepted_index_shape: &str,
+) -> CatalogEntry {
+    CatalogEntry {
+        accepted_index_shape: Some(accepted_index_shape.to_string()),
+        ..entry(CatalogEntryKind::StoreIndex, canonical_path, label, &[])
+    }
+}
+
 fn reserved_entry(
     kind: CatalogEntryKind,
     canonical_path: &str,
@@ -719,11 +730,13 @@ fn evolve_retire_of_a_still_declared_store_index_fails_closed() {
         let metadata = catalog(vec![
             entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
             entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
-            entry(
-                CatalogEntryKind::StoreIndex,
+            store_index_entry(
                 "books::^books::byTitle",
                 "index-by-title",
-                &[],
+                &format!(
+                    "unique=true;keys=[member:{}:string]",
+                    derived_id("member-title")
+                ),
             ),
             entry(
                 CatalogEntryKind::ResourceMember,

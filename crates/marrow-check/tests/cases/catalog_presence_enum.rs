@@ -17,6 +17,17 @@ fn entry(
     literal_entry(kind, canonical_path, &derived_id(label), aliases)
 }
 
+fn store_index_entry(
+    canonical_path: &str,
+    label: &str,
+    accepted_index_shape: &str,
+) -> CatalogEntry {
+    CatalogEntry {
+        accepted_index_shape: Some(accepted_index_shape.to_string()),
+        ..entry(CatalogEntryKind::StoreIndex, canonical_path, label, &[])
+    }
+}
+
 fn sorted_enum_member_catalog_ids(
     facts: &marrow_check::CheckedFacts,
     members: &[marrow_check::EnumMemberId],
@@ -205,11 +216,14 @@ fn enum_index_key_meaning_uses_catalog_member_identity_after_source_reorder() {
                 "store-orders",
                 &[],
             ),
-            entry(
-                CatalogEntryKind::StoreIndex,
+            store_index_entry(
                 "books::^orders::byState",
                 "index-by-state",
-                &[],
+                &format!(
+                    "unique=false;keys=[member:{}:enum:{},identity:0:int]",
+                    derived_id("member-state"),
+                    derived_id("enum-status")
+                ),
             ),
             entry(
                 CatalogEntryKind::ResourceMember,

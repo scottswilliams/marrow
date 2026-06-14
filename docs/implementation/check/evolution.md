@@ -25,7 +25,7 @@ and repair still needs the snapshot fixed before activation.
 - **Records stream, never materialize.** One paged `for_each_record` scan per root fuses presence probing and unique-index key derivation. Required-leaf state is bounded; each unique-index probe keeps a seen set proportional to the number of distinct populated key tuples and reports distinct colliding tuples, not duplicate-record counts.
 - **A transform body is a pure total function of `old`.** Reading saved data directly bypasses the per-member decodability proof and fails closed; the transform target is excluded from the presence scan and its verdict carries the decodability proof.
 - **A default must be a checker-evaluable constant on a scalar leaf.** `const_default` is the single interpreter; apply writes the encoded bytes verbatim and never re-reads source, so a non-scalar or per-record-varying fill is a typed `RejectedDefault`.
-- **Baselines are typed by durable surface.** A store/member with no recorded accepted token/struct/key-shape places no obligation; the proposal freezes the current shape forward so a later change has a baseline. A store index with no accepted declaration shape is treated as changed once, so apply rebuilds or probes its derived cells before freezing that shape forward.
+- **Baselines are typed by durable surface.** A store/member with no recorded accepted token/struct/key-shape places no obligation; the proposal freezes the current shape forward so a later change has a baseline. A store index must have an accepted declaration shape; a missing shape is invalid accepted metadata rather than an evolution obligation.
 
 ## Modules
 

@@ -353,6 +353,16 @@ fn rejects_hostile_catalog_json_families() {
         .expect_err("null byte accepted index shape must fail closed");
     assert_eq!(error.code, CATALOG_INVALID);
 
+    let index_without_shape = literal_entry(
+        CatalogEntryKind::StoreIndex,
+        "books::^books::byTitle",
+        "cat_88888888888888888888888888888888",
+        &[],
+    );
+    let error = CatalogMetadata::from_json(&catalog(vec![index_without_shape]).to_json_pretty())
+        .expect_err("store index without accepted shape must fail closed");
+    assert_eq!(error.code, CATALOG_INVALID);
+
     let mut member_with_null_struct = literal_entry(
         CatalogEntryKind::ResourceMember,
         "books::Book::title",

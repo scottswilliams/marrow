@@ -1,48 +1,15 @@
 use crate::support;
 use crate::support_discharge;
-use marrow_catalog::{CatalogEntryKind, CatalogMetadata};
+use marrow_catalog::CatalogEntryKind;
 use marrow_check::evolution::{RepairReason, Verdict, preview};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_store::value::{Scalar, encode_value};
 
-use support::catalog::{read_catalog, write_catalog};
-use support::{TempProject, check_with_accepted, temp_project, write};
+use support::catalog::write_catalog;
+use support::{check_with_accepted, temp_project, write};
 use support_discharge::*;
-
-fn composite_index_project(name: &str) -> TempProject {
-    temp_project(name, |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   required a: string\n\
-             \x20   required b: string\n\
-             store ^books(id: int): Book\n\
-             \x20   index byPair(a, b) unique\n\
-             pub fn add(a: string, b: string): Id(^books)\n\
-             \x20   return nextId(^books)\n",
-        );
-    })
-}
-
-fn checked_with_missing_index_shape(
-    root: &std::path::Path,
-    index_path: &str,
-) -> marrow_check::CheckedProgram {
-    let mut catalog = read_catalog(root).expect("accepted catalog");
-    let entry = catalog
-        .entries
-        .iter_mut()
-        .find(|entry| entry.kind == CatalogEntryKind::StoreIndex && entry.path == index_path)
-        .expect("store index entry");
-    entry.accepted_index_shape = None;
-    let catalog = CatalogMetadata::new(catalog.epoch, catalog.entries);
-    write_catalog(root, &catalog);
-    checked(root)
-}
 
 /// Retiring a member whose source is gone, with populated records, is a destructive
 /// decision. The verdict names the exact catalog id and the populated count.
@@ -105,89 +72,6 @@ fn retire_of_populated_member_requires_scoped_approval() {
         Verdict::DestructiveDecisionRequired { populated } => assert_eq!(*populated, 2),
         other => panic!("expected destructive decision, got {other:#?}"),
     }
-}
-
-/// An accepted unique index whose catalog predates index-shape signatures discharges once to a
-/// derived rebuild, so the current declaration is proved before the signature is frozen forward.
-#[test]
-fn legacy_unique_index_shape_over_clean_data_rebuilds() {
-    let root = temp_project("discharge-index-clean", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   required isbn: string\n\
-             store ^books(id: int): Book\n\
-             \x20   index byIsbn(isbn) unique\n\
-             pub fn add(isbn: string): Id(^books)\n\
-             \x20   return nextId(^books)\n",
-        );
-    });
-    commit_then_check(&root);
-    let program = checked_with_missing_index_shape(&root, "books::^books::byIsbn");
-    let place = root_place(&program, "books");
-    let store = TreeStore::memory();
-    let seed = Seed::new(&store, &place);
-    seed.record(1);
-    seed.member(1, "isbn", Scalar::Str("111".into()));
-    seed.index_entry("byIsbn", Scalar::Str("111".into()), 1);
-    seed.record(2);
-    seed.member(2, "isbn", Scalar::Str("222".into()));
-    seed.index_entry("byIsbn", Scalar::Str("222".into()), 2);
-
-    let result = witness(&program, &store);
-
-    let index_id = index_catalog_id(&place, "byIsbn");
-    assert!(
-        matches!(verdict_for(&result, &index_id), Verdict::DerivedRebuild),
-        "{:#?}",
-        result.verdicts
-    );
-    assert_eq!(result.counts.index_collisions, 0);
-}
-
-/// A missing accepted index-shape signature does not bypass uniqueness: discharge probes the
-/// current declaration and fails closed when records would collide.
-#[test]
-fn legacy_unique_index_shape_over_colliding_data_fails() {
-    let root = temp_project("discharge-index-collide", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   required isbn: string\n\
-             store ^books(id: int): Book\n\
-             \x20   index byIsbn(isbn) unique\n\
-             pub fn add(isbn: string): Id(^books)\n\
-             \x20   return nextId(^books)\n",
-        );
-    });
-    commit_then_check(&root);
-    let program = checked_with_missing_index_shape(&root, "books::^books::byIsbn");
-    let place = root_place(&program, "books");
-    let store = TreeStore::memory();
-    let seed = Seed::new(&store, &place);
-    // Two records claim the same unique key: a collision the index cannot publish.
-    seed.record(1);
-    seed.member(1, "isbn", Scalar::Str("dup".into()));
-    seed.index_entry("byIsbn", Scalar::Str("dup".into()), 1);
-    seed.record(2);
-    seed.member(2, "isbn", Scalar::Str("dup".into()));
-    seed.index_entry("byIsbn", Scalar::Str("dup".into()), 2);
-
-    let (witness, diagnostics) = preview(&program, &store).expect("preview");
-
-    let byisbn_id = index_catalog_id(&place, "byIsbn");
-    assert!(!witness.is_activatable(), "{witness:#?}");
-    assert!(witness.counts.index_collisions > 0, "{witness:#?}");
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.catalog_id.as_str() == byisbn_id),
-        "{diagnostics:#?}"
-    );
 }
 
 /// Dropping a sparse source field that nothing else depends on is a legal no-op. The
@@ -902,10 +786,10 @@ fn dropped_field_an_index_needs_requires_retire() {
                     "books::Book::isbn",
                     &isbn_id,
                 ),
-                entry(
-                    CatalogEntryKind::StoreIndex,
+                store_index_entry(
                     "books::^books::byIsbn",
                     &hex_id(5),
+                    &format!("unique=true;keys=[member:{isbn_id}:string]"),
                 ),
             ],
         );
@@ -994,10 +878,10 @@ fn dropped_field_ignores_same_named_index_on_another_resource() {
                     "media::Movie::subtitle",
                     &hex_id(9),
                 ),
-                entry(
-                    CatalogEntryKind::StoreIndex,
+                store_index_entry(
                     "media::^movies::bySubtitle",
                     &hex_id(10),
+                    &format!("unique=true;keys=[member:{}:string]", hex_id(9)),
                 ),
             ],
         );
@@ -1072,10 +956,10 @@ fn dropped_index_is_index_dropped() {
                     "books::Book::isbn",
                     &hex_id(4),
                 ),
-                entry(
-                    CatalogEntryKind::StoreIndex,
+                store_index_entry(
                     "books::^books::byIsbn",
                     &index_id,
+                    &format!("unique=true;keys=[member:{}:string]", hex_id(4)),
                 ),
             ],
         );
@@ -1132,143 +1016,4 @@ fn dropped_index_is_index_dropped() {
         "the dropped index entry is gone from the published catalog: {:#?}",
         proposal.entries
     );
-}
-
-/// A legacy accepted composite-index signature is rebuilt from the full `(a, b)` tuple per
-/// record; distinct full tuples that share their first key column are collision-free.
-#[test]
-fn legacy_composite_unique_index_distinct_tuples_rebuild() {
-    let root = composite_index_project("discharge-composite-clean");
-    commit_then_check(&root);
-    let program = checked_with_missing_index_shape(&root, "books::^books::byPair");
-    let place = root_place(&program, "books");
-    let store = TreeStore::memory();
-    let seed = Seed::new(&store, &place);
-    seed.record(1);
-    seed.member(1, "a", Scalar::Str("shared".into()));
-    seed.member(1, "b", Scalar::Str("one".into()));
-    seed.record(2);
-    seed.member(2, "a", Scalar::Str("shared".into()));
-    seed.member(2, "b", Scalar::Str("two".into()));
-
-    let result = witness(&program, &store);
-
-    let index_id = index_catalog_id(&place, "byPair");
-    assert!(
-        matches!(verdict_for(&result, &index_id), Verdict::DerivedRebuild),
-        "{:#?}",
-        result.verdicts
-    );
-    assert_eq!(result.counts.index_collisions, 0);
-}
-
-/// The legacy-signature path still probes a composite unique index over the full tuple, so a
-/// duplicate `(a, b)` fails closed before the signature can be accepted.
-#[test]
-fn legacy_composite_unique_index_duplicate_tuple_collides() {
-    let root = composite_index_project("discharge-composite-collide");
-    commit_then_check(&root);
-    let program = checked_with_missing_index_shape(&root, "books::^books::byPair");
-    let place = root_place(&program, "books");
-    let store = TreeStore::memory();
-    let seed = Seed::new(&store, &place);
-    seed.record(1);
-    seed.member(1, "a", Scalar::Str("same".into()));
-    seed.member(1, "b", Scalar::Str("same".into()));
-    seed.record(2);
-    seed.member(2, "a", Scalar::Str("same".into()));
-    seed.member(2, "b", Scalar::Str("same".into()));
-
-    let result = witness(&program, &store);
-
-    let index_id = index_catalog_id(&place, "byPair");
-    assert!(
-        matches!(
-            verdict_for(&result, &index_id),
-            Verdict::RepairRequired { .. }
-        ),
-        "{:#?}",
-        result.verdicts
-    );
-    assert!(result.counts.index_collisions > 0, "{:#?}", result.counts);
-}
-
-/// A legacy accepted single-column unique index with no cells still derives each prospective key
-/// from member values; distinct values rebuild cleanly.
-#[test]
-fn legacy_unique_index_shape_no_cells_clean_rebuilds() {
-    let root = temp_project("discharge-new-index-clean", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   required isbn: string\n\
-             store ^books(id: int): Book\n\
-             \x20   index byIsbn(isbn) unique\n\
-             pub fn add(isbn: string): Id(^books)\n\
-             \x20   return nextId(^books)\n",
-        );
-    });
-    commit_then_check(&root);
-    let program = checked_with_missing_index_shape(&root, "books::^books::byIsbn");
-    let place = root_place(&program, "books");
-    let store = TreeStore::memory();
-    let seed = Seed::new(&store, &place);
-    // Records exist with distinct member values, but no index cells were ever written.
-    seed.record(1);
-    seed.member(1, "isbn", Scalar::Str("111".into()));
-    seed.record(2);
-    seed.member(2, "isbn", Scalar::Str("222".into()));
-
-    let result = witness(&program, &store);
-
-    let index_id = index_catalog_id(&place, "byIsbn");
-    assert!(
-        matches!(verdict_for(&result, &index_id), Verdict::DerivedRebuild),
-        "{:#?}",
-        result.verdicts
-    );
-    assert_eq!(result.counts.index_collisions, 0);
-}
-
-/// A legacy accepted unique index whose current prospective member values collide fails closed,
-/// even when the store holds no index cells.
-#[test]
-fn legacy_unique_index_shape_no_cells_duplicate_collides() {
-    let root = temp_project("discharge-new-index-collide", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   required isbn: string\n\
-             store ^books(id: int): Book\n\
-             \x20   index byIsbn(isbn) unique\n\
-             pub fn add(isbn: string): Id(^books)\n\
-             \x20   return nextId(^books)\n",
-        );
-    });
-    commit_then_check(&root);
-    let program = checked_with_missing_index_shape(&root, "books::^books::byIsbn");
-    let place = root_place(&program, "books");
-    let store = TreeStore::memory();
-    let seed = Seed::new(&store, &place);
-    seed.record(1);
-    seed.member(1, "isbn", Scalar::Str("dup".into()));
-    seed.record(2);
-    seed.member(2, "isbn", Scalar::Str("dup".into()));
-
-    let result = witness(&program, &store);
-
-    let index_id = index_catalog_id(&place, "byIsbn");
-    assert!(
-        matches!(
-            verdict_for(&result, &index_id),
-            Verdict::RepairRequired { .. }
-        ),
-        "{:#?}",
-        result.verdicts
-    );
-    assert!(result.counts.index_collisions > 0, "{:#?}", result.counts);
 }
