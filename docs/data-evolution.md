@@ -170,6 +170,21 @@ IDs for resources, stores, store indexes, resource members, enums, and enum
 members. Runtime value encoding remains a separate storage concern; the catalog
 is the durable schema identity exposed to tools, evolution, and checked facts.
 
+### Branch And Team Workflow
+
+Merged source is truth. Development stores are disposable. Production identities
+flow only through deployed catalogs and `marrow evolve apply`, never through a
+developer's local `.data` directory.
+
+When two branches conflict in `marrow.catalog.json`, keep the conflict visible:
+`marrow check` reports `catalog.merge_conflict` until the artifact is resolved.
+After resolving the source and catalog file, `marrow check` should pass against
+the merged artifact. A local store from the losing branch is older than the
+merged catalog and is fenced by activation, typically as `run.store_behind`,
+until `marrow evolve apply` activates or replaces that local store. Do not copy a
+development store forward to rescue a merge; replay the accepted source and
+catalog path.
+
 The accepted snapshot is advanced only by the flows that establish durable
 state — running the program and `marrow evolve apply` — each writing the catalog
 rows in the same store transaction as the data and metadata they commit. The
@@ -376,6 +391,112 @@ blocks `evolve preview` and `evolve apply`.
 
 There is no dedicated `marrow repair` command. Repair is a maintenance run of
 your own code, verified before and after with `marrow data integrity`.
+
+The recovery-point gate binds to witness outcomes that delete or overwrite
+populated stored cells; in v0.1 exactly Retire.
+
+## Maintenance Migration And Repair, Worked
+
+Leaf retype is not an in-place reinterpret. Add the new member, transform it
+from the old member, apply, then retire the old member under explicit
+maintenance approval:
+
+```mw
+resource Book
+    required pages: int
+    required pageLabel: string
+
+store ^books(id: int): Book
+
+evolve
+    transform Book.pageLabel
+        return $"pages:{old.pages}"
+```
+
+```sh
+marrow evolve apply ./project
+```
+
+After the transform, source can drop `pages` only by stating the destructive
+intent:
+
+```mw
+resource Book
+    required pageLabel: string
+
+store ^books(id: int): Book
+
+evolve
+    retire Book.pages
+```
+
+```sh
+marrow evolve apply --maintenance --approve-retire <pages-catalog-id>:<count> ./project
+```
+
+The result is byte-stable: the new `pageLabel` cell is written under its own
+catalog ID, and the populated old `pages` cell is deleted under the retired
+catalog ID rather than reused.
+
+Store re-key is a copy-and-delete migration in v0.1. Keep the old store declared
+while adding the new keyed store, construct non-integer target identities
+explicitly, copy the modeled data, then delete the old identities:
+
+```mw
+resource Book
+    required title: string
+
+store ^books(id: int): Book
+store ^booksBySlug(slug: string): Book
+
+pub fn migrate()
+    const target: Id(^booksBySlug) = Id(^booksBySlug, "book-1")
+    var b: Book
+    b.title = ^books(1).title ?? ""
+    transaction
+        ^booksBySlug(target) = b
+        delete ^books(1)
+```
+
+Run that function with the maintenance posture appropriate for the migration:
+
+```sh
+marrow run --maintenance --entry books::migrate ./project
+```
+
+The old int-keyed record is gone; the new string-keyed record is addressed by
+the stored identity payload for `Id(^booksBySlug, "book-1")`. The old store ID
+and int key are not silently reinterpreted as the new address.
+
+For `data.orphan`, bracket repair with integrity. First run the target source
+and confirm the problem:
+
+```sh
+marrow data integrity --format json ./project
+```
+
+If the orphan is a dropped member, run a repair source that still declares that
+member, delete or move the modeled data through managed paths, then return to
+the target source and rerun integrity:
+
+```mw
+resource Book
+    required title: string
+    subtitle: string
+
+store ^books(id: int): Book
+
+pub fn repair()
+    delete ^books(1).subtitle
+```
+
+```sh
+marrow run --maintenance --entry books::repair ./project
+marrow data integrity --format json ./project
+```
+
+The repair is complete only when integrity reports no problems against the
+target source.
 
 ## Backup And Restore
 

@@ -1,0 +1,14 @@
+module books
+resource Book
+    required title: string
+store ^books(id: int): Book
+store ^booksBySlug(slug: string): Book
+pub fn migrate()
+    const target: Id(^booksBySlug) = Id(^booksBySlug, "book-1")
+    var b: Book
+    b.title = ^books(1).title ?? ""
+    transaction
+        ^booksBySlug(target) = b
+        delete ^books(1)
+pub fn showNew()
+    print(^booksBySlug(Id(^booksBySlug, "book-1")).title ?? "missing")

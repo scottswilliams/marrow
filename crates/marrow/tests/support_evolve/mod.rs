@@ -244,3 +244,39 @@ pub(crate) const RETIRE_BLOCK_SOURCE: &str =
 #[allow(dead_code)]
 pub(crate) const RETIRE_BLOCK_DELETED_SOURCE: &str =
     include_str!("../../../../fixtures/v01/evolution/books_seed_retire_block_deleted.mw");
+
+#[allow(dead_code)]
+pub(crate) const BRANCH_WORKFLOW_BASELINE_SOURCE: &str =
+    include_str!("../../../../fixtures/v01/evolution/branch_workflow_baseline.mw");
+
+#[allow(dead_code)]
+pub(crate) const BRANCH_WORKFLOW_EVOLVED_SOURCE: &str =
+    include_str!("../../../../fixtures/v01/evolution/branch_workflow_evolved.mw");
+
+#[allow(dead_code)]
+pub(crate) const LEAF_RETYPE_BASELINE_SOURCE: &str =
+    include_str!("../../../../fixtures/v01/evolution/leaf_retype_baseline.mw");
+
+#[allow(dead_code)]
+pub(crate) const LEAF_RETYPE_TRANSFORM_SOURCE: &str =
+    include_str!("../../../../fixtures/v01/evolution/leaf_retype_transform.mw");
+
+#[allow(dead_code)]
+pub(crate) const LEAF_RETYPE_RETIRE_OLD_SOURCE: &str =
+    include_str!("../../../../fixtures/v01/evolution/leaf_retype_retire_old.mw");
+
+#[allow(dead_code)]
+pub(crate) const STORE_REKEY_BASELINE_SOURCE: &str =
+    include_str!("../../../../fixtures/v01/evolution/store_rekey_baseline.mw");
+
+#[allow(dead_code)]
+pub(crate) const STORE_REKEY_STRING_TARGET_SOURCE: &str =
+    include_str!("../../../../fixtures/v01/evolution/store_rekey_string_target.mw");
+
+#[allow(dead_code)]
+pub(crate) const ORPHAN_REPAIR_SOURCE: &str =
+    include_str!("../../../../fixtures/v01/evolution/orphan_repair_source.mw");
+
+#[allow(dead_code)]
+pub(crate) const ORPHAN_REPAIRED_TARGET_SOURCE: &str =
+    include_str!("../../../../fixtures/v01/evolution/orphan_repaired_target.mw");

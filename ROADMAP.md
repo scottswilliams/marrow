@@ -847,21 +847,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 Listing order is execution order. docs/cli.md integrates in lane order: W6.6.
 
-**W6.9 → Worked unhappy-path guide (III.B5; after W2.6, W3.7, and W6.5 — shared
-data-evolution.md).** Owns: data-evolution.md
-"Maintenance Migration And Repair, Worked" — leaf retype, store re-key (via the identity
-constructor for non-int keys), data.orphan repair bracketed by integrity; each example mirrored
-as a fixtures/v01/evolution fixture with a byte-identity tidy check; one sentence recording the
-gate-51 classification rule — the recovery-point gate binds to witness outcomes that delete or
-overwrite populated stored cells, in v0.1 exactly Retire; the "Branch and team
-workflow" doctrine subsection — merged source is truth, dev stores are disposable, production
-ids flow only through deployed catalogs and evolve apply — with the end-to-end merge-conflict
-fixture: conflict markers → catalog.merge_conflict → resolve → check green → losing-branch
-store hits the existing activation fence (C32). Seed: the fixtures
-themselves, run through the production evolution harness. Review: any ergonomic gap surfaced is
-filed as a finding, never patched around in the doc. Done: the escape hatch is paved and cannot
-rot.
-
 **W6.10 → Invocation spine extraction (G1-1; v01-full).** After W3.5 and W6.1 (the cmd_run.rs
 Text sweep lands before the spine extraction); **strictly before W6.6.**
 Owns: a new module inside marrow-run exposing ProjectSession::open(root, mode) and
