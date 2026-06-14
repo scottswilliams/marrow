@@ -17,6 +17,7 @@ mod enums;
 pub mod evolution;
 pub mod executable;
 pub mod facts;
+mod hex;
 mod infer;
 mod keyed_entries;
 mod presence;

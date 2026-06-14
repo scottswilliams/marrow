@@ -3,6 +3,8 @@ use std::io::Read;
 
 use marrow_catalog::CatalogEntry;
 
+use crate::hex::push_lower_hex;
+
 /// Hands out random opaque 128-bit catalog ids (`cat_<32 lowercase hex>`), re-rolling
 /// against the ids already in use. Ids are random rather than a monotonic counter so
 /// branch-parallel work, which has no single coordinator, cannot collide when two
@@ -75,10 +77,7 @@ fn fill_os_entropy(_bytes: &mut [u8; 16]) {
 fn catalog_id_from_bytes(bytes: [u8; 16]) -> String {
     let mut id = String::with_capacity("cat_".len() + 32);
     id.push_str("cat_");
-    for byte in bytes {
-        use std::fmt::Write as _;
-        write!(&mut id, "{byte:02x}").expect("writing to a string cannot fail");
-    }
+    push_lower_hex(&mut id, &bytes);
     id
 }
 
@@ -111,6 +110,16 @@ mod tests {
         entropy: E,
     ) -> StableIdAllocator<E> {
         StableIdAllocator { used, entropy }
+    }
+
+    #[test]
+    fn catalog_id_from_bytes_uses_canonical_lowercase_text() {
+        let id = catalog_id_from_bytes([
+            0x00, 0x01, 0x02, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0xff, 0xa0, 0xb0,
+            0xc0, 0xd0,
+        ]);
+
+        assert_eq!(id, "cat_000102090a0b0c0d0e0f10ffa0b0c0d0");
     }
 
     #[test]

@@ -5,6 +5,7 @@ use marrow_store::tree::{DataPathSegment, decode_tree_enum_member};
 use marrow_store::value::{SavedValue, decode_value, encode_value};
 
 use super::{DataQuery, DataQuerySegment};
+use crate::hex::push_lower_hex;
 use crate::{CheckedProgram, EnumId, StoreLeafKind, identity_leaf_key_mismatch};
 
 const UNDECLARED_MEMBER: &str = "<undeclared member>";
@@ -152,19 +153,11 @@ fn render_key(key: &SavedKey) -> String {
 
 fn render_hex_value(bytes: &[u8]) -> String {
     let mut text = String::from("0x");
-    push_hex(&mut text, bytes);
+    push_lower_hex(&mut text, bytes);
     text
 }
 
 fn render_key_temporal(value: SavedValue) -> String {
     String::from_utf8(encode_value(&value).expect("temporal key values encode"))
         .expect("temporal key encodings are ascii")
-}
-
-fn push_hex(out: &mut String, bytes: &[u8]) {
-    use std::fmt::Write;
-
-    for byte in bytes {
-        write!(out, "{byte:02x}").expect("write hex");
-    }
 }

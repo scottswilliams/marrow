@@ -6,6 +6,7 @@ use marrow_store::value::{SavedValue, ScalarType, decode_value, encode_value};
 
 use crate::CheckedProgram;
 use crate::facts::EnumId;
+use crate::hex::push_lower_hex;
 use crate::resolve::resolve_store_by_root;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,7 +194,7 @@ fn display_key(key: &SavedKey) -> String {
         SavedKey::Str(value) => format!("{value:?}"),
         SavedKey::Bytes(value) => {
             let mut text = String::from("0x");
-            push_hex(&mut text, value);
+            push_lower_hex(&mut text, value);
             text
         }
         SavedKey::Date(days) => render_temporal(SavedValue::Date(*days)),
@@ -206,13 +207,6 @@ fn render_temporal(value: SavedValue) -> String {
     match encode_value(&value) {
         Ok(bytes) => String::from_utf8(bytes).unwrap_or_else(|_| format!("{value:?}")),
         Err(_) => format!("{value:?}"),
-    }
-}
-
-fn push_hex(out: &mut String, bytes: &[u8]) {
-    use std::fmt::Write;
-    for byte in bytes {
-        write!(out, "{byte:02x}").unwrap();
     }
 }
 
@@ -247,4 +241,21 @@ fn decode_hex(text: &str) -> Option<Vec<u8>> {
         bytes.push((hi * 16 + lo) as u8);
     }
     Some(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use marrow_store::key::SavedKey;
+
+    use super::{PathSegment, display_path};
+
+    #[test]
+    fn display_path_renders_byte_keys_as_lower_hex_pairs() {
+        let path = [
+            PathSegment::Root("items".to_string()),
+            PathSegment::RecordKey(SavedKey::Bytes(vec![0x00, 0x0a, 0xff])),
+        ];
+
+        assert_eq!(display_path(&path), "^items(0x000aff)");
+    }
 }
