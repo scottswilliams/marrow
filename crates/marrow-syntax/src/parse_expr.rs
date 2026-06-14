@@ -531,9 +531,10 @@ impl<'a> ExprParser<'a> {
             {
                 self.name_expr()
             }
-            // A type keyword is only a value when called (`int(...)`, `Error(...)`).
+            // A keyword constructor is only a value when called (`int(...)`,
+            // `Error(...)`, `Id(^root, ...)`).
             TokenKind::Keyword(keyword)
-                if is_callable_keyword(keyword)
+                if (is_callable_keyword(keyword) || keyword == Keyword::Id)
                     && matches!(self.peek_at(1), Some(TokenKind::LeftParen)) =>
             {
                 self.advance();
@@ -697,6 +698,7 @@ fn starts_expression(kind: TokenKind) -> bool {
                     | Keyword::Duration
                     | Keyword::ErrorCode
                     | Keyword::Error
+                    | Keyword::Id
             )
     )
 }

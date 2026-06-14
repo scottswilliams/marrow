@@ -7,8 +7,8 @@ use super::head::{parse_enum_head, parse_resource_head, parse_store_head};
 use super::params::parse_function_head;
 use super::stmt::StmtParser;
 use super::tokens::{
-    comment_from_token, doc_comment_text, find_top_level_equal, line_span, line_text_end_before,
-    qualified_name, reject_structural_type_tokens, type_ref_from_tokens,
+    comment_from_token, doc_comment_text, find_top_level_equal, import_name, line_span,
+    line_text_end_before, module_name, reject_structural_type_tokens, type_ref_from_tokens,
 };
 use crate::ast::{
     Block, Comment, CommentMarker, CommentPlacement, ConstDecl, Declaration, EnumDecl, Expression,
@@ -202,7 +202,7 @@ impl<'a> DeclParser<'a> {
     fn parse_module(&mut self, file: &mut SourceFile, saw_top_level_item: bool) {
         let span = self.header_span();
         let header = self.take_header_line();
-        let name = qualified_name(self.source, &header[1..]);
+        let name = module_name(self.source, &header[1..]);
         if saw_top_level_item {
             self.error_span(
                 span,
@@ -223,7 +223,7 @@ impl<'a> DeclParser<'a> {
     fn parse_use(&mut self, file: &mut SourceFile) {
         let span = self.header_span();
         let header = self.take_header_line();
-        if let Some(name) = qualified_name(self.source, &header[1..]) {
+        if let Some(name) = import_name(self.source, &header[1..]) {
             file.uses.push(UseDecl { name, span });
         } else {
             self.error_span(

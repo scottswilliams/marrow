@@ -301,6 +301,24 @@ fn rejects_invalid_module_names() {
 }
 
 #[test]
+fn reserved_words_as_module_segments_are_rejected() {
+    for source in [
+        "module journal\n",
+        "module app::sensitive\n",
+        "module app::declassify\n",
+        "module app::Id\n",
+    ] {
+        let parsed = parse_source(source);
+        assert!(
+            parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::ModuleName))),
+            "expected module-name diagnostic for {source}: {:#?}",
+            parsed.diagnostics
+        );
+    }
+}
+
+#[test]
 fn rejects_invalid_import_names() {
     let parsed = parse_source(
         r#"module app
@@ -314,6 +332,32 @@ use *
             == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::ImportName))),
         "{:#?}",
         parsed.diagnostics
+    );
+}
+
+#[test]
+fn reserved_words_as_import_segments_are_rejected() {
+    for source in [
+        "module app\nuse journal\n",
+        "module app\nuse pkg::sensitive\n",
+        "module app\nuse pkg::declassify\n",
+        "module app\nuse pkg::Id\n",
+        "module app\nuse std::Id\n",
+    ] {
+        let parsed = parse_source(source);
+        assert!(
+            parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::ImportName))),
+            "expected import-name diagnostic for {source}: {:#?}",
+            parsed.diagnostics
+        );
+    }
+
+    let std_bytes = parse_source("module app\nuse std::bytes\n");
+    assert!(
+        std_bytes.diagnostics.is_empty(),
+        "std::bytes import remains valid: {:#?}",
+        std_bytes.diagnostics
     );
 }
 
@@ -345,6 +389,34 @@ fn reserved_word_as_const_name_is_rejected() {
         "{:#?}",
         parsed.diagnostics
     );
+}
+
+#[test]
+fn future_surface_words_as_const_names_are_rejected() {
+    for word in ["journal", "sensitive", "declassify", "Id"] {
+        let parsed = parse_source(&format!("module app\nconst {word} = 5\n"));
+        assert!(
+            parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::ConstName))),
+            "expected const-name diagnostic for {word}: {:#?}",
+            parsed.diagnostics
+        );
+    }
+}
+
+#[test]
+fn future_surface_words_as_function_names_are_rejected() {
+    for word in ["journal", "sensitive", "declassify", "Id"] {
+        let parsed = parse_source(&format!("module app\nfn {word}()\n    return\n"));
+        assert!(
+            parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Expected(
+                    ExpectedSyntax::FunctionName
+                ))),
+            "expected function-name diagnostic for {word}: {:#?}",
+            parsed.diagnostics
+        );
+    }
 }
 
 #[test]

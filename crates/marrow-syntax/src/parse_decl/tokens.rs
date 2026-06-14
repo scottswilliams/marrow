@@ -41,15 +41,35 @@ pub(super) fn line_text_end_before(source: &str, pos: usize) -> usize {
     let before = before.strip_suffix('\r').unwrap_or(before);
     before.len()
 }
-/// The `::`-separated source text spanned by the `module`/`use` name tokens, if
-/// it is a qualified name. The text is validated lexically (not by token kind),
-/// so a keyword that is also a valid path segment — such as the `bytes` in
-/// `use std::bytes` — is accepted, the same way it is mid-path in an expression.
-pub(super) fn qualified_name(source: &str, tokens: &[Token]) -> Option<String> {
+fn qualified_name_text(source: &str, tokens: &[Token]) -> Option<String> {
     let first = tokens.first()?;
     let last = tokens.last()?;
     let text = &source[first.span.start_byte..last.span.end_byte];
     is_qualified_name(text).then(|| text.to_string())
+}
+pub(super) fn module_name(source: &str, tokens: &[Token]) -> Option<String> {
+    let text = qualified_name_text(source, tokens)?;
+    reserved_segment(tokens).is_none().then_some(text)
+}
+pub(super) fn import_name(source: &str, tokens: &[Token]) -> Option<String> {
+    let text = qualified_name_text(source, tokens)?;
+    (reserved_segment(tokens).is_none() || is_std_bytes_import(source, tokens)).then_some(text)
+}
+fn reserved_segment(tokens: &[Token]) -> Option<&Token> {
+    tokens
+        .iter()
+        .step_by(2)
+        .find(|token| matches!(token.kind, TokenKind::Keyword(_)))
+}
+fn is_std_bytes_import(source: &str, tokens: &[Token]) -> bool {
+    matches!(
+        tokens,
+        [std, sep, bytes]
+            if std.kind == TokenKind::Identifier
+                && std.text(source) == "std"
+                && sep.kind == TokenKind::DoubleColon
+                && bytes.kind == TokenKind::Keyword(Keyword::Bytes)
+    )
 }
 pub(super) fn push_parse_error(
     diagnostics: &mut Vec<Diagnostic>,

@@ -261,6 +261,21 @@ fn reserved_word_as_parameter_name_is_rejected() {
     );
 }
 
+#[test]
+fn future_surface_words_as_parameter_names_are_rejected() {
+    for word in ["journal", "sensitive", "declassify", "Id"] {
+        let parsed = parse_source(&format!("fn f({word}: int)\n    return\n"));
+        assert!(
+            parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Expected(
+                    ExpectedSyntax::ParameterName
+                ))),
+            "expected parameter-name diagnostic for {word}: {:#?}",
+            parsed.diagnostics
+        );
+    }
+}
+
 /// `(name, ty, docs)` triples for every parameter of a single function, for
 /// comparing parameter lists across the comma, newline, and mixed surfaces.
 fn param_shape(source: &str) -> Vec<(String, String, Vec<String>)> {

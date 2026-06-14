@@ -328,36 +328,6 @@ fn identity_type_must_name_a_declared_store() {
 }
 
 #[test]
-fn resource_id_constructor_in_an_identity_assignment_is_unresolved() {
-    // A `Resource::Id(...)` constructor is not a store-identity conversion boundary;
-    // assigning it into an identity field is an unresolved call, not a coercion.
-    let found = check_module(
-        "id-ctor-assignment-unresolved",
-        "module m\n\
-         resource Author\n    name: string\n\
-         store ^authors(id: int): Author\n\n\
-         resource Book\n    authorId: Id(^authors)\n\
-         store ^books(id: int): Book\n\n\
-         fn put(x: unknown)\n    ^books(1).authorId = Author::Id(int(x))\n",
-        "check.unresolved_call",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
-}
-
-#[test]
-fn resource_id_constructor_call_is_unresolved() {
-    let found = check_module(
-        "id-ctor-call-unresolved",
-        "module m\n\
-         resource Author\n    name: string\n\
-         store ^authors(id: int): Author\n\n\
-         fn f()\n    const author = Author::Id(7)\n",
-        "check.unresolved_call",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
-}
-
-#[test]
 fn an_unknown_value_into_a_whole_resource_is_an_untyped_value() {
     // `^books(1) = x` writes a whole `Book`. A dynamic `unknown` value carries no
     // type, so its fields could spill a raw scalar or a foreign identity into a

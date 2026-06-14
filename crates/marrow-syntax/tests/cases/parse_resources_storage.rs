@@ -252,6 +252,47 @@ fn header_helper_errors_report_specific_expected_parts() {
 }
 
 #[test]
+fn future_surface_words_as_resource_enum_or_store_root_names_are_rejected() {
+    for word in ["journal", "sensitive", "declassify", "Id"] {
+        let resource = parse_source(&format!("module app\nresource {word}\n    title: string\n"));
+        assert!(
+            has_reason(
+                &resource.diagnostics,
+                parse_reason(ParseDiagnosticReason::Expected(
+                    ExpectedSyntax::ResourceName
+                ))
+            ),
+            "expected resource-name diagnostic for {word}: {:#?}",
+            resource.diagnostics
+        );
+
+        let enum_source = parse_source(&format!("module app\nenum {word}\n    active\n"));
+        assert!(
+            has_reason(
+                &enum_source.diagnostics,
+                parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::EnumName))
+            ),
+            "expected enum-name diagnostic for {word}: {:#?}",
+            enum_source.diagnostics
+        );
+
+        let root = parse_source(&format!(
+            "module app\nresource Book\n    title: string\nstore ^{word}: Book\n"
+        ));
+        assert!(
+            has_reason(
+                &root.diagnostics,
+                parse_reason(ParseDiagnosticReason::Expected(
+                    ExpectedSyntax::SavedRootName
+                ))
+            ),
+            "expected saved-root-name diagnostic for {word}: {:#?}",
+            root.diagnostics
+        );
+    }
+}
+
+#[test]
 fn rejects_malformed_index_field_paths() {
     for source in [
         "module app\nresource Book\n    title: string\nstore ^books(id: int): Book\n    index bad(title.)\n",
@@ -284,6 +325,21 @@ fn reserved_word_as_resource_member_name_is_rejected() {
         "{:#?}",
         parsed.diagnostics[0]
     );
+}
+
+#[test]
+fn future_surface_words_as_resource_member_names_are_rejected() {
+    for word in ["journal", "sensitive", "declassify", "Id"] {
+        let parsed = parse_source(&format!("resource R\n    {word}: int\n"));
+        assert!(
+            parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Expected(
+                    ExpectedSyntax::ResourceMemberName
+                ))),
+            "expected member-name diagnostic for {word}: {:#?}",
+            parsed.diagnostics
+        );
+    }
 }
 
 #[test]

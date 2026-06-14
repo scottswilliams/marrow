@@ -126,6 +126,22 @@ fn lexes_maybe_return_and_absent_return_keywords() {
 }
 
 #[test]
+fn lexes_future_surface_reservations_as_keywords() {
+    let source = "journal sensitive declassify Id";
+
+    assert_eq!(
+        kinds(source),
+        vec![
+            TokenKind::Keyword(Keyword::Journal),
+            TokenKind::Keyword(Keyword::Sensitive),
+            TokenKind::Keyword(Keyword::Declassify),
+            TokenKind::Keyword(Keyword::Id),
+            TokenKind::Eof,
+        ]
+    );
+}
+
+#[test]
 fn preserves_doc_comments_as_tokens() {
     let source = ";; Books saved by id.\nresource Book\n    required title: string\nstore ^books(id: int): Book\n";
 

@@ -527,11 +527,22 @@ pub(crate) fn check_tests_with_sources_analysis(
             functions,
             constants,
         } = check_file_source(&file.path, &source, &mut report.diagnostics);
+        let reserved_module = file
+            .module_name
+            .as_deref()
+            .and_then(|name| reserved_module_segment(name).map(|segment| (name, segment)));
+        if let Some((module_name, segment)) = reserved_module {
+            report
+                .diagnostics
+                .push(test_module_path_error(file, module_name, segment));
+            resolution_suppression.hide_module(module_name.to_string());
+            resolution_suppression.hide_declared_types(&parsed, &[module_name.to_string()]);
+        }
 
         // A test file is a script: it is named from its path, never from a
         // declared `module`. Duplicate source/test module names are rejected
         // after the clean test module set is known.
-        if !parsed.has_errors() {
+        if !parsed.has_errors() && reserved_module.is_none() {
             modules.push(CheckedModule {
                 name: file.module_name.clone().unwrap_or_default(),
                 source_file: file.path.clone(),
@@ -633,7 +644,7 @@ pub(crate) fn check_tests_with_sources_analysis(
         .into_iter()
         .map(|(file, parsed)| analysis::AnalyzedFile {
             path: file.path.clone(),
-            module_name: file.module_name.clone(),
+            module_name: clean_path_module_name(&file.module_name).cloned(),
             source: parsed_sources.remove(&file.path).unwrap_or_default(),
             parsed,
         })
@@ -644,6 +655,33 @@ pub(crate) fn check_tests_with_sources_analysis(
         test_module_start: project_count,
         files: analyzed,
     })
+}
+
+fn clean_path_module_name(module_name: &Option<String>) -> Option<&String> {
+    module_name
+        .as_ref()
+        .filter(|name| reserved_module_segment(name).is_none())
+}
+
+fn reserved_module_segment(module_name: &str) -> Option<&str> {
+    module_name
+        .split("::")
+        .find(|segment| marrow_syntax::is_reserved_word(segment))
+}
+
+fn test_module_path_error(
+    file: &marrow_project::ModuleFile,
+    module_name: &str,
+    segment: &str,
+) -> CheckDiagnostic {
+    CheckDiagnostic::error(
+        CHECK_MODULE_PATH,
+        &file.path,
+        SourceSpan::default(),
+        format!(
+            "test module path-derived name `{module_name}` contains reserved segment `{segment}`"
+        ),
+    )
 }
 
 /// Hide the resource and enum types declared in test files that failed to parse,

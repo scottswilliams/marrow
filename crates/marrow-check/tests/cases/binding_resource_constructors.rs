@@ -1,7 +1,7 @@
 //! Resource-constructor and alias resolution in the binding index: a qualified
 //! `state::Book(..)` call uses the named module's resource, a bare constructor
-//! prefers the current module, and an aliased `book::Id` call, constructor, or
-//! type ref resolves to the imported function or resource named `Id` rather than a
+//! prefers the current module, and an aliased `book::Code` call, constructor, or
+//! type ref resolves to the imported function or resource named `Code` rather than a
 //! same-named local trap. Resolved against a cleanly-checked program.
 use crate::support_binding;
 use marrow_check::binding::SymbolKind;
@@ -64,9 +64,9 @@ fn bare_resource_constructor_prefers_current_module_resource() {
 }
 
 #[test]
-fn alias_qualified_id_call_resolves_to_imported_function_named_id() {
+fn alias_qualified_call_resolves_to_imported_function() {
     let imported = "module shelf::book\n\
-        pub fn Id(): int\n    \
+        pub fn Code(): int\n    \
         return 1\n";
     let trap = "module traps\n\
         resource book\n    \
@@ -75,9 +75,9 @@ fn alias_qualified_id_call_resolves_to_imported_function_named_id() {
     let app = "module app\n\
         use shelf::book\n\
         fn run(): int\n    \
-        return book::Id()\n";
+        return book::Code()\n";
     let (index, paths) = checked_index(
-        "alias-id-call-imported-function",
+        "alias-code-call-imported-function",
         &[
             ("src/shelf/book.mw", imported),
             ("src/traps.mw", trap),
@@ -87,7 +87,7 @@ fn alias_qualified_id_call_resolves_to_imported_function_named_id() {
     let imported_file = &paths[0];
     let app_file = &paths[2];
 
-    let call = app.find("book::Id").expect("aliased function call");
+    let call = app.find("book::Code").expect("aliased function call");
     let def = index
         .definition(app_file, call + "book::".len() + 1)
         .expect("aliased call resolves");
@@ -96,11 +96,11 @@ fn alias_qualified_id_call_resolves_to_imported_function_named_id() {
 }
 
 #[test]
-fn alias_qualified_id_call_resolves_to_imported_resource_named_id() {
+fn alias_qualified_call_resolves_to_imported_resource() {
     let imported = "module shelf::book\n\
-        resource Id\n    \
+        resource Code\n    \
         required title: string\n\
-        store ^imported_ids(id: int): Id\n";
+        store ^imported_codes(id: int): Code\n";
     let trap = "module traps\n\
         resource book\n    \
         required title: string\n\
@@ -108,9 +108,9 @@ fn alias_qualified_id_call_resolves_to_imported_resource_named_id() {
     let app = "module app\n\
         use shelf::book\n\
         fn make()\n    \
-        const value = book::Id(title: \"x\")\n";
+        const value = book::Code(title: \"x\")\n";
     let (index, paths) = checked_index(
-        "alias-id-call-imported-resource",
+        "alias-code-call-imported-resource",
         &[
             ("src/shelf/book.mw", imported),
             ("src/traps.mw", trap),
@@ -120,7 +120,9 @@ fn alias_qualified_id_call_resolves_to_imported_resource_named_id() {
     let imported_file = &paths[0];
     let app_file = &paths[2];
 
-    let call = app.find("book::Id").expect("aliased resource constructor");
+    let call = app
+        .find("book::Code")
+        .expect("aliased resource constructor");
     let def = index
         .definition(app_file, call + "book::".len() + 1)
         .expect("aliased constructor resolves");
@@ -129,21 +131,21 @@ fn alias_qualified_id_call_resolves_to_imported_resource_named_id() {
 }
 
 #[test]
-fn alias_qualified_id_type_ref_expands_alias_to_imported_resource() {
+fn alias_qualified_type_ref_expands_alias_to_imported_resource() {
     let trap = "module traps\n\
         resource book\n    \
         required title: string\n\
         store ^trap_books(id: int): book\n";
     let imported_module = "module shelf::book\n\
-        resource Id\n    \
+        resource Code\n    \
         required title: string\n\
-        store ^imported_ids(id: int): Id\n";
+        store ^imported_codes(id: int): Code\n";
     let app = "module app\n\
         use shelf::book\n\
-        fn load(value: book::Id)\n    \
+        fn load(value: book::Code)\n    \
         return\n";
     let (index, paths) = checked_index(
-        "alias-id-type-ref-imported-resource",
+        "alias-code-type-ref-imported-resource",
         &[
             ("src/traps.mw", trap),
             ("src/shelf/book.mw", imported_module),
@@ -153,7 +155,7 @@ fn alias_qualified_id_type_ref_expands_alias_to_imported_resource() {
     let imported_file = &paths[1];
     let app_file = &paths[2];
 
-    let type_ref = app.find("book::Id").expect("aliased resource type ref");
+    let type_ref = app.find("book::Code").expect("aliased resource type ref");
     let def = index
         .definition(app_file, type_ref + "book::".len() + 1)
         .expect("aliased type ref resolves");

@@ -399,28 +399,6 @@ fn a_qualified_resource_constructor_is_not_an_unresolved_call() {
 }
 
 #[test]
-fn qualified_id_call_uses_the_resource_constructor_without_identity_precedence() {
-    let root = temp_project("identity-constructor-precedence", |root| {
-        write(
-            root,
-            "src/catalog.mw",
-            "module catalog\nresource Id\n    title: string\n",
-        );
-        write(
-            root,
-            "src/app.mw",
-            "module app\nuse catalog\nresource Book\n    title: string\nstore ^books(id: int): Book\nfn caller()\n    var id = catalog::Id(1)\n",
-        );
-    });
-    let (report, _program) = check_project(&root, &config()).expect("check");
-    assert!(
-        with_code(&report, "check.call_argument").len() == 1,
-        "{:#?}",
-        report.diagnostics
-    );
-}
-
-#[test]
 fn an_unknown_call_in_a_module_less_script_is_flagged() {
     // A module-less script joins the program under the empty module name, so its
     // own calls resolve against it: a call naming a function the script does not

@@ -51,6 +51,10 @@ pub const NESTING_DEPTH_LIMIT: usize = 256;
 /// operator already reads, even though the parser raises it.
 pub const NESTING_LIMIT: &str = "check.nesting_limit";
 
+pub fn is_reserved_word(text: &str) -> bool {
+    token::keyword(text).is_some()
+}
+
 pub fn parse_source(source: &str) -> ParsedSource {
     let lexed = lex_source(source);
     let mut parsed = DeclParser::new(source, &lexed.tokens).parse();

@@ -99,6 +99,9 @@ pub enum Keyword {
     Absent,
     Delete,
     Merge,
+    Journal,
+    Sensitive,
+    Declassify,
     Transaction,
     Lock,
     Try,
@@ -122,6 +125,7 @@ pub enum Keyword {
     Unknown,
     Error,
     ErrorCode,
+    Id,
 }
 
 /// The tokens whose spans fall entirely within `[start_byte, end_byte)`. Relies
@@ -190,6 +194,9 @@ pub(crate) fn keyword(text: &str) -> Option<Keyword> {
         "absent" => Keyword::Absent,
         "delete" => Keyword::Delete,
         "merge" => Keyword::Merge,
+        "journal" => Keyword::Journal,
+        "sensitive" => Keyword::Sensitive,
+        "declassify" => Keyword::Declassify,
         "transaction" => Keyword::Transaction,
         "lock" => Keyword::Lock,
         "try" => Keyword::Try,
@@ -213,6 +220,7 @@ pub(crate) fn keyword(text: &str) -> Option<Keyword> {
         "unknown" => Keyword::Unknown,
         "Error" => Keyword::Error,
         "ErrorCode" => Keyword::ErrorCode,
+        "Id" => Keyword::Id,
         _ => return None,
     })
 }

@@ -281,7 +281,7 @@ fn reports_unresolved_import() {
         write(
             root,
             "src/app.mw",
-            "use unknown::mod\nfn main()\n    return\n",
+            "use missing::mod\nfn main()\n    return\n",
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
@@ -290,11 +290,43 @@ fn reports_unresolved_import() {
     assert_eq!(unresolved.len(), 1, "{:#?}", report.diagnostics);
     assert_eq!(
         unresolved[0].payload,
-        DiagnosticPayload::UnresolvedImport("unknown::mod".into()),
+        DiagnosticPayload::UnresolvedImport("missing::mod".into()),
         "{:#?}",
         unresolved[0]
     );
     assert_eq!(unresolved[0].span.line, 1, "{:#?}", unresolved[0]);
+}
+
+#[test]
+fn rejects_reserved_path_segment_in_test_module_name() {
+    let root = temp_project("check-tests-reserved-segment", |root| {
+        write(root, "src/app.mw", "module app\n");
+        write(root, "tests/journal.mw", "pub fn smoke()\n    return\n");
+    });
+    let cfg = parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+    )
+    .expect("config");
+    let (src_report, src_program) = check_project(&root, &cfg).expect("check src");
+    let (test_report, test_modules) = check_tests(&root, &cfg, src_program).expect("check tests");
+
+    assert!(!src_report.has_errors(), "{:#?}", src_report.diagnostics);
+    let diagnostic = test_report
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "check.module_path")
+        .expect("module-path diagnostic");
+    assert!(
+        diagnostic.file.ends_with("journal.mw"),
+        "{:?}",
+        diagnostic.file
+    );
+    assert!(
+        diagnostic.message.contains("reserved"),
+        "{:?}",
+        diagnostic.message
+    );
+    assert!(test_modules.is_empty(), "{test_modules:#?}");
 }
 
 #[test]

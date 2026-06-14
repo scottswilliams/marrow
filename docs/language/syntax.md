@@ -377,22 +377,23 @@ Marrow parser-reserved words are:
 module use pub fn resource store index unique
 required
 enum evolve match is
-const var if else while for in break continue return delete merge
+const var if else while for in break continue return maybe absent delete merge
+journal sensitive declassify
 transaction lock try catch throw true false
 not and or
 int decimal bool string bytes date instant duration
 sequence
-unknown Error ErrorCode
+unknown Error ErrorCode Id
 ```
 
 A parser-reserved word cannot be used as a name. Bindings, parameters,
-resources, fields, functions, and module segments must not be spelled as a
-parser-reserved word; doing so is a parse error.
+resources, fields, functions, and user module segments must not be spelled as a
+parser-reserved word; doing so is a parse error. The standard-library import
+`use std::bytes` is an explicit descriptor-path exception.
 
-The names `journal`, `maybe`, `absent`, `Id`, `sensitive`, and `declassify` are
-held for current builtin forms or future language surfaces. v0.1 does not reject
-all uses of those spellings as identifiers at parse time; a use is rejected only
-where the current grammar or checker gives that spelling special meaning.
+The reserved word `Id` remains the current identity type and constructor
+spelling in `Id(^store)` and `Id(^store, key...)`. Outside those grammar
+positions, it is not an identifier.
 
 Reserved-word recognition happens before identifier parsing. Builtin names and
 standard-library descriptors dispatch through the builtin table rather than

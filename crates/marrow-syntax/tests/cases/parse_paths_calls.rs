@@ -460,6 +460,19 @@ fn parses_conversion_and_constructor_calls() {
         "expected int callee, got {callee:?}"
     );
 
+    let parsed = parse_source("const Loaded = Id(^books, \"book-17\")\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected const declaration");
+    };
+    let Some(Expression::Call { callee, .. }) = &decl.value else {
+        panic!("expected identity constructor call, got {:?}", decl.value);
+    };
+    assert!(
+        matches!(callee.as_ref(), Expression::Name { segments, .. } if segments == &["Id"]),
+        "expected Id callee, got {callee:?}"
+    );
+
     // Qualified calls keep their path segments.
     let parsed = parse_source("const First = shelf::make(17)\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
@@ -474,4 +487,19 @@ fn parses_conversion_and_constructor_calls() {
         "expected shelf::make callee, got {callee:?}"
     );
     assert_eq!(args.len(), 1);
+}
+
+#[test]
+fn qualified_id_constructor_paths_are_rejected() {
+    for source in [
+        "const Bad = Author::Id(7)\n",
+        "const Bad = Id::fromKey(7)\n",
+    ] {
+        let parsed = parse_source(source);
+        assert!(
+            !parsed.diagnostics.is_empty(),
+            "expected qualified Id path to be rejected for {source}: {:#?}",
+            parsed.diagnostics
+        );
+    }
 }
