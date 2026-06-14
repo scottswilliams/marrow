@@ -159,18 +159,22 @@ pub(super) fn expression_key(expr: &CheckedExpr, scope: &NameScope) -> ExprKey {
                 bindings,
             }
         }
-        CheckedExpr::Field { base, name, .. } => {
+        CheckedExpr::Field {
+            base, name, quoted, ..
+        } => {
             let base = expression_key(base, scope);
             ExprKey {
-                text: format!("field:{}:{name}", base.text),
+                text: format!("field:{}:{quoted}:{name}", base.text),
                 ty: None,
                 bindings: base.bindings,
             }
         }
-        CheckedExpr::OptionalField { base, name, .. } => {
+        CheckedExpr::OptionalField {
+            base, name, quoted, ..
+        } => {
             let base = expression_key(base, scope);
             ExprKey {
-                text: format!("optional:{}:{name}", base.text),
+                text: format!("optional:{}:{quoted}:{name}", base.text),
                 ty: None,
                 bindings: base.bindings,
             }
@@ -240,5 +244,68 @@ pub(super) fn expression_key(expr: &CheckedExpr, scope: &NameScope) -> ExprKey {
                 bindings,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use marrow_syntax::SourceSpan;
+
+    fn root_expr() -> CheckedExpr {
+        CheckedExpr::SavedRoot {
+            name: "books".to_string(),
+            place: None,
+            span: SourceSpan::default(),
+        }
+    }
+
+    fn field_expr(quoted: bool) -> CheckedExpr {
+        CheckedExpr::Field {
+            base: Box::new(root_expr()),
+            name: "title".to_string(),
+            quoted,
+            place: None,
+            span: SourceSpan::default(),
+        }
+    }
+
+    fn optional_field_expr(quoted: bool) -> CheckedExpr {
+        CheckedExpr::OptionalField {
+            base: Box::new(root_expr()),
+            name: "title".to_string(),
+            quoted,
+            place: None,
+            span: SourceSpan::default(),
+        }
+    }
+
+    #[test]
+    fn field_expression_keys_preserve_the_quoted_bit() {
+        let scope = NameScope::default();
+
+        assert_eq!(
+            expression_key(&field_expr(false), &scope).text,
+            "field:root:books:false:title"
+        );
+        assert_eq!(
+            expression_key(&field_expr(true), &scope).text,
+            "field:root:books:true:title"
+        );
+    }
+
+    #[test]
+    fn optional_field_expression_keys_preserve_the_quoted_bit() {
+        let scope = NameScope::default();
+
+        assert_eq!(
+            expression_key(&optional_field_expr(false), &scope).text,
+            "optional:root:books:false:title"
+        );
+        assert_eq!(
+            expression_key(&optional_field_expr(true), &scope).text,
+            "optional:root:books:true:title"
+        );
     }
 }

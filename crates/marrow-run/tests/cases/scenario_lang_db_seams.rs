@@ -1,8 +1,7 @@
 //! Tier-2 scenarios over the production runtime pipeline that exercise the seams
 //! where typed `.mw` language semantics meet durable saved data: typed read-back
-//! and typed absence, presence proofs that match storage, source spelling that is
-//! independent of the physical store key, cross-module saves, and the all-or-nothing
-//! contract of a multi-write transaction.
+//! and typed absence, presence proofs that match storage, cross-module saves, and
+//! the all-or-nothing contract of a multi-write transaction.
 //!
 //! Each scenario characterizes current v0.1 behavior with typed oracles: runtime
 //! `Value`s, typed `RuntimeError` codes, and direct store effects read back through

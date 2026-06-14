@@ -369,9 +369,10 @@ segments are rejected unconditionally at parse time — no parse-time maintenanc
 in v0.1 — with a parse diagnostic stating quoted segments are not part of the ordinary
 expression grammar and naming operator maintenance mode (ADR language/03) as their decided home;
 grammar.md's field_name drops `| string_lit`; the syntax.md:319-329 and
-resources-and-storage.md:286-288 explanatory passages are deleted; presence keys drop the quoted
-flag from key text (keys.rs:143/152 become `field:{base}:{name}` / `optional:{base}:{name}`).
-The AST/CheckedExpr `quoted: bool`, rejected_surface.rs guard, formatter quoted-emission, and
+resources-and-storage.md:286-288 explanatory passages are deleted; canonical presence keys retain
+the quoted flag in key text (`field:{base}:{quoted}:{name}` /
+`optional:{base}:{quoted}:{name}`) so inert internal identity metadata is not collapsed. The
+AST/CheckedExpr `quoted: bool`, rejected_surface.rs guard, formatter quoted-emission, and
 the evolution/intents + durable_path plumbing are retained inert for Phase 2, whose deletion
 remains explicitly blocked on the maintenance-surface syntax design (the one by-design deferral
 in this gate). Tests: scenario_lang_db_seams.rs:213 deleted as vacuous;
