@@ -103,9 +103,8 @@ pub(crate) fn report_runtime_fault(
     error: &marrow_run::RuntimeError,
     format: CheckFormat,
 ) {
-    let path = error.origin.and_then(|id| program.file_path(id));
     match format {
-        CheckFormat::Text => match path {
+        CheckFormat::Text => match error.origin.and_then(|id| program.file_path(id)) {
             Some(path) => eprintln!(
                 "{}:{}:{}: {}: {}",
                 path.display(),
@@ -117,25 +116,38 @@ pub(crate) fn report_runtime_fault(
             None => report_simple_error(error.code, &error.message, CheckFormat::Text),
         },
         CheckFormat::Json | CheckFormat::Jsonl => {
-            let mut data = serde_json::Map::new();
-            if let Some(code) = error.uncaught_throw_code() {
-                data.insert("code".to_string(), serde_json::json!(code));
-            }
-            let source_span = match path {
-                Some(path) => serde_json::json!({
-                    "file": path.display().to_string(),
-                    "line": error.span.line,
-                    "column": error.span.column,
-                }),
-                None => serde_json::Value::Null,
-            };
-            write_json_err(serde_json::json!({
-                "code": error.code,
-                "kind": marrow_syntax::kind_for_code(error.code),
-                "message": error.message,
-                "data": data,
-                "source_span": source_span,
-            }));
+            write_json_err(serde_json::Value::Object(runtime_fault_json(
+                program, error,
+            )));
         }
     }
+}
+
+pub(crate) fn runtime_fault_json(
+    program: &marrow_check::CheckedRuntimeProgram,
+    error: &marrow_run::RuntimeError,
+) -> serde_json::Map<String, serde_json::Value> {
+    let path = error.origin.and_then(|id| program.file_path(id));
+    let mut data = serde_json::Map::new();
+    if let Some(code) = error.uncaught_throw_code() {
+        data.insert("code".to_string(), serde_json::json!(code));
+    }
+    let source_span = match path {
+        Some(path) => serde_json::json!({
+            "file": path.display().to_string(),
+            "line": error.span.line,
+            "column": error.span.column,
+        }),
+        None => serde_json::Value::Null,
+    };
+    serde_json::Map::from_iter([
+        ("code".to_string(), serde_json::json!(error.code)),
+        (
+            "kind".to_string(),
+            serde_json::json!(marrow_syntax::kind_for_code(error.code)),
+        ),
+        ("message".to_string(), serde_json::json!(error.message)),
+        ("data".to_string(), serde_json::Value::Object(data)),
+        ("source_span".to_string(), source_span),
+    ])
 }

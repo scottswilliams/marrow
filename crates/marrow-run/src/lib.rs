@@ -62,15 +62,15 @@ pub use entry::{
 };
 pub use error::{
     CALL_DEPTH_BUDGET, RECURSION_LIMIT, RUN_ABSENT, RUN_AMBIGUOUS_FUNCTION, RUN_ASSERT,
-    RUN_CAPABILITY, RUN_DECIMAL_OVERFLOW, RUN_DIVIDE_BY_ZERO, RUN_NO_ENCLOSING_LOOP, RUN_NO_VALUE,
-    RUN_OVERFLOW, RUN_PRIVATE_FUNCTION, RUN_RECURSION, RUN_STORE, RUN_TEMPORAL_OVERFLOW,
-    RUN_TRAVERSAL, RUN_TYPE, RUN_UNBOUND_NAME, RUN_UNCAUGHT_THROW, RUN_UNKNOWN_FUNCTION,
-    RUN_UNSUPPORTED, RuntimeError,
+    RUN_CAPABILITY, RUN_DECIMAL_OVERFLOW, RUN_DIVIDE_BY_ZERO, RUN_ENTRY_ARGUMENT,
+    RUN_ENTRY_SURFACE, RUN_NO_ENCLOSING_LOOP, RUN_NO_VALUE, RUN_OVERFLOW, RUN_PRIVATE_FUNCTION,
+    RUN_RECURSION, RUN_STORE, RUN_TEMPORAL_OVERFLOW, RUN_TRAVERSAL, RUN_TYPE, RUN_UNBOUND_NAME,
+    RUN_UNCAUGHT_THROW, RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RuntimeError,
 };
 pub use host::{FixedNondeterminism, Frame, Host, Nondeterminism, StepHook, SystemNondeterminism};
 pub use project_session::{
     ProjectInvokeError, ProjectMode, ProjectOpen, ProjectSession, ProjectSessionError,
-    ProjectSessionNotice, ProjectTestCase, SessionEntry,
+    ProjectSessionNotice, ProjectTestCase, SessionEntry, StoreStamp,
 };
 pub use value::{IdentityValue, RunOutput, RunOutputSink, Value};
 pub use write_plan::{WriteDataSegment, WriteOp, WriteTarget};

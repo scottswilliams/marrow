@@ -185,6 +185,28 @@ A module entrypoint is an ordinary `pub fn` declaration. Argument decoding and
 result rendering happen at the tool or host boundary, then Marrow code runs with
 typed parameters and typed returns.
 
+For the CLI boundary, `marrow run --arg name=value` decodes arguments from the
+checked function signature. Scalar text uses the same literal/runtime scalar
+grammar as Marrow values, enum text uses accepted member spellings, and `string`
+receives the raw text after the first `=`. A sequence parameter whose element is
+scalar or enum collects repeated `--arg` values in argv order; `[]` is the empty
+sequence spelling. A single-component `Id(^store)` parameter decodes through the
+same identity-key guards used by saved data. Resource-shaped parameters, local
+tree parameters, group entries, unknown or invalid parameter surfaces,
+unsupported sequence element types, and composite identity keys are outside the
+CLI entry surface; composite identity parameters should be wrapped by an entry
+that accepts the scalar key parts and constructs or looks up the identity in
+Marrow code.
+Decoding is per invocation: scalar and enum text is parsed once per supplied
+argument, repeated sequence values are appended in argv order, and identity
+keys run the same key guard used by saved data before the function starts.
+
+Plain text `marrow run` leaves program `print` output on stdout. With
+`--format json`, the CLI captures that output into a result envelope and renders
+the return value only when it has a JSON surface. Identity returns use the same
+JSON identity form as saved-data JSON tooling. Resource-shaped returns are
+excluded from the run JSON surface.
+
 ## Parameters
 
 Parameters are read-only by-value inputs:

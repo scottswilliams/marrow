@@ -845,45 +845,7 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 ## Wave 6 — Operator surface and integration (CLI; concurrent by command)
 
-Listing order is execution order. docs/cli.md integrates in lane order: W6.6.
-
-**W6.6 → Dry-run stability then entry invocation (III.B4 then III.E1; both own cmd_run.rs —
-sequenced; after W6.10's spine extraction).** III.B4: dry-run classifies via check, skips
-identity freeze and auto-apply, reports would-freeze/would-apply — report content, not errors: a
-successful preview exits 0, and when the fence would not pass, dry-run reports and does not
-execute — pinned by the
-check_read_only_cli pattern (durable-identity stability, stated limits), plus the write-counts
-accumulator in the dry-run report — per-root/per-index creates/writes/deletes, catalog-id-keyed
-sink over the WritePlan executor, no-op outside `--dry-run` (C49). III.E1: `--arg name=value`
-decoding against checked entry signatures per the gate-27 value grammar — per-scalar textual
-forms from the language literal grammars; string is the raw remainder after the first `=`;
-sequence parameters (element type scalar or enum only) repeat the flag in argv order with `[]`
-as the empty-sequence spelling; identity params via the W2.6 constructor shape and key-component
-guards (no second key-decoding owner), single-component keys only, composite-key identity
-parameters excluded with a typed error naming the wrapper-entry pattern; resource-shaped
-parameters rejected typed; the rejected `--args-json` alternative never ships — the two
-error-codes.md rows `run.entry_surface` and `run.entry_argument` (kind runtime, exit 1, rendered
-in the envelope), the pre-stable JSON result envelope (identity returns rendered in the marrow
-data JSON identity form; resource-shaped returns excluded), per-invocation cost documented; the
-`--arg` hostile-input fixture family (scalar edges) joins W2.2's CI family. Batched inside the
-III.E1 half (the field reservations are one
-change): data.code on run.uncaught_error rendered in the envelope (W6.1 owns the emit path)
-(C54); the `store_stamp` envelope object with field spellings
-`store_uid`/`catalog_epoch`/`commit_id`, plus the sibling key `committed` present only when the
-run committed a write — omitted, not null, for read-only runs (gate 50, C17; StoreUid from
-W3.4); the reserved nullable `signature_digest` field, null throughout v0.1 (gate 48, C10); the
-reserved null raises field (C07; the stability.md note lands in W7.2); the argv/stdout transport
-sentence in cli.md and the lane doc
-(C47); the G1-2 implementation constraint — all signature-driven decoding lives in
-marrow-run::entry (CheckedEntryCall is the seam), CLI parser and JSON envelope are thin
-adapters, one in-process resource-parameter-rejection test as a review requirement;
-Host::with_output_sink as an additive capability — the lane chooses sink vs buffer for envelope
-capture in the same change as the gate-13 print contract; RunOutput.output is not deleted
-(G1-3); one egress-regime sentence in the envelope spec (G3-3). Seeds: dry-run
-catalog-byte-identity test; an end-to-end `--arg` fixture incl. an `Id(^store)` parameter.
-Review: no back-door JSON object mapping (resource returns excluded); textual scalar forms
-specified in cli.md in lockstep with modules-functions.md. Done: an external app can drive a
-Marrow store with typed arguments.
+Listing order is execution order. docs/cli.md integrates with the remaining operator lanes.
 
 **W6.11 → Evolve operator surface (C26 + C33; gate 51; v01-full).** After W3.5 (apply.rs
 reshaped); sequenced with W6.5 if files overlap. Owns: cmd_evolve render.rs --scaffold
@@ -930,14 +892,6 @@ the marrow-lsp code action are deferred. Seed: failing fixture — the no-matchi
 carries the exact declaration for a two-field lookup. Review: fires only at explicit rejection
 (law 15 intact); the synthesized declaration always compiles when pasted. Done: the language's
 defining error carries its machine-applicable fix.
-
-**W6.15 → Stdout flush on fault rider.** Carries: W6.6's Host::with_output_sink path must emit
-print output produced before a runtime fault; if W6.6 is not imminent, a minimal stopgap prints
-and flushes the accumulated buffer in the text Err arm before fault reporting. Owns: cmd_run.rs
-fault rendering and the W6.6 output-sink seam. Seed: a text-mode run that prints, then faults,
-currently loses stdout. Review: stdout/stderr separation stays intact, log remains stderr, the
-success-path buffering contract does not change, and JSON envelope handling waits for W6.6.
-Done: text-mode users see prior print output before the fault report without a new output mode.
 
 **W6.16 → Records vocabulary.** Carries: rename `records` to `cells` in `marrow data stats`
 text/JSON and `data dump` summary JSON after W6.5 retires `check --data`. Owns:

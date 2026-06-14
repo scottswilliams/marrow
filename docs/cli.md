@@ -8,8 +8,8 @@ marrow init <projectdir>
 marrow check [--format text|json|jsonl] <projectdir>
 marrow evolve <preview|apply> [--format text|json|jsonl] <projectdir>
 marrow fmt [--check | --write] <file.mw | projectdir>
-marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] \
-  [--format text|json] <projectdir>
+marrow run [--entry <entry>] [--arg name=value]... [--maintenance] \
+  [--trace] [--dry-run] [--format text|json] <projectdir>
 marrow test [--trace] [--format text|json|jsonl] <projectdir>
 marrow data <roots|stats|dump|integrity|recover> [--format text|json|jsonl] <projectdir>
 marrow data get [--format text|json|jsonl] <projectdir> <path>
@@ -44,10 +44,12 @@ Commands that report diagnostics, saved data, or test results take `--format`:
 - `jsonl` — one JSON object per line for streaming reports, ending with a
   `{"kind": "summary", …}` line where the report has many records.
 
-Plain `run` output is the program's own `print` stream, which carries no
-envelope and does not accept `--format`. `run --dry-run` accepts
-`--format text|json` for its tooling report, written to stderr. `run --trace`
-is text-only and fails closed with non-text formats.
+Plain `run` text output is the program's own `print` stream on stdout. With
+`run --format json`, stdout becomes a result envelope that carries the captured
+program output separately from the rendered return value. `run --dry-run`
+accepts `--format text|json` for its tooling report, written to stderr.
+`run --trace` is text-only and does not accept an explicit `--format` unless it
+is combined with `--dry-run`.
 
 `marrow test --format json|jsonl` shapes the test pass/fail report on stdout.
 With `--trace`, the trace is a separate text stream on stderr while the test
@@ -197,8 +199,8 @@ unknown flag, or a `-` stdin argument.
 ## `marrow run`
 
 ```
-marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] \
-  [--format text|json] <projectdir>
+marrow run [--entry <entry>] [--arg name=value]... [--maintenance] \
+  [--trace] [--dry-run] [--format text|json] <projectdir>
 ```
 
 Check a project, then run an entry function over the store its `marrow.json`
@@ -235,6 +237,18 @@ accepted only when it names one public function in the checked program; ambiguou
 bare names fail with `run.ambiguous_function`. If neither entry source is
 present, `run` fails with `run.no_entry` (exit `1`).
 
+`--arg name=value` supplies one entry parameter value. Repeat `--arg` in argv
+order. The CLI parser only splits at the first `=`; signature-driven decoding
+belongs to the checked entry call. Scalar and enum arguments use the same
+textual spellings accepted by runtime literals and checked enum facts. `string`
+values are the raw text after the first `=`. Sequence parameters whose element
+type is scalar or enum collect repeated values in argv order; `--arg name=[]`
+spells an empty sequence. Single-component `Id(^store)` parameters decode
+through the same identity-key guards used by saved data. Composite identity
+keys, resource-shaped parameters, group entries, local trees, and other
+unsupported entry surfaces fail with `run.entry_argument` (exit `1`). There is
+no `--args-json`; it is an unknown option and exits `2`.
+
 Output written with `print` goes to stdout. `std::log` output goes to
 stderr. The run reads the real system clock, environment, and filesystem.
 
@@ -246,7 +260,8 @@ that the default run rejects. An operator must type it; the default run and
 `--trace` reports each statement as it runs — file, line, call depth, and the
 visible locals — and each managed write or delete, in execution order. The trace
 is a text-only tooling stream on stderr, leaving the program's stdout for its
-own `print` output. Combining `--trace` with a non-text format is a usage error.
+own `print` output. Combining `--trace` with any explicit `--format` is a usage
+error unless `--dry-run` is also present.
 
 In the human-readable text of a `--trace` or `--dry-run` write, the leaf value is
 rendered as its declared typed scalar, not as raw codec bytes: a `bool` reads
@@ -254,21 +269,42 @@ rendered as its declared typed scalar, not as raw codec bytes: a `bool` reads
 machine-readable `value_b64` field in dry-run JSON output stays the raw stored
 bytes.
 
-`--dry-run` runs the entry against an isolated store and reports the saved-data
-writes it would commit. Native-store dry runs copy the configured store after the
-normal run setup has opened, fenced, and applied any zero-mutation schema drift;
-the entry then runs against the copy, so user `transaction` blocks cannot consume
-the dry-run boundary. Only saved data is isolated; host side effects such as
-`std::io` writes or `std::log` lines are not.
+`--format json` on a non-dry run moves the program's `print` stream into the
+`output` field of a stdout envelope. The envelope also carries `return` when the
+entry's return value has a JSON surface, `signature_digest: null`,
+`raises: null`, and `store_stamp` with `store_uid`, `catalog_epoch`, and
+`commit_id`. A sibling `committed: true` appears only when this invocation
+committed a write; read-only runs omit `committed`. Identity returns use the
+same JSON identity form as `marrow data` JSON surfaces. Resource-shaped returns
+are outside the run surface and fail with `run.entry_surface` (exit `1`). If
+return rendering or a later runtime fault fails after a durable write has
+committed, stderr carries the runtime fault JSON with `store_stamp` and
+`committed: true`; stdout does not carry a successful result envelope. If an
+uncaught `Error` reaches the top of a JSON run, stderr carries the runtime fault
+JSON and includes the original error code as `data.code`.
 
-`--dry-run` takes `--format text|json`. A plain run's stdout is the program's
-own output and takes no format, so `--format` without `--dry-run` is a usage
-error (exit `2`). The report is tooling output on stderr under every format,
-off the program's stdout stream. Under text, planned writes are
-`would write <path>` / `would delete <path>` lines and a
-`dry run: N write(s), M delete(s) (not committed)` summary. Under `json`,
-the report is a `{"committed": false, "planned": […]}` envelope whose planned
-entries carry the op, human path, and base64 value bytes.
+`--dry-run` classifies the run through the checked project and store fences
+without freezing first-run durable identity into the native store and without
+auto-applying zero-mutation schema drift. If a real run would freeze the
+baseline, apply schema drift, or fence, the dry-run report contains
+tooling content for that action and exits `0`; JSON reports spell these booleans
+as `would_freeze`, `would_apply`, and `would_fence`. When a fence would not
+pass, the entry is not executed. Otherwise the entry runs against an isolated
+store, so user `transaction` blocks cannot consume the dry-run boundary. Only
+saved data is isolated; host side effects such as `std::io` writes or
+`std::log` lines are not.
+
+`--dry-run` takes `--format text|json`. The report is tooling output on stderr
+under every format, off the program's stdout stream. Under text, planned writes
+are `would write <path>` / `would delete <path>` lines, followed by per-target
+create/write/delete counts and a `dry run: N write(s), M delete(s) (not
+committed)` summary. Under `json`, the report object contains `committed`,
+`writes`, `deletes`, `messages`, `would_freeze`, `would_apply`, `would_fence`,
+`planned`, and `write_counts`. Planned entries carry the op, human path, base64
+value bytes, and a structured `target`. Target identities, index keys, and keyed
+data path segments use the same typed saved-key JSON objects as `marrow data`.
+`write_counts.roots` and `write_counts.indexes` are objects keyed by root or
+index name; each leaf is `{ "creates": N, "writes": N, "deletes": N }`.
 
 `--trace` composes with `--dry-run`: the run is traced while its saved writes are
 isolated from the configured store. This composition is text-only: trace events

@@ -1,8 +1,13 @@
 mod support;
+mod support_evolve;
 
+use std::fs;
 use std::process::{Command, Output};
 
-use support::{json_records_in_stderr, marrow, temp_project, unique_temp_path, write};
+use marrow_store::tree::TreeStore;
+use support::{
+    json_records_in_stderr, marrow, temp_project, temp_project_uncommitted, unique_temp_path, write,
+};
 
 /// A native-store project whose entry writes one field inside a `transaction`,
 /// plus a reader that dumps the store and a second writer for the dry-vs-real
@@ -38,6 +43,94 @@ fn native_project(name: &str) -> support::TempProject {
         );
         write(root, "src/app.mw", SRC);
     })
+}
+
+#[test]
+fn dry_run_rejects_populated_unstamped_pending_baseline_store() {
+    let root = temp_project_uncommitted("dryrun-unstamped-pending", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "shelf::show" } }"#,
+        );
+        write(
+            root,
+            "src/shelf.mw",
+            "module shelf\n\
+             resource Counter\n\
+             \x20\x20\x20\x20required value: int\n\
+             store ^counter(id: int): Counter\n\
+             pub fn show()\n\
+             \x20\x20\x20\x20if const value = ^counter(1).value\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20print($\"value={value}\")\n",
+        );
+    });
+    let config_text = fs::read_to_string(root.join("marrow.json")).expect("read config");
+    let config = marrow_project::parse_config(&config_text).expect("parse config");
+    let (_proposal_report, proposal_program) =
+        marrow_check::check_project_with_catalog(root.path(), &config, None).expect("propose");
+    let proposal = proposal_program
+        .catalog
+        .proposal
+        .clone()
+        .expect("a catalog proposal");
+    let (report, program) =
+        marrow_check::check_project_with_catalog(root.path(), &config, Some(&proposal))
+            .expect("check against proposal");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let place = marrow_check::checked_saved_root_place(
+        &program,
+        "counter",
+        marrow_syntax::SourceSpan::default(),
+    )
+    .expect("checked place");
+    let store_path = root.join(".data").join("marrow.redb");
+    fs::create_dir_all(store_path.parent().unwrap()).expect("create data dir");
+    {
+        let store = TreeStore::open(&store_path).expect("open native store");
+        let store_id = marrow_store::cell::CatalogId::new(
+            place.store_catalog_id.clone().expect("accepted store id"),
+        )
+        .expect("store catalog id");
+        let value_id = marrow_store::cell::CatalogId::new(
+            place
+                .root_members
+                .iter()
+                .find(|member| member.name == "value")
+                .expect("value member")
+                .catalog_id
+                .clone()
+                .expect("accepted value member id"),
+        )
+        .expect("value catalog id");
+        store
+            .write_node(&store_id, &[marrow_store::key::SavedKey::Int(1)])
+            .expect("write record");
+        store
+            .write_data_value(
+                &store_id,
+                &[marrow_store::key::SavedKey::Int(1)],
+                &[marrow_store::tree::DataPathSegment::Member(value_id)],
+                marrow_store::value::encode_value(&marrow_store::value::Scalar::Int(7))
+                    .expect("encode value"),
+            )
+            .expect("write value");
+    }
+
+    let dry = marrow(&[
+        "run",
+        "--dry-run",
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
+
+    assert_eq!(dry.status.code(), Some(1), "{dry:?}");
+    let stdout = String::from_utf8(dry.stdout).expect("stdout utf8");
+    let stderr = String::from_utf8(dry.stderr).expect("stderr utf8");
+    let output = format!("{stdout}{stderr}");
+    assert!(output.contains("run.store_unstamped"), "{output}");
+    assert!(!output.contains("would_freeze"), "{output}");
 }
 
 fn marrow_with_env(args: &[&str], key: &str, value: &str) -> Output {
@@ -312,6 +405,10 @@ fn dry_run_renders_a_bool_write_as_its_typed_value() {
         .expect("a planned write to ^flags(1).on");
     assert_eq!(write["target"]["store"], serde_json::json!("flags"));
     assert_eq!(
+        write["target"]["identity"],
+        serde_json::json!([{ "type": "int", "value": 1 }])
+    );
+    assert_eq!(
         write["target"]["path"],
         serde_json::json!([{ "member": "on" }])
     );
@@ -576,9 +673,7 @@ fn dry_run_reports_non_root_deletes() {
             step["op"] == "delete"
                 && step["target"]["kind"] == "data"
                 && step["target"]["store"] == "books"
-                && step["target"]["identity"]
-                    .as_array()
-                    .is_some_and(|keys| keys.len() == 1 && keys[0] == "1")
+                && step["target"]["identity"] == serde_json::json!([{ "type": "int", "value": 1 }])
                 && step["target"]["path"]
                     .as_array()
                     .is_some_and(|path| path.len() == 1 && path[0]["member"] == "details")
@@ -777,5 +872,438 @@ fn dry_run_composes_with_trace() {
         dump_json["records"],
         serde_json::json!([]),
         "store must be empty: {dump_json}"
+    );
+}
+
+#[test]
+fn dry_run_reports_would_freeze_without_committing_catalog_identity() {
+    let project = temp_project_uncommitted("dryrun-would-freeze", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             resource Book\n\
+             \x20\x20\x20\x20title: string\n\
+             store ^books(id: int): Book\n\n\
+             pub fn main()\n\
+             \x20\x20\x20\x20print(\"preview\")\n",
+        );
+    });
+    let dir = project.to_str().unwrap().to_string();
+
+    let dry = marrow(&["run", "--dry-run", "--format", "json", &dir]);
+
+    assert_eq!(dry.status.code(), Some(0), "{dry:?}");
+    assert_eq!(
+        String::from_utf8(dry.stdout).expect("stdout utf8"),
+        "preview\n"
+    );
+    let report: serde_json::Value =
+        serde_json::from_str(String::from_utf8(dry.stderr).expect("stderr utf8").trim())
+            .expect("dry-run json");
+    assert_eq!(report["would_freeze"], true, "{report}");
+    assert!(
+        !project.join("marrow.catalog.json").exists(),
+        "dry-run must not render the first-run catalog artifact"
+    );
+    let store_path = support_evolve::native_store_path(&project);
+    if store_path.exists() {
+        let store = TreeStore::open_read_only(&store_path).expect("open store read-only");
+        assert_eq!(
+            store
+                .read_catalog_snapshot()
+                .expect("read catalog snapshot"),
+            None,
+            "dry-run must not freeze accepted catalog identity into the store"
+        );
+        assert_eq!(
+            store.read_commit_metadata().expect("read commit metadata"),
+            None,
+            "dry-run must not stamp commit metadata"
+        );
+    }
+}
+
+#[test]
+fn dry_run_reports_would_apply_zero_mutation_drift_without_stamping() {
+    let project = temp_project_uncommitted("dryrun-would-apply", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::seedLog" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             resource Log\n\
+             \x20\x20\x20\x20note: string\n\
+             store ^log(id: int): Log\n\
+             resource Book\n\
+             \x20\x20\x20\x20title: string\n\
+             store ^books(id: int): Book\n\n\
+             pub fn seedLog()\n\
+             \x20\x20\x20\x20^log(1).note = \"seeded\"\n",
+        );
+    });
+    let dir = project.to_str().unwrap().to_string();
+    let first = marrow(&["run", &dir]);
+    assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    let epoch_before = support_evolve::accepted_catalog(&project).epoch;
+    let stamp_before = TreeStore::open_read_only(&support_evolve::native_store_path(&project))
+        .expect("open store")
+        .read_commit_metadata()
+        .expect("read stamp");
+
+    write(
+        &project,
+        "src/app.mw",
+        "module app\n\n\
+         resource Log\n\
+         \x20\x20\x20\x20note: string\n\
+         store ^log(id: int): Log\n\
+         resource Book\n\
+         \x20\x20\x20\x20title: string\n\
+         \x20\x20\x20\x20subtitle: string\n\
+         store ^books(id: int): Book\n\n\
+         pub fn seedLog()\n\
+         \x20\x20\x20\x20^log(1).note = \"seeded\"\n",
+    );
+
+    let dry = marrow(&["run", "--dry-run", "--format", "json", &dir]);
+
+    assert_eq!(dry.status.code(), Some(0), "{dry:?}");
+    let report: serde_json::Value =
+        serde_json::from_str(String::from_utf8(dry.stderr).expect("stderr utf8").trim())
+            .expect("dry-run json");
+    assert_eq!(report["would_apply"], true, "{report}");
+    assert_eq!(
+        support_evolve::accepted_catalog(&project).epoch,
+        epoch_before,
+        "dry-run must not auto-apply zero-mutation drift"
+    );
+    let stamp_after = TreeStore::open_read_only(&support_evolve::native_store_path(&project))
+        .expect("open store")
+        .read_commit_metadata()
+        .expect("read stamp");
+    assert_eq!(stamp_after, stamp_before, "dry-run must not restamp");
+}
+
+#[test]
+fn dry_run_would_apply_executes_against_isolated_advanced_schema() {
+    let project = temp_project_uncommitted("dryrun-would-apply-entry-new-schema", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::seed" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             resource Log\n\
+             \x20\x20\x20\x20note: string\n\
+             store ^log(id: int): Log\n\
+             resource Book\n\
+             \x20\x20\x20\x20required title: string\n\
+             store ^books(id: int): Book\n\n\
+             pub fn seed()\n\
+             \x20\x20\x20\x20transaction\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^log(1).note = \"seeded\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(1).title = \"Mort\"\n",
+        );
+    });
+    let dir = project.to_str().unwrap().to_string();
+    let first = marrow(&["run", &dir]);
+    assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    let epoch_before = support_evolve::accepted_catalog(&project).epoch;
+    let stamp_before = TreeStore::open_read_only(&support_evolve::native_store_path(&project))
+        .expect("open store")
+        .read_commit_metadata()
+        .expect("read stamp");
+
+    write(
+        &project,
+        "src/app.mw",
+        "module app\n\n\
+         resource Log\n\
+         \x20\x20\x20\x20note: string\n\
+         store ^log(id: int): Log\n\
+         resource Book\n\
+         \x20\x20\x20\x20required title: string\n\
+         \x20\x20\x20\x20subtitle: string\n\
+         store ^books(id: int): Book\n\
+         \x20\x20\x20\x20index bySubtitle(subtitle, id)\n\
+         resource Note\n\
+         \x20\x20\x20\x20body: string\n\
+         store ^notes(id: int): Note\n\n\
+         pub fn seed()\n\
+         \x20\x20\x20\x20transaction\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20^log(1).note = \"seeded\"\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20^books(1).title = \"Mort\"\n\
+         pub fn writeNewSchema()\n\
+         \x20\x20\x20\x20transaction\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20^books(1).subtitle = \"draft\"\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20^notes(1).body = \"new root\"\n",
+    );
+
+    let dry = marrow(&[
+        "run",
+        "--dry-run",
+        "--format",
+        "json",
+        "--entry",
+        "app::writeNewSchema",
+        &dir,
+    ]);
+
+    assert_eq!(dry.status.code(), Some(0), "{dry:?}");
+    let report: serde_json::Value =
+        serde_json::from_str(String::from_utf8(dry.stderr).expect("stderr utf8").trim())
+            .expect("dry-run json");
+    assert_eq!(report["would_apply"], true, "{report}");
+    let planned = report["planned"].as_array().expect("planned array");
+    assert!(
+        planned
+            .iter()
+            .any(|step| step["op"] == "write" && step["path"] == "^books(1).subtitle"),
+        "dry-run must execute the entry against the new optional member: {report}"
+    );
+    assert!(
+        planned
+            .iter()
+            .any(|step| step["op"] == "write" && step["path"] == "^notes(1).body"),
+        "dry-run must execute the entry against the new saved root: {report}"
+    );
+    assert!(
+        planned.iter().any(|step| {
+            step["op"] == "write"
+                && step["target"]["kind"] == "index"
+                && step["target"]["index"] == "^books.bySubtitle"
+                && step["target"]["keys"]
+                    == serde_json::json!([
+                        { "type": "string", "value": "draft" },
+                        { "type": "int", "value": 1 }
+                    ])
+        }),
+        "dry-run must update the new index in the isolated advanced store: {report}"
+    );
+    assert_eq!(
+        support_evolve::accepted_catalog(&project).epoch,
+        epoch_before,
+        "dry-run must not advance the configured store catalog"
+    );
+    let stamp_after = TreeStore::open_read_only(&support_evolve::native_store_path(&project))
+        .expect("open store")
+        .read_commit_metadata()
+        .expect("read stamp");
+    assert_eq!(stamp_after, stamp_before, "dry-run must not restamp");
+
+    let dump = marrow(&["data", "dump", "--format", "json", &dir]);
+    assert_eq!(dump.status.code(), Some(0), "dump: {dump:?}");
+    let dump_json: serde_json::Value =
+        serde_json::from_str(String::from_utf8(dump.stdout).expect("stdout utf8").trim())
+            .expect("dump json");
+    assert!(
+        !dump_json["records"]
+            .as_array()
+            .expect("records array")
+            .iter()
+            .any(|record| {
+                record["path"] == "^books(1).subtitle"
+                    || record["path"]
+                        .as_str()
+                        .is_some_and(|path| path.starts_with("^notes"))
+            }),
+        "dry-run must not write the new schema data to the configured store: {dump_json}"
+    );
+}
+
+#[test]
+fn dry_run_reports_would_fence_as_successful_report_content() {
+    let project = temp_project_uncommitted("dryrun-would-fence", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::seedLog" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             resource Log\n\
+             \x20\x20\x20\x20note: string\n\
+             store ^log(id: int): Log\n\
+             resource Book\n\
+             \x20\x20\x20\x20required title: string\n\
+             store ^books(id: int): Book\n\n\
+             pub fn seedLog()\n\
+             \x20\x20\x20\x20^log(1).note = \"seeded\"\n\
+             pub fn seedBook()\n\
+             \x20\x20\x20\x20^books(1).title = \"Mort\"\n",
+        );
+    });
+    let dir = project.to_str().unwrap().to_string();
+    assert_eq!(marrow(&["run", &dir]).status.code(), Some(0), "seed log");
+    assert_eq!(
+        marrow(&["run", "--entry", "app::seedBook", &dir])
+            .status
+            .code(),
+        Some(0),
+        "seed book"
+    );
+    let epoch_before = support_evolve::accepted_catalog(&project).epoch;
+    write(
+        &project,
+        "src/app.mw",
+        "module app\n\n\
+         resource Log\n\
+         \x20\x20\x20\x20note: string\n\
+         store ^log(id: int): Log\n\
+         resource Book\n\
+         \x20\x20\x20\x20required title: string\n\
+         \x20\x20\x20\x20required pages: int\n\
+         store ^books(id: int): Book\n\
+         evolve\n\
+         \x20\x20\x20\x20default Book.pages = 0\n\n\
+         pub fn seedLog()\n\
+         \x20\x20\x20\x20^log(1).note = \"seeded\"\n\
+         pub fn seedBook()\n\
+         \x20\x20\x20\x20^books(1).title = \"Mort\"\n\
+         \x20\x20\x20\x20^books(1).pages = 7\n",
+    );
+
+    let dry = marrow(&["run", "--dry-run", "--format", "json", &dir]);
+
+    assert_eq!(dry.status.code(), Some(0), "{dry:?}");
+    assert!(
+        dry.stdout.is_empty(),
+        "would-fence dry-run must not execute entry output: {dry:?}"
+    );
+    let report: serde_json::Value =
+        serde_json::from_str(String::from_utf8(dry.stderr).expect("stderr utf8").trim())
+            .expect("dry-run json");
+    assert_eq!(report["would_fence"], true, "{report}");
+    assert_eq!(
+        support_evolve::accepted_catalog(&project).epoch,
+        epoch_before,
+        "would-fence dry-run must not apply drift"
+    );
+}
+
+#[test]
+fn dry_run_json_reports_per_root_and_index_write_counts() {
+    let project = temp_project("dryrun-write-counts", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             resource Book\n\
+             \x20\x20\x20\x20title: string\n\
+             \x20\x20\x20\x20shelf: string\n\
+             store ^books(id: int): Book\n\
+             \x20\x20\x20\x20index byShelf(shelf, id)\n\n\
+             pub fn main()\n\
+             \x20\x20\x20\x20transaction\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(1).title = \"Mort\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(1).shelf = \"fiction\"\n",
+        );
+    });
+
+    let dry = marrow(&[
+        "run",
+        "--dry-run",
+        "--format",
+        "json",
+        project.to_str().unwrap(),
+    ]);
+
+    assert_eq!(dry.status.code(), Some(0), "{dry:?}");
+    let report: serde_json::Value =
+        serde_json::from_str(String::from_utf8(dry.stderr).expect("stderr utf8").trim())
+            .expect("dry-run json");
+    assert_eq!(
+        report["write_counts"]["roots"]["books"],
+        serde_json::json!({ "creates": 2, "writes": 2, "deletes": 0 }),
+        "{report}"
+    );
+    assert_eq!(
+        report["write_counts"]["indexes"]["^books.byShelf"],
+        serde_json::json!({ "creates": 0, "writes": 1, "deletes": 0 }),
+        "{report}"
+    );
+    let planned = report["planned"].as_array().expect("planned array");
+    assert!(
+        planned.iter().any(|step| {
+            step["op"] == "write"
+                && step["target"]["kind"] == "index"
+                && step["target"]["index"] == "^books.byShelf"
+                && step["target"]["keys"]
+                    == serde_json::json!([
+                        { "type": "string", "value": "fiction" },
+                        { "type": "int", "value": 1 }
+                    ])
+                && step["target"]["identity"] == serde_json::json!([{ "type": "int", "value": 1 }])
+        }),
+        "dry-run index target keys must use typed saved-key JSON: {report}"
+    );
+}
+
+#[test]
+fn dry_run_json_reports_typed_keyed_data_path_segments() {
+    let project = temp_project("dryrun-keyed-path-json", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             resource Book\n\
+             \x20\x20\x20\x20tags(pos: int): string\n\
+             store ^books(id: int): Book\n\n\
+             pub fn main()\n\
+             \x20\x20\x20\x20^books(1).tags(2) = \"funny\"\n",
+        );
+    });
+
+    let dry = marrow(&[
+        "run",
+        "--dry-run",
+        "--format",
+        "json",
+        project.to_str().unwrap(),
+    ]);
+
+    assert_eq!(dry.status.code(), Some(0), "{dry:?}");
+    let report: serde_json::Value =
+        serde_json::from_str(String::from_utf8(dry.stderr).expect("stderr utf8").trim())
+            .expect("dry-run json");
+    let planned = report["planned"].as_array().expect("planned array");
+    assert!(
+        planned.iter().any(|step| {
+            step["op"] == "write"
+                && step["target"]["kind"] == "data"
+                && step["target"]["store"] == "books"
+                && step["target"]["identity"] == serde_json::json!([{ "type": "int", "value": 1 }])
+                && step["target"]["path"]
+                    == serde_json::json!([
+                        { "member": "tags" },
+                        { "key": { "type": "int", "value": 2 } }
+                    ])
+        }),
+        "dry-run keyed data path segments must use typed saved-key JSON: {report}"
     );
 }

@@ -6,6 +6,8 @@
 //! so the report covers managed writes alone. With `--trace` set, each event also
 //! forwards to a [`TraceHook`].
 
+use std::collections::BTreeMap;
+
 use marrow_check::CheckedRuntimeProgram;
 use marrow_run::{Frame, RuntimeError, StepHook, WriteOp, WriteTarget};
 use marrow_syntax::SourceSpan;
@@ -20,6 +22,14 @@ pub(crate) struct PlannedWrite {
     op: WriteOp,
     target: WriteTarget,
     value: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PreviewActions {
+    pub(crate) would_freeze: bool,
+    pub(crate) would_apply: bool,
+    pub(crate) would_fence: bool,
+    pub(crate) messages: Vec<String>,
 }
 
 /// Collects the managed writes a dry run would commit, optionally forwarding each
@@ -124,8 +134,10 @@ pub(crate) fn report(
     planned: &[PlannedWrite],
     format: CheckFormat,
     program: &CheckedRuntimeProgram,
+    actions: &PreviewActions,
 ) {
     let names = WriteTargetNames::from_program(program);
+    let write_counts = write_counts(planned, &names);
     let writes = planned
         .iter()
         .filter(|step| matches!(step.op, WriteOp::Write))
@@ -133,6 +145,9 @@ pub(crate) fn report(
     let deletes = planned.len() - writes;
     match format {
         CheckFormat::Text => {
+            for message in &actions.messages {
+                eprintln!("{message}");
+            }
             for step in planned {
                 match (step.op, &step.value) {
                     (WriteOp::Write, Some(value)) => eprintln!(
@@ -148,6 +163,7 @@ pub(crate) fn report(
                     }
                 }
             }
+            write_counts.render_text();
             eprintln!("dry run: {writes} write(s), {deletes} delete(s) (not committed)");
         }
         CheckFormat::Json => {
@@ -157,13 +173,106 @@ pub(crate) fn report(
                 .collect();
             crate::write_json_err(json!({
                 "committed": false,
+                "would_freeze": actions.would_freeze,
+                "would_apply": actions.would_apply,
+                "would_fence": actions.would_fence,
+                "messages": actions.messages,
                 "writes": writes,
                 "deletes": deletes,
+                "write_counts": write_counts.to_json(),
                 "planned": records,
             }));
         }
         CheckFormat::Jsonl => unreachable!("run rejects --format jsonl before dry-run reporting"),
     }
+}
+
+#[derive(Default)]
+struct WriteCounts {
+    roots: BTreeMap<String, TargetCounts>,
+    indexes: BTreeMap<String, TargetCounts>,
+}
+
+#[derive(Default)]
+struct TargetCounts {
+    creates: usize,
+    writes: usize,
+    deletes: usize,
+}
+
+impl WriteCounts {
+    fn render_text(&self) {
+        for (root, counts) in &self.roots {
+            eprintln!(
+                "would touch root {root}: {} create(s), {} write(s), {} delete(s)",
+                counts.creates, counts.writes, counts.deletes
+            );
+        }
+        for (index, counts) in &self.indexes {
+            eprintln!(
+                "would touch index {index}: {} create(s), {} write(s), {} delete(s)",
+                counts.creates, counts.writes, counts.deletes
+            );
+        }
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        json!({
+            "roots": counts_map_json(&self.roots),
+            "indexes": counts_map_json(&self.indexes),
+        })
+    }
+}
+
+fn counts_map_json(counts: &BTreeMap<String, TargetCounts>) -> serde_json::Value {
+    serde_json::Value::Object(
+        counts
+            .iter()
+            .map(|(target, counts)| {
+                (
+                    target.clone(),
+                    json!({
+                        "creates": counts.creates,
+                        "writes": counts.writes,
+                        "deletes": counts.deletes,
+                    }),
+                )
+            })
+            .collect(),
+    )
+}
+
+fn write_counts(planned: &[PlannedWrite], names: &WriteTargetNames) -> WriteCounts {
+    let mut counts = WriteCounts::default();
+    for step in planned {
+        match &step.target {
+            WriteTarget::Data { path, .. } => {
+                let target = write_target_json(&step.target, names);
+                let Some(root) = target["store"].as_str() else {
+                    continue;
+                };
+                let entry = counts.roots.entry(root.to_string()).or_default();
+                match step.op {
+                    WriteOp::Write if path.is_empty() => entry.creates += 1,
+                    WriteOp::Write => entry.writes += 1,
+                    WriteOp::Delete => entry.deletes += 1,
+                }
+            }
+            WriteTarget::Index { .. } => {
+                let target = write_target_json(&step.target, names);
+                let Some(index) = target["index"].as_str() else {
+                    continue;
+                };
+                let entry = counts.indexes.entry(index.to_string()).or_default();
+                match step.op {
+                    WriteOp::Write => entry.writes += 1,
+                    WriteOp::Delete => entry.deletes += 1,
+                }
+            }
+            WriteTarget::Meta { .. } => {}
+        }
+    }
+    counts
 }
 
 /// Render one planned write as a JSON record with op, path, and base64 value

@@ -99,6 +99,7 @@ enum RunStore {
         path: PathBuf,
         store: Option<TreeStore>,
     },
+    Isolated(IsolatedStore),
 }
 
 impl fmt::Debug for RunStore {
@@ -110,6 +111,7 @@ impl fmt::Debug for RunStore {
                 .field("path", path)
                 .field("open", &store.is_some())
                 .finish(),
+            Self::Isolated(_) => formatter.write_str("Isolated"),
         }
     }
 }
@@ -124,6 +126,9 @@ pub struct ProjectTestCase {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectSessionNotice {
     AutoApplied { from_epoch: u64, to_epoch: u64 },
+    DryRunWouldFreeze,
+    DryRunWouldApply { from_epoch: u64, to_epoch: u64 },
+    DryRunWouldFence { message: String },
 }
 
 impl ProjectSessionNotice {
@@ -135,6 +140,16 @@ impl ProjectSessionNotice {
             } => {
                 format!("auto-applied evolution: catalog epoch {from_epoch} -> {to_epoch}")
             }
+            Self::DryRunWouldFreeze => {
+                "dry run: would freeze accepted catalog identity".to_string()
+            }
+            Self::DryRunWouldApply {
+                from_epoch,
+                to_epoch,
+            } => {
+                format!("dry run: would apply evolution: catalog epoch {from_epoch} -> {to_epoch}")
+            }
+            Self::DryRunWouldFence { message } => format!("dry run: would fence: {message}"),
         }
     }
 }
@@ -260,6 +275,13 @@ pub enum ProjectInvokeError {
     Session(ProjectSessionError),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreStamp {
+    pub store_uid: String,
+    pub catalog_epoch: u64,
+    pub commit_id: u64,
+}
+
 impl ProjectInvokeError {
     pub fn code(&self) -> &'static str {
         match self {
@@ -310,6 +332,7 @@ enum SessionWrites {
 
 pub struct SessionEntry<'a> {
     name: &'a str,
+    args: Vec<(&'a str, &'a str)>,
     host: &'a Host,
     output: &'a mut dyn RunOutputSink,
     hook: Option<&'a mut dyn StepHook>,
@@ -320,11 +343,17 @@ impl<'a> SessionEntry<'a> {
     pub fn new(name: &'a str, host: &'a Host, output: &'a mut dyn RunOutputSink) -> Self {
         Self {
             name,
+            args: Vec::new(),
             host,
             output,
             hook: None,
             writes: SessionWrites::Commit,
         }
+    }
+
+    pub fn with_text_args(mut self, args: Vec<(&'a str, &'a str)>) -> Self {
+        self.args = args;
+        self
     }
 
     pub fn with_hook(mut self, hook: &'a mut dyn StepHook) -> Self {
@@ -382,11 +411,39 @@ impl ProjectSession {
         &self.notices
     }
 
+    pub fn store_stamp(&self) -> Result<Option<StoreStamp>, ProjectSessionError> {
+        let store = match &self.kind {
+            SessionKind::Run {
+                store:
+                    RunStore::Native {
+                        store: Some(store), ..
+                    },
+                ..
+            } => store,
+            _ => return Ok(None),
+        };
+        let Some(uid) = store.read_store_uid()? else {
+            return Ok(None);
+        };
+        let Some(commit) = store.read_commit_metadata()? else {
+            return Ok(None);
+        };
+        Ok(Some(StoreStamp {
+            store_uid: uid.as_str().to_string(),
+            catalog_epoch: commit.catalog_epoch,
+            commit_id: commit.commit_id,
+        }))
+    }
+
     pub fn invoke(&self, invocation: SessionEntry<'_>) -> Result<RunOutput, ProjectInvokeError> {
-        let call = CheckedEntryCall::new(&self.runtime, invocation.name, Vec::new())?;
+        let call =
+            CheckedEntryCall::from_text_args(&self.runtime, invocation.name, &invocation.args)?;
         match &self.kind {
             SessionKind::Run { store, .. } => match (store, invocation.writes) {
                 (RunStore::Memory(store), _) => invoke_store(store, &call, invocation),
+                (RunStore::Isolated(isolated), _) => {
+                    invoke_store(&isolated.store, &call, invocation)
+                }
                 (
                     RunStore::Native {
                         store: Some(store), ..
@@ -518,17 +575,47 @@ fn open_run_store(
     isolate_writes: bool,
     notices: &mut Vec<ProjectSessionNotice>,
 ) -> Result<OpenRunStore, ProjectSessionError> {
-    let Some(store) = open_store_file(root, config)? else {
+    let Some(store) = open_store_file(root, config, !isolate_writes)? else {
+        if isolate_writes && pending_baseline(&program) {
+            notices.push(ProjectSessionNotice::DryRunWouldFreeze);
+            return open_memory_preview_store(root, config, program);
+        }
         return open_memory_store(program);
     };
-    let program = establish_store_baseline(root, config, &store.store, program)?;
+    if isolate_writes && pending_baseline(&program) {
+        if populated_unstamped_store(&program, &store.store)? {
+            return Err(ProjectSessionError::UnstampedStore);
+        }
+        notices.push(ProjectSessionNotice::DryRunWouldFreeze);
+        let program = bind_run_preview_identity(root, config, program)?;
+        return finish_open(program, store, true);
+    }
+    let program = if isolate_writes {
+        program
+    } else {
+        establish_store_baseline(root, config, &store.store, program)?
+    };
     match fence_run(&program, &store.store) {
         Ok(()) => finish_open(program, store, isolate_writes),
         Err(FenceError::SchemaDrift) => {
+            if isolate_writes {
+                return classify_dry_run_drift(root, config, &program, store, notices);
+            }
             auto_apply_then_reopen(root, program, store, isolate_writes, notices)
         }
         Err(error) => Err(ProjectSessionError::Fence(error)),
     }
+}
+
+fn open_memory_preview_store(
+    root: &Path,
+    config: &ProjectConfig,
+    program: CheckedProgram,
+) -> Result<OpenRunStore, ProjectSessionError> {
+    Ok(OpenRunStore {
+        program: bind_run_preview_identity(root, config, program)?,
+        store: RunStore::Memory(TreeStore::memory()),
+    })
 }
 
 fn open_memory_store(program: CheckedProgram) -> Result<OpenRunStore, ProjectSessionError> {
@@ -544,13 +631,21 @@ fn open_memory_store(program: CheckedProgram) -> Result<OpenRunStore, ProjectSes
 fn open_store_file(
     root: &Path,
     config: &ProjectConfig,
+    write_uid: bool,
 ) -> Result<Option<NativeRunStore>, ProjectSessionError> {
     let Some(path) = resolve_store_path(root, config)? else {
         return Ok(None);
     };
-    let store = TreeStore::open(&path)?;
-    let mut nondeterminism = SystemNondeterminism::new();
-    ensure_store_uid(&store, &mut nondeterminism)?;
+    let store = if write_uid {
+        let store = TreeStore::open(&path)?;
+        let mut nondeterminism = SystemNondeterminism::new();
+        ensure_store_uid(&store, &mut nondeterminism)?;
+        store
+    } else if path.exists() {
+        TreeStore::open_read_only(&path)?
+    } else {
+        return Ok(None);
+    };
     Ok(Some(NativeRunStore { path, store }))
 }
 
@@ -613,11 +708,71 @@ fn auto_apply_then_reopen(
     drop(store);
 
     let (config, program) = load_checked_for_session(root)?;
-    let Some(store) = open_store_file(root, &config)? else {
+    let Some(store) = open_store_file(root, &config, true)? else {
         return open_memory_store(program);
     };
     fence_run(&program, &store.store).map_err(ProjectSessionError::Fence)?;
     finish_open(program, store, isolate_writes)
+}
+
+fn classify_dry_run_drift(
+    root: &Path,
+    config: &ProjectConfig,
+    program: &CheckedProgram,
+    store: NativeRunStore,
+    notices: &mut Vec<ProjectSessionNotice>,
+) -> Result<OpenRunStore, ProjectSessionError> {
+    let witness = preview(program, &store.store)
+        .map_err(ProjectSessionError::Store)?
+        .0;
+    let from_epoch = witness
+        .store_catalog
+        .as_ref()
+        .map(|catalog| catalog.epoch)
+        .unwrap_or(witness.accepted_catalog.epoch);
+    let to_epoch = witness
+        .proposal_catalog
+        .as_ref()
+        .map(|catalog| catalog.epoch)
+        .unwrap_or(witness.accepted_catalog.epoch);
+    let obligation = RunObligation::classify(&witness);
+    match obligation {
+        RunObligation::ZeroMutation { .. } => {
+            notices.push(ProjectSessionNotice::DryRunWouldApply {
+                from_epoch,
+                to_epoch,
+            });
+            let isolated = isolated_store(&store.path)?;
+            match try_auto_apply(&witness, program, &isolated.store) {
+                Ok(AutoApplyOutcome::Applied) => {}
+                Ok(AutoApplyOutcome::MustFence(obligation)) => {
+                    notices.push(ProjectSessionNotice::DryRunWouldFence {
+                        message: fence_message(&obligation),
+                    });
+                    return finish_open(program.clone(), store, true);
+                }
+                Err(_) => {
+                    return Err(ProjectSessionError::SchemaDrift {
+                        message: "store changed under the auto-apply probe; re-run to recompute the evolution against current data".to_string(),
+                    });
+                }
+            }
+            let program =
+                marrow_check::recheck_against_store_catalog(root, config, &isolated.store)
+                    .map_err(ProjectSessionError::from)?;
+            fence_run(&program, &isolated.store).map_err(ProjectSessionError::Fence)?;
+            return Ok(OpenRunStore {
+                program,
+                store: RunStore::Isolated(isolated),
+            });
+        }
+        obligation => {
+            notices.push(ProjectSessionNotice::DryRunWouldFence {
+                message: fence_message(&obligation),
+            });
+        }
+    }
+    finish_open(program.clone(), store, true)
 }
 
 fn fence_message(obligation: &RunObligation) -> String {
@@ -689,6 +844,14 @@ fn bind_test_identity(
         return Err(ProjectSessionError::Check { report });
     }
     Ok(bound)
+}
+
+fn bind_run_preview_identity(
+    root: &Path,
+    config: &ProjectConfig,
+    program: CheckedProgram,
+) -> Result<CheckedProgram, ProjectSessionError> {
+    bind_test_identity(root, config, program)
 }
 
 fn resolve_store_path(

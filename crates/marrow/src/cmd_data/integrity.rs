@@ -3,7 +3,6 @@ use std::process::ExitCode;
 
 use marrow_check::tooling::{IntegrityProblem, count_integrity_problems, visit_integrity_problems};
 use marrow_store::StoreError;
-use marrow_store::key::SavedKey;
 use marrow_store::tree::DataPathSegment;
 use marrow_store::tree::TreeStore;
 use serde_json::json;
@@ -168,7 +167,7 @@ fn integrity_record(problem: &IntegrityProblem) -> serde_json::Value {
                 incomplete
                     .record_identity
                     .iter()
-                    .map(saved_key_json)
+                    .map(super::saved_key_json)
                     .collect::<Vec<_>>()
             ),
         );
@@ -195,7 +194,7 @@ fn integrity_record(problem: &IntegrityProblem) -> serde_json::Value {
                 dangling_ref
                     .containing_identity
                     .iter()
-                    .map(saved_key_json)
+                    .map(super::saved_key_json)
                     .collect::<Vec<_>>()
             ),
         );
@@ -213,7 +212,7 @@ fn integrity_record(problem: &IntegrityProblem) -> serde_json::Value {
                 dangling_ref
                     .referenced_identity
                     .iter()
-                    .map(saved_key_json)
+                    .map(super::saved_key_json)
                     .collect::<Vec<_>>()
             ),
         );
@@ -226,22 +225,6 @@ fn data_path_segment_json(segment: &DataPathSegment) -> serde_json::Value {
         DataPathSegment::Member(catalog_id) => {
             json!({ "member_catalog_id": catalog_id.as_str() })
         }
-        DataPathSegment::Key(key) => json!({ "key": saved_key_json(key) }),
-    }
-}
-
-fn saved_key_json(key: &SavedKey) -> serde_json::Value {
-    match key {
-        SavedKey::Int(value) => json!({ "type": "int", "value": value }),
-        SavedKey::Bool(value) => json!({ "type": "bool", "value": value }),
-        SavedKey::Str(value) => json!({ "type": "string", "value": value }),
-        SavedKey::Date(value) => json!({ "type": "date", "days_since_epoch": value }),
-        SavedKey::Duration(value) => json!({ "type": "duration", "nanos": value.to_string() }),
-        SavedKey::Instant(value) => {
-            json!({ "type": "instant", "nanos_since_epoch": value.to_string() })
-        }
-        SavedKey::Bytes(value) => {
-            json!({ "type": "bytes", "value_b64": marrow_run::base64::encode(value) })
-        }
+        DataPathSegment::Key(key) => json!({ "key": super::saved_key_json(key) }),
     }
 }

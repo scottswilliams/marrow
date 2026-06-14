@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fmt;
 use std::io::Read;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -11,7 +12,7 @@ use marrow_syntax::SourceSpan;
 
 use crate::env::Env;
 use crate::error::RuntimeError;
-use crate::value::Value;
+use crate::value::{RunOutputSink, Value};
 use crate::write_plan::{WriteOp, WriteTarget};
 
 /// The nondeterministic inputs a host or tool may capture at a run boundary.
@@ -180,7 +181,7 @@ impl<'e, 'p> Frame<'e, 'p> {
 /// as `std::clock` require the matching capability, and a call made without it
 /// raises a typed capability error (`run.capability`). A command or embedding
 /// provides the capabilities its run needs.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct Host {
     /// UTC instant in nanoseconds since the epoch, captured once so every
     /// `std::clock::now()` in the run sees one consistent instant.
@@ -192,6 +193,8 @@ pub struct Host {
     /// formatted lines here; the command or embedding decides where they go
     /// (e.g. standard error). A run without it cannot use `std::log`.
     pub(crate) log: Option<Rc<RefCell<String>>>,
+    /// The run's print output sink, when the host owns program-output transport.
+    pub(crate) output: Option<Rc<RefCell<dyn RunOutputSink>>>,
     /// Whether the run may touch the real filesystem through `std::io`. Marrow
     /// does not sandbox paths; the host either grants filesystem access or not.
     pub(crate) filesystem: bool,
@@ -200,6 +203,19 @@ pub struct Host {
     /// for repair and administration; an ordinary run never does, so the protected
     /// operations stay unreachable on the default path.
     pub(crate) maintenance: bool,
+}
+
+impl fmt::Debug for Host {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Host")
+            .field("clock", &self.clock)
+            .field("environment", &self.environment)
+            .field("log", &self.log)
+            .field("output", &self.output.as_ref().map(|_| "<output sink>"))
+            .field("filesystem", &self.filesystem)
+            .field("maintenance", &self.maintenance)
+            .finish()
+    }
 }
 
 impl Host {
@@ -237,6 +253,17 @@ impl Host {
     /// flush it to standard error and a test can inspect it.
     pub fn with_log_sink(mut self, sink: Rc<RefCell<String>>) -> Self {
         self.log = Some(sink);
+        self
+    }
+
+    /// `print` output writes to the caller-owned sink. This is the host-owned
+    /// boundary for embedders that need to capture or route program stdout.
+    pub fn with_output_sink<S>(mut self, sink: Rc<RefCell<S>>) -> Self
+    where
+        S: RunOutputSink + 'static,
+    {
+        let sink: Rc<RefCell<dyn RunOutputSink>> = sink;
+        self.output = Some(sink);
         self
     }
 

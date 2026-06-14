@@ -59,6 +59,10 @@ impl RuntimeError {
         }
     }
 
+    pub fn entry_surface(message: impl Into<String>) -> Self {
+        RuntimeError::fault(RUN_ENTRY_SURFACE, message.into(), SourceSpan::default())
+    }
+
     /// Whether this fault can be handled by a language `catch`.
     pub fn is_catchable(&self) -> bool {
         self.catchable
@@ -175,6 +179,12 @@ pub const RUN_STORE: &str = "run.store";
 
 /// A construct the runtime does not evaluate.
 pub const RUN_UNSUPPORTED: &str = "run.unsupported";
+
+/// An entry parameter supplied through the host/CLI argument surface failed decoding.
+pub const RUN_ENTRY_ARGUMENT: &str = "run.entry_argument";
+
+/// An entry parameter or return value is outside the v0.1 host/CLI surface.
+pub const RUN_ENTRY_SURFACE: &str = "run.entry_surface";
 
 /// A host capability a builtin needs (e.g. the clock for `std::clock::now`) was
 /// not provided to this run.
@@ -476,6 +486,10 @@ pub(crate) fn unsupported(what: &str, span: SourceSpan) -> RuntimeError {
         format!("the runtime does not evaluate {what}"),
         span,
     )
+}
+
+pub(crate) fn entry_argument(message: impl Into<String>) -> RuntimeError {
+    RuntimeError::fault(RUN_ENTRY_ARGUMENT, message.into(), SourceSpan::default())
 }
 
 pub(crate) fn type_error(message: &str, span: SourceSpan) -> RuntimeError {
