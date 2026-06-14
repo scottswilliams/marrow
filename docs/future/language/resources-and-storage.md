@@ -13,8 +13,9 @@ central counter.
 ## Ephemeral roots
 
 The `~` sigil is reserved for typed ephemeral roots: process- or session-lived
-resource-typed state that can be rebuilt and is never durable truth. v1 reserves
-the sigil only; it does not implement `~` declarations or writes.
+resource-typed state that can be rebuilt and is never durable truth. The current
+language reserves the sigil only; it does not implement `~` declarations or
+writes.
 
 ```mw
 cache ~bookSearch(term: string, book: Id(^books)): SearchHit

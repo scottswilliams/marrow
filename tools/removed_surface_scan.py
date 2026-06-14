@@ -10,7 +10,7 @@ from typing import Callable, Optional
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SELF = "tools/w7_absence_scan.py"
+SELF = "tools/removed_surface_scan.py"
 
 
 @dataclass(frozen=True)
@@ -36,15 +36,15 @@ def rel(path: Path) -> str:
     return path.relative_to(ROOT).as_posix()
 
 
-def allowed_backlog(path: str, _text: str, _match: Optional[re.Match[str]] = None) -> bool:
-    return path == "ROADMAP.md" or path == SELF
+def allow_scanner_source(path: str, _text: str, _match: Optional[re.Match[str]] = None) -> bool:
+    return path == SELF
 
 
 def allow_paths(*paths: str) -> Allow:
     allowed = set(paths)
 
     def inner(path: str, text: str, match: Optional[re.Match[str]] = None) -> bool:
-        return allowed_backlog(path, text, match) or path in allowed
+        return allow_scanner_source(path, text, match) or path in allowed
 
     return inner
 
@@ -53,7 +53,7 @@ def allow_future_or_paths(*paths: str) -> Allow:
     allowed = set(paths)
 
     def inner(path: str, text: str, match: Optional[re.Match[str]] = None) -> bool:
-        return allowed_backlog(path, text, match) or path.startswith("docs/future/") or path in allowed
+        return allow_scanner_source(path, text, match) or path.startswith("docs/future/") or path in allowed
 
     return inner
 
@@ -169,7 +169,7 @@ def in_function_context(text: str, match: Optional[re.Match[str]], names: tuple[
 
 
 def allow_underscore_concat(path: str, text: str, match: Optional[re.Match[str]] = None) -> bool:
-    if allowed_backlog(path, text, match):
+    if allow_scanner_source(path, text, match):
         return True
     line = matched_line(text, match).lower()
     return (
@@ -180,11 +180,11 @@ def allow_underscore_concat(path: str, text: str, match: Optional[re.Match[str]]
 
 
 def allow_at_rejection_owner(path: str, text: str, match: Optional[re.Match[str]] = None) -> bool:
-    return allowed_backlog(path, text, match)
+    return allow_scanner_source(path, text, match)
 
 
 def allow_write_builtin(path: str, text: str, match: Optional[re.Match[str]] = None) -> bool:
-    if allowed_backlog(path, text, match):
+    if allow_scanner_source(path, text, match):
         return True
     if match and match.group(0) in {"CheckedBuiltinCall::Write", "OutputKind::Write"}:
         return False
@@ -202,7 +202,7 @@ def allow_write_builtin(path: str, text: str, match: Optional[re.Match[str]] = N
 
 
 def allow_loop_label(path: str, text: str, match: Optional[re.Match[str]] = None) -> bool:
-    if allowed_backlog(path, text, match):
+    if allow_scanner_source(path, text, match):
         return True
     if path.startswith("__probe__/") or path.endswith(".mw"):
         return False
@@ -242,7 +242,7 @@ MODE_TEST_CONTEXTS = (
 
 
 def allow_removed_mode(path: str, text: str, match: Optional[re.Match[str]] = None) -> bool:
-    if allowed_backlog(path, text, match):
+    if allow_scanner_source(path, text, match):
         return True
     return path in {
         "crates/marrow-syntax/tests/cases/parse_paths_calls.rs",
@@ -253,7 +253,7 @@ def allow_removed_mode(path: str, text: str, match: Optional[re.Match[str]] = No
 
 
 def allow_quoted_segments(path: str, text: str, match: Optional[re.Match[str]] = None) -> bool:
-    if allowed_backlog(path, text, match):
+    if allow_scanner_source(path, text, match):
         return True
     if path.startswith("docs/future/"):
         return True
@@ -282,7 +282,7 @@ def allow_quoted_segments(path: str, text: str, match: Optional[re.Match[str]] =
 
 
 def allow_evidence_fields(path: str, text: str, match: Optional[re.Match[str]] = None) -> bool:
-    if allowed_backlog(path, text, match):
+    if allow_scanner_source(path, text, match):
         return True
     if path != "crates/marrow/src/backup/archive.rs":
         return False
@@ -294,7 +294,7 @@ def allow_evidence_fields(path: str, text: str, match: Optional[re.Match[str]] =
 
 
 def allow_glob_grammar(path: str, text: str, match: Optional[re.Match[str]] = None) -> bool:
-    if allowed_backlog(path, text, match):
+    if allow_scanner_source(path, text, match):
         return True
     line = matched_line(text, match)
     if path == "docs/project-config.md":
@@ -382,12 +382,12 @@ PATTERNS: tuple[Pattern, ...] = (
     Pattern(
         "check-data",
         re.compile(r"\bcheck\s+--data\b|CheckData|cmd_check_data"),
-        allowed_backlog,
+        allow_scanner_source,
     ),
     Pattern(
         "single-file-check",
         re.compile(r"\bmarrow\s+check\s+[^`\n]*\.mw\b|single_file_check"),
-        allowed_backlog,
+        allow_scanner_source,
     ),
     Pattern(
         "completion-dir",
@@ -603,7 +603,7 @@ def main() -> int:
         seen = {hit.pattern_id for hit in hits if hit.path.startswith("__probe__/") or hit.path in PROBES}
         missing = sorted(EXPECTED_PROBE_IDS - seen)
         if missing:
-            print(f"w7_absence_scan probe suite missed: {', '.join(missing)}")
+            print(f"removed_surface_scan probe suite missed: {', '.join(missing)}")
             print_hits([hit for hit in hits if hit.path.startswith("__probe__/") or hit.path in PROBES])
             return 1
         missing_probe_paths = []
@@ -613,7 +613,7 @@ def main() -> int:
             if missing_for_path:
                 missing_probe_paths.append(f"{path}: {', '.join(missing_for_path)}")
         if missing_probe_paths:
-            print("w7_absence_scan probe suite missed reviewed false-negative probes:")
+            print("removed_surface_scan probe suite missed reviewed false-negative probes:")
             for missing_path in missing_probe_paths:
                 print(missing_path)
             print_hits([hit for hit in hits if hit.path in PROBES])
@@ -627,18 +627,18 @@ def main() -> int:
             if missing_for_path:
                 missing_review_probes.append(f"{path}: {', '.join(missing_for_path)}")
         if missing_review_probes:
-            print("w7_absence_scan probe suite missed exact-path review probes:")
+            print("removed_surface_scan probe suite missed exact-path review probes:")
             for missing_path in missing_review_probes:
                 print(missing_path)
             print_hits(review_hits)
             return 1
-        print(f"w7_absence_scan probe suite detected {len(EXPECTED_PROBE_IDS)} pattern families")
+        print(f"removed_surface_scan probe suite detected {len(EXPECTED_PROBE_IDS)} pattern families")
         return 0
 
     extra = None
     expected_seed = args.seed or args.assert_seed
     if expected_seed:
-        extra = {"__seed__/w7_absence_seed.mw": seed_text(expected_seed)}
+        extra = {"__seed__/removed_surface_seed.mw": seed_text(expected_seed)}
 
     hits = collect_hits(extra)
     if args.assert_seed:
@@ -649,7 +649,7 @@ def main() -> int:
             return 1
         if len(seed_hits) == 1 and seed_hits[0].pattern_id == args.assert_seed:
             print(
-                f"w7_absence_scan seed {args.assert_seed} detected "
+                f"removed_surface_scan seed {args.assert_seed} detected "
                 f"{seed_hits[0].path}:{seed_hits[0].line_no}"
             )
             return 0
@@ -661,7 +661,7 @@ def main() -> int:
         print_hits(hits)
         return 1
 
-    print("w7_absence_scan passed")
+    print("removed_surface_scan passed")
     return 0
 
 

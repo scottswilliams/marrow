@@ -124,6 +124,7 @@ over every configured source and test file.
 
 | Code | Meaning |
 |---|---|
+| `check.failed` | A project check completed with one or more parse, schema, or check diagnostics. Command boundaries may use this summary code while the detailed diagnostics carry their own codes. |
 | `check.module_path` | A library file declares a module name that does not match its path. |
 | `check.duplicate_module` | Two library files declare the same module name. |
 | `check.multiple_scripts` | A project holds more than one file without a `module` declaration. A project may have at most one single-file script (its entrypoint); every other file must declare a `module`. |
@@ -174,6 +175,10 @@ over every configured source and test file.
 | `check.range` | A range-for header is ill-formed: the endpoints are not the same steppable type, or the `by` step does not match them (an `int` for `int`, a positive duration for `date`/`instant`). `instant` requires an explicit step; a zero step, a literal step pointing away from literal endpoints (a dead loop), a negated duration on a temporal range, or a `by` on a non-range iterable is rejected. |
 | `check.range_value` | A range expression appears outside a `for` iterable. Ranges are loop shapes, not values. |
 | `check.collection_unsupported` | A collection operation uses a shape v0.1 does not support: `values` or `entries` on an address-only index branch, a generated index branch as a resource member/call chain, or a hidden lookup with no matching declared index. Missing-index diagnostics may render an `add: index ...` remedy. |
+| `check.read_only_expression_context` | A checked read-only expression query names a module or program context that does not exist. |
+| `check.read_only_expression_write` | A checked read-only expression would write or allocate saved data, or open a transaction. |
+| `check.read_only_expression_host_effect` | A checked read-only expression would call a host-effecting operation. |
+| `check.read_only_expression_unindexed_lookup` | A checked read-only expression would traverse a saved collection without a declared index. |
 | `check.private_enum` | A cross-module enum reference names an enum that exists but is not `pub`; the enum resolves, the visibility does not. |
 | `check.nesting_limit` | Source nests expressions or statement blocks deeper than the fixed parser limit (256). Raised by the parser at the offending span so pathologically nested source fails closed rather than overflowing the stack; see the [cost model](language/cost-model.md). |
 | `check.evolve_target` | An `evolve` intent names an entity — a resource member, saved root, store index, enum, or enum member — that the current source does not declare (or, for a rename's source side, that the accepted catalog does not record). |
@@ -204,6 +209,7 @@ Resource-schema rules. Reported during a project check alongside `check.*`.
 
 | Code | Meaning |
 |---|---|
+| `catalog.invalid` | An accepted catalog artifact is malformed, has an unsupported format version, fails digest validation, or carries catalog data that cannot be decoded. |
 | `catalog.merge_conflict` | `marrow.catalog.json` or another accepted-catalog metadata section contains Git conflict marker lines. Resolve the conflict and rerun the command. |
 
 ### `doctor.*` — kind `tooling`
@@ -262,6 +268,8 @@ code, except `run.uncaught_error` — see "Typed Errors In Running Programs".
 | `run.traversal` | A write, delete, or append changed the saved layer a loop was actively traversing. Fatal dynamic counterpart of `check.loop_mutates_traversed_layer`. |
 | `run.depth` | Function-call nesting exceeded the fixed call-depth budget (256). Located at the offending call site and reports the callee name, budget, and observed attempted depth, so runaway or unbounded recursion fails closed rather than overflowing the stack; see the [cost model](language/cost-model.md). |
 | `run.no_entry` | `marrow run` found no entry: no `--entry` was given and `marrow.json` sets no `run.defaultEntry`. |
+| `run.durable_store_required` | A command needs a native durable store to establish accepted durable identity, but the project is configured for an in-memory store. |
+| `run.dry_run_isolation` | Dry-run execution exhausted attempts to allocate a unique temporary store directory. |
 | `run.store_evolved` | The store was stamped at a catalog epoch newer than this program accepted, so a newer binary evolved it. Recompile or upgrade against the current accepted catalog. Fenced before any execution; the store is unchanged. |
 | `run.store_behind` | The store was stamped at a catalog epoch older than this program accepted, so its data predates the catalog. Run `marrow evolve apply` to activate the store first. Fenced before any execution; the store is unchanged. |
 | `run.schema_drift` | The store was stamped under a different schema at the same catalog epoch: its recorded source digest does not match the durable shape this binary expects. Run `marrow evolve preview` to inspect the required repair or `marrow evolve apply` to activate it. Fenced before any execution; the store is unchanged. |

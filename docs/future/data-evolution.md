@@ -1,11 +1,9 @@
 # Data Evolution
 
-Future counterpart of [`../data-evolution.md`](../data-evolution.md). Project
-compilation over source, catalog, and live data — including preview/apply
-discharge, typed transforms, and catalog-owned stable identity — ships today
-and is documented there. This page records the designed extensions: online
-activation jobs, compatibility windows, shadow decant, store recompilation,
-and typed export/import artifacts.
+Future counterpart of [`../data-evolution.md`](../data-evolution.md). This page
+records designed extensions beyond the current local preview/apply model: online
+activation jobs, compatibility windows, shadow decant, store recompilation, and
+typed export/import artifacts.
 
 ## Online Activation Jobs
 
@@ -25,10 +23,10 @@ The intended protocol is:
 6. `close` drains old runtime generations, removes adapters, and purges retired
    physical state.
 
-Today's implementation collapses those steps into one exact local apply, but
-the public facts must not assume a future online system can hold a global
-write fence for the entire backfill. A transform that runs as an online job
-adds cancellation and checkpoint behavior to today's exact apply.
+The public facts must not assume an online system can hold a global write fence
+for the entire backfill. A transform that runs as an online job needs
+cancellation and checkpoint behavior in addition to the exact local apply
+contract.
 
 ## Compatibility Windows
 

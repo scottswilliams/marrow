@@ -2,7 +2,7 @@ from pathlib import Path
 import re
 import sys
 
-import w7_absence_scan
+import removed_surface_scan
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -237,10 +237,10 @@ def main():
             print(f"- {failure}")
         return 1
 
-    stale_hits = w7_absence_scan.collect_hits()
+    stale_hits = removed_surface_scan.collect_hits()
     if stale_hits:
         print("docs_lint failed:")
-        print("- W7 absence scan found stale removed-surface spelling:")
+        print("- removed-surface scan found stale spelling:")
         for hit in stale_hits:
             print(f"  {hit.path}:{hit.line_no}: {hit.pattern_id}: {hit.text}")
         return 1

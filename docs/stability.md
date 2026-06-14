@@ -1,8 +1,6 @@
 # Stability Contract
 
-This page names the v0.1 surfaces Marrow treats as release contracts. It does
-not make implementation-quality claims; the evidence for storage and release
-gates lives in [freeze-gate-evidence.md](freeze-gate-evidence.md).
+This page names the v0.1 surfaces Marrow treats as release contracts.
 
 ## Platform And Distribution
 
@@ -28,9 +26,8 @@ $ marrow --version
 marrow 0.1.0 engine-profile=(key=v0, layout-epoch=0, digest=77944eb86c08b665)
 ```
 
-The storage-engine/04 decision is Accepted for v0.1, and LayoutEpoch 0 is
-frozen. A later physical byte-format change is a LayoutEpoch recompile, never an
-in-place edit of v0.1 store bytes.
+LayoutEpoch 0 is frozen for v0.1. A later physical byte-format change is a
+LayoutEpoch recompile, never an in-place edit of v0.1 store bytes.
 
 ## Stable Surfaces
 
@@ -47,9 +44,9 @@ in-place edit of v0.1 store bytes.
 
 The native cost law counts one durable commit fsync per committed source
 transaction; fresh native-store creation also syncs the containing directory.
-The evolution staging contract is constant-memory for the W3.4-reviewed staging
-path. Those sentences are law-backed release contract statements, not latency or
-peak-memory benchmark claims.
+The evolution staging contract is constant-memory for the staging path. These
+are law-backed release contract statements, not latency or peak-memory benchmark
+claims.
 
 ## Not Stable In v0.1
 
@@ -74,9 +71,8 @@ The `signature_digest` field in the run JSON envelope is reserved for the future
 function ABI identity model and remains `null` in v0.1. The `raises` field is
 reserved for the future declared error surface and remains `null` in v0.1.
 
-A typed JSONL export remains a gated future surface. It depends on the
-tooling/05 export boundary and the type-identity work named in the roadmap; it
-is not a v0.1 data export API.
+A typed JSONL export remains a gated future surface. It depends on the designed
+export boundary and type-identity contract; it is not a v0.1 data export API.
 
 The egress-regime table lives in [operations.md](operations.md#egress-regimes).
 That table is the single home for classifying application, tooling, admin,
