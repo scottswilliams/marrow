@@ -242,10 +242,12 @@ fn overlong_record_node_does_not_create_root_presence() {
          \x20\x20\x20\x20return count(^counter)\n",
     );
     let store = TreeStore::memory();
-    let counter = store_catalog_id(&program, "counter");
-    store
-        .write_node(&counter, &[SavedKey::Int(1), SavedKey::Int(2)])
-        .expect("write overlong node");
+    write_record_node(
+        &program,
+        &store,
+        "counter",
+        &[SavedKey::Int(1), SavedKey::Int(2)],
+    );
 
     assert_eq!(
         run_entry(&store, checked_entry!(&program, "test::hasRoot"))

@@ -407,18 +407,45 @@ pub fn write_data_value(
     path: &[DataPathSegment],
     value: SavedValue,
 ) {
+    write_data_bytes(
+        program,
+        store,
+        root,
+        identity,
+        path,
+        encode_value(&value).expect("test value encodes"),
+    );
+}
+
+pub fn write_data_bytes(
+    program: &CheckedRuntimeProgram,
+    store: &TreeStore,
+    root: &str,
+    identity: &[SavedKey],
+    path: &[DataPathSegment],
+    bytes: Vec<u8>,
+) {
     let store_id = store_catalog_id(program, root);
+    write_record_node_for_store(store, &store_id, identity);
     store
-        .write_node(&store_id, identity)
-        .expect("typed record node write succeeds");
-    store
-        .write_data_value(
-            &store_id,
-            identity,
-            path,
-            encode_value(&value).expect("test value encodes"),
-        )
+        .write_data_value(&store_id, identity, path, bytes)
         .expect("typed data write succeeds");
+}
+
+pub fn write_record_node(
+    program: &CheckedRuntimeProgram,
+    store: &TreeStore,
+    root: &str,
+    identity: &[SavedKey],
+) {
+    let store_id = store_catalog_id(program, root);
+    write_record_node_for_store(store, &store_id, identity);
+}
+
+fn write_record_node_for_store(store: &TreeStore, store_id: &CatalogId, identity: &[SavedKey]) {
+    store
+        .write_node(store_id, identity)
+        .expect("typed record node write succeeds");
 }
 
 pub fn read_data_value(

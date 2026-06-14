@@ -102,17 +102,14 @@ fn a_type_wrong_identity_field_does_not_decode_as_an_identity_value() {
     );
     let store = TreeStore::memory();
     let path = data_path(&program, "books", &["authorId"]);
-    store
-        .write_node(&store_catalog_id(&program, "books"), &[SavedKey::Int(1)])
-        .expect("write book node");
-    store
-        .write_data_value(
-            &store_catalog_id(&program, "books"),
-            &[SavedKey::Int(1)],
-            &path,
-            encode_identity_payload(&[SavedKey::Str("not-an-int".to_string())]),
-        )
-        .expect("write corrupt identity leaf");
+    write_data_bytes(
+        &program,
+        &store,
+        "books",
+        &[SavedKey::Int(1)],
+        &path,
+        encode_identity_payload(&[SavedKey::Str("not-an-int".to_string())]),
+    );
 
     assert!(
         run_entry(&store, checked_entry!(&program, "test::read")).is_err(),
