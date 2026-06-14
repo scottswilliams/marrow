@@ -388,10 +388,11 @@ spec/lane: sequence[T] is a stdlib return-type contract (std::text::split return
 sequence[string], verified in stdlib.rs) with no equally-ergonomic explicit spelling for
 positional data, while map's explicit keyed-leaf form `scores(key: K): V` is equally readable,
 is what every teaching page uses, and is the identical schema the sugar desugars to (stored
-bytes unaffected). After the cut `map[...]` is no longer a type spelling (parse error in type
-position), so schema.unsupported_type is retired: both constructors in marrow-schema errors.rs
-are map-only — delete them and the docs/error-codes.md:194 row (pre-release; the code contract
-is not yet frozen). Full blast per the trimmed removal: sequence desugar path retained intact;
+bytes unaffected). After the cut `map[...]` is no longer a supported saved-member or value type;
+syntax may preserve the spelling as annotation text, and checker/schema reject it downstream.
+schema.unsupported_type is retired: both constructors in marrow-schema errors.rs are map-only —
+delete them and the docs/error-codes.md:194 row (pre-release; the code contract is not yet frozen).
+Full blast per the trimmed removal: sequence desugar path retained intact;
 leaf_type.rs and discharge/leaf_obligations.rs comments referencing the map spelling cleaned;
 contains_map_type guard in driver.rs and the token.rs map_type_parts guard deleted; grammar.md
 map_member_type production plus types.md/data-evolution.md prose removed. Change A (future-page
