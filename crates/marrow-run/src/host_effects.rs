@@ -82,6 +82,31 @@ pub(crate) fn eval_env(
     }
 }
 
+pub(crate) fn eval_context(
+    op: &str,
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    if !args.is_empty() {
+        return Err(std_arity("context", op, span));
+    }
+    let context = env
+        .host
+        .context
+        .as_ref()
+        .ok_or_else(|| no_capability("context", "context", op, span))?;
+    let value = match op {
+        "actor" => context.actor(),
+        "requestId" => context.request_id(),
+        "idempotencyKey" => context.idempotency_key(),
+        _ => unreachable!("the stdlib table routes only context ops to eval_context"),
+    };
+    value
+        .map(|value| Value::Str(value.to_string()))
+        .ok_or_else(|| raise_fault(RUN_ABSENT, format!("context `{op}` is absent"), span))
+}
+
 pub(crate) fn eval_log(
     op: &str,
     args: &[ExecArg],

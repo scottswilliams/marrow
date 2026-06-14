@@ -21,7 +21,7 @@ use crate::error::{
     CALL_DEPTH_BUDGET, RUN_ABSENT, RUN_UNKNOWN_FUNCTION, RuntimeError, call_depth_exceeded,
     unsupported,
 };
-use crate::host_effects::{eval_clock_capability, eval_env, eval_io, eval_log};
+use crate::host_effects::{eval_clock_capability, eval_context, eval_env, eval_io, eval_log};
 use crate::local_collection::eval_local_collection_read;
 use crate::neighbor::eval_neighbor;
 use crate::std_pure::eval_std;
@@ -239,6 +239,7 @@ fn eval_std_call(
 ) -> Result<Option<Value>, RuntimeError> {
     let result = match target.requires_capability {
         Some(Capability::Clock) => eval_clock_capability(target.op, args, span, env).map(Some),
+        Some(Capability::Context) => eval_context(target.op, args, span, env).map(Some),
         Some(Capability::Environment) => eval_env(target.op, args, span, env).map(Some),
         Some(Capability::Log) => eval_log(target.op, args, span, env),
         Some(Capability::Filesystem) => eval_io(target.op, args, span, env),

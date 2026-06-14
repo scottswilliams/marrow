@@ -946,7 +946,10 @@ fn runtime_entry_name(module: &str, function: &str) -> String {
 fn work_shape(closure: &EffectClosureFacts) -> WorkShapeClass {
     if closure.write_effects_reachable {
         WorkShapeClass::WritesSavedData
-    } else if !closure.stores_read.is_empty() || !closure.saved_index_reads.is_empty() {
+    } else if !closure.stores_read.is_empty()
+        || !closure.saved_index_reads.is_empty()
+        || !closure.host_calls.is_empty()
+    {
         WorkShapeClass::ReadOnly
     } else {
         WorkShapeClass::ComputeOnly

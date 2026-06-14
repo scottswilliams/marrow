@@ -14,6 +14,8 @@ marrow-check = { path = "../marrow-check" }
 marrow-schema = { path = "../marrow-schema" }
 marrow-store = { path = "../marrow-store", features = ["native"] }
 marrow-syntax = { path = "../marrow-syntax" }
+serde = "1"
+serde_json = { version = "1", features = ["arbitrary_precision", "raw_value"] }
 sha2 = { version = "0.11", default-features = false }
 
 [dev-dependencies]

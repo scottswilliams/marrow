@@ -20,6 +20,47 @@ pub trait LogSink {
     fn write_log(&mut self, line: &str);
 }
 
+/// Request-scoped values captured by an embedding host for the current run.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunContext {
+    actor: Option<String>,
+    request_id: Option<String>,
+    idempotency_key: Option<String>,
+}
+
+impl RunContext {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_actor(mut self, actor: impl Into<String>) -> Self {
+        self.actor = Some(actor.into());
+        self
+    }
+
+    pub fn with_request_id(mut self, request_id: impl Into<String>) -> Self {
+        self.request_id = Some(request_id.into());
+        self
+    }
+
+    pub fn with_idempotency_key(mut self, idempotency_key: impl Into<String>) -> Self {
+        self.idempotency_key = Some(idempotency_key.into());
+        self
+    }
+
+    pub(crate) fn actor(&self) -> Option<&str> {
+        self.actor.as_deref()
+    }
+
+    pub(crate) fn request_id(&self) -> Option<&str> {
+        self.request_id.as_deref()
+    }
+
+    pub(crate) fn idempotency_key(&self) -> Option<&str> {
+        self.idempotency_key.as_deref()
+    }
+}
+
 impl LogSink for String {
     fn write_log(&mut self, line: &str) {
         self.push_str(line);
@@ -200,6 +241,9 @@ pub struct Host {
     /// The run's environment variables, when an environment capability is
     /// provided. A run without it cannot use `std::env`.
     pub(crate) environment: Option<HashMap<String, String>>,
+    /// Request-scoped context fields. Missing context rejects `std::context`;
+    /// missing individual fields read as ordinary absence.
+    pub(crate) context: Option<RunContext>,
     /// The run's log sink, when a log capability is provided. `std::log` appends
     /// formatted lines here; the command or embedding decides where they go
     /// (e.g. standard error). A run without it cannot use `std::log`.
@@ -221,6 +265,7 @@ impl fmt::Debug for Host {
         f.debug_struct("Host")
             .field("clock", &self.clock)
             .field("environment", &self.environment)
+            .field("context", &self.context)
             .field("log", &self.log.as_ref().map(|_| "<log sink>"))
             .field("output", &self.output.as_ref().map(|_| "<output sink>"))
             .field("filesystem", &self.filesystem)
@@ -257,6 +302,12 @@ impl Host {
     /// Environment is the given variables, for deterministic runs and tests.
     pub fn with_environment(mut self, variables: HashMap<String, String>) -> Self {
         self.environment = Some(variables);
+        self
+    }
+
+    /// Request context is captured by the embedding host for this run.
+    pub fn with_run_context(mut self, context: RunContext) -> Self {
+        self.context = Some(context);
         self
     }
 

@@ -39,6 +39,7 @@ pub enum ReturnType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Capability {
     Clock,
+    Context,
     Environment,
     Log,
     Filesystem,
@@ -56,7 +57,7 @@ pub struct StdOp {
     pub requires_capability: Option<Capability>,
 }
 
-use Capability::{Clock, Environment, Filesystem, Log};
+use Capability::{Clock, Context, Environment, Filesystem, Log};
 use ParamType::{Error as ErrorArg, Path, Scalar, ScalarAny, Sequence as SequenceArg};
 use ReturnPresence::{Always, MaybePresent};
 use ReturnType::{Sequence, Void};
@@ -118,6 +119,41 @@ const TABLE: &[StdOp] = &[
     row("math", "powInt", &[Scalar(Int), Scalar(Int)], scalar(Int), Always, None),
     row("math", "modulo", &[Scalar(Int), Scalar(Int)], scalar(Int), Always, None),
     row("math", "remainder", &[Scalar(Int), Scalar(Int)], scalar(Int), Always, None),
+    row("math", "clampInt", &[Scalar(Int), Scalar(Int), Scalar(Int)], scalar(Int), Always, None),
+    row("math", "clampDecimal", &[Scalar(Decimal), Scalar(Decimal), Scalar(Decimal)], scalar(Decimal), Always, None),
+    row("json", "valid", &[Scalar(Str)], scalar(Bool), Always, None),
+    row("json", "string", &[Scalar(Str), Scalar(Str)], scalar(Str), MaybePresent, None),
+    row("json", "int", &[Scalar(Str), Scalar(Str)], scalar(Int), MaybePresent, None),
+    row("json", "decimal", &[Scalar(Str), Scalar(Str)], scalar(Decimal), MaybePresent, None),
+    row("json", "bool", &[Scalar(Str), Scalar(Str)], scalar(Bool), MaybePresent, None),
+    row("json", "count", &[Scalar(Str), Scalar(Str)], scalar(Int), MaybePresent, None),
+    row("csv", "rowCount", &[Scalar(Str)], scalar(Int), Always, None),
+    row("csv", "hasColumn", &[Scalar(Str), Scalar(Str)], scalar(Bool), Always, None),
+    row("csv", "string", &[Scalar(Str), Scalar(Int), Scalar(Str)], scalar(Str), MaybePresent, None),
+    row("csv", "int", &[Scalar(Str), Scalar(Int), Scalar(Str)], scalar(Int), MaybePresent, None),
+    row("csv", "decimal", &[Scalar(Str), Scalar(Int), Scalar(Str)], scalar(Decimal), MaybePresent, None),
+    row("csv", "bool", &[Scalar(Str), Scalar(Int), Scalar(Str)], scalar(Bool), MaybePresent, None),
+    row("id", "slug", &[Scalar(Str)], scalar(Str), Always, None),
+    row("id", "stableUuid", &[Scalar(Str)], scalar(Str), Always, None),
+    row("random", "int", &[Scalar(Str), Scalar(Int), Scalar(Int), Scalar(Int)], scalar(Int), Always, None),
+    row("random", "bool", &[Scalar(Str), Scalar(Int)], scalar(Bool), Always, None),
+    row("random", "decimal", &[Scalar(Str), Scalar(Int)], scalar(Decimal), Always, None),
+    row("context", "actor", &[], scalar(Str), MaybePresent, Some(Context)),
+    row("context", "requestId", &[], scalar(Str), MaybePresent, Some(Context)),
+    row("context", "idempotencyKey", &[], scalar(Str), MaybePresent, Some(Context)),
+    row("audit", "event", &[Scalar(Str), Scalar(Str), Scalar(Str)], scalar(Str), Always, None),
+    row("audit", "change", &[Scalar(Str), Scalar(Str), Scalar(Str)], scalar(Str), Always, None),
+    row("error", "code", &[ErrorArg], scalar(Str), Always, None),
+    row("error", "message", &[ErrorArg], scalar(Str), Always, None),
+    row("error", "hasCode", &[ErrorArg, Scalar(Str)], scalar(Bool), Always, None),
+    row("matrix", "parse", &[Scalar(Str)], scalar(Str), Always, None),
+    row("matrix", "identity", &[Scalar(Int)], scalar(Str), Always, None),
+    row("matrix", "rows", &[Scalar(Str)], scalar(Int), Always, None),
+    row("matrix", "cols", &[Scalar(Str)], scalar(Int), Always, None),
+    row("matrix", "get", &[Scalar(Str), Scalar(Int), Scalar(Int)], scalar(Decimal), Always, None),
+    row("matrix", "add", &[Scalar(Str), Scalar(Str)], scalar(Str), Always, None),
+    row("matrix", "multiply", &[Scalar(Str), Scalar(Str)], scalar(Str), Always, None),
+    row("matrix", "transpose", &[Scalar(Str)], scalar(Str), Always, None),
     row("clock", "now", &[], scalar(Instant), Always, Some(Clock)),
     row("clock", "today", &[], scalar(Date), Always, Some(Clock)),
     row("clock", "parseInstant", &[Scalar(Str)], scalar(Instant), Always, None),

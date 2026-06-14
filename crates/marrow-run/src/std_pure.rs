@@ -35,6 +35,13 @@ pub(crate) fn eval_std(
         "math" => eval_math_std(op, args, span, env),
         "bytes" => eval_bytes_std(op, args, span, env),
         "clock" => eval_clock_std(op, args, span, env),
+        "json" => crate::std_json::eval_json(op, args, span, env),
+        "csv" => crate::std_csv::eval_csv(op, args, span, env),
+        "id" => crate::std_id::eval_id(op, args, span, env),
+        "random" => crate::std_random::eval_random(op, args, span, env),
+        "audit" => crate::std_audit::eval_audit(op, args, span, env),
+        "error" => crate::std_error_helpers::eval_error(op, args, span, env),
+        "matrix" => crate::std_matrix::eval_matrix(op, args, span, env),
         _ => Err(unsupported(&format!("std::{module}::{op}"), span)),
     }
 }
@@ -302,6 +309,8 @@ fn eval_math_std(
         "roundDecimal" => eval_math_round_decimal(args, span, env),
         "ceiling" => eval_math_ceiling(args, span, env),
         "powInt" => eval_math_pow_int(args, span, env),
+        "clampInt" => eval_math_clamp_int(args, span, env),
+        "clampDecimal" => eval_math_clamp_decimal(args, span, env),
         other => Err(unsupported(&format!("std::math::{other}"), span)),
     }
 }
@@ -502,6 +511,40 @@ fn eval_math_pow_int(
         },
     };
     Ok(Value::Int(value))
+}
+
+fn eval_math_clamp_int(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [value, min, max] = args else {
+        return Err(std_arity("math", "clampInt", span));
+    };
+    let value = eval_int(&value.value, env)?;
+    let min = eval_int(&min.value, env)?;
+    let max = eval_int(&max.value, env)?;
+    if min > max {
+        return Err(type_error("clampInt min must be <= max", span));
+    }
+    Ok(Value::Int(value.clamp(min, max)))
+}
+
+fn eval_math_clamp_decimal(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [value, min, max] = args else {
+        return Err(std_arity("math", "clampDecimal", span));
+    };
+    let value = eval_decimal_arg(value, env, span)?;
+    let min = eval_decimal_arg(min, env, span)?;
+    let max = eval_decimal_arg(max, env, span)?;
+    if min > max {
+        return Err(type_error("clampDecimal min must be <= max", span));
+    }
+    Ok(Value::Decimal(value.clamp(min, max)))
 }
 
 fn eval_text_index(

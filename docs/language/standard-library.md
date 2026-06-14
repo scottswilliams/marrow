@@ -19,17 +19,16 @@ runtime platform:
   library calls work.
 
 The first standard library does not include HTTP clients, process execution,
-directory walking, random number generation, regular expressions, localized
-formatting, JSON object mapping, or backend-specific storage APIs. Those can be
-host libraries or separate extensions after the language/database kernel is
-stable.
+directory walking, regular expressions, localized formatting, JSON object
+mapping, or backend-specific storage APIs. Those can be host libraries or
+separate extensions after the language/database kernel is stable.
 
 The Marrow language does not require every host module. Pure helpers are
-available in normal CLI runs. Host functions in `std::clock`, `std::io`,
-`std::env`, and `std::log` depend on the command or embedding host; a call made
-without the matching capability is a typed capability error. The capability is
-per function, not per module: within `std::clock` only `now()` and `today()`
-need the host clock, while the parse and format helpers are pure.
+available in normal CLI runs. Host functions in `std::clock`, `std::context`,
+`std::io`, `std::env`, and `std::log` depend on the command or embedding host;
+a call made without the matching capability is a typed capability error. The
+capability is per function, not per module: within `std::clock` only `now()`
+and `today()` need the host clock, while the parse and format helpers are pure.
 
 The descriptor table is closed for every known `std` module. A call to an
 operation the table does not define is a check error, whether the module is pure
@@ -180,6 +179,8 @@ std::math::ceiling(value: decimal): int
 std::math::powInt(base: int, exp: int): int
 std::math::modulo(a: int, b: int): int
 std::math::remainder(a: int, b: int): int
+std::math::clampInt(value: int, min: int, max: int): int
+std::math::clampDecimal(value: decimal, min: decimal, max: decimal): decimal
 ```
 
 The `%` operator is remainder. Named functions make negative-number behavior
@@ -192,6 +193,138 @@ when the result does not fit in `int`.
 fractional precision, then returns the canonical decimal value. `scale` must be
 in `0..=34`; values outside that range raise `run.type`. The result is still
 canonical decimal data, so trailing zeroes are not preserved for presentation.
+`clampInt` and `clampDecimal` require `min <= max` and return the nearest bound
+when `value` is outside the inclusive range.
+
+## `std::json`
+
+JSON helpers are scalar readers over JSON text. They do not expose a JSON value
+type and do not map JSON objects to Marrow resources:
+
+```mw
+std::json::valid(text: string): bool
+std::json::string(text: string, pointer: string): maybe-present string
+std::json::int(text: string, pointer: string): maybe-present int
+std::json::decimal(text: string, pointer: string): maybe-present decimal
+std::json::bool(text: string, pointer: string): maybe-present bool
+std::json::count(text: string, pointer: string): maybe-present int
+```
+
+`pointer` is an RFC 6901 JSON Pointer. The empty string selects the root; other
+pointers start with `/`, split on `/`, and decode `~0` to `~` and `~1` to `/`.
+Missing members, missing indexes, and JSON `null` are absent and compose with
+`??`. Malformed pointers, malformed JSON for scalar reads, wrong scalar kinds,
+duplicate object keys, leading-zero array indexes, and values outside Marrow
+scalar envelopes raise `run.type`.
+
+JSON text is bounded before and after parsing by fixed byte, depth, node, and
+string-size caps. Integers must fit `int` and be JSON integers. The negative
+zero integer spelling `-0` is rejected rather than normalized to `0`. Decimals
+must be canonical Marrow decimal text inside the decimal envelope; exponent
+spellings do not become decimal values.
+
+## `std::csv`
+
+CSV helpers read a narrow RFC 4180 subset from text and return scalar cells:
+
+```mw
+std::csv::rowCount(text: string): int
+std::csv::hasColumn(text: string, column: string): bool
+std::csv::string(text: string, row: int, column: string): maybe-present string
+std::csv::int(text: string, row: int, column: string): maybe-present int
+std::csv::decimal(text: string, row: int, column: string): maybe-present decimal
+std::csv::bool(text: string, row: int, column: string): maybe-present bool
+```
+
+The first row is the required header. Data rows are zero-based after the header.
+Missing rows, missing columns, and empty cells are absent. Duplicate or empty
+headers, ragged rows, malformed quotes, CR not followed by LF, and oversized
+input raise `run.type`. Unquoted whitespace is preserved. Quoted fields may
+contain commas, newlines, and escaped quotes as `""`.
+
+## `std::id` And `std::random`
+
+ID helpers return ordinary strings:
+
+```mw
+std::id::slug(text: string): string
+std::id::stableUuid(seed: string): string
+```
+
+`slug` is ASCII-only: it lowercases `A-Z`, keeps `a-z` and `0-9`, collapses
+other runs to one `-`, and trims hyphens. `stableUuid` hashes the seed and
+returns a deterministic RFC 4122 version-4 UUID string. It does not create an
+`Id(^store)` and is unrelated to `nextId`.
+
+Deterministic random helpers are pure PRFs over `(seed, step)`:
+
+```mw
+std::random::int(seed: string, step: int, min: int, max: int): int
+std::random::bool(seed: string, step: int): bool
+std::random::decimal(seed: string, step: int): decimal
+```
+
+`step` must be non-negative and `min <= max`. `int` uses rejection sampling over
+a SHA-256-derived `u128`; `decimal` returns an exact canonical decimal in
+`[0, 1)` with up to 18 fractional digits. No helper reads host entropy.
+
+## `std::context`, `std::audit`, And `std::error`
+
+Run context is host-provided request metadata:
+
+```mw
+std::context::actor(): maybe-present string
+std::context::requestId(): maybe-present string
+std::context::idempotencyKey(): maybe-present string
+```
+
+A run without context capability raises `run.capability`. A provided context
+with a missing field returns absence.
+
+Audit helpers are pure compact JSON string builders; they do not write logs or
+saved data:
+
+```mw
+std::audit::event(action: string, actor: string, subject: string): string
+std::audit::change(field: string, before: string, after: string): string
+```
+
+Error helpers read the existing `Error` resource shape:
+
+```mw
+std::error::code(err: Error): string
+std::error::message(err: Error): string
+std::error::hasCode(err: Error, code: string): bool
+```
+
+`Error.code` uses the existing error-code grammar. In the current type lattice
+`ErrorCode` stores as `string`, so these helpers return and compare strings
+without weakening the `Error(...)` and `ErrorCode(...)` validation rules.
+`hasCode` raises `run.type` when `code` is not valid error-code text.
+
+## `std::matrix`
+
+Matrices are canonical strings, not a distinct value type:
+
+```mw
+std::matrix::parse(text: string): string
+std::matrix::identity(size: int): string
+std::matrix::rows(matrix: string): int
+std::matrix::cols(matrix: string): int
+std::matrix::get(matrix: string, row: int, col: int): decimal
+std::matrix::add(a: string, b: string): string
+std::matrix::multiply(a: string, b: string): string
+std::matrix::transpose(matrix: string): string
+```
+
+Canonical matrix text is bracketed rows separated by `;`, columns separated by
+`,`, and canonical decimal cells, for example `[1,2;3.5,4]`. `parse` accepts
+spaces around cells and separators and returns canonical text. Rows and columns
+are zero-based. Non-rectangular or malformed text, invalid indexes, incompatible
+dimensions, and configured byte/dimension/cell/operation-limit violations raise
+`run.type`. Addition and multiplication use exact Marrow decimal arithmetic and
+raise the existing decimal overflow fault when an arithmetic result leaves the
+decimal envelope.
 
 ## `std::assert` And Testing
 

@@ -48,7 +48,14 @@ mod range_expr;
 mod read;
 mod saved_iter;
 mod statement;
+mod std_audit;
+mod std_csv;
+mod std_error_helpers;
+mod std_id;
+mod std_json;
+mod std_matrix;
 mod std_pure;
+mod std_random;
 mod stdlib;
 mod store;
 mod transaction;
@@ -68,7 +75,8 @@ pub use error::{
     RUN_UNKNOWN_FUNCTION, RUN_UNSUPPORTED, RuntimeError,
 };
 pub use host::{
-    FixedNondeterminism, Frame, Host, LogSink, Nondeterminism, StepHook, SystemNondeterminism,
+    FixedNondeterminism, Frame, Host, LogSink, Nondeterminism, RunContext, StepHook,
+    SystemNondeterminism,
 };
 pub use project_session::{
     ProjectInvokeError, ProjectMode, ProjectOpen, ProjectSession, ProjectSessionError,

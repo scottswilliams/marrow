@@ -10,7 +10,7 @@ use marrow_syntax::SourceSpan;
 use crate::env::{Context, Env, TransactionState};
 use crate::error::RUN_UNSUPPORTED;
 use crate::host::Host;
-use crate::host_effects::{eval_clock_capability, eval_env, eval_io, eval_log};
+use crate::host_effects::{eval_clock_capability, eval_context, eval_env, eval_io, eval_log};
 use crate::std_pure::eval_std;
 use crate::stdlib::eval_assert;
 use crate::value::RunOutputSink;
@@ -45,6 +45,7 @@ fn every_table_row_reaches_a_live_handler() {
             Some(Capability::Clock) => {
                 eval_clock_capability(entry.op, no_args, span, &mut env).map(Some)
             }
+            Some(Capability::Context) => eval_context(entry.op, no_args, span, &mut env).map(Some),
             Some(Capability::Environment) => eval_env(entry.op, no_args, span, &mut env).map(Some),
             Some(Capability::Log) => eval_log(entry.op, no_args, span, &mut env),
             Some(Capability::Filesystem) => eval_io(entry.op, no_args, span, &mut env),

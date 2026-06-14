@@ -5,7 +5,7 @@
 use crate::support;
 use support::*;
 
-use marrow_run::{Host, RUN_CAPABILITY, Value};
+use marrow_run::{Host, RUN_CAPABILITY, RunContext, Value};
 use marrow_store::tree::TreeStore;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -150,6 +150,47 @@ fn io_without_a_filesystem_capability_is_a_capability_error() {
         checked_entry!(&program, "test::loadText", Value::Str("x".into())),
     );
     assert_run_error(result, RUN_CAPABILITY);
+}
+
+#[test]
+fn context_helpers_require_host_context_capability() {
+    let program =
+        checked_program("pub fn actor(): string\n    return std::context::actor() ?? \"none\"\n");
+    let store = TreeStore::memory();
+    assert_run_error(
+        run_entry(&store, checked_entry!(&program, "test::actor")),
+        RUN_CAPABILITY,
+    );
+}
+
+#[test]
+fn context_helpers_read_host_fields_and_missing_fields_are_absent() {
+    let program = checked_program(
+        "pub fn actor(): string\n    return std::context::actor() ?? \"none\"\n\n\
+         pub fn request(): string\n    return std::context::requestId() ?? \"none\"\n\n\
+         pub fn key(): string\n    return std::context::idempotencyKey() ?? \"none\"\n",
+    );
+    let store = TreeStore::memory();
+    let host =
+        Host::new().with_run_context(RunContext::new().with_actor("ada").with_request_id("req-1"));
+    assert_eq!(
+        run_entry_with_host(&store, &host, checked_entry!(&program, "test::actor"))
+            .unwrap()
+            .value,
+        Some(Value::Str("ada".into()))
+    );
+    assert_eq!(
+        run_entry_with_host(&store, &host, checked_entry!(&program, "test::request"))
+            .unwrap()
+            .value,
+        Some(Value::Str("req-1".into()))
+    );
+    assert_eq!(
+        run_entry_with_host(&store, &host, checked_entry!(&program, "test::key"))
+            .unwrap()
+            .value,
+        Some(Value::Str("none".into()))
+    );
 }
 
 #[test]

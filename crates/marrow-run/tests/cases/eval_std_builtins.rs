@@ -289,6 +289,404 @@ fn std_math_round_decimal_rejects_invalid_scale() {
 }
 
 #[test]
+fn std_json_scalar_helpers_read_present_absent_and_invalid_values() {
+    let program = checked_program(
+        r#"pub fn valid(): bool
+    return std::json::valid("{\"user\":{\"name\":\"Ada\",\"age\":37,\"score\":12.5,\"active\":true,\"tags\":[\"db\",\"lang\"]}}")
+
+pub fn name(): string
+    return std::json::string("{\"user\":{\"name\":\"Ada\",\"age\":37,\"score\":12.5,\"active\":true,\"tags\":[\"db\",\"lang\"]}}", "/user/name") ?? ""
+
+pub fn age(): int
+    return std::json::int("{\"user\":{\"name\":\"Ada\",\"age\":37,\"score\":12.5,\"active\":true,\"tags\":[\"db\",\"lang\"]}}", "/user/age") ?? -1
+
+pub fn score(): string
+    return string(std::json::decimal("{\"user\":{\"name\":\"Ada\",\"age\":37,\"score\":12.5,\"active\":true,\"tags\":[\"db\",\"lang\"]}}", "/user/score") ?? 0.0)
+
+pub fn active(): bool
+    return std::json::bool("{\"user\":{\"name\":\"Ada\",\"age\":37,\"score\":12.5,\"active\":true,\"tags\":[\"db\",\"lang\"]}}", "/user/active") ?? false
+
+pub fn tag_count(): int
+    return std::json::count("{\"user\":{\"name\":\"Ada\",\"age\":37,\"score\":12.5,\"active\":true,\"tags\":[\"db\",\"lang\"]}}", "/user/tags") ?? -1
+
+pub fn missing(): string
+    return std::json::string("{\"user\":null}", "/user/name") ?? "absent"
+
+pub fn wrong_kind(): string
+    return std::json::string("{\"user\":{\"age\":37}}", "/user/age") ?? "wrong"
+
+pub fn bad_pointer(): string
+    return std::json::string("{}", "user") ?? ""
+"#,
+    );
+
+    assert_eq!(
+        run(checked_entry!(&program, "test::valid")).unwrap(),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::name")).unwrap(),
+        Some(Value::Str("Ada".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::age")).unwrap(),
+        Some(Value::Int(37))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::score")).unwrap(),
+        Some(Value::Str("12.5".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::active")).unwrap(),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::tag_count")).unwrap(),
+        Some(Value::Int(2))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::missing")).unwrap(),
+        Some(Value::Str("absent".into()))
+    );
+    assert_run_error(run(checked_entry!(&program, "test::wrong_kind")), RUN_TYPE);
+    assert_run_error(run(checked_entry!(&program, "test::bad_pointer")), RUN_TYPE);
+}
+
+#[test]
+fn std_json_rejects_lossy_or_ambiguous_scalar_reads() {
+    let program = checked_program(
+        r#"pub fn high_precision_decimal(): string
+    return string(std::json::decimal("{\"n\":0.1234567890123456789}", "/n") ?? 0.0)
+
+pub fn duplicate_key(): int
+    return std::json::int("{\"a\":1,\"a\":2}", "/a") ?? -1
+
+pub fn leading_zero_index(): string
+    return std::json::string("[\"a\",\"b\"]", "/01") ?? "absent"
+
+pub fn private_number_key(): string
+    return std::json::string("{\"$serde_json::private::Number\":\"kept\"}", "/$serde_json::private::Number") ?? "absent"
+
+pub fn negative_zero_int(): int
+    return std::json::int("{\"n\":-0}", "/n") ?? 9
+
+pub fn negative_zero_decimal(): string
+    return string(std::json::decimal("{\"n\":-0}", "/n") ?? 9.9)
+"#,
+    );
+
+    assert_eq!(
+        run(checked_entry!(&program, "test::high_precision_decimal")).unwrap(),
+        Some(Value::Str("0.1234567890123456789".into()))
+    );
+    assert_run_error(
+        run(checked_entry!(&program, "test::duplicate_key")),
+        RUN_TYPE,
+    );
+    assert_run_error(
+        run(checked_entry!(&program, "test::leading_zero_index")),
+        RUN_TYPE,
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::private_number_key")).unwrap(),
+        Some(Value::Str("kept".into()))
+    );
+    assert_run_error(
+        run(checked_entry!(&program, "test::negative_zero_int")),
+        RUN_TYPE,
+    );
+    assert_run_error(
+        run(checked_entry!(&program, "test::negative_zero_decimal")),
+        RUN_TYPE,
+    );
+}
+
+#[test]
+fn std_csv_scalar_helpers_read_present_absent_and_invalid_values() {
+    let program = checked_program(
+        r#"pub fn rows(): int
+    return std::csv::rowCount("name,age,balance,active\nAda,37,12.5,true\nBob,,0,false\n")
+
+pub fn has_balance(): bool
+    return std::csv::hasColumn("name,age,balance,active\nAda,37,12.5,true\nBob,,0,false\n", "balance")
+
+pub fn name(): string
+    return std::csv::string("name,age,balance,active\nAda,37,12.5,true\nBob,,0,false\n", 0, "name") ?? ""
+
+pub fn age(): int
+    return std::csv::int("name,age,balance,active\nAda,37,12.5,true\nBob,,0,false\n", 0, "age") ?? -1
+
+pub fn balance(): string
+    return string(std::csv::decimal("name,age,balance,active\nAda,37,12.5,true\nBob,,0,false\n", 0, "balance") ?? 0.0)
+
+pub fn active(): bool
+    return std::csv::bool("name,age,balance,active\nAda,37,12.5,true\nBob,,0,false\n", 1, "active") ?? true
+
+pub fn empty_cell(): string
+    return std::csv::string("name,age,balance,active\nAda,37,12.5,true\nBob,,0,false\n", 1, "age") ?? "absent"
+
+pub fn duplicate_header(): int
+    return std::csv::rowCount("name,name\nAda,Lovelace\n")
+"#,
+    );
+
+    assert_eq!(
+        run(checked_entry!(&program, "test::rows")).unwrap(),
+        Some(Value::Int(2))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::has_balance")).unwrap(),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::name")).unwrap(),
+        Some(Value::Str("Ada".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::age")).unwrap(),
+        Some(Value::Int(37))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::balance")).unwrap(),
+        Some(Value::Str("12.5".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::active")).unwrap(),
+        Some(Value::Bool(false))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::empty_cell")).unwrap(),
+        Some(Value::Str("absent".into()))
+    );
+    assert_run_error(
+        run(checked_entry!(&program, "test::duplicate_header")),
+        RUN_TYPE,
+    );
+}
+
+#[test]
+fn std_id_helpers_return_plain_strings() {
+    let program = checked_program(
+        r#"pub fn slug(): string
+    return std::id::slug(" Hello, Marrow_ID! ")
+
+pub fn uuid(): string
+    return std::id::stableUuid("alpha")
+"#,
+    );
+
+    assert_eq!(
+        run(checked_entry!(&program, "test::slug")).unwrap(),
+        Some(Value::Str("hello-marrow-id".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::uuid")).unwrap(),
+        Some(Value::Str("8ed3f6ad-685b-459e-ad70-22518e1af76c".into()))
+    );
+}
+
+#[test]
+fn std_random_helpers_are_deterministic_and_bounded() {
+    let program = checked_program(
+        r#"pub fn random_int_is_stable_and_bounded(): bool
+    const first: int = std::random::int("seed", 2, 10, 20)
+    const second: int = std::random::int("seed", 2, 10, 20)
+    return first == second and first >= 10 and first <= 20
+
+pub fn random_bool_is_stable(): bool
+    return std::random::bool("seed", 3) == std::random::bool("seed", 3)
+
+pub fn random_decimal_is_stable(): bool
+    return string(std::random::decimal("seed", 4)) == string(std::random::decimal("seed", 4))
+
+pub fn random_cross_zero_range_is_bounded(): bool
+    const value: int = std::random::int("seed", 5, -1, 9223372036854775807)
+    return value >= -1 and value <= 9223372036854775807
+
+pub fn random_full_int_range_returns(): int
+    return std::random::int("seed", 0, (0 - 9223372036854775807) - 1, 9223372036854775807)
+
+pub fn random_bad_step(): int
+    return std::random::int("seed", -1, 0, 9)
+"#,
+    );
+
+    assert_eq!(
+        run(checked_entry!(
+            &program,
+            "test::random_int_is_stable_and_bounded"
+        ))
+        .unwrap(),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::random_bool_is_stable")).unwrap(),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::random_decimal_is_stable")).unwrap(),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        run(checked_entry!(
+            &program,
+            "test::random_cross_zero_range_is_bounded"
+        ))
+        .unwrap(),
+        Some(Value::Bool(true))
+    );
+    assert!(matches!(
+        run(checked_entry!(
+            &program,
+            "test::random_full_int_range_returns"
+        )),
+        Ok(Some(Value::Int(_)))
+    ));
+    assert_run_error(
+        run(checked_entry!(&program, "test::random_bad_step")),
+        RUN_TYPE,
+    );
+}
+
+#[test]
+fn std_audit_helpers_build_json_strings_without_writes() {
+    let program = checked_program(
+        r#"pub fn audit_event(): string
+    return std::audit::event("create", "ada", "book")
+
+pub fn audit_change(): string
+    return std::audit::change("title", "old", "new")
+"#,
+    );
+
+    assert_eq!(
+        run(checked_entry!(&program, "test::audit_event")).unwrap(),
+        Some(Value::Str(
+            "{\"action\":\"create\",\"actor\":\"ada\",\"subject\":\"book\"}".into()
+        ))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::audit_change")).unwrap(),
+        Some(Value::Str(
+            "{\"field\":\"title\",\"before\":\"old\",\"after\":\"new\"}".into()
+        ))
+    );
+}
+
+#[test]
+fn std_matrix_helpers_use_canonical_text_and_exact_arithmetic() {
+    let program = checked_program(
+        r#"pub fn matrix_parse(): string
+    return std::matrix::parse("[1, 2; 3.5, 4]")
+
+pub fn matrix_shape(): string
+    const m: string = std::matrix::parse("[1,2;3,4]")
+    return $"{std::matrix::rows(m)}x{std::matrix::cols(m)}"
+
+pub fn matrix_get(): string
+    return string(std::matrix::get(std::matrix::parse("[1,2;3.5,4]"), 1, 0))
+
+pub fn matrix_add(): string
+    return std::matrix::add("[1,2;3,4]", "[0.5,1;1.5,2]")
+
+pub fn matrix_multiply(): string
+    return std::matrix::multiply("[1,2;3,4]", "[5;6]")
+
+pub fn matrix_transpose(): string
+    return std::matrix::transpose("[1,2;3,4]")
+
+pub fn matrix_bad(): string
+    return std::matrix::parse("[1,2;3]")
+"#,
+    );
+
+    assert_eq!(
+        run(checked_entry!(&program, "test::matrix_parse")).unwrap(),
+        Some(Value::Str("[1,2;3.5,4]".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::matrix_shape")).unwrap(),
+        Some(Value::Str("2x2".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::matrix_get")).unwrap(),
+        Some(Value::Str("3.5".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::matrix_add")).unwrap(),
+        Some(Value::Str("[1.5,3;4.5,6]".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::matrix_multiply")).unwrap(),
+        Some(Value::Str("[17;39]".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::matrix_transpose")).unwrap(),
+        Some(Value::Str("[1,3;2,4]".into()))
+    );
+    assert_run_error(run(checked_entry!(&program, "test::matrix_bad")), RUN_TYPE);
+}
+
+#[test]
+fn std_math_clamp_helpers_bound_values() {
+    let program = checked_program(
+        r#"pub fn clamp_int(): int
+    return std::math::clampInt(12, 0, 10)
+
+pub fn clamp_decimal(): string
+    return string(std::math::clampDecimal(-1.5, 0.0, 10.0))
+"#,
+    );
+
+    assert_eq!(
+        run(checked_entry!(&program, "test::clamp_int")).unwrap(),
+        Some(Value::Int(10))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::clamp_decimal")).unwrap(),
+        Some(Value::Str("0".into()))
+    );
+}
+
+#[test]
+fn std_error_helpers_read_error_fields() {
+    let program = checked_program(
+        "pub fn helpers(): string\n    try\n        throw Error(code: \"app.fail\", message: \"boom\")\n    catch err: Error\n        if std::error::hasCode(err, \"app.fail\")\n            return std::error::code(err) + \":\" + std::error::message(err)\n    return \"\"\n",
+    );
+
+    assert_eq!(
+        run(checked_entry!(&program, "test::helpers")).unwrap(),
+        Some(Value::Str("app.fail:boom".into()))
+    );
+}
+
+#[test]
+fn std_error_has_code_validates_expected_code_text() {
+    let program = checked_program(
+        "pub fn invalid(): bool\n    try\n        throw Error(code: \"app.fail\", message: \"boom\")\n    catch err: Error\n        return std::error::hasCode(err, \"App.fail\")\n",
+    );
+
+    assert_run_error(run(checked_entry!(&program, "test::invalid")), RUN_TYPE);
+}
+
+#[test]
+fn std_matrix_rejects_oversized_text_before_canonicalizing() {
+    let program = checked_program(
+        "pub fn parse(text: string): string\n    return std::matrix::parse(text)\n",
+    );
+    let oversized = format!("[{}1]", " ".repeat(1_048_577));
+
+    assert_run_error(
+        run(checked_entry!(
+            &program,
+            "test::parse",
+            Value::Str(oversized)
+        )),
+        RUN_TYPE,
+    );
+}
+
+#[test]
 fn std_math_modulo_by_zero_is_a_runtime_error() {
     let program = checked_program("pub fn f(): int\n    return std::math::modulo(7, 0)\n");
     assert_run_error(run(checked_entry!(&program, "test::f")), RUN_DIVIDE_BY_ZERO);

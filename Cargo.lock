@@ -118,6 +118,8 @@ dependencies = [
  "marrow-schema",
  "marrow-store",
  "marrow-syntax",
+ "serde",
+ "serde_json",
  "sha2",
 ]
 

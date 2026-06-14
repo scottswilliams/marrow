@@ -138,6 +138,28 @@ fn read_only_public_entry_reports_static_footprint() {
 }
 
 #[test]
+fn host_context_public_entry_is_not_compute_only() {
+    let root = temp_project("effect-closure-context-host-call", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             pub fn actor(): string\n\
+             \x20   return std::context::actor() ?? \"none\"\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    assert_clean(&report);
+
+    let footprint = program
+        .entry_footprints()
+        .into_iter()
+        .find(|footprint| footprint.entry == "app::actor")
+        .expect("public actor entry footprint");
+    assert_eq!(footprint.work_shape, WorkShapeClass::ReadOnly);
+}
+
+#[test]
 fn entry_cost_shape_reports_counted_index_branch_as_one_range_scan() {
     let root = temp_project("entry-cost-shape-index-count", |root| {
         write(
