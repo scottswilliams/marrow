@@ -129,6 +129,18 @@ pub(crate) fn enumerate_local_keys_call_arg(
     enumerate_local_collection_dir(eval_expr(arg, env)?, Direction::Ascending, span).map(Some)
 }
 
+pub(crate) fn enumerate_reversed_local_keys_call_arg(
+    arg: &ExecExpr,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Option<Vec<Value>>, RuntimeError> {
+    let Some(mut keys) = enumerate_local_keys_call_arg(arg, span, env)? else {
+        return Ok(None);
+    };
+    keys.reverse();
+    Ok(Some(keys))
+}
+
 fn enumerate_keys_over_reversed(
     value: Value,
     span: SourceSpan,

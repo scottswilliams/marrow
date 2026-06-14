@@ -430,6 +430,63 @@ fn keys_over_reversed_local_keyed_tree_yields_descending_keys() {
 }
 
 #[test]
+fn reversed_keys_over_local_keyed_tree_yields_descending_keys() {
+    let program = checked_program(
+        "pub fn keyed(): string\n\
+         \x20   var scores(playerId: string): int\n\
+         \x20   scores(\"p2\") = 20\n\
+         \x20   scores(\"p1\") = 10\n\
+         \x20   var out: string = \"\"\n\
+         \x20   for playerId in reversed(keys(scores))\n\
+         \x20       const typed: string = playerId\n\
+         \x20       out = $\"{out}{playerId};\"\n\
+         \x20   return out\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::keyed")).unwrap(),
+        Some(Value::Str("p2;p1;".into()))
+    );
+}
+
+#[test]
+fn reversed_keys_over_reversed_local_keyed_tree_yields_ascending_keys() {
+    let program = checked_program(
+        "pub fn keyed(): string\n\
+         \x20   var scores(playerId: string): int\n\
+         \x20   scores(\"p2\") = 20\n\
+         \x20   scores(\"p1\") = 10\n\
+         \x20   var out: string = \"\"\n\
+         \x20   for playerId in reversed(keys(reversed(scores)))\n\
+         \x20       const typed: string = playerId\n\
+         \x20       out = $\"{out}{playerId};\"\n\
+         \x20   return out\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::keyed")).unwrap(),
+        Some(Value::Str("p1;p2;".into()))
+    );
+}
+
+#[test]
+fn materialized_reversed_keys_over_reversed_local_keyed_tree_yields_ascending_keys() {
+    let program = checked_program(
+        "pub fn keyed(): string\n\
+         \x20   var scores(playerId: string): int\n\
+         \x20   scores(\"p2\") = 20\n\
+         \x20   scores(\"p1\") = 10\n\
+         \x20   const players = reversed(keys(reversed(scores)))\n\
+         \x20   var out: string = \"\"\n\
+         \x20   for playerId in players\n\
+         \x20       out = $\"{out}{playerId};\"\n\
+         \x20   return out\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::keyed")).unwrap(),
+        Some(Value::Str("p1;p2;".into()))
+    );
+}
+
+#[test]
 fn reversed_loop_over_a_local_keyed_tree_binds_descending_keys() {
     let program = checked_program(
         "pub fn keyed(): string\n\

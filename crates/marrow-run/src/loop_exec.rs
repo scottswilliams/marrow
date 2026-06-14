@@ -15,7 +15,8 @@ use crate::error::{RuntimeError, overflow, type_error, unsupported};
 use crate::exec::eval_block;
 use crate::expr::{eval_condition, eval_expr};
 use crate::local_collection::{
-    enumerate_local_collection_dir, enumerate_local_keys_call_arg, materialize_local_collection_dir,
+    enumerate_local_collection_dir, enumerate_local_keys_call_arg,
+    enumerate_reversed_local_keys_call_arg, materialize_local_collection_dir,
 };
 use crate::range_expr::checked_range;
 use crate::read::{keys_argument, reversed_argument};
@@ -415,12 +416,9 @@ pub(crate) fn eval_collection(
 ) -> Result<Vec<Value>, RuntimeError> {
     if let Some(inner) = reversed_argument(iterable) {
         if let Some(layer) = keys_argument(inner) {
-            if layer.saved_place().is_none() {
-                return enumerate_local_collection_dir(
-                    eval_expr(layer, env)?,
-                    Direction::Descending,
-                    iterable.span(),
-                );
+            if let Some(keys) = enumerate_reversed_local_keys_call_arg(layer, iterable.span(), env)?
+            {
+                return Ok(keys);
             }
             return Err(durable_collection_value(iterable.span()));
         }

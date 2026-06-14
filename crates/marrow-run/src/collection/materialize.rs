@@ -4,7 +4,9 @@ use marrow_syntax::SourceSpan;
 use crate::env::Env;
 use crate::error::{RuntimeError, unsupported};
 use crate::expr::eval_expr;
-use crate::local_collection::materialize_local_collection_dir;
+use crate::local_collection::{
+    enumerate_reversed_local_keys_call_arg, materialize_local_collection_dir,
+};
 use crate::stdlib::check_key_collection;
 use crate::value::Value;
 
@@ -67,14 +69,8 @@ pub(crate) fn reversed_keys(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    if layer.saved_place().is_none() {
-        return Ok(Value::Sequence(
-            crate::local_collection::enumerate_local_collection_dir(
-                eval_expr(layer, env)?,
-                Direction::Descending,
-                span,
-            )?,
-        ));
+    if let Some(keys) = enumerate_reversed_local_keys_call_arg(layer, span, env)? {
+        return Ok(Value::Sequence(keys));
     }
     check_key_collection(layer, span)?;
     Err(durable_collection_value(span))
