@@ -110,6 +110,73 @@ fn composite_scalar_key_whole_saved_root_assignment_warns() {
 }
 
 #[test]
+fn typed_keyed_entry_replacement_with_keyed_child_layer_warns() {
+    let report = check_source(
+        "lossy-typed-entry-replacement",
+        "module m\n\
+         resource Comment\n    required body: string\n    reactions(pos: int): string\n\
+         resource Post\n    comments(seq: int): Comment\n\
+         store ^posts(id: int): Post\n\n\
+         fn replace(post: Id(^posts), seq: int, replacement: Comment)\n    ^posts(post).comments(seq) = replacement\n",
+    );
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let found = with_code(&report, CHECK_LOSSY_ROUND_TRIP);
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(found[0].severity, Severity::Warning);
+}
+
+#[test]
+fn typed_keyed_entry_replacement_with_nested_keyed_child_layer_warns() {
+    let report = check_source(
+        "lossy-typed-entry-nested-replacement",
+        "module m\n\
+         resource Comment\n    required body: string\n    meta\n        reactions(pos: int): string\n\
+         resource Post\n    comments(seq: int): Comment\n\
+         store ^posts(id: int): Post\n\n\
+         fn replace(post: Id(^posts), seq: int, replacement: Comment)\n    ^posts(post).comments(seq) = replacement\n",
+    );
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let found = with_code(&report, CHECK_LOSSY_ROUND_TRIP);
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(found[0].severity, Severity::Warning);
+}
+
+#[test]
+fn inline_keyed_entry_replacement_with_keyed_child_layer_warns() {
+    let report = check_source(
+        "lossy-inline-entry-replacement",
+        "module m\n\
+         resource Post\n    comments(seq: int)\n        required body: string\n        reactions(pos: int): string\n\
+         store ^posts(id: int): Post\n\n\
+         fn replace(post: Id(^posts), seq: int, replacement: Post)\n    ^posts(post).comments(seq) = replacement\n",
+    );
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let found = with_code(&report, CHECK_LOSSY_ROUND_TRIP);
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(found[0].severity, Severity::Warning);
+}
+
+#[test]
+fn singleton_root_keyed_entry_replacement_with_keyed_child_layer_warns() {
+    let report = check_source(
+        "lossy-singleton-entry-replacement",
+        "module m\n\
+         resource Row\n    required label: string\n    notes(pos: int): string\n\
+         resource Settings\n    rows(id: int): Row\n\
+         store ^settings: Settings\n\n\
+         fn replace(id: int, replacement: Row)\n    ^settings.rows(id) = replacement\n",
+    );
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let found = with_code(&report, CHECK_LOSSY_ROUND_TRIP);
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(found[0].severity, Severity::Warning);
+}
+
+#[test]
 fn whole_saved_root_assignment_without_keyed_child_layers_does_not_warn() {
     let report = check_source(
         "non-lossy-root-replacement",
@@ -117,6 +184,22 @@ fn whole_saved_root_assignment_without_keyed_child_layers_does_not_warn() {
          resource Book\n    required title: string\n    meta\n        shelf: string\n\
          store ^books(id: int): Book\n\n\
          fn replace(id: int, replacement: Book)\n    ^books(id) = replacement\n",
+    );
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let found = with_code(&report, CHECK_LOSSY_ROUND_TRIP);
+    assert!(found.is_empty(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn typed_keyed_entry_replacement_without_keyed_child_layers_does_not_warn() {
+    let report = check_source(
+        "non-lossy-typed-entry-replacement",
+        "module m\n\
+         resource Comment\n    required body: string\n    meta\n        author: string\n\
+         resource Post\n    comments(seq: int): Comment\n\
+         store ^posts(id: int): Post\n\n\
+         fn replace(post: Id(^posts), seq: int, replacement: Comment)\n    ^posts(post).comments(seq) = replacement\n",
     );
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
@@ -192,6 +275,98 @@ fn invalid_saved_root_addressing_does_not_warn() {
 }
 
 #[test]
+fn invalid_keyed_entry_addressing_does_not_warn() {
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "wrong-root-key-type",
+            "module m\n\
+             resource Comment\n    required body: string\n    reactions(pos: int): string\n\
+             resource Post\n    comments(seq: int): Comment\n\
+             store ^posts(id: int): Post\n\n\
+             fn replace(post: string, seq: int, replacement: Comment)\n    ^posts(post).comments(seq) = replacement\n",
+            CHECK_KEY_TYPE,
+        ),
+        (
+            "wrong-parent-layer-key-type",
+            "module m\n\
+             resource Comment\n    required body: string\n    reactions(pos: int): string\n\
+             resource Chapter\n    comments(seq: int): Comment\n\
+             resource Post\n    chapters(ch: int): Chapter\n\
+             store ^posts(id: int): Post\n\n\
+             fn replace(post: Id(^posts), ch: string, seq: int, replacement: Comment)\n    ^posts(post).chapters(ch).comments(seq) = replacement\n",
+            CHECK_KEY_TYPE,
+        ),
+        (
+            "named-terminal-layer-key",
+            "module m\n\
+             resource Comment\n    required body: string\n    reactions(pos: int): string\n\
+             resource Post\n    comments(seq: int): Comment\n\
+             store ^posts(id: int): Post\n\n\
+             fn replace(post: Id(^posts), seq: int, replacement: Comment)\n    ^posts(post).comments(seq: seq) = replacement\n",
+            CHECK_CALL_ARGUMENT,
+        ),
+        (
+            "wrong-terminal-layer-arity",
+            "module m\n\
+             resource Comment\n    required body: string\n    reactions(pos: int): string\n\
+             resource Post\n    comments(seq: int): Comment\n\
+             store ^posts(id: int): Post\n\n\
+             fn replace(post: Id(^posts), replacement: Comment)\n    ^posts(post).comments() = replacement\n",
+            CHECK_KEY_TYPE,
+        ),
+        (
+            "parent-layer-range-key",
+            "module m\n\
+             resource Comment\n    required body: string\n    reactions(pos: int): string\n\
+             resource Chapter\n    comments(seq: int): Comment\n\
+             resource Post\n    chapters(ch: int): Chapter\n\
+             store ^posts(id: int): Post\n\n\
+             fn replace(post: Id(^posts), lo: int, hi: int, seq: int, replacement: Comment)\n    ^posts(post).chapters(lo..hi).comments(seq) = replacement\n",
+            "check.invalid_assign_target",
+        ),
+        (
+            "terminal-layer-range-key",
+            "module m\n\
+             resource Comment\n    required body: string\n    reactions(pos: int): string\n\
+             resource Chapter\n    comments(seq: int): Comment\n\
+             resource Post\n    chapters(ch: int): Chapter\n\
+             store ^posts(id: int): Post\n\n\
+             fn replace(post: Id(^posts), ch: int, lo: int, hi: int, replacement: Comment)\n    ^posts(post).chapters(ch).comments(lo..hi) = replacement\n",
+            "check.invalid_assign_target",
+        ),
+        (
+            "unresolved-terminal-layer-key",
+            "module m\n\
+             resource Comment\n    required body: string\n    reactions(pos: int): string\n\
+             resource Post\n    comments(seq: int): Comment\n\
+             store ^posts(id: int): Post\n\n\
+             fn replace(post: Id(^posts), replacement: Comment)\n    ^posts(post).comments(missing) = replacement\n",
+            CHECK_UNRESOLVED_NAME,
+        ),
+        (
+            "optional-entry-target",
+            "module m\n\
+             resource Comment\n    required body: string\n    reactions(pos: int): string\n\
+             resource Post\n    comments(seq: int): Comment\n\
+             store ^posts(id: int): Post\n\n\
+             fn replace(post: Id(^posts), seq: int, replacement: Comment)\n    ^posts(post)?.comments(seq) = replacement\n",
+            "check.invalid_assign_target",
+        ),
+    ];
+
+    for (name, source, expected_error) in cases {
+        let report = check_source(name, source);
+        assert!(
+            !with_code(&report, expected_error).is_empty(),
+            "{name}: {:#?}",
+            report.diagnostics
+        );
+        let found = with_code(&report, CHECK_LOSSY_ROUND_TRIP);
+        assert!(found.is_empty(), "{name}: {:#?}", report.diagnostics);
+    }
+}
+
+#[test]
 fn saved_field_assignment_does_not_warn() {
     let report = check_source(
         "field-write-preserves-children",
@@ -207,13 +382,29 @@ fn saved_field_assignment_does_not_warn() {
 }
 
 #[test]
-fn keyed_child_entry_assignment_does_not_warn() {
+fn keyed_entry_field_assignment_does_not_warn() {
     let report = check_source(
-        "keyed-child-entry-preserves-root-siblings",
+        "keyed-entry-field-write-preserves-children",
         "module m\n\
-         resource Book\n    required title: string\n    versions(version: int)\n        title: string\n\
+         resource Comment\n    required body: string\n    reactions(pos: int): string\n\
+         resource Post\n    comments(seq: int): Comment\n\
+         store ^posts(id: int): Post\n\n\
+         fn replace_body(post: Id(^posts), seq: int, body: string)\n    ^posts(post).comments(seq).body = body\n",
+    );
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let found = with_code(&report, CHECK_LOSSY_ROUND_TRIP);
+    assert!(found.is_empty(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn keyed_leaf_assignment_does_not_warn() {
+    let report = check_source(
+        "keyed-leaf-write-preserves-root-siblings",
+        "module m\n\
+         resource Book\n    required title: string\n    tags(pos: int): string\n\
          store ^books(id: int): Book\n\n\
-         fn replace_version(id: int, version: int, replacement: Book)\n    ^books(id).versions(version) = replacement\n",
+         fn replace_tag(id: int, pos: int, tag: string)\n    ^books(id).tags(pos) = tag\n",
     );
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);

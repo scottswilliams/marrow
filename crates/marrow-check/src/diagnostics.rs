@@ -43,8 +43,8 @@ pub const CHECK_RETURN_TYPE: &str = "check.return_type";
 /// A value's type does not match the binding or place it is stored into (a typed
 /// `const`/`var` initializer, or an assignment target).
 pub const CHECK_ASSIGNMENT_TYPE: &str = "check.assignment_type";
-/// A whole saved-root replacement can clear keyed child layers that a
-/// whole-resource read does not materialize.
+/// A whole saved-record replacement can clear keyed child layers that a
+/// whole-resource or keyed-entry read does not materialize.
 pub const CHECK_LOSSY_ROUND_TRIP: &str = "check.lossy_round_trip";
 /// A straight-line local resource value is missing a required field when written
 /// as a whole saved root.

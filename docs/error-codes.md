@@ -138,7 +138,7 @@ over every configured source and test file.
 | `check.call_argument` | A call or constructor passes the wrong number of arguments, names a parameter or key that does not exist, omits a required key, or supplies one more than once. |
 | `check.return_type` | A `return` value's type does not match the function's declared return type. |
 | `check.assignment_type` | A value's type does not match the typed binding or assignment target it is stored into. |
-| `check.lossy_round_trip` | Warning: a whole saved-root replacement targets a resource shape with keyed child layers, so omitted keyed children will be cleared. |
+| `check.lossy_round_trip` | Warning: a whole saved-record replacement targets a record shape with keyed child layers, so omitted keyed children will be cleared. |
 | `check.required_absent` | A straight-line whole saved-root write stores a local resource variable whose required field path was never assigned. Inconclusive paths remain runtime `write.required_absent` checks. |
 | `check.commit_amplification` | Warning: a loop contains a saved-data write outside an enclosing `transaction`. |
 | `check.untyped_value` | A value whose type cannot be resolved (`unknown`) is stored into a concrete typed place. |

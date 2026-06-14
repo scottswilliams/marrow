@@ -568,6 +568,16 @@ pub(crate) fn is_saved_key_range_path(
         .is_some_and(|expr| SavedPlaceResolver::new(program).is_key_range_path(&expr))
 }
 
+pub(crate) fn is_saved_path_with_key_range_arg(
+    program: &CheckedProgram,
+    path: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
+) -> bool {
+    checked_saved_expr(program, path, scope, file)
+        .is_some_and(|expr| SavedPlaceResolver::new(program).has_key_range_arg(&expr))
+}
+
 pub(crate) fn is_saved_index_range_path(
     program: &CheckedProgram,
     path: &marrow_syntax::Expression,

@@ -9,6 +9,7 @@ use std::path::Path;
 use marrow_syntax::SourceSpan;
 
 use crate::enums::{MatchCheck, check_match, resolve_diagnosed_annotation_type};
+use crate::executable::{SavedPlaceResolver, lower_expr_for_file};
 use crate::infer::{
     bind, infer_assignment_target_type_with_read_scope, infer_type_with_read_scope,
     local_binding_with_read_scope,
@@ -16,13 +17,15 @@ use crate::infer::{
 use crate::resolve::resolve_store_by_root;
 use crate::walk::for_each_child_expr;
 use crate::{
-    CHECK_COLLECTION_UNSUPPORTED, CHECK_CONDITION_TYPE, CHECK_LOSSY_ROUND_TRIP, CHECK_RANGE_VALUE,
-    CheckDiagnostic, CheckedProgram, MarrowType,
+    CHECK_CALL_ARGUMENT, CHECK_COLLECTION_UNSUPPORTED, CHECK_CONDITION_TYPE, CHECK_KEY_TYPE,
+    CHECK_LOSSY_ROUND_TRIP, CHECK_RANGE_VALUE, CHECK_UNRESOLVED_NAME, CheckDiagnostic,
+    CheckedProgram, MarrowType,
 };
 
 use super::collections::{
     check_entries_value_position, check_for_collection_support, check_for_entries_support,
     for_frame, is_saved_index_branch_path, is_saved_index_range_path, is_saved_key_range_path,
+    is_saved_path_with_key_range_arg,
 };
 use super::operators::{check_assignment, check_condition, check_return_type, check_throw_type};
 use super::ranges::{check_range_header, check_range_iterable_value_parts};
@@ -396,6 +399,13 @@ impl StatementCheck<'_> {
                 target.span(),
                 "generated index branches cannot be assigned",
             ));
+        } else if is_saved_path_with_key_range_arg(self.program, target, self.scope, self.file) {
+            self.diagnostics.push(CheckDiagnostic::error(
+                crate::rules::CHECK_INVALID_ASSIGN_TARGET,
+                self.file,
+                target.span(),
+                "saved key ranges cannot be assigned",
+            ));
         }
         if self.is_nested_local_resource_field_write(target)
             && !has_invalid_assign_target(self.diagnostics, self.file, target.span())
@@ -407,35 +417,40 @@ impl StatementCheck<'_> {
                 "nested local resource fields cannot be assigned",
             ));
         }
-        if let Some(store) = saved_root_replacement(RootReplacementCheck {
+        if let Some(store) = saved_root_replacement(TargetCheck {
             program: self.program,
             target,
             scope: self.scope,
             aliases: self.aliases,
             file: self.file,
+            diagnostics: self.diagnostics,
             transform_old: self.transform_old,
         }) {
             self.required_fields
                 .check_whole_root_write(self.file, value, store, self.diagnostics);
-            self.check_lossy_round_trip_warning(target, store.resource.members.as_slice());
         }
+        self.check_lossy_round_trip_warning(target);
         check_assignment(self.file, span, &target_type, &value_type, self.diagnostics);
         self.required_fields.assign_target(target);
     }
 
-    fn check_lossy_round_trip_warning(
-        &mut self,
-        target: &marrow_syntax::Expression,
-        members: &[marrow_schema::Node],
-    ) {
-        if !members_contain_keyed_layer(members) {
+    fn check_lossy_round_trip_warning(&mut self, target: &marrow_syntax::Expression) {
+        if !saved_record_replacement_has_keyed_layer(TargetCheck {
+            program: self.program,
+            target,
+            scope: self.scope,
+            aliases: self.aliases,
+            file: self.file,
+            diagnostics: self.diagnostics,
+            transform_old: self.transform_old,
+        }) {
             return;
         }
         self.diagnostics.push(CheckDiagnostic::warning(
             CHECK_LOSSY_ROUND_TRIP,
             self.file,
             target.span(),
-            "whole saved-root replacement clears keyed child layers omitted from the value",
+            "whole saved-record replacement clears keyed child layers omitted from the value",
         ));
     }
 
@@ -765,17 +780,18 @@ fn local_field_root(expr: &marrow_syntax::Expression) -> Option<&str> {
     }
 }
 
-struct RootReplacementCheck<'p, 'a> {
+struct TargetCheck<'p, 'a> {
     program: &'p CheckedProgram,
     target: &'a marrow_syntax::Expression,
     scope: &'a [HashMap<String, MarrowType>],
     aliases: &'a HashMap<String, Vec<String>>,
     file: &'a Path,
+    diagnostics: &'a [CheckDiagnostic],
     transform_old: Option<crate::presence::TransformOldReadScope<'a>>,
 }
 
 fn saved_root_replacement<'p>(
-    check: RootReplacementCheck<'p, '_>,
+    check: TargetCheck<'p, '_>,
 ) -> Option<crate::resolve::StoreResource<'p>> {
     match check.target {
         marrow_syntax::Expression::SavedRoot { name, .. } => {
@@ -787,7 +803,7 @@ fn saved_root_replacement<'p>(
                 return None;
             };
             let store = resolve_store_by_root(check.program, name)?;
-            let arg_types = saved_root_replacement_arg_types(&check, args);
+            let arg_types = target_arg_types(&check, args);
             if saved_root_args_address_record(store.store, args, &arg_types) {
                 return Some(store);
             }
@@ -797,8 +813,66 @@ fn saved_root_replacement<'p>(
     }
 }
 
-fn saved_root_replacement_arg_types(
-    check: &RootReplacementCheck<'_, '_>,
+fn saved_record_replacement_has_keyed_layer(check: TargetCheck<'_, '_>) -> bool {
+    let Some(target) = lower_expr_for_file(check.program, check.file, check.target, check.scope)
+    else {
+        return false;
+    };
+    let Some(place) = target.saved_place() else {
+        return false;
+    };
+    if !saved_record_replacement_target_shape(check.target, !place.layers.is_empty()) {
+        return false;
+    }
+    if target_has_saved_address_diagnostic(check.file, check.target.span(), check.diagnostics) {
+        return false;
+    }
+    let resolver = SavedPlaceResolver::new(check.program);
+    resolver
+        .record_replacement_members(place)
+        .is_some_and(|members| {
+            members
+                .iter()
+                .any(|member| member.contains_keyed_descendant())
+        })
+}
+
+fn saved_record_replacement_target_shape(
+    target: &marrow_syntax::Expression,
+    has_layers: bool,
+) -> bool {
+    if target_path_contains_optional_field(target) {
+        return false;
+    }
+    if has_layers {
+        return matches!(
+            target,
+            marrow_syntax::Expression::Call { callee, .. }
+                if matches!(callee.as_ref(), marrow_syntax::Expression::Field { .. })
+        );
+    }
+    match target {
+        marrow_syntax::Expression::SavedRoot { .. } => true,
+        marrow_syntax::Expression::Call { callee, .. } => {
+            matches!(callee.as_ref(), marrow_syntax::Expression::SavedRoot { .. })
+        }
+        _ => false,
+    }
+}
+
+fn target_path_contains_optional_field(target: &marrow_syntax::Expression) -> bool {
+    match target {
+        marrow_syntax::Expression::OptionalField { .. } => true,
+        marrow_syntax::Expression::Call { callee, .. } => {
+            target_path_contains_optional_field(callee)
+        }
+        marrow_syntax::Expression::Field { base, .. } => target_path_contains_optional_field(base),
+        _ => false,
+    }
+}
+
+fn target_arg_types(
+    check: &TargetCheck<'_, '_>,
     args: &[marrow_syntax::Argument],
 ) -> Vec<MarrowType> {
     let mut diagnostics = Vec::new();
@@ -817,10 +891,26 @@ fn saved_root_replacement_arg_types(
         .collect()
 }
 
-fn members_contain_keyed_layer(members: &[marrow_schema::Node]) -> bool {
-    members
-        .iter()
-        .any(|member| !member.key_params.is_empty() || members_contain_keyed_layer(&member.members))
+fn target_has_saved_address_diagnostic(
+    file: &Path,
+    span: SourceSpan,
+    diagnostics: &[CheckDiagnostic],
+) -> bool {
+    diagnostics.iter().any(|diagnostic| {
+        diagnostic.file == file
+            && span_contains(span, diagnostic.span)
+            && matches!(
+                diagnostic.code,
+                CHECK_CALL_ARGUMENT
+                    | CHECK_KEY_TYPE
+                    | CHECK_UNRESOLVED_NAME
+                    | crate::rules::CHECK_INVALID_ASSIGN_TARGET
+            )
+    })
+}
+
+fn span_contains(outer: SourceSpan, inner: SourceSpan) -> bool {
+    outer.start_byte <= inner.start_byte && inner.end_byte <= outer.end_byte
 }
 
 fn has_invalid_assign_target(

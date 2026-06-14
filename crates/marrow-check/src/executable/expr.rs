@@ -154,6 +154,14 @@ impl CheckedSavedMember {
             CheckedSavedMemberKind::Group => None,
         }
     }
+
+    pub(crate) fn contains_keyed_descendant(&self) -> bool {
+        !self.key_params.is_empty()
+            || self
+                .group_members
+                .iter()
+                .any(Self::contains_keyed_descendant)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

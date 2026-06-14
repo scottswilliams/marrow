@@ -125,6 +125,10 @@ impl<'a> SavedPlaceResolver<'a> {
             && (self.is_index_branch(expr) || self.layer_or_root_range_subject(expr).is_some())
     }
 
+    pub(crate) fn has_key_range_arg(&self, expr: &CheckedExpr) -> bool {
+        expr.saved_place().is_some_and(place_has_range_arg)
+    }
+
     pub(crate) fn is_index_range_path(&self, expr: &CheckedExpr) -> bool {
         self.range_arg_position(expr).is_some() && self.is_index_branch(expr)
     }
@@ -204,6 +208,22 @@ impl<'a> SavedPlaceResolver<'a> {
 
     pub(crate) fn saved_key_param_type(key: &CheckedSavedKeyParam) -> MarrowType {
         checked_key_param_type(key).unwrap_or(MarrowType::Unknown)
+    }
+
+    pub(crate) fn record_replacement_members<'p>(
+        &self,
+        place: &'p CheckedSavedPlace,
+    ) -> Option<&'p [CheckedSavedMember]> {
+        if !matches!(place.terminal, CheckedSavedTerminal::Record) {
+            return None;
+        }
+        if !root_record_addressed(place) || !place.layers.iter().all(layer_record_addressed) {
+            return None;
+        }
+        let Some(layer) = place.layers.last() else {
+            return Some(&place.root_members);
+        };
+        layer.leaf.is_none().then_some(layer.members.as_slice())
     }
 
     pub(crate) fn binding_member_ref(&self, expr: &CheckedExpr) -> Option<SavedMemberRef> {
@@ -707,6 +727,26 @@ fn checked_range_expr(expr: &CheckedExpr) -> bool {
 
 fn range_arg_position_in(args: &[CheckedArg]) -> Option<usize> {
     args.iter().position(|arg| checked_range_expr(&arg.value))
+}
+
+fn place_has_range_arg(place: &CheckedSavedPlace) -> bool {
+    range_arg_position_in(&place.identity_args).is_some()
+        || place
+            .layers
+            .iter()
+            .any(|layer| range_arg_position_in(&layer.args).is_some())
+        || match &place.terminal {
+            CheckedSavedTerminal::Index { args, .. } => range_arg_position_in(args).is_some(),
+            CheckedSavedTerminal::Record | CheckedSavedTerminal::Field { .. } => false,
+        }
+}
+
+fn root_record_addressed(place: &CheckedSavedPlace) -> bool {
+    place.identity_keys.is_empty() || !place.identity_args.is_empty()
+}
+
+fn layer_record_addressed(layer: &CheckedSavedLayer) -> bool {
+    layer.key_params.is_empty() || !layer.args.is_empty()
 }
 
 fn checked_key_param_type(key: &CheckedSavedKeyParam) -> Option<MarrowType> {

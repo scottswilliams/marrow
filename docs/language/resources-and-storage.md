@@ -574,12 +574,12 @@ and traversed through their saved addresses (for example `^books(id).versions(v)
 A whole read is useful for small records and construction; read or traverse the
 child layers you need directly.
 
-Whole-resource assignment is exact. It replaces the saved resource for that
-identity, clearing every field, unkeyed group, and keyed child layer omitted from
+Whole-record assignment is exact. It replaces the saved record at that
+address, clearing every field, unkeyed group, and keyed child layer omitted from
 the assigned value. To preserve children while changing current state, write the
-specific fields instead of using `=`. When the root resource has keyed child
-layers, the checker warns on whole-root replacement so a read-modify-write reset
-is visible before runtime.
+specific fields instead of using `=`. When the replaced record shape has keyed
+child layers, the checker warns so a read-modify-write reset is visible before
+runtime.
 
 The compiler checks resource fields before runtime. Runtime reads from saved
 data also validate bytes before returning typed values.
