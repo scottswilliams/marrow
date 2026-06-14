@@ -38,17 +38,38 @@ impl StagedDataView for EmptyStagedData {
     }
 }
 
-pub(crate) fn reject_resource_unique_conflicts(
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
-    value: &ResourceValue,
-    store: &TreeStore,
+#[derive(Clone, Copy)]
+pub(crate) struct IndexWriteContext<'a> {
+    place: &'a CheckedSavedPlace,
+    identity: &'a [SavedKey],
+    store: &'a TreeStore,
     span: SourceSpan,
+}
+
+impl<'a> IndexWriteContext<'a> {
+    pub(crate) fn new(
+        place: &'a CheckedSavedPlace,
+        identity: &'a [SavedKey],
+        store: &'a TreeStore,
+        span: SourceSpan,
+    ) -> Self {
+        Self {
+            place,
+            identity,
+            store,
+            span,
+        }
+    }
+}
+
+pub(crate) fn reject_resource_unique_conflicts(
+    context: IndexWriteContext<'_>,
+    value: &ResourceValue,
 ) -> Result<(), WriteError> {
-    for index in &place.indexes {
+    for index in &context.place.indexes {
         if index.unique {
-            let new_keys = index_keys(&index.keys, place, identity, value);
-            check_unique_conflict(index, identity, new_keys.as_deref(), store, span)?;
+            let new_keys = index_keys(&index.keys, context.place, context.identity, value);
+            check_unique_conflict(index, context, new_keys.as_deref())?;
         }
     }
     Ok(())
@@ -56,24 +77,21 @@ pub(crate) fn reject_resource_unique_conflicts(
 
 pub(crate) fn stage_resource_index_rewrites(
     steps: &mut Vec<PlanStep>,
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
+    context: IndexWriteContext<'_>,
     value: &ResourceValue,
-    store: &TreeStore,
-    span: SourceSpan,
 ) -> Result<(), WriteError> {
-    for index in &place.indexes {
-        if let Some(old_keys) = stored_index_keys(&index.keys, place, identity, store, span)? {
+    for index in &context.place.indexes {
+        if let Some(old_keys) = stored_index_keys(&index.keys, context)? {
             steps.push(PlanStep::DeleteIndex {
-                address: index_address(index, old_keys, span)?,
-                identity: identity.to_vec(),
+                address: index_address(index, old_keys, context.span)?,
+                identity: context.identity.to_vec(),
             });
         }
-        if let Some(new_keys) = index_keys(&index.keys, place, identity, value) {
+        if let Some(new_keys) = index_keys(&index.keys, context.place, context.identity, value) {
             steps.push(PlanStep::WriteIndex {
-                address: index_address(index, new_keys, span)?,
-                identity: identity.to_vec(),
-                value: index_entry_value(index.unique, identity),
+                address: index_address(index, new_keys, context.span)?,
+                identity: context.identity.to_vec(),
+                value: index_entry_value(index.unique, context.identity),
             });
         }
     }
@@ -102,16 +120,13 @@ pub(crate) fn index_rebuild_entry_with_staged(
 
 pub(crate) fn stage_resource_index_deletes(
     steps: &mut Vec<PlanStep>,
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
-    store: &TreeStore,
-    span: SourceSpan,
+    context: IndexWriteContext<'_>,
 ) -> Result<(), WriteError> {
-    for index in &place.indexes {
-        if let Some(keys) = stored_index_keys(&index.keys, place, identity, store, span)? {
+    for index in &context.place.indexes {
+        if let Some(keys) = stored_index_keys(&index.keys, context)? {
             steps.push(PlanStep::DeleteIndex {
-                address: index_address(index, keys, span)?,
-                identity: identity.to_vec(),
+                address: index_address(index, keys, context.span)?,
+                identity: context.identity.to_vec(),
             });
         }
     }
@@ -119,138 +134,104 @@ pub(crate) fn stage_resource_index_deletes(
 }
 
 pub(crate) fn reject_field_unique_conflicts(
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
+    context: IndexWriteContext<'_>,
     field: &str,
     value: &LeafValue,
-    store: &TreeStore,
-    span: SourceSpan,
 ) -> Result<(), WriteError> {
-    for index in &place.indexes {
+    for index in &context.place.indexes {
         if index.unique && index.keys.iter().any(|key| key.name == field) {
             let new_keys =
-                field_write_index_keys(&index.keys, place, identity, field, value, store, span)?;
-            check_unique_conflict(index, identity, new_keys.as_deref(), store, span)?;
+                field_write_index_keys(&index.keys, context, field, FieldIndexValue::Leaf(value))?;
+            check_unique_conflict(index, context, new_keys.as_deref())?;
         }
     }
     Ok(())
 }
 
 pub(crate) fn reject_identity_field_unique_conflicts(
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
+    context: IndexWriteContext<'_>,
     field: &str,
     keys: &[SavedKey],
-    store: &TreeStore,
-    span: SourceSpan,
 ) -> Result<(), WriteError> {
     let bytes = encode_identity_payload(keys);
-    for index in &place.indexes {
+    for index in &context.place.indexes {
         if index.unique && index.keys.iter().any(|key| key.name == field) {
-            let new_keys = identity_field_write_index_keys(
+            let new_keys = field_write_index_keys(
                 &index.keys,
-                place,
-                identity,
+                context,
                 field,
-                &bytes,
-                store,
-                span,
+                FieldIndexValue::IdentityBytes(&bytes),
             )?;
-            check_unique_conflict(index, identity, new_keys.as_deref(), store, span)?;
+            check_unique_conflict(index, context, new_keys.as_deref())?;
         }
     }
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn stage_field_index_rewrites(
     steps: &mut Vec<PlanStep>,
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
+    context: IndexWriteContext<'_>,
     field: &str,
     value: &LeafValue,
-    store: &TreeStore,
-    span: SourceSpan,
 ) -> Result<(), WriteError> {
-    for index in &place.indexes {
-        if !index.keys.iter().any(|key| key.name == field) {
-            continue;
-        }
-        if let Some(old_keys) = stored_index_keys(&index.keys, place, identity, store, span)? {
-            steps.push(PlanStep::DeleteIndex {
-                address: index_address(index, old_keys, span)?,
-                identity: identity.to_vec(),
-            });
-        }
-        if let Some(new_keys) =
-            field_write_index_keys(&index.keys, place, identity, field, value, store, span)?
-        {
-            steps.push(PlanStep::WriteIndex {
-                address: index_address(index, new_keys, span)?,
-                identity: identity.to_vec(),
-                value: index_entry_value(index.unique, identity),
-            });
-        }
-    }
-    Ok(())
+    stage_field_index_rewrites_for_value(steps, context, field, FieldIndexValue::Leaf(value))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn stage_identity_field_index_rewrites(
     steps: &mut Vec<PlanStep>,
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
+    context: IndexWriteContext<'_>,
     field: &str,
     keys: &[SavedKey],
-    store: &TreeStore,
-    span: SourceSpan,
 ) -> Result<(), WriteError> {
     let bytes = encode_identity_payload(keys);
-    for index in &place.indexes {
-        if !index.keys.iter().any(|key| key.name == field) {
-            continue;
-        }
-        if let Some(old_keys) = stored_index_keys(&index.keys, place, identity, store, span)? {
-            steps.push(PlanStep::DeleteIndex {
-                address: index_address(index, old_keys, span)?,
-                identity: identity.to_vec(),
-            });
-        }
-        if let Some(new_keys) = identity_field_write_index_keys(
-            &index.keys,
-            place,
-            identity,
-            field,
-            &bytes,
-            store,
-            span,
-        )? {
-            steps.push(PlanStep::WriteIndex {
-                address: index_address(index, new_keys, span)?,
-                identity: identity.to_vec(),
-                value: index_entry_value(index.unique, identity),
-            });
-        }
-    }
-    Ok(())
+    stage_field_index_rewrites_for_value(
+        steps,
+        context,
+        field,
+        FieldIndexValue::IdentityBytes(&bytes),
+    )
 }
 
 pub(crate) fn stage_field_index_deletes(
     steps: &mut Vec<PlanStep>,
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
+    context: IndexWriteContext<'_>,
     field: &str,
-    store: &TreeStore,
-    span: SourceSpan,
 ) -> Result<(), WriteError> {
-    for index in &place.indexes {
+    for index in &context.place.indexes {
         if !index.keys.iter().any(|key| key.name == field) {
             continue;
         }
-        if let Some(old_keys) = stored_index_keys(&index.keys, place, identity, store, span)? {
+        if let Some(old_keys) = stored_index_keys(&index.keys, context)? {
             steps.push(PlanStep::DeleteIndex {
-                address: index_address(index, old_keys, span)?,
-                identity: identity.to_vec(),
+                address: index_address(index, old_keys, context.span)?,
+                identity: context.identity.to_vec(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn stage_field_index_rewrites_for_value(
+    steps: &mut Vec<PlanStep>,
+    context: IndexWriteContext<'_>,
+    field: &str,
+    value: FieldIndexValue<'_>,
+) -> Result<(), WriteError> {
+    for index in &context.place.indexes {
+        if !index.keys.iter().any(|key| key.name == field) {
+            continue;
+        }
+        if let Some(old_keys) = stored_index_keys(&index.keys, context)? {
+            steps.push(PlanStep::DeleteIndex {
+                address: index_address(index, old_keys, context.span)?,
+                identity: context.identity.to_vec(),
+            });
+        }
+        if let Some(new_keys) = field_write_index_keys(&index.keys, context, field, value)? {
+            steps.push(PlanStep::WriteIndex {
+                address: index_address(index, new_keys, context.span)?,
+                identity: context.identity.to_vec(),
+                value: index_entry_value(index.unique, context.identity),
             });
         }
     }
@@ -292,12 +273,16 @@ fn index_keys(
 
 fn stored_arg_key(
     key: &CheckedSavedIndexKey,
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
-    store: &TreeStore,
-    span: SourceSpan,
+    context: IndexWriteContext<'_>,
 ) -> Result<Option<SavedKey>, WriteError> {
-    stored_arg_key_with_staged(key, place, identity, store, &EmptyStagedData, span)
+    stored_arg_key_with_staged(
+        key,
+        context.place,
+        context.identity,
+        context.store,
+        &EmptyStagedData,
+        context.span,
+    )
 }
 
 fn stored_arg_key_with_staged(
@@ -338,12 +323,16 @@ fn stored_arg_key_with_staged(
 
 fn stored_index_keys(
     keys: &[CheckedSavedIndexKey],
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
-    store: &TreeStore,
-    span: SourceSpan,
+    context: IndexWriteContext<'_>,
 ) -> Result<Option<Vec<SavedKey>>, WriteError> {
-    stored_index_keys_with_staged(keys, place, identity, store, &EmptyStagedData, span)
+    stored_index_keys_with_staged(
+        keys,
+        context.place,
+        context.identity,
+        context.store,
+        &EmptyStagedData,
+        context.span,
+    )
 }
 
 fn stored_index_keys_with_staged(
@@ -359,42 +348,33 @@ fn stored_index_keys_with_staged(
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
-fn field_write_index_keys(
-    keys: &[CheckedSavedIndexKey],
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
-    field: &str,
-    value: &LeafValue,
-    store: &TreeStore,
-    span: SourceSpan,
-) -> Result<Option<Vec<SavedKey>>, WriteError> {
-    keys.iter()
-        .map(|key| {
-            if key.name == field {
-                Ok(value.as_key())
-            } else {
-                stored_arg_key(key, place, identity, store, span)
-            }
-        })
-        .collect()
+#[derive(Clone, Copy)]
+enum FieldIndexValue<'a> {
+    Leaf(&'a LeafValue),
+    IdentityBytes(&'a [u8]),
 }
 
-fn identity_field_write_index_keys(
+impl FieldIndexValue<'_> {
+    fn key_for(self, key: &CheckedSavedIndexKey) -> Result<Option<SavedKey>, WriteError> {
+        match self {
+            Self::Leaf(value) => Ok(value.as_key()),
+            Self::IdentityBytes(bytes) => stored_index_key(&key.value_meaning, bytes).map(Some),
+        }
+    }
+}
+
+fn field_write_index_keys(
     keys: &[CheckedSavedIndexKey],
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
+    context: IndexWriteContext<'_>,
     field: &str,
-    bytes: &[u8],
-    store: &TreeStore,
-    span: SourceSpan,
+    value: FieldIndexValue<'_>,
 ) -> Result<Option<Vec<SavedKey>>, WriteError> {
     keys.iter()
         .map(|key| {
             if key.name == field {
-                stored_index_key(&key.value_meaning, bytes).map(Some)
+                value.key_for(key)
             } else {
-                stored_arg_key(key, place, identity, store, span)
+                stored_arg_key(key, context)
             }
         })
         .collect()
@@ -425,20 +405,23 @@ fn index_entry_value(unique: bool, identity: &[SavedKey]) -> Vec<u8> {
 
 fn check_unique_conflict(
     index: &CheckedSavedIndex,
-    identity: &[SavedKey],
+    context: IndexWriteContext<'_>,
     new_keys: Option<&[SavedKey]>,
-    store: &TreeStore,
-    span: SourceSpan,
 ) -> Result<(), WriteError> {
     let Some(new_keys) = new_keys else {
         return Ok(());
     };
-    let address = IndexAddress::from_checked(&index.catalog_id, new_keys.to_vec(), span)
+    let address = IndexAddress::from_checked(&index.catalog_id, new_keys.to_vec(), context.span)
         .map_err(runtime_store_error)?;
-    let page = store
+    let page = context
+        .store
         .scan_index_tuple(&address.index, &address.keys, 2)
         .map_err(WriteError::from)?;
-    if page.entries.iter().any(|entry| entry.identity != identity) {
+    if page
+        .entries
+        .iter()
+        .any(|entry| entry.identity != context.identity)
+    {
         return Err(WriteError {
             code: WRITE_UNIQUE_CONFLICT,
             message: format!(

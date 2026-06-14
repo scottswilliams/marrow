@@ -7,7 +7,7 @@ use marrow_store::value::ValueError;
 use marrow_syntax::SourceSpan;
 
 use crate::index_maintenance::{
-    reject_field_unique_conflicts, reject_identity_field_unique_conflicts,
+    IndexWriteContext, reject_field_unique_conflicts, reject_identity_field_unique_conflicts,
     reject_resource_unique_conflicts, stage_field_index_deletes, stage_field_index_rewrites,
     stage_identity_field_index_rewrites, stage_resource_index_deletes,
     stage_resource_index_rewrites,
@@ -85,6 +85,7 @@ pub(crate) fn plan_resource_write(
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
     resolve_store_identity(place, identity)?;
+    let index_context = IndexWriteContext::new(place, identity, store, span);
     let mut to_write = Vec::new();
     for field in materialized_plain_fields(&place.root_members) {
         let name = materialized_field_name(&field.path);
@@ -100,7 +101,7 @@ pub(crate) fn plan_resource_write(
         }
     }
 
-    reject_resource_unique_conflicts(place, identity, value, store, span)?;
+    reject_resource_unique_conflicts(index_context, value)?;
 
     let mut steps = vec![PlanStep::DeleteData {
         address: data_address(place, identity, &[], &[], span)?,
@@ -112,7 +113,7 @@ pub(crate) fn plan_resource_write(
             value: bytes,
         });
     }
-    stage_resource_index_rewrites(&mut steps, place, identity, value, store, span)?;
+    stage_resource_index_rewrites(&mut steps, index_context, value)?;
     Ok(WritePlan { steps })
 }
 
@@ -123,10 +124,11 @@ pub(crate) fn plan_resource_delete(
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
     resolve_store_identity(place, identity)?;
+    let index_context = IndexWriteContext::new(place, identity, store, span);
     let mut steps = vec![PlanStep::DeleteData {
         address: data_address(place, identity, &[], &[], span)?,
     }];
-    stage_resource_index_deletes(&mut steps, place, identity, store, span)?;
+    stage_resource_index_deletes(&mut steps, index_context)?;
     Ok(WritePlan { steps })
 }
 
@@ -182,12 +184,13 @@ pub(crate) fn plan_field_write(
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
     resolve_store_identity(place, identity)?;
+    let index_context = IndexWriteContext::new(place, identity, store, span);
     let leaf = checked_field_leaf(&place.root_members, field).ok_or_else(|| WriteError {
         code: WRITE_UNKNOWN_FIELD,
         message: format!("resource `{}` has no field `{field}`", place.resource_name),
     })?;
     check_type(field, leaf, value)?;
-    reject_field_unique_conflicts(place, identity, field, value, store, span)?;
+    reject_field_unique_conflicts(index_context, field, value)?;
     let mut steps = vec![
         record_node_step(place, identity, span)?,
         PlanStep::WriteData {
@@ -195,7 +198,7 @@ pub(crate) fn plan_field_write(
             value: value.bytes()?,
         },
     ];
-    stage_field_index_rewrites(&mut steps, place, identity, field, value, store, span)?;
+    stage_field_index_rewrites(&mut steps, index_context, field, value)?;
     Ok(WritePlan { steps })
 }
 
@@ -209,11 +212,12 @@ pub(crate) fn plan_identity_field_write(
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
     resolve_store_identity(place, identity)?;
+    let index_context = IndexWriteContext::new(place, identity, store, span);
     let leaf = checked_field_leaf(&place.root_members, field).ok_or_else(|| WriteError {
         code: WRITE_UNKNOWN_FIELD,
         message: format!("resource `{}` has no field `{field}`", place.resource_name),
     })?;
-    reject_identity_field_unique_conflicts(place, identity, field, keys, store, span)?;
+    reject_identity_field_unique_conflicts(index_context, field, keys)?;
     let mut steps = vec![
         record_node_step(place, identity, span)?,
         PlanStep::WriteData {
@@ -221,7 +225,7 @@ pub(crate) fn plan_identity_field_write(
             value: staged_identity_value(field, leaf, keys, referenced_arity)?,
         },
     ];
-    stage_identity_field_index_rewrites(&mut steps, place, identity, field, keys, store, span)?;
+    stage_identity_field_index_rewrites(&mut steps, index_context, field, keys)?;
     Ok(WritePlan { steps })
 }
 
@@ -349,6 +353,7 @@ pub(crate) fn plan_field_delete(
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
     resolve_store_identity(place, identity)?;
+    let index_context = IndexWriteContext::new(place, identity, store, span);
     if checked_field_leaf(&place.root_members, field).is_none() {
         return Err(WriteError {
             code: WRITE_UNKNOWN_FIELD,
@@ -358,7 +363,7 @@ pub(crate) fn plan_field_delete(
     let mut steps = vec![PlanStep::DeleteData {
         address: data_address(place, identity, &[], &[field.to_string()], span)?,
     }];
-    stage_field_index_deletes(&mut steps, place, identity, field, store, span)?;
+    stage_field_index_deletes(&mut steps, index_context, field)?;
     Ok(WritePlan { steps })
 }
 

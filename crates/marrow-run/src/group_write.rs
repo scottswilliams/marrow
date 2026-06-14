@@ -47,104 +47,116 @@ pub(crate) fn eval_group_entry_write(
     let traversed = DataAddress::layer_prefix(place, &identity, &traversed_layers, span)?;
     env.guard_traversed_layer(&TraversedLayer::data(traversed), span)?;
 
+    let target = GroupEntryTarget {
+        place,
+        identity: &identity,
+        parent_addresses: &parent_addresses,
+        span,
+    };
+
     if let Some(leaf) = &layer_facts.leaf {
-        return write_layer_leaf(
-            place,
-            &identity,
-            &parent_addresses,
-            keys,
-            leaf.clone(),
-            value,
-            span,
-            env,
-        );
+        return write_layer_leaf(&target, keys, leaf, value, env);
     }
 
-    write_direct_group_entry(place, &identity, &parent_addresses, keys, value, span, env)
+    write_direct_group_entry(&target, keys, value, env)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn write_layer_leaf(
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
-    parent_addresses: &[LayerAddress],
-    keys: &[ExecArg],
-    leaf: StoreLeafKind,
-    value: &ExecExpr,
+struct GroupEntryTarget<'a> {
+    place: &'a CheckedSavedPlace,
+    identity: &'a [SavedKey],
+    parent_addresses: &'a [LayerAddress],
     span: SourceSpan,
+}
+
+fn write_layer_leaf(
+    target: &GroupEntryTarget<'_>,
+    keys: &[ExecArg],
+    leaf: &StoreLeafKind,
+    value: &ExecExpr,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
     let value = eval_expr(value, env)?;
-    let expected = place
+    let expected = target
+        .place
         .layers
         .last()
         .map_or(&[][..], |layer| layer.key_params.as_slice());
-    let layer_keys = lower_keys(keys, span, false, None, expected, env)?;
-    let mut layers = parent_addresses.to_vec();
-    let Some(layer_facts) = place.layers.last() else {
-        return Err(unsupported("assigning this saved path", span));
+    let layer_keys = lower_keys(keys, target.span, false, None, expected, env)?;
+    let mut layers = target.parent_addresses.to_vec();
+    let Some(layer_facts) = target.place.layers.last() else {
+        return Err(unsupported("assigning this saved path", target.span));
     };
     layers.push(LayerAddress::from_checked(layer_facts, layer_keys.clone()));
 
-    let plan = match &leaf {
+    let plan = match leaf {
         StoreLeafKind::Identity { store_root, arity } => {
-            let keys = identity_keys_of(value, store_root, span)?;
-            plan_layer_identity_leaf_write(place, identity, &layers, &keys, *arity, span)
+            let keys = identity_keys_of(value, store_root, target.span)?;
+            plan_layer_identity_leaf_write(
+                target.place,
+                target.identity,
+                &layers,
+                &keys,
+                *arity,
+                target.span,
+            )
         }
         StoreLeafKind::Scalar(_) | StoreLeafKind::Enum { .. } => {
-            let saved = value_to_leaf(value, &leaf, span)?;
-            plan_layer_leaf_write(place, identity, &layers, &saved, span)
+            let saved = value_to_leaf(value, leaf, target.span)?;
+            plan_layer_leaf_write(target.place, target.identity, &layers, &saved, target.span)
         }
     };
-    env.apply_plan(plan, span)
+    env.apply_plan(plan, target.span)
 }
 
 fn write_direct_group_entry(
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
-    parent_addresses: &[LayerAddress],
+    target: &GroupEntryTarget<'_>,
     keys: &[ExecArg],
     value: &ExecExpr,
-    span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
     let Value::Resource(fields) = eval_expr(value, env)? else {
         return Err(unsupported(
             "assigning a non-resource value to a group entry",
-            span,
+            target.span,
         ));
     };
-    let Some(layer_facts) = place.layers.last() else {
-        return Err(unsupported("assigning this saved path", span));
+    let Some(layer_facts) = target.place.layers.last() else {
+        return Err(unsupported("assigning this saved path", target.span));
     };
     let expected = layer_facts.key_params.as_slice();
-    let layer_keys = lower_keys(keys, span, false, None, expected, env)?;
-    let value = resource_value_of(&layer_facts.members, fields, span)?;
+    let layer_keys = lower_keys(keys, target.span, false, None, expected, env)?;
+    let value = resource_value_of(&layer_facts.members, fields, target.span)?;
     let layer_address = LayerAddress::from_checked(layer_facts, layer_keys.clone());
-    let mut layers = parent_addresses.to_vec();
+    let mut layers = target.parent_addresses.to_vec();
     layers.push(layer_address);
     let created_required_paths = created_required_paths_for_value(
-        place,
-        identity,
+        target.place,
+        target.identity,
         &layers,
         &layer_facts.members,
         &value,
-        span,
+        target.span,
         env,
     )?;
-    let plan = plan_layer_group_write(place, identity, &layers, &value, span);
+    let plan = plan_layer_group_write(target.place, target.identity, &layers, &value, target.span);
     let plan = if env.transaction_depth() == 0 {
         plan.and_then(|plan| {
-            validate_required_fields_after_group_write(place, identity, &layers, env.store, span)?;
+            validate_required_fields_after_group_write(
+                target.place,
+                target.identity,
+                &layers,
+                env.store,
+                target.span,
+            )?;
             Ok(plan)
         })
     } else {
         plan
     };
-    env.apply_plan(plan, span)?;
+    env.apply_plan(plan, target.span)?;
     for path in created_required_paths {
         env.note_created_required_path(path);
     }
-    env.defer_required_entry_check(place, identity, &layers);
+    env.defer_required_entry_check(target.place, target.identity, &layers);
     Ok(())
 }
