@@ -41,7 +41,7 @@ fn an_uncaught_throw_surfaces_the_thrown_code() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,
@@ -63,7 +63,7 @@ fn a_dynamically_built_invalid_error_code_faults_typed_at_run() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,
@@ -114,7 +114,7 @@ fn an_uncaught_fault_is_located() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,
@@ -147,7 +147,7 @@ fn a_cross_module_fault_names_the_callee_file() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,
@@ -177,7 +177,7 @@ fn an_overflow_fault_is_located() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,
@@ -210,7 +210,7 @@ fn an_absent_element_fault_is_located() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,
@@ -241,7 +241,7 @@ fn an_uncaught_throw_is_located() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,
@@ -274,7 +274,7 @@ fn unbounded_recursion_surfaces_a_located_recursion_limit() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,
@@ -311,7 +311,7 @@ fn recursion_within_the_limit_runs_normally() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,
@@ -338,7 +338,11 @@ fn a_fault_with_no_origin_keeps_the_bare_fallback() {
     // renders bare: the code leads the line with no location prefix and no spurious
     // `:0:0:`.
     let root = temp_project("run-located-noorigin", |root| {
-        write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+        );
         write(
             root,
             "src/app.mw",

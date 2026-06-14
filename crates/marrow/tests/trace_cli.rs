@@ -17,7 +17,7 @@ fn faulting_print_project(name: &str) -> support::TempProject {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,
@@ -454,7 +454,7 @@ fn test_trace_labels_each_test() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
         );
         write(root, "src/app.mw", "module app\n");
         write(

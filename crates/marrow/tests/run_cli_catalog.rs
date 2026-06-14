@@ -201,7 +201,7 @@ fn a_memory_backed_durable_baseline_fails_with_a_typed_error() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,
@@ -234,7 +234,7 @@ fn a_plain_script_runs_over_memory_with_no_baseline() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "main" } }"#,
         );
         write(root, "src/app.mw", "pub fn main()\n\x20   print(\"ran\")\n");
     });

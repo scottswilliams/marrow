@@ -404,22 +404,21 @@ pub(crate) fn dir_and_path_args(
     }
 }
 
-/// The native backend's redb file path, or `Ok(None)` for the in-memory default.
+/// The native backend's redb file path, or `Ok(None)` for an explicit memory store.
 /// No filesystem side effects.
 pub(crate) fn native_store_path(
     dir: &str,
     config: &marrow_project::ProjectConfig,
 ) -> Result<Option<PathBuf>, ExitCode> {
     match &config.store {
-        None
-        | Some(marrow_project::StoreConfig {
+        marrow_project::StoreConfig {
             backend: marrow_project::StoreBackend::Memory,
             ..
-        }) => Ok(None),
-        Some(marrow_project::StoreConfig {
+        } => Ok(None),
+        marrow_project::StoreConfig {
             backend: marrow_project::StoreBackend::Native,
             data_dir,
-        }) => {
+        } => {
             let data_dir = data_dir
                 .as_deref()
                 .expect("parse_config guarantees a native store has a dataDir");
@@ -448,7 +447,7 @@ pub(crate) fn resolve_store_path(
 }
 
 /// Open the project's store read-only, or `Ok(None)` if it holds no saved data on
-/// disk yet (in-memory default, or the native file does not exist). Never creates.
+/// disk yet (explicit memory store, or the native file does not exist). Never creates.
 pub(crate) fn open_store_for_inspection(
     dir: &str,
     config: &marrow_project::ProjectConfig,
@@ -631,7 +630,7 @@ fn render_accepted_catalog_file(
 }
 
 fn accepted_catalog_file_path(dir: &str) -> PathBuf {
-    Path::new(dir).join("marrow.catalog.json")
+    Path::new(dir).join(marrow_project::CATALOG_FILE_NAME)
 }
 
 /// Load the config and check the project. On any failure (config, unreadable

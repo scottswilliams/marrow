@@ -301,8 +301,8 @@ pub(crate) fn commit_catalog_if_clean(root: impl AsRef<Path>) {
     }
 }
 
-/// The native store file path a project's config selects, or `None` for the in-memory
-/// default. Mirrors the CLI's own resolution so fixtures and the binary agree on where
+/// The native store file path a project's config selects, or `None` for an explicit
+/// memory store. Mirrors the CLI's own resolution so fixtures and the binary agree on where
 /// the store lives.
 #[allow(dead_code)]
 pub(crate) fn native_store_path(
@@ -310,10 +310,10 @@ pub(crate) fn native_store_path(
     config: &marrow_project::ProjectConfig,
 ) -> Option<PathBuf> {
     match &config.store {
-        Some(marrow_project::StoreConfig {
+        marrow_project::StoreConfig {
             backend: marrow_project::StoreBackend::Native,
             data_dir,
-        }) => {
+        } => {
             let data_dir = data_dir.as_deref().expect("native store has a dataDir");
             Some(root.join(data_dir).join("marrow.redb"))
         }

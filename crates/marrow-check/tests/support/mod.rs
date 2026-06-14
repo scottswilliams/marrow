@@ -84,7 +84,7 @@ pub fn write(root: &Path, relative: &str, contents: &str) {
 
 /// The standard project config: a single `src` source root.
 pub fn config() -> ProjectConfig {
-    parse_config(r#"{ "sourceRoots": ["src"] }"#).expect("config")
+    parse_config(r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#).expect("config")
 }
 
 /// Assert `report` carries no errors, dumping every diagnostic on failure.

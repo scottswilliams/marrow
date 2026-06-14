@@ -24,7 +24,7 @@ fn runs_the_default_entry_and_prints_its_output() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,
@@ -45,7 +45,7 @@ fn failing_run_keeps_program_output_written_before_the_fault() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,
@@ -67,7 +67,7 @@ fn entry_flag_overrides_the_default_entry() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,
@@ -85,7 +85,11 @@ fn entry_flag_overrides_the_default_entry() {
 #[test]
 fn bare_entry_flag_resolves_a_unique_public_function() {
     let root = temp_project("run-bare-entry", |root| {
-        write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+        );
         write(
             root,
             "src/util.mw",
@@ -102,7 +106,11 @@ fn bare_entry_flag_resolves_a_unique_public_function() {
 #[test]
 fn bare_entry_flag_rejects_ambiguous_public_functions() {
     let root = temp_project("run-ambiguous-entry", |root| {
-        write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+        );
         write(
             root,
             "src/app.mw",
@@ -123,7 +131,11 @@ fn bare_entry_flag_rejects_ambiguous_public_functions() {
 #[test]
 fn entry_flag_rejects_private_functions() {
     let root = temp_project("run-private-entry", |root| {
-        write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+        );
         write(
             root,
             "src/app.mw",
@@ -163,7 +175,11 @@ fn a_plain_run_rejects_format_because_it_shapes_no_report() {
 #[test]
 fn reports_a_missing_entry() {
     let root = temp_project("run-noentry", |root| {
-        write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+        );
         write(
             root,
             "src/app.mw",
@@ -179,7 +195,11 @@ fn reports_a_missing_entry() {
 #[test]
 fn maps_an_unknown_entry_to_a_runtime_code() {
     let root = temp_project("run-unknown", |root| {
-        write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+        );
         write(
             root,
             "src/app.mw",
@@ -201,7 +221,7 @@ fn runs_a_module_less_script_bare_entry() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "main" } }"#,
         );
         write(
             root,

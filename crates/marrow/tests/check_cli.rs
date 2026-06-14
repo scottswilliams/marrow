@@ -132,7 +132,11 @@ fn check_reports_parse_diagnostics() {
 #[test]
 fn check_allows_out_as_an_ordinary_binding_name() {
     let dir = temp_project_dir("out-binding");
-    fs::write(dir.join("marrow.json"), r#"{ "sourceRoots": ["src"] }"#).expect("write config");
+    fs::write(
+        dir.join("marrow.json"),
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+    )
+    .expect("write config");
     fs::write(
         dir.join("src/m.mw"),
         "module m\n\npub fn f(): int\n    var out: int = 0\n    return out\n",
@@ -206,7 +210,11 @@ fn temp_project_dir(name: &str) -> support::TempProject {
 
 fn project_with_source(name: &str, relative: &str, source: &str) -> support::TempProject {
     let dir = temp_project_dir(name);
-    fs::write(dir.join("marrow.json"), r#"{ "sourceRoots": ["src"] }"#).expect("write config");
+    fs::write(
+        dir.join("marrow.json"),
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+    )
+    .expect("write config");
     support::write(dir.path(), relative, source);
     dir
 }
@@ -216,7 +224,11 @@ fn check_reports_schema_diagnostics_for_a_project_directory() {
     // Checking a project directory (one with marrow.json) runs the whole-project
     // checker, which surfaces schema diagnostics.
     let dir = temp_project_dir("schema-project");
-    fs::write(dir.join("marrow.json"), r#"{ "sourceRoots": ["src"] }"#).expect("write config");
+    fs::write(
+        dir.join("marrow.json"),
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+    )
+    .expect("write config");
     fs::write(
         dir.join("src/shelf.mw"),
         "module shelf\nresource Book\n    note: unknown\nstore ^books(id: int): Book\n",
@@ -233,7 +245,11 @@ fn check_reports_schema_diagnostics_for_a_project_directory() {
 #[test]
 fn check_reports_reserved_merge_and_lock_as_parse_errors() {
     let dir = temp_project_dir("reserved-merge-lock");
-    fs::write(dir.join("marrow.json"), r#"{ "sourceRoots": ["src"] }"#).expect("write config");
+    fs::write(
+        dir.join("marrow.json"),
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+    )
+    .expect("write config");
     fs::write(
         dir.join("src/shelf.mw"),
          "module shelf\n\
@@ -267,7 +283,11 @@ fn check_reports_reserved_merge_and_lock_as_parse_errors() {
 #[test]
 fn check_rejects_removed_inout_syntax_for_a_project_directory() {
     let dir = temp_project_dir("removed-argument-mode");
-    fs::write(dir.join("marrow.json"), r#"{ "sourceRoots": ["src"] }"#).expect("write config");
+    fs::write(
+        dir.join("marrow.json"),
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+    )
+    .expect("write config");
     fs::write(
         dir.join("src/shelf.mw"),
         "module shelf\n\
@@ -417,7 +437,11 @@ fn check_rejects_a_project_with_two_module_less_scripts() {
     // `module`. Two scripts share the empty module name, so the checker rejects
     // the project rather than alias one script's names against the other's.
     let dir = temp_project_dir("two-scripts");
-    fs::write(dir.join("marrow.json"), r#"{ "sourceRoots": ["src"] }"#).expect("write config");
+    fs::write(
+        dir.join("marrow.json"),
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+    )
+    .expect("write config");
     fs::write(
         dir.join("src/one.mw"),
         "pub fn main()\n    print(\"one\")\n",
@@ -439,7 +463,11 @@ fn check_rejects_a_project_with_two_module_less_scripts() {
 #[test]
 fn check_rejects_module_declarations_named_like_builtins() {
     let dir = temp_project_dir("builtin-shadow");
-    fs::write(dir.join("marrow.json"), r#"{ "sourceRoots": ["src"] }"#).expect("write config");
+    fs::write(
+        dir.join("marrow.json"),
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+    )
+    .expect("write config");
     fs::write(
         dir.join("src/app.mw"),
         "module app\n\nfn exists(x: int): int\n    return x\n\nconst keys = 1\n",

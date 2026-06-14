@@ -334,7 +334,11 @@ fn fmt_write_refuses_unexpected_indentation_without_rewriting() {
 
 fn temp_project(name: &str, files: &[(&str, &str)]) -> support::TempProject {
     support::temp_project_uncommitted(name, |root| {
-        support::write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        support::write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+        );
         for (relative, source) in files {
             support::write(root, relative, source);
         }

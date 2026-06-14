@@ -481,6 +481,7 @@ pub(super) mod test_support {
     use std::path::PathBuf;
 
     use marrow_check::{CheckedProgram, ProjectConfig, check_project, check_project_with_catalog};
+    use marrow_project::{StoreBackend, StoreConfig};
 
     pub(super) const BOOK_SOURCE: &str =
         "module shelf\n\nresource Book\n    required title: string\nstore ^books(id: int): Book\n";
@@ -500,7 +501,10 @@ pub(super) mod test_support {
         ProjectConfig {
             source_roots: vec!["src".into()],
             default_entry: None,
-            store: None,
+            store: StoreConfig {
+                backend: StoreBackend::Memory,
+                data_dir: None,
+            },
             tests: Vec::new(),
         }
     }

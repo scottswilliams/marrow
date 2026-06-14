@@ -819,21 +819,19 @@ fn hash_config(digest: &mut Sha256Digest, config: &ProjectConfig) {
         "config.default_entry",
         config.default_entry.as_deref(),
     );
-    match &config.store {
-        Some(store) => {
-            hash_str(digest, "config.store", "some");
-            hash_str(
-                digest,
-                "config.store.backend",
-                match store.backend {
-                    StoreBackend::Memory => "memory",
-                    StoreBackend::Native => "native",
-                },
-            );
-            hash_opt_str(digest, "config.store.data_dir", store.data_dir.as_deref());
-        }
-        None => hash_str(digest, "config.store", "none"),
-    }
+    hash_str(
+        digest,
+        "config.store.backend",
+        match config.store.backend {
+            StoreBackend::Memory => "memory",
+            StoreBackend::Native => "native",
+        },
+    );
+    hash_opt_str(
+        digest,
+        "config.store.data_dir",
+        config.store.data_dir.as_deref(),
+    );
     hash_str_list(digest, "config.tests", &config.tests);
 }
 
@@ -880,7 +878,7 @@ mod tests {
     use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use marrow_project::ProjectConfig;
+    use marrow_project::{ProjectConfig, StoreBackend, StoreConfig};
 
     use super::analyze_project;
     use crate::ProjectSources;
@@ -934,7 +932,10 @@ mod tests {
         let config = ProjectConfig {
             source_roots: vec!["src".to_string()],
             default_entry: None,
-            store: None,
+            store: StoreConfig {
+                backend: StoreBackend::Memory,
+                data_dir: None,
+            },
             tests: vec!["src".to_string(), "tests".to_string()],
         };
 

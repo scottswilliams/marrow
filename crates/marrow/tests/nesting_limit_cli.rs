@@ -34,7 +34,11 @@ fn nested_parens(depth: usize) -> String {
 fn check_json_codes(source: &str) -> (Option<i32>, Vec<String>) {
     let project = support::temp_project_uncommitted("nesting-check", |root| {
         fs::create_dir_all(root.join("src")).expect("create src dir");
-        fs::write(root.join("marrow.json"), r#"{ "sourceRoots": ["src"] }"#).expect("write config");
+        fs::write(
+            root.join("marrow.json"),
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+        )
+        .expect("write config");
         fs::write(root.join("src/app.mw"), source).expect("write source");
     });
     let output = support::marrow_sub("check", &["--format", "json", project.to_str().unwrap()]);

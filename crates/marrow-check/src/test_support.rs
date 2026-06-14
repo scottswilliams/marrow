@@ -14,7 +14,7 @@
 use std::path::Path;
 
 use marrow_catalog::CatalogEntryKind;
-use marrow_project::ProjectConfig;
+use marrow_project::{ProjectConfig, StoreBackend, StoreConfig};
 use marrow_store::cell::CatalogId;
 
 use crate::{
@@ -27,7 +27,10 @@ pub fn test_config() -> ProjectConfig {
     ProjectConfig {
         source_roots: vec!["src".into()],
         default_entry: None,
-        store: None,
+        store: StoreConfig {
+            backend: StoreBackend::Memory,
+            data_dir: None,
+        },
         tests: Vec::new(),
     }
 }

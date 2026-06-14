@@ -87,7 +87,11 @@ fn check_json_reports_entry_footprints_with_catalog_ids() {
 #[test]
 fn failed_check_json_suppresses_entry_footprints() {
     let root = temp_project("check-json-failed-no-entry-footprints", |root| {
-        write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+        );
         write(
             root,
             "src/app.mw",

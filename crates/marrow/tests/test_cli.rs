@@ -12,7 +12,8 @@ fn run_test_args(args: &[&str]) -> std::process::Output {
     marrow_sub("test", args)
 }
 
-const CONFIG: &str = r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#;
+const CONFIG: &str =
+    r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#;
 
 fn mixed_outcome_project(name: &str) -> support::TempProject {
     temp_project(name, |root| {

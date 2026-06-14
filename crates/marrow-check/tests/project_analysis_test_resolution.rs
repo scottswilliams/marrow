@@ -18,7 +18,10 @@ fn analyze_project_includes_configured_tests_when_sources_have_errors() {
             "module app\nfn f()\n    var x: int = \"str\"\n",
         );
     });
-    let cfg = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
+    let cfg = parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+    )
+    .expect("config");
     let path = root.join("tests/new_test.mw");
     let sources = ProjectSources::new().with(&path, "fn smoke()\n    var y: int = \"str\"\n");
 
@@ -58,7 +61,10 @@ fn analyze_project_suppresses_test_resolution_noise_when_source_modules_are_inco
              \tconst BAD = 1\n",
         );
     });
-    let cfg = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
+    let cfg = parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+    )
+    .expect("config");
     let path = root.join("tests/smoke_test.mw");
     let sources = ProjectSources::new().with(
         &path,
@@ -95,7 +101,10 @@ fn analyze_project_keeps_test_local_resolution_diagnostics_when_source_modules_a
     let root = temp_project("analyze-test-local-errors-with-incomplete-source", |root| {
         write(root, "src/app.mw", "module app\n\tfn f()\n");
     });
-    let cfg = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
+    let cfg = parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+    )
+    .expect("config");
     let path = root.join("tests/smoke_test.mw");
     let sources = ProjectSources::new().with(
         &path,
@@ -132,7 +141,10 @@ fn analyze_project_keeps_test_local_bare_call_matching_hidden_source_module() {
             write(root, "src/app.mw", "module app\n\tfn f()\n");
         },
     );
-    let cfg = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
+    let cfg = parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+    )
+    .expect("config");
     let path = root.join("tests/smoke_test.mw");
     let sources =
         ProjectSources::new().with(&path, "fn smoke()\n    app()\n    var y: int = \"str\"\n");
@@ -169,7 +181,10 @@ fn analyze_project_keeps_test_local_submodule_import_matching_hidden_source_pref
             write(root, "src/app.mw", "module app\n\tfn f()\n");
         },
     );
-    let cfg = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
+    let cfg = parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+    )
+    .expect("config");
     let path = root.join("tests/smoke_test.mw");
     let sources = ProjectSources::new().with(
         &path,
@@ -210,7 +225,10 @@ fn analyze_project_keeps_test_local_unresolved_call_when_another_test_has_parse_
         );
         write(root, "tests/a_bad_test.mw", "fn broken()\n\treturn\n");
     });
-    let cfg = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
+    let cfg = parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+    )
+    .expect("config");
     let path = root.join("tests/b_smoke_test.mw");
     let sources = ProjectSources::new().with(
         &path,
@@ -248,7 +266,10 @@ fn analyze_project_suppresses_unresolved_import_when_broken_configured_test_is_i
         );
         write(root, "tests/helper.mw", "fn helper()\n\treturn\n");
     });
-    let cfg = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
+    let cfg = parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+    )
+    .expect("config");
     let path = root.join("tests/smoke_test.mw");
     let sources = ProjectSources::new().with(
         &path,
@@ -296,7 +317,10 @@ fn analyze_project_ignores_declared_modules_in_broken_configured_tests_for_call_
             );
         },
     );
-    let cfg = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
+    let cfg = parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+    )
+    .expect("config");
     let path = root.join("tests/b_smoke_test.mw");
     let sources = ProjectSources::new().with(
         &path,
@@ -337,7 +361,10 @@ fn analyze_project_keeps_source_module_calls_when_broken_test_path_collides() {
         );
         write(root, "tests/app.mw", "fn broken()\n\treturn\n");
     });
-    let cfg = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
+    let cfg = parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+    )
+    .expect("config");
     let path = root.join("tests/b_smoke_test.mw");
     let sources = ProjectSources::new().with(
         &path,
@@ -374,7 +401,10 @@ fn analyze_project_keeps_test_module_calls_when_broken_source_path_collides() {
         write(root, "src/tests/app.mw", "module tests::app\n\tfn f()\n");
         write(root, "tests/app.mw", "fn existing()\n    return\n");
     });
-    let cfg = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
+    let cfg = parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+    )
+    .expect("config");
     let path = root.join("tests/b_smoke_test.mw");
     let sources = ProjectSources::new().with(
         &path,
@@ -415,7 +445,10 @@ fn analyze_project_reports_duplicate_when_test_module_collides_with_source_modul
         );
         write(root, "tests/app.mw", "pub fn testOnly()\n    return\n");
     });
-    let cfg = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
+    let cfg = parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+    )
+    .expect("config");
     let path = root.join("tests/b_smoke_test.mw");
     let sources = ProjectSources::new().with(
         &path,
@@ -478,7 +511,10 @@ fn analyze_project_suppresses_unknown_types_from_broken_configured_test_declarat
             "resource Fixture\n    title: string\n\tconst BAD = 1\n",
         );
     });
-    let cfg = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
+    let cfg = parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+    )
+    .expect("config");
     let path = root.join("tests/b_smoke_test.mw");
     let sources = ProjectSources::new().with(
         &path,
@@ -525,7 +561,10 @@ fn analyze_project_keeps_test_local_unknown_type_diagnostics_when_hidden_type_na
             );
         },
     );
-    let cfg = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
+    let cfg = parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+    )
+    .expect("config");
     let path = root.join("tests/smoke_test.mw");
     let sources = ProjectSources::new().with(
         &path,

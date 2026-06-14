@@ -28,7 +28,11 @@ fn assert_has_file(records: &[Value], suffix: &str) {
 #[test]
 fn checks_a_clean_project_directory() {
     let root = temp_project("proj-clean", |root| {
-        write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+        );
         write(root, "src/shelf/books.mw", "module shelf::books\n");
         write(root, "src/main.mw", "fn main()\n    return\n");
     });
@@ -43,7 +47,11 @@ fn checks_a_clean_project_directory() {
 #[test]
 fn reports_project_module_path_mismatch() {
     let root = temp_project("proj-mismatch", |root| {
-        write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+        );
         write(root, "src/shelf/books.mw", "module shelf::other\n");
     });
     let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
@@ -56,7 +64,11 @@ fn reports_project_module_path_mismatch() {
 #[test]
 fn reports_project_check_as_jsonl() {
     let root = temp_project("proj-jsonl", |root| {
-        write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+        );
         write(root, "src/shelf/books.mw", "module shelf::other\n");
     });
     let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
@@ -151,7 +163,11 @@ fn rejects_duplicate_format_flag() {
 #[test]
 fn surfaces_a_parse_error_in_a_project_file_with_its_path() {
     let root = temp_project("proj-parse", |root| {
-        write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+        );
         // A tab is a lexical error.
         write(root, "src/bad.mw", "module bad\n\tconst X: int = 1\n");
     });
@@ -169,7 +185,7 @@ fn project_check_reports_parse_errors_in_configured_tests() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
         );
         write(
             root,
@@ -196,7 +212,7 @@ fn project_check_reports_type_errors_in_configured_tests() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
         );
         write(
             root,
@@ -223,7 +239,7 @@ fn surfaces_a_parse_error_in_configured_test_files() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
         );
         write(root, "src/app.mw", "module app\n");
         // A tab is a lexical error.
@@ -243,7 +259,7 @@ fn reports_configured_test_files_when_source_files_have_errors() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
         );
         write(
             root,
@@ -268,7 +284,7 @@ fn suppresses_configured_test_resolution_noise_when_source_parse_fails() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
         );
         // The tab is a lexical error, so this file contributes no `app` module,
         // even though the parser saw its resource and function declarations.
@@ -306,7 +322,7 @@ fn keeps_configured_test_local_resolution_diagnostics_when_source_parse_fails() 
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
         );
         write(root, "src/app.mw", "module app\n\tfn f()\n");
         write(
@@ -336,7 +352,7 @@ fn keeps_configured_test_local_bare_call_matching_hidden_source_module() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
         );
         write(root, "src/app.mw", "module app\n\tfn f()\n");
         write(
@@ -362,7 +378,7 @@ fn keeps_configured_test_local_submodule_import_matching_hidden_source_prefix() 
             write(
                 root,
                 "marrow.json",
-                r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
+                r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
             );
             write(root, "src/app.mw", "module app\n\tfn f()\n");
             write(
@@ -387,7 +403,7 @@ fn keeps_configured_test_local_unresolved_call_when_another_test_has_parse_error
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
         );
         write(
             root,
@@ -417,7 +433,7 @@ fn suppresses_unresolved_import_when_broken_configured_test_is_imported() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
         );
         write(
             root,
@@ -448,7 +464,7 @@ fn ignores_declared_modules_in_broken_configured_tests_for_call_suppression() {
             write(
                 root,
                 "marrow.json",
-                r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
+                r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
             );
             write(
                 root,
@@ -482,7 +498,7 @@ fn keeps_source_module_calls_when_broken_test_path_collides() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
         );
         write(
             root,
@@ -511,7 +527,7 @@ fn keeps_test_module_calls_when_broken_source_path_collides() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
         );
         write(root, "src/tests/app.mw", "module tests::app\n\tfn f()\n");
         write(root, "tests/app.mw", "fn existing()\n    return\n");
@@ -536,7 +552,7 @@ fn reports_duplicate_when_test_module_collides_with_source_module() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
         );
         write(
             root,
@@ -565,7 +581,7 @@ fn suppresses_unknown_types_from_broken_configured_test_declarations() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
         );
         write(
             root,
@@ -598,7 +614,7 @@ fn keeps_configured_test_local_unknown_type_diagnostics_when_hidden_type_names_m
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
         );
         write(
             root,
@@ -641,7 +657,11 @@ fn project_diagnostics_carry_the_documented_kind_envelope_field() {
     // The error envelope's `kind` is a common field, so the project diagnostic
     // path must emit it.
     let root = temp_project("proj-kind", |root| {
-        write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+        );
         write(root, "src/shelf/books.mw", "module shelf::other\n");
     });
     let output = run_check(&["--format", "json", root.to_str().unwrap()]);

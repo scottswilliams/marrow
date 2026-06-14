@@ -8,7 +8,7 @@ fn module_constants_are_bound_at_runtime() {
         write(
             root,
             "marrow.json",
-            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
         );
         write(
             root,
@@ -74,7 +74,11 @@ fn native_store_persists_writes_across_runs() {
 #[test]
 fn refuses_to_run_a_project_that_does_not_check() {
     let root = temp_project("run-badcheck", |root| {
-        write(root, "marrow.json", r#"{ "sourceRoots": ["src"] }"#);
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+        );
         // The path implies module `shelf::books`, but the file declares another.
         write(root, "src/shelf/books.mw", "module shelf::other\n");
     });

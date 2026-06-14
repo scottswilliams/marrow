@@ -18,6 +18,9 @@ pub use digest::{Sha256Digest, sha256_digest};
 /// Stable error code for an invalid `marrow.json`.
 pub const CONFIG_INVALID: &str = "config.invalid";
 
+/// Fixed source-tree artifact for accepted catalog identity.
+pub const CATALOG_FILE_NAME: &str = "marrow.catalog.json";
+
 /// A validated Marrow project configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectConfig {
@@ -25,8 +28,8 @@ pub struct ProjectConfig {
     pub source_roots: Vec<String>,
     /// Default entrypoint, a qualified `pub fn` name such as `shelf::sample::main`.
     pub default_entry: Option<String>,
-    /// The selected storage backend, if the project pins one.
-    pub store: Option<StoreConfig>,
+    /// The selected storage backend.
+    pub store: StoreConfig,
     /// Test file or directory paths, relative to the project root.
     pub tests: Vec<String>,
 }
@@ -71,6 +74,7 @@ pub enum ConfigErrorKind {
     InvalidJson,
     MissingSourceRoots,
     EmptySourceRoots,
+    MissingStore,
     UnknownStoreBackend {
         backend: String,
     },
@@ -156,6 +160,12 @@ pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
             "`sourceRoots` must list at least one source directory",
         ));
     }
+    let raw_store = raw.store.ok_or_else(|| {
+        ConfigError::new(
+            ConfigErrorKind::MissingStore,
+            "`store` must select either \"native\" or \"memory\"; for a one-line memory store use \"store\": { \"backend\": \"memory\" }",
+        )
+    })?;
     if let Some(default_entry) = raw
         .run
         .as_ref()
@@ -171,46 +181,41 @@ pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
         check_plain_test_path(test_path)?;
     }
 
-    let store = match raw.store {
-        Some(store) => {
-            check_no_nul("store.backend", &store.backend)?;
-            let backend = StoreBackend::parse(&store.backend).ok_or_else(|| {
-                ConfigError::new(
-                    ConfigErrorKind::UnknownStoreBackend {
-                        backend: store.backend.clone(),
-                    },
-                    format!(
-                        "unknown store backend `{}`; expected `memory` or `native`",
-                        store.backend
-                    ),
-                )
-            })?;
-            if backend == StoreBackend::Native {
-                match store.data_dir.as_deref() {
-                    None => {
-                        return Err(ConfigError::new(
-                            ConfigErrorKind::NativeStoreMissingDataDir,
-                            "the `native` store backend requires a non-empty `dataDir`",
-                        ));
-                    }
-                    Some("") => {
-                        return Err(ConfigError::new(
-                            ConfigErrorKind::NativeStoreEmptyDataDir,
-                            "the `native` store backend requires a non-empty `dataDir`",
-                        ));
-                    }
-                    Some(_) => {}
-                }
+    check_no_nul("store.backend", &raw_store.backend)?;
+    let backend = StoreBackend::parse(&raw_store.backend).ok_or_else(|| {
+        ConfigError::new(
+            ConfigErrorKind::UnknownStoreBackend {
+                backend: raw_store.backend.clone(),
+            },
+            format!(
+                "unknown store backend `{}`; expected `memory` or `native`",
+                raw_store.backend
+            ),
+        )
+    })?;
+    if backend == StoreBackend::Native {
+        match raw_store.data_dir.as_deref() {
+            None => {
+                return Err(ConfigError::new(
+                    ConfigErrorKind::NativeStoreMissingDataDir,
+                    "the `native` store backend requires a non-empty `dataDir`",
+                ));
             }
-            if let Some(data_dir) = &store.data_dir {
-                check_under_root(ConfigPathField::DataDir, data_dir)?;
+            Some("") => {
+                return Err(ConfigError::new(
+                    ConfigErrorKind::NativeStoreEmptyDataDir,
+                    "the `native` store backend requires a non-empty `dataDir`",
+                ));
             }
-            Some(StoreConfig {
-                backend,
-                data_dir: store.data_dir,
-            })
+            Some(_) => {}
         }
-        None => None,
+    }
+    if let Some(data_dir) = &raw_store.data_dir {
+        check_under_root(ConfigPathField::DataDir, data_dir)?;
+    }
+    let store = StoreConfig {
+        backend,
+        data_dir: raw_store.data_dir,
     };
 
     Ok(ProjectConfig {

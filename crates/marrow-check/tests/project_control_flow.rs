@@ -17,7 +17,10 @@ fn check_tests_report(name: &str, app_src: &str, test_src: &str) -> marrow_check
         write(root, "src/app.mw", app_src);
         write(root, "tests/app_test.mw", test_src);
     });
-    let cfg = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
+    let cfg = parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+    )
+    .expect("config");
     let (src_report, src_program) = check_project(&root, &cfg).expect("check src");
     assert!(!src_report.has_errors(), "{:#?}", src_report.diagnostics);
     let (test_report, _modules) = check_tests(&root, &cfg, src_program).expect("check tests");

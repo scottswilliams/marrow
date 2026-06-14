@@ -199,10 +199,11 @@ marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] \
 
 Check a project, then run an entry function over the store its `marrow.json`
 selects (see [project-config.md](project-config.md)). A project must check
-cleanly before it runs. The in-memory default admits only a program with no
+cleanly before it runs. The explicit memory backend admits only a program with no
 durable declarations; a program that declares a durable surface (a `resource`,
 a saved `store`, or an `enum`) needs a configured `native` store and otherwise
-fails with `run.durable_store_required`.
+fails with `run.durable_store_required`. Omitting `store` is a `config.invalid`
+project configuration error.
 
 A clean run records the project's baseline durable identity if it has none yet:
 the first run of a project with a durable surface freezes the accepted catalog

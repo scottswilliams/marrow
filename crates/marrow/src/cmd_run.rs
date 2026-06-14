@@ -322,8 +322,8 @@ fn create_temp_store_dir(format: CheckFormat) -> Result<TempStoreDir, ExitCode> 
 /// durable activation context and checked for an unstamped-but-populated state. A
 /// store a newer binary evolved past this program's accepted catalog, one that
 /// predates it, or one whose storage layout drifted is refused rather than written
-/// with a stale shape. An in-memory default has no durable context to fence and is
-/// never stamp-checked.
+/// with a stale shape. An explicit memory store has no durable context to fence
+/// and is never stamp-checked.
 ///
 /// Schema drift at the current epoch is the run-time evolution case: the store holds a
 /// structurally different shape at this binary's epoch, which a sparse add or any other
@@ -387,7 +387,7 @@ fn pending_baseline(program: &marrow_check::CheckedProgram) -> bool {
 }
 
 /// Open the project's configured native store file for writing, or `Ok(None)` when the
-/// project configures the in-memory default. The redb backend holds a process-level lock
+/// project configures a memory store. The redb backend holds a process-level lock
 /// on the file, so a caller re-opening after an auto-apply must drop its first handle
 /// first.
 fn open_store_file(

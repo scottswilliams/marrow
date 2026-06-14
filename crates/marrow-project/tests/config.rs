@@ -13,18 +13,20 @@ fn parses_the_documented_example_config() {
     let config = parse_config(json).expect("valid config");
     assert_eq!(config.source_roots, ["src"]);
     assert_eq!(config.default_entry.as_deref(), Some("shelf::sample::main"));
-    let store = config.store.expect("store");
-    assert_eq!(store.backend, StoreBackend::Native);
-    assert_eq!(store.data_dir.as_deref(), Some(".marrow/data"));
+    assert_eq!(config.store.backend, StoreBackend::Native);
+    assert_eq!(config.store.data_dir.as_deref(), Some(".marrow/data"));
     assert_eq!(config.tests, ["tests"]);
 }
 
 #[test]
-fn fills_optional_fields_with_defaults() {
-    let config = parse_config(r#"{ "sourceRoots": ["src", "lib"] }"#).expect("valid config");
+fn fills_optional_run_and_tests_with_defaults() {
+    let config =
+        parse_config(r#"{ "sourceRoots": ["src", "lib"], "store": { "backend": "memory" } }"#)
+            .expect("valid config");
     assert_eq!(config.source_roots, ["src", "lib"]);
     assert_eq!(config.default_entry, None);
-    assert_eq!(config.store, None);
+    assert_eq!(config.store.backend, StoreBackend::Memory);
+    assert_eq!(config.store.data_dir, None);
     assert!(config.tests.is_empty());
 }
 
@@ -32,9 +34,8 @@ fn fills_optional_fields_with_defaults() {
 fn accepts_the_memory_backend() {
     let config = parse_config(r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#)
         .expect("valid config");
-    let store = config.store.expect("store");
-    assert_eq!(store.backend, StoreBackend::Memory);
-    assert_eq!(store.data_dir, None);
+    assert_eq!(config.store.backend, StoreBackend::Memory);
+    assert_eq!(config.store.data_dir, None);
 }
 
 #[test]
@@ -46,9 +47,26 @@ fn rejects_missing_source_roots() {
 
 #[test]
 fn rejects_empty_source_roots() {
-    let error = parse_config(r#"{ "sourceRoots": [] }"#).expect_err("should reject");
+    let error = parse_config(r#"{ "sourceRoots": [], "store": { "backend": "memory" } }"#)
+        .expect_err("should reject");
     assert_eq!(error.code, "config.invalid");
     assert_eq!(error.kind, ConfigErrorKind::EmptySourceRoots);
+}
+
+#[test]
+fn rejects_missing_store_block() {
+    let error = parse_config(r#"{ "sourceRoots": ["src"] }"#).expect_err("should reject");
+    assert_eq!(error.code, "config.invalid");
+    assert_eq!(error.kind, ConfigErrorKind::MissingStore);
+    assert!(error.message.contains(r#""native""#), "{:?}", error);
+    assert!(error.message.contains(r#""memory""#), "{:?}", error);
+    assert!(
+        error
+            .message
+            .contains(r#""store": { "backend": "memory" }"#),
+        "{:?}",
+        error
+    );
 }
 
 #[test]
@@ -83,19 +101,19 @@ fn rejects_native_store_without_data_dir() {
 fn rejects_path_entries_that_escape_the_project_root() {
     for (json, field, value, reason) in [
         (
-            r#"{ "sourceRoots": [""] }"#,
+            r#"{ "sourceRoots": [""], "store": { "backend": "memory" } }"#,
             ConfigPathField::SourceRootsEntry,
             "",
             ConfigPathViolation::Empty,
         ),
         (
-            r#"{ "sourceRoots": ["/etc"] }"#,
+            r#"{ "sourceRoots": ["/etc"], "store": { "backend": "memory" } }"#,
             ConfigPathField::SourceRootsEntry,
             "/etc",
             ConfigPathViolation::Absolute,
         ),
         (
-            r#"{ "sourceRoots": ["../other"] }"#,
+            r#"{ "sourceRoots": ["../other"], "store": { "backend": "memory" } }"#,
             ConfigPathField::SourceRootsEntry,
             "../other",
             ConfigPathViolation::ParentDir,
@@ -113,13 +131,13 @@ fn rejects_path_entries_that_escape_the_project_root() {
             ConfigPathViolation::ParentDir,
         ),
         (
-            r#"{ "sourceRoots": ["src"], "tests": ["../tests"] }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["../tests"] }"#,
             ConfigPathField::TestsEntry,
             "../tests",
             ConfigPathViolation::ParentDir,
         ),
         (
-            r#"{ "sourceRoots": ["src"], "tests": ["/abs/tests"] }"#,
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["/abs/tests"] }"#,
             ConfigPathField::TestsEntry,
             "/abs/tests",
             ConfigPathViolation::Absolute,
@@ -148,7 +166,9 @@ fn rejects_test_entries_with_glob_metacharacters() {
         "tests/{unit}.mw",
         "tests/unit}.mw",
     ] {
-        let json = format!(r#"{{ "sourceRoots": ["src"], "tests": ["{value}"] }}"#);
+        let json = format!(
+            r#"{{ "sourceRoots": ["src"], "store": {{ "backend": "memory" }}, "tests": ["{value}"] }}"#
+        );
         let error = parse_config(&json).expect_err("should reject glob-like test entry");
         assert_eq!(error.code, "config.invalid", "{value}");
         assert!(error.message.contains(value), "{:?}", error);
@@ -165,6 +185,28 @@ fn rejects_unknown_top_level_keys() {
     assert_eq!(
         error.message,
         "unknown field `globals`, expected one of `sourceRoots`, `run`, `store`, `tests` at line 1 column 35"
+    );
+}
+
+#[test]
+fn rejects_accepted_catalog_config_key() {
+    let error = parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "acceptedCatalog": "other.json" }"#,
+    )
+    .expect_err("should reject acceptedCatalog");
+    assert_eq!(error.code, "config.invalid");
+    assert_eq!(error.kind, ConfigErrorKind::InvalidJson);
+    assert!(
+        error.message.contains("unknown field `acceptedCatalog`"),
+        "{:?}",
+        error
+    );
+    assert!(
+        error
+            .message
+            .contains("expected one of `sourceRoots`, `run`, `store`, `tests`"),
+        "{:?}",
+        error
     );
 }
 
@@ -194,7 +236,7 @@ fn rejects_hostile_config_json_families() {
     for (label, json) in [
         (
             "duplicate top-level key",
-            r#"{ "sourceRoots": ["src"], "sourceRoots": ["other"] }"#,
+            r#"{ "sourceRoots": ["src"], "sourceRoots": ["other"], "store": { "backend": "memory" } }"#,
         ),
         ("type-wrong source root list", r#"{ "sourceRoots": [1] }"#),
         (
@@ -203,11 +245,11 @@ fn rejects_hostile_config_json_families() {
         ),
         (
             "null byte default entry",
-            "{ \"sourceRoots\": [\"src\"], \"run\": { \"defaultEntry\": \"app::main\\u0000\" } }",
+            "{ \"sourceRoots\": [\"src\"], \"store\": { \"backend\": \"memory\" }, \"run\": { \"defaultEntry\": \"app::main\\u0000\" } }",
         ),
         (
             "null byte source root",
-            "{ \"sourceRoots\": [\"src\\u0000evil\"] }",
+            "{ \"sourceRoots\": [\"src\\u0000evil\"], \"store\": { \"backend\": \"memory\" } }",
         ),
         (
             "null byte store backend",
@@ -215,7 +257,7 @@ fn rejects_hostile_config_json_families() {
         ),
         (
             "null byte test path",
-            "{ \"sourceRoots\": [\"src\"], \"tests\": [\"tests\\u0000/unit.mw\"] }",
+            "{ \"sourceRoots\": [\"src\"], \"store\": { \"backend\": \"memory\" }, \"tests\": [\"tests\\u0000/unit.mw\"] }",
         ),
         (
             "null byte native data dir",

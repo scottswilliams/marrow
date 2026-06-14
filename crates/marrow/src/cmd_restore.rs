@@ -257,7 +257,7 @@ fn read_source_tree_catalog(
     dir: &str,
     format: CheckFormat,
 ) -> Result<Option<marrow_catalog::CatalogMetadata>, ExitCode> {
-    let path = Path::new(dir).join("marrow.catalog.json");
+    let path = Path::new(dir).join(marrow_project::CATALOG_FILE_NAME);
     let json = match fs::read_to_string(&path) {
         Ok(json) => json,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),

@@ -23,15 +23,15 @@ setting.
 }
 ```
 
-The minimal valid file is just the required field:
+The minimal valid file selects a source root and a store backend:
 
 ```json
-{ "sourceRoots": ["src"] }
+{ "sourceRoots": ["src"], "store": { "backend": "memory" } }
 ```
 
 With this minimal file there is no default entry (you must pass `--entry` to
-`run`), the store is in-memory (nothing is persisted), and no tests are
-discovered. The in-memory default admits a `run` only for a program with no
+`run`), the explicit store is in-memory (nothing is persisted), and no tests are
+discovered. The memory backend admits a `run` only for a program with no
 durable declarations — see
 [`store.backend`](#storebackend-and-storedatadir).
 
@@ -41,7 +41,7 @@ durable declarations — see
 |---|---|---|---|
 | `sourceRoots` | array of strings | yes | — |
 | `run.defaultEntry` | string | no | none |
-| `store.backend` | `"memory"` \| `"native"` | no | in-memory |
+| `store.backend` | `"memory"` \| `"native"` | yes | — |
 | `store.dataDir` | string | only when `backend` is `"native"` | — |
 | `tests` | array of strings | no | `[]` |
 
@@ -62,7 +62,7 @@ Recursive source walks skip symlinked files and directories.
 Multiple roots are searched in order:
 
 ```json
-{ "sourceRoots": ["src", "lib"] }
+{ "sourceRoots": ["src", "lib"], "store": { "backend": "memory" } }
 ```
 
 If two roots overlap (for example `src` and `src/sub`), a file reachable through
@@ -75,7 +75,11 @@ on disk is an error (`project.source_root`) when a command walks it.
 The entry name that `marrow run` calls when no `--entry` is given:
 
 ```json
-{ "run": { "defaultEntry": "shelf::sample::main" } }
+{
+  "sourceRoots": ["src"],
+  "store": { "backend": "memory" },
+  "run": { "defaultEntry": "shelf::sample::main" }
+}
 ```
 
 An entry must name a public function. A qualified name such as
@@ -93,18 +97,16 @@ value does not print it.
 
 ### `store.backend` and `store.dataDir`
 
-The storage selection. When `store` is omitted entirely, commands use an
-in-memory store: nothing is persisted. `marrow test` always runs each test on
-a fresh in-memory store. `marrow run` admits the in-memory store only for a
-program with no durable declarations; a program that declares a durable
-surface (a `resource`, a saved `store`, or an `enum`) fails with
-`run.durable_store_required` and needs a native store. The supported
-production saved-data backend is the native redb store.
+The required storage selection. `marrow test` always runs each test on a fresh
+in-memory store. `marrow run` admits the memory backend only for a program with
+no durable declarations; a program that declares a durable surface (a
+`resource`, a saved `store`, or an `enum`) fails with
+`run.durable_store_required` and needs a native store. The supported production
+saved-data backend is the native redb store.
 
 - `memory` — an in-memory store. Creates no files. `dataDir` is ignored if
   present (and may be omitted). This backend is not a production `^` durability
-  profile; `run` refuses a durable program here exactly as when `store` is
-  omitted.
+  profile; `run` refuses a durable program here.
 
   ```json
   { "sourceRoots": ["src"], "store": { "backend": "memory" } }
@@ -159,6 +161,7 @@ reports the `config.invalid` code (kind `tooling`) and exits with code `1`. The
 rules:
 
 - `sourceRoots` must list at least one directory.
+- `store` is required and must be an object.
 - `store.backend` must be `"memory"` or `"native"`; any other value is
   rejected and the unknown name is named in the message.
 - A `native` store must have a non-empty `dataDir`. (A `native` store cannot
@@ -189,6 +192,9 @@ config.invalid: the `native` store backend requires a non-empty `dataDir`
 
 $ marrow check ./proj          # sourceRoots missing or empty
 config.invalid: `sourceRoots` must list at least one source directory
+
+$ marrow check ./proj          # store missing
+config.invalid: `store` must select either "native" or "memory"; for a one-line memory store use "store": { "backend": "memory" }
 
 $ marrow check ./proj          # unknown top-level key "globals"
 config.invalid: unknown field `globals`, expected one of `sourceRoots`, `run`, `store`, `tests` at line 1 column 35

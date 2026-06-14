@@ -57,7 +57,8 @@ fn discovers_mw_files_with_module_names() {
             "module nested::deep::thing\n",
         );
     });
-    let config = parse_config(r#"{ "sourceRoots": ["src"] }"#).expect("config");
+    let config = parse_config(r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#)
+        .expect("config");
 
     let modules = discover_modules(&root, &config).expect("discover");
     let found: Vec<(PathBuf, Option<String>)> = modules
@@ -84,7 +85,9 @@ fn searches_each_configured_source_root() {
         write(root, "src/a.mw", "module a\n");
         write(root, "lib/b.mw", "module b\n");
     });
-    let config = parse_config(r#"{ "sourceRoots": ["src", "lib"] }"#).expect("config");
+    let config =
+        parse_config(r#"{ "sourceRoots": ["src", "lib"], "store": { "backend": "memory" } }"#)
+            .expect("config");
 
     let modules = discover_modules(&root, &config).expect("discover");
     let names: Vec<Option<String>> = modules.iter().map(|m| m.module_name.clone()).collect();
@@ -103,7 +106,9 @@ fn overlapping_source_roots_discover_each_file_once() {
     let root = temp_project("overlapping-roots", |root| {
         write(root, "src/sub/x.mw", "module sub::x\n");
     });
-    let config = parse_config(r#"{ "sourceRoots": ["src", "src/sub"] }"#).expect("config");
+    let config =
+        parse_config(r#"{ "sourceRoots": ["src", "src/sub"], "store": { "backend": "memory" } }"#)
+            .expect("config");
 
     let modules = discover_modules(&root, &config).expect("discover");
     let found: Vec<(PathBuf, Option<String>)> = modules
@@ -127,7 +132,8 @@ fn an_empty_source_root_yields_no_modules() {
     let root = temp_project("empty-root", |root| {
         fs::create_dir_all(root.join("src")).expect("create src");
     });
-    let config = parse_config(r#"{ "sourceRoots": ["src"] }"#).expect("config");
+    let config = parse_config(r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#)
+        .expect("config");
 
     let modules = discover_modules(&root, &config).expect("discover");
     assert!(modules.is_empty(), "{modules:#?}");
@@ -136,7 +142,8 @@ fn an_empty_source_root_yields_no_modules() {
 #[test]
 fn errors_when_a_source_root_is_missing() {
     let root = temp_project("missing-root", |_| {});
-    let config = parse_config(r#"{ "sourceRoots": ["src"] }"#).expect("config");
+    let config = parse_config(r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#)
+        .expect("config");
 
     let error = discover_modules(&root, &config).expect_err("missing source root should error");
     assert_eq!(error.code, "project.source_root");
@@ -150,7 +157,10 @@ fn discovers_test_files_from_a_plain_directory_recursively() {
         write(root, "tests/deep/more_test.mw", "pub fn ok()\n    return\n");
         write(root, "tests/notes.txt", "ignore me");
     });
-    let config = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
+    let config = parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+    )
+    .expect("config");
 
     let modules = discover_test_modules(&root, &config).expect("discover tests");
     let names: Vec<Option<String>> = modules.iter().map(|m| m.module_name.clone()).collect();
@@ -163,8 +173,10 @@ fn discovers_test_files_from_a_plain_directory_recursively() {
 
 #[test]
 fn star_test_entry_is_invalid_config() {
-    let error = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests/*.mw"] }"#)
-        .expect_err("glob-like test entry should fail closed");
+    let error = parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests/*.mw"] }"#,
+    )
+    .expect_err("glob-like test entry should fail closed");
 
     assert_eq!(error.code, "config.invalid");
 }
@@ -176,7 +188,7 @@ fn test_paths_accept_a_bare_directory_or_file() {
         write(root, "checks/deep/b_test.mw", "pub fn ok()\n    return\n");
         write(root, "smoke.mw", "pub fn ok()\n    return\n");
     });
-    let config = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["checks", "smoke.mw"] }"#)
+    let config = parse_config(r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["checks", "smoke.mw"] }"#)
         .expect("config");
 
     let modules = discover_test_modules(&root, &config).expect("discover tests");
@@ -196,7 +208,10 @@ fn configured_test_symlink_is_not_followed() {
         std::os::unix::fs::symlink(root.join("real_tests"), root.join("tests"))
             .expect("create test symlink");
     });
-    let config = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
+    let config = parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+    )
+    .expect("config");
 
     let modules = discover_test_modules(&root, &config).expect("discover tests");
 
@@ -210,7 +225,10 @@ fn a_missing_test_directory_yields_no_tests() {
     let root = temp_project("test-missing", |root| {
         write(root, "src/app.mw", "module app\n");
     });
-    let config = parse_config(r#"{ "sourceRoots": ["src"], "tests": ["tests"] }"#).expect("config");
+    let config = parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+    )
+    .expect("config");
 
     let modules = discover_test_modules(&root, &config).expect("discover tests");
     assert!(modules.is_empty(), "{modules:#?}");

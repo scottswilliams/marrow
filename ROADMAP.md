@@ -694,9 +694,8 @@ including the identity/write-path soundness re-review-until-clean requirement.
 becomes `config.invalid` with a two-choice diagnostic naming both backends by their exact config
 spellings — `"native"` and `"memory"` — and showing that in-memory stays one explicit line
 (`"store": { "backend": "memory" }`). The tooling/04 default-to-memory clause ('defaulting to
-in-memory when store is omitted') is amended to silence-is-an-error in W1.1; the validation arm,
-store-required tests, and two doc pages ride W6.7. Gate 30 is untouched: `marrow init` scaffolds
-`native`, so the happy path never sees the diagnostic.
+in-memory when store is omitted') is amended to silence-is-an-error in W1.1. Gate 30 is
+untouched: `marrow init` scaffolds `native`, so the happy path never sees the diagnostic.
 
 **43. Sensitive-data reservation (C05).** Decided: accept the reservation: `sensitive` and
 `declassify` are added to the reserved-word list via W4.6's bookkeeping; `sensitive`'s grammar
@@ -847,17 +846,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 ## Wave 6 — Operator surface and integration (CLI; concurrent by command)
 
 Listing order is execution order. docs/cli.md integrates in lane order: W6.6.
-
-**W6.7 ∥ (after W6.2 — shared marrow-project lib.rs; W6.2 owns project-config.md) acceptedCatalog
-key deletion + required store block (removal #41; gates 32, 42).**
-Owns: marrow-project config field → constant, validation arms — incl. the gate-42 (C56)
-store-required arm: config.invalid on an absent store block, a two-choice diagnostic naming the
-exact config spellings `"native"` and `"memory"` and showing the one-line memory form
-(`"store": { "backend": "memory" }`) — three config tests + the store-required tests; doc pages
-project-config.md and quickstart.md. Coordinated with the catalog refactor (W3.5). Seed:
-unknown-key error lists the shrunken set. Review: validation fails closed; the diagnostic names
-both backends with the exact config spellings; the gate-30 scaffold is untouched. Done: one
-catalog path; no silent selection of the non-durable mode.
 
 **W6.8 ∥ Operations page + truth-sweep remainder (III.B1 + III.C4 residue).** Owns:
 docs/operations.md (single-writer model, deploy choreography for the one-epoch window, store
@@ -1102,7 +1090,7 @@ Every v01-foundation and post-v01-seam item, its owning lane, and the invariant 
 | C36 | maybe ReturnType marker general from the start | W4.5 (gate 39) | one fact-model owner for maybe-returns; no stdlib-only special case to migrate later |
 | C44 | dense-CommitId sentence + density conformance law | W1.1 + W3.2 | the committed CommitId sequence is gapless — the cursor algebra of replication and incremental backup |
 | C54 | data.code on run.uncaught_error + tooling/03 fix | W1.1 + W6.1 (emit) + W6.6 (envelope render) | clients branch on code+data, never message text, on the top programmatic failure path |
-| C56 | store block required in marrow.json | gate 42 + W6.7 + W1.1 | no silent selection of the non-durable mode |
+| C56 | store block required in marrow.json | gate 42 + W1.1 | no silent selection of the non-durable mode |
 | C57 | one-data-model law scoped to shape + reads | W1.1 | no doc-vs-binary seam on the flagship symmetry claim |
 | G2-1 | fsync/commit/bytes counters on the counting decorator | W2.8 | deterministic cost meters are pure functions of (program, data) |
 | G3-2 | 0600 artifact modes + encryption-as-profile clause + ops Security section | W2.4 + W1.1 + W6.8 | at-rest delegation is explicit; encryption is forever a backend-profile concern, never cell-layer crypto |

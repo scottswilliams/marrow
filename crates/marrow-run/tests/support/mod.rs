@@ -18,7 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use marrow_check::{
     CheckedProgram, CheckedRuntimeProgram, ProjectConfig, ResourceId, ResourceMemberId,
-    ResourceMemberKind, check_project,
+    ResourceMemberKind, StoreBackend, StoreConfig, check_project,
 };
 use marrow_run::{CheckedEntryCall, Host, Value, WriteDataSegment};
 use marrow_store::cell::CatalogId;
@@ -180,7 +180,10 @@ pub fn test_project_config() -> ProjectConfig {
     ProjectConfig {
         source_roots: vec!["src".into()],
         default_entry: None,
-        store: None,
+        store: StoreConfig {
+            backend: StoreBackend::Memory,
+            data_dir: None,
+        },
         tests: Vec::new(),
     }
 }
