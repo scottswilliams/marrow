@@ -154,7 +154,7 @@ marrow data roots .
 ^books
 ```
 
-Count roots and records:
+Count roots and cells:
 
 ```sh
 marrow data stats .
@@ -165,7 +165,7 @@ fields:
 
 ```text
 roots: 1
-records: 12
+cells: 12
 ```
 
 Dump every saved field path and value:
@@ -189,8 +189,10 @@ marrow data dump .
 ^books(4).shelf	fiction
 ```
 
-`data dump` reports stored field values, not the generated index entries, which
-are derived data. Read a single path:
+One cell is one stored path/value pair; one entity is one identity tuple such as
+`^books(1)`, so each saved book above contributes three cells. `data dump`
+reports stored field values, not the generated index entries, which are derived
+data. Read a single path:
 
 ```sh
 marrow data get . '^books(1).title'
@@ -218,7 +220,7 @@ marrow data stats --format json .
 ```
 
 ```text
-{"project":"/absolute/path/to/shelf","records":12,"roots":1}
+{"project":"/absolute/path/to/shelf","cells":12,"roots":1}
 ```
 
 `marrow data` inspection commands are read-only; `marrow data recover` is the

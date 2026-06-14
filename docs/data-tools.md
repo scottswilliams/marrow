@@ -23,8 +23,8 @@ The v0.1 tooling contract is:
 - keep repair as explicit maintenance code over modeled data.
 
 `marrow data dump` is the operator/admin exception: it intentionally walks the
-whole typed store snapshot and prints every record. It is not a production
-preview API.
+whole typed store snapshot and prints every stored path/value pair. It is not a
+production preview API.
 
 Typed backup/restore is a tooling and backup-format contract, not a raw
 archive replay: the archive carries a typed manifest, the accepted-catalog
@@ -39,7 +39,7 @@ verb. The other subcommands only read.
 Inspection subcommands never create or modify the store. By default they open
 the configured native store read-only, and if no store file exists yet they
 report an empty result rather than creating one: `roots` and `dump` print
-`(no saved data)`, `stats` reports zero roots and records, `integrity` reports
+`(no saved data)`, `stats` reports zero roots and cells, `integrity` reports
 `ok` over zero records, and `get` prints `(absent)`. The data directory is left
 untouched — no `marrow.redb` is written.
 
@@ -115,19 +115,21 @@ data)` in text and
 
 ## `marrow data stats`
 
-Counts saved roots and records (one record is one stored `(path, value)` pair).
+Counts saved roots and cells. One cell is one stored `(path, value)` pair.
+One entity is one identity tuple, such as `^counter(1)`, and can contain
+multiple cells.
 
 ```
 $ marrow data stats ./project
 roots: 1
-records: 1
+cells: 1
 ```
 
 ```json
-{"project":"/absolute/path/to/project","records":1,"roots":1}
+{"project":"/absolute/path/to/project","cells":1,"roots":1}
 ```
 
-The record count is a full store scan; it is exact, not an estimate.
+The cell count is a full store scan; it is exact, not an estimate.
 
 ## `marrow data dump`
 
@@ -161,7 +163,7 @@ path plus base64 of the value bytes:
 
 ```jsonl
 {"path":"^counter(1).value","value_b64":"NDI="}
-{"kind":"summary","records":1}
+{"kind":"summary","cells":1}
 ```
 
 Paths in text use Marrow path syntax: `^root` for a root, `.name` for a field

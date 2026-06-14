@@ -846,15 +846,6 @@ Wave gate: full gate; evolution/backup fixture families feed the gate-35 ledger.
 
 Listing order is execution order. docs/cli.md integrates with the remaining operator lanes.
 
-**W6.16 → Records vocabulary.** Carries: rename `records` to `cells` in `marrow data stats`
-text/JSON and `data dump` summary JSON after W6.5 retires `check --data`. Owns:
-data stats/dump renderers, data_cli_inventory.rs and data dump/paged render-contract tests,
-docs/data-tools.md, docs/cli.md, and docs/quickstart.md. Seed: pinned output fixtures still
-expect `records` for data-cell counts. Review: no per-root breakdown, no fence state or
-StoreStamp in stats output, and no rename of `evolve preview`'s entity-level `records_scanned`.
-Done: docs define one cell as one stored path/value pair and distinguish it from one entity as
-one identity tuple.
-
 **W6.17 → Value echo diagnostics.** Carries: bounded offending-value prose at three verified
 runtime sites: conversion errors in stdlib/conversion.rs, unique-index conflicts in
 index_maintenance.rs, and parseDuration/parseDate in std_pure.rs. Owns: those message

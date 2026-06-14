@@ -516,15 +516,16 @@ $ marrow data roots ./proj
 
 ### `data stats`
 
-Count the saved roots and records.
+Count the saved roots and cells. One cell is one stored `(path, value)` pair;
+one entity is one identity tuple such as `^books(1)`.
 
 ```console
 $ marrow data stats ./proj
 roots: 1
-records: 2
+cells: 2
 
 $ marrow data stats --format json ./proj
-{"project":"/absolute/path/to/proj","records":2,"roots":1}
+{"project":"/absolute/path/to/proj","cells":2,"roots":1}
 ```
 
 ### `data dump`
@@ -548,7 +549,7 @@ $ marrow data dump --format jsonl ./proj
 {"path":"^books(1).author","value_b64":"…"}
 {"path":"^books(1).loanedTo","value_b64":"…"}
 {"path":"^books(1).state","value_b64":"…"}
-{"kind":"summary","records":4}
+{"kind":"summary","cells":4}
 ```
 
 ### `data integrity`

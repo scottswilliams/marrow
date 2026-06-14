@@ -29,8 +29,8 @@ fn data_roots_lists_stored_roots() {
 }
 
 #[test]
-fn data_stats_counts_roots_and_records() {
-    // Render contract: the text format prints `roots:`/`records:` count lines. The
+fn data_stats_counts_roots_and_cells() {
+    // Render contract: the text format prints `roots:`/`cells:` count lines. The
     // typed counts are asserted by `data_stats_format_json_emits_counts`.
     let (_project, dir) = seeded_project("data-stats");
     let output = marrow(&["data", "stats", &dir]);
@@ -38,7 +38,7 @@ fn data_stats_counts_roots_and_records() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
     // Render contract: the two count lines, pinned exactly.
-    assert_eq!(stdout, "roots: 1\nrecords: 1\n", "{stdout}");
+    assert_eq!(stdout, "roots: 1\ncells: 1\n", "{stdout}");
 }
 
 #[test]
@@ -53,7 +53,8 @@ fn data_inventory_does_not_treat_an_overlong_node_as_a_shorter_record() {
     assert_eq!(stats.status.code(), Some(0), "{stats:?}");
     let stats_json = json(stats);
     assert_eq!(stats_json["roots"], serde_json::json!(0));
-    assert_eq!(stats_json["records"], serde_json::json!(0));
+    assert_eq!(stats_json["cells"], serde_json::json!(0));
+    assert!(stats_json.get("records").is_none(), "{stats_json}");
 
     assert_eq!(get.status.code(), Some(0), "{get:?}");
     let get_json = json(get);
@@ -91,7 +92,8 @@ fn data_inventory_ignores_overlong_nodes_under_composite_roots() {
     assert_eq!(stats.status.code(), Some(0), "{stats:?}");
     let stats_json = json(stats);
     assert_eq!(stats_json["roots"], serde_json::json!(0));
-    assert_eq!(stats_json["records"], serde_json::json!(0));
+    assert_eq!(stats_json["cells"], serde_json::json!(0));
+    assert!(stats_json.get("records").is_none(), "{stats_json}");
 
     assert_eq!(get.status.code(), Some(0), "{get:?}");
     assert_eq!(json(get)["presence"], serde_json::json!("absent"));
@@ -111,8 +113,10 @@ fn inspecting_an_unseeded_project_reports_no_data_and_writes_no_records() {
     // Render contract: an empty store prints a human placeholder, not a bare line.
     let stdout = String::from_utf8(output.stdout).expect("utf8");
     assert_eq!(stdout, "(no saved data)\n", "{stdout}");
-    // Inspection writes no records: the store holds zero saved records.
-    assert_eq!(json(stats)["records"], serde_json::json!(0));
+    // Inspection writes no cells: the store holds zero saved data cells.
+    let stats_json = json(stats);
+    assert_eq!(stats_json["cells"], serde_json::json!(0));
+    assert!(stats_json.get("records").is_none(), "{stats_json}");
 }
 
 #[test]
@@ -289,8 +293,10 @@ fn data_dump_of_an_unseeded_project_prints_empty_and_writes_no_records() {
     // Render contract: an empty store dump prints a human placeholder.
     let stdout = String::from_utf8(output.stdout).expect("utf8");
     assert_eq!(stdout, "(no saved data)\n", "{stdout}");
-    // Inspection writes no records: the store holds zero saved records.
-    assert_eq!(json(stats)["records"], serde_json::json!(0));
+    // Inspection writes no cells: the store holds zero saved data cells.
+    let stats_json = json(stats);
+    assert_eq!(stats_json["cells"], serde_json::json!(0));
+    assert!(stats_json.get("records").is_none(), "{stats_json}");
 }
 
 #[test]
@@ -371,7 +377,8 @@ fn data_stats_format_json_emits_counts() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let value = json(output);
     assert_eq!(value["roots"], serde_json::json!(1));
-    assert_eq!(value["records"], serde_json::json!(1));
+    assert_eq!(value["cells"], serde_json::json!(1));
+    assert!(value.get("records").is_none(), "{value}");
 }
 
 #[test]
@@ -388,7 +395,8 @@ fn data_dump_format_jsonl_emits_a_record_then_a_summary() {
     assert!(record["value_b64"].is_string(), "{record}");
     let summary: serde_json::Value = serde_json::from_str(lines[1]).expect("summary json");
     assert_eq!(summary["kind"], serde_json::json!("summary"));
-    assert_eq!(summary["records"], serde_json::json!(1));
+    assert_eq!(summary["cells"], serde_json::json!(1));
+    assert!(summary.get("records").is_none(), "{summary}");
 }
 
 #[test]
@@ -415,14 +423,16 @@ fn data_commands_page_through_large_native_store() {
 
     assert_eq!(stats.status.code(), Some(0), "{stats:?}");
     let stats_json: serde_json::Value = serde_json::from_slice(&stats.stdout).expect("stats json");
-    assert_eq!(stats_json["records"], serde_json::json!(RECORDS));
+    assert_eq!(stats_json["cells"], serde_json::json!(RECORDS));
+    assert!(stats_json.get("records").is_none(), "{stats_json}");
 
     assert_eq!(dump.status.code(), Some(0), "{dump:?}");
     let dump_stdout = String::from_utf8(dump.stdout).expect("dump utf8");
     let lines = dump_stdout.lines().collect::<Vec<_>>();
     assert_eq!(lines.len(), RECORDS + 1);
     let summary: serde_json::Value = serde_json::from_str(lines[RECORDS]).expect("summary json");
-    assert_eq!(summary["records"], serde_json::json!(RECORDS));
+    assert_eq!(summary["cells"], serde_json::json!(RECORDS));
+    assert!(summary.get("records").is_none(), "{summary}");
 
     // Paging through every record finds no integrity problems, asserted as the typed
     // empty problem list rather than the rendered record-count text.

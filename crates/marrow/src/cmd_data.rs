@@ -248,7 +248,7 @@ pub(crate) fn data(args: &[String]) -> ExitCode {
                 "\
 Usage:
   marrow data roots [--backup <artifact>] [--format text|json|jsonl] <projectdir> list the saved roots
-  marrow data stats [--backup <artifact>] [--format text|json|jsonl] <projectdir> count roots and records
+  marrow data stats [--backup <artifact>] [--format text|json|jsonl] <projectdir> count roots and cells
   marrow data dump [--backup <artifact>] [--format text|json|jsonl] <projectdir> dump every (path, value)
   marrow data integrity [--backup <artifact>] [--format text|json|jsonl] <dir>   verify checked saved values decode
   marrow data recover [--format text|json|jsonl] <dir>     repair an unclean native store open
@@ -379,7 +379,7 @@ fn data_stats(args: &[String]) -> ExitCode {
         Ok(target) => target,
         Err(code) => return code,
     };
-    // One snapshot spans both passes, so the root count and the record count describe
+    // One snapshot spans both passes, so the root count and the cell count describe
     // the same coherent version of the store.
     let _snapshot = match pin_snapshot(&store, format) {
         Ok(snapshot) => snapshot,
@@ -402,13 +402,13 @@ fn data_stats(args: &[String]) -> ExitCode {
     match format {
         CheckFormat::Text => {
             println!("roots: {roots}");
-            println!("records: {records}");
+            println!("cells: {records}");
         }
         CheckFormat::Json | CheckFormat::Jsonl => {
             write_json(json!({
                 "project": crate::project_json_path(&dir),
                 "roots": roots,
-                "records": records,
+                "cells": records,
             }));
         }
     }
@@ -425,7 +425,7 @@ fn data_dump(args: &[String]) -> ExitCode {
         Ok(target) => target,
         Err(code) => return code,
     };
-    // One snapshot spans the count and the dump traversal, so the emitted records
+    // One snapshot spans the count and the dump traversal, so the emitted cells
     // and the trailing count describe the same coherent version of the store.
     let _snapshot = match pin_snapshot(&store, format) {
         Ok(snapshot) => snapshot,
@@ -494,7 +494,7 @@ fn render_dump_jsonl(
             Ok(())
         })?;
     }
-    write_json(json!({ "kind": "summary", "records": records }));
+    write_json(json!({ "kind": "summary", "cells": records }));
     Ok(())
 }
 
