@@ -127,6 +127,45 @@ fn append_in_value_position_inside_loop_warns() {
 }
 
 #[test]
+fn append_in_top_level_while_condition_warns() {
+    let report = check_source(
+        "commit-amplification-while-condition",
+        "module m\n\
+         resource Book\n    required title: string\n    tags(pos: int): string\n\
+         store ^books(id: int): Book\n\n\
+         fn tag()\n    while append(^books(1).tags, \"x\") > 0\n        print(\"tagged\")\n",
+    );
+
+    assert_commit_amplification_warnings(&report, 1);
+}
+
+#[test]
+fn transaction_around_while_condition_suppresses_append_warning() {
+    let report = check_source(
+        "commit-amplification-while-condition-transaction",
+        "module m\n\
+         resource Book\n    required title: string\n    tags(pos: int): string\n\
+         store ^books(id: int): Book\n\n\
+         fn tag()\n    transaction\n        while append(^books(1).tags, \"x\") > 0\n            print(\"tagged\")\n",
+    );
+
+    assert_clean(&report);
+}
+
+#[test]
+fn nested_while_condition_warns_once_per_append() {
+    let report = check_source(
+        "commit-amplification-nested-while-condition",
+        "module m\n\
+         resource Book\n    required title: string\n    tags(pos: int): string\n\
+         store ^books(id: int): Book\n\n\
+         fn tag(again: bool)\n    while again\n        while append(^books(1).tags, \"x\") > 0\n            print(\"tagged\")\n",
+    );
+
+    assert_commit_amplification_warnings(&report, 1);
+}
+
+#[test]
 fn append_inside_nested_evaluated_expressions_in_loop_warns_once_per_call() {
     let cases = [
         (

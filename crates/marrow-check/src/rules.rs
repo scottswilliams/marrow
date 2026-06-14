@@ -498,7 +498,15 @@ fn walk_commit_amplification(
                     walk_commit_amplification(file, block, in_loop, in_transaction, out);
                 }
             }
-            Statement::While { body, .. } | Statement::For { body, .. } => {
+            Statement::While {
+                condition, body, ..
+            } => {
+                if !in_transaction && let Some(condition) = condition {
+                    push_append_write_warnings(file, condition, out);
+                }
+                walk_commit_amplification(file, body, true, in_transaction, out);
+            }
+            Statement::For { body, .. } => {
                 walk_commit_amplification(file, body, true, in_transaction, out);
             }
             Statement::Transaction { body, .. } => {
@@ -562,7 +570,7 @@ fn push_commit_amplification_warnings(
         Statement::Throw { value, .. } | Statement::Expr { value, .. } => {
             push_append_write_warnings(file, value, out);
         }
-        Statement::If { condition, .. } | Statement::While { condition, .. } => {
+        Statement::If { condition, .. } => {
             if let Some(condition) = condition {
                 push_append_write_warnings(file, condition, out);
             }
@@ -582,6 +590,7 @@ fn push_commit_amplification_warnings(
         Statement::ReturnAbsent { .. }
         | Statement::Break { .. }
         | Statement::Continue { .. }
+        | Statement::While { .. }
         | Statement::Transaction { .. }
         | Statement::Try { .. } => {}
     }

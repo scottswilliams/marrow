@@ -140,7 +140,7 @@ over every configured source and test file.
 | `check.assignment_type` | A value's type does not match the typed binding or assignment target it is stored into. |
 | `check.lossy_round_trip` | Warning: a whole saved-record replacement targets a record shape with keyed child layers, so omitted keyed children will be cleared. |
 | `check.required_absent` | A straight-line whole saved-root write stores a local resource variable whose required field path was never assigned. Inconclusive paths remain runtime `write.required_absent` checks. |
-| `check.commit_amplification` | Warning: a loop contains a saved-data write outside an enclosing `transaction`. |
+| `check.commit_amplification` | Warning: a loop condition or body contains a saved-data write outside an enclosing `transaction`. |
 | `check.untyped_value` | A value whose type cannot be resolved (`unknown`) is stored into a concrete typed place. |
 | `check.key_type` | A saved key or identity argument's type does not match the key it addresses: a scalar of the wrong type in a keyed lookup, or an identity of a foreign store root spliced into a keyspace. |
 | `check.unresolved_name` | A bare name used as a value resolves to no binding in scope. |
