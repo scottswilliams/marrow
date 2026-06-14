@@ -674,10 +674,7 @@ fn evolution_preview_reads_counts_and_samples_from_backup() {
     let root = support::temp_root("analysis-evolution-preview-backup-archive");
     let archive = root.join("books.mwbackup");
     let store = TreeStore::memory();
-    let store_id = CatalogId::new("cat_00000000000000000000000000000001").expect("store id");
-    store
-        .write_node(&store_id, &[SavedKey::Int(1)])
-        .expect("seed backup cell");
+    seed_backup_record(&store, "cat_00000000000000000000000000000001", 1);
     write_minimal_backup_archive(&archive, &store);
 
     let facts = marrow_check::evolution::evolution_preview(&snapshot, Some(&archive))
@@ -706,10 +703,7 @@ fn evolution_preview_marks_backup_samples_truncated_only_after_omitting_distinct
     let archive = root.join("books.mwbackup");
     let store = TreeStore::memory();
     for n in 0..17 {
-        let store_id = CatalogId::new(format!("cat_{n:032}")).expect("store id");
-        store
-            .write_node(&store_id, &[SavedKey::Int(n)])
-            .expect("seed backup cell");
+        seed_backup_record(&store, format!("cat_{n:032}"), n);
     }
     write_minimal_backup_archive(&archive, &store);
 
@@ -720,6 +714,13 @@ fn evolution_preview_marks_backup_samples_truncated_only_after_omitting_distinct
     assert_eq!(backup.cell_count, 17);
     assert_eq!(backup.sample_catalog_ids.len(), 16);
     assert!(backup.samples_truncated);
+}
+
+fn seed_backup_record(store: &TreeStore, catalog_id: impl Into<String>, id: i64) {
+    let store_id = CatalogId::new(catalog_id).expect("store id");
+    store
+        .write_node(&store_id, &[SavedKey::Int(id)])
+        .expect("seed backup cell");
 }
 
 fn write_minimal_backup_archive(path: &std::path::Path, store: &TreeStore) {
