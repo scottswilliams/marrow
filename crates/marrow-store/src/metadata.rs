@@ -35,8 +35,10 @@ impl EngineProfile {
     }
 
     pub fn digest_hex(&self) -> String {
-        let digest = u64::from_be_bytes(self.digest_bytes());
-        format!("{digest:016x}")
+        let bytes = self.digest_bytes();
+        let mut digest = String::with_capacity(ENGINE_PROFILE_DIGEST_BYTES * 2);
+        push_lower_hex(&mut digest, &bytes);
+        digest
     }
 
     fn digest_preimage(&self) -> Vec<u8> {
@@ -88,10 +90,7 @@ impl StoreUid {
     pub fn from_entropy_bytes(bytes: [u8; 16]) -> Self {
         let mut uid = String::with_capacity(STORE_UID_PREFIX.len() + STORE_UID_HEX_LEN);
         uid.push_str(STORE_UID_PREFIX);
-        for byte in bytes {
-            uid.push(char::from(LOWER_HEX_DIGITS[usize::from(byte >> 4)]));
-            uid.push(char::from(LOWER_HEX_DIGITS[usize::from(byte & 0x0f)]));
-        }
+        push_lower_hex(&mut uid, &bytes);
         Self(uid)
     }
 
@@ -110,6 +109,13 @@ impl std::fmt::Display for StoreUidError {
 }
 
 impl std::error::Error for StoreUidError {}
+
+fn push_lower_hex(out: &mut String, bytes: &[u8]) {
+    for &byte in bytes {
+        out.push(char::from(LOWER_HEX_DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(LOWER_HEX_DIGITS[usize::from(byte & 0x0f)]));
+    }
+}
 
 pub(crate) fn encode_commit_metadata(metadata: &CommitMetadata) -> Result<Vec<u8>, StoreError> {
     let mut bytes = Vec::new();
@@ -241,6 +247,11 @@ mod tests {
             changed_root_catalog_ids: vec![catalog_id("1"), catalog_id("2")],
             changed_index_catalog_ids: vec![catalog_id("3")],
         }
+    }
+
+    #[test]
+    fn engine_profile_digest_hex_uses_canonical_text() {
+        assert_eq!(EngineProfile::new(5).digest_hex(), "779449b86c08ade6");
     }
 
     #[test]

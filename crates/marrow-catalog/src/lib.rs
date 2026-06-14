@@ -5,7 +5,6 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -14,6 +13,7 @@ use sha2::{Digest, Sha256};
 pub const CATALOG_INVALID: &str = "catalog.invalid";
 /// Stable error code for an accepted catalog metadata file with Git conflict markers.
 pub const CATALOG_MERGE_CONFLICT: &str = "catalog.merge_conflict";
+const LOWER_HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 /// A committed accepted catalog snapshot. Source checks may read it and propose
 /// replacement contents, but they never write it.
@@ -504,10 +504,15 @@ fn digest_json(json: &str) -> String {
     let digest = Sha256::digest(json.as_bytes());
     let mut out = String::with_capacity("sha256:".len() + digest.len() * 2);
     out.push_str("sha256:");
-    for byte in digest {
-        write!(&mut out, "{byte:02x}").expect("writing to String cannot fail");
-    }
+    push_lower_hex(&mut out, &digest);
     out
+}
+
+fn push_lower_hex(out: &mut String, bytes: &[u8]) {
+    for &byte in bytes {
+        out.push(char::from(LOWER_HEX_DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(LOWER_HEX_DIGITS[usize::from(byte & 0x0f)]));
+    }
 }
 
 fn digest_entry_order(entry: &CatalogEntry) -> DigestEntryOrder<'_> {

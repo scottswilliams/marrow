@@ -719,17 +719,15 @@ pub(crate) fn write_json_err(value: serde_json::Value) {
     );
 }
 
-/// Append the lowercase hex of `bytes` to `out` (two digits per byte, no prefix).
-/// Writing into the caller's buffer avoids a per-byte allocation.
+const LOWER_HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
 pub(crate) fn push_hex(out: &mut String, bytes: &[u8]) {
-    use std::fmt::Write;
-    for byte in bytes {
-        let _ = write!(out, "{byte:02x}");
+    for &byte in bytes {
+        out.push(char::from(LOWER_HEX_DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(LOWER_HEX_DIGITS[usize::from(byte & 0x0f)]));
     }
 }
 
-/// Allocate and return the lowercase hex string of `bytes`. The single owner of
-/// the digest-to-hex conversion.
 pub(crate) fn hex_string(bytes: &[u8]) -> String {
     let mut text = String::with_capacity(bytes.len() * 2);
     push_hex(&mut text, bytes);

@@ -1,8 +1,8 @@
 //! SHA-256 for catalog and analyzed-source integrity digests.
 
-use std::fmt::Write as _;
-
 use sha2::{Digest, Sha256};
+
+const LOWER_HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 pub fn sha256_digest(bytes: &[u8]) -> String {
     let mut digest = Sha256Digest::new();
@@ -40,10 +40,15 @@ impl Default for Sha256Digest {
 fn sha256_hex(digest: &[u8]) -> String {
     let mut out = String::with_capacity("sha256:".len() + digest.len() * 2);
     out.push_str("sha256:");
-    for byte in digest {
-        write!(&mut out, "{byte:02x}").expect("writing to String cannot fail");
-    }
+    push_lower_hex(&mut out, digest);
     out
+}
+
+fn push_lower_hex(out: &mut String, bytes: &[u8]) {
+    for &byte in bytes {
+        out.push(char::from(LOWER_HEX_DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(LOWER_HEX_DIGITS[usize::from(byte & 0x0f)]));
+    }
 }
 
 #[cfg(test)]
