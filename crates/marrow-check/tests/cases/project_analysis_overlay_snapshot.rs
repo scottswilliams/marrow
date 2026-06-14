@@ -194,6 +194,74 @@ fn analyze_project_retains_configured_test_files_in_snapshot() {
 }
 
 #[test]
+fn analyze_project_keeps_configured_test_modules_out_of_program_facts() {
+    let root = temp_project("analyze-test-facts-boundary", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             resource Book\n\
+             \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
+             pub fn takes_int(n: int)\n\
+             \x20   if exists(^books(n).subtitle)\n\
+             \x20       print(^books(n).subtitle)\n",
+        );
+        write(
+            root,
+            "tests/smoke_test.mw",
+            "fn smoke()\n\
+             \x20   app::takes_int(\"bad\")\n",
+        );
+    });
+    let cfg = parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+    )
+    .expect("config");
+    let test_path = root.join("tests/smoke_test.mw");
+
+    let snapshot = analyze_project(&root, &cfg, &ProjectSources::new(), None).expect("analyze");
+
+    assert!(
+        snapshot
+            .report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "check.call_argument"
+                && diagnostic.file == test_path),
+        "configured test diagnostics should still be reported: {:#?}",
+        snapshot.report.diagnostics
+    );
+    assert!(
+        snapshot.files.iter().any(|file| file.path == test_path
+            && file.module_name.as_deref() == Some("tests::smoke_test")),
+        "configured test files should still be retained: {:#?}",
+        snapshot.files
+    );
+    assert!(
+        !snapshot
+            .program
+            .modules
+            .iter()
+            .any(|module| module.name == "tests::smoke_test"),
+        "configured test modules must not remain in the returned source program"
+    );
+    assert!(
+        snapshot
+            .program
+            .facts
+            .module_id("tests::smoke_test")
+            .is_none(),
+        "configured test facts must not remain in the returned source program"
+    );
+    assert!(
+        !snapshot.program.facts.presence_proofs().is_empty(),
+        "{:#?}",
+        snapshot.program.facts.presence_proofs()
+    );
+}
+
+#[test]
 fn analyze_project_retains_unsaved_configured_test_files_in_snapshot() {
     use marrow_check::{ProjectSources, analyze_project};
 

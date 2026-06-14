@@ -117,6 +117,7 @@ pub fn analyze_project(
     let mut snapshot = analyze_source_project(project_root, config, sources, accepted)?;
     let resolution_suppression = source_resolution_suppression(&snapshot, project_root, config);
     let test_sources = cached_project_sources(&snapshot, sources);
+    let source_facts = snapshot.program.facts.clone();
     let tests = crate::check_tests_with_sources_analysis(
         project_root,
         config,
@@ -126,6 +127,7 @@ pub fn analyze_project(
         crate::TestProgramOutput::DiagnosticsOnly,
     )?;
     snapshot.program.modules.truncate(tests.test_module_start);
+    snapshot.program.facts = source_facts;
     snapshot.report.diagnostics.extend(tests.report.diagnostics);
     snapshot.files.extend(tests.files);
     snapshot.files.sort_by(|a, b| a.path.cmp(&b.path));
