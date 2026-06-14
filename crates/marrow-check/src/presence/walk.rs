@@ -810,7 +810,16 @@ fn collect_expr(
             ));
         }
         collect_call_expr(
-            program, callee, args, target, narrowed, scope, recorder, events,
+            CallExprParts {
+                callee,
+                args,
+                target,
+            },
+            program,
+            narrowed,
+            scope,
+            recorder,
+            events,
         );
         return;
     }
@@ -823,7 +832,16 @@ fn collect_expr(
             ..
         } => {
             collect_call_expr(
-                program, callee, args, target, narrowed, scope, recorder, events,
+                CallExprParts {
+                    callee,
+                    args,
+                    target,
+                },
+                program,
+                narrowed,
+                scope,
+                recorder,
+                events,
             );
         }
         CheckedExpr::Field { base, .. } => {
@@ -844,7 +862,18 @@ fn collect_expr(
         CheckedExpr::Binary {
             op, left, right, ..
         } => {
-            collect_binary_expr(program, *op, left, right, narrowed, scope, recorder, events);
+            collect_binary_expr(
+                BinaryExprParts {
+                    op: *op,
+                    left,
+                    right,
+                },
+                program,
+                narrowed,
+                scope,
+                recorder,
+                events,
+            );
         }
         CheckedExpr::Range {
             start, end, step, ..
@@ -863,20 +892,25 @@ fn collect_expr(
     }
 }
 
+#[derive(Clone, Copy)]
+struct CallExprParts<'a> {
+    callee: &'a CheckedExpr,
+    args: &'a [CheckedArg],
+    target: &'a CheckedCallTarget,
+}
+
 fn collect_call_expr(
+    parts: CallExprParts<'_>,
     program: &CheckedProgram,
-    callee: &CheckedExpr,
-    args: &[CheckedArg],
-    target: &CheckedCallTarget,
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
     events: &mut InvalidationLog,
 ) {
-    if matches!(target, CheckedCallTarget::IdentityConstructor(_)) {
+    if matches!(parts.target, CheckedCallTarget::IdentityConstructor(_)) {
         collect_args(
             program,
-            &args[args.len().min(1)..],
+            &parts.args[parts.args.len().min(1)..],
             ReadContext::Bare,
             narrowed,
             scope,
@@ -885,17 +919,17 @@ fn collect_call_expr(
         );
         return;
     }
-    match builtin_of(target) {
+    match builtin_of(parts.target) {
         Some(CheckedBuiltinCall::Exists) => {
-            collect_exists_args(program, args, narrowed, scope, recorder, events);
+            collect_exists_args(program, parts.args, narrowed, scope, recorder, events);
         }
         Some(CheckedBuiltinCall::Append) => {
-            collect_append_args(program, args, narrowed, scope, recorder, events);
+            collect_append_args(program, parts.args, narrowed, scope, recorder, events);
         }
         Some(builtin) if builtin.reads_attached_data() => {
             collect_args(
                 program,
-                args,
+                parts.args,
                 ReadContext::AttachedData,
                 narrowed,
                 scope,
@@ -903,9 +937,7 @@ fn collect_call_expr(
                 events,
             );
         }
-        _ => collect_plain_call(
-            program, callee, args, target, narrowed, scope, recorder, events,
-        ),
+        _ => collect_plain_call(parts, program, narrowed, scope, recorder, events),
     }
 }
 
@@ -972,21 +1004,21 @@ fn collect_append_args(
 }
 
 fn collect_plain_call(
+    parts: CallExprParts<'_>,
     program: &CheckedProgram,
-    callee: &CheckedExpr,
-    args: &[CheckedArg],
-    target: &CheckedCallTarget,
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
     events: &mut InvalidationLog,
 ) {
-    let writes_saved = call_writes_saved_data(program, target);
-    collect_bare_expr(program, callee, narrowed, scope, recorder, events);
-    if let Some(path_args) = std_path_arg_mask(target) {
-        collect_std_args(program, args, &path_args, narrowed, scope, recorder, events);
+    let writes_saved = call_writes_saved_data(program, parts.target);
+    collect_bare_expr(program, parts.callee, narrowed, scope, recorder, events);
+    if let Some(path_args) = std_path_arg_mask(parts.target) {
+        collect_std_args(
+            program, parts.args, &path_args, narrowed, scope, recorder, events,
+        );
     } else {
-        collect_call_args(program, args, narrowed, scope, recorder, events);
+        collect_call_args(program, parts.args, narrowed, scope, recorder, events);
     }
     if writes_saved {
         invalidate_saved_targets(narrowed, events);
@@ -1022,31 +1054,35 @@ fn collect_args(
     }
 }
 
-fn collect_binary_expr(
-    program: &CheckedProgram,
+struct BinaryExprParts<'a> {
     op: CheckedBinaryOp,
-    left: &CheckedExpr,
-    right: &CheckedExpr,
+    left: &'a CheckedExpr,
+    right: &'a CheckedExpr,
+}
+
+fn collect_binary_expr(
+    parts: BinaryExprParts<'_>,
+    program: &CheckedProgram,
     narrowed: &mut Vec<ReadTarget>,
     scope: &mut NameScope,
     recorder: &mut PresenceRecorder<'_>,
     events: &mut InvalidationLog,
 ) {
-    let left_context = if op == CheckedBinaryOp::Coalesce {
+    let left_context = if parts.op == CheckedBinaryOp::Coalesce {
         ReadContext::Resolved
     } else {
         ReadContext::Bare
     };
     collect_expr(
         program,
-        left,
+        parts.left,
         left_context,
         narrowed,
         scope,
         recorder,
         events,
     );
-    collect_bare_expr(program, right, narrowed, scope, recorder, events);
+    collect_bare_expr(program, parts.right, narrowed, scope, recorder, events);
 }
 
 fn collect_interpolation_expr(

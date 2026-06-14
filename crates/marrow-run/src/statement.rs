@@ -8,8 +8,7 @@ use marrow_schema::Type;
 use marrow_syntax::SourceSpan;
 
 use crate::call::{
-    eval_call, expr_call_maybe_present, expr_return_absence_can_propagate,
-    expression_absent_at_resolution_site,
+    eval_call, expr_return_absence_can_propagate, expression_absent_at_resolution_site,
 };
 use crate::call_args::default_value;
 use crate::durable_read::read_saved_value_if_present;
@@ -82,6 +81,12 @@ fn eval_binding_or_write_statement(
         }
         ExecStmt::Return { value, .. } => {
             let value = match value.as_ref() {
+                Some(expr) if expr.saved_place().is_some() => {
+                    match read_saved_value_if_present(expr, expr.span(), env)? {
+                        Some(value) => Some(value),
+                        None => return Ok(Some(Flow::ReturnAbsent)),
+                    }
+                }
                 Some(expr) if expr_return_absence_can_propagate(expr) => match eval_expr(expr, env)
                 {
                     Ok(value) => Some(value),
@@ -309,14 +314,11 @@ fn eval_if_const_value(value: &ExecExpr, env: &mut Env<'_>) -> Result<Option<Val
     if value.saved_place().is_some() {
         return read_saved_value_if_present(value, value.span(), env);
     }
-    if expr_call_maybe_present(value) {
-        return match eval_expr(value, env) {
-            Ok(value) => Ok(Some(value)),
-            Err(error) if expression_absent_at_resolution_site(value, &error) => Ok(None),
-            Err(error) => Err(error),
-        };
+    match eval_expr(value, env) {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if expression_absent_at_resolution_site(value, &error) => Ok(None),
+        Err(error) => Err(error),
     }
-    Ok(Some(eval_expr(value, env)?))
 }
 
 fn eval_bound_if_const(

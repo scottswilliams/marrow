@@ -34,6 +34,15 @@ pub fn whole(id: int): Book
         return book
     return fallback
 
+pub fn maybe_whole(id: int): maybe Book
+    return ^books(id)
+
+pub fn maybe_whole_or_fallback(id: int): Book
+    var fallback: Book
+    fallback.title = \"\"
+    fallback.pages = 0
+    return maybe_whole(id) ?? fallback
+
 pub fn pages_or_caught(id: int): string
     try
         if const book = ^books(id)
@@ -80,6 +89,17 @@ fn a_whole_resource_read_over_a_missing_required_field_faults() {
     let result = run_entry(
         &store,
         checked_entry!(&program, "test::whole", Value::Int(1)),
+    );
+    assert_run_error(result, RUN_ABSENT);
+}
+
+#[test]
+fn a_maybe_return_read_over_a_missing_required_field_faults() {
+    let program = checked_program(REQUIRED_PAGES);
+    let store = store_missing_required_pages(&program, 1);
+    let result = run_entry(
+        &store,
+        checked_entry!(&program, "test::maybe_whole_or_fallback", Value::Int(1)),
     );
     assert_run_error(result, RUN_ABSENT);
 }

@@ -67,6 +67,11 @@ pub(crate) fn bindable_saved_value_read_in_type_scope(
     type_scope: &[std::collections::HashMap<String, MarrowType>],
     transform_old: Option<super::TransformOldReadScope<'_>>,
 ) -> bool {
+    if let CheckedExpr::Call { target, .. } = expr
+        && maybe_present_result(target)
+    {
+        return true;
+    }
     let scope = NameScope::from_type_scope(type_scope, transform_old);
     read_target_with_scope(program, expr, &scope).is_some_and(|target| {
         target.read == PresenceProofRead::Direct && target.value == ReadTargetValue::Value

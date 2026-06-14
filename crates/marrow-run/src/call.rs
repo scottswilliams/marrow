@@ -237,7 +237,7 @@ fn eval_std_call(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Option<Value>, RuntimeError> {
-    match target.requires_capability {
+    let result = match target.requires_capability {
         Some(Capability::Clock) => eval_clock_capability(target.op, args, span, env).map(Some),
         Some(Capability::Environment) => eval_env(target.op, args, span, env).map(Some),
         Some(Capability::Log) => eval_log(target.op, args, span, env),
@@ -245,5 +245,15 @@ fn eval_std_call(
         Some(Capability::Maintenance) => Err(unsupported("a maintenance std call", span)),
         None if target.module == "assert" => eval_assert(target.op, args, span, env),
         None => eval_std(target.module, target.op, args, span, env).map(Some),
+    };
+    match result {
+        Err(error)
+            if target.presence == ReturnPresence::MaybePresent
+                && error.code == RUN_ABSENT
+                && error.span == span =>
+        {
+            Ok(None)
+        }
+        other => other,
     }
 }
