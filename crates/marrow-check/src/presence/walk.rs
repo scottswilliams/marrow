@@ -7,7 +7,7 @@ use super::effects::{
 use super::keys::saved_place_key;
 use super::proofs::{PresenceRecorder, ReadContext, read_proof, record_read};
 use super::scope::NameScope;
-use super::target::{ReadTarget, read_target_with_scope};
+use super::target::{ReadTarget, read_target_with_scope, saved_path_read_target_with_scope};
 use super::writes::call_writes_saved_data;
 use crate::executable::CheckedExecutableContext;
 use crate::{
@@ -868,7 +868,9 @@ fn collect_std_args(
     recorder: &mut PresenceRecorder<'_>,
 ) {
     for (index, arg) in args.iter().enumerate() {
-        let context = if path_args.get(index).copied().unwrap_or(false) {
+        let context = if path_args.get(index).copied().unwrap_or(false)
+            && saved_path_read_target_with_scope(program, &arg.value, scope).is_some()
+        {
             ReadContext::AttachedData
         } else {
             ReadContext::Bare

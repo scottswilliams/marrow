@@ -178,7 +178,8 @@ visibility      = "pub" ;
 param_list      = param_decl ("," param_decl)* ","? ;
 param_decl      = doc_comment* identifier type_annotation ;
 
-return_type     = ":" type ;
+return_type     = ":" maybe_return? type ;
+maybe_return    = "maybe" ;
 
 block           = INDENT statement+ DEDENT ;
 ```
@@ -285,9 +286,9 @@ var_stmt        =
 
 assignment_stmt = assignable "=" expression NEWLINE ;
 delete_stmt     = "delete" path_expr NEWLINE ;
-return_stmt     = "return" expression? NEWLINE ;
-break_stmt      = "break" NEWLINE ;
-continue_stmt   = "continue" NEWLINE ;
+return_stmt     = "return" ("absent" | expression)? NEWLINE ;
+break_stmt      = "break" identifier? NEWLINE ;
+continue_stmt   = "continue" identifier? NEWLINE ;
 
 throw_stmt      = "throw" expression NEWLINE ;
 expression_stmt = expression NEWLINE ;
@@ -353,8 +354,8 @@ catch_clause     =
 
 Assignment is not an expression. Equality is `==` and inequality is `!=`; the
 single `=` is assignment only and is a parse error in expression position. The
-absence-default `??` and the optional read `?.` apply to possibly-absent path
-reads.
+absence-default `??` applies to possibly-absent reads and maybe-present call
+results; the optional read `?.` applies to possibly-absent path reads.
 
 ```ebnf
 expression      = or_expr ;
@@ -410,8 +411,8 @@ ranges and comparisons: `count ?? 0 < 5` is `(count ?? 0) < 5`,
 `start ?? 1 .. n` is `(start ?? 1) .. n`, and `x ?? y + 1` is `x ?? (y + 1)`.
 Its left operand must be a maybe-present read — a path read (including a keyed
 child such as `^patients(id).visits(date)`), a `?.` chain, or a maybe-present
-builtin result such as `next`/`prev`; that constraint is enforced by the
-checker, not the grammar.
+call result such as `next`/`prev` or a maybe-returning user function; that
+constraint is enforced by the checker, not the grammar.
 
 `is` is the enum-subtree test: `value is Enum::member` is `true` when the value is
 at or under that member, exact for a concrete leaf. It is a reserved word, sits
@@ -508,9 +509,9 @@ These rules are part of the grammar contract:
   bind address-only durable collections.
 - The absence-default `??` is non-associative and binds looser than additive
   expressions and tighter than ranges and comparisons. Its left operand must be
-  a maybe-present read — a path read, a `?.` chain, or a maybe-present builtin
-  result such as `next`/`prev`; an always-present left operand is rejected as an
-  operator misuse.
+  a maybe-present read — a path read, a `?.` chain, or a maybe-present call
+  result such as `next`/`prev` or a maybe-returning user function; an
+  always-present left operand is rejected as an operator misuse.
 - The optional read `?.` is a postfix field access that short-circuits the chain
   to absent when a step is absent; only absence is short-circuited, not schema or
   decoding errors.

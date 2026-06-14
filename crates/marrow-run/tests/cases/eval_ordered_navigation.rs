@@ -230,6 +230,37 @@ fn next_of_bare_layer_is_first_and_prev_is_last() {
 }
 
 #[test]
+fn maybe_return_propagates_empty_neighbor_absence() {
+    let program = checked_program(
+        "resource Book\n\
+         \x20   required title: string\n\
+         store ^books(id: int): Book\n\n\
+         fn maybeNext(): maybe Id(^books)\n\
+         \x20   return next(^books)\n\n\
+         fn maybePrev(): maybe Id(^books)\n\
+         \x20   return prev(^books)\n\n\
+         pub fn nextFallback(): bool\n\
+         \x20   return exists(^books(maybeNext() ?? Id(^books, 1)))\n\n\
+         pub fn prevFallback(): bool\n\
+         \x20   return exists(^books(maybePrev() ?? Id(^books, 1)))\n",
+    );
+    let store = TreeStore::memory();
+
+    assert_eq!(
+        run_entry(&store, checked_entry!(&program, "test::nextFallback"))
+            .expect("next fallback")
+            .value,
+        Some(Value::Bool(false))
+    );
+    assert_eq!(
+        run_entry(&store, checked_entry!(&program, "test::prevFallback"))
+            .expect("prev fallback")
+            .value,
+        Some(Value::Bool(false))
+    );
+}
+
+#[test]
 fn prev_of_first_is_absent_and_composes_with_coalesce() {
     let program = checked_program(NAV_BOOKS);
     let store = TreeStore::memory();

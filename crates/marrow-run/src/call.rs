@@ -87,6 +87,9 @@ pub(crate) fn expr_return_absence_can_propagate(expr: &ExecExpr) -> bool {
                     CheckedCallTarget::SavedIndexLookup
                         | CheckedCallTarget::SavedLayerRead
                         | CheckedCallTarget::SavedResourceRead
+                        | CheckedCallTarget::Builtin(
+                            CheckedBuiltinCall::Next | CheckedBuiltinCall::Prev
+                        )
                 )
         }
         ExecExpr::SavedRoot { .. } | ExecExpr::Field { .. } | ExecExpr::OptionalField { .. } => {

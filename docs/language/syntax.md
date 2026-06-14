@@ -246,10 +246,11 @@ require ordered values of the same type.
 
 The absence-default `??` reads a maybe-present operand on its left and yields the
 right operand when that read is absent. Its left operand must be a maybe-present
-read — a path read, a `?.` chain, or a maybe-present builtin result such as
-`next`/`prev` — since a value that is always present has nothing to default; the
-default must match the read's type. It binds looser than `+`/`-` and tighter
-than ranges and comparisons, so `count ?? 0 < 5` is `(count ?? 0) < 5`,
+read — a path read, a `?.` chain, or a maybe-present call result such as
+`next`/`prev` or a maybe-returning user function — since a value that is always
+present has nothing to default; the default must match the read's type. It binds
+looser than `+`/`-` and tighter than ranges and comparisons, so `count ?? 0 < 5`
+is `(count ?? 0) < 5`,
 `start ?? 1 .. n` is `(start ?? 1) .. n`, and `x ?? y + 1` is `x ?? (y + 1)`.
 It does not chain: write one `??` per read.
 

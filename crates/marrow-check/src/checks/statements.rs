@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use marrow_schema::ReturnPresence;
 use marrow_syntax::SourceSpan;
 
 use crate::enums::{MatchCheck, check_match, resolve_diagnosed_annotation_type};
@@ -30,6 +31,7 @@ use super::collections::{
 use super::operators::{check_assignment, check_condition, check_return_type, check_throw_type};
 use super::ranges::{check_range_header, check_range_iterable_value_parts};
 use super::required_fields::RequiredFieldAssignments;
+use super::returns::check_return_values;
 use super::saved_keys::saved_root_args_address_record;
 
 /// Type-check a function body, tracking the type of each in-scope binding and
@@ -132,6 +134,7 @@ pub(crate) fn check_transform_block_types(check: TransformBlockTypeCheck<'_>) {
                 resource: transform_old_resource,
                 frame,
             });
+    check_return_values(file, block, true, ReturnPresence::Always, diagnostics);
     let mut required_fields = RequiredFieldAssignments::inactive();
     check_block_types_with_read_scope(
         BlockTypeContext {

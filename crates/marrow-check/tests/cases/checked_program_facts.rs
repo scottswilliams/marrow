@@ -4,7 +4,7 @@ use marrow_check::{
     check_tests_program,
 };
 use marrow_project::parse_config;
-use marrow_schema::stdlib::Capability;
+use marrow_schema::{ReturnPresence, stdlib::Capability};
 
 use support::{config, temp_project, write};
 
@@ -61,6 +61,47 @@ fn checked_facts_assign_typed_ids_to_same_named_declarations() {
         facts.function(fresh).return_type.as_ref(),
         Some(&CheckedType::Identity(a_books))
     );
+}
+
+#[test]
+fn checked_facts_preserve_function_return_presence() {
+    let root = temp_project("program-fact-return-presence", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
+             fn maybeSubtitle(id: int): maybe string\n\
+             \x20   return ^books(id).subtitle\n\
+             fn title(id: int): string\n\
+             \x20   return ^books(id).subtitle ?? \"\"\n\
+             fn log()\n\
+             \x20   print(\"x\")\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let facts = &program.facts;
+    let module = facts.module_id("books").expect("books module");
+
+    let maybe = facts
+        .function_id(module, "maybeSubtitle")
+        .expect("maybeSubtitle");
+    let title = facts.function_id(module, "title").expect("title");
+    let log = facts.function_id(module, "log").expect("log");
+
+    assert_eq!(
+        facts.function(maybe).return_presence,
+        ReturnPresence::MaybePresent
+    );
+    assert_eq!(
+        facts.function(title).return_presence,
+        ReturnPresence::Always
+    );
+    assert_eq!(facts.function(log).return_presence, ReturnPresence::Always);
 }
 
 #[test]

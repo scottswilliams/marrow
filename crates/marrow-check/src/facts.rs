@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use marrow_schema::stdlib::Capability;
-use marrow_schema::{NodeKind, ScalarType, Type};
+use marrow_schema::{NodeKind, ReturnPresence, ScalarType, Type};
 use marrow_store::key::{SavedKey, decode_identity_payload_arity, encode_identity_index_key};
 use marrow_store::tree::decode_tree_enum_member;
 use marrow_store::value::decode_value;
@@ -619,6 +619,7 @@ impl CheckedFacts {
             public: function.public,
             params,
             return_type,
+            return_presence: function.return_presence,
             direct_effects: DirectEffectFacts::default(),
             source_index,
             span: function.span,
@@ -1323,6 +1324,7 @@ pub struct FunctionFact {
     pub public: bool,
     pub params: Vec<LocalFact>,
     pub return_type: Option<CheckedType>,
+    pub return_presence: ReturnPresence,
     pub direct_effects: DirectEffectFacts,
     /// Position of the source function in its module's `functions`. A fact is
     /// built only when its signature resolves, so the facts are a subset of the

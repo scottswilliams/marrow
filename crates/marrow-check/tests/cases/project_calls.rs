@@ -260,6 +260,46 @@ fn exists_does_not_narrow_a_later_maybe_function_call() {
 }
 
 #[test]
+fn assert_absent_does_not_resolve_a_maybe_function_call() {
+    let report = check_module_report(
+        "user-maybe-return-assert-absent-boundary",
+        "module m\n\
+         resource Book\n\
+         \x20   title: string\n\
+         store ^books(id: int): Book\n\n\
+         fn missing(): maybe int\n\
+         \x20   return absent\n\n\
+         fn caller()\n\
+         \x20   std::assert::absent(missing())\n\
+         \x20   std::assert::absent(next(^books))\n",
+    );
+
+    let found = with_code(&report, "check.bare_maybe_present_read");
+    assert_eq!(found.len(), 2, "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn assert_absent_rejects_non_path_arguments() {
+    let report = check_module_report(
+        "assert-absent-path-shape",
+        "module m\n\
+         resource Book\n\
+         \x20   title: string\n\
+         store ^books(id: int): Book\n\n\
+         fn always(): int\n\
+         \x20   return 1\n\n\
+         fn caller(id: int)\n\
+         \x20   std::assert::absent(^books(id).title)\n\
+         \x20   std::assert::absent(1)\n\
+         \x20   std::assert::absent(id)\n\
+         \x20   std::assert::absent(always())\n",
+    );
+
+    let found = with_code(&report, "check.call_argument");
+    assert_eq!(found.len(), 3, "{:#?}", report.diagnostics);
+}
+
+#[test]
 fn maybe_return_absence_forms_are_checked_against_the_signature() {
     let report = check_module_report(
         "user-maybe-return-absence-forms",

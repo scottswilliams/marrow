@@ -178,6 +178,7 @@ fn check_builtin_call(
         return std_call_return_type(segments).unwrap_or(MarrowType::Unknown);
     }
     if let Some(params) = std_call_params(segments) {
+        check_std_call_args(env, segments, args);
         check_args_against(
             &label,
             &params,
@@ -427,6 +428,38 @@ fn check_builtin_call_args(
             check_error_code_conversion_literal(args, env.file, env.diagnostics);
         }
     }
+}
+
+fn check_std_call_args(
+    env: &mut CallEnv<'_>,
+    segments: &[String],
+    args: &[marrow_syntax::Argument],
+) {
+    if segments == ["std", "assert", "absent"] {
+        check_assert_absent_args(env, args);
+    }
+}
+
+fn check_assert_absent_args(env: &mut CallEnv<'_>, args: &[marrow_syntax::Argument]) {
+    let [arg] = args else { return };
+    if !assert_absent_arg_is_saved_path(env, &arg.value) {
+        env.diagnostics.push(call_diagnostic(
+            env.file,
+            env.span,
+            "`std::assert::absent` expects a saved path".to_string(),
+        ));
+    }
+}
+
+fn assert_absent_arg_is_saved_path(env: &CallEnv<'_>, expr: &marrow_syntax::Expression) -> bool {
+    if is_saved_index_range_path(env.program, expr, env.scope, env.file) {
+        return true;
+    }
+    if is_saved_key_range_path(env.program, expr, env.scope, env.file) {
+        return false;
+    }
+    lower_expr_for_file(env.program, env.file, expr, env.scope)
+        .is_some_and(|expr| expr.saved_place().is_some())
 }
 
 fn check_exists_args(env: &mut CallEnv<'_>, args: &[marrow_syntax::Argument]) {

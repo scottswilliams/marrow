@@ -1028,6 +1028,98 @@ fn evolve_transform_body_reports_unknown_calls() {
 }
 
 #[test]
+fn evolve_transform_body_rejects_return_absent() {
+    let root = temp_project("evolve-transform-return-absent", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   title: string\n\
+             store ^books(id: int): Book\n\
+             evolve\n\
+             \x20   transform Book.title\n\
+             \x20   \x20   return absent\n",
+        );
+    });
+
+    let (report, _program) = check_with_accepted(&root);
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == marrow_check::CHECK_RETURN_VALUE),
+        "`return absent` in a transform body must be rejected: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn evolve_transform_body_rejects_plain_return() {
+    let root = temp_project("evolve-transform-plain-return", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   title: string\n\
+             store ^books(id: int): Book\n\
+             evolve\n\
+             \x20   transform Book.title\n\
+             \x20   \x20   return\n",
+        );
+    });
+
+    let (report, _program) = check_with_accepted(&root);
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == marrow_check::CHECK_RETURN_VALUE),
+        "plain `return` in a transform body must be rejected: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn evolve_transform_match_arm_rejects_return_absent() {
+    let root = temp_project("evolve-transform-match-return-absent", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             enum Status\n\
+             \x20   draft\n\
+             \x20   final\n\
+             resource Book\n\
+             \x20   status: Status\n\
+             \x20   title: string\n\
+             store ^books(id: int): Book\n\
+             evolve\n\
+             \x20   transform Book.title\n\
+             \x20   \x20   match old.status\n\
+             \x20   \x20       Status::draft\n\
+             \x20   \x20           return absent\n\
+             \x20   \x20       Status::final\n\
+             \x20   \x20           return \"final\"\n",
+        );
+    });
+
+    let (report, _program) = check_with_accepted(&root);
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == marrow_check::CHECK_RETURN_VALUE),
+        "`return absent` in a transform match arm must be rejected: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn evolve_default_value_type_mismatch_is_diagnosed() {
     let root = temp_project("evolve-default-type", |root| {
         write(

@@ -113,6 +113,14 @@ pub(super) fn read_target_with_scope(
     saved_path_target(program, expr, scope)
 }
 
+pub(super) fn saved_path_read_target_with_scope(
+    program: &CheckedProgram,
+    expr: &CheckedExpr,
+    scope: &NameScope,
+) -> Option<ReadTarget> {
+    saved_place_target(program, expr, scope)
+}
+
 pub(super) fn proof_place(target: &ReadTarget) -> Option<PresenceProofPlace> {
     match &target.place {
         ReadPlace::Saved { effect, .. } => Some(PresenceProofPlace::Saved(effect.clone())),
@@ -159,6 +167,14 @@ fn saved_path_target(
     if let Some(target) = transform_old_target(program, expr, scope) {
         return Some(target);
     }
+    saved_place_target(program, expr, scope)
+}
+
+fn saved_place_target(
+    program: &CheckedProgram,
+    expr: &CheckedExpr,
+    scope: &NameScope,
+) -> Option<ReadTarget> {
     let place = accepted_saved_place(expr)?;
     let path = saved_place_key(expr, scope)?;
     if let Some(index) = checked_saved_index_read(place) {
