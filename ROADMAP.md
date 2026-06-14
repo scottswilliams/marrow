@@ -2,7 +2,7 @@
 
 The goal: total production-foundation readiness for the v0.1 prototype — a complete cleanup and
 hardening of the entire project (language, database, tooling, tests, docs), executed as waved
-lanes ending at the v0.1 tag. The plan synthesizes three adversarially verified whole-system
+lanes ending at the `v0.1.0` tag. The plan synthesizes three adversarially verified whole-system
 reviews (architecture, subtraction, innovation); their long-form evidence lives outside the
 repository, and this file is the executable authority. Proposal tags (`II.A2`, removal titles,
 `C26`, `G1-4`) are provenance only — every lane states its own scope. Two sibling repositories
@@ -253,7 +253,7 @@ source-level key bounds (allowed — they change which entries are in the iterab
 iteration-state machinery (still excluded); the cost-model one-liner records that a range
 argument is the same single range scan over that branch with explicit bounds readable off the
 source; the decision and ADR amendment land now, implementation is lane W4.8 (the named
-slippable language lane), and if W4.8 slips past the v0.1 tag the syntax stays reserved (grammar
+slippable language lane), and if W4.8 slips past the `v0.1.0` tag the syntax stays reserved (grammar
 parses, checker rejects), docs/language documents nothing until the lane lands, and no other
 feature may claim `..` in key-argument position.
 
@@ -608,15 +608,15 @@ soak shows zero both-or-invisible violations — a reproduced violation is red, 
 environmental flake is investigated and rerun, never waved through; if W4.8 (the named slippable
 language lane) slips, its bounded-scan laws follow it and do not block the freeze, since
 read-path laws add no bytes. Every later byte-format change is a LayoutEpoch recompile, never an
-in-place edit. Any red family found before the v0.1 tag blocks the tag; a defect lane fixes it,
+in-place edit. Any red family found before the `v0.1.0` tag blocks the tag; a defect lane fixes it,
 the entire family re-runs fresh (not just the failing case), and the packet is re-assembled.
 
-**36. foundations/03 self-deletion timing.** Decided: approved with a single trigger: the v0.1
+**36. foundations/03 self-deletion timing.** Decided: approved with a single trigger: the `v0.1.0`
 tag — the alternative completion-note path is dropped, since the tag itself is the completion
 declaration and one trigger leaves no ambiguity. Execution: one marrow-decisions commit, made
-immediately after W7.4 pushes the v0.1 tag, deletes
+immediately after W7.4 pushes the `v0.1.0` tag, deletes
 adr/foundations/03-prototype-status-and-replacement.md and removes its index entries from both
-adr/foundations/README.md and adr/README.md, with the commit message naming the v0.1 tag; no
+adr/foundations/README.md and adr/README.md, with the commit message naming the `v0.1.0` tag; no
 content migration (the crate-ownership map is already owned by docs/implementation/README.md's
 Crate map section, verified present). The deletion commit hash is recorded in the W7.4 release
 evidence packet; the file is never deleted before the tag exists. W1.1 still applies the gate-34
@@ -850,28 +850,12 @@ Wave gate: full gate; CLI surface frozen for the release contract.
 
 ## Wave 7 — Release proof
 
-**W7.3 ∥ Docs-truth + absence pass.** Owns: every docs/implementation page re-verified against
-code; the cumulative absence/sibling scan for every removed pattern (serve, lsp, protocol.*,
-at-sugar, `_` concat, write, finally, labels, out, inout, decimal ranges, quoted segments, map
-sugar, check --data, single-file check, completion/, rebind/resume, touches_saved_data,
-FutureEphemeralRootEffects, Match fields, savepoint journal, meta cells 01-03, evidence fields,
-acceptedCatalog, tempfile, glob grammar, drift codes, capability kind, fictional helpers) run as
-one recorded script; the two persistent CI tidy checks — exact compiled-dependency count from
-cargo tree on the release target (changed only by an ADR commit) and the release binary-size
-envelope (+25%, re-pinned per release as a within-release guard) — pinned in the same commit as
-the evidence packet (G2-5); the README Scope-And-Security expansion — untrusted-input
-enumeration, checksums-detect-accident-not-tampering, the capability table as the
-determinism/embedding seam (G3-1). Seed: the recorded absence-scan script failing on one seeded stale spelling, then
-clean. Review: scan patterns probed adversarially — each proven to match its pre-removal
-spelling; implementation-page claims spot-checked against code. Done: the scan output is part
-of the release evidence packet.
-
 **W7.4 → Final gate + tag.** Fresh full workspace gate from clean worktrees; crash harness
 green; storage-engine/04 Accepted with LayoutEpoch 0 frozen (gate 35); conformance suite (now
 incl. reverse/bounded-scan and identity-component laws) green; docs corpus
 deterministic; evidence packet assembled (base/head, changed files, gate output, reviewer
 verdicts, absence scans; measured cold-start wall-clock, peak RSS, and binary bytes on a named
-reference setup — recorded, never asserted (G2-6)); tag v0.1. After the tag is pushed, one
+reference setup — recorded, never asserted (G2-6)); tag `v0.1.0`. After the tag is pushed, one
 marrow-decisions commit deletes foundations/03 and its two README index entries (gate 36), with
 the deletion commit hash recorded in the evidence packet.
 
