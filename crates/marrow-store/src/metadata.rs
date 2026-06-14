@@ -5,6 +5,9 @@ use crate::codec::BoundedReader;
 const ENGINE_PROFILE_KEY_VERSION_V0: u8 = 0;
 const ENGINE_PROFILE_DIGEST_BYTES: usize = 8;
 const MIN_ENCODED_CATALOG_ID_BYTES: usize = 4 + "cat_00000000000000000000000000000000".len();
+const STORE_UID_PREFIX: &str = "store_";
+const STORE_UID_HEX_LEN: usize = 32;
+const LOWER_HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 pub type EngineProfileDigest = [u8; ENGINE_PROFILE_DIGEST_BYTES];
 
@@ -69,10 +72,10 @@ pub struct StoreUid(String);
 impl StoreUid {
     pub fn new(uid: impl Into<String>) -> Result<Self, StoreUidError> {
         let uid = uid.into();
-        let Some(hex) = uid.strip_prefix("store_") else {
+        let Some(hex) = uid.strip_prefix(STORE_UID_PREFIX) else {
             return Err(StoreUidError);
         };
-        if hex.len() != 32
+        if hex.len() != STORE_UID_HEX_LEN
             || !hex
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
@@ -80,6 +83,16 @@ impl StoreUid {
             return Err(StoreUidError);
         }
         Ok(Self(uid))
+    }
+
+    pub fn from_entropy_bytes(bytes: [u8; 16]) -> Self {
+        let mut uid = String::with_capacity(STORE_UID_PREFIX.len() + STORE_UID_HEX_LEN);
+        uid.push_str(STORE_UID_PREFIX);
+        for byte in bytes {
+            uid.push(char::from(LOWER_HEX_DIGITS[usize::from(byte >> 4)]));
+            uid.push(char::from(LOWER_HEX_DIGITS[usize::from(byte & 0x0f)]));
+        }
+        Self(uid)
     }
 
     pub fn as_str(&self) -> &str {
@@ -207,7 +220,9 @@ fn corrupt_metadata(bytes: &[u8]) -> StoreError {
 
 #[cfg(test)]
 mod tests {
-    use super::{CommitMetadata, EngineProfile, decode_commit_metadata, encode_commit_metadata};
+    use super::{
+        CommitMetadata, EngineProfile, StoreUid, decode_commit_metadata, encode_commit_metadata,
+    };
     use crate::StoreError;
     use crate::cell::CatalogId;
 
@@ -225,6 +240,29 @@ mod tests {
             engine_profile_digest: profile.digest_bytes(),
             changed_root_catalog_ids: vec![catalog_id("1"), catalog_id("2")],
             changed_index_catalog_ids: vec![catalog_id("3")],
+        }
+    }
+
+    #[test]
+    fn store_uid_from_entropy_bytes_uses_canonical_text() {
+        let uid = StoreUid::from_entropy_bytes([
+            0x00, 0x01, 0x02, 0x09, 0x0a, 0x0f, 0x10, 0x11, 0x80, 0x90, 0xa0, 0xb0, 0xc0, 0xd0,
+            0xe0, 0xff,
+        ]);
+
+        assert_eq!(uid.as_str(), "store_000102090a0f10118090a0b0c0d0e0ff");
+    }
+
+    #[test]
+    fn store_uid_parser_rejects_non_canonical_text() {
+        for uid in [
+            "cat_000102090a0f10118090a0b0c0d0e0ff",
+            "store_000102090a0f10118090a0b0c0d0e0f",
+            "store_000102090a0f10118090a0b0c0d0e0ff0",
+            "store_000102090a0f10118090a0b0c0d0e0fG",
+            "store_000102090A0f10118090a0b0c0d0e0ff",
+        ] {
+            assert!(StoreUid::new(uid).is_err(), "{uid}");
         }
     }
 

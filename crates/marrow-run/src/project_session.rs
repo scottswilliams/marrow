@@ -943,13 +943,7 @@ fn ensure_store_uid(
 }
 
 fn mint_store_uid(nondeterminism: &mut impl Nondeterminism) -> StoreUid {
-    let mut uid = String::with_capacity("store_".len() + 32);
-    uid.push_str("store_");
-    for byte in nondeterminism.entropy_u128().to_be_bytes() {
-        use std::fmt::Write as _;
-        write!(&mut uid, "{byte:02x}").expect("writing to a string cannot fail");
-    }
-    StoreUid::new(uid).expect("store uid encoding is valid")
+    StoreUid::from_entropy_bytes(nondeterminism.entropy_u128().to_be_bytes())
 }
 
 struct IsolatedStore {

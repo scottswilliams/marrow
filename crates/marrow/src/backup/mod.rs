@@ -277,17 +277,7 @@ pub(crate) fn require_store_uid(store: &TreeStore) -> Result<StoreUid, BackupErr
 }
 
 pub(crate) fn mint_store_uid(nondeterminism: &mut impl Nondeterminism) -> StoreUid {
-    store_uid_from_bytes(nondeterminism.entropy_u128().to_be_bytes())
-}
-
-fn store_uid_from_bytes(bytes: [u8; 16]) -> StoreUid {
-    let mut uid = String::with_capacity("store_".len() + 32);
-    uid.push_str("store_");
-    for byte in bytes {
-        use std::fmt::Write as _;
-        write!(&mut uid, "{byte:02x}").expect("writing to a string cannot fail");
-    }
-    StoreUid::new(uid).expect("store uid encoding is valid")
+    StoreUid::from_entropy_bytes(nondeterminism.entropy_u128().to_be_bytes())
 }
 
 /// A backup or restore failure, carrying a stable dotted code for tools.
