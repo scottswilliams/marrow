@@ -20,6 +20,7 @@ the assembled packet; W7.4 repeats the fresh full-workspace gate before the
 | Engine profile | `key=v0`, `layout-epoch=0`, `digest=77944eb86c08b665`. |
 | W7.2 assembly run | Green in `/Users/scottwilliams/Dev/.worktrees/marrow-roadmap/W7.2/marrow` with `CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.cargo-targets/marrow-roadmap/W7.2-final`; workspace tests report zero ignored tests. |
 | W7.3 docs-truth run | Integrated on `main` at `70d31008287291be741c5bd245258a42503c369b`; soundness and idiom/spec re-reviews passed after adversarial scanner probes. |
+| W7.4 final tag gate | Integrated on `main` at `7929527d4ac3ceacb0d8da57112e81f1575021f1`; tag `v0.1.0` pushed and peeled to that commit. |
 
 ## Seeded Evidence
 
@@ -43,6 +44,7 @@ the assembled packet; W7.4 repeats the fresh full-workspace gate before the
 | W3.8 | `023bcbcf68eb3efec8edbe77a03321dcd2aef934` | W7.2 soundness PASS (release-contract re-review); Final W7.2 idiom/spec PASS. | Multi-epoch evolution and epoch-mismatch restore suites are included in the W7.2 assembly run. |
 | W4.7/W4.8 | `f21b9eefb37c63165540eb1681776fc6feb27fa4` / `c6e90842edb32d99d027f053958d65651bfe172b` | W7.2 soundness PASS (release-contract re-review); Final W7.2 idiom/spec PASS. | Reverse/bounded saved-read and conformance-corpus suites are included in the W7.2 assembly run. |
 | W7.3 | `70d31008287291be741c5bd245258a42503c369b` | Banach soundness PASS; Turing idiom/spec PASS. | W7 absence scan, docs lint, release tidy, and full workspace gates passed on the W7.3 branch and again after fast-forward integration on `main`. |
+| W7.4 | `7929527d4ac3ceacb0d8da57112e81f1575021f1` | Mencius soundness re-review PASS; Linnaeus idiom/spec re-review PASS. | W7.4 focused families, release tidy, docs/absence scans, full workspace gates, and post-integration main gates passed before `v0.1.0` was tagged and pushed. |
 
 ## W7.2 Assembly Commands
 
@@ -229,8 +231,15 @@ Result: build passed; full workspace tests passed; clippy passed with
 unsafe scans had no matches; manifest and lockfile diff was empty.
 
 W7.4 review verdicts: Mencius soundness re-review PASS; Linnaeus idiom/spec
-re-review PASS. The post-tag `marrow-decisions` deletion commit hash is
-recorded here only after the `v0.1.0` tag exists.
+re-review PASS. The pushed `v0.1.0` tag is an annotated tag with remote tag
+object `ffd53e0f6634d22bdddc371d6a18ae612b242c6f`; it peels to
+`7929527d4ac3ceacb0d8da57112e81f1575021f1`.
+
+The post-tag `marrow-decisions` gate-36 deletion commit is
+`c22f87c05bd8859208570e94f9741f767cefe5e3`: it deletes
+`adr/foundations/03-prototype-status-and-replacement.md` and removes that ADR's
+two README index entries. The local `marrow-decisions` checkout has no remote
+configured, and GitHub lists no `scottswilliams/marrow-decisions` repository.
 
 ## Final Assembly Rules
 
@@ -246,8 +255,7 @@ The final packet records:
 - reviewer verdicts for the lane and final integration review;
 - the suite names run for each family;
 - the fresh full-workspace tag-gate commands with explicit `CARGO_TARGET_DIR`;
-- after the `v0.1.0` tag exists, the post-tag `marrow-decisions` deletion
-  commit hash.
+- the post-tag `marrow-decisions` deletion commit hash.
 
 Any red family found during the W7.4 tag gate blocks the `v0.1.0` tag until a
 fix lane lands and the entire affected family reruns fresh.

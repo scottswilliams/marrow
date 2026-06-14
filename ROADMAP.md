@@ -850,15 +850,6 @@ Wave gate: full gate; CLI surface frozen for the release contract.
 
 ## Wave 7 — Release proof
 
-**W7.4 → Final gate + tag.** Fresh full workspace gate from clean worktrees; crash harness
-green; storage-engine/04 Accepted with LayoutEpoch 0 frozen (gate 35); conformance suite (now
-incl. reverse/bounded-scan and identity-component laws) green; docs corpus
-deterministic; evidence packet assembled (base/head, changed files, gate output, reviewer
-verdicts, absence scans; measured cold-start wall-clock, peak RSS, and binary bytes on a named
-reference setup — recorded, never asserted (G2-6)); tag `v0.1.0`. After the tag is pushed, one
-marrow-decisions commit deletes foundations/03 and its two README index entries (gate 36), with
-the deletion commit hash recorded in the evidence packet.
-
 ---
 
 ## Seams
