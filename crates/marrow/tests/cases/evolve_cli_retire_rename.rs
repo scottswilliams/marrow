@@ -371,14 +371,14 @@ fn retire_apply_requires_recovery_choice_for_zero_count_retire() {
         record.get("recovery_point").is_none(),
         "a recovery refusal is not an apply receipt: {record}"
     );
+    let epoch_after_refusal = store_epoch(&root);
     assert_eq!(
-        store_epoch(&root),
-        epoch_before,
+        epoch_after_refusal, epoch_before,
         "zero-count retire backup refusal must not advance the store"
     );
+    let catalog_after_refusal = fs::read_to_string(&catalog_path).ok();
     assert_eq!(
-        fs::read_to_string(&catalog_path).ok(),
-        catalog_before,
+        catalog_after_refusal, catalog_before,
         "zero-count retire backup refusal must not advance the catalog file"
     );
 

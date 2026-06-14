@@ -553,8 +553,9 @@ fn restore_replace_clears_catalog_when_backup_has_none() {
             .replace_catalog_snapshot(&stale_catalog_snapshot())
             .expect("write stale catalog");
     }
+    let stale_catalog = read_store_catalog(&data_dir);
     assert!(
-        read_store_catalog(&data_dir).is_some(),
+        stale_catalog.is_some(),
         "fixture starts with catalog rows but no data"
     );
 
@@ -1291,13 +1292,13 @@ fn restore_refuses_a_catalog_only_target() {
     let target_store_file = target_data_dir.join("marrow.redb");
     fs::remove_file(target.join("marrow.catalog.json")).expect("leave only the store baseline");
     let before_catalog = read_store_catalog(&target_data_dir).expect("catalog-only baseline");
-    assert!(
-        TreeStore::open_read_only(&target_store_file)
-            .expect("open target read-only")
+    let target_is_empty = {
+        let store = TreeStore::open_read_only(&target_store_file).expect("open target read-only");
+        store
             .is_empty()
-            .expect("catalog-only target has no data or index cells"),
-        "fixture target is catalog-only"
-    );
+            .expect("catalog-only target has no data or index cells")
+    };
+    assert!(target_is_empty, "fixture target is catalog-only");
 
     let restore = marrow(&["restore", &target_dir, &archive_arg]);
     assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
