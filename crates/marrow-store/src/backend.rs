@@ -267,7 +267,6 @@ pub(crate) mod counting {
             }
         }
 
-        #[allow(dead_code)]
         pub(crate) fn with_fsyncs_per_commit(
             inner: B,
             counts: BackendCounts,
