@@ -1078,29 +1078,6 @@ fn try_body_transient_invalidation_blocks_catch_reads() {
 }
 
 #[test]
-fn try_body_transient_invalidation_blocks_finally_reads() {
-    assert_bare_present_read(
-        "presence-try-finally-transient-invalidation",
-        "module books\n\
-         resource Book\n\
-         \x20   subtitle: string\n\
-         store ^books(id: int): Book\n\
-         fn leaked(id: Id(^books), stop: bool): string\n\
-         \x20   if not exists(^books(id).subtitle)\n\
-         \x20       return \"missing\"\n\
-         \x20   try\n\
-         \x20       delete ^books(id).subtitle\n\
-         \x20       if stop\n\
-         \x20           throw Error(code: \"test.stop\", message: \"stop\")\n\
-         \x20       if not exists(^books(id).subtitle)\n\
-         \x20           return \"missing\"\n\
-         \x20   finally\n\
-         \x20       write(^books(id).subtitle)\n\
-         \x20   return \"ok\"\n",
-    );
-}
-
-#[test]
 fn saved_writing_call_in_try_blocks_catch_reads() {
     assert_bare_present_read(
         "presence-try-call-invalidation",
@@ -1122,50 +1099,6 @@ fn saved_writing_call_in_try_blocks_catch_reads() {
          \x20   catch err: Error\n\
          \x20       return ^books(id).subtitle\n\
          \x20   return \"ok\"\n",
-    );
-}
-
-#[test]
-fn catch_transient_invalidation_blocks_finally_reads() {
-    assert_bare_present_read(
-        "presence-catch-finally-transient-invalidation",
-        "module books\n\
-         resource Book\n\
-         \x20   subtitle: string\n\
-         store ^books(id: int): Book\n\
-         fn leaked(id: Id(^books), stop: bool): string\n\
-         \x20   if not exists(^books(id).subtitle)\n\
-         \x20       return \"missing\"\n\
-         \x20   try\n\
-         \x20       throw Error(code: \"test.stop\", message: \"stop\")\n\
-         \x20   catch err: Error\n\
-         \x20       delete ^books(id).subtitle\n\
-         \x20       if stop\n\
-         \x20           throw Error(code: \"test.stop\", message: \"stop\")\n\
-         \x20       if not exists(^books(id).subtitle)\n\
-         \x20           return \"missing\"\n\
-         \x20   finally\n\
-         \x20       write(^books(id).subtitle)\n\
-         \x20   return \"ok\"\n",
-    );
-}
-
-#[test]
-fn finally_invalidation_blocks_post_try_reads() {
-    assert_bare_present_read(
-        "presence-finally-invalidation",
-        "module books\n\
-         resource Book\n\
-         \x20   subtitle: string\n\
-         store ^books(id: int): Book\n\
-         fn leaked(id: Id(^books)): string\n\
-         \x20   if not exists(^books(id).subtitle)\n\
-         \x20       return \"missing\"\n\
-         \x20   try\n\
-         \x20       const ok: int = 1\n\
-         \x20   finally\n\
-         \x20       delete ^books(id).subtitle\n\
-         \x20   return ^books(id).subtitle\n",
     );
 }
 

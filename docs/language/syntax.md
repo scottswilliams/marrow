@@ -375,13 +375,12 @@ Type names have one source spelling: `int`, `decimal`, `bool`, `string`,
 Marrow parser-reserved words are:
 
 ```text
-module use pub fn resource store index unique
-required
-enum evolve match is
+module use pub fn resource store
+enum evolve match index unique required
 const var if else while for in break continue return maybe absent delete merge
 journal sensitive declassify
 transaction lock try catch throw true false
-not and or
+not and or is
 int decimal bool string bytes date instant duration
 sequence
 unknown Error ErrorCode Id

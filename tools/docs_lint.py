@@ -84,6 +84,76 @@ def check_data_evolution_outcome_names(path, text, failures):
             failures.append(f"{rel(path)} contains non-canonical outcome name {pattern!r}: {reason}")
 
 
+def keyword_spellings(failures):
+    path = ROOT / "crates" / "marrow-syntax" / "src" / "token.rs"
+    text = read_text(path)
+    match = re.search(
+        r"pub\(crate\) fn keyword\(text: &str\) -> Option<Keyword> \{\s*"
+        r"Some\(match text \{(?P<body>.*?)^\s*_ => return None,",
+        text,
+        flags=re.DOTALL | re.MULTILINE,
+    )
+    if not match:
+        failures.append("could not find marrow-syntax keyword() match table")
+        return []
+    arms = re.findall(
+        r'^\s*"([^"]+)"\s*=>\s*Keyword::[A-Za-z0-9_]+,\s*$',
+        match.group("body"),
+        flags=re.MULTILINE,
+    )
+    if not arms:
+        failures.append("could not read any marrow-syntax keyword() arms")
+    return arms
+
+
+def documented_reserved_words(failures):
+    path = ROOT / "docs" / "language" / "syntax.md"
+    text = read_text(path)
+    anchor = "Marrow parser-reserved words are:\n\n```text\n"
+    start = text.find(anchor)
+    if start == -1:
+        failures.append("docs/language/syntax.md missing parser-reserved words block")
+        return []
+    start += len(anchor)
+    end = text.find("\n```", start)
+    if end == -1:
+        failures.append("docs/language/syntax.md parser-reserved words block is unterminated")
+        return []
+    return text[start:end].split()
+
+
+def check_parser_reserved_words(failures):
+    expected = keyword_spellings(failures)
+    actual = documented_reserved_words(failures)
+    if not expected or not actual or actual == expected:
+        return
+
+    missing = sorted(set(expected) - set(actual))
+    extra = sorted(set(actual) - set(expected))
+    mismatch = next(
+        (
+            f"position {index + 1}: expected {want!r}, found {got!r}"
+            for index, (want, got) in enumerate(zip(expected, actual))
+            if want != got
+        ),
+        None,
+    )
+    if mismatch is None and len(expected) != len(actual):
+        mismatch = f"length mismatch: expected {len(expected)} words, found {len(actual)}"
+
+    details = []
+    if missing:
+        details.append(f"missing: {', '.join(missing)}")
+    if extra:
+        details.append(f"extra: {', '.join(extra)}")
+    if mismatch:
+        details.append(mismatch)
+    failures.append(
+        "docs/language/syntax.md parser-reserved words must match "
+        f"marrow-syntax keyword() order ({'; '.join(details)})"
+    )
+
+
 def main():
     failures = []
 
@@ -106,6 +176,7 @@ def main():
             if needle in text:
                 failures.append(f"{rel(path)} contains {needle!r}: {reason}")
         check_data_evolution_outcome_names(path, text, failures)
+    check_parser_reserved_words(failures)
 
     install = ROOT / "docs" / "install.md"
     if install.exists():
