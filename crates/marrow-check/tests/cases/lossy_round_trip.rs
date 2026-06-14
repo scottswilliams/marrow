@@ -154,6 +154,14 @@ fn invalid_saved_root_addressing_does_not_warn() {
             CHECK_KEY_TYPE,
         ),
         (
+            "identity-range-key",
+            "module m\n\
+             resource Book\n    required title: string\n    tags(pos: int): string\n\
+             store ^books(id: int): Book\n\n\
+             fn replace(lo: Id(^books), hi: Id(^books), replacement: Book)\n    ^books(lo..hi) = replacement\n",
+            CHECK_KEY_TYPE,
+        ),
+        (
             "unresolved-key",
             "module m\n\
              resource Book\n    required title: string\n    tags(pos: int): string\n\

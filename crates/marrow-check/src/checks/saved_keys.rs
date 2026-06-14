@@ -94,6 +94,17 @@ fn check_root_args_against(
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
+    if range_arg_position(args).is_some() {
+        check_checked_key_range_args(
+            &place.identity_keys,
+            args,
+            arg_types,
+            span,
+            file,
+            diagnostics,
+        );
+        return;
+    }
     if let [MarrowType::Identity(_)] = arg_types {
         let expected = MarrowType::Identity(place.root.clone());
         if type_compatible(&expected, &arg_types[0]) == Some(false) {
@@ -110,18 +121,7 @@ fn check_root_args_against(
         }
         return;
     }
-    if range_arg_position(args).is_some() {
-        check_checked_key_range_args(
-            &place.identity_keys,
-            args,
-            arg_types,
-            span,
-            file,
-            diagnostics,
-        );
-    } else {
-        check_checked_keys_against(&place.identity_keys, arg_types, span, file, diagnostics);
-    }
+    check_checked_keys_against(&place.identity_keys, arg_types, span, file, diagnostics);
 }
 
 pub(crate) fn saved_root_args_address_record(
@@ -132,10 +132,13 @@ pub(crate) fn saved_root_args_address_record(
     if args.iter().any(|arg| arg.name.is_some()) {
         return false;
     }
+    if range_arg_position(args).is_some() {
+        return false;
+    }
     if let [MarrowType::Identity(_)] = arg_types {
         return type_compatible(&identity_type_for_store(store), &arg_types[0]) != Some(false);
     }
-    if range_arg_position(args).is_some() || args.len() != store.identity_keys.len() {
+    if args.len() != store.identity_keys.len() {
         return false;
     }
     store

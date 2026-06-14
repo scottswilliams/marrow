@@ -817,6 +817,19 @@ fn trailing_range_store_keyspace_argument_checks_clean() {
 }
 
 #[test]
+fn root_identity_splice_range_argument_is_rejected() {
+    let found = check_module(
+        "root-identity-splice-range",
+        "module m\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
+         fn f(lo: Id(^books), hi: Id(^books))\n    for id in ^books(lo..hi)\n        print(id)\n",
+        "check.key_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
 fn trailing_range_keyed_layer_argument_checks_clean() {
     let report = check_module_report(
         "trailing-layer-range",
