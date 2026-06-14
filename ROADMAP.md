@@ -341,32 +341,17 @@ line-27 'is sugar that desugars to' bullet is amended via W1.1 as an explicit re
 now also a single-spelling fact. Saved bytes are unaffected (sugar desugared pre-catalog);
 W1.7's byte-identical-catalog review check stands.
 
-**18. Cut loop labels, finally, and phantom `out` (removals #7, #8, #9A).** Decided: cut all
-three under one ADR language/06 amendment (W1.1) that records each rationale and explicitly
-states the grammar tightening 'a try block must always have a catch clause'. Labels: delete the
-grammar.md loop_label production, the Loop Labels spec section, try_loop_label, AST/IR label
-fields, format_label_prefix/suffix, collapse jump_resolves_in_scope to depth-only, drop label
-params from loop_exec; replacement idiom is function extraction with return. Finally: delete the
-runtime statement.rs finally execution and all checker finally modules; error-codes.md row
-check.finally_control_flow is deleted outright (no future/reserved placeholder — the code
-contract freezes at release, not before); check.try_handler rewording to 'A `try` block has no
-`catch` clause' lands in error-codes.md:161 plus diagnostics.rs and rules.rs in the same change;
-replacement idiom is catch-cleanup-rethrow, with reintroduction only when a handle/capability
-surface creates real cleanup obligations. `out`: delete Keyword::Out from token.rs:201 and the
-two parser branches (parse_expr.rs:356, parse_decl/params.rs:140) with their diagnostics, and
-drop `out` from the syntax.md reserved-word list entirely — fully unreserved, no merge/lock-style
-note, superseding REPORT II.E2 item 1's keep-it-reserved sentence (that guidance assumed the ADR
-still claimed `out`); `finally` and label syntax likewise unreserve fully.
+**18. Cut loop labels, finally, and phantom `out` (removals #7, #8, #9A).** Decided and
+implemented: v0.1 has no loop labels, no `finally` clause, and no `out` parameter or argument
+mode. A `try` block always has a `catch` clause; cleanup is expressed with catch-cleanup-rethrow
+until a future handle/capability surface creates real cleanup obligations. Loop exits are
+depth-only, with function extraction plus `return` as the replacement idiom for labeled control
+flow. `out` and `finally` are ordinary identifiers, not reserved words or future placeholders.
 
-**19. Cut inout parameter mode (removal #9B).** Decided: cut inout now. Amend ADR language/06
-(W1.1, same amendment as gate 18) to one parameter mode — read-only by-value parameters —
-striking the inout clause alongside the out clause; `inout` is fully unreserved. Delete the
-param/arg mode parsing, CheckedArgMode/CheckedParamMode from the checked IR, the Place type and
-call_args.rs write-back path, the checker writable-place rules (rejected_surface.rs,
-checks/calls.rs), and the presence-narrowing expiry logic it forces; rewrite the ~80 inout test
-references to return-value style (`book = normalize(book)`). Replacement contract recorded in
-the spec: return-value style for local mutation helpers; explicit saved assignments at call
-sites for saved data (already the rule).
+**19. Cut inout parameter mode (removal #9B).** Decided and implemented: v0.1 has one parameter
+mode, read-only by-value parameters. `inout` is an ordinary identifier. Mutation helpers return
+values, and saved data changes happen through explicit saved assignments at call sites. This keeps
+call semantics free of hidden write-back/place behavior and keeps presence narrowing local.
 
 **20. Cut decimal range steppables (removal #10).** Decided: cut decimal from range-loop
 steppable types; int, date, and instant ranges are unchanged. The ADR language/06

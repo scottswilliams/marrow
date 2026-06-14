@@ -4,7 +4,8 @@
 use crate::common;
 use common::parse_reason;
 use marrow_syntax::{
-    BinaryOp, ExpectedSyntax, Expression, ParseDiagnosticReason, Statement, parse_source,
+    BinaryOp, ExpectedSyntax, Expression, ParseDiagnosticReason, Statement, UnsupportedSyntax,
+    parse_source,
 };
 
 #[test]
@@ -311,15 +312,99 @@ fn try_finally_is_rejected_as_removed_syntax() {
     );
     assert!(parsed.has_errors(), "expected finally rejection");
     assert!(
-        parsed.diagnostics.iter().any(|diagnostic| diagnostic
-            .message
-            .contains("`try` requires a `catch` clause")
+        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+            == parse_reason(ParseDiagnosticReason::Unsupported(
+                UnsupportedSyntax::Finally,
+            ))
+            && diagnostic.message.contains("`finally` blocks were removed")
             && diagnostic
                 .help
                 .as_deref()
                 .is_some_and(|help| help.contains("catch, clean up, then rethrow"))),
         "{:#?}",
         parsed.diagnostics
+    );
+    assert!(
+        !parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+            == parse_reason(ParseDiagnosticReason::UnexpectedIndentation)),
+        "{:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
+fn try_catch_finally_is_rejected_as_removed_syntax() {
+    let parsed = parse_source(
+        "module app\n\
+         fn run()\n\
+         \x20   try\n\
+         \x20       risky()\n\
+         \x20   catch err\n\
+         \x20       print(err.message)\n\
+         \x20   finally\n\
+         \x20       cleanup()\n",
+    );
+    assert!(parsed.has_errors(), "expected finally rejection");
+    assert!(
+        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+            == parse_reason(ParseDiagnosticReason::Unsupported(
+                UnsupportedSyntax::Finally,
+            ))
+            && diagnostic.message.contains("`finally` blocks were removed")
+            && diagnostic
+                .help
+                .as_deref()
+                .is_some_and(|help| help.contains("catch, clean up, then rethrow"))),
+        "{:#?}",
+        parsed.diagnostics
+    );
+    assert!(
+        !parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+            == parse_reason(ParseDiagnosticReason::UnexpectedIndentation)),
+        "{:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
+fn finally_assignment_after_try_catch_is_an_ordinary_statement() {
+    let parsed = parse_source(
+        "module app\n\
+         fn run()\n\
+         \x20   try\n\
+         \x20       risky()\n\
+         \x20   catch err\n\
+         \x20       print(err.message)\n\
+         \x20   finally = \"done\"\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let run = parsed.file.function("run").expect("run function");
+    assert!(
+        matches!(run.body.statements.last(), Some(Statement::Assign { .. })),
+        "{:#?}",
+        run.body.statements
+    );
+}
+
+#[test]
+fn bare_finally_expression_after_try_catch_is_ordinary_without_a_block() {
+    let parsed = parse_source(
+        "module app\n\
+         fn run()\n\
+         \x20   var finally: string = \"done\"\n\
+         \x20   try\n\
+         \x20       risky()\n\
+         \x20   catch err\n\
+         \x20       print(err.message)\n\
+         \x20   finally\n\
+         \x20   return\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let run = parsed.file.function("run").expect("run function");
+    assert!(
+        matches!(run.body.statements.get(2), Some(Statement::Expr { .. })),
+        "{:#?}",
+        run.body.statements
     );
 }
 

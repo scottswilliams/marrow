@@ -274,6 +274,9 @@ impl<'a> StmtParser<'a> {
         } else {
             None
         };
+        if let Some(finally_span) = self.consume_removed_finally_clause() {
+            end = finally_span;
+        }
 
         if catch.is_none() {
             self.error_span_reason(
@@ -292,6 +295,43 @@ impl<'a> StmtParser<'a> {
             catch,
             span: join_spans(start, end),
         }
+    }
+
+    fn consume_removed_finally_clause(&mut self) -> Option<SourceSpan> {
+        let token = self.tokens.get(self.pos).copied()?;
+        if token.kind != TokenKind::Identifier || token.text(self.source) != "finally" {
+            return None;
+        }
+        let line_end = self.find_line_end();
+        let has_trailing_comment =
+            line_end > self.pos && is_line_comment(self.tokens[line_end - 1].kind);
+        let content_end = if has_trailing_comment {
+            line_end - 1
+        } else {
+            line_end
+        };
+        if content_end != self.pos + 1 {
+            return None;
+        }
+        let after_header = match self.tokens.get(line_end).map(|token| token.kind) {
+            Some(TokenKind::Newline) => line_end + 1,
+            _ => line_end,
+        };
+        if self.tokens.get(after_header).map(|token| token.kind) != Some(TokenKind::Indent) {
+            return None;
+        }
+        self.error_span_reason(
+            token.span,
+            ParseDiagnosticReason::Unsupported(UnsupportedSyntax::Finally),
+            "`finally` blocks were removed",
+        );
+        if let Some(diagnostic) = self.diagnostics.last_mut() {
+            diagnostic.help =
+                Some("catch, clean up, then rethrow when cleanup is needed".to_string());
+        }
+        self.consume_header_line();
+        let end = self.skip_block();
+        Some(join_spans(token.span, end))
     }
 
     fn catch_clause(&mut self) -> CatchClause {

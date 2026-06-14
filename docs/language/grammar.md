@@ -286,8 +286,8 @@ var_stmt        =
 assignment_stmt = assignable "=" expression NEWLINE ;
 delete_stmt     = "delete" path_expr NEWLINE ;
 return_stmt     = "return" expression? NEWLINE ;
-break_stmt      = "break" identifier? NEWLINE ;
-continue_stmt   = "continue" identifier? NEWLINE ;
+break_stmt      = "break" NEWLINE ;
+continue_stmt   = "continue" NEWLINE ;
 
 throw_stmt      = "throw" expression NEWLINE ;
 expression_stmt = expression NEWLINE ;

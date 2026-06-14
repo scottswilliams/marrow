@@ -113,6 +113,7 @@ pub enum ReservedSyntax {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnsupportedSyntax {
+    Finally,
     LoopLabels,
     ParameterModes,
     ParameterDefaults,
