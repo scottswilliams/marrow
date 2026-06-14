@@ -209,11 +209,9 @@ digest order sorts entries by declaration kind tag, canonical path, stable ID,
 aliases, lifecycle tag, accepted store-key shape, accepted store-index shape, and
 accepted structural signature. Source/member order and catalog-row order are not
 digest inputs, so a pure enum-member reorder preserves catalog identity. New
-catalog writes stamp the canonical digest. Reads also accept a stored header
-digest computed by the legacy order-sensitive row-order form only when that
-digest still matches the decoded rows; the returned snapshot is normalized to
-the canonical digest before its IDs bind. A snapshot whose stored header matches
-neither accepted digest is rejected.
+catalog writes stamp the canonical digest, and reads accept only that canonical
+digest. A snapshot with a stale row-order digest or any other digest mismatch is
+rejected as `catalog.invalid` before its IDs bind.
 
 ## Activation Fencing
 

@@ -17,9 +17,8 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
   `marrow_catalog::CatalogMetadata` as a header row plus one row per entry in
   its own physical family (`FAMILY_CATALOG`), written in the caller's
   transaction and invisible to data/index/meta access. A read verifies the stored
-  header against the decoded rows, recognizes the canonical digest and matching
-  row-order header digest, and returns a snapshot normalized to the canonical
-  digest.
+  header's canonical digest against the decoded rows and rejects any mismatch as
+  corruption.
 - **Backup** — `backup` streams data-family record nodes, keyed group-entry path nodes, and value cells; index cells are rebuilt and commit metadata is restamped from the manifest on restore, never archived.
 
 ## Modules
@@ -35,7 +34,7 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 | `crates/marrow-store/src/codec.rs` | Shared bounds-checked reader for private length-prefixed store codecs. |
 | `crates/marrow-store/src/tree.rs` | `TreeStore` facade over a boxed `Backend`: metadata, the catalog-table read/replace surface, typed writes/reads, node-backed record navigation, child/index navigation, paged index scans, backup streaming, snapshots. |
 | `crates/marrow-store/src/metadata.rs` | `EngineProfile`, `CommitMetadata`, `StoreUid`, and their length-prefixed binary codecs with bounded-count guards. |
-| `crates/marrow-store/src/catalog.rs` | Accepted-catalog table codec: header/entry rows, bounded paged scan, ordinal checks, digest normalization, row-order header recognition, and read/replace through `TreeStore`. |
+| `crates/marrow-store/src/catalog.rs` | Accepted-catalog table codec: header/entry rows, bounded paged scan, ordinal checks, canonical digest verification, and read/replace through `TreeStore`. |
 | `crates/marrow-store/src/mem.rs` | `MemStore`: in-memory `Backend` with one full-map clone for the open flat transaction and a frozen pinned-read snapshot. |
 | `crates/marrow-store/src/redb.rs` | `RedbStore`: persistent `Backend` with explicit immediate-durability redb transactions, format-version stamp plus parent-directory sync on fresh creation, joined transaction depth, batched prefix delete, pinned read snapshots. |
 | `crates/marrow-store/src/traversal.rs` | Shared prefix-scan page driver both engines feed to build a bounded, prefix-clipped, truncation-flagged `ScanPage`. |
@@ -52,8 +51,7 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 - Catalog snapshot integrity is independent of declaration order. New headers
   store a digest over entries sorted by kind tag, path, stable ID, aliases,
   lifecycle tag, accepted store-key shape, accepted store-index shape, and
-  accepted structural signature. Reads also recognize a matching row-order
-  digest, then normalize the returned snapshot to the canonical digest.
+  accepted structural signature. Reads accept only that canonical digest.
 - Corruption is fail-closed and typed: malformed keys, value frames, metadata, or backup frames decode to `StoreError::Corruption`, never partial values. Decoders enforce exact-length consumption and bounded list counts.
 - On-disk format is version-gated with no automatic conversion: a mismatched `FORMAT_VERSION` is refused, a non-empty redb file with no `marrow.meta` table is corruption, and a read/write lock conflict is `store.locked`.
 - Native open fails closed, never crashes: `RedbStore::open`/`open_read_only` run the redb open and its structural probe under a panic backstop (`catch_open`), so a truncated or torn body that drives redb into a layout assertion or btree `unreachable!()` becomes `store.corruption` instead of aborting the process. Redb open errors map by damage (`map_open_error`): a torn body to corruption, an unclean-shutdown repair-needed file to the typed `store.recovery_required` (a write-capable open attempts the replay and reports whether the store opened), a read/write holder conflict to `store.locked`, everything else to `store.io`.

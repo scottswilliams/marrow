@@ -41,9 +41,7 @@ impl CatalogMetadata {
         entries: Vec<CatalogEntry>,
     ) -> Result<Self, CatalogError> {
         let digest = catalog_digest(epoch, &entries);
-        if stored_digest != digest
-            && stored_digest != legacy_order_sensitive_catalog_digest(epoch, &entries)
-        {
+        if stored_digest != digest {
             return Err(CatalogError::new(format!(
                 "catalog digest `{stored_digest}` does not match computed digest `{digest}`"
             )));
@@ -261,9 +259,11 @@ mod tag_tests {
 #[cfg(test)]
 mod digest_tests {
     use super::{
-        CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata, catalog_digest,
-        legacy_order_sensitive_catalog_digest,
+        CATALOG_INVALID, CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata,
     };
+
+    const STALE_ORDER_SENSITIVE_DIGEST: &str =
+        "sha256:295d5c4a5198276642b56d3239b893234b30ebc44db5c36137d5d21f374381e2";
 
     fn entry(kind: CatalogEntryKind, path: &str, suffix: u8) -> CatalogEntry {
         CatalogEntry {
@@ -287,31 +287,32 @@ mod digest_tests {
     }
 
     #[test]
-    fn stored_parts_accept_legacy_order_sensitive_digest_and_normalize_it() {
+    fn stored_parts_reject_stale_order_sensitive_digest() {
         let entries = reordered_entries();
-        let legacy = legacy_order_sensitive_catalog_digest(7, &entries);
-        assert_ne!(legacy, catalog_digest(7, &entries));
 
-        let metadata =
-            CatalogMetadata::from_stored_parts(7, legacy, entries).expect("legacy digest accepted");
+        let error = CatalogMetadata::from_stored_parts(
+            7,
+            STALE_ORDER_SENSITIVE_DIGEST.to_string(),
+            entries,
+        )
+        .expect_err("stale order-sensitive digest rejected");
 
-        assert_eq!(metadata.digest, catalog_digest(7, &metadata.entries));
+        assert_eq!(error.code, CATALOG_INVALID);
     }
 
     #[test]
-    fn json_accepts_legacy_order_sensitive_digest_and_normalizes_it() {
+    fn json_rejects_stale_order_sensitive_digest() {
         let entries = reordered_entries();
-        let legacy = legacy_order_sensitive_catalog_digest(7, &entries);
         let json = serde_json::json!({
             "epoch": 7,
-            "digest": legacy,
+            "digest": STALE_ORDER_SENSITIVE_DIGEST,
             "entries": entries,
         })
         .to_string();
 
-        let metadata = CatalogMetadata::from_json(&json).expect("legacy JSON digest accepted");
+        let error = CatalogMetadata::from_json(&json).expect_err("stale JSON digest rejected");
 
-        assert_eq!(metadata.digest, catalog_digest(7, &metadata.entries));
+        assert_eq!(error.code, CATALOG_INVALID);
     }
 }
 
@@ -472,13 +473,6 @@ struct DigestPayload<'a> {
     entries: Vec<&'a CatalogEntry>,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LegacyDigestPayload<'a> {
-    epoch: u64,
-    entries: &'a [CatalogEntry],
-}
-
 fn catalog_digest(epoch: u64, entries: &[CatalogEntry]) -> String {
     let mut canonical_entries: Vec<&CatalogEntry> = entries.iter().collect();
     canonical_entries
@@ -488,12 +482,6 @@ fn catalog_digest(epoch: u64, entries: &[CatalogEntry]) -> String {
         entries: canonical_entries,
     })
     .expect("catalog digest payload serializes");
-    digest_json(&json)
-}
-
-fn legacy_order_sensitive_catalog_digest(epoch: u64, entries: &[CatalogEntry]) -> String {
-    let json = serde_json::to_string(&LegacyDigestPayload { epoch, entries })
-        .expect("catalog digest payload serializes");
     digest_json(&json)
 }
 

@@ -59,9 +59,9 @@ pub(crate) fn read_catalog_snapshot(
         }
     }
     let entries = entries.into_iter().map(|row| row.entry).collect();
-    // Rebuilding through the catalog normalizer recomputes the digest from the decoded
-    // entries, so a mismatch against every accepted header digest proves a row was
-    // tampered even when every field still decodes into a structurally valid form.
+    // Rebuilding through the catalog normalizer recomputes the canonical digest from the
+    // decoded entries, so any header mismatch proves the snapshot is stale or tampered even
+    // when every row still decodes into a structurally valid entry.
     CatalogMetadata::from_stored_parts(header.epoch, header.digest, entries)
         .map(Some)
         .map_err(|_| corrupt_catalog("catalog digest does not match stored entries"))

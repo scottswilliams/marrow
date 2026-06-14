@@ -195,14 +195,13 @@ decoded entries. The canonical catalog digest sorts entries by declaration kind
 tag, canonical path, stable ID, aliases, lifecycle tag, accepted store-key shape,
 accepted store-index shape, and accepted structural signature before hashing, so
 declaration order does not change the digest. The accepted contract is the
-canonical digest; the decoder also recognizes a matching row-order header digest
-and returns the snapshot with the canonical digest. A tampered catalog row —
-even one that decodes into a structurally valid entry — fails closed as
+canonical digest only. A stale row-order header digest or a tampered catalog row
+— even one that decodes into a structurally valid entry — fails closed as
 `store.corruption`.
 
 Malformed tree-cell metadata, malformed node markers, malformed tree-cell
 reference/enum values, malformed index identity suffixes, and a catalog snapshot
-whose header matches neither accepted digest report `store.corruption`.
+whose header digest does not match the decoded entries report `store.corruption`.
 
 ## Value Codecs
 
