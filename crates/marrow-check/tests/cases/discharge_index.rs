@@ -2,10 +2,9 @@ use crate::support;
 use crate::support_discharge;
 use marrow_catalog::CatalogEntryKind;
 use marrow_check::evolution::{RepairReason, Verdict, preview};
-use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{DataPathSegment, TreeStore};
-use marrow_store::value::{Scalar, encode_value};
+use marrow_store::tree::TreeStore;
+use marrow_store::value::Scalar;
 
 use support::catalog::write_catalog;
 use support::{check_with_accepted, temp_project, write};
@@ -52,18 +51,10 @@ fn retire_of_populated_member_requires_scoped_approval() {
     let program = checked(&root);
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
-    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).unwrap();
-    let subtitle = CatalogId::new(subtitle_id.clone()).unwrap();
+    let seed = Seed::new(&store, &place);
     for (id, value) in [(1, "A"), (2, "B")] {
-        store.write_node(&store_id, &[SavedKey::Int(id)]).unwrap();
-        store
-            .write_data_value(
-                &store_id,
-                &[SavedKey::Int(id)],
-                &[DataPathSegment::Member(subtitle.clone())],
-                encode_value(&Scalar::Str(value.into())).unwrap(),
-            )
-            .unwrap();
+        seed.record(id);
+        seed.member_by_id(id, &subtitle_id, Scalar::Str(value.into()));
     }
 
     let result = witness(&program, &store);
@@ -463,19 +454,13 @@ fn dropped_populated_store_fails_closed() {
     });
     let (_report, program) = check_with_accepted(&root);
     let store = TreeStore::memory();
-    // Seed one `Book` record under its accepted store id, so the dropped store holds data.
-    let book_store = CatalogId::new(book_store_id.clone()).unwrap();
-    store.write_node(&book_store, &[SavedKey::Int(1)]).unwrap();
-    store
-        .write_data_value(
-            &book_store,
-            &[SavedKey::Int(1)],
-            &[DataPathSegment::Member(
-                CatalogId::new(book_member_id.clone()).unwrap(),
-            )],
-            encode_value(&Scalar::Str("Dune".into())).unwrap(),
-        )
-        .unwrap();
+    seed_catalog_member(
+        &store,
+        &book_store_id,
+        &[SavedKey::Int(1)],
+        &book_member_id,
+        Scalar::Str("Dune".into()),
+    );
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
@@ -547,18 +532,13 @@ fn dropped_populated_singleton_store_fails_closed() {
     });
     let (_report, program) = check_with_accepted(&root);
     let store = TreeStore::memory();
-    let settings_store = CatalogId::new(settings_store_id.clone()).unwrap();
-    store.write_node(&settings_store, &[]).unwrap();
-    store
-        .write_data_value(
-            &settings_store,
-            &[],
-            &[DataPathSegment::Member(
-                CatalogId::new(settings_member_id.clone()).unwrap(),
-            )],
-            encode_value(&Scalar::Str("dark".into())).unwrap(),
-        )
-        .unwrap();
+    seed_catalog_member(
+        &store,
+        &settings_store_id,
+        &[],
+        &settings_member_id,
+        Scalar::Str("dark".into()),
+    );
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
@@ -610,18 +590,13 @@ fn retired_populated_singleton_store_requires_scoped_approval() {
     });
     let (_report, program) = check_with_accepted(&root);
     let store = TreeStore::memory();
-    let settings_store = CatalogId::new(settings_store_id.clone()).unwrap();
-    store.write_node(&settings_store, &[]).unwrap();
-    store
-        .write_data_value(
-            &settings_store,
-            &[],
-            &[DataPathSegment::Member(
-                CatalogId::new(settings_member_id.clone()).unwrap(),
-            )],
-            encode_value(&Scalar::Str("dark".into())).unwrap(),
-        )
-        .unwrap();
+    seed_catalog_member(
+        &store,
+        &settings_store_id,
+        &[],
+        &settings_member_id,
+        Scalar::Str("dark".into()),
+    );
 
     let result = witness(&program, &store);
 
@@ -678,8 +653,7 @@ fn dropped_populated_store_without_accepted_key_shape_fails_closed() {
     });
     let (_report, program) = check_with_accepted(&root);
     let store = TreeStore::memory();
-    let settings_store = CatalogId::new(settings_store_id.clone()).unwrap();
-    store.write_node(&settings_store, &[]).unwrap();
+    seed_catalog_record(&store, &settings_store_id, &[]);
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
