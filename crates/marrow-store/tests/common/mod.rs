@@ -1,19 +1,25 @@
 //! Shared helpers for the store integration tests.
+#[cfg(feature = "native")]
 use std::path::{Path, PathBuf};
+#[cfg(feature = "native")]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "native")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 
+#[cfg(feature = "native")]
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(feature = "native")]
 #[derive(Debug)]
 pub struct TempDir {
     path: PathBuf,
 }
 
+#[cfg(feature = "native")]
 impl TempDir {
     pub fn new(prefix: &str) -> std::io::Result<Self> {
         let base = std::env::temp_dir();
@@ -42,6 +48,7 @@ impl TempDir {
     }
 }
 
+#[cfg(feature = "native")]
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
