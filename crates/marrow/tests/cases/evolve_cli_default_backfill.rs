@@ -2,7 +2,6 @@ use std::fs;
 
 use crate::support;
 use crate::support_evolve;
-use marrow_store::key::SavedKey;
 use marrow_store::tree::{CommitMetadata, TreeStore};
 use marrow_store::value::{Scalar, ScalarType};
 use support::{marrow, marrow_sub, write};
@@ -10,8 +9,7 @@ use support_evolve::{
     OPTIONAL_PAGES_DEFAULT_INDEX_SOURCE, REQUIRED_BASELINE_SOURCE, REQUIRED_DEFAULT_SOURCE,
     REQUIRED_NO_DEFAULT_SOURCE, accepted_catalog, accepted_catalog_entry_id, commit_catalog,
     native_books_project, native_store_path, open_native_store, read_scalar,
-    read_scalar_by_catalog_id, root_place, seed_member, seed_title_only, store_catalog_id,
-    store_epoch,
+    read_scalar_by_catalog_id, root_place, seed_member, seed_record, seed_title_only, store_epoch,
 };
 
 #[test]
@@ -333,10 +331,7 @@ fn evolve_apply_does_not_rerun_an_already_applied_transform() {
     let accepted_place = root_place(&accepted, "books");
     {
         let store = open_native_store(&root);
-        let store_id = store_catalog_id(&accepted_place);
-        store
-            .write_node(&store_id, &[SavedKey::Int(1)])
-            .expect("write record");
+        seed_record(&store, &accepted_place, 1);
         seed_member(&store, &accepted_place, 1, "price", Scalar::Int(3));
     }
     write(

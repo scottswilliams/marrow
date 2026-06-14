@@ -60,11 +60,15 @@ pub(crate) fn open_native_store(root: impl AsRef<Path>) -> TreeStore {
     fs::create_dir_all(path.parent().unwrap()).expect("create data dir");
     TreeStore::open(&path).expect("open native store")
 }
-pub(crate) fn seed_title_only(store: &TreeStore, place: &CheckedSavedPlace, id: i64, title: &str) {
+pub(crate) fn seed_record(store: &TreeStore, place: &CheckedSavedPlace, id: i64) {
     let store_id = store_catalog_id(place);
     store
         .write_node(&store_id, &[SavedKey::Int(id)])
         .expect("write record");
+}
+pub(crate) fn seed_title_only(store: &TreeStore, place: &CheckedSavedPlace, id: i64, title: &str) {
+    seed_record(store, place, id);
+    let store_id = store_catalog_id(place);
     let title_id = CatalogId::new(member_catalog_id(place, "title")).expect("title id");
     store
         .write_data_value(
