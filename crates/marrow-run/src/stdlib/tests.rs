@@ -15,6 +15,7 @@ use crate::env::{Context, Env, TransactionState};
 use crate::error::{RUN_UNSUPPORTED, RuntimeError};
 use crate::host::{Host, RunContext};
 use crate::host_effects::{eval_clock_capability, eval_context, eval_env, eval_io, eval_log};
+use crate::std_json::eval_json;
 use crate::std_pure::eval_std;
 use crate::stdlib::eval_assert;
 use crate::value::RunOutputSink;
@@ -190,4 +191,23 @@ fn host_capability_handlers_reject_unknown_ops() {
     assert_unsupported(eval_io("missing", &io_arg, span, &mut env));
     assert!(!path.exists());
     let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn json_handler_rejects_unknown_ops_before_args() {
+    let program = CheckedRuntimeProgram::default();
+    let store = TreeStore::memory();
+    let log = Rc::new(RefCell::new(String::new()));
+    let host = Host::new().with_log_sink(Rc::clone(&log));
+    let span = SourceSpan::default();
+    let log_arg = vec![std_call_arg(
+        "log",
+        "info",
+        vec![string_arg("should not run")],
+        Capability::Log,
+    )];
+
+    let mut env = test_env(&program, &store, &host);
+    assert_unsupported(eval_json("missing", &log_arg, span, &mut env));
+    assert_eq!(log.borrow().as_str(), "");
 }

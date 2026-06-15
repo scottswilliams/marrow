@@ -18,6 +18,28 @@ const MAX_DEPTH: usize = 64;
 const MAX_NODES: usize = 10_000;
 const MAX_STRING_BYTES: usize = 65_536;
 
+#[derive(Clone, Copy)]
+enum JsonScalarOp {
+    String,
+    Int,
+    Decimal,
+    Bool,
+    Count,
+}
+
+impl JsonScalarOp {
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "string" => Some(Self::String),
+            "int" => Some(Self::Int),
+            "decimal" => Some(Self::Decimal),
+            "bool" => Some(Self::Bool),
+            "count" => Some(Self::Count),
+            _ => None,
+        }
+    }
+}
+
 pub(crate) fn eval_json(
     op: &str,
     args: &[ExecArg],
@@ -32,7 +54,10 @@ pub(crate) fn eval_json(
             let text = eval_text(text, env, span)?;
             Ok(Value::Bool(parse_json(&text).is_ok()))
         }
-        "string" | "int" | "decimal" | "bool" | "count" => {
+        _ => {
+            let Some(scalar_op) = JsonScalarOp::from_name(op) else {
+                return Err(crate::error::unsupported(&format!("std::json::{op}"), span));
+            };
             let [text, pointer] = args else {
                 return Err(std_arity("json", op, span));
             };
@@ -45,9 +70,8 @@ pub(crate) fn eval_json(
             if is_null(&value) {
                 return Err(absent_read("JSON pointer selected null".into(), span));
             }
-            json_value(op, &value, span)
+            json_value(scalar_op, &value, span)
         }
-        _ => Err(crate::error::unsupported(&format!("std::json::{op}"), span)),
     }
 }
 
@@ -329,25 +353,30 @@ fn decode_pointer_token(raw: &str, span: SourceSpan) -> Result<String, RuntimeEr
     Ok(decoded)
 }
 
-fn json_value(op: &str, value: &str, span: SourceSpan) -> Result<Value, RuntimeError> {
+fn json_value(op: JsonScalarOp, value: &str, span: SourceSpan) -> Result<Value, RuntimeError> {
     match (op, json_kind(value)) {
-        ("string", Some(b'"')) => serde_json::from_str::<String>(value)
+        (JsonScalarOp::String, Some(b'"')) => serde_json::from_str::<String>(value)
             .map(Value::Str)
             .map_err(|_| type_error("JSON value is not a string", span)),
-        ("int", Some(b'-' | b'0'..=b'9')) => parse_json_number(value, span)?
+        (JsonScalarOp::Int, Some(b'-' | b'0'..=b'9')) => parse_json_number(value, span)?
             .as_i64()
             .map(Value::Int)
             .ok_or_else(|| type_error("JSON number is not an int", span)),
-        ("decimal", Some(b'-' | b'0'..=b'9')) => parse_json_decimal(value, span),
-        ("bool", Some(b't' | b'f')) => serde_json::from_str::<bool>(value)
+        (JsonScalarOp::Decimal, Some(b'-' | b'0'..=b'9')) => parse_json_decimal(value, span),
+        (JsonScalarOp::Bool, Some(b't' | b'f')) => serde_json::from_str::<bool>(value)
             .map(Value::Bool)
             .map_err(|_| type_error("JSON value is not a bool", span)),
-        ("count", Some(b'[')) => Ok(Value::Int(parse_raw_array(value, span)?.len() as i64)),
-        ("count", Some(b'{')) => Ok(Value::Int(parse_raw_object(value, span)?.len() as i64)),
-        ("string" | "int" | "decimal" | "bool" | "count", _) => {
-            Err(type_error("JSON value has the wrong kind", span))
+        (JsonScalarOp::Count, Some(b'[')) => {
+            Ok(Value::Int(parse_raw_array(value, span)?.len() as i64))
         }
-        _ => unreachable!("json_value is only called for known JSON scalar ops"),
+        (JsonScalarOp::Count, Some(b'{')) => {
+            Ok(Value::Int(parse_raw_object(value, span)?.len() as i64))
+        }
+        (JsonScalarOp::String, _)
+        | (JsonScalarOp::Int, _)
+        | (JsonScalarOp::Decimal, _)
+        | (JsonScalarOp::Bool, _)
+        | (JsonScalarOp::Count, _) => Err(type_error("JSON value has the wrong kind", span)),
     }
 }
 
