@@ -437,7 +437,7 @@ fn eval_math_round(
         return Err(std_arity("math", "round", span));
     };
     decimal_to_i64(
-        round_decimal_half_even_to_integer(eval_decimal_arg(value, env, span)?),
+        round_decimal_half_even_to_integer(eval_decimal_arg(value, env, span)?, span)?,
         span,
     )
     .map(Value::Int)
@@ -573,11 +573,14 @@ fn eval_string_sequence(
     }
 }
 
-fn round_decimal_half_even_to_integer(value: Decimal) -> i128 {
+fn round_decimal_half_even_to_integer(
+    value: Decimal,
+    span: SourceSpan,
+) -> Result<i128, RuntimeError> {
     value
         .round_to_scale(0)
-        .expect("scale zero is inside the decimal envelope")
-        .coefficient()
+        .map(Decimal::coefficient)
+        .ok_or_else(|| overflow(span))
 }
 
 fn ceiling_decimal(value: Decimal) -> i128 {
