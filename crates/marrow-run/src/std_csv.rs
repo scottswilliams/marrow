@@ -16,6 +16,26 @@ const MAX_ROWS: usize = 10_000;
 const MAX_COLUMNS: usize = 256;
 const MAX_CELL_BYTES: usize = 65_536;
 
+#[derive(Clone, Copy)]
+enum CsvScalarOp {
+    String,
+    Int,
+    Decimal,
+    Bool,
+}
+
+impl CsvScalarOp {
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "string" => Some(Self::String),
+            "int" => Some(Self::Int),
+            "decimal" => Some(Self::Decimal),
+            "bool" => Some(Self::Bool),
+            _ => None,
+        }
+    }
+}
+
 pub(crate) fn eval_csv(
     op: &str,
     args: &[ExecArg],
@@ -38,7 +58,10 @@ pub(crate) fn eval_csv(
             let column = eval_text(column, env, span)?;
             Ok(Value::Bool(table.columns.contains_key(&column)))
         }
-        "string" | "int" | "decimal" | "bool" => {
+        _ => {
+            let Some(cell_op) = CsvScalarOp::from_name(op) else {
+                return Err(crate::error::unsupported(&format!("std::csv::{op}"), span));
+            };
             let [text, row, column] = args else {
                 return Err(std_arity("csv", op, span));
             };
@@ -51,9 +74,8 @@ pub(crate) fn eval_csv(
             if cell.is_empty() {
                 return Err(absent_read("CSV cell is empty".into(), span));
             }
-            parse_cell(op, cell, span)
+            parse_cell(cell_op, cell, span)
         }
-        _ => Err(crate::error::unsupported(&format!("std::csv::{op}"), span)),
     }
 }
 
@@ -182,23 +204,22 @@ fn row_index(arg: &ExecArg, env: &mut Env<'_>, span: SourceSpan) -> Result<usize
         .map_err(|_| type_error("CSV row index must be non-negative", span))
 }
 
-fn parse_cell(op: &str, cell: &str, span: SourceSpan) -> Result<Value, RuntimeError> {
+fn parse_cell(op: CsvScalarOp, cell: &str, span: SourceSpan) -> Result<Value, RuntimeError> {
     match op {
-        "string" => Ok(Value::Str(cell.to_string())),
-        "int" => cell
+        CsvScalarOp::String => Ok(Value::Str(cell.to_string())),
+        CsvScalarOp::Int => cell
             .parse::<i64>()
             .map(Value::Int)
             .map_err(|_| type_error("CSV cell is not an int", span)),
-        "decimal" => match Decimal::parse_canonical(cell) {
+        CsvScalarOp::Decimal => match Decimal::parse_canonical(cell) {
             Ok(decimal) => Ok(Value::Decimal(decimal)),
             Err(DecimalParseError::Overflow) => Err(decimal_overflow(span)),
             Err(DecimalParseError::Malformed) => Err(type_error("CSV cell is not a decimal", span)),
         },
-        "bool" => match cell {
+        CsvScalarOp::Bool => match cell {
             "true" => Ok(Value::Bool(true)),
             "false" => Ok(Value::Bool(false)),
             _ => Err(type_error("CSV cell is not a bool", span)),
         },
-        _ => unreachable!("parse_cell is only called for known CSV scalar ops"),
     }
 }
