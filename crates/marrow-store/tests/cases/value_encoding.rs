@@ -43,6 +43,29 @@ fn canonical_forms_match_the_docs() {
 }
 
 #[test]
+fn scalar_names_keep_canonical_spelling_separate_from_aliases() {
+    for (scalar, name) in [
+        (ScalarType::Bool, "bool"),
+        (ScalarType::Int, "int"),
+        (ScalarType::Str, "string"),
+        (ScalarType::Bytes, "bytes"),
+        (ScalarType::Date, "date"),
+        (ScalarType::Instant, "instant"),
+        (ScalarType::Duration, "duration"),
+        (ScalarType::Decimal, "decimal"),
+    ] {
+        assert_eq!(scalar.name(), name);
+        assert_eq!(ScalarType::from_scalar_name(name), Some(scalar));
+    }
+
+    assert_eq!(
+        ScalarType::from_scalar_name("ErrorCode"),
+        Some(ScalarType::Str)
+    );
+    assert_eq!(ScalarType::from_scalar_name("unknown"), None);
+}
+
+#[test]
 fn non_canonical_integers_are_rejected() {
     assert_eq!(decode_value(b"+1", ScalarType::Int), None);
     assert_eq!(decode_value(b"01", ScalarType::Int), None);

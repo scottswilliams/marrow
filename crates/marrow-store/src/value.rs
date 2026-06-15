@@ -111,36 +111,33 @@ pub enum ScalarType {
     Decimal,
 }
 
-/// Canonical scalar spellings shared by schema, checker, runtime, and tools.
-/// `ErrorCode` is a language spelling stored as a string; placing it after the
-/// canonical `string` entry keeps the reverse lookup of `Str` as `string`.
-const SCALAR_NAMES: [(&str, ScalarType); 9] = [
-    ("bool", ScalarType::Bool),
-    ("int", ScalarType::Int),
-    ("string", ScalarType::Str),
-    ("bytes", ScalarType::Bytes),
-    ("ErrorCode", ScalarType::Str),
-    ("date", ScalarType::Date),
-    ("instant", ScalarType::Instant),
-    ("duration", ScalarType::Duration),
-    ("decimal", ScalarType::Decimal),
-];
-
 impl ScalarType {
     pub fn from_scalar_name(name: &str) -> Option<ScalarType> {
-        SCALAR_NAMES
-            .iter()
-            .find(|(spelling, _)| *spelling == name)
-            .map(|(_, ty)| *ty)
+        Some(match name {
+            "bool" => ScalarType::Bool,
+            "int" => ScalarType::Int,
+            "string" | "ErrorCode" => ScalarType::Str,
+            "bytes" => ScalarType::Bytes,
+            "date" => ScalarType::Date,
+            "instant" => ScalarType::Instant,
+            "duration" => ScalarType::Duration,
+            "decimal" => ScalarType::Decimal,
+            _ => return None,
+        })
     }
 
     /// The canonical language spelling of this scalar type.
     pub fn name(self) -> &'static str {
-        SCALAR_NAMES
-            .iter()
-            .find(|(_, ty)| *ty == self)
-            .map(|(spelling, _)| *spelling)
-            .expect("every scalar has a spelling")
+        match self {
+            ScalarType::Bool => "bool",
+            ScalarType::Int => "int",
+            ScalarType::Str => "string",
+            ScalarType::Bytes => "bytes",
+            ScalarType::Date => "date",
+            ScalarType::Instant => "instant",
+            ScalarType::Duration => "duration",
+            ScalarType::Decimal => "decimal",
+        }
     }
 }
 
