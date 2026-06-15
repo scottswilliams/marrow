@@ -164,6 +164,7 @@ pub enum ProjectSessionError {
         path: PathBuf,
         error: std::io::Error,
     },
+    Entropy(std::io::Error),
     Config {
         code: &'static str,
         message: String,
@@ -199,6 +200,7 @@ impl ProjectSessionError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Io { .. } => marrow_check::IO_READ,
+            Self::Entropy(_) => "io.entropy",
             Self::Config { code, .. } => code,
             Self::Catalog { code, .. } => code,
             Self::Check { .. } => "check.failed",
@@ -217,6 +219,7 @@ impl ProjectSessionError {
     pub fn message(&self) -> String {
         match self {
             Self::Io { error, .. } => error.to_string(),
+            Self::Entropy(error) => format!("OS entropy unavailable: {error}"),
             Self::Config { message, .. } => message.clone(),
             Self::Catalog { message, .. } => message.clone(),
             Self::Check { .. } => "project failed to check".to_string(),
@@ -975,17 +978,22 @@ fn validate_record_identity_key(
 fn ensure_store_uid(
     store: &TreeStore,
     nondeterminism: &mut impl Nondeterminism,
-) -> Result<StoreUid, StoreError> {
+) -> Result<StoreUid, ProjectSessionError> {
     if let Some(uid) = store.read_store_uid()? {
         return Ok(uid);
     }
-    let uid = mint_store_uid(nondeterminism);
+    let uid = mint_store_uid(nondeterminism)?;
     store.write_store_uid(&uid)?;
     Ok(uid)
 }
 
-fn mint_store_uid(nondeterminism: &mut impl Nondeterminism) -> StoreUid {
-    StoreUid::from_entropy_bytes(nondeterminism.entropy_u128().to_be_bytes())
+fn mint_store_uid(
+    nondeterminism: &mut impl Nondeterminism,
+) -> Result<StoreUid, ProjectSessionError> {
+    let entropy = nondeterminism
+        .entropy_u128()
+        .map_err(ProjectSessionError::Entropy)?;
+    Ok(StoreUid::from_entropy_bytes(entropy.to_be_bytes()))
 }
 
 struct IsolatedStore {
@@ -1049,4 +1057,53 @@ fn create_temp_store_dir() -> Result<TempStoreDir, TempStoreDirError> {
         }
     }
     Err(TempStoreDirError::Exhausted)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use marrow_store::tree::TreeStore;
+
+    use super::{Nondeterminism, ProjectSessionError, ensure_store_uid, mint_store_uid};
+
+    struct FailingNondeterminism;
+
+    impl Nondeterminism for FailingNondeterminism {
+        fn now_nanos(&self) -> i128 {
+            0
+        }
+
+        fn entropy_u128(&mut self) -> io::Result<u128> {
+            Err(io::Error::other("entropy unavailable"))
+        }
+    }
+
+    #[test]
+    fn uid_minting_entropy_error_has_session_code_and_message() {
+        let error = mint_store_uid(&mut FailingNondeterminism)
+            .expect_err("entropy failure stops UID minting");
+
+        assert!(matches!(error, ProjectSessionError::Entropy(_)));
+        assert_eq!(error.code(), "io.entropy");
+        assert_eq!(
+            error.message(),
+            "OS entropy unavailable: entropy unavailable"
+        );
+    }
+
+    #[test]
+    fn ensure_store_uid_propagates_entropy_error_without_stamping_store() {
+        let store = TreeStore::memory();
+        let error = ensure_store_uid(&store, &mut FailingNondeterminism)
+            .expect_err("entropy failure stops store UID stamping");
+
+        assert!(matches!(error, ProjectSessionError::Entropy(_)));
+        assert!(
+            store
+                .read_store_uid()
+                .expect("read missing store UID")
+                .is_none()
+        );
+    }
 }

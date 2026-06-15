@@ -267,7 +267,7 @@ pub(crate) fn ensure_store_uid(
     if let Some(uid) = store.read_store_uid()? {
         return Ok(uid);
     }
-    let uid = mint_store_uid(nondeterminism);
+    let uid = mint_store_uid(nondeterminism)?;
     store.write_store_uid(&uid)?;
     Ok(uid)
 }
@@ -276,8 +276,11 @@ pub(crate) fn require_store_uid(store: &TreeStore) -> Result<StoreUid, BackupErr
     store.read_store_uid()?.ok_or(BackupError::StoreUidMissing)
 }
 
-pub(crate) fn mint_store_uid(nondeterminism: &mut impl Nondeterminism) -> StoreUid {
-    StoreUid::from_entropy_bytes(nondeterminism.entropy_u128().to_be_bytes())
+pub(crate) fn mint_store_uid(
+    nondeterminism: &mut impl Nondeterminism,
+) -> Result<StoreUid, BackupError> {
+    let entropy = nondeterminism.entropy_u128()?;
+    Ok(StoreUid::from_entropy_bytes(entropy.to_be_bytes()))
 }
 
 /// A backup or restore failure, carrying a stable dotted code for tools.
@@ -527,11 +530,26 @@ pub(super) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use marrow_run::FixedNondeterminism;
+    use std::io;
+
+    use marrow_run::{FixedNondeterminism, Nondeterminism};
     use marrow_store::cell::CatalogId;
     use marrow_store::tree::CommitMetadata;
+    use marrow_store::tree::TreeStore;
 
-    use super::{CommitDescriptor, mint_store_uid};
+    use super::{BackupError, CommitDescriptor, ensure_store_uid, mint_store_uid};
+
+    struct FailingNondeterminism;
+
+    impl Nondeterminism for FailingNondeterminism {
+        fn now_nanos(&self) -> i128 {
+            0
+        }
+
+        fn entropy_u128(&mut self) -> io::Result<u128> {
+            Err(io::Error::other("entropy unavailable"))
+        }
+    }
 
     fn catalog(text: &str) -> CatalogId {
         CatalogId::new(text.to_string()).expect("valid catalog id")
@@ -542,11 +560,34 @@ mod tests {
         let mut first = FixedNondeterminism::new(0, 0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10);
         let mut second = FixedNondeterminism::new(0, 0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10);
 
-        let first_uid = mint_store_uid(&mut first);
-        let second_uid = mint_store_uid(&mut second);
+        let first_uid = mint_store_uid(&mut first).expect("mint first UID");
+        let second_uid = mint_store_uid(&mut second).expect("mint second UID");
 
         assert_eq!(first_uid, second_uid);
         assert_eq!(first_uid.as_str(), "store_0102030405060708090a0b0c0d0e0f10");
+    }
+
+    #[test]
+    fn store_uid_minting_returns_entropy_io_error() {
+        let error = mint_store_uid(&mut FailingNondeterminism)
+            .expect_err("entropy failure stops UID minting");
+
+        assert!(matches!(error, BackupError::Io(_)));
+    }
+
+    #[test]
+    fn ensure_store_uid_returns_entropy_io_error_without_stamping_store() {
+        let store = TreeStore::memory();
+        let error = ensure_store_uid(&store, &mut FailingNondeterminism)
+            .expect_err("entropy failure stops store UID stamping");
+
+        assert!(matches!(error, BackupError::Io(_)));
+        assert!(
+            store
+                .read_store_uid()
+                .expect("read missing store UID")
+                .is_none()
+        );
     }
 
     #[test]

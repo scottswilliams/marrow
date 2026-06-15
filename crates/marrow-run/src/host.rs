@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
-use std::io::Read;
+use std::io::{self, Read};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -70,7 +70,7 @@ impl LogSink for String {
 /// The nondeterministic inputs a host or tool may capture at a run boundary.
 pub trait Nondeterminism {
     fn now_nanos(&self) -> i128;
-    fn entropy_u128(&mut self) -> u128;
+    fn entropy_u128(&mut self) -> io::Result<u128>;
 }
 
 /// Production nondeterminism from the operating system.
@@ -91,7 +91,7 @@ impl Nondeterminism for SystemNondeterminism {
             .unwrap_or(0)
     }
 
-    fn entropy_u128(&mut self) -> u128 {
+    fn entropy_u128(&mut self) -> io::Result<u128> {
         system_entropy_u128()
     }
 }
@@ -117,29 +117,29 @@ impl Nondeterminism for FixedNondeterminism {
         self.now_nanos
     }
 
-    fn entropy_u128(&mut self) -> u128 {
-        self.entropy_u128
+    fn entropy_u128(&mut self) -> io::Result<u128> {
+        Ok(self.entropy_u128)
     }
 }
 
 #[cfg(unix)]
-fn system_entropy_u128() -> u128 {
-    let file =
-        std::fs::File::open("/dev/urandom").expect("nondeterminism entropy requires OS entropy");
+fn system_entropy_u128() -> io::Result<u128> {
+    let file = std::fs::File::open("/dev/urandom")?;
     entropy_u128_from_reader(file)
 }
 
-fn entropy_u128_from_reader(mut reader: impl Read) -> u128 {
+fn entropy_u128_from_reader(mut reader: impl Read) -> io::Result<u128> {
     let mut bytes = [0u8; 16];
-    reader
-        .read_exact(&mut bytes)
-        .expect("nondeterminism entropy requires OS entropy");
-    u128::from_be_bytes(bytes)
+    reader.read_exact(&mut bytes)?;
+    Ok(u128::from_be_bytes(bytes))
 }
 
 #[cfg(not(unix))]
-fn system_entropy_u128() -> u128 {
-    panic!("nondeterminism entropy requires OS entropy");
+fn system_entropy_u128() -> io::Result<u128> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "OS entropy is unsupported on this platform",
+    ))
 }
 
 /// An opt-in debugger hook for statement-by-statement stepping and write
@@ -356,8 +356,17 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "nondeterminism entropy requires OS entropy")]
-    fn entropy_reader_failure_panics() {
-        super::entropy_u128_from_reader(FailingEntropy);
+    fn entropy_reader_failure_returns_error() {
+        let error = super::entropy_u128_from_reader(FailingEntropy).expect_err("reader fails");
+
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+    }
+
+    #[test]
+    fn entropy_short_reader_returns_error() {
+        let error = super::entropy_u128_from_reader(io::Cursor::new([0u8; 8]))
+            .expect_err("reader is short");
+
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
     }
 }

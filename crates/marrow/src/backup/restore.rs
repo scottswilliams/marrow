@@ -379,7 +379,8 @@ fn replay(
     nondeterminism: &mut impl Nondeterminism,
     verify: &impl Fn(&CheckedProgram, &TreeStore) -> Result<(), BackupError>,
 ) -> Result<RestoreReport, BackupError> {
-    store.write_store_uid(&mint_store_uid(nondeterminism))?;
+    let uid = mint_store_uid(nondeterminism)?;
+    store.write_store_uid(&uid)?;
     if let Some(snapshot) = &section.snapshot {
         store.replace_catalog_snapshot(snapshot)?;
     }
@@ -538,19 +539,35 @@ fn rebuild_error(error: ApplyError) -> BackupError {
 
 #[cfg(test)]
 mod tests {
+    use std::io;
     use std::path::Path;
 
     use marrow_catalog::CatalogMetadata;
     use marrow_check::CheckedProgram;
-    use marrow_run::FixedNondeterminism;
+    use marrow_run::{FixedNondeterminism, Nondeterminism};
     use marrow_store::cell::CatalogId;
     use marrow_store::key::{SavedKey, encode_identity_payload};
     use marrow_store::tree::{CommitMetadata, DataPathSegment, TreeStore};
 
     use super::super::test_support::{BOOK_SOURCE, committed_program};
     use super::super::{BackupCorruptProblem, BackupFormatProblem, archive};
-    use super::{BackupError, CHECKSUM_SEED, RestoreReport, read_backup_prologue, restore_backup};
+    use super::{
+        BackupError, CHECKSUM_SEED, RestoreReport, RestoreTargetMode, read_backup_prologue,
+        restore_backup, restore_backup_with_prologue,
+    };
     use crate::backup::{create_backup, ensure_store_uid};
+
+    struct FailingNondeterminism;
+
+    impl Nondeterminism for FailingNondeterminism {
+        fn now_nanos(&self) -> i128 {
+            0
+        }
+
+        fn entropy_u128(&mut self) -> io::Result<u128> {
+            Err(io::Error::other("entropy unavailable"))
+        }
+    }
 
     /// Restore that verifies nothing: the restore.* codes under test fail in
     /// validation or replay, before a schema check would run.
@@ -958,6 +975,37 @@ mod tests {
                     .expect("catalog read")
                     .is_none(),
             "a corrupt catalog row leaves the target empty with no catalog"
+        );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn rolls_back_when_entropy_fails_before_replay_writes_uid() {
+        let (root, program) = committed_program("restore-entropy-rollback", BOOK_SOURCE);
+        let archive = seeded_backup(&program);
+        let mut input = &archive[..];
+        let prologue = read_backup_prologue(&mut input).expect("read prologue");
+        let target = TreeStore::memory();
+        let error = restore_backup_with_prologue(
+            &program,
+            &target,
+            prologue,
+            &mut input,
+            RestoreTargetMode::EmptyOnly,
+            &mut FailingNondeterminism,
+            accept,
+        )
+        .expect_err("entropy failure rejects restore");
+
+        assert!(matches!(error, BackupError::Io(_)));
+        assert!(
+            target.read_store_uid().expect("read store UID").is_none()
+                && target
+                    .read_catalog_snapshot()
+                    .expect("read catalog")
+                    .is_none()
+                && target.is_empty().expect("data empty"),
+            "entropy failure leaves no store UID, catalog snapshot, or data"
         );
         cleanup(&root);
     }
