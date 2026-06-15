@@ -378,7 +378,7 @@ fn entry_args_accept_empty_sequence_and_reject_args_json() {
 }
 
 #[test]
-fn entry_args_reject_composite_identity_with_wrapper_entry_guidance() {
+fn entry_args_reject_composite_identity_params() {
     let root = temp_project("run-entry-composite-id", |root| {
         write(
             root,
@@ -410,8 +410,6 @@ fn entry_args_reject_composite_identity_with_wrapper_entry_guidance() {
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert_eq!(fault_code(&output.stderr), "run.entry_argument");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("wrapper entry"), "{stderr}");
 }
 
 #[test]

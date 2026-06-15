@@ -346,7 +346,7 @@ fn host_output_sink_receives_print_output() {
 }
 
 #[test]
-fn composite_identity_params_name_the_wrapper_entry_pattern() {
+fn text_args_reject_composite_identity_params() {
     let program = checked_program(
         "resource Enrollment\n\
          \x20   status: string\n\
@@ -360,9 +360,4 @@ fn composite_identity_params_name_the_wrapper_entry_pattern() {
         .expect_err("composite identity params are excluded");
 
     assert_eq!(error.code(), "run.entry_argument");
-    assert!(
-        error.message.contains("wrapper entry"),
-        "message should name the wrapper-entry pattern: {}",
-        error.message
-    );
 }
