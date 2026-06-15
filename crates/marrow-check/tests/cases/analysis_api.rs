@@ -19,6 +19,8 @@ use marrow_syntax::ParsedSource;
 
 use support::{analyze_overlay, config, temp_root, write};
 
+const BACKUP_SAMPLE_MEMBER_ID: &str = "cat_ffffffffffffffffffffffffffffffff";
+
 /// Analyze a single `src/m.mw` source and return the program plus the parse for
 /// that file, so a test can position into the buffer it controls. The source is
 /// written to disk so project discovery finds it, then re-supplied as an overlay
@@ -674,7 +676,7 @@ fn evolution_preview_reads_counts_and_samples_from_backup() {
     let root = support::temp_root("analysis-evolution-preview-backup-archive");
     let archive = root.join("books.mwbackup");
     let store = TreeStore::memory();
-    seed_backup_record(&store, "cat_00000000000000000000000000000001", 1);
+    seed_backup_sample_leaf(&store, "cat_00000000000000000000000000000001", 1);
     write_minimal_backup_archive(&archive, &store);
 
     let facts = marrow_check::evolution::evolution_preview(&snapshot, Some(&archive))
@@ -684,7 +686,10 @@ fn evolution_preview_reads_counts_and_samples_from_backup() {
     assert_eq!(backup.cell_count, 1);
     assert_eq!(
         backup.sample_catalog_ids,
-        vec!["cat_00000000000000000000000000000001".to_string()]
+        vec![
+            "cat_00000000000000000000000000000001".to_string(),
+            BACKUP_SAMPLE_MEMBER_ID.to_string(),
+        ]
     );
     assert!(!backup.samples_truncated);
 }
@@ -703,7 +708,7 @@ fn evolution_preview_marks_backup_samples_truncated_only_after_omitting_distinct
     let archive = root.join("books.mwbackup");
     let store = TreeStore::memory();
     for n in 0..17 {
-        seed_backup_record(&store, format!("cat_{n:032}"), n);
+        seed_backup_sample_leaf(&store, format!("cat_{n:032x}"), n);
     }
     write_minimal_backup_archive(&archive, &store);
 
@@ -712,14 +717,25 @@ fn evolution_preview_marks_backup_samples_truncated_only_after_omitting_distinct
     let backup = facts.backup.expect("backup facts");
 
     assert_eq!(backup.cell_count, 17);
-    assert_eq!(backup.sample_catalog_ids.len(), 16);
+    let mut expected_samples = vec![
+        "cat_00000000000000000000000000000000".to_string(),
+        BACKUP_SAMPLE_MEMBER_ID.to_string(),
+    ];
+    expected_samples.extend((1..=14).map(|n| format!("cat_{n:032x}")));
+    assert_eq!(backup.sample_catalog_ids, expected_samples);
     assert!(backup.samples_truncated);
 }
 
-fn seed_backup_record(store: &TreeStore, catalog_id: impl Into<String>, id: i64) {
+fn seed_backup_sample_leaf(store: &TreeStore, catalog_id: impl Into<String>, id: i64) {
     let store_id = CatalogId::new(catalog_id).expect("store id");
+    let member_id = CatalogId::new(BACKUP_SAMPLE_MEMBER_ID).expect("member id");
     store
-        .write_node(&store_id, &[SavedKey::Int(id)])
+        .write_leaf(
+            &store_id,
+            &[SavedKey::Int(id)],
+            &member_id,
+            b"sample".to_vec(),
+        )
         .expect("seed backup cell");
 }
 
