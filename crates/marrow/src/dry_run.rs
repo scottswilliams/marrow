@@ -13,7 +13,6 @@ use marrow_run::{Frame, RuntimeError, StepHook, WriteOp, WriteTarget};
 use marrow_syntax::SourceSpan;
 use serde_json::json;
 
-use crate::CheckFormat;
 use crate::trace::{TraceHook, WriteTargetNames, render_write_target, write_target_json};
 
 /// One managed operation a dry run would have committed; `value` is `None` for a
@@ -128,11 +127,17 @@ impl StepHook for DryRunHook {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum ReportFormat {
+    Text,
+    Json,
+}
+
 /// Report the planned writes a dry run collected, on standard error to stay off
 /// the program's own stdout stream.
 pub(crate) fn report(
     planned: &[PlannedWrite],
-    format: CheckFormat,
+    format: ReportFormat,
     program: &CheckedRuntimeProgram,
     actions: &PreviewActions,
 ) {
@@ -144,7 +149,7 @@ pub(crate) fn report(
         .count();
     let deletes = planned.len() - writes;
     match format {
-        CheckFormat::Text => {
+        ReportFormat::Text => {
             for message in &actions.messages {
                 eprintln!("{message}");
             }
@@ -166,7 +171,7 @@ pub(crate) fn report(
             write_counts.render_text();
             eprintln!("dry run: {writes} write(s), {deletes} delete(s) (not committed)");
         }
-        CheckFormat::Json => {
+        ReportFormat::Json => {
             let records: Vec<serde_json::Value> = planned
                 .iter()
                 .map(|step| planned_record(step, &names))
@@ -183,7 +188,6 @@ pub(crate) fn report(
                 "planned": records,
             }));
         }
-        CheckFormat::Jsonl => unreachable!("run rejects --format jsonl before dry-run reporting"),
     }
 }
 

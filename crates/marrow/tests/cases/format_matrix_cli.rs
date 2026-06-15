@@ -80,6 +80,7 @@ fn run_rejects_jsonl_format() {
     assert!(output.stdout.is_empty(), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
     assert!(stderr.contains("unknown format: jsonl"), "{stderr}");
+    assert!(!stderr.contains("config.invalid"), "{stderr}");
 }
 
 #[test]

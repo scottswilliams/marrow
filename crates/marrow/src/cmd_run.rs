@@ -24,7 +24,7 @@ use crate::{CheckFormat, report_io_error, report_project, report_simple_error};
 enum RunObservation {
     Plain,
     Trace,
-    DryRun(CheckFormat),
+    DryRun(dry_run::ReportFormat),
     TraceDryRun,
 }
 
@@ -40,8 +40,23 @@ impl RunObservation {
     fn format(self) -> CheckFormat {
         match self {
             Self::Plain | Self::Trace | Self::TraceDryRun => CheckFormat::Text,
-            Self::DryRun(format) => format,
+            Self::DryRun(format) => dry_run_check_format(format),
         }
+    }
+
+    fn dry_report_format(self) -> Option<dry_run::ReportFormat> {
+        match self {
+            Self::DryRun(format) => Some(format),
+            Self::TraceDryRun => Some(dry_run::ReportFormat::Text),
+            Self::Plain | Self::Trace => None,
+        }
+    }
+}
+
+fn dry_run_check_format(format: dry_run::ReportFormat) -> CheckFormat {
+    match format {
+        dry_run::ReportFormat::Text => CheckFormat::Text,
+        dry_run::ReportFormat::Json => CheckFormat::Json,
     }
 }
 
@@ -57,6 +72,7 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
     let mut trace = false;
     let mut dry_run = false;
     let mut format = CheckFormat::Text;
+    let mut dry_report_format = dry_run::ReportFormat::Text;
     let mut saw_format = false;
     let mut index = 0;
     while index < args.len() {
@@ -100,10 +116,14 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
                 {
                     return code;
                 }
-                if matches!(format, CheckFormat::Jsonl) {
-                    eprintln!("unknown format: jsonl");
-                    return ExitCode::from(2);
-                }
+                dry_report_format = match format {
+                    CheckFormat::Text => dry_run::ReportFormat::Text,
+                    CheckFormat::Json => dry_run::ReportFormat::Json,
+                    CheckFormat::Jsonl => {
+                        eprintln!("unknown format: jsonl");
+                        return ExitCode::from(2);
+                    }
+                };
             }
             "--help" | "-h" => {
                 print!(
@@ -166,7 +186,7 @@ with `print` goes to stdout.
     let observe = match (trace, dry_run) {
         (false, false) => RunObservation::Plain,
         (true, false) => RunObservation::Trace,
-        (false, true) => RunObservation::DryRun(format),
+        (false, true) => RunObservation::DryRun(dry_report_format),
         (true, true) => RunObservation::TraceDryRun,
     };
     run_project_dir(
@@ -215,8 +235,10 @@ fn run_project_dir(
         .run_entry()
         .expect("run sessions carry the selected entry");
     let actions = preview_actions(session.notices());
-    if observe.isolates_writes() && actions.would_fence {
-        dry_run::report(&[], format, session.runtime_program(), &actions);
+    if let Some(report_style) = observe.dry_report_format()
+        && actions.would_fence
+    {
+        dry_run::report(&[], report_style, session.runtime_program(), &actions);
         return ExitCode::SUCCESS;
     }
     let nondeterminism = SystemNondeterminism::new();
@@ -361,7 +383,7 @@ fn execute(request: RunExecution<'_>, nondeterminism: &impl Nondeterminism) -> E
             .iter()
             .map(|(name, value)| (name.as_str(), value.as_str()))
             .collect();
-        if observe.isolates_writes() {
+        if let Some(report_style) = observe.dry_report_format() {
             let trace = observe.traces().then(|| TraceHook::new("", program));
             let mut hook = DryRunHook::new(trace);
             let result = session.invoke(
@@ -376,6 +398,7 @@ fn execute(request: RunExecution<'_>, nondeterminism: &impl Nondeterminism) -> E
                 Report::Dry {
                     planned,
                     trace,
+                    style: report_style,
                     actions,
                 },
             )
@@ -406,7 +429,7 @@ fn execute(request: RunExecution<'_>, nondeterminism: &impl Nondeterminism) -> E
             return report_session_open_error(dir, error, format);
         }
     };
-    report.emit(format, program);
+    report.emit(program);
     match invocation {
         Ok(output) => {
             if json_envelope {
@@ -458,24 +481,26 @@ enum Report {
     Dry {
         planned: Vec<dry_run::PlannedWrite>,
         trace: Option<TraceHook>,
+        style: dry_run::ReportFormat,
         actions: dry_run::PreviewActions,
     },
 }
 
 impl Report {
-    fn emit(self, format: CheckFormat, program: &marrow_check::CheckedRuntimeProgram) {
+    fn emit(self, program: &marrow_check::CheckedRuntimeProgram) {
         match self {
             Report::None => {}
             Report::Trace(mut hook) => hook.flush(),
             Report::Dry {
                 planned,
                 trace,
+                style,
                 actions,
             } => {
                 if let Some(mut trace) = trace {
                     trace.flush();
                 }
-                dry_run::report(&planned, format, program, &actions);
+                dry_run::report(&planned, style, program, &actions);
             }
         }
     }
