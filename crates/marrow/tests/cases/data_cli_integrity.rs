@@ -11,10 +11,11 @@ use crate::support_data;
 use crate::support_evolve;
 use marrow_check::tooling::{
     DataQuerySegment, QueryError, ToolingError, count_activation_integrity_problems,
-    count_integrity_problems, data_children,
+    count_integrity_problems, data_children, read_data_query, resolve_data_query, walk_data,
 };
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::value::SUPPORTED_DATE_MAX_DAYS;
 use support::write;
 use support_data::{
     checked_place, checked_program, delete_tree_path, encode_identity_keys, field_path,
@@ -67,6 +68,118 @@ fn shared_data_children_rejects_zero_limit() {
     assert!(
         matches!(error, ToolingError::Query(QueryError::ZeroLimit)),
         "expected a typed zero-limit query error, got {error:?}"
+    );
+}
+
+fn temporal_key_project(name: &str) -> support::TempProject {
+    let project = support::temp_project_uncommitted(name, |root| {
+        write(root, "marrow.json", support::native_config());
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             resource Event\n\
+             \x20   notes(day: date): string\n\
+             store ^events(day: date): Event\n",
+        );
+    });
+    support::commit_catalog_if_clean(&project);
+    project
+}
+
+fn assert_store_corruption(error: ToolingError) {
+    match error {
+        ToolingError::Store(error) => assert_eq!(error.code(), "store.corruption", "{error:?}"),
+        other => panic!("expected store corruption, got {other:?}"),
+    }
+}
+
+fn assert_store_error_corruption(error: marrow_store::StoreError) {
+    assert_eq!(error.code(), "store.corruption", "{error:?}");
+}
+
+#[test]
+fn tooling_rejects_malformed_temporal_root_keys() {
+    let project = temporal_key_project("data-tooling-malformed-temporal-root");
+    write_record_node(&project, "events", &[SavedKey::Date(0)]);
+    write_record_node(
+        &project,
+        "events",
+        &[SavedKey::Date(SUPPORTED_DATE_MAX_DAYS + 1)],
+    );
+    let program = checked_program(&project);
+    let store =
+        TreeStore::open(&project.join(".data").join("marrow.redb")).expect("open native store");
+    let root = [DataQuerySegment::Root("events".into())];
+
+    assert_store_corruption(
+        data_children(&program, &store, &root, 10, None)
+            .expect_err("children rejects malformed root key"),
+    );
+    let query = resolve_data_query(&program, &root)
+        .expect("resolve root query")
+        .expect("root query");
+    assert_store_error_corruption(
+        read_data_query(&store, &query).expect_err("read rejects malformed root key"),
+    );
+    assert_store_corruption(
+        walk_data(&program, &store, &query, None, 10).expect_err("walk rejects malformed root key"),
+    );
+    assert_eq!(
+        count_integrity_problems(&store, &program)
+            .expect_err("integrity rejects malformed root key")
+            .code(),
+        "store.corruption"
+    );
+}
+
+#[test]
+fn tooling_rejects_malformed_temporal_layer_keys() {
+    let project = temporal_key_project("data-tooling-malformed-temporal-layer");
+    let place = checked_place(&project, "events");
+    let malformed = SavedKey::Date(SUPPORTED_DATE_MAX_DAYS + 1);
+    write_tree_value(
+        &project,
+        "events",
+        &[SavedKey::Date(0)],
+        &keyed_field_path(&place, "notes", SavedKey::Date(0)),
+        b"valid".to_vec(),
+    );
+    write_tree_value(
+        &project,
+        "events",
+        &[SavedKey::Date(0)],
+        &keyed_field_path(&place, "notes", malformed),
+        b"x".to_vec(),
+    );
+    let program = checked_program(&project);
+    let store =
+        TreeStore::open(&project.join(".data").join("marrow.redb")).expect("open native store");
+    let layer = [
+        DataQuerySegment::Root("events".into()),
+        DataQuerySegment::Key(SavedKey::Date(0)),
+        DataQuerySegment::Layer("notes".into()),
+    ];
+
+    assert_store_corruption(
+        data_children(&program, &store, &layer, 10, None)
+            .expect_err("children rejects malformed layer key"),
+    );
+    let query = resolve_data_query(&program, &layer)
+        .expect("resolve layer query")
+        .expect("layer query");
+    assert_store_error_corruption(
+        read_data_query(&store, &query).expect_err("read rejects malformed layer key"),
+    );
+    assert_store_corruption(
+        walk_data(&program, &store, &query, None, 10)
+            .expect_err("walk rejects malformed layer key"),
+    );
+    assert_eq!(
+        count_integrity_problems(&store, &program)
+            .expect_err("integrity rejects malformed layer key")
+            .code(),
+        "store.corruption"
     );
 }
 

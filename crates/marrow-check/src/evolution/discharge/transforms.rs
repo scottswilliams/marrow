@@ -60,7 +60,7 @@ pub(super) fn discharge_transforms(
             // The decodability obligation lands on the target, not the read member: a read
             // member often has its own presence verdict, so a second verdict on its id would
             // duplicate it. The target is what cannot be recomputed when a read cannot decode.
-            let scan = scan_transform_records(store, place, &reads, enum_members)?;
+            let scan = scan_transform_records(store, program, place, &reads, enum_members)?;
             records += scan.records;
             if undecodable.is_none() {
                 undecodable = scan.undecodable;
@@ -125,6 +125,7 @@ struct TransformScan {
 /// scan order for the repair diagnostic.
 fn scan_transform_records(
     store: &TreeStore,
+    program: &CheckedProgram,
     place: &CheckedSavedPlace,
     reads: &[TransformReadMember],
     enum_members: &EnumMembers,
@@ -138,7 +139,7 @@ fn scan_transform_records(
             for read in reads {
                 let path = [DataPathSegment::Member(read.catalog_id.clone())];
                 if let Some(bytes) = store.read_data_value(&store_id, identity, &path)?
-                    && !leaf_value_valid(&read.leaf, &bytes, enum_members)
+                    && !leaf_value_valid(program, &read.leaf, &bytes, enum_members)
                 {
                     undecodable = Some(format_identity(identity));
                     break;

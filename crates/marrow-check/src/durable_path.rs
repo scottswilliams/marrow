@@ -2,7 +2,9 @@
 
 use marrow_schema::KeyDef;
 use marrow_store::key::SavedKey;
-use marrow_store::value::{SavedValue, ScalarType, decode_value, encode_value};
+use marrow_store::value::{
+    SavedValue, ScalarType, decode_value, encode_value, scalar_key_matches_type,
+};
 
 use crate::CheckedProgram;
 use crate::facts::EnumId;
@@ -78,7 +80,9 @@ fn key_type_mismatch<'a>(
         .iter()
         .zip(found)
         .find_map(|(def, key)| match def.ty.scalar() {
-            Some(expected) if expected != key.scalar_type() => Some((expected, key.scalar_type())),
+            Some(expected) if !scalar_key_matches_type(key, expected) => {
+                Some((expected, key.scalar_type()))
+            }
             _ => None,
         })
 }

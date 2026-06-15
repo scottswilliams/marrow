@@ -8,6 +8,7 @@ use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
+use marrow_store::value::{scalar_key_matches_type, validate_scalar_key};
 use marrow_syntax::SourceSpan;
 
 use crate::facts::{EnumId, EnumMemberId};
@@ -75,7 +76,34 @@ pub fn for_each_place_record(
     visit: &mut dyn FnMut(&[SavedKey]) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
     let store_id = checked_place_store_id(place)?;
-    store.for_each_record(&store_id, place.identity_keys.len(), visit)
+    store.for_each_record(&store_id, place.identity_keys.len(), &mut |identity| {
+        validate_place_record_identity(place, identity)?;
+        visit(identity)
+    })
+}
+
+fn validate_place_record_identity(
+    place: &CheckedSavedPlace,
+    identity: &[SavedKey],
+) -> Result<(), StoreError> {
+    if identity.len() != place.identity_keys.len() {
+        return Err(StoreError::Corruption {
+            message: "stored record identity does not match checked identity arity".to_string(),
+        });
+    }
+    for (key, declared) in identity.iter().zip(&place.identity_keys) {
+        validate_scalar_key(key).map_err(|error| StoreError::Corruption {
+            message: error.to_string(),
+        })?;
+        if let Some(expected) = declared.scalar
+            && !scalar_key_matches_type(key, expected)
+        {
+            return Err(StoreError::Corruption {
+                message: "stored record identity key does not match checked key type".to_string(),
+            });
+        }
+    }
+    Ok(())
 }
 
 pub(crate) struct CheckedExecutableContext<'a> {

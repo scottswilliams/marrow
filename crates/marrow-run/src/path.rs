@@ -10,11 +10,13 @@ use marrow_syntax::SourceSpan;
 use crate::collection::absent_read;
 use crate::durable_read::{LayerEntryAddress, read_layer_entry_at, read_resource};
 use crate::env::Env;
-use crate::error::{Located, RUN_TYPE, RuntimeError, key_type_fault, type_error, unsupported};
+use crate::error::{RUN_TYPE, RuntimeError, key_type_fault, type_error, unsupported};
 use crate::expr::eval_expr;
-use crate::read::iterable_index_branch_present;
+use crate::read::{
+    iterable_index_branch_present, root_identity_present, validated_data_layer_present,
+};
 use crate::stdlib::exact_unique_index_lookup_value;
-use crate::store::{DataAddress, LayerAddress, catalog_id, data_exists, read_data};
+use crate::store::{DataAddress, LayerAddress, data_exists, read_data};
 use crate::value::{Value, decode_leaf, value_to_key};
 use crate::write_dispatch::{write_nested_field, write_resource, write_saved_field};
 
@@ -128,7 +130,25 @@ impl SavedPath {
                 DataAddress::record(&self.place, &self.identity, span)?
             }
             Terminal::Record => {
-                DataAddress::layer_prefix(&self.place, &self.identity, &self.layer_addresses, span)?
+                let address = DataAddress::layer_prefix(
+                    &self.place,
+                    &self.identity,
+                    &self.layer_addresses,
+                    span,
+                )?;
+                if let (Some(layer), Some(layer_address)) =
+                    (self.place.layers.last(), self.layer_addresses.last())
+                    && layer_address.keys.len() < layer.key_params.len()
+                {
+                    return validated_data_layer_present(
+                        env.store,
+                        &address,
+                        &layer.key_params,
+                        layer_address.keys.len(),
+                        span,
+                    );
+                }
+                address
             }
             Terminal::Field { catalog_id, .. } => DataAddress::member(
                 &self.place,
@@ -246,11 +266,7 @@ pub(crate) fn saved_path_present(
     env: &mut Env<'_>,
 ) -> Result<bool, RuntimeError> {
     if let Some(place) = direct_root_place(expr).filter(|place| !place.identity_keys.is_empty()) {
-        let store = catalog_id(&place.store_catalog_id, "store", span)?;
-        return env
-            .store
-            .record_identity_exists_under(&store, &[], place.identity_keys.len())
-            .map_err(|error| error.located(span));
+        return root_identity_present(place, span, env);
     }
     if let Some(value) = exact_unique_index_lookup_value(expr, span, env)? {
         return Ok(value.is_present());
@@ -294,8 +310,8 @@ pub(crate) fn lower_keys(
                 return Err(unsupported("an identity mixed with other keys", span));
             }
             value => {
-                let key =
-                    value_to_key(value).ok_or_else(|| unsupported("a key of this type", span))?;
+                let key = value_to_key(value, span)?
+                    .ok_or_else(|| unsupported("a key of this type", span))?;
                 // Guard the key's scalar kind against the declared key type, so a
                 // wrong-typed key faults here rather than corrupting the keyspace.
                 // An unresolved schema passes no expectations, so the guard skips
@@ -346,7 +362,7 @@ pub(crate) fn guard_key_type(
     span: SourceSpan,
 ) -> Result<(), RuntimeError> {
     if let Some(expected) = declared.scalar
-        && expected != key.scalar_type()
+        && !marrow_store::value::scalar_key_matches_type(key, expected)
     {
         return Err(key_type_fault(expected, key.scalar_type(), span));
     }

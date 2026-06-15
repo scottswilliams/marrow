@@ -1,13 +1,13 @@
 //! Runtime handlers for host-backed stdlib capabilities.
 
 use marrow_check::CheckedArg as ExecArg;
-use marrow_store::value::NANOS_PER_DAY;
+use marrow_store::value::{NANOS_PER_DAY, supported_date_days, supported_instant_nanos};
 use marrow_syntax::SourceSpan;
 
 use crate::env::Env;
 use crate::error::{
     RUN_ABSENT, RUN_CAPABILITY, RuntimeError, error_field, io_error, raise, raise_fault, std_arity,
-    type_error, unsupported,
+    temporal_overflow, type_error, unsupported,
 };
 use crate::expr::eval_expr;
 use crate::stdlib::eval_text;
@@ -41,9 +41,17 @@ pub(crate) fn eval_clock_capability(
         .clock
         .ok_or_else(|| no_capability("clock", "clock", op, span))?;
     if op == "now" {
+        if !supported_instant_nanos(nanos) {
+            return Err(temporal_overflow(span));
+        }
         Ok(Value::Instant(nanos))
     } else {
-        Ok(Value::Date(nanos.div_euclid(NANOS_PER_DAY) as i32))
+        let days =
+            i32::try_from(nanos.div_euclid(NANOS_PER_DAY)).map_err(|_| temporal_overflow(span))?;
+        if !supported_date_days(days) {
+            return Err(temporal_overflow(span));
+        }
+        Ok(Value::Date(days))
     }
 }
 

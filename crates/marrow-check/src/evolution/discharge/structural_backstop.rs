@@ -3,6 +3,7 @@ use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::value::{ScalarType, scalar_key_matches_type, validate_scalar_key};
 
 use crate::evolution::witness::{RepairReason, Verdict};
 use crate::executable::{CheckedSavedMember, CheckedSavedPlace, for_each_place_record};
@@ -15,7 +16,7 @@ use super::{Accumulator, catalog_id, member_label, required_catalog_id};
 #[derive(Clone)]
 enum DescentStep {
     Member(CatalogId),
-    KeyedLayer(CatalogId),
+    KeyedLayer(CatalogId, Vec<Option<ScalarType>>),
 }
 
 /// A backstop candidate: the record-rooted descent to its subtree, the member id its repair is
@@ -101,36 +102,96 @@ fn descend_path(
             path.push(DataPathSegment::Member(member_id.clone()));
             descend_path(store, store_id, identity, &path, rest)
         }
-        DescentStep::KeyedLayer(layer_id) => {
+        DescentStep::KeyedLayer(layer_id, key_scalars) => {
             let mut layer_path = prefix.to_vec();
             layer_path.push(DataPathSegment::Member(layer_id.clone()));
-            for_each_entry_key(store, store_id, identity, &layer_path, |entry_key| {
-                let mut entry_path = layer_path.clone();
-                entry_path.push(DataPathSegment::Key(entry_key.clone()));
-                descend_path(store, store_id, identity, &entry_path, rest)
-            })
+            for_each_entry_path(
+                store,
+                store_id,
+                identity,
+                &layer_path,
+                key_scalars,
+                |entry_path| descend_path(store, store_id, identity, entry_path, rest),
+            )
         }
     }
 }
 
-/// Page every existing entry key under `layer_path` in key order, calling `visit` once per
-/// entry; `visit` returns `true` to stop early. The loop holds only the current entry key, so
-/// an arbitrarily wide layer is paged without materializing its keys.
-pub(super) fn for_each_entry_key(
+/// Page every existing entry under `layer_path` in key order, calling `visit` once per
+/// full entry path; `visit` returns `true` to stop early. The loop holds only the current
+/// key path, so an arbitrarily wide layer is paged without materializing its keys.
+pub(super) fn for_each_entry_path(
     store: &TreeStore,
     store_id: &CatalogId,
     identity: &[SavedKey],
     layer_path: &[DataPathSegment],
-    mut visit: impl FnMut(&SavedKey) -> Result<bool, StoreError>,
+    key_scalars: &[Option<ScalarType>],
+    mut visit: impl FnMut(&[DataPathSegment]) -> Result<bool, StoreError>,
 ) -> Result<bool, StoreError> {
-    let mut next = store.data_first_child(store_id, identity, layer_path)?;
+    let mut entry_path = layer_path.to_vec();
+    for_each_entry_key_at(
+        store,
+        store_id,
+        identity,
+        &mut entry_path,
+        key_scalars,
+        0,
+        &mut visit,
+    )
+}
+
+fn for_each_entry_key_at(
+    store: &TreeStore,
+    store_id: &CatalogId,
+    identity: &[SavedKey],
+    entry_path: &mut Vec<DataPathSegment>,
+    key_scalars: &[Option<ScalarType>],
+    key_index: usize,
+    visit: &mut impl FnMut(&[DataPathSegment]) -> Result<bool, StoreError>,
+) -> Result<bool, StoreError> {
+    if key_index == key_scalars.len() {
+        return visit(entry_path);
+    }
+    let mut next = store.data_first_child(store_id, identity, entry_path)?;
     while let Some(entry_key) = next {
-        if visit(&entry_key)? {
+        validate_entry_key(key_scalars[key_index], &entry_key)?;
+        entry_path.push(DataPathSegment::Key(entry_key));
+        let Some(DataPathSegment::Key(entry_key)) = entry_path.last() else {
+            return Err(StoreError::Corruption {
+                message: "evolution keyed-layer traversal lost its cursor".to_string(),
+            });
+        };
+        let next_after = entry_key.clone();
+        if for_each_entry_key_at(
+            store,
+            store_id,
+            identity,
+            entry_path,
+            key_scalars,
+            key_index + 1,
+            visit,
+        )? {
+            entry_path.pop();
             return Ok(true);
         }
-        next = store.data_next_child(store_id, identity, layer_path, &entry_key)?;
+        entry_path.pop();
+        next = store.data_next_child(store_id, identity, entry_path, &next_after)?;
     }
     Ok(false)
+}
+
+fn validate_entry_key(expected: Option<ScalarType>, key: &SavedKey) -> Result<(), StoreError> {
+    validate_scalar_key(key).map_err(|error| StoreError::Corruption {
+        message: error.to_string(),
+    })?;
+    if let Some(expected) = expected
+        && !scalar_key_matches_type(key, expected)
+    {
+        return Err(StoreError::Corruption {
+            message: "stored keyed-layer entry key does not match checked key type".to_string(),
+        });
+    }
+    Ok(())
 }
 
 /// Walk the member tree collecting a backstop candidate for each member whose signature
@@ -171,7 +232,10 @@ fn collect_structural_candidates(
         child_descent.push(if member.key_params.is_empty() {
             DescentStep::Member(member_id)
         } else {
-            DescentStep::KeyedLayer(member_id)
+            DescentStep::KeyedLayer(
+                member_id,
+                member.key_params.iter().map(|param| param.scalar).collect(),
+            )
         });
         collect_structural_candidates(
             place,

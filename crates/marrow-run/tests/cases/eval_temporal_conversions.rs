@@ -8,7 +8,14 @@ use marrow_run::{
     Host, RUN_CAPABILITY, RUN_DECIMAL_OVERFLOW, RUN_TEMPORAL_OVERFLOW, RUN_TYPE, Value,
 };
 use marrow_store::Decimal;
+use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
+use marrow_store::value::{
+    SUPPORTED_DATE_MAX_DAYS, SUPPORTED_DATE_MIN_DAYS, SUPPORTED_INSTANT_MAX_NANOS,
+    SUPPORTED_INSTANT_MIN_NANOS,
+};
+
+const VALUE_RANGE: &str = "value.range";
 
 #[test]
 fn formats_and_parses_instants() {
@@ -245,6 +252,139 @@ fn temporal_operator_overflow_is_catchable() {
 }
 
 #[test]
+fn instant_min_max_arithmetic_stays_inside_the_saved_range() {
+    let program = checked_program(
+        "pub fn shift(t: instant, d: duration): string\n\
+         \x20   try\n\
+         \x20       return std::clock::formatInstant(t + d)\n\
+         \x20   catch err: Error\n\
+         \x20       return err.code\n",
+    );
+    assert_eq!(
+        run(checked_entry!(
+            &program,
+            "test::shift",
+            Value::Instant(SUPPORTED_INSTANT_MIN_NANOS),
+            Value::Duration(0)
+        )),
+        Ok(Some(Value::Str("0001-01-01T00:00:00Z".into())))
+    );
+    assert_eq!(
+        run(checked_entry!(
+            &program,
+            "test::shift",
+            Value::Instant(SUPPORTED_INSTANT_MIN_NANOS),
+            Value::Duration(-1)
+        )),
+        Ok(Some(Value::Str(RUN_TEMPORAL_OVERFLOW.into())))
+    );
+    assert_eq!(
+        run(checked_entry!(
+            &program,
+            "test::shift",
+            Value::Instant(SUPPORTED_INSTANT_MAX_NANOS),
+            Value::Duration(0)
+        )),
+        Ok(Some(Value::Str("9999-12-31T23:59:59.999999999Z".into())))
+    );
+    assert_eq!(
+        run(checked_entry!(
+            &program,
+            "test::shift",
+            Value::Instant(SUPPORTED_INSTANT_MAX_NANOS),
+            Value::Duration(1)
+        )),
+        Ok(Some(Value::Str(RUN_TEMPORAL_OVERFLOW.into())))
+    );
+}
+
+#[test]
+fn host_clock_rejects_instants_outside_the_saved_range() {
+    let program = checked_program("pub fn now(): instant\n    return std::clock::now()\n");
+    let store = TreeStore::memory();
+
+    assert_eq!(
+        run_entry_with_host(
+            &store,
+            &Host::new().with_clock(SUPPORTED_INSTANT_MIN_NANOS),
+            checked_entry!(&program, "test::now")
+        )
+        .unwrap()
+        .value,
+        Some(Value::Instant(SUPPORTED_INSTANT_MIN_NANOS))
+    );
+    assert_run_error(
+        run_entry_with_host(
+            &store,
+            &Host::new().with_clock(SUPPORTED_INSTANT_MIN_NANOS - 1),
+            checked_entry!(&program, "test::now"),
+        ),
+        RUN_TEMPORAL_OVERFLOW,
+    );
+    assert_eq!(
+        run_entry_with_host(
+            &store,
+            &Host::new().with_clock(SUPPORTED_INSTANT_MAX_NANOS),
+            checked_entry!(&program, "test::now")
+        )
+        .unwrap()
+        .value,
+        Some(Value::Instant(SUPPORTED_INSTANT_MAX_NANOS))
+    );
+    assert_run_error(
+        run_entry_with_host(
+            &store,
+            &Host::new().with_clock(SUPPORTED_INSTANT_MAX_NANOS + 1),
+            checked_entry!(&program, "test::now"),
+        ),
+        RUN_TEMPORAL_OVERFLOW,
+    );
+}
+
+#[test]
+fn host_clock_rejects_today_outside_the_saved_date_range() {
+    let program = checked_program("pub fn today(): date\n    return std::clock::today()\n");
+    let store = TreeStore::memory();
+
+    assert_eq!(
+        run_entry_with_host(
+            &store,
+            &Host::new().with_clock(SUPPORTED_INSTANT_MIN_NANOS),
+            checked_entry!(&program, "test::today")
+        )
+        .unwrap()
+        .value,
+        Some(Value::Date(SUPPORTED_DATE_MIN_DAYS))
+    );
+    assert_run_error(
+        run_entry_with_host(
+            &store,
+            &Host::new().with_clock(SUPPORTED_INSTANT_MIN_NANOS - 1),
+            checked_entry!(&program, "test::today"),
+        ),
+        RUN_TEMPORAL_OVERFLOW,
+    );
+    assert_eq!(
+        run_entry_with_host(
+            &store,
+            &Host::new().with_clock(SUPPORTED_INSTANT_MAX_NANOS),
+            checked_entry!(&program, "test::today")
+        )
+        .unwrap()
+        .value,
+        Some(Value::Date(SUPPORTED_DATE_MAX_DAYS))
+    );
+    assert_run_error(
+        run_entry_with_host(
+            &store,
+            &Host::new().with_clock(SUPPORTED_INSTANT_MAX_NANOS + 1),
+            checked_entry!(&program, "test::today"),
+        ),
+        RUN_TEMPORAL_OVERFLOW,
+    );
+}
+
+#[test]
 fn clock_today_reads_the_host_clock_capability() {
     // `today()` is the host clock's UTC calendar date.
     let program = checked_program(
@@ -289,6 +429,243 @@ fn a_date_round_trips_through_saved_data() {
     )
     .expect("read");
     assert_eq!(outcome.value, Some(Value::Str("2024-02-29".into())));
+}
+
+const DATE_KEYED_EVENTS: &str = "\
+resource Event
+    title: string
+    notes(day: date): string
+store ^events(day: date): Event
+
+pub fn rootCount(): int
+    return count(^events)
+
+pub fn rootExists(): bool
+    return exists(^events)
+
+pub fn rootKeys(): int
+    var n = 0
+    for event in keys(^events)
+        n = n + 1
+    return n
+
+pub fn rootNext(): Id(^events)
+    return next(^events) ?? Id(^events, std::clock::parseDate(\"1970-01-01\"))
+
+pub fn rootPrev(): Id(^events)
+    return prev(^events) ?? Id(^events, std::clock::parseDate(\"1970-01-01\"))
+
+pub fn noteCount(day: date): int
+    return count(^events(day).notes)
+
+pub fn noteExists(day: date): bool
+    return exists(^events(day).notes)
+
+pub fn noteKeys(day: date): int
+    var n = 0
+    for note_day in keys(^events(day).notes)
+        n = n + 1
+    return n
+
+pub fn noteValues(day: date): int
+    var n = 0
+    for note in values(^events(day).notes)
+        n = n + 1
+    return n
+
+pub fn noteEntries(day: date): int
+    var n = 0
+    for note_day, note in entries(^events(day).notes)
+        n = n + 1
+    return n
+
+pub fn noteNext(day: date): date
+    return next(^events(day).notes) ?? std::clock::parseDate(\"1970-01-01\")
+
+pub fn notePrev(day: date): date
+    return prev(^events(day).notes) ?? std::clock::parseDate(\"1970-01-01\")
+
+pub fn writeRoot(day: date)
+    ^events(day).title = \"x\"
+
+pub fn writeNote(day: date, note_day: date)
+    ^events(day).notes(note_day) = \"x\"
+";
+
+#[test]
+fn malformed_date_keyed_root_faults_before_count_presence_or_iteration() {
+    let program = checked_program(DATE_KEYED_EVENTS);
+    let store = TreeStore::memory();
+    write_record_node(
+        &program,
+        &store,
+        "events",
+        &[SavedKey::Date(SUPPORTED_DATE_MIN_DAYS - 1)],
+    );
+
+    for entry in [
+        "test::rootCount",
+        "test::rootExists",
+        "test::rootKeys",
+        "test::rootNext",
+        "test::rootPrev",
+    ] {
+        assert_run_error(
+            run_entry(&store, checked_entry!(&program, entry)),
+            VALUE_RANGE,
+        );
+    }
+}
+
+#[test]
+fn malformed_date_keyed_layer_faults_before_count_presence_or_neighbors() {
+    let program = checked_program(DATE_KEYED_EVENTS);
+    let store = TreeStore::memory();
+    let root_day = SavedKey::Date(0);
+    let malformed_day = SavedKey::Date(SUPPORTED_DATE_MIN_DAYS - 1);
+    write_data_bytes(
+        &program,
+        &store,
+        "events",
+        &[root_day],
+        &keyed_data_path(&program, "events", &[("notes", vec![malformed_day])], &[]),
+        b"x".to_vec(),
+    );
+
+    for entry in [
+        "test::noteCount",
+        "test::noteExists",
+        "test::noteKeys",
+        "test::noteValues",
+        "test::noteEntries",
+        "test::noteNext",
+        "test::notePrev",
+    ] {
+        assert_run_error(
+            run_entry(&store, checked_entry!(&program, entry, Value::Date(0))),
+            VALUE_RANGE,
+        );
+    }
+}
+
+#[test]
+fn malformed_date_keyed_layer_presence_scans_past_valid_children() {
+    let program = checked_program(DATE_KEYED_EVENTS);
+    let store = TreeStore::memory();
+    write_data_bytes(
+        &program,
+        &store,
+        "events",
+        &[SavedKey::Date(0)],
+        &keyed_data_path(
+            &program,
+            "events",
+            &[("notes", vec![SavedKey::Date(0)])],
+            &[],
+        ),
+        b"valid".to_vec(),
+    );
+    write_data_bytes(
+        &program,
+        &store,
+        "events",
+        &[SavedKey::Date(0)],
+        &keyed_data_path(
+            &program,
+            "events",
+            &[("notes", vec![SavedKey::Date(SUPPORTED_DATE_MAX_DAYS + 1)])],
+            &[],
+        ),
+        b"bad".to_vec(),
+    );
+
+    assert_run_error(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::noteExists", Value::Date(0)),
+        ),
+        VALUE_RANGE,
+    );
+}
+
+#[test]
+fn wrong_scalar_temporal_keys_fault_before_traversal_results() {
+    let program = checked_program(DATE_KEYED_EVENTS);
+    let store = TreeStore::memory();
+    write_record_node(
+        &program,
+        &store,
+        "events",
+        &[SavedKey::Str("bad-root".into())],
+    );
+    for entry in [
+        "test::rootCount",
+        "test::rootExists",
+        "test::rootKeys",
+        "test::rootNext",
+        "test::rootPrev",
+    ] {
+        assert_run_error(run_entry(&store, checked_entry!(&program, entry)), RUN_TYPE);
+    }
+
+    let store = TreeStore::memory();
+    write_data_bytes(
+        &program,
+        &store,
+        "events",
+        &[SavedKey::Date(0)],
+        &keyed_data_path(
+            &program,
+            "events",
+            &[("notes", vec![SavedKey::Str("bad-note".into())])],
+            &[],
+        ),
+        b"x".to_vec(),
+    );
+    for entry in [
+        "test::noteCount",
+        "test::noteExists",
+        "test::noteKeys",
+        "test::noteValues",
+        "test::noteEntries",
+        "test::noteNext",
+        "test::notePrev",
+    ] {
+        assert_run_error(
+            run_entry(&store, checked_entry!(&program, entry, Value::Date(0))),
+            RUN_TYPE,
+        );
+    }
+}
+
+#[test]
+fn runtime_writes_reject_out_of_range_temporal_keys() {
+    let program = checked_program(DATE_KEYED_EVENTS);
+    let store = TreeStore::memory();
+
+    assert_run_error(
+        run_entry(
+            &store,
+            checked_entry!(
+                &program,
+                "test::writeRoot",
+                Value::Date(SUPPORTED_DATE_MIN_DAYS - 1)
+            ),
+        ),
+        VALUE_RANGE,
+    );
+    assert_run_error(
+        run_entry(
+            &store,
+            checked_entry!(
+                &program,
+                "test::writeNote",
+                Value::Date(0),
+                Value::Date(SUPPORTED_DATE_MAX_DAYS + 1)
+            ),
+        ),
+        VALUE_RANGE,
+    );
 }
 
 #[test]

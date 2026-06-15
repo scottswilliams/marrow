@@ -35,8 +35,8 @@ pub type SavedValue = Scalar;
 impl Scalar {
     /// This scalar's order-preserving key projection, or `None` for a decimal, which
     /// has no order-preserving key encoding. The single home for that mapping.
-    pub fn as_key(&self) -> Option<SavedKey> {
-        Some(match self {
+    pub fn as_key(&self) -> Result<Option<SavedKey>, ValueError> {
+        let key = match self {
             Scalar::Int(v) => SavedKey::Int(*v),
             Scalar::Bool(v) => SavedKey::Bool(*v),
             Scalar::Str(v) => SavedKey::Str(v.clone()),
@@ -44,8 +44,10 @@ impl Scalar {
             Scalar::Date(v) => SavedKey::Date(*v),
             Scalar::Duration(v) => SavedKey::Duration(*v),
             Scalar::Instant(v) => SavedKey::Instant(*v),
-            Scalar::Decimal(_) => return None,
-        })
+            Scalar::Decimal(_) => return Ok(None),
+        };
+        validate_scalar_key(&key)?;
+        Ok(Some(key))
     }
 
     /// This scalar's type discriminant.
@@ -206,6 +208,9 @@ pub fn date_days(year: i32, month: u32, day: u32) -> Option<i32> {
     (civil_from_days(days) == (year, month, day)).then_some(value)
 }
 
+pub const SUPPORTED_DATE_MIN_DAYS: i32 = -719_162;
+pub const SUPPORTED_DATE_MAX_DAYS: i32 = 2_932_896;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DateParts {
     pub year: i32,
@@ -215,10 +220,15 @@ pub struct DateParts {
 
 /// The calendar components of a supported date day count.
 pub fn date_parts(days: i32) -> Option<DateParts> {
+    if !supported_date_days(days) {
+        return None;
+    }
     let (year, month, day) = civil_from_days(i64::from(days));
-    (1..=9999)
-        .contains(&year)
-        .then_some(DateParts { year, month, day })
+    Some(DateParts { year, month, day })
+}
+
+pub fn supported_date_days(days: i32) -> bool {
+    (SUPPORTED_DATE_MIN_DAYS..=SUPPORTED_DATE_MAX_DAYS).contains(&days)
 }
 
 /// Formats days-since-epoch as `YYYY-MM-DD`, erroring outside year 0001-9999 since a
@@ -290,6 +300,30 @@ const NANOS_PER_SEC: i128 = 1_000_000_000;
 /// Nanoseconds in a 24-hour day, the date<->nanos conversion factor. Owned here
 /// alongside the date/instant codecs; the runtime imports it for the same model.
 pub const NANOS_PER_DAY: i128 = 86_400 * NANOS_PER_SEC;
+
+pub const SUPPORTED_INSTANT_MIN_NANOS: i128 = SUPPORTED_DATE_MIN_DAYS as i128 * NANOS_PER_DAY;
+pub const SUPPORTED_INSTANT_MAX_NANOS: i128 =
+    SUPPORTED_DATE_MAX_DAYS as i128 * NANOS_PER_DAY + (NANOS_PER_DAY - 1);
+
+pub fn supported_instant_nanos(nanos: i128) -> bool {
+    (SUPPORTED_INSTANT_MIN_NANOS..=SUPPORTED_INSTANT_MAX_NANOS).contains(&nanos)
+}
+
+pub fn validate_scalar_key(key: &SavedKey) -> Result<(), ValueError> {
+    match key {
+        SavedKey::Date(days) if !supported_date_days(*days) => {
+            Err(ValueError::DateOutOfRange { days: *days })
+        }
+        SavedKey::Instant(nanos) if !supported_instant_nanos(*nanos) => {
+            Err(ValueError::InstantOutOfRange { nanos: *nanos })
+        }
+        _ => Ok(()),
+    }
+}
+
+pub fn scalar_key_matches_type(key: &SavedKey, expected: ScalarType) -> bool {
+    key.scalar_type() == expected && validate_scalar_key(key).is_ok()
+}
 
 /// Appends the canonical sub-second fraction of `nanos_fraction` (in `[0, 10^9)`):
 /// nothing when zero, else `.` and the nine-digit fraction with trailing zeros
@@ -371,12 +405,12 @@ fn parse_duration(bytes: &[u8]) -> Option<i128> {
 /// Formats UTC nanoseconds-since-epoch as canonical `YYYY-MM-DDTHH:MM:SSZ`, with a
 /// trimmed fraction only when non-zero. Errors outside year 0001-9999, like dates.
 fn format_instant(nanos: i128) -> Result<String, ValueError> {
+    if !supported_instant_nanos(nanos) {
+        return Err(ValueError::InstantOutOfRange { nanos });
+    }
     let days = nanos.div_euclid(NANOS_PER_DAY);
     let time_of_day = nanos.rem_euclid(NANOS_PER_DAY); // [0, NANOS_PER_DAY)
     let (year, month, day) = civil_from_days(days as i64);
-    if !(1..=9999).contains(&year) {
-        return Err(ValueError::InstantOutOfRange { nanos });
-    }
     let total_seconds = (time_of_day / NANOS_PER_SEC) as u32; // [0, 86399]
     let fraction = (time_of_day % NANOS_PER_SEC) as u32;
     let (hours, minutes, seconds) = (

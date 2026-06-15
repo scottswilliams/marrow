@@ -2,6 +2,7 @@ use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::DataPathSegment;
+use marrow_store::value::{scalar_key_matches_type, validate_scalar_key};
 
 use crate::{CheckedSavedMember, CheckedSavedMemberKind, ScalarType};
 
@@ -32,7 +33,17 @@ pub(crate) fn tooling_catalog_id(
 pub(crate) fn key_mismatch(expected: Option<ScalarType>, key: &SavedKey) -> Option<KeyMismatch> {
     let expected = expected?;
     let found = key.scalar_type();
-    (expected != found).then_some(KeyMismatch { expected, found })
+    (!scalar_key_matches_type(key, expected)).then_some(KeyMismatch { expected, found })
+}
+
+pub(crate) fn stored_key_mismatch(
+    expected: Option<ScalarType>,
+    key: &SavedKey,
+) -> Result<Option<KeyMismatch>, StoreError> {
+    validate_scalar_key(key).map_err(|error| StoreError::Corruption {
+        message: error.to_string(),
+    })?;
+    Ok(key_mismatch(expected, key))
 }
 
 #[derive(Clone, Copy)]

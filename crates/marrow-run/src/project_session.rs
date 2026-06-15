@@ -4,10 +4,14 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use marrow_check::evolution::preview;
-use marrow_check::{CheckReport, CheckedProgram, CheckedRuntimeProgram, ProjectConfig};
+use marrow_check::{
+    CheckReport, CheckedProgram, CheckedRuntimeProgram, CheckedSavedPlace, ProjectConfig,
+};
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
+use marrow_store::key::SavedKey;
 use marrow_store::tree::{StoreUid, TreeStore};
+use marrow_store::value::{ScalarType, scalar_key_matches_type, validate_scalar_key};
 use marrow_syntax::SourceSpan;
 
 use crate::entry::{CheckedEntryCall, run_entry_with_debugger, run_entry_with_host};
@@ -921,13 +925,51 @@ fn saved_root_holds_records(
     else {
         return Ok(false);
     };
-    let Some(raw_store_id) = place.store_catalog_id else {
+    let Some(raw_store_id) = place.store_catalog_id.as_ref() else {
         return Ok(false);
     };
-    let Ok(store_id) = CatalogId::new(raw_store_id) else {
+    let Ok(store_id) = CatalogId::new(raw_store_id.clone()) else {
         return Ok(false);
     };
-    store.record_identity_exists_under(&store_id, &[], place.identity_keys.len())
+    first_valid_record_identity_exists(store, &store_id, &place)
+}
+
+fn first_valid_record_identity_exists(
+    store: &TreeStore,
+    store_id: &CatalogId,
+    place: &CheckedSavedPlace,
+) -> Result<bool, StoreError> {
+    if place.identity_keys.is_empty() {
+        return store.data_subtree_exists(store_id, &[], &[]);
+    }
+    let mut identity = Vec::with_capacity(place.identity_keys.len());
+    while identity.len() < place.identity_keys.len() {
+        let Some(key) =
+            store.record_first_child_at_arity(store_id, &identity, place.identity_keys.len())?
+        else {
+            return Ok(false);
+        };
+        validate_record_identity_key(place.identity_keys[identity.len()].scalar, &key)?;
+        identity.push(key);
+    }
+    Ok(true)
+}
+
+fn validate_record_identity_key(
+    expected: Option<ScalarType>,
+    key: &SavedKey,
+) -> Result<(), StoreError> {
+    validate_scalar_key(key).map_err(|error| StoreError::Corruption {
+        message: error.to_string(),
+    })?;
+    if let Some(expected) = expected
+        && !scalar_key_matches_type(key, expected)
+    {
+        return Err(StoreError::Corruption {
+            message: "stored record identity key does not match checked key type".to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn ensure_store_uid(

@@ -7,6 +7,7 @@ use crate::{CheckedProgram, CheckedSavedMember, checked_saved_root_place};
 use super::query::resolve_data_query;
 use super::query_error::QueryError;
 use super::record_nav;
+use super::shape::stored_key_mismatch;
 use super::shape::{declared_members_below_path, tooling_catalog_id};
 use super::traversal::data_roots_in_store;
 use super::{DataChild, DataChildrenPage, DataQuery, DataQuerySegment};
@@ -130,7 +131,13 @@ fn record_children(
             query.storage.identity_arity,
         )?,
     };
-    page_key_children(first, limit, |anchor| {
+    let expected = query
+        .storage
+        .identity_key_scalars
+        .get(query.storage.identity.len())
+        .copied()
+        .flatten();
+    page_key_children(first, limit, expected, |anchor| {
         record_nav::next_record_child(
             store,
             &query.storage.store,
@@ -191,7 +198,13 @@ fn data_key_children(
             &query.storage.data_path,
         )?,
     };
-    page_key_children(first, limit, |anchor| {
+    let expected = query
+        .storage
+        .data_key_scalars
+        .get(query.storage.data_key_prefix_len)
+        .copied()
+        .flatten();
+    page_key_children(first, limit, expected, |anchor| {
         store
             .data_next_child(
                 &query.storage.store,
@@ -206,6 +219,7 @@ fn data_key_children(
 fn page_key_children(
     first: Option<SavedKey>,
     limit: usize,
+    expected: Option<crate::ScalarType>,
     mut next: impl FnMut(&SavedKey) -> Result<Option<SavedKey>, ToolingError>,
 ) -> Result<DataChildrenPage, ToolingError> {
     let mut children = Vec::new();
@@ -219,6 +233,7 @@ fn page_key_children(
                 cursor: last,
             });
         }
+        stored_key_mismatch(expected, &key)?;
         children.push(DataChild::Key(key.clone()));
         child = next(&key)?;
         last = Some(key);

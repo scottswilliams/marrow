@@ -6,7 +6,10 @@ use marrow_store::key::{
     SavedKey, decode_identity_index_key, decode_identity_payload_arity, encode_identity_index_key,
 };
 use marrow_store::tree::{TreeEnumMember, decode_tree_enum_member, encode_tree_enum_member};
-use marrow_store::value::{SavedValue, ScalarType, decode_value, encode_value};
+use marrow_store::value::{
+    SavedValue, ScalarType, decode_value, encode_value, scalar_key_matches_type,
+    validate_scalar_key,
+};
 use marrow_syntax::SourceSpan;
 
 use marrow_check::{
@@ -123,10 +126,10 @@ impl LeafValue {
         }
     }
 
-    pub(crate) fn as_key(&self) -> Option<SavedKey> {
+    pub(crate) fn as_key(&self) -> Result<Option<SavedKey>, marrow_store::value::ValueError> {
         match self {
             Self::Scalar(value) => value.as_key(),
-            Self::Enum { index_key, .. } => Some(index_key.clone()),
+            Self::Enum { index_key, .. } => Ok(Some(index_key.clone())),
         }
     }
 
@@ -259,8 +262,9 @@ pub struct RunOutput {
 /// A child key as its runtime value. Every saved key kind converts — including
 /// the temporal date, duration, and instant keys — so a layer keyed by any scalar
 /// type iterates to usable values.
-pub(crate) fn saved_key_to_value(key: SavedKey) -> Value {
-    match key {
+pub(crate) fn saved_key_to_value(key: SavedKey, span: SourceSpan) -> Result<Value, RuntimeError> {
+    validate_scalar_key(&key).map_err(|error| error.located(span))?;
+    Ok(match key {
         SavedKey::Int(n) => Value::Int(n),
         SavedKey::Bool(b) => Value::Bool(b),
         SavedKey::Str(s) => Value::Str(s),
@@ -268,7 +272,7 @@ pub(crate) fn saved_key_to_value(key: SavedKey) -> Value {
         SavedKey::Duration(n) => Value::Duration(n),
         SavedKey::Instant(n) => Value::Instant(n),
         SavedKey::Bytes(b) => Value::Bytes(b),
-    }
+    })
 }
 
 /// The runtime value for an identity's lowered keys. Every identity carries its
@@ -349,8 +353,11 @@ pub(crate) fn identity_keys_of(
 
 /// Convert a record-key value to a [`SavedKey`], or `None` for a type that is not
 /// a valid key (decimals, sequences, resources, and identities are not keys).
-pub(crate) fn value_to_key(value: Value) -> Option<SavedKey> {
-    match value {
+pub(crate) fn value_to_key(
+    value: Value,
+    span: SourceSpan,
+) -> Result<Option<SavedKey>, RuntimeError> {
+    let key = match value {
         Value::Int(n) => Some(SavedKey::Int(n)),
         Value::Bool(b) => Some(SavedKey::Bool(b)),
         Value::Str(s) => Some(SavedKey::Str(s)),
@@ -367,7 +374,11 @@ pub(crate) fn value_to_key(value: Value) -> Option<SavedKey> {
         | Value::Resource(_)
         | Value::Identity(_)
         | Value::LocalTree(_) => None,
+    };
+    if let Some(key) = &key {
+        validate_scalar_key(key).map_err(|error| error.located(span))?;
     }
+    Ok(key)
 }
 
 pub(crate) fn value_to_index_key(
@@ -380,7 +391,7 @@ pub(crate) fn value_to_index_key(
             if value_scalar_type(&value) != Some(*scalar) {
                 return Err(type_error("this index key has the wrong scalar type", span));
             }
-            value_to_key(value).ok_or_else(|| unsupported("an index key of this type", span))
+            value_to_key(value, span)?.ok_or_else(|| unsupported("an index key of this type", span))
         }
         StoredValueMeaning::Enum { enum_id, members } => match value {
             Value::Enum(value)
@@ -424,13 +435,13 @@ pub(crate) fn index_key_to_value(
 ) -> Result<Value, RuntimeError> {
     match meaning {
         StoredValueMeaning::Scalar(scalar) => {
-            if key.scalar_type() != *scalar {
+            if !scalar_key_matches_type(key, *scalar) {
                 return Err(type_error(
                     "stored index key has the wrong scalar type",
                     span,
                 ));
             }
-            Ok(saved_key_to_value(key.clone()))
+            saved_key_to_value(key.clone(), span)
         }
         StoredValueMeaning::Enum { members, .. } => {
             let SavedKey::Str(member_catalog_id) = key else {
@@ -485,16 +496,20 @@ pub(crate) fn validate_identity_key_scalars(
     key_scalars: &[ScalarType],
     span: SourceSpan,
 ) -> Result<(), RuntimeError> {
-    if keys.len() != key_scalars.len()
-        || !keys
-            .iter()
-            .zip(key_scalars)
-            .all(|(key, scalar)| key.scalar_type() == *scalar)
-    {
+    if keys.len() != key_scalars.len() {
         return Err(type_error(
             "stored identity keys do not match the store identity type",
             span,
         ));
+    }
+    for (key, scalar) in keys.iter().zip(key_scalars) {
+        validate_scalar_key(key).map_err(|error| error.located(span))?;
+        if !scalar_key_matches_type(key, *scalar) {
+            return Err(type_error(
+                "stored identity keys do not match the store identity type",
+                span,
+            ));
+        }
     }
     Ok(())
 }
@@ -511,8 +526,9 @@ pub(crate) fn validate_place_identity_keys(
         ));
     }
     for (key, declared) in keys.iter().zip(&place.identity_keys) {
+        validate_scalar_key(key).map_err(|error| error.located(span))?;
         if let Some(expected) = declared.scalar
-            && key.scalar_type() != expected
+            && !scalar_key_matches_type(key, expected)
         {
             return Err(type_error(
                 "stored identity keys do not match the store identity type",
@@ -677,39 +693,41 @@ fn render_identity(identity: &IdentityValue) -> String {
 mod tests {
     use super::{Value, saved_key_to_value};
     use marrow_store::key::SavedKey;
+    use marrow_syntax::SourceSpan;
 
     #[test]
     fn saved_key_to_value_carries_every_scalar_key_kind() {
         // Every saved key kind converts to its runtime value, including the temporal
         // ones, so iterating a layer keyed by any scalar type yields a usable value
         // rather than faulting `run.unsupported`.
+        let span = SourceSpan::default();
         assert!(matches!(
-            saved_key_to_value(SavedKey::Int(7)),
-            Value::Int(7)
+            saved_key_to_value(SavedKey::Int(7), span),
+            Ok(Value::Int(7))
         ));
         assert!(matches!(
-            saved_key_to_value(SavedKey::Bool(true)),
-            Value::Bool(true)
+            saved_key_to_value(SavedKey::Bool(true), span),
+            Ok(Value::Bool(true))
         ));
         assert!(matches!(
-            saved_key_to_value(SavedKey::Str("k".into())),
-            Value::Str(_)
+            saved_key_to_value(SavedKey::Str("k".into()), span),
+            Ok(Value::Str(_))
         ));
         assert!(matches!(
-            saved_key_to_value(SavedKey::Bytes(vec![1])),
-            Value::Bytes(_)
+            saved_key_to_value(SavedKey::Bytes(vec![1]), span),
+            Ok(Value::Bytes(_))
         ));
         assert!(matches!(
-            saved_key_to_value(SavedKey::Date(18_000)),
-            Value::Date(18_000)
+            saved_key_to_value(SavedKey::Date(18_000), span),
+            Ok(Value::Date(18_000))
         ));
         assert!(matches!(
-            saved_key_to_value(SavedKey::Duration(5_000)),
-            Value::Duration(5_000)
+            saved_key_to_value(SavedKey::Duration(5_000), span),
+            Ok(Value::Duration(5_000))
         ));
         assert!(matches!(
-            saved_key_to_value(SavedKey::Instant(1_600)),
-            Value::Instant(1_600)
+            saved_key_to_value(SavedKey::Instant(1_600), span),
+            Ok(Value::Instant(1_600))
         ));
     }
 }

@@ -1,9 +1,11 @@
 use crate::support;
 use crate::support_discharge;
 use marrow_check::evolution::{RepairReason, Verdict, preview};
+use marrow_store::StoreError;
+use marrow_store::cell::CatalogId;
 use marrow_store::key::{SavedKey, encode_identity_payload};
-use marrow_store::tree::TreeStore;
-use marrow_store::value::Scalar;
+use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::value::{SUPPORTED_DATE_MIN_DAYS, Scalar};
 
 use support::catalog::write_catalog;
 use support::{temp_project, write};
@@ -165,6 +167,37 @@ fn store_identity_key_shape_unchanged_is_no_store_repair() {
     );
 }
 
+#[test]
+fn malformed_temporal_store_identity_faults_discharge() {
+    let root = temp_project("discharge-store-key-malformed-date", |root| {
+        write(
+            root,
+            "src/events.mw",
+            "module events\n\
+             resource Event\n\
+             \x20   required name: string\n\
+             store ^events(day: date): Event\n\
+             pub fn add(day: date, name: string)\n\
+             \x20   ^events(day).name = name\n",
+        );
+    });
+    let program = commit_then_check(&root);
+    let place = root_place(&program, "events");
+    let store = TreeStore::memory();
+    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store"))
+        .expect("store catalog id");
+    store
+        .write_node(&store_id, &[SavedKey::Date(SUPPORTED_DATE_MIN_DAYS - 1)])
+        .expect("write malformed record");
+
+    let err = preview(&program, &store).expect_err("malformed date identity must fault discharge");
+
+    assert!(
+        matches!(err, StoreError::Corruption { ref message } if message.contains("date day")),
+        "{err:?}"
+    );
+}
+
 /// A pure store rename behind an identity leaf (`Id(^books)` -> `Id(^library)`) is NOT a
 /// retype: the referenced store keeps its stable identity, so the identity-aware token is
 /// unchanged and a populated record discharges cleanly. The spelling-based comparison
@@ -224,4 +257,53 @@ fn store_rename_behind_identity_leaf_is_not_a_retype() {
     );
     assert!(result.is_activatable(), "{result:#?}");
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+}
+
+#[test]
+fn identity_leaf_with_malformed_temporal_payload_fails_closed() {
+    let root = temp_project("discharge-identity-leaf-malformed-date", |root| {
+        write(
+            root,
+            "src/events.mw",
+            "module events\n\
+             resource Event\n\
+             \x20   required parent: Id(^events)\n\
+             store ^events(day: date): Event\n\
+             pub fn add(day: date, parent: Id(^events))\n\
+             \x20   ^events(day).parent = parent\n",
+        );
+    });
+    let program = commit_then_check(&root);
+    let place = root_place(&program, "events");
+    let store = TreeStore::memory();
+    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store"))
+        .expect("store catalog id");
+    let parent_raw = member_catalog_id(&place, "parent");
+    let parent_id = CatalogId::new(parent_raw.clone()).expect("parent catalog id");
+    let identity = [SavedKey::Date(SUPPORTED_DATE_MIN_DAYS)];
+    store
+        .write_node(&store_id, &identity)
+        .expect("write valid record");
+    store
+        .write_data_value(
+            &store_id,
+            &identity,
+            &[DataPathSegment::Member(parent_id)],
+            encode_identity_payload(&[SavedKey::Date(SUPPORTED_DATE_MIN_DAYS - 1)]),
+        )
+        .expect("write malformed identity payload");
+
+    let (result, _) = preview(&program, &store).expect("preview");
+
+    assert!(
+        matches!(
+            verdict_for(&result, &parent_raw),
+            Verdict::RepairRequired {
+                reason: RepairReason::InvalidStoredValue
+            }
+        ),
+        "{:#?}",
+        result.verdicts
+    );
+    assert!(!result.is_activatable(), "{result:#?}");
 }

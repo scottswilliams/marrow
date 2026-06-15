@@ -12,7 +12,7 @@ use crate::{
 
 use super::record_nav;
 use super::render::{push_key, push_member};
-use super::shape::{key_mismatch, tooling_catalog_id};
+use super::shape::{stored_key_mismatch, tooling_catalog_id};
 use super::{DataRecord, DebugDataPayload, KeyMismatch};
 
 pub fn data_roots_in_store(
@@ -118,8 +118,11 @@ fn place_has_data(place: &CheckedSavedPlace, store: &TreeStore) -> Result<bool, 
     if place.identity_keys.is_empty() {
         return store.data_subtree_exists(&store_id, &[], &[]);
     }
-    record_nav::first_record_child(store, &store_id, &[], place.identity_keys.len())
-        .map(|key| key.is_some())
+    let key = record_nav::first_record_child(store, &store_id, &[], place.identity_keys.len())?;
+    if let Some(key) = &key {
+        stored_key_mismatch(place.identity_keys[0].scalar, key)?;
+    }
+    Ok(key.is_some())
 }
 
 fn visit_place_records_until(
@@ -176,9 +179,10 @@ fn visit_identity_records_until(
     while let Some(key) = child {
         let next_after = key.clone();
         let prior_len = push_key(path, &key);
-        let next_mismatch = mismatch
-            .clone()
-            .or_else(|| key_mismatch(place.identity_keys[key_index].scalar, &key));
+        let next_mismatch = match mismatch.clone() {
+            Some(mismatch) => Some(mismatch),
+            None => stored_key_mismatch(place.identity_keys[key_index].scalar, &key)?,
+        };
         identity.push(key);
         match visit_identity_records_until(
             place,
@@ -246,6 +250,7 @@ fn visit_identity_record_nodes_until(
         record_nav::first_record_child(store, store_id, identity, place.identity_keys.len())?;
     while let Some(key) = child {
         let next_after = key.clone();
+        stored_key_mismatch(place.identity_keys[identity.len()].scalar, &key)?;
         identity.push(key);
         match visit_identity_record_nodes_until(place, store_id, store, identity, visit)? {
             ControlFlow::Continue(count) => {
@@ -373,9 +378,10 @@ fn visit_member_keys_until(
     while let Some(key) = child {
         let next_after = key.clone();
         let prior_len = push_key(path, &key);
-        let next_mismatch = mismatch
-            .clone()
-            .or_else(|| key_mismatch(cursor.member.key_params[key_index].scalar, &key));
+        let next_mismatch = match mismatch.clone() {
+            Some(mismatch) => Some(mismatch),
+            None => stored_key_mismatch(cursor.member.key_params[key_index].scalar, &key)?,
+        };
         data_path.push(DataPathSegment::Key(key));
         match visit_member_keys_until(cursor, data_path, path, key_index + 1, next_mismatch, visit)?
         {

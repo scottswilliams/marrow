@@ -68,7 +68,7 @@ pub(crate) fn reject_resource_unique_conflicts(
 ) -> Result<(), WriteError> {
     for index in &context.place.indexes {
         if index.unique {
-            let new_keys = index_keys(&index.keys, context.place, context.identity, value);
+            let new_keys = index_keys(&index.keys, context.place, context.identity, value)?;
             check_unique_conflict(index, context, new_keys.as_deref())?;
         }
     }
@@ -87,7 +87,7 @@ pub(crate) fn stage_resource_index_rewrites(
                 identity: context.identity.to_vec(),
             });
         }
-        if let Some(new_keys) = index_keys(&index.keys, context.place, context.identity, value) {
+        if let Some(new_keys) = index_keys(&index.keys, context.place, context.identity, value)? {
             steps.push(PlanStep::WriteIndex {
                 address: index_address(index, new_keys, context.span)?,
                 identity: context.identity.to_vec(),
@@ -243,32 +243,44 @@ fn index_keys(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
     value: &ResourceValue,
-) -> Option<Vec<SavedKey>> {
+) -> Result<Option<Vec<SavedKey>>, WriteError> {
     let mut result = Vec::with_capacity(keys.len());
     for key in keys {
         match key.source {
             StoreIndexKeySource::IdentityKey => {
-                let position = place
+                let Some(position) = place
                     .identity_keys
                     .iter()
-                    .position(|identity_key| identity_key.name == key.name)?;
+                    .position(|identity_key| identity_key.name == key.name)
+                else {
+                    return Ok(None);
+                };
                 result.push(identity[position].clone());
             }
             StoreIndexKeySource::ResourceMember(_) => {
                 if let Some((_, saved)) = value.fields.iter().find(|(name, _)| name == &key.name) {
-                    result.push(saved.as_key()?);
+                    let Some(key) = saved.as_key()? else {
+                        return Ok(None);
+                    };
+                    result.push(key);
                 } else {
-                    let supplied = value
+                    let Some(supplied) = value
                         .identities
                         .iter()
-                        .find(|supplied| supplied.field == key.name)?;
+                        .find(|supplied| supplied.field == key.name)
+                    else {
+                        return Ok(None);
+                    };
                     let bytes = encode_identity_payload(&supplied.keys);
-                    result.push(key.value_meaning.stored_key(&bytes)?);
+                    let Some(key) = key.value_meaning.stored_key(&bytes) else {
+                        return Ok(None);
+                    };
+                    result.push(key);
                 }
             }
         }
     }
-    Some(result)
+    Ok(Some(result))
 }
 
 fn stored_arg_key(
@@ -357,7 +369,7 @@ enum FieldIndexValue<'a> {
 impl FieldIndexValue<'_> {
     fn key_for(self, key: &CheckedSavedIndexKey) -> Result<Option<SavedKey>, WriteError> {
         match self {
-            Self::Leaf(value) => Ok(value.as_key()),
+            Self::Leaf(value) => value.as_key().map_err(WriteError::from),
             Self::IdentityBytes(bytes) => stored_index_key(&key.value_meaning, bytes).map(Some),
         }
     }

@@ -2,8 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use marrow_catalog::{CatalogEntry, CatalogEntryKind};
 
-use crate::StoreLeafKind;
-use crate::program::CheckedProgram;
+use crate::{CheckedProgram, StoreLeafKind};
 
 /// Selectable member identities of each current enum, keyed by the enum id a
 /// [`StoreLeafKind::Enum`] leaf carries. A stored value is valid only when its decoded
@@ -141,6 +140,7 @@ fn is_member_path_of(path: &str, ancestor: &str) -> bool {
 /// redefinition hole: bytes that structurally decode but name a member the current enum no
 /// longer has are not a valid value, so they fail closed rather than decode silently.
 pub(super) fn leaf_value_valid(
+    program: &CheckedProgram,
     leaf: &StoreLeafKind,
     bytes: &[u8],
     enum_members: &EnumMembers,
@@ -151,8 +151,14 @@ pub(super) fn leaf_value_valid(
         }
         StoreLeafKind::Enum { enum_id } => marrow_store::tree::decode_tree_enum_member(bytes)
             .is_ok_and(|member| enum_members.contains(*enum_id, member.member_id().as_str())),
-        StoreLeafKind::Identity { arity, .. } => {
-            marrow_store::key::decode_identity_payload_arity(bytes, *arity).is_some()
+        StoreLeafKind::Identity { store_root, arity } => {
+            let Some(keys) = marrow_store::key::decode_identity_payload_arity(bytes, *arity) else {
+                return false;
+            };
+            program
+                .facts
+                .store_by_root(store_root)
+                .is_some_and(|store| store.identity_keys_match(&keys))
         }
     }
 }

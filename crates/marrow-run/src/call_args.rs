@@ -6,6 +6,7 @@ use marrow_schema::{KeyDef, Type};
 use marrow_store::Decimal;
 use marrow_store::key::SavedKey;
 use marrow_store::value::ScalarType;
+use marrow_store::value::scalar_key_matches_type;
 use marrow_syntax::SourceSpan;
 
 use crate::env::Env;
@@ -248,7 +249,7 @@ fn identity_keys_match(declared: &[KeyDef], keys: &[SavedKey]) -> bool {
             .iter()
             .zip(keys)
             .all(|(declared, key)| match declared.ty.scalar() {
-                Some(expected) => expected == key.scalar_type(),
+                Some(expected) => scalar_key_matches_type(key, expected),
                 None => true,
             })
 }

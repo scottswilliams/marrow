@@ -3,7 +3,7 @@
 use marrow_check::CheckedArg as ExecArg;
 use marrow_schema::stdlib;
 use marrow_store::Decimal;
-use marrow_store::value::{SavedValue, ScalarType, date_days, date_parts, decode_value};
+use marrow_store::value::{SavedValue, ScalarType, date_parts, decode_value, supported_date_days};
 use marrow_syntax::SourceSpan;
 
 use crate::base64;
@@ -772,9 +772,7 @@ fn eval_clock_date_part(
 }
 
 fn require_supported_date(days: i32, span: SourceSpan) -> Result<i32, RuntimeError> {
-    let min = date_days(1, 1, 1).expect("year 0001 lower date bound is valid");
-    let max = date_days(9999, 12, 31).expect("year 9999 upper date bound is valid");
-    if (min..=max).contains(&days) {
+    if supported_date_days(days) {
         Ok(days)
     } else {
         Err(temporal_overflow(span))

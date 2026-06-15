@@ -100,7 +100,7 @@ pub(crate) fn discharge(
         if classify_store_key_shape(program, place, &accepted_key_shapes, &mut acc)? {
             continue;
         }
-        discharge_root(store, place, &enum_members, &mut acc)?;
+        discharge_root(program, store, place, &enum_members, &mut acc)?;
     }
     absent_source::classify_absent_source_entries(program, store, &mut acc)?;
     discharge_transforms(program, store, &places, &enum_members, &mut acc)?;

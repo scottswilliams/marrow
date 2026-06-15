@@ -3,6 +3,7 @@ use std::ops::ControlFlow;
 use marrow_check::{CheckedExpr as ExecExpr, CheckedSavedLayer, CheckedSavedPlace};
 use marrow_store::key::SavedKey;
 use marrow_store::tree::IndexRangeBounds;
+use marrow_store::value::ScalarType;
 use marrow_syntax::SourceSpan;
 
 use crate::durable_read::{LayerEntryAddress, read_layer_entry, read_layer_entry_at};
@@ -11,7 +12,7 @@ use crate::error::{RuntimeError, unsupported};
 use crate::path::{lower, lower_keys};
 use crate::read::{
     first_data_child, first_data_child_in_range, is_key_range_expr, key_range_bounds,
-    next_data_child, next_data_child_in_range,
+    next_data_child, next_data_child_in_range, validate_scanned_child_key,
 };
 use crate::store::{DataAddress, LayerAddress};
 use crate::value::{Value, saved_key_to_value};
@@ -23,6 +24,7 @@ pub(super) struct ChildLayerScan {
     identity: Vec<SavedKey>,
     parent_layers: Vec<LayerAddress>,
     layer_facts: CheckedSavedLayer,
+    key_scalars: Vec<Option<ScalarType>>,
     exact_prefix: Vec<SavedKey>,
     range: Option<IndexRangeBounds>,
     address: DataAddress,
@@ -54,6 +56,11 @@ impl ChildLayerScan {
             identity: base_path.identity,
             parent_layers: base_path.layer_addresses,
             layer_facts: layer_facts.clone(),
+            key_scalars: layer_facts
+                .key_params
+                .iter()
+                .map(|param| param.scalar)
+                .collect(),
             exact_prefix,
             range,
             address,
@@ -105,7 +112,8 @@ impl ChildLayerScan {
         env: &mut Env<'_>,
         visit: &mut impl FnMut(SavedLoopRow, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
     ) -> Result<ControlFlow<Flow>, RuntimeError> {
-        let key_value = saved_key_to_value(key.clone());
+        validate_scanned_child_key(&self.key_scalars, self.exact_prefix.len(), &key, self.span)?;
+        let key_value = saved_key_to_value(key.clone(), self.span)?;
         match self.shape {
             LoopShape::Keys => visit(SavedLoopRow::Single(key_value), env),
             LoopShape::Values => {

@@ -1,14 +1,17 @@
 use marrow_check::{CheckedArg as ExecArg, CheckedExpr as ExecExpr, CheckedSavedPlace};
 use marrow_store::key::SavedKey;
+use marrow_store::value::{ScalarType, scalar_key_matches_type, validate_scalar_key};
 use marrow_syntax::SourceSpan;
 
 use crate::collection::Direction;
 use crate::env::Env;
-use crate::error::{RUN_ABSENT, RUN_TYPE, RuntimeError, raise_fault, unsupported};
+use crate::error::{
+    Located, RUN_ABSENT, RUN_TYPE, RuntimeError, raise_fault, type_error, unsupported,
+};
 use crate::path::{Terminal, direct_root_place, lower};
 use crate::read::{first_data_child, first_record_child, next_data_child, next_record_child};
 use crate::store::{DataAddress, catalog_id};
-use crate::value::{Value, identity_value, saved_key_to_value};
+use crate::value::{Value, identity_value, saved_key_to_value, validate_place_identity_keys};
 
 pub(crate) fn eval_neighbor(
     dir: Direction,
@@ -29,15 +32,17 @@ pub(crate) fn eval_neighbor(
         ));
     };
     let target = neighbor_target(&arg.value, env)?;
-    let identity_root = match &target {
-        NeighborTarget::Record { place, .. } => Some(place.root.clone()),
-        NeighborTarget::Data { .. } => None,
-    };
-    let neighbor = seek_neighbor(target, dir, span, env)?;
+    let neighbor = seek_neighbor(&target, dir, span, env)?;
     match neighbor {
-        Some(key) => match identity_root {
-            Some(root) => Ok(identity_value(&root, vec![key])),
-            None => Ok(saved_key_to_value(key)),
+        Some(key) => match &target {
+            NeighborTarget::Record { place, .. } => {
+                validate_place_identity_keys(place, std::slice::from_ref(&key), span)?;
+                Ok(identity_value(&place.root, vec![key]))
+            }
+            NeighborTarget::Data { expected_key, .. } => {
+                validate_data_key(*expected_key, &key, span)?;
+                saved_key_to_value(key, span)
+            }
         },
         None => {
             let edge = if dir == Direction::Ascending {
@@ -82,6 +87,12 @@ fn neighbor_target(expr: &ExecExpr, env: &mut Env<'_>) -> Result<NeighborTarget,
         return Err(unsupported("`next`/`prev` of this path", span));
     };
     let last_keys = last_keys.clone();
+    let expected_key = path
+        .place
+        .layers
+        .last()
+        .and_then(|layer| layer.key_params.first())
+        .and_then(|param| param.scalar);
     let mut parent_layers = path.layer_addresses;
     if let Some(last) = parent_layers.last_mut() {
         last.keys.clear();
@@ -91,10 +102,12 @@ fn neighbor_target(expr: &ExecExpr, env: &mut Env<'_>) -> Result<NeighborTarget,
         [] => Ok(NeighborTarget::Data {
             parent,
             anchor: None,
+            expected_key,
         }),
         [key] => Ok(NeighborTarget::Data {
             parent,
             anchor: Some(key.clone()),
+            expected_key,
         }),
         _ => Err(unsupported(
             "`next`/`prev` of a multi-key layer position (scope a single key level)",
@@ -111,11 +124,12 @@ enum NeighborTarget {
     Data {
         parent: DataAddress,
         anchor: Option<SavedKey>,
+        expected_key: Option<ScalarType>,
     },
 }
 
 fn seek_neighbor(
-    target: NeighborTarget,
+    target: &NeighborTarget,
     dir: Direction,
     span: SourceSpan,
     env: &Env<'_>,
@@ -131,16 +145,33 @@ fn seek_neighbor(
                     env.store,
                     &store,
                     &[],
-                    &key,
+                    key,
                     dir,
                     place.identity_keys.len(),
                     span,
                 ),
             }
         }
-        NeighborTarget::Data { parent, anchor } => match anchor {
-            None => first_data_child(env.store, &parent, dir, span),
-            Some(key) => next_data_child(env.store, &parent, &key, dir, span),
+        NeighborTarget::Data { parent, anchor, .. } => match anchor {
+            None => first_data_child(env.store, parent, dir, span),
+            Some(key) => next_data_child(env.store, parent, key, dir, span),
         },
     }
+}
+
+fn validate_data_key(
+    expected: Option<ScalarType>,
+    key: &SavedKey,
+    span: SourceSpan,
+) -> Result<(), RuntimeError> {
+    validate_scalar_key(key).map_err(|error| error.located(span))?;
+    if let Some(expected) = expected
+        && !scalar_key_matches_type(key, expected)
+    {
+        return Err(type_error(
+            "stored layer keys do not match the layer key type",
+            span,
+        ));
+    }
+    Ok(())
 }

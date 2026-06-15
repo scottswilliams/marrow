@@ -15,7 +15,10 @@ pub(crate) struct StorageDataQuery {
     pub(crate) store: CatalogId,
     pub(crate) identity: Vec<SavedKey>,
     pub(crate) identity_arity: usize,
+    pub(crate) identity_key_scalars: Vec<Option<crate::ScalarType>>,
     pub(crate) data_path: Vec<DataPathSegment>,
+    pub(crate) data_key_scalars: Vec<Option<crate::ScalarType>>,
+    pub(crate) data_key_prefix_len: usize,
 }
 
 pub fn resolve_data_query(
@@ -86,6 +89,9 @@ fn resolve_query_steps(
     }
 
     let mut data_path = Vec::new();
+    let identity_key_scalars = place.identity_keys.iter().map(|key| key.scalar).collect();
+    let mut data_key_scalars = Vec::new();
+    let mut data_key_prefix_len = 0usize;
     let mut members = place.root_members.as_slice();
     let mut leaf: Option<StoreLeafKind> = None;
     while let Some(segment) = rest.get(index) {
@@ -104,6 +110,8 @@ fn resolve_query_steps(
             return Ok(None);
         };
         data_path.push(DataPathSegment::Member(member_id));
+        data_key_scalars = member.key_params.iter().map(|param| param.scalar).collect();
+        data_key_prefix_len = 0;
         leaf = None;
         index += 1;
 
@@ -126,6 +134,7 @@ fn resolve_query_steps(
             data_path.push(DataPathSegment::Key(key.clone()));
             rendered_segments.push(DataQuerySegment::Key(key.clone()));
             key_count += 1;
+            data_key_prefix_len = key_count;
             index += 1;
         }
 
@@ -141,6 +150,8 @@ fn resolve_query_steps(
         members = match &member.kind {
             CheckedSavedMemberKind::Group => {
                 leaf = None;
+                data_key_scalars = Vec::new();
+                data_key_prefix_len = 0;
                 member.group_members.as_slice()
             }
             CheckedSavedMemberKind::Field { .. } => {
@@ -159,7 +170,10 @@ fn resolve_query_steps(
             store,
             identity,
             identity_arity: place.identity_keys.len(),
+            identity_key_scalars,
             data_path,
+            data_key_scalars,
+            data_key_prefix_len,
         },
     )))
 }

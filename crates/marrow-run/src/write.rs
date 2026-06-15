@@ -601,7 +601,7 @@ fn supplied_field(
         }
         return match supplied_value(value, field) {
             Some(saved) => {
-                let key = saved.as_key().ok_or_else(|| WriteError {
+                let key = saved.as_key()?.ok_or_else(|| WriteError {
                     code: WRITE_TYPE_MISMATCH,
                     message: format!(
                         "field `{field}` references `{store_root}`, but the value is not an identity"

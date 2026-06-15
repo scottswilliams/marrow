@@ -3,12 +3,13 @@ use std::ops::ControlFlow;
 use marrow_check::CheckedSavedPlace;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::IndexRangeBounds;
+use marrow_store::value::{ScalarType, scalar_key_matches_type, validate_scalar_key};
 use marrow_syntax::SourceSpan;
 
 use crate::collection::Direction;
 use crate::durable_read::read_resource;
 use crate::env::{Env, Flow, TraversedLayer};
-use crate::error::RuntimeError;
+use crate::error::{Located, RuntimeError, type_error};
 use crate::read::{
     KeyRangeAddress, RecordChildRange, collected_identity_value, first_record_child,
     first_record_child_in_range, next_record_child, next_record_child_in_range,
@@ -20,7 +21,7 @@ use super::{ChildCursor, LoopShape, SavedLoopRow, SavedLoopSpec, shape_row, walk
 pub(super) struct RootScan {
     place: CheckedSavedPlace,
     store: marrow_store::cell::CatalogId,
-    arity: usize,
+    key_scalars: Vec<Option<ScalarType>>,
     exact_prefix: Vec<SavedKey>,
     range: Option<IndexRangeBounds>,
     dir: Direction,
@@ -47,7 +48,7 @@ impl RootScan {
         Ok(Self {
             place: place.clone(),
             store: crate::store::catalog_id(&place.store_catalog_id, "store", spec.span)?,
-            arity,
+            key_scalars: place.identity_keys.iter().map(|key| key.scalar).collect(),
             exact_prefix: address.exact_prefix,
             range: address.range,
             dir: spec.dir,
@@ -67,10 +68,13 @@ impl RootScan {
         env: &mut Env<'_>,
         visit: &mut impl FnMut(SavedLoopRow, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
     ) -> Result<Flow, RuntimeError> {
-        let depth = self.arity.saturating_sub(self.exact_prefix.len());
+        let depth = self
+            .key_scalars
+            .len()
+            .saturating_sub(self.exact_prefix.len());
         let cursor = RecordCursor::new_bounded(
             &self.store,
-            self.arity,
+            self.key_scalars.clone(),
             self.dir,
             self.span,
             self.range.clone(),
@@ -98,7 +102,7 @@ impl RootScan {
                 .last()
                 .cloned()
                 .ok_or_else(|| crate::error::unsupported("iterating this saved path", self.span))?;
-            saved_key_to_value(component)
+            saved_key_to_value(component, self.span)?
         } else {
             collected_identity_value(&identity, Some(&self.place.root), self.span)?
         };
@@ -111,7 +115,7 @@ impl RootScan {
 
 pub(crate) struct RecordCursor<'a> {
     store: &'a marrow_store::cell::CatalogId,
-    arity: usize,
+    key_scalars: Vec<Option<ScalarType>>,
     dir: Direction,
     span: SourceSpan,
     range: Option<IndexRangeBounds>,
@@ -120,13 +124,13 @@ pub(crate) struct RecordCursor<'a> {
 impl<'a> RecordCursor<'a> {
     pub(crate) fn new(
         store: &'a marrow_store::cell::CatalogId,
-        arity: usize,
+        key_scalars: Vec<Option<ScalarType>>,
         dir: Direction,
         span: SourceSpan,
     ) -> Self {
         Self {
             store,
-            arity,
+            key_scalars,
             dir,
             span,
             range: None,
@@ -135,18 +139,35 @@ impl<'a> RecordCursor<'a> {
 
     pub(crate) fn new_bounded(
         store: &'a marrow_store::cell::CatalogId,
-        arity: usize,
+        key_scalars: Vec<Option<ScalarType>>,
         dir: Direction,
         span: SourceSpan,
         range: Option<IndexRangeBounds>,
     ) -> Self {
         Self {
             store,
-            arity,
+            key_scalars,
             dir,
             span,
             range,
         }
+    }
+
+    fn arity(&self) -> usize {
+        self.key_scalars.len()
+    }
+
+    fn validate_child(&self, prefix: &[SavedKey], key: &SavedKey) -> Result<(), RuntimeError> {
+        validate_scalar_key(key).map_err(|error| error.located(self.span))?;
+        if let Some(Some(expected)) = self.key_scalars.get(prefix.len())
+            && !scalar_key_matches_type(key, *expected)
+        {
+            return Err(type_error(
+                "stored identity keys do not match the store identity type",
+                self.span,
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -164,14 +185,29 @@ impl ChildCursor for RecordCursor<'_> {
                     prefix,
                     range,
                     dir: self.dir,
-                    arity: self.arity,
+                    arity: self.arity(),
                     span: self.span,
                 },
-            );
+            )
+            .and_then(|key| {
+                if let Some(key) = &key {
+                    self.validate_child(prefix, key)?;
+                }
+                Ok(key)
+            });
         }
-        first_record_child(
-            env.store, self.store, prefix, self.dir, self.arity, self.span,
-        )
+        let key = first_record_child(
+            env.store,
+            self.store,
+            prefix,
+            self.dir,
+            self.arity(),
+            self.span,
+        )?;
+        if let Some(key) = &key {
+            self.validate_child(prefix, key)?;
+        }
+        Ok(key)
     }
 
     fn next(
@@ -188,14 +224,30 @@ impl ChildCursor for RecordCursor<'_> {
                     prefix,
                     range,
                     dir: self.dir,
-                    arity: self.arity,
+                    arity: self.arity(),
                     span: self.span,
                 },
                 anchor,
-            );
+            )
+            .and_then(|key| {
+                if let Some(key) = &key {
+                    self.validate_child(prefix, key)?;
+                }
+                Ok(key)
+            });
         }
-        next_record_child(
-            env.store, self.store, prefix, anchor, self.dir, self.arity, self.span,
-        )
+        let key = next_record_child(
+            env.store,
+            self.store,
+            prefix,
+            anchor,
+            self.dir,
+            self.arity(),
+            self.span,
+        )?;
+        if let Some(key) = &key {
+            self.validate_child(prefix, key)?;
+        }
+        Ok(key)
     }
 }

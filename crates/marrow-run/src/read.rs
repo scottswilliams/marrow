@@ -7,6 +7,7 @@ use marrow_check::{
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, IndexEntry, IndexRangeBounds, TreeStore};
+use marrow_store::value::{ScalarType, scalar_key_matches_type, validate_scalar_key};
 use marrow_syntax::SourceSpan;
 
 use crate::collection::Direction;
@@ -287,7 +288,7 @@ fn lower_range_bound(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<SavedKey, RuntimeError> {
-    let key = value_to_key(eval_expr(expr, env)?)
+    let key = value_to_key(eval_expr(expr, env)?, span)?
         .ok_or_else(|| unsupported("a key of this type", span))?;
     guard_key_type(expected, &key, span)?;
     Ok(key)
@@ -313,7 +314,7 @@ pub(crate) fn count_iterable_layer(
             if address.range.is_some() {
                 let cursor = RecordCursor::new_bounded(
                     &store,
-                    arity,
+                    place.identity_keys.iter().map(|key| key.scalar).collect(),
                     Direction::Ascending,
                     path.span(),
                     address.range.clone(),
@@ -327,12 +328,18 @@ pub(crate) fn count_iterable_layer(
                     |_, _| Ok(1),
                 );
             }
-            count_record_identities(&store, arity, path.span(), env)
+            count_record_identities(place, &store, path.span(), env)
         }
         IterableLayer::Index(place, branch) => count_index_branch(place, &branch, path.span(), env),
         IterableLayer::ChildLayer => {
-            let address = child_layer_prefix_address(path, env)?;
-            crate::store::data_child_count(env.store, &address, path.span())
+            let prefix = child_layer_prefix_address(path, env)?;
+            validated_data_child_count(
+                env.store,
+                &prefix.address,
+                &prefix.key_scalars,
+                prefix.exact_key_count,
+                path.span(),
+            )
         }
     }
 }
@@ -367,23 +374,24 @@ pub(crate) fn iterable_index_branch_present(
 /// root walks the first `arity - 1` levels and folds the bulk child count of the
 /// final level into each walked prefix, avoiding a per-leaf descent.
 fn count_record_identities(
+    place: &CheckedSavedPlace,
     store: &CatalogId,
-    arity: usize,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<usize, RuntimeError> {
-    if arity <= 1 {
-        return env
-            .store
-            .record_child_count(store, &[])
-            .map_err(|error| error.located(span));
-    }
-    let cursor = RecordCursor::new(store, arity, Direction::Ascending, span);
-    count_keyed_children(&cursor, arity - 1, &[], env, span, |prefix, env| {
-        env.store
-            .record_child_count(store, prefix)
-            .map_err(|error| error.located(span))
-    })
+    let key_scalars: Vec<_> = place.identity_keys.iter().map(|key| key.scalar).collect();
+    let depth = key_scalars.len();
+    let cursor = RecordCursor::new(store, key_scalars, Direction::Ascending, span);
+    count_keyed_children(&cursor, depth, &[], env, span, |_, _| Ok(1))
+}
+
+pub(crate) fn root_identity_present(
+    place: &CheckedSavedPlace,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<bool, RuntimeError> {
+    let store = crate::store::catalog_id(&place.store_catalog_id, "store", span)?;
+    count_record_identities(place, &store, span, env).map(|count| count > 0)
 }
 
 fn count_index_branch(
@@ -585,10 +593,16 @@ fn validate_scanned_index_tuple_entries(
     Ok(())
 }
 
+pub(crate) struct ChildLayerPrefixAddress {
+    pub(crate) address: DataAddress,
+    pub(crate) key_scalars: Vec<Option<ScalarType>>,
+    pub(crate) exact_key_count: usize,
+}
+
 fn child_layer_prefix_address(
     path: &ExecExpr,
     env: &mut Env<'_>,
-) -> Result<DataAddress, RuntimeError> {
+) -> Result<ChildLayerPrefixAddress, RuntimeError> {
     let ExecExpr::Field { base, .. } = path else {
         return Err(unsupported("iterating this saved path", path.span()));
     };
@@ -602,7 +616,73 @@ fn child_layer_prefix_address(
     };
     let mut layers = base_path.layer_addresses;
     layers.push(LayerAddress::from_checked(layer_facts, Vec::new()));
-    DataAddress::layer_prefix(place, &base_path.identity, &layers, span)
+    let address = DataAddress::layer_prefix(place, &base_path.identity, &layers, span)?;
+    Ok(ChildLayerPrefixAddress {
+        address,
+        key_scalars: layer_facts
+            .key_params
+            .iter()
+            .map(|param| param.scalar)
+            .collect(),
+        exact_key_count: 0,
+    })
+}
+
+pub(crate) fn validated_data_layer_present(
+    store: &TreeStore,
+    address: &DataAddress,
+    key_params: &[CheckedSavedKeyParam],
+    exact_key_count: usize,
+    span: SourceSpan,
+) -> Result<bool, RuntimeError> {
+    let key_scalars: Vec<_> = key_params.iter().map(|param| param.scalar).collect();
+    let mut child = first_data_child(store, address, Direction::Ascending, span)?;
+    let mut present = false;
+    while let Some(key) = child {
+        validate_scanned_child_key(&key_scalars, exact_key_count, &key, span)?;
+        present = true;
+        child = next_data_child(store, address, &key, Direction::Ascending, span)?;
+    }
+    if present {
+        Ok(true)
+    } else {
+        crate::store::data_exists(store, address, span)
+    }
+}
+
+pub(crate) fn validated_data_child_count(
+    store: &TreeStore,
+    address: &DataAddress,
+    key_scalars: &[Option<ScalarType>],
+    exact_key_count: usize,
+    span: SourceSpan,
+) -> Result<usize, RuntimeError> {
+    let mut count = 0usize;
+    let mut child = first_data_child(store, address, Direction::Ascending, span)?;
+    while let Some(key) = child {
+        validate_scanned_child_key(key_scalars, exact_key_count, &key, span)?;
+        count = count.checked_add(1).ok_or_else(|| overflow(span))?;
+        child = next_data_child(store, address, &key, Direction::Ascending, span)?;
+    }
+    Ok(count)
+}
+
+pub(crate) fn validate_scanned_child_key(
+    key_scalars: &[Option<ScalarType>],
+    position: usize,
+    key: &SavedKey,
+    span: SourceSpan,
+) -> Result<(), RuntimeError> {
+    validate_scalar_key(key).map_err(|error| error.located(span))?;
+    if let Some(Some(expected)) = key_scalars.get(position)
+        && !scalar_key_matches_type(key, *expected)
+    {
+        return Err(type_error(
+            "stored layer keys do not match the layer key type",
+            span,
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn first_record_child(
@@ -889,7 +969,7 @@ pub(crate) fn collected_identity_value(
     let [key] = keys else {
         return Err(unsupported("iterating a composite non-identity key", span));
     };
-    Ok(saved_key_to_value(key.clone()))
+    saved_key_to_value(key.clone(), span)
 }
 
 /// Read a field of a local resource value, e.g. `book.shelf`. An unpopulated

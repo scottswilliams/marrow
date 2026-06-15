@@ -7,7 +7,7 @@ use crate::error::{RuntimeError, overflow, type_error, unsupported};
 use crate::expr::eval_expr;
 use crate::local_collection::local_collection_count;
 use crate::path::{Terminal, direct_root_place, lower, saved_path_present};
-use crate::read::{count_iterable_index_branch, count_iterable_layer};
+use crate::read::{count_iterable_index_branch, count_iterable_layer, validated_data_child_count};
 use crate::stdlib::exact_unique_index_lookup_value;
 use crate::store::{DataAddress, data_child_count, data_exists};
 use crate::value::Value;
@@ -52,12 +52,21 @@ pub(crate) fn eval_count(
     if let Some(entries) = count_iterable_index_branch(&arg.value, env)? {
         return Ok(Value::Int(usize_to_i64(entries, span)?));
     }
-    let address = count_address(&arg.value, span, env)?;
-    let children = data_child_count(env.store, &address, span)?;
+    let target = count_target(&arg.value, span, env)?;
+    let children = match &target.child_layer {
+        Some(child_layer) => validated_data_child_count(
+            env.store,
+            &target.address,
+            &child_layer.key_scalars,
+            child_layer.exact_key_count,
+            span,
+        )?,
+        None => data_child_count(env.store, &target.address, span)?,
+    };
     let count = if children > 0 {
         children
     } else {
-        data_exists(env.store, &address, span)? as usize
+        data_exists(env.store, &target.address, span)? as usize
     };
     Ok(Value::Int(count as i64))
 }
@@ -80,17 +89,37 @@ fn usize_to_i64(count: usize, span: SourceSpan) -> Result<i64, RuntimeError> {
     i64::try_from(count).map_err(|_| overflow(span))
 }
 
-fn count_address(
+struct CountTarget {
+    address: DataAddress,
+    child_layer: Option<CountChildLayer>,
+}
+
+struct CountChildLayer {
+    key_scalars: Vec<Option<marrow_store::value::ScalarType>>,
+    exact_key_count: usize,
+}
+
+fn count_target(
     expr: &ExecExpr,
     span: SourceSpan,
     env: &mut Env<'_>,
-) -> Result<DataAddress, RuntimeError> {
+) -> Result<CountTarget, RuntimeError> {
     let path = lower(expr, env)?;
-    match &path.terminal {
+    let mut child_layer = None;
+    let address = match &path.terminal {
         Terminal::Record => {
             if path.layer_addresses.is_empty() {
                 DataAddress::record(&path.place, &path.identity, span)
             } else {
+                if let (Some(layer), Some(layer_address)) =
+                    (path.place.layers.last(), path.layer_addresses.last())
+                    && layer_address.keys.len() < layer.key_params.len()
+                {
+                    child_layer = Some(CountChildLayer {
+                        key_scalars: layer.key_params.iter().map(|param| param.scalar).collect(),
+                        exact_key_count: layer_address.keys.len(),
+                    });
+                }
                 DataAddress::layer_prefix(&path.place, &path.identity, &path.layer_addresses, span)
             }
         }
@@ -102,5 +131,9 @@ fn count_address(
             span,
         ),
         Terminal::Index => Err(unsupported("counting this index path", span)),
-    }
+    }?;
+    Ok(CountTarget {
+        address,
+        child_layer,
+    })
 }

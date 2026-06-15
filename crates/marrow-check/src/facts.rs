@@ -7,7 +7,7 @@ use marrow_schema::stdlib::Capability;
 use marrow_schema::{NodeKind, ReturnPresence, ScalarType, Type};
 use marrow_store::key::{SavedKey, decode_identity_payload_arity, encode_identity_index_key};
 use marrow_store::tree::decode_tree_enum_member;
-use marrow_store::value::decode_value;
+use marrow_store::value::{decode_value, scalar_key_matches_type};
 use marrow_syntax::{ParsedSource, ResourceMember, SourceSpan, TypeRef};
 
 use crate::catalog::{
@@ -1225,7 +1225,7 @@ impl StoreFact {
         self.identity_keys.iter().zip(keys).all(|(expected, key)| {
             matches!(
                 expected.value_meaning,
-                Some(StoredValueMeaning::Scalar(scalar)) if scalar == key.scalar_type()
+                Some(StoredValueMeaning::Scalar(scalar)) if scalar_key_matches_type(key, scalar)
             )
         })
     }
@@ -1385,7 +1385,9 @@ impl StoredValueMeaning {
     /// decodes to a store-prefixed canonical identity component.
     pub fn stored_key(&self, bytes: &[u8]) -> Option<SavedKey> {
         match self {
-            Self::Scalar(scalar) => decode_value(bytes, *scalar).and_then(|value| value.as_key()),
+            Self::Scalar(scalar) => {
+                decode_value(bytes, *scalar).and_then(|value| value.as_key().ok().flatten())
+            }
             Self::Enum { .. } => decode_tree_enum_member(bytes)
                 .ok()
                 .map(|member| SavedKey::Str(member.member_id().as_str().to_string())),
@@ -1401,7 +1403,7 @@ impl StoredValueMeaning {
                     || !keys
                         .iter()
                         .zip(key_scalars)
-                        .all(|(key, scalar)| key.scalar_type() == *scalar)
+                        .all(|(key, scalar)| scalar_key_matches_type(key, *scalar))
                 {
                     return None;
                 }

@@ -454,7 +454,9 @@ fn decode_scalar(scalar: ScalarType, text: &str) -> Option<Value> {
 }
 
 fn scalar_key(scalar: ScalarType, text: &str) -> Option<SavedKey> {
-    value_to_key(decode_scalar(scalar, text)?)
+    value_to_key(decode_scalar(scalar, text)?, SourceSpan::default())
+        .ok()
+        .flatten()
 }
 
 fn eval_scalar_arg_expression(scalar: ScalarType, expression: &Expression) -> Option<Value> {

@@ -104,7 +104,9 @@ pub(crate) fn enumerate_local_collection_dir(
                     seen.push(key);
                 }
             }
-            seen.into_iter().map(saved_key_to_value).collect()
+            seen.into_iter()
+                .map(|key| saved_key_to_value(key, span))
+                .collect::<Result<_, _>>()?
         }
         _ => return Err(unsupported("keys over this value", span)),
     };
@@ -176,7 +178,8 @@ pub(crate) fn materialize_local_collection_dir(
                     .keys
                     .first()
                     .cloned()
-                    .map(saved_key_to_value)
+                    .map(|key| saved_key_to_value(key, span))
+                    .transpose()?
                     .ok_or_else(|| iterable_key_type_error(span))?;
                 Ok((key, entry.value))
             })
@@ -251,7 +254,7 @@ fn eval_local_keys(
     args.iter()
         .map(|arg| {
             reject_named_lookup_arg(arg, span)?;
-            value_to_key(eval_expr(&arg.value, env)?)
+            value_to_key(eval_expr(&arg.value, env)?, span)?
                 .ok_or_else(|| unsupported("a key of this type", span))
         })
         .collect()

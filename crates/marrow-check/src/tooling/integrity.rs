@@ -16,9 +16,10 @@ use crate::{
 };
 
 use super::data::{
-    DataRecord, checked_places, key_mismatch, push_key, render_data_path, tooling_catalog_id,
-    validate_member_path_node, validate_member_value_path, visit_data_records_in_places,
-    visit_data_records_in_places_until, visit_place_record_identities_until,
+    DataRecord, checked_places, push_key, render_data_path, stored_key_mismatch,
+    tooling_catalog_id, validate_member_path_node, validate_member_value_path,
+    visit_data_records_in_places, visit_data_records_in_places_until,
+    visit_place_record_identities_until,
 };
 
 const ORPHAN_INTEGRITY_HELP: &str =
@@ -488,7 +489,7 @@ fn visit_incomplete_records_in_places_until(
                 let ControlFlow::Continue(()) = visit_item()? else {
                     return Ok(ControlFlow::Break(()));
                 };
-                if identity_has_key_mismatch(place, identity) {
+                if identity_has_key_mismatch(place, identity)? {
                     return Ok(ControlFlow::Continue(()));
                 }
                 let context = CompletenessContext {
@@ -528,11 +529,16 @@ fn accepted_member_ids(program: &CheckedProgram) -> HashSet<&str> {
         .collect()
 }
 
-fn identity_has_key_mismatch(place: &CheckedSavedPlace, identity: &[SavedKey]) -> bool {
-    identity
-        .iter()
-        .enumerate()
-        .any(|(index, key)| key_mismatch(place.identity_keys[index].scalar, key).is_some())
+fn identity_has_key_mismatch(
+    place: &CheckedSavedPlace,
+    identity: &[SavedKey],
+) -> Result<bool, StoreError> {
+    for (index, key) in identity.iter().enumerate() {
+        if stored_key_mismatch(place.identity_keys[index].scalar, key)?.is_some() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 struct CompletenessContext<'a> {
@@ -657,7 +663,7 @@ fn visit_keyed_group_entries_until(
         .data_first_child(context.store_id, identity, parent_path)?;
     while let Some(key) = child {
         let next_after = key.clone();
-        if key_mismatch(member.key_params[key_index].scalar, &key).is_none() {
+        if stored_key_mismatch(member.key_params[key_index].scalar, &key)?.is_none() {
             let ControlFlow::Continue(()) = visit_item()? else {
                 return Ok(ControlFlow::Break(()));
             };

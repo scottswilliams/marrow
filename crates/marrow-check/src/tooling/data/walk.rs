@@ -10,7 +10,8 @@ use super::query_error::QueryError;
 use super::record_nav;
 use super::render::render_query_segments;
 use super::shape::{
-    cursor_names_value_path, path_can_match, query_segment_for_member, tooling_catalog_id,
+    cursor_names_value_path, path_can_match, query_segment_for_member, stored_key_mismatch,
+    tooling_catalog_id,
 };
 use super::{
     DataEntry, DataQuery, DataQuerySegment, DataWalkPage, DebugDataCursorPath, DebugDataPayload,
@@ -191,6 +192,7 @@ fn walk_member_keys(
         .data_first_child(walk.store_id, walk.identity, data_path)?;
     while let Some(key) = child {
         let anchor = key.clone();
+        stored_key_mismatch(member.key_params[key_index].scalar, &key)?;
         walk_member_key(walk, member, data_path, path, key_index, key)?;
         if walk.state.next_cursor_path.is_some() {
             break;
@@ -265,6 +267,7 @@ fn walk_member_keys_after(
         .data_next_child(walk.store_id, walk.identity, data_path, anchor)?;
     while let Some(key) = child {
         let anchor = key.clone();
+        stored_key_mismatch(member.key_params[key_index].scalar, &key)?;
         walk_member_key(walk, member, data_path, path, key_index, key)?;
         if walk.state.next_cursor_path.is_some() {
             break;
@@ -336,6 +339,7 @@ fn first_identity_under(
     else {
         return Ok(None);
     };
+    stored_key_mismatch(query.storage.identity_key_scalars[prefix.len()], &child)?;
     let mut identity = prefix.to_vec();
     identity.push(child);
     while identity.len() < query.storage.identity_arity {
@@ -348,6 +352,7 @@ fn first_identity_under(
         else {
             return Ok(None);
         };
+        stored_key_mismatch(query.storage.identity_key_scalars[identity.len()], &child)?;
         identity.push(child);
     }
     Ok(Some(identity))
@@ -368,6 +373,7 @@ fn next_identity_after(
             query.storage.identity_arity,
             anchor,
         )? {
+            stored_key_mismatch(query.storage.identity_key_scalars[level], &next)?;
             let mut candidate = prefix.to_vec();
             candidate.push(next);
             return first_identity_under(store, query, &candidate);

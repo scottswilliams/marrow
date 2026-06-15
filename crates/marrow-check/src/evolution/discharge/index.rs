@@ -4,6 +4,7 @@ use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::value::{ScalarType, scalar_key_matches_type, validate_scalar_key};
 
 use crate::evolution::witness::{DefaultValue, RepairReason, Verdict};
 use crate::executable::{CheckedSavedIndex, CheckedSavedPlace};
@@ -31,6 +32,7 @@ pub(super) struct UniqueIndexPlan {
 enum IndexKeyColumn {
     Identity {
         position: usize,
+        scalar: Option<ScalarType>,
     },
     Member {
         path: DataPathSegment,
@@ -88,7 +90,11 @@ fn index_key_columns(
                 else {
                     return Ok(None);
                 };
-                columns.push(IndexKeyColumn::Identity { position });
+                let scalar = match &key.value_meaning {
+                    StoredValueMeaning::Scalar(scalar) => Some(*scalar),
+                    StoredValueMeaning::Identity { .. } | StoredValueMeaning::Enum { .. } => None,
+                };
+                columns.push(IndexKeyColumn::Identity { position, scalar });
             }
             StoreIndexKeySource::ResourceMember(_) => {
                 let Some(member) = place
@@ -129,10 +135,11 @@ pub(super) fn prospective_index_key(
     let mut tuple = Vec::with_capacity(probe.columns.len());
     for column in &probe.columns {
         match column {
-            IndexKeyColumn::Identity { position } => {
+            IndexKeyColumn::Identity { position, scalar } => {
                 let Some(key) = identity.get(*position) else {
                     return Ok(ProspectiveIndexKey::Absent);
                 };
+                validate_identity_column_key(*scalar, key)?;
                 tuple.push(key.clone());
             }
             IndexKeyColumn::Member {
@@ -156,6 +163,23 @@ pub(super) fn prospective_index_key(
         }
     }
     Ok(ProspectiveIndexKey::Present(tuple))
+}
+
+fn validate_identity_column_key(
+    expected: Option<ScalarType>,
+    key: &SavedKey,
+) -> Result<(), StoreError> {
+    validate_scalar_key(key).map_err(|error| StoreError::Corruption {
+        message: error.to_string(),
+    })?;
+    if let Some(expected) = expected
+        && !scalar_key_matches_type(key, expected)
+    {
+        return Err(StoreError::Corruption {
+            message: "stored index identity key does not match checked key type".to_string(),
+        });
+    }
+    Ok(())
 }
 
 pub(super) enum ProspectiveIndexKey {

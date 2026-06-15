@@ -2,8 +2,12 @@
 //! bytes are rejected.
 
 use marrow_store::Decimal;
+use marrow_store::key::SavedKey;
 use marrow_store::value::{
-    SavedValue, ScalarType, ValueError, date_days, decode_value, encode_value,
+    SUPPORTED_DATE_MAX_DAYS, SUPPORTED_DATE_MIN_DAYS, SUPPORTED_INSTANT_MAX_NANOS,
+    SUPPORTED_INSTANT_MIN_NANOS, SavedValue, Scalar, ScalarType, ValueError, date_days,
+    decode_value, encode_value, scalar_key_matches_type, supported_date_days,
+    supported_instant_nanos, validate_scalar_key,
 };
 
 fn round_trips(value: SavedValue, ty: ScalarType) {
@@ -250,11 +254,6 @@ fn saved_decimal_encoding_matches_the_shared_decimal_codec() {
     }
 }
 
-// One day before year 0001-01-01 and one day after year 9999-12-31: the canonical
-// range's outer neighbors, used to prove encode rejects exactly what decode does.
-const DAY_BEFORE_YEAR_ONE: i32 = -719163; // 0000-12-31
-const DAY_AFTER_YEAR_9999: i32 = 2932897; // 10000-01-01
-
 #[test]
 fn date_encode_enforces_the_canonical_year_range() {
     // The documented range encodes and round-trips at both ends.
@@ -268,7 +267,12 @@ fn date_encode_enforces_the_canonical_year_range() {
     }
     // A day just outside the range, and the i32 extremes, are a typed range error
     // rather than a 5-7 digit year that decode could never read back.
-    for days in [DAY_BEFORE_YEAR_ONE, DAY_AFTER_YEAR_9999, i32::MIN, i32::MAX] {
+    for days in [
+        SUPPORTED_DATE_MIN_DAYS - 1,
+        SUPPORTED_DATE_MAX_DAYS + 1,
+        i32::MIN,
+        i32::MAX,
+    ] {
         assert_eq!(
             encode_value(&SavedValue::Date(days)),
             Err(ValueError::DateOutOfRange { days }),
@@ -279,7 +283,6 @@ fn date_encode_enforces_the_canonical_year_range() {
 
 #[test]
 fn instant_encode_enforces_the_canonical_year_range() {
-    const NANOS_PER_DAY: i128 = 86_400 * 1_000_000_000;
     // The documented range encodes and round-trips at both ends.
     for text in ["0001-01-01T00:00:00Z", "9999-12-31T23:59:59.999999999Z"] {
         let value = decode_value(text.as_bytes(), ScalarType::Instant).expect("valid instant");
@@ -288,8 +291,8 @@ fn instant_encode_enforces_the_canonical_year_range() {
     // An instant whose calendar day falls outside year 0001-9999 is a typed range
     // error, matching the date boundary; i128 extremes are rejected too.
     for nanos in [
-        i128::from(DAY_BEFORE_YEAR_ONE) * NANOS_PER_DAY,
-        i128::from(DAY_AFTER_YEAR_9999) * NANOS_PER_DAY,
+        SUPPORTED_INSTANT_MIN_NANOS - 1,
+        SUPPORTED_INSTANT_MAX_NANOS + 1,
         i128::MIN,
         i128::MAX,
     ] {
@@ -301,4 +304,118 @@ fn instant_encode_enforces_the_canonical_year_range() {
             "out-of-range instant {nanos} must be a typed error"
         );
     }
+}
+
+#[test]
+fn temporal_codec_constants_match_supported_boundaries() {
+    assert_eq!(SUPPORTED_DATE_MIN_DAYS, date_days(1, 1, 1).unwrap());
+    assert_eq!(SUPPORTED_DATE_MAX_DAYS, date_days(9999, 12, 31).unwrap());
+    assert!(supported_date_days(SUPPORTED_DATE_MIN_DAYS));
+    assert!(supported_date_days(SUPPORTED_DATE_MAX_DAYS));
+    assert!(!supported_date_days(SUPPORTED_DATE_MIN_DAYS - 1));
+    assert!(!supported_date_days(SUPPORTED_DATE_MAX_DAYS + 1));
+
+    assert_eq!(
+        decode_value(b"0001-01-01T00:00:00Z", ScalarType::Instant),
+        Some(SavedValue::Instant(SUPPORTED_INSTANT_MIN_NANOS))
+    );
+    assert_eq!(
+        decode_value(b"9999-12-31T23:59:59.999999999Z", ScalarType::Instant),
+        Some(SavedValue::Instant(SUPPORTED_INSTANT_MAX_NANOS))
+    );
+    assert!(supported_instant_nanos(SUPPORTED_INSTANT_MIN_NANOS));
+    assert!(supported_instant_nanos(SUPPORTED_INSTANT_MAX_NANOS));
+    assert!(!supported_instant_nanos(SUPPORTED_INSTANT_MIN_NANOS - 1));
+    assert!(!supported_instant_nanos(SUPPORTED_INSTANT_MAX_NANOS + 1));
+}
+
+#[test]
+fn scalar_key_validation_rejects_temporal_key_neighbors() {
+    for key in [
+        SavedKey::Date(SUPPORTED_DATE_MIN_DAYS),
+        SavedKey::Date(SUPPORTED_DATE_MAX_DAYS),
+        SavedKey::Instant(SUPPORTED_INSTANT_MIN_NANOS),
+        SavedKey::Instant(SUPPORTED_INSTANT_MAX_NANOS),
+        SavedKey::Duration(i128::MIN),
+        SavedKey::Duration(i128::MAX),
+    ] {
+        validate_scalar_key(&key).expect("supported scalar key");
+    }
+
+    assert_eq!(
+        validate_scalar_key(&SavedKey::Date(SUPPORTED_DATE_MIN_DAYS - 1)),
+        Err(ValueError::DateOutOfRange {
+            days: SUPPORTED_DATE_MIN_DAYS - 1
+        })
+    );
+    assert_eq!(
+        validate_scalar_key(&SavedKey::Date(SUPPORTED_DATE_MAX_DAYS + 1)),
+        Err(ValueError::DateOutOfRange {
+            days: SUPPORTED_DATE_MAX_DAYS + 1
+        })
+    );
+    assert_eq!(
+        validate_scalar_key(&SavedKey::Instant(SUPPORTED_INSTANT_MIN_NANOS - 1)),
+        Err(ValueError::InstantOutOfRange {
+            nanos: SUPPORTED_INSTANT_MIN_NANOS - 1
+        })
+    );
+    assert_eq!(
+        validate_scalar_key(&SavedKey::Instant(SUPPORTED_INSTANT_MAX_NANOS + 1)),
+        Err(ValueError::InstantOutOfRange {
+            nanos: SUPPORTED_INSTANT_MAX_NANOS + 1
+        })
+    );
+}
+
+#[test]
+fn scalar_key_type_match_validates_temporal_ranges() {
+    assert!(scalar_key_matches_type(
+        &SavedKey::Date(SUPPORTED_DATE_MIN_DAYS),
+        ScalarType::Date
+    ));
+    assert!(!scalar_key_matches_type(
+        &SavedKey::Date(SUPPORTED_DATE_MIN_DAYS - 1),
+        ScalarType::Date
+    ));
+    assert!(!scalar_key_matches_type(
+        &SavedKey::Date(SUPPORTED_DATE_MIN_DAYS),
+        ScalarType::Int
+    ));
+    assert!(scalar_key_matches_type(
+        &SavedKey::Instant(SUPPORTED_INSTANT_MAX_NANOS),
+        ScalarType::Instant
+    ));
+    assert!(!scalar_key_matches_type(
+        &SavedKey::Instant(SUPPORTED_INSTANT_MAX_NANOS + 1),
+        ScalarType::Instant
+    ));
+}
+
+#[test]
+fn scalar_key_projection_validates_temporal_ranges() {
+    assert_eq!(
+        Scalar::Date(SUPPORTED_DATE_MIN_DAYS).as_key(),
+        Ok(Some(SavedKey::Date(SUPPORTED_DATE_MIN_DAYS)))
+    );
+    assert_eq!(
+        Scalar::Date(SUPPORTED_DATE_MIN_DAYS - 1).as_key(),
+        Err(ValueError::DateOutOfRange {
+            days: SUPPORTED_DATE_MIN_DAYS - 1
+        })
+    );
+    assert_eq!(
+        Scalar::Instant(SUPPORTED_INSTANT_MAX_NANOS).as_key(),
+        Ok(Some(SavedKey::Instant(SUPPORTED_INSTANT_MAX_NANOS)))
+    );
+    assert_eq!(
+        Scalar::Instant(SUPPORTED_INSTANT_MAX_NANOS + 1).as_key(),
+        Err(ValueError::InstantOutOfRange {
+            nanos: SUPPORTED_INSTANT_MAX_NANOS + 1
+        })
+    );
+    assert_eq!(
+        Scalar::Decimal(Decimal::parse("1.5").unwrap()).as_key(),
+        Ok(None)
+    );
 }

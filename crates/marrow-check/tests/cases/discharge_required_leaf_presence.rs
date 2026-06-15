@@ -2,9 +2,10 @@ use crate::support;
 use crate::support_discharge;
 use marrow_catalog::CatalogEntryKind;
 use marrow_check::evolution::{RepairDiagnostic, RepairReason, Verdict, preview};
+use marrow_store::StoreError;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
-use marrow_store::value::Scalar;
+use marrow_store::value::{SUPPORTED_DATE_MIN_DAYS, Scalar};
 
 use support::catalog::write_catalog;
 use support::{temp_project, write};
@@ -115,6 +116,42 @@ fn required_keyed_layer_leaf_missing_fails_closed() {
             .any(|id| id.as_str() == body_id),
         "{:#?}",
         result.changed_root_catalog_ids
+    );
+}
+
+#[test]
+fn malformed_temporal_keyed_layer_entry_faults_discharge() {
+    let root = temp_project("discharge-keyed-malformed-date", |root| {
+        write(
+            root,
+            "src/policies.mw",
+            "module policies\n\
+             resource Policy\n\
+             \x20   versions(day: date)\n\
+             \x20       required body: string\n\
+             store ^policies(id: int): Policy\n\
+             pub fn add(): Id(^policies)\n\
+             \x20   return nextId(^policies)\n",
+        );
+    });
+    let program = commit_then_check(&root);
+    let place = root_place(&program, "policies");
+    let store = TreeStore::memory();
+    let seed = Seed::new(&store, &place);
+    seed.record(1);
+    seed.keyed_member(
+        1,
+        "versions",
+        SavedKey::Date(SUPPORTED_DATE_MIN_DAYS - 1),
+        "body",
+        Scalar::Str("bad".into()),
+    );
+
+    let err = preview(&program, &store).expect_err("malformed date key must fault discharge");
+
+    assert!(
+        matches!(err, StoreError::Corruption { ref message } if message.contains("date day")),
+        "{err:?}"
     );
 }
 

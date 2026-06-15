@@ -8,6 +8,7 @@ use marrow_check::{
     CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace, checked_place_store_id,
 };
 use marrow_store::cell::CatalogId;
+use marrow_store::value::ScalarType;
 
 use super::apply::ApplyError;
 
@@ -31,7 +32,10 @@ pub(super) struct MemberLocation {
 
 pub(super) enum PathStep {
     Member(CatalogId),
-    Layer(CatalogId),
+    Layer {
+        id: CatalogId,
+        key_scalars: Vec<Option<ScalarType>>,
+    },
 }
 
 fn locate_in(
@@ -48,7 +52,10 @@ fn locate_in(
         };
         let keyed = !member.key_params.is_empty();
         let step = if keyed {
-            PathStep::Layer(member_id.clone())
+            PathStep::Layer {
+                id: member_id.clone(),
+                key_scalars: member.key_params.iter().map(|param| param.scalar).collect(),
+            }
         } else {
             PathStep::Member(member_id.clone())
         };

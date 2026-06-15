@@ -8,7 +8,7 @@ use marrow_check::{
     CheckedUnaryOp as UnaryOp,
 };
 use marrow_store::Decimal;
-use marrow_store::value::{NANOS_PER_DAY, date_days};
+use marrow_store::value::supported_instant_nanos;
 use marrow_syntax::{
     SourceSpan, StringLiteralError, decode_string_escapes, decode_string_literal,
     duration_unit_seconds,
@@ -478,11 +478,7 @@ fn instant_result(result: Option<i128>, span: SourceSpan) -> Result<Value, Runti
 }
 
 fn instant_in_saved_range(nanos: i128) -> bool {
-    let min_day = date_days(1, 1, 1).expect("year 0001-01-01 is in the saved instant range");
-    let max_day = date_days(9999, 12, 31).expect("year 9999-12-31 is in the saved instant range");
-    let min = i128::from(min_day) * NANOS_PER_DAY;
-    let max = i128::from(max_day) * NANOS_PER_DAY + (NANOS_PER_DAY - 1);
-    (min..=max).contains(&nanos)
+    supported_instant_nanos(nanos)
 }
 
 /// The checker rejects mixed int/decimal operands, so a mismatch here is

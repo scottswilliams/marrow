@@ -10,13 +10,14 @@ use crate::evolution::witness::{RepairReason, Verdict};
 use crate::executable::{
     CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace, for_each_place_record,
 };
+use crate::program::CheckedProgram;
 
 use super::enum_shrink::{EnumMembers, leaf_value_valid};
 use super::index::{
     IndexScan, ProspectiveIndexKey, UniqueIndexPlan, classify_indexes, prospective_index_key,
     unique_index_plan,
 };
-use super::structural_backstop::for_each_entry_key;
+use super::structural_backstop::for_each_entry_path;
 use super::{
     Accumulator, MAX_NAMED_RECORDS, catalog_id, member_label, missing_member_message,
     required_catalog_id,
@@ -26,6 +27,7 @@ use super::{
 /// streaming scan visits each record once, probing every required leaf and deriving every
 /// prospective unique-index key tuple; the verdicts fall out of the accumulated state.
 pub(super) fn discharge_root(
+    program: &CheckedProgram,
     store: &TreeStore,
     place: &CheckedSavedPlace,
     enum_members: &EnumMembers,
@@ -61,7 +63,13 @@ pub(super) fn discharge_root(
                 continue;
             }
             let bytes = store.read_data_value(&store_id, identity, &leaf.path)?;
-            state.record_read(bytes.as_deref(), leaf.leaf.as_ref(), enum_members, identity);
+            state.record_read(
+                program,
+                bytes.as_deref(),
+                leaf.leaf.as_ref(),
+                enum_members,
+                identity,
+            );
         }
         for ((probe, state), invalid_count) in unique_indexes
             .iter()
@@ -94,7 +102,7 @@ pub(super) fn discharge_root(
         .zip(index_state)
         .collect();
     classify_indexes(place, &collisions, &unprobeable, &invalid_values, acc)?;
-    discharge_keyed_layers(store, place, enum_members, acc)?;
+    discharge_keyed_layers(store, program, place, enum_members, acc)?;
     Ok(())
 }
 
@@ -317,6 +325,7 @@ fn emit_disappeared_leaf(
 /// classifies each leaf from the accumulated per-entry counts exactly as an unkeyed leaf is.
 fn discharge_keyed_layers(
     store: &TreeStore,
+    program: &CheckedProgram,
     place: &CheckedSavedPlace,
     enum_members: &EnumMembers,
     acc: &mut Accumulator,
@@ -338,6 +347,7 @@ fn discharge_keyed_layers(
         store_id: &store_id,
         obligations: &per_entry,
         enum_members,
+        program,
         state: HashMap::new(),
     };
     let mut flat_state: Vec<LeafScan> = flat_retyped.iter().map(|_| LeafScan::default()).collect();
@@ -368,6 +378,7 @@ struct KeyedScan<'a> {
     store_id: &'a CatalogId,
     obligations: &'a [LeafObligation],
     enum_members: &'a EnumMembers,
+    program: &'a CheckedProgram,
     state: HashMap<CatalogId, LeafScan>,
 }
 
@@ -394,19 +405,26 @@ impl KeyedScan<'_> {
                 // recurses into each entry; a keyed leaf holds its value directly under the
                 // entry key, recorded against the member's obligation.
                 let (store, store_id) = (self.store, self.store_id);
-                for_each_entry_key(store, store_id, identity, &member_path, |entry_key| {
-                    let mut entry_path = member_path.clone();
-                    entry_path.push(DataPathSegment::Key(entry_key.clone()));
-                    match &member.kind {
-                        CheckedSavedMemberKind::Group => {
-                            self.descend(identity, &member.group_members, &entry_path)?;
+                let key_scalars: Vec<_> =
+                    member.key_params.iter().map(|param| param.scalar).collect();
+                for_each_entry_path(
+                    store,
+                    store_id,
+                    identity,
+                    &member_path,
+                    &key_scalars,
+                    |entry_path| {
+                        match &member.kind {
+                            CheckedSavedMemberKind::Group => {
+                                self.descend(identity, &member.group_members, entry_path)?;
+                            }
+                            CheckedSavedMemberKind::Field { .. } => {
+                                self.record_leaf(&member_id, identity, entry_path)?;
+                            }
                         }
-                        CheckedSavedMemberKind::Field { .. } => {
-                            self.record_leaf(&member_id, identity, &entry_path)?;
-                        }
-                    }
-                    Ok(false)
-                })?;
+                        Ok(false)
+                    },
+                )?;
                 continue;
             }
             match &member.kind {
@@ -440,7 +458,13 @@ impl KeyedScan<'_> {
         let bytes = self
             .store
             .read_data_value(self.store_id, identity, member_path)?;
-        entry.record_read(bytes.as_deref(), leaf.as_ref(), self.enum_members, identity);
+        entry.record_read(
+            self.program,
+            bytes.as_deref(),
+            leaf.as_ref(),
+            self.enum_members,
+            identity,
+        );
         Ok(())
     }
 }
@@ -558,6 +582,7 @@ impl LeafScan {
     /// treats any stored cell as present so the retype check sees its old bytes; absent is missing.
     fn record_read(
         &mut self,
+        program: &CheckedProgram,
         bytes: Option<&[u8]>,
         leaf: Option<&StoreLeafKind>,
         enum_members: &EnumMembers,
@@ -565,7 +590,7 @@ impl LeafScan {
     ) {
         match (bytes, leaf) {
             (None, _) => self.record_missing(identity),
-            (Some(bytes), Some(leaf)) if leaf_value_valid(leaf, bytes, enum_members) => {
+            (Some(bytes), Some(leaf)) if leaf_value_valid(program, leaf, bytes, enum_members) => {
                 self.record_present()
             }
             (Some(_), Some(_)) => self.record_invalid(identity),

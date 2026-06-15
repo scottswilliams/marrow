@@ -13,6 +13,7 @@ use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::value::{ScalarType, scalar_key_matches_type, validate_scalar_key};
 
 use crate::index_maintenance::{EmptyStagedData, index_rebuild_entry_with_staged};
 use crate::write_plan::PlanStep;
@@ -286,44 +287,91 @@ pub(super) fn visit_member_cell_paths<F>(
 where
     F: FnMut(&[DataPathSegment]) -> Result<(), StoreError>,
 {
-    descend(store, store_id, identity, &mut Vec::new(), steps, visit)
+    CellPathVisitor {
+        store,
+        store_id,
+        identity,
+        visit,
+    }
+    .descend(&mut Vec::new(), steps)
 }
 
-fn descend<F>(
-    store: &TreeStore,
-    store_id: &CatalogId,
-    identity: &[SavedKey],
-    prefix: &mut Vec<DataPathSegment>,
-    steps: &[PathStep],
-    visit: &mut F,
-) -> Result<(), StoreError>
+struct CellPathVisitor<'a, F> {
+    store: &'a TreeStore,
+    store_id: &'a CatalogId,
+    identity: &'a [SavedKey],
+    visit: &'a mut F,
+}
+
+impl<F> CellPathVisitor<'_, F>
 where
     F: FnMut(&[DataPathSegment]) -> Result<(), StoreError>,
 {
-    let Some((step, rest)) = steps.split_first() else {
-        return visit(prefix);
-    };
-    match step {
-        PathStep::Member(id) => {
-            prefix.push(DataPathSegment::Member(id.clone()));
-            descend(store, store_id, identity, prefix, rest, visit)?;
-            prefix.pop();
-        }
-        PathStep::Layer(id) => {
-            prefix.push(DataPathSegment::Member(id.clone()));
-            let mut child = store.data_first_child(store_id, identity, prefix)?;
-            while let Some(entry_key) = child {
-                prefix.push(DataPathSegment::Key(entry_key));
-                descend(store, store_id, identity, prefix, rest, visit)?;
-                let Some(DataPathSegment::Key(entry_key)) = prefix.pop() else {
-                    return Err(StoreError::Corruption {
-                        message: "evolution default traversal lost its keyed cursor".to_string(),
-                    });
-                };
-                child = store.data_next_child(store_id, identity, prefix, &entry_key)?;
+    fn descend(
+        &mut self,
+        prefix: &mut Vec<DataPathSegment>,
+        steps: &[PathStep],
+    ) -> Result<(), StoreError> {
+        let Some((step, rest)) = steps.split_first() else {
+            return (self.visit)(prefix);
+        };
+        match step {
+            PathStep::Member(id) => {
+                prefix.push(DataPathSegment::Member(id.clone()));
+                self.descend(prefix, rest)?;
+                prefix.pop();
             }
-            prefix.pop();
+            PathStep::Layer { id, key_scalars } => {
+                prefix.push(DataPathSegment::Member(id.clone()));
+                self.descend_layer_keys(prefix, key_scalars, 0, rest)?;
+                prefix.pop();
+            }
         }
+        Ok(())
+    }
+
+    fn descend_layer_keys(
+        &mut self,
+        prefix: &mut Vec<DataPathSegment>,
+        key_scalars: &[Option<ScalarType>],
+        key_index: usize,
+        rest: &[PathStep],
+    ) -> Result<(), StoreError> {
+        if key_index == key_scalars.len() {
+            return self.descend(prefix, rest);
+        }
+        let mut child = self
+            .store
+            .data_first_child(self.store_id, self.identity, prefix)?;
+        while let Some(entry_key) = child {
+            validate_entry_key(key_scalars[key_index], &entry_key)?;
+            prefix.push(DataPathSegment::Key(entry_key));
+            let Some(DataPathSegment::Key(entry_key)) = prefix.last() else {
+                return Err(StoreError::Corruption {
+                    message: "evolution default traversal lost its keyed cursor".to_string(),
+                });
+            };
+            let next_after = entry_key.clone();
+            self.descend_layer_keys(prefix, key_scalars, key_index + 1, rest)?;
+            prefix.pop();
+            child =
+                self.store
+                    .data_next_child(self.store_id, self.identity, prefix, &next_after)?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_entry_key(expected: Option<ScalarType>, key: &SavedKey) -> Result<(), StoreError> {
+    validate_scalar_key(key).map_err(|error| StoreError::Corruption {
+        message: error.to_string(),
+    })?;
+    if let Some(expected) = expected
+        && !scalar_key_matches_type(key, expected)
+    {
+        return Err(StoreError::Corruption {
+            message: "stored keyed-layer entry key does not match checked key type".to_string(),
+        });
     }
     Ok(())
 }
