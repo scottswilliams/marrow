@@ -536,9 +536,10 @@ fn an_unknown_op_in_a_closed_pure_module_is_flagged_at_check() {
         "check.unresolved_call",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
-    assert!(
-        found[0].message.contains("std::math::bogus"),
-        "the diagnostic must name the unknown op: {found:#?}"
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::UnresolvedCall("std::math::bogus".into()),
+        "{found:#?}"
     );
 }
 
@@ -606,8 +607,9 @@ fn an_unknown_op_in_a_host_module_is_flagged_at_check() {
         "check.unresolved_call",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
-    assert!(
-        found[0].message.contains("std::io::frobnicate"),
-        "the diagnostic must name the unknown op: {found:#?}"
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::UnresolvedCall("std::io::frobnicate".into()),
+        "{found:#?}"
     );
 }
