@@ -818,9 +818,6 @@ fn data_record_count_counts_distinct_record_identities() {
     let store = TreeStore::memory();
 
     store
-        .write_node(&settings, &[])
-        .expect("write settings node");
-    store
         .write_data_value(
             &settings,
             &[],

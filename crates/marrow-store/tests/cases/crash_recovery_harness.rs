@@ -29,7 +29,6 @@ fn write_generation(path: &Path, generation: u8) {
     let books = catalog_id("1111111111111111");
     for id in 0..RECORDS {
         let identity = [SavedKey::Int(id)];
-        store.write_node(&books, &identity).expect("write node");
         store
             .write_data_value(
                 &books,
@@ -92,9 +91,6 @@ fn run_child() {
     let books = catalog_id("1111111111111111");
     for id in 0..RECORDS {
         let identity = [SavedKey::Int(id)];
-        store
-            .write_node(&books, &identity)
-            .expect("child write node");
         store
             .write_data_value(
                 &books,
