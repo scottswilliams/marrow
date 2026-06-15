@@ -583,6 +583,9 @@ pub fn matrix_shape(): string
     const m: string = std::matrix::parse("[1,2;3,4]")
     return $"{std::matrix::rows(m)}x{std::matrix::cols(m)}"
 
+pub fn matrix_identity(): string
+    return std::matrix::identity(3)
+
 pub fn matrix_get(): string
     return string(std::matrix::get(std::matrix::parse("[1,2;3.5,4]"), 1, 0))
 
@@ -607,6 +610,10 @@ pub fn matrix_bad(): string
     assert_eq!(
         run(checked_entry!(&program, "test::matrix_shape")).unwrap(),
         Some(Value::Str("2x2".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::matrix_identity")).unwrap(),
+        Some(Value::Str("[1,0,0;0,1,0;0,0,1]".into()))
     );
     assert_eq!(
         run(checked_entry!(&program, "test::matrix_get")).unwrap(),

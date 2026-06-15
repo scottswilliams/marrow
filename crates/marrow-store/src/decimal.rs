@@ -45,6 +45,12 @@ impl Decimal {
         scale: 0,
     };
 
+    /// The value one (`coefficient 1`, `scale 0`).
+    pub const ONE: Decimal = Decimal {
+        coefficient: 1,
+        scale: 0,
+    };
+
     /// Largest supported fractional scale.
     pub const MAX_SCALE: u32 = MAX_DIGITS;
 

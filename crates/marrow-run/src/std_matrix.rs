@@ -33,9 +33,8 @@ pub(crate) fn eval_matrix(
             };
             let size = dimension(eval_int(&size.value, env)?, span)?;
             let mut rows = vec![vec![Decimal::ZERO; size]; size];
-            let one = Decimal::from_parts(1, 0).expect("one is in the decimal envelope");
             for (index, row) in rows.iter_mut().enumerate() {
-                row[index] = one;
+                row[index] = Decimal::ONE;
             }
             Ok(Value::Str(ParsedMatrix { rows }.render()))
         }
