@@ -60,68 +60,66 @@ impl SavedPath {
     /// unpopulated element raises a fatal absent-element fault. Read-site
     /// resolution probes presence before calling this fixed-address read.
     pub(crate) fn read(&self, span: SourceSpan, env: &mut Env<'_>) -> Result<Value, RuntimeError> {
-        let Terminal::Field {
-            name: field,
-            catalog_id,
-            leaf,
-        } = &self.terminal
-        else {
-            return match self.terminal {
-                Terminal::Record if self.layer_addresses.is_empty() => {
-                    read_resource(&self.place, &self.identity, span, env)
-                }
-                Terminal::Record => {
-                    let Some(layer_facts) = self.place.layers.last() else {
-                        return Err(unsupported("reading this saved path", span));
+        match &self.terminal {
+            Terminal::Record if self.layer_addresses.is_empty() => {
+                read_resource(&self.place, &self.identity, span, env)
+            }
+            Terminal::Record => {
+                let Some(layer_facts) = self.place.layers.last() else {
+                    return Err(unsupported("reading this saved path", span));
+                };
+                read_layer_entry_at(
+                    LayerEntryAddress {
+                        place: &self.place,
+                        identity: &self.identity,
+                        layers: &self.layer_addresses,
+                        layer_facts,
+                    },
+                    span,
+                    env,
+                )
+            }
+            Terminal::Index => Err(unsupported("reading this saved path", span)),
+            Terminal::Field {
+                name: field,
+                catalog_id,
+                leaf,
+            } => {
+                let leaf = leaf.as_ref().ok_or_else(|| {
+                    let what = if self.layers.is_empty() {
+                        "reading this field"
+                    } else {
+                        "reading this group field"
                     };
-                    read_layer_entry_at(
-                        LayerEntryAddress {
-                            place: &self.place,
-                            identity: &self.identity,
-                            layers: &self.layer_addresses,
-                            layer_facts,
-                        },
+                    unsupported(what, span)
+                })?;
+                let address = DataAddress::member(
+                    &self.place,
+                    &self.identity,
+                    &self.layer_addresses,
+                    catalog_id,
+                    span,
+                )?;
+                let bytes = read_data(env.store, &address, span)?;
+                let Some(bytes) = bytes else {
+                    // A group-entry field's absence is reported against its entry, a
+                    // top-level field's against the field itself.
+                    let what = if self.layers.is_empty() {
+                        format!("`{field}` is absent")
+                    } else {
+                        format!("`{field}` entry is absent")
+                    };
+                    return Err(absent_read(what, span));
+                };
+                decode_leaf(env.program, &bytes, leaf).ok_or_else(|| {
+                    RuntimeError::fault(
+                        RUN_TYPE,
+                        format!("stored value for `{field}` did not decode to a runtime value"),
                         span,
-                        env,
                     )
-                }
-                Terminal::Index => Err(unsupported("reading this saved path", span)),
-                Terminal::Field { .. } => unreachable!("guarded by the let-else"),
-            };
-        };
-        let leaf = leaf.as_ref().ok_or_else(|| {
-            let what = if self.layers.is_empty() {
-                "reading this field"
-            } else {
-                "reading this group field"
-            };
-            unsupported(what, span)
-        })?;
-        let address = DataAddress::member(
-            &self.place,
-            &self.identity,
-            &self.layer_addresses,
-            catalog_id,
-            span,
-        )?;
-        let bytes = read_data(env.store, &address, span)?;
-        let Some(bytes) = bytes else {
-            // A group-entry field's absence is reported against its entry, a
-            // top-level field's against the field itself.
-            let what = if self.layers.is_empty() {
-                format!("`{field}` is absent")
-            } else {
-                format!("`{field}` entry is absent")
-            };
-            return Err(absent_read(what, span));
-        };
-        decode_leaf(env.program, &bytes, leaf).ok_or_else(|| {
-            RuntimeError::fault(
-                RUN_TYPE,
-                format!("stored value for `{field}` did not decode to a runtime value"),
-                span,
-            )
-        })
+                })
+            }
+        }
     }
 
     pub(crate) fn is_present(&self, span: SourceSpan, env: &Env<'_>) -> Result<bool, RuntimeError> {
