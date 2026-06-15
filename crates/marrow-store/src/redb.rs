@@ -56,11 +56,15 @@ impl<'a> traversal::ScanEntry
 pub(crate) struct RedbStore {
     db: DatabaseHandle,
     /// The live write transaction while one is open.
-    txn: Option<WriteTransaction>,
-    transaction_depth: usize,
+    txn: Option<OpenTransaction>,
     /// A pinned read transaction while a snapshot is held, so reads observe one
     /// consistent version even as later write transactions commit.
     read_view: Option<ReadTransaction>,
+}
+
+struct OpenTransaction {
+    write: WriteTransaction,
+    depth: usize,
 }
 
 enum DatabaseHandle {
@@ -554,8 +558,8 @@ macro_rules! read_view {
     ($self:expr, $op:expr, |$table:ident| $body:expr) => {
         match (&$self.txn, &$self.read_view) {
             // An open write transaction reads its own writes.
-            (Some(write), _) => {
-                let $table = write.open_table(TABLE).map_err(io($op))?;
+            (Some(txn), _) => {
+                let $table = txn.write.open_table(TABLE).map_err(io($op))?;
                 $body
             }
             // A pinned snapshot reads its consistent version.
@@ -590,7 +594,6 @@ impl RedbStore {
         Ok(Self {
             db: DatabaseHandle::ReadWrite(db),
             txn: None,
-            transaction_depth: 0,
             read_view: None,
         })
     }
@@ -607,7 +610,6 @@ impl RedbStore {
         Ok(Self {
             db: DatabaseHandle::ReadWrite(db),
             txn: None,
-            transaction_depth: 0,
             read_view: None,
         })
     }
@@ -629,7 +631,6 @@ impl RedbStore {
         Ok(Self {
             db: DatabaseHandle::ReadOnly(db),
             txn: None,
-            transaction_depth: 0,
             read_view: None,
         })
     }
@@ -656,19 +657,16 @@ impl RedbStore {
         op: &'static str,
         mutate: impl FnOnce(&mut Table<&[u8], &[u8]>) -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
-        if self.txn.is_none() {
+        let Some(txn) = &self.txn else {
             let write = self.db.begin_write(op)?;
             {
                 let mut table = write.open_table(TABLE).map_err(io(op))?;
                 mutate(&mut table)?;
             }
             return write.commit().map_err(io(op));
-        }
-        {
-            let write = self.txn.as_ref().expect("an open transaction");
-            let mut table = write.open_table(TABLE).map_err(io(op))?;
-            mutate(&mut table)?;
-        }
+        };
+        let mut table = txn.write.open_table(TABLE).map_err(io(op))?;
+        mutate(&mut table)?;
         Ok(())
     }
 }
@@ -773,34 +771,38 @@ impl Backend for RedbStore {
 
     fn begin(&mut self) -> Result<(), StoreError> {
         self.ensure_writable("begin", StoreError::begin_while_snapshot_pinned)?;
-        if self.txn.is_none() {
-            self.txn = Some(self.db.begin_write("begin")?);
+        match &mut self.txn {
+            Some(txn) => txn.depth += 1,
+            None => {
+                self.txn = Some(OpenTransaction {
+                    write: self.db.begin_write("begin")?,
+                    depth: 1,
+                });
+            }
         }
-        self.transaction_depth += 1;
         Ok(())
     }
 
     fn commit(&mut self) -> Result<(), StoreError> {
         // No open transaction is a harmless no-op, matching the in-memory store.
-        if self.transaction_depth == 0 {
+        let Some(mut txn) = self.txn.take() else {
             return Ok(());
-        }
-        self.transaction_depth -= 1;
-        if self.transaction_depth == 0 {
-            let write = self.txn.take().expect("a transaction while committing");
-            write.commit().map_err(io("commit"))?;
+        };
+        txn.depth -= 1;
+        if txn.depth == 0 {
+            txn.write.commit().map_err(io("commit"))?;
+        } else {
+            self.txn = Some(txn);
         }
         Ok(())
     }
 
     fn rollback(&mut self) -> Result<(), StoreError> {
         // No open transaction is a harmless no-op, matching the in-memory store.
-        if self.transaction_depth == 0 {
+        let Some(txn) = self.txn.take() else {
             return Ok(());
-        }
-        self.transaction_depth = 0;
-        let write = self.txn.take().expect("a transaction while rolling back");
-        write.abort().map_err(io("rollback"))?;
+        };
+        txn.write.abort().map_err(io("rollback"))?;
         Ok(())
     }
 
