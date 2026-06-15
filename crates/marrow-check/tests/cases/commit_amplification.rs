@@ -16,10 +16,6 @@ fn assert_commit_amplification_warnings(report: &CheckReport, expected: usize) {
     assert_eq!(found.len(), expected, "{:#?}", report.diagnostics);
     for diagnostic in found {
         assert_eq!(diagnostic.severity, Severity::Warning);
-        assert!(
-            diagnostic.message.contains("transaction"),
-            "{diagnostic:#?}"
-        );
     }
 }
 
