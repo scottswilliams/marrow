@@ -303,15 +303,18 @@ pub(crate) fn value_scalar_type(value: &Value) -> Option<ScalarType> {
     })
 }
 
-/// The canonical text of a saved scalar. The canonical byte encoding is always
-/// valid UTF-8, so the only failure is an out-of-range temporal value that cannot
-/// be formatted, which surfaces as a located error.
+/// The canonical text of a saved scalar whose canonical encoding is textual.
+/// Temporal range failures surface as located codec errors; bytes may not be
+/// valid UTF-8 and are rejected as a type fault if routed here.
 pub(crate) fn canonical_scalar_text(
     value: SavedValue,
     span: SourceSpan,
 ) -> Result<String, RuntimeError> {
+    if matches!(value, SavedValue::Bytes(_)) {
+        return Err(type_error("cannot render bytes as canonical text", span));
+    }
     let bytes = encode_value(&value).map_err(|error| error.located(span))?;
-    Ok(String::from_utf8(bytes).expect("a canonical scalar encodes as UTF-8 text"))
+    String::from_utf8(bytes).map_err(|_| type_error("cannot render bytes as canonical text", span))
 }
 
 /// Convert a runtime value to the saved scalar a managed write stores. Enum
@@ -691,8 +694,10 @@ fn render_identity(identity: &IdentityValue) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Value, saved_key_to_value};
+    use super::{Value, canonical_scalar_text, saved_key_to_value};
+    use crate::error::RUN_TYPE;
     use marrow_store::key::SavedKey;
+    use marrow_store::value::SavedValue;
     use marrow_syntax::SourceSpan;
 
     #[test]
@@ -729,5 +734,16 @@ mod tests {
             saved_key_to_value(SavedKey::Instant(1_600), span),
             Ok(Value::Instant(1_600))
         ));
+    }
+
+    #[test]
+    fn canonical_scalar_text_rejects_bytes() {
+        for bytes in [b"abc".to_vec(), vec![0xff]] {
+            let error =
+                canonical_scalar_text(SavedValue::Bytes(bytes), SourceSpan::default()).unwrap_err();
+
+            assert_eq!(error.code, RUN_TYPE);
+            assert!(error.catchable);
+        }
     }
 }
