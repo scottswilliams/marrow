@@ -223,7 +223,8 @@ mod tests {
 
     #[test]
     fn backup_manifest_uses_commit_metadata_as_stamp() {
-        let (root, program) = committed_program("backup-commit-only-stamp", BOOK_SOURCE);
+        let (root, program) = committed_program("backup-commit-only-stamp", BOOK_SOURCE)
+            .expect("committed backup fixture");
         let store = TreeStore::memory();
         let epoch = program.catalog.accepted_epoch.expect("accepted epoch");
         let snapshot = CatalogMetadata::new(epoch, program.catalog.accepted_entries.clone())
@@ -281,7 +282,8 @@ mod tests {
 
     #[test]
     fn backup_manifest_rejects_commit_epoch_that_disagrees_with_catalog_snapshot() {
-        let (root, program) = committed_program("backup-commit-snapshot-drift", BOOK_SOURCE);
+        let (root, program) = committed_program("backup-commit-snapshot-drift", BOOK_SOURCE)
+            .expect("committed backup fixture");
         let store = TreeStore::memory();
         let epoch = program.catalog.accepted_epoch.expect("accepted epoch");
         let snapshot = CatalogMetadata::new(epoch, program.catalog.accepted_entries.clone())

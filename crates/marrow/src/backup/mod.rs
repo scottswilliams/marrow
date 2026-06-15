@@ -494,23 +494,29 @@ impl From<marrow_store::StoreError> for BackupError {
 
 #[cfg(test)]
 pub(super) mod test_support {
+    use std::io;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use marrow_check::{CheckedProgram, ProjectConfig, check_project, check_project_with_catalog};
     use marrow_project::{StoreBackend, StoreConfig};
 
+    static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
     pub(super) const BOOK_SOURCE: &str =
         "module shelf\n\nresource Book\n    required title: string\nstore ^books(id: int): Book\n";
 
-    pub(super) fn temp_dir(name: &str) -> PathBuf {
+    fn temp_dir(name: &str) -> io::Result<PathBuf> {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock after unix epoch")
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("create project root");
-        root
+            .map_or(0, |duration| duration.as_nanos());
+        let ordinal = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "marrow-{name}-{}-{nanos}-{ordinal}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root)?;
+        Ok(root)
     }
 
     fn config() -> ProjectConfig {
@@ -525,26 +531,34 @@ pub(super) mod test_support {
         }
     }
 
-    pub(super) fn committed_program(name: &str, source: &str) -> (PathBuf, CheckedProgram) {
-        let root = temp_dir(name);
+    pub(super) fn committed_program(
+        name: &str,
+        source: &str,
+    ) -> Result<(PathBuf, CheckedProgram), Box<dyn std::error::Error>> {
+        let root = temp_dir(name)?;
         let path = root.join("src/shelf.mw");
-        std::fs::create_dir_all(path.parent().unwrap()).expect("create src");
-        std::fs::write(&path, source).expect("write source");
-        let (report, program) = check_project(&root, &config()).expect("check project");
+        let source_dir = path
+            .parent()
+            .ok_or_else(|| io::Error::other("backup fixture source path has no parent"))?;
+        std::fs::create_dir_all(source_dir)?;
+        std::fs::write(&path, source)?;
+        let (report, program) = check_project(&root, &config())?;
         assert!(!report.has_errors(), "{:#?}", report.diagnostics);
         // Commit the baseline through the store transaction and re-bind against the
         // accepted snapshot, the way a state-establishing run does before rendering the
         // catalog file.
         let store = marrow_store::tree::TreeStore::memory();
-        marrow_run::evolution::commit_catalog_baseline(&store, &program)
-            .expect("commit catalog baseline");
+        if !marrow_run::evolution::commit_catalog_baseline(&store, &program)? {
+            return Err(
+                io::Error::other("backup fixture did not commit a catalog baseline").into(),
+            );
+        }
         let accepted = store
-            .read_catalog_snapshot()
-            .expect("read catalog snapshot");
-        let (report, program) =
-            check_project_with_catalog(&root, &config(), accepted.as_ref()).expect("re-check");
+            .read_catalog_snapshot()?
+            .ok_or_else(|| io::Error::other("backup fixture baseline missing catalog snapshot"))?;
+        let (report, program) = check_project_with_catalog(&root, &config(), Some(&accepted))?;
         assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-        (root, program)
+        Ok((root, program))
     }
 }
 

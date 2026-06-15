@@ -643,7 +643,8 @@ mod tests {
 
     #[test]
     fn rejects_a_bad_magic_with_format_version() {
-        let (root, program) = committed_program("restore-magic", BOOK_SOURCE);
+        let (root, program) =
+            committed_program("restore-magic", BOOK_SOURCE).expect("committed backup fixture");
         let mut archive = seeded_backup(&program);
         archive[0] ^= 0xff; // Corrupt the magic header.
         let error = restore_into_empty(&program, &archive).expect_err("bad magic is rejected");
@@ -653,7 +654,8 @@ mod tests {
 
     #[test]
     fn rejects_an_unsupported_format_version() {
-        let (root, program) = committed_program("restore-version", BOOK_SOURCE);
+        let (root, program) =
+            committed_program("restore-version", BOOK_SOURCE).expect("committed backup fixture");
         let mut archive = seeded_backup(&program);
         // The version is the four bytes after the 8-byte magic; bump it past what this
         // build writes.
@@ -665,14 +667,16 @@ mod tests {
 
     #[test]
     fn rejects_a_source_mismatch() {
-        let (root_a, program_a) = committed_program("restore-source-a", BOOK_SOURCE);
+        let (root_a, program_a) =
+            committed_program("restore-source-a", BOOK_SOURCE).expect("committed backup fixture");
         let archive = seeded_backup(&program_a);
         // A different schema: an added field changes the source digest.
         let (root_b, program_b) = committed_program(
             "restore-source-b",
             "module shelf\n\nresource Book\n    \
              required title: string\n    pages: int\nstore ^books(id: int): Book\n",
-        );
+        )
+        .expect("committed backup fixture");
         let error =
             restore_into_empty(&program_b, &archive).expect_err("a foreign schema is rejected");
         assert_eq!(error.code(), "restore.source_mismatch");
@@ -682,7 +686,8 @@ mod tests {
 
     #[test]
     fn rejects_a_catalog_mismatch() {
-        let (root, program) = committed_program("restore-catalog", BOOK_SOURCE);
+        let (root, program) =
+            committed_program("restore-catalog", BOOK_SOURCE).expect("committed backup fixture");
         let archive = seeded_backup(&program);
         // Same source digest, different accepted epoch: the data belongs to another
         // committed catalog state.
@@ -696,7 +701,8 @@ mod tests {
 
     #[test]
     fn rejects_a_non_empty_parent_snapshot_digest() {
-        let (root, program) = committed_program("restore-parent-snapshot", BOOK_SOURCE);
+        let (root, program) = committed_program("restore-parent-snapshot", BOOK_SOURCE)
+            .expect("committed backup fixture");
         let archive = seeded_backup(&program);
         let archive = rewrite_manifest(&archive, |manifest| {
             manifest["parent_snapshot_digest"] = serde_json::json!(
@@ -722,7 +728,8 @@ mod tests {
 
     #[test]
     fn rejects_commit_metadata_that_disagrees_with_manifest() {
-        let (root, program) = committed_program("restore-commit-binding", BOOK_SOURCE);
+        let (root, program) = committed_program("restore-commit-binding", BOOK_SOURCE)
+            .expect("committed backup fixture");
         let archive = seeded_backup(&program);
         let archive = rewrite_manifest(&archive, |manifest| {
             manifest["commit"]["source_digest"] = serde_json::json!(
@@ -738,7 +745,8 @@ mod tests {
 
     #[test]
     fn rejects_an_engine_recompile() {
-        let (root, program) = committed_program("restore-engine", BOOK_SOURCE);
+        let (root, program) =
+            committed_program("restore-engine", BOOK_SOURCE).expect("committed backup fixture");
         let archive = seeded_backup(&program);
         // Rewrite the manifest's engine layout epoch to a value this build does not
         // write, so the restore reports an engine recompile is required.
@@ -751,7 +759,8 @@ mod tests {
 
     #[test]
     fn rejects_a_declared_cell_that_does_not_decode() {
-        let (root, program) = committed_program("restore-decode", BOOK_SOURCE);
+        let (root, program) =
+            committed_program("restore-decode", BOOK_SOURCE).expect("committed backup fixture");
         let archive = seeded_backup(&program);
         // Restore replays the data, then the verify proves the declared records decode.
         // A title leaf whose bytes are not a canonical string is `restore.data_invalid`.
@@ -776,7 +785,8 @@ mod tests {
 
     #[test]
     fn rejects_a_malformed_data_cell_target_even_when_the_checksum_matches() {
-        let (root, program) = committed_program("restore-malformed-target", BOOK_SOURCE);
+        let (root, program) = committed_program("restore-malformed-target", BOOK_SOURCE)
+            .expect("committed backup fixture");
         let archive = seeded_backup(&program);
         let archive = with_malformed_first_target(&archive);
         let error = restore_into_empty(&program, &archive)
@@ -787,7 +797,8 @@ mod tests {
 
     #[test]
     fn rejects_an_impossible_backup_target_count_even_when_the_checksum_matches() {
-        let (root, program) = committed_program("restore-impossible-target-count", BOOK_SOURCE);
+        let (root, program) = committed_program("restore-impossible-target-count", BOOK_SOURCE)
+            .expect("committed backup fixture");
         let archive = seeded_backup(&program);
         let archive = with_impossible_first_target_count(&archive);
         let error = restore_into_empty(&program, &archive)
@@ -798,7 +809,8 @@ mod tests {
 
     #[test]
     fn rejects_an_empty_path_value_target_even_when_the_checksum_matches() {
-        let (root, program) = committed_program("restore-empty-value-target", BOOK_SOURCE);
+        let (root, program) = committed_program("restore-empty-value-target", BOOK_SOURCE)
+            .expect("committed backup fixture");
         let archive = seeded_backup(&program);
         let archive = with_empty_path_value_target(&program, &archive);
         let error = restore_into_empty(&program, &archive)
@@ -809,7 +821,8 @@ mod tests {
 
     #[test]
     fn restore_replays_the_accepted_catalog_rows() {
-        let (root, program) = committed_program("restore-catalog-rows", BOOK_SOURCE);
+        let (root, program) = committed_program("restore-catalog-rows", BOOK_SOURCE)
+            .expect("committed backup fixture");
         let archive = seeded_backup(&program);
         let target = TreeStore::memory();
         restore_backup(&program, &target, &mut &archive[..], accept).expect("restore");
@@ -828,7 +841,8 @@ mod tests {
 
     #[test]
     fn restore_mints_a_fresh_store_uid() {
-        let (root, program) = committed_program("restore-store-uid", BOOK_SOURCE);
+        let (root, program) =
+            committed_program("restore-store-uid", BOOK_SOURCE).expect("committed backup fixture");
         let archive = seeded_backup(&program);
         let source_uid = split_archive(&archive).manifest["store_uid"]
             .as_str()
@@ -848,7 +862,8 @@ mod tests {
 
     #[test]
     fn rejects_a_manifest_catalog_digest_that_disagrees_with_the_section() {
-        let (root, program) = committed_program("restore-catalog-digest", BOOK_SOURCE);
+        let (root, program) = committed_program("restore-catalog-digest", BOOK_SOURCE)
+            .expect("committed backup fixture");
         let archive = seeded_backup(&program);
         // Tamper only the manifest's catalog fingerprint, leaving the catalog section
         // rows untouched, so the recomputed section digest no longer matches.
@@ -881,7 +896,8 @@ mod tests {
 
     #[test]
     fn rejects_a_manifest_catalog_epoch_that_disagrees_with_the_section() {
-        let (root, program) = committed_program("restore-catalog-epoch", BOOK_SOURCE);
+        let (root, program) = committed_program("restore-catalog-epoch", BOOK_SOURCE)
+            .expect("committed backup fixture");
         let archive = seeded_backup(&program);
         let archive = rewrite_manifest(&archive, |manifest| {
             let epoch = manifest
@@ -910,7 +926,8 @@ mod tests {
 
     #[test]
     fn rejects_a_tampered_manifest_through_the_folded_checksum() {
-        let (root, program) = committed_program("restore-manifest-tamper", BOOK_SOURCE);
+        let (root, program) = committed_program("restore-manifest-tamper", BOOK_SOURCE)
+            .expect("committed backup fixture");
         let archive = seeded_backup(&program);
         // Flip a manifest field that passes every structural check but is not part of
         // any prior binding: the record count stays, the engine and catalog still agree,
@@ -944,7 +961,8 @@ mod tests {
 
     #[test]
     fn rolls_back_when_a_catalog_row_corrupts_mid_replay() {
-        let (root, program) = committed_program("restore-catalog-rollback", BOOK_SOURCE);
+        let (root, program) = committed_program("restore-catalog-rollback", BOOK_SOURCE)
+            .expect("committed backup fixture");
         let archive = seeded_backup(&program);
         // Corrupt one catalog row inside the section. The section decode recomputes the
         // catalog digest from the rows, so a tampered row fails closed before any data
@@ -967,7 +985,8 @@ mod tests {
 
     #[test]
     fn rolls_back_when_entropy_fails_before_replay_writes_uid() {
-        let (root, program) = committed_program("restore-entropy-rollback", BOOK_SOURCE);
+        let (root, program) = committed_program("restore-entropy-rollback", BOOK_SOURCE)
+            .expect("committed backup fixture");
         let archive = seeded_backup(&program);
         let mut input = &archive[..];
         let prologue = read_backup_prologue(&mut input).expect("read prologue");
@@ -998,7 +1017,8 @@ mod tests {
 
     #[test]
     fn the_catalog_section_and_data_stream_are_disjoint() {
-        let (root, program) = committed_program("restore-section-disjoint", BOOK_SOURCE);
+        let (root, program) = committed_program("restore-section-disjoint", BOOK_SOURCE)
+            .expect("committed backup fixture");
         let archive = seeded_backup(&program);
         let parts = split_archive(&archive);
 
