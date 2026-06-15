@@ -1160,15 +1160,12 @@ impl TreeStore {
                 value,
             });
         }
-        let cursor = if page.truncated {
-            last_key.map(|last_key| IndexCursor {
-                prefix: prefix.as_bytes().to_vec(),
-                last_key,
-                scope: IndexCursorScope::Exact,
-            })
-        } else {
-            None
-        };
+        let cursor = index_page_cursor(
+            page.truncated,
+            last_key,
+            prefix.as_bytes(),
+            IndexCursorScope::Exact,
+        )?;
         Ok(IndexPage {
             entries,
             cursor,
@@ -1295,15 +1292,7 @@ impl TreeStore {
                 value,
             });
         }
-        let cursor = if page.truncated {
-            last_key.map(|last_key| IndexCursor {
-                prefix: prefix.as_bytes().to_vec(),
-                last_key,
-                scope,
-            })
-        } else {
-            None
-        };
+        let cursor = index_page_cursor(page.truncated, last_key, prefix.as_bytes(), scope)?;
         Ok(IndexPage {
             entries,
             cursor,
@@ -1750,6 +1739,25 @@ fn empty_index_page() -> IndexPage {
     }
 }
 
+fn index_page_cursor(
+    truncated: bool,
+    last_key: Option<Vec<u8>>,
+    prefix: &[u8],
+    scope: IndexCursorScope,
+) -> Result<Option<IndexCursor>, StoreError> {
+    if !truncated {
+        return Ok(None);
+    }
+    let last_key = last_key.ok_or_else(|| StoreError::InvalidCursor {
+        message: "index scan page was truncated without a cursor".into(),
+    })?;
+    Ok(Some(IndexCursor {
+        prefix: prefix.to_vec(),
+        last_key,
+        scope,
+    }))
+}
+
 pub fn encode_tree_enum_member(value: &TreeEnumMember) -> Result<Vec<u8>, StoreError> {
     let mut bytes = vec![TREE_VALUE_VERSION_V0];
     put_catalog_id(&value.enum_id, &mut bytes)?;
@@ -1820,7 +1828,8 @@ mod tests {
     use std::cell::Cell;
 
     use super::{
-        CellKey, CommitMetadata, DataPathSegment, NODE_MARKER, TreeBackupCellBuf, TreeStore,
+        CellKey, CommitMetadata, DataPathSegment, IndexCursor, IndexCursorScope, IndexRangeBounds,
+        NODE_MARKER, TreeBackupCellBuf, TreeStore,
     };
     use crate::StoreError;
     use crate::backend::counting::{BackendCounts, CountingBackend};
@@ -1831,8 +1840,21 @@ mod tests {
     use crate::metadata::{decode_commit_metadata, encode_commit_metadata};
 
     enum BackendFault {
-        FailOnNthWrite { writes_until_fault: Cell<usize> },
-        EmptyTruncatedBackupScan,
+        FailOnNthWrite {
+            writes_until_fault: Cell<usize>,
+        },
+        EmptyTruncatedScan {
+            method: EmptyTruncatedScanMethod,
+            prefix: Vec<u8>,
+        },
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum EmptyTruncatedScanMethod {
+        Scan,
+        ScanAfter,
+        ScanBetween,
+        ScanBetweenBefore,
     }
 
     struct FaultingBackend {
@@ -1851,9 +1873,40 @@ mod tests {
         }
 
         fn empty_truncated_backup_scan() -> Self {
+            Self::empty_truncated_scan(
+                EmptyTruncatedScanMethod::Scan,
+                CellKey::data_family().as_bytes(),
+            )
+        }
+
+        fn empty_truncated_scan(method: EmptyTruncatedScanMethod, prefix: &[u8]) -> Self {
             Self {
                 inner: MemStore::default(),
-                fault: BackendFault::EmptyTruncatedBackupScan,
+                fault: BackendFault::EmptyTruncatedScan {
+                    method,
+                    prefix: prefix.to_vec(),
+                },
+            }
+        }
+
+        fn should_return_empty_truncated(
+            &self,
+            method: EmptyTruncatedScanMethod,
+            prefix: &[u8],
+        ) -> bool {
+            matches!(
+                &self.fault,
+                BackendFault::EmptyTruncatedScan {
+                    method: fault_method,
+                    prefix: fault_prefix,
+                } if *fault_method == method && fault_prefix.as_slice() == prefix
+            )
+        }
+
+        fn empty_truncated_page() -> ScanPage {
+            ScanPage {
+                entries: Vec::new(),
+                truncated: true,
             }
         }
     }
@@ -1895,13 +1948,8 @@ mod tests {
         }
 
         fn scan(&self, prefix: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
-            if matches!(self.fault, BackendFault::EmptyTruncatedBackupScan)
-                && prefix == CellKey::data_family().as_bytes()
-            {
-                return Ok(ScanPage {
-                    entries: Vec::new(),
-                    truncated: true,
-                });
+            if self.should_return_empty_truncated(EmptyTruncatedScanMethod::Scan, prefix) {
+                return Ok(Self::empty_truncated_page());
             }
             self.inner.scan(prefix, limit)
         }
@@ -1912,6 +1960,9 @@ mod tests {
             cursor: &[u8],
             limit: usize,
         ) -> Result<ScanPage, StoreError> {
+            if self.should_return_empty_truncated(EmptyTruncatedScanMethod::ScanAfter, prefix) {
+                return Ok(Self::empty_truncated_page());
+            }
             self.inner.scan_after(prefix, cursor, limit)
         }
 
@@ -1931,6 +1982,9 @@ mod tests {
             upper: Option<&[u8]>,
             limit: usize,
         ) -> Result<ScanPage, StoreError> {
+            if self.should_return_empty_truncated(EmptyTruncatedScanMethod::ScanBetween, prefix) {
+                return Ok(Self::empty_truncated_page());
+            }
             self.inner.scan_between(prefix, lower, upper, limit)
         }
 
@@ -1954,6 +2008,11 @@ mod tests {
             cursor: &[u8],
             limit: usize,
         ) -> Result<ScanPage, StoreError> {
+            if self
+                .should_return_empty_truncated(EmptyTruncatedScanMethod::ScanBetweenBefore, prefix)
+            {
+                return Ok(Self::empty_truncated_page());
+            }
             self.inner
                 .scan_between_before(prefix, lower, upper, cursor, limit)
         }
@@ -1987,6 +2046,91 @@ mod tests {
         let error = store
             .visit_backup_cells(|_| Ok(()))
             .expect_err("empty truncated backup scan should return an error");
+
+        assert!(matches!(error, StoreError::InvalidCursor { .. }));
+        assert_eq!(error.code(), "store.cursor");
+    }
+
+    #[test]
+    fn exact_index_scan_reports_empty_truncated_page_as_invalid_cursor() {
+        let index = catalog("cat_00000000000000000000000000000001");
+        let keys = [SavedKey::Str("fiction".into())];
+        let prefix = CellKey::index_tuple_prefix(&index, &keys);
+        let store = TreeStore::from_backend(Box::new(FaultingBackend::empty_truncated_scan(
+            EmptyTruncatedScanMethod::Scan,
+            prefix.as_bytes(),
+        )));
+
+        let error = store
+            .scan_index_tuple(&index, &keys, 1)
+            .expect_err("empty truncated exact index scan should return an error");
+
+        assert!(matches!(error, StoreError::InvalidCursor { .. }));
+        assert_eq!(error.code(), "store.cursor");
+    }
+
+    #[test]
+    fn resumed_exact_index_scan_reports_empty_truncated_page_as_invalid_cursor() {
+        let index = catalog("cat_00000000000000000000000000000001");
+        let keys = [SavedKey::Str("fiction".into())];
+        let prefix = CellKey::index_tuple_prefix(&index, &keys);
+        let cursor = IndexCursor {
+            prefix: prefix.as_bytes().to_vec(),
+            last_key: prefix.as_bytes().to_vec(),
+            scope: IndexCursorScope::Exact,
+        };
+        let store = TreeStore::from_backend(Box::new(FaultingBackend::empty_truncated_scan(
+            EmptyTruncatedScanMethod::ScanAfter,
+            prefix.as_bytes(),
+        )));
+
+        let error = store
+            .scan_index_tuple_after(&index, &keys, &cursor, 1)
+            .expect_err("empty truncated resumed exact index scan should return an error");
+
+        assert!(matches!(error, StoreError::InvalidCursor { .. }));
+        assert_eq!(error.code(), "store.cursor");
+    }
+
+    #[test]
+    fn bounded_index_range_reports_empty_truncated_page_as_invalid_cursor() {
+        let index = catalog("cat_00000000000000000000000000000001");
+        let prefix = CellKey::index_key_prefix(&index, &[]);
+        let range = IndexRangeBounds {
+            lower: Some(SavedKey::Int(10)),
+            upper: Some(SavedKey::Int(30)),
+            upper_inclusive: false,
+        };
+        let store = TreeStore::from_backend(Box::new(FaultingBackend::empty_truncated_scan(
+            EmptyTruncatedScanMethod::ScanBetween,
+            prefix.as_bytes(),
+        )));
+
+        let error = store
+            .scan_index_range(&index, &[], &range, 1)
+            .expect_err("empty truncated bounded index scan should return an error");
+
+        assert!(matches!(error, StoreError::InvalidCursor { .. }));
+        assert_eq!(error.code(), "store.cursor");
+    }
+
+    #[test]
+    fn reverse_bounded_index_range_reports_empty_truncated_page_as_invalid_cursor() {
+        let index = catalog("cat_00000000000000000000000000000001");
+        let prefix = CellKey::index_key_prefix(&index, &[]);
+        let range = IndexRangeBounds {
+            lower: Some(SavedKey::Int(10)),
+            upper: Some(SavedKey::Int(30)),
+            upper_inclusive: false,
+        };
+        let store = TreeStore::from_backend(Box::new(FaultingBackend::empty_truncated_scan(
+            EmptyTruncatedScanMethod::ScanBetweenBefore,
+            prefix.as_bytes(),
+        )));
+
+        let error = store
+            .scan_index_range_reverse(&index, &[], &range, 1)
+            .expect_err("empty truncated reverse bounded index scan should return an error");
 
         assert!(matches!(error, StoreError::InvalidCursor { .. }));
         assert_eq!(error.code(), "store.cursor");
