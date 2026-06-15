@@ -137,10 +137,13 @@ impl LeafValue {
 
 impl Value {
     /// A total, never-faulting one-line rendering for a debugger's Variables view.
-    /// Scalars render as the normal text renderer does; the shapes it refuses get
-    /// a compact structural preview instead of a fault. A preview, not re-parseable.
+    /// A preview, not re-parseable.
     pub fn display_debug(&self) -> String {
-        scalar_text(self).unwrap_or_else(|| match self {
+        match self {
+            Value::Int(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            Value::Str(s) => s.clone(),
+            Value::Decimal(d) => d.to_text(),
             Value::Instant(n) => format!("instant({n})"),
             Value::Date(d) => format!("date({d})"),
             Value::Duration(n) => format!("duration({n})"),
@@ -148,38 +151,13 @@ impl Value {
             Value::Enum(value) => value.display_name.clone(),
             Value::Sequence(items) => format!("sequence[{}]", items.len()),
             Value::LocalTree(entries) => format!("tree[{}]", entries.len()),
-            // Field names only, in schema order; values may be large or nested.
             Value::Resource(fields) => {
                 let names: Vec<&str> = fields.iter().map(|(name, _)| name.as_str()).collect();
                 format!("resource{{{}}}", names.join(", "))
             }
             Value::Identity(identity) => render_debug_identity(identity),
-            Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::Decimal(_) => {
-                unreachable!("scalar_text rendered every scalar before this match")
-            }
-        })
+        }
     }
-}
-
-/// The single owner of the scalar-to-text mapping: canonical text for the scalars
-/// that render identically in a debugger preview and the text renderer, `None` for
-/// the shapes that render differently in each.
-fn scalar_text(value: &Value) -> Option<String> {
-    Some(match value {
-        Value::Int(n) => n.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Str(s) => s.clone(),
-        Value::Decimal(d) => d.to_text(),
-        Value::Bytes(_)
-        | Value::Instant(_)
-        | Value::Date(_)
-        | Value::Duration(_)
-        | Value::Enum(_)
-        | Value::Sequence(_)
-        | Value::LocalTree(_)
-        | Value::Resource(_)
-        | Value::Identity(_) => return None,
-    })
 }
 
 /// A compact preview of one identity key segment for [`Value::display_debug`].
@@ -670,10 +648,11 @@ pub(crate) fn saved_value_to_value(value: SavedValue) -> Value {
 /// `true`/`false`, strings as themselves. Resource values have no text form, and
 /// an instant is rendered through `std::clock::formatInstant`, not directly.
 pub(crate) fn render(value: Value, span: SourceSpan) -> Result<String, RuntimeError> {
-    if let Some(text) = scalar_text(&value) {
-        return Ok(text);
-    }
     match value {
+        Value::Int(n) => Ok(n.to_string()),
+        Value::Bool(b) => Ok(b.to_string()),
+        Value::Str(s) => Ok(s),
+        Value::Decimal(d) => Ok(d.to_text()),
         Value::Identity(identity) => Ok(render_identity(&identity)),
         Value::Bytes(_) => Err(unsupported("rendering a bytes value", span)),
         Value::Sequence(_) => Err(unsupported("rendering a sequence value", span)),
@@ -683,9 +662,6 @@ pub(crate) fn render(value: Value, span: SourceSpan) -> Result<String, RuntimeEr
         Value::Duration(_) => Err(unsupported("rendering a duration value", span)),
         Value::Resource(_) => Err(unsupported("rendering a resource value", span)),
         Value::Enum(_) => Err(unsupported("rendering an enum value", span)),
-        Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::Decimal(_) => {
-            unreachable!("scalar_text rendered every scalar before this match")
-        }
     }
 }
 
