@@ -68,6 +68,16 @@ PROBES = {
 }
 
 
+ABSENCE_PROBES = {
+    "raw-store-test-hook": [
+        (
+            "crates/marrow-store/tests/cases/probe.rs",
+            "fn t() { store.write_node(path); TreeStore::write_data_value(); }\n",
+        )
+    ],
+}
+
+
 def rust_code_mask(text: str) -> str:
     chars = list(text)
     i = 0
@@ -253,6 +263,8 @@ def scan_semantic_prose(path: str, text: str) -> list[Hit]:
 def scan_raw_store_hook(path: str, text: str) -> list[Hit]:
     if not ("/tests/" in path or "support" in path):
         return []
+    if path.startswith("crates/marrow-store/tests/cases/"):
+        return []
     pattern = re.compile(
         r"\bwrite_raw_[A-Za-z0-9_]*\b|\braw_catalog\b|"
         r"\bTreeStore::write_data_value\b|\bwrite_node\s*\(|\bdelete_data_subtree\s*\("
@@ -301,6 +313,13 @@ def assert_probes() -> int:
         seen = [hit for hit in probe_hits if hit.path.startswith("__probe__/") or "probe.rs" in hit.path]
         if not seen:
             print(f"cleanup_scan probe missed {family}")
+            failed = True
+    for family, probes in ABSENCE_PROBES.items():
+        probe_paths = {path for path, _ in probes}
+        probe_hits = collect_hits({family}, dict(probes))
+        seen = [hit for hit in probe_hits if hit.path in probe_paths]
+        if seen:
+            print(f"cleanup_scan absence probe reported {family}")
             failed = True
     original_tracked_files = globals()["tracked_files"]
     globals()["tracked_files"] = lambda: ["__probe__/deleted.rs"]
