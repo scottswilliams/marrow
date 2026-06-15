@@ -304,7 +304,7 @@ pub struct StoreStamp {
 impl ProjectInvokeError {
     pub fn code(&self) -> &'static str {
         match self {
-            Self::Runtime(error) => error.code,
+            Self::Runtime(error) => error.code(),
             Self::Session(error) => error.code(),
         }
     }

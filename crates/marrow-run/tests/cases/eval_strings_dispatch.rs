@@ -165,7 +165,7 @@ fn run_entry_rejects_host_values_that_do_not_match_checked_parameters() {
     let program = checked_program("pub fn needs_int(n: int)\n    print(\"ran\")\n");
     let error = rejected_entry_call(&program, "test::needs_int", vec![Value::Str("x".into())]);
 
-    assert_eq!(error.code, RUN_TYPE);
+    assert_eq!(error.code(), RUN_TYPE);
     let (code, message) = error_throw_fields(&error);
     assert_eq!(code, RUN_TYPE);
     assert_eq!(message, "entry argument `n` has the wrong type");
@@ -176,7 +176,7 @@ fn run_entry_rejects_private_functions_as_entries() {
     let program = checked_program_modules(&["module a\n\nfn secret(): int\n    return 1\n"]);
     let error = rejected_entry_call(&program, "a::secret", vec![]);
 
-    assert_eq!(error.code, "run.private_function");
+    assert_eq!(error.code(), "run.private_function");
 }
 
 #[test]
@@ -187,7 +187,7 @@ fn run_entry_rejects_ambiguous_bare_entries() {
     ]);
     let error = rejected_entry_call(&program, "widget", vec![]);
 
-    assert_eq!(error.code, "run.ambiguous_function");
+    assert_eq!(error.code(), "run.ambiguous_function");
 }
 
 #[test]
@@ -198,7 +198,7 @@ fn run_entry_rejects_host_values_for_identity_parameters() {
     );
     let error = rejected_entry_call(&program, "test::load", vec![Value::Int(1)]);
 
-    assert_eq!(error.code, RUN_TYPE);
+    assert_eq!(error.code(), RUN_TYPE);
     let (code, message) = error_throw_fields(&error);
     assert_eq!(code, RUN_TYPE);
     assert_eq!(message, "entry argument `id` has the wrong type");
@@ -212,7 +212,7 @@ fn run_entry_rejects_host_values_for_resource_parameters() {
     );
     let error = rejected_entry_call(&program, "test::show", vec![Value::Resource(vec![])]);
 
-    assert_eq!(error.code, RUN_TYPE);
+    assert_eq!(error.code(), RUN_TYPE);
     let (code, message) = error_throw_fields(&error);
     assert_eq!(code, RUN_TYPE);
     assert_eq!(message, "entry argument `book` has the wrong type");
@@ -263,7 +263,7 @@ fn using_a_void_call_as_a_value_is_rejected() {
 fn an_unknown_function_is_rejected() {
     let program = checked_program("pub fn f(): int\n    return 1\n");
     let error = rejected_entry_call(&program, "test::missing", Vec::new());
-    assert_eq!(error.code, RUN_UNKNOWN_FUNCTION);
+    assert_eq!(error.code(), RUN_UNKNOWN_FUNCTION);
 }
 
 #[test]

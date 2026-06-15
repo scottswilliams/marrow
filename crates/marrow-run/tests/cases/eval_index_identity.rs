@@ -176,7 +176,7 @@ fn unique_index_conflict_message_includes_index_name_and_key_preview() {
         ),
     )
     .unwrap_err();
-    assert_eq!(error.code, "write.unique_conflict");
+    assert_eq!(error.code(), "write.unique_conflict");
     assert_eq!(
         error.message,
         "unique index `byIsbn` already holds key(s) (\"978-0\") for another identity"
@@ -213,7 +213,7 @@ fn unique_index_conflict_key_previews_are_bounded() {
         ),
     )
     .unwrap_err();
-    assert_eq!(error.code, "write.unique_conflict");
+    assert_eq!(error.code(), "write.unique_conflict");
     assert!(error.message.contains("unique index `byIsbn`"));
     assert!(
         error.message.contains("(\"978-"),

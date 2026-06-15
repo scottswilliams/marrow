@@ -16,7 +16,7 @@ fn throw_surfaces_as_an_uncaught_error() {
         "pub fn bad()\n    throw Error(code: \"book.absent\", message: \"no book\")\n",
     );
     let error = run_expecting_error(checked_entry!(&program, "test::bad"));
-    assert_eq!(error.code, RUN_UNCAUGHT_THROW);
+    assert_eq!(error.code(), RUN_UNCAUGHT_THROW);
     // The rendered message is byte-identical to the `uncaught error [code]: msg`
     // formula, pinning the format the CLI surfaces for an uncaught throw.
     assert_eq!(error.message, "uncaught error [book.absent]: no book");

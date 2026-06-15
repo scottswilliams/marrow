@@ -12,6 +12,14 @@ use crate::env::AssignError;
 use crate::value::Value;
 use crate::write::WriteError;
 
+/// Typed details for a `run.depth` fault.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallDepthFault {
+    pub function_name: String,
+    pub budget: usize,
+    pub observed_depth: usize,
+}
+
 /// A runtime fault: a stable `run.*` code, a human-readable message, and the
 /// source span of the construct that raised it.
 ///
@@ -25,7 +33,7 @@ use crate::write::WriteError;
 /// uncaught.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeError {
-    pub code: &'static str,
+    code: &'static str,
     pub message: String,
     pub span: SourceSpan,
     /// An already-materialized `Error` value. Runtime faults raised by
@@ -43,24 +51,72 @@ pub struct RuntimeError {
     /// the activation that raised it and stays `None` for activations without
     /// module context.
     pub origin: Option<FileId>,
+    /// Present only for `run.depth` faults.
+    call_depth: Option<Box<CallDepthFault>>,
 }
 
 impl RuntimeError {
     /// A fatal, uncatchable runtime fault.
     pub(crate) fn fault(code: &'static str, message: String, span: SourceSpan) -> Self {
+        Self::fatal_unchecked(code, message, span)
+    }
+
+    pub fn fatal(code: &'static str, message: impl Into<String>, span: SourceSpan) -> Self {
+        reject_public_depth_code(code);
+        Self::fatal_unchecked(code, message, span)
+    }
+
+    fn fatal_unchecked(code: &'static str, message: impl Into<String>, span: SourceSpan) -> Self {
         RuntimeError {
             code,
-            message,
+            message: message.into(),
             span,
             throw: None,
             catchable: false,
             transaction_escape: false,
             origin: None,
+            call_depth: None,
+        }
+    }
+
+    pub fn fatal_with_throw(
+        code: &'static str,
+        message: impl Into<String>,
+        span: SourceSpan,
+        throw: Value,
+    ) -> Self {
+        reject_public_depth_code(code);
+        Self::fatal_with_throw_unchecked(code, message, span, throw)
+    }
+
+    fn fatal_with_throw_unchecked(
+        code: &'static str,
+        message: impl Into<String>,
+        span: SourceSpan,
+        throw: Value,
+    ) -> Self {
+        RuntimeError {
+            code,
+            message: message.into(),
+            span,
+            throw: Some(Box::new(throw)),
+            catchable: false,
+            transaction_escape: false,
+            origin: None,
+            call_depth: None,
         }
     }
 
     pub fn entry_surface(message: impl Into<String>) -> Self {
         RuntimeError::fault(RUN_ENTRY_SURFACE, message.into(), SourceSpan::default())
+    }
+
+    pub fn code(&self) -> &'static str {
+        self.code
+    }
+
+    pub fn call_depth(&self) -> Option<&CallDepthFault> {
+        self.call_depth.as_deref()
     }
 
     /// Whether this fault can be handled by a language `catch`.
@@ -128,7 +184,7 @@ impl RuntimeError {
 
 impl marrow_syntax::Diagnose for RuntimeError {
     fn code(&self) -> &str {
-        self.code
+        self.code()
     }
     fn message(&self) -> &str {
         &self.message
@@ -213,6 +269,10 @@ pub const RUN_DEPTH: &str = "run.depth";
 /// instead of recursing. Fixed in v0.1, not configurable.
 pub const CALL_DEPTH_BUDGET: usize = 256;
 
+fn reject_public_depth_code(code: &'static str) {
+    assert_ne!(code, RUN_DEPTH, "use the runtime call-depth constructor");
+}
+
 /// A `run.depth` fault raised at the call site that would have descended past
 /// [`CALL_DEPTH_BUDGET`].
 pub(crate) fn call_depth_exceeded(
@@ -220,14 +280,20 @@ pub(crate) fn call_depth_exceeded(
     observed_depth: usize,
     span: SourceSpan,
 ) -> RuntimeError {
-    RuntimeError::fault(
+    let mut error = RuntimeError::fault(
         RUN_DEPTH,
         format!(
             "call nesting exceeded the call-depth budget while calling `{function_name}` \
              (budget={CALL_DEPTH_BUDGET}, observed_depth={observed_depth})"
         ),
         span,
-    )
+    );
+    error.call_depth = Some(Box::new(CallDepthFault {
+        function_name: function_name.to_string(),
+        budget: CALL_DEPTH_BUDGET,
+        observed_depth,
+    }));
+    error
 }
 
 /// Raise `error` as a catchable language throw on the `Err` channel: the value
@@ -260,6 +326,7 @@ pub(crate) fn raise_with_transaction_escape(
         // The completion carries the file the throw was first raised in; this
         // caller-frame re-span keeps it rather than re-deriving a shallower one.
         origin,
+        call_depth: None,
     }
 }
 
@@ -270,6 +337,7 @@ pub(crate) fn unknown_function(name: &str, span: SourceSpan) -> RuntimeError {
         catchable: false,
         transaction_escape: false,
         origin: None,
+        call_depth: None,
         code: RUN_UNKNOWN_FUNCTION,
         message: format!("the program has no function `{name}`"),
         span,
@@ -283,6 +351,7 @@ pub(crate) fn ambiguous_function(name: &str, span: SourceSpan) -> RuntimeError {
         catchable: false,
         transaction_escape: false,
         origin: None,
+        call_depth: None,
         code: RUN_AMBIGUOUS_FUNCTION,
         message: format!("entry `{name}` is ambiguous; qualify it as `module::{name}`"),
         span,
@@ -296,6 +365,7 @@ pub(crate) fn private_function(name: &str, span: SourceSpan) -> RuntimeError {
         catchable: false,
         transaction_escape: false,
         origin: None,
+        call_depth: None,
         code: RUN_PRIVATE_FUNCTION,
         message: format!("function `{name}` is private to its module"),
         span,
@@ -333,6 +403,7 @@ pub(crate) fn reraise_fault_with_transaction_escape(
         // Kept from the completion so the file the fault was raised in survives
         // this caller-frame re-span.
         origin,
+        call_depth: None,
     }
 }
 
@@ -349,6 +420,7 @@ pub(crate) fn raise_fault(code: &'static str, message: String, span: SourceSpan)
         catchable: true,
         transaction_escape: false,
         origin: None,
+        call_depth: None,
     }
 }
 
@@ -435,6 +507,7 @@ pub(crate) fn key_type_fault(
         catchable: false,
         transaction_escape: false,
         origin: None,
+        call_depth: None,
         code: RUN_TYPE,
         message: format!(
             "a key of type `{}` was given where `{}` is declared",
@@ -536,7 +609,7 @@ mod tests {
     use crate::value::Value;
 
     use super::{
-        RUN_ABSENT, RUN_UNCAUGHT_THROW, RuntimeError, error_value_allocation_count,
+        RUN_ABSENT, RUN_DEPTH, RUN_UNCAUGHT_THROW, RuntimeError, error_value_allocation_count,
         reset_error_value_allocation_count,
     };
 
@@ -625,27 +698,24 @@ mod tests {
 
     #[test]
     fn fatal_error_with_throw_does_not_produce_catch_value() {
-        let fatal = RuntimeError {
-            code: "run.fatal",
-            message: "fatal".into(),
-            span: marrow_syntax::SourceSpan::default(),
-            throw: Some(Box::new(Value::Resource(Vec::new()))),
-            catchable: false,
-            transaction_escape: false,
-            origin: None,
-        };
+        let fatal = RuntimeError::fatal_with_throw(
+            "run.fatal",
+            "fatal",
+            marrow_syntax::SourceSpan::default(),
+            Value::Resource(Vec::new()),
+        );
 
         assert!(fatal.error_value().is_none());
         assert!(matches!(
             fatal.into_catch_value(),
-            Err(error) if error.code == "run.fatal" && error.throw.is_some()
+            Err(error) if error.code() == "run.fatal" && error.throw.is_some()
         ));
 
-        let fatal_uncaught_throw = RuntimeError {
-            code: RUN_UNCAUGHT_THROW,
-            message: "fatal uncaught throw".into(),
-            span: marrow_syntax::SourceSpan::default(),
-            throw: Some(Box::new(Value::Resource(vec![
+        let fatal_uncaught_throw = RuntimeError::fatal_with_throw(
+            RUN_UNCAUGHT_THROW,
+            "fatal uncaught throw",
+            marrow_syntax::SourceSpan::default(),
+            Value::Resource(vec![
                 (
                     marrow_schema::error::CODE.to_string(),
                     Value::Str("debug.fatal".into()),
@@ -654,17 +724,33 @@ mod tests {
                     marrow_schema::error::MESSAGE.to_string(),
                     Value::Str("debugger fatal throw".into()),
                 ),
-            ]))),
-            catchable: false,
-            transaction_escape: false,
-            origin: None,
-        };
+            ]),
+        );
 
         assert!(fatal_uncaught_throw.error_value().is_none());
         assert!(fatal_uncaught_throw.uncaught_throw_code().is_none());
         assert!(matches!(
             fatal_uncaught_throw.into_catch_value(),
-            Err(error) if error.code == RUN_UNCAUGHT_THROW && error.throw.is_some()
+            Err(error) if error.code() == RUN_UNCAUGHT_THROW && error.throw.is_some()
         ));
+    }
+
+    #[test]
+    fn public_fatal_constructors_reject_depth_code() {
+        let span = marrow_syntax::SourceSpan::default();
+        assert!(
+            std::panic::catch_unwind(|| RuntimeError::fatal(RUN_DEPTH, "depth", span)).is_err()
+        );
+        assert!(
+            std::panic::catch_unwind(|| {
+                RuntimeError::fatal_with_throw(
+                    RUN_DEPTH,
+                    "depth",
+                    span,
+                    Value::Resource(Vec::new()),
+                )
+            })
+            .is_err()
+        );
     }
 }

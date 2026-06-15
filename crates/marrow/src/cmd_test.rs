@@ -195,7 +195,7 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat, filter: Option<
                     .unwrap_or(test.source_file.as_path());
                 // An assertion is a test FAIL; any other fault is an ERROR. The
                 // labels are column-aligned with the `ok` line.
-                let (label, status, counter) = if error.code == marrow_run::RUN_ASSERT {
+                let (label, status, counter) = if error.code() == marrow_run::RUN_ASSERT {
                     ("FAIL ", "failed", &mut failed)
                 } else {
                     ("ERROR", "errored", &mut errored)
@@ -207,7 +207,7 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat, filter: Option<
                         file.display(),
                         error.span.line,
                         error.span.column,
-                        error.code,
+                        error.code(),
                         error.message
                     );
                 }
@@ -219,7 +219,7 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat, filter: Option<
                         status,
                         file,
                         error.span,
-                        Some(error.code),
+                        Some(error.code()),
                         capture_output.then(|| captured_output.report_value()),
                     ),
                 );

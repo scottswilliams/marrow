@@ -139,7 +139,11 @@ fn text_args_reject_storage_encodings_and_hostile_scalar_literals() {
         )
         .expect_err("hostile scalar arg should fail");
 
-        assert_eq!(error.code, "run.entry_argument", "{name}={text}: {error:?}");
+        assert_eq!(
+            error.code(),
+            "run.entry_argument",
+            "{name}={text}: {error:?}"
+        );
     }
 }
 
@@ -173,7 +177,7 @@ fn text_args_reject_scalar_conversion_calls() {
         let error = CheckedEntryCall::from_text_args(&program, entry, &args)
             .expect_err("scalar conversion calls are outside the entry argv grammar");
 
-        assert_eq!(error.code, "run.entry_argument", "{entry} {args:?}");
+        assert_eq!(error.code(), "run.entry_argument", "{entry} {args:?}");
     }
 }
 
@@ -216,7 +220,7 @@ fn text_args_reject_sequence_elements_outside_scalar_or_enum_surface() {
     let error = CheckedEntryCall::from_text_args(&program, "test::unsupported", &[("ids", "7")])
         .expect_err("identity sequence args are outside the argv surface");
 
-    assert_eq!(error.code, "run.entry_argument");
+    assert_eq!(error.code(), "run.entry_argument");
 }
 
 #[test]
@@ -272,7 +276,7 @@ fn text_args_decode_single_key_id_and_reject_resource_params() {
     let error =
         CheckedEntryCall::from_text_args(&program, "test::unsupported", &[("book", "anything")])
             .expect_err("resource params are outside the entry argv surface");
-    assert_eq!(error.code, "run.entry_argument");
+    assert_eq!(error.code(), "run.entry_argument");
 }
 
 #[test]
@@ -295,7 +299,7 @@ fn text_args_decode_identity_keys_with_language_scalar_literals() {
 
     let error = CheckedEntryCall::from_text_args(&program, "test::accept", &[("blob", "bXc=")])
         .expect_err("base64 identity keys are outside the arg grammar");
-    assert_eq!(error.code, "run.entry_argument");
+    assert_eq!(error.code(), "run.entry_argument");
 }
 
 #[test]
@@ -355,7 +359,7 @@ fn composite_identity_params_name_the_wrapper_entry_pattern() {
     let error = CheckedEntryCall::from_text_args(&program, "test::mark", &[("id", "student-1")])
         .expect_err("composite identity params are excluded");
 
-    assert_eq!(error.code, "run.entry_argument");
+    assert_eq!(error.code(), "run.entry_argument");
     assert!(
         error.message.contains("wrapper entry"),
         "message should name the wrapper-entry pattern: {}",

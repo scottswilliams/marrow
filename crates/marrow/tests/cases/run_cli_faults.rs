@@ -306,6 +306,44 @@ fn unbounded_recursion_surfaces_a_located_call_depth_fault() {
 }
 
 #[test]
+fn unbounded_recursion_surfaces_a_json_call_depth_payload() {
+    let root = temp_project("run-recursion-json", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             fn sumTo(n: int): int\n\
+             \x20\x20\x20\x20if n <= 0\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20return 0\n\
+             \x20\x20\x20\x20return n + sumTo(n - 1)\n\n\
+             pub fn main()\n\
+             \x20\x20\x20\x20print(sumTo(255))\n",
+        );
+    });
+    let output = marrow_sub("run", &["--format", "json", root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let records = support::json_records_in_stderr(output.stderr);
+    let fault = records.last().expect("json fault");
+    assert_eq!(fault["code"], "run.depth", "{fault}");
+    assert_eq!(fault["data"]["callee"], "sumTo", "{fault}");
+    assert_eq!(fault["data"]["budget"], 256, "{fault}");
+    assert_eq!(fault["data"]["observed_depth"], 257, "{fault}");
+    assert!(
+        fault["source_span"]["file"]
+            .as_str()
+            .is_some_and(|file| file.ends_with("src/app.mw")),
+        "{fault}"
+    );
+    assert_eq!(fault["source_span"]["line"], 6, "{fault}");
+}
+
+#[test]
 fn recursion_within_the_limit_runs_normally() {
     // A recursion that stays inside the 256-frame limit runs to completion and
     // prints its result, so the bound rejects only runaway recursion.

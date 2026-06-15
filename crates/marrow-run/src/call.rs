@@ -100,7 +100,7 @@ pub(crate) fn expr_return_absence_can_propagate(expr: &ExecExpr) -> bool {
 }
 
 pub(crate) fn expression_absent_at_resolution_site(expr: &ExecExpr, error: &RuntimeError) -> bool {
-    error.code == RUN_ABSENT && error.is_catchable() && error.span == expr.span()
+    error.code() == RUN_ABSENT && error.is_catchable() && error.span == expr.span()
 }
 
 fn eval_program_function<'p>(
@@ -252,7 +252,7 @@ fn eval_std_call(
     match result {
         Err(error)
             if target.presence == ReturnPresence::MaybePresent
-                && error.code == RUN_ABSENT
+                && error.code() == RUN_ABSENT
                 && error.span == span =>
         {
             Ok(None)

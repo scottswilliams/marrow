@@ -643,19 +643,22 @@ mod tests {
     #[test]
     fn malformed_checked_duration_literals_fault_without_panicking() {
         let span = SourceSpan::default();
-        assert_eq!(eval_duration_literal("1", span).unwrap_err().code, RUN_TYPE);
         assert_eq!(
-            eval_duration_literal(".seconds", span).unwrap_err().code,
+            eval_duration_literal("1", span).unwrap_err().code(),
+            RUN_TYPE
+        );
+        assert_eq!(
+            eval_duration_literal(".seconds", span).unwrap_err().code(),
             RUN_TYPE
         );
         assert_eq!(
             eval_duration_literal("many.seconds", span)
                 .unwrap_err()
-                .code,
+                .code(),
             RUN_TYPE
         );
         assert_eq!(
-            eval_duration_literal("1.year", span).unwrap_err().code,
+            eval_duration_literal("1.year", span).unwrap_err().code(),
             RUN_TYPE
         );
     }
@@ -665,7 +668,7 @@ mod tests {
         let span = SourceSpan::default();
         let literal = format!("{}.seconds", i128::MAX);
         assert_eq!(
-            eval_duration_literal(&literal, span).unwrap_err().code,
+            eval_duration_literal(&literal, span).unwrap_err().code(),
             RUN_OVERFLOW
         );
     }

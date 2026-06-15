@@ -9,7 +9,7 @@
 use crate::support;
 use support::*;
 
-use marrow_run::{CheckedEntryCall, RuntimeError, Value};
+use marrow_run::{CallDepthFault, CheckedEntryCall, RuntimeError, Value};
 use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 use marrow_store::value::SavedValue;
@@ -142,7 +142,7 @@ fn a_bare_entry_name_matching_two_public_functions_is_ambiguous() {
     ]);
     let error =
         CheckedEntryCall::new(&program, "run", vec![]).expect_err("bare `run` is ambiguous");
-    assert_eq!(error.code, "run.ambiguous_function");
+    assert_eq!(error.code(), "run.ambiguous_function");
     assert!(
         CheckedEntryCall::new(&program, "a::run", vec![]).is_ok(),
         "the qualified entry resolves"
@@ -163,7 +163,7 @@ fn a_qualified_entry_naming_a_private_function_is_rejected() {
     ]);
     let error = CheckedEntryCall::new(&program, "a::secret", vec![])
         .expect_err("a private function is not an entry");
-    assert_eq!(error.code, "run.private_function");
+    assert_eq!(error.code(), "run.private_function");
     assert!(
         CheckedEntryCall::new(&program, "a::open", vec![]).is_ok(),
         "the public entry in the same module resolves"
@@ -171,7 +171,8 @@ fn a_qualified_entry_naming_a_private_function_is_rejected() {
     let missing = CheckedEntryCall::new(&program, "a::ghost", vec![])
         .expect_err("an undeclared entry is unknown");
     assert_eq!(
-        missing.code, "run.unknown_function",
+        missing.code(),
+        "run.unknown_function",
         "a missing name is a distinct fault from a private one"
     );
 }
@@ -219,18 +220,14 @@ fn unbounded_recursion_faults_with_the_call_depth_budget() {
     // fault at the attempted 257th frame rather than overflowing the native stack.
     assert_eq!(marrow_run::CALL_DEPTH_BUDGET, 256);
     let error = run_recursion_entry("test::deep").expect_err("call-depth budget");
-    assert_eq!(error.code, marrow_run::RUN_DEPTH);
-    assert!(
-        error.message.contains("budget=256"),
-        "call-depth payload includes the budget: {error:?}"
-    );
-    assert!(
-        error.message.contains("observed_depth=257"),
-        "call-depth payload includes the observed attempted depth: {error:?}"
-    );
-    assert!(
-        error.message.contains("sumTo"),
-        "call-depth payload names the callee: {error:?}"
+    assert_eq!(error.code(), marrow_run::RUN_DEPTH);
+    assert_eq!(
+        error.call_depth().cloned(),
+        Some(CallDepthFault {
+            function_name: "sumTo".into(),
+            budget: marrow_run::CALL_DEPTH_BUDGET,
+            observed_depth: 257,
+        })
     );
 }
 

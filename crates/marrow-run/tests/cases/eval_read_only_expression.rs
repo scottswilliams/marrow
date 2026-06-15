@@ -440,7 +440,8 @@ fn checked_read_only_expression_is_bound_to_the_program_catalog_context() {
     .expect_err("expression from another catalog context is rejected");
 
     assert_eq!(
-        error.code, "run.unsupported",
+        error.code(),
+        "run.unsupported",
         "wrong program context should fail before evaluating: {error:?}"
     );
 }

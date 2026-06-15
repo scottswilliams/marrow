@@ -66,7 +66,7 @@ fn uncaught_fault_in_entry_module_carries_its_file_id() {
         "pub fn boom(): int\n    const boom = 1 / 0\n    return 0\n",
     )]);
     let error = run_expecting_error(checked_entry!(&program, "a::boom"));
-    assert_eq!(error.code, RUN_DIVIDE_BY_ZERO);
+    assert_eq!(error.code(), RUN_DIVIDE_BY_ZERO);
     assert_eq!(error.origin, Some(FileId(0)));
     assert!(
         program
@@ -88,7 +88,7 @@ fn uncaught_fault_in_cross_module_callee_carries_the_callee_file_id() {
         ),
     ]);
     let error = run_expecting_error(checked_entry!(&program, "a::run"));
-    assert_eq!(error.code, RUN_DIVIDE_BY_ZERO);
+    assert_eq!(error.code(), RUN_DIVIDE_BY_ZERO);
     assert_eq!(error.origin, Some(FileId(1)));
     assert!(
         program
@@ -111,7 +111,7 @@ fn uncaught_throw_from_cross_module_callee_carries_the_raising_frame_file_id() {
         ),
     ]);
     let error = run_expecting_error(checked_entry!(&program, "a::run"));
-    assert_eq!(error.code, RUN_UNCAUGHT_THROW);
+    assert_eq!(error.code(), RUN_UNCAUGHT_THROW);
     assert_eq!(error.origin, Some(FileId(1)));
 }
 
@@ -123,7 +123,7 @@ fn checked_program_entry_fault_carries_origin() {
         Vec::new(),
     )
     .unwrap_err();
-    assert_eq!(error.code, RUN_DIVIDE_BY_ZERO);
+    assert_eq!(error.code(), RUN_DIVIDE_BY_ZERO);
     assert_eq!(error.origin, Some(FileId(0)));
 }
 
@@ -144,6 +144,6 @@ fn outer_frame_does_not_overwrite_inner_origin() {
         ),
     ]);
     let error = run_expecting_error(checked_entry!(&program, "a::outer"));
-    assert_eq!(error.code, RUN_DIVIDE_BY_ZERO);
+    assert_eq!(error.code(), RUN_DIVIDE_BY_ZERO);
     assert_eq!(error.origin, Some(FileId(1)));
 }

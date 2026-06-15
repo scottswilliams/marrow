@@ -85,7 +85,10 @@ fn std_call_arg(
 }
 
 fn assert_unsupported<T>(result: Result<T, RuntimeError>) {
-    assert_eq!(result.err().map(|error| error.code), Some(RUN_UNSUPPORTED));
+    assert_eq!(
+        result.err().map(|error| error.code()),
+        Some(RUN_UNSUPPORTED)
+    );
 }
 
 fn assert_unknown_host_ops(
@@ -143,9 +146,11 @@ fn every_table_row_reaches_a_live_handler() {
         };
         if let Err(error) = result {
             assert_ne!(
-                error.code, RUN_UNSUPPORTED,
+                error.code(),
+                RUN_UNSUPPORTED,
                 "std::{}::{} has a descriptor row but no runtime handler",
-                entry.module, entry.op
+                entry.module,
+                entry.op
             );
         }
     }
@@ -227,7 +232,7 @@ fn clock_date_part_dispatch_keeps_error_surfaces() {
         let host = Host::new();
         let mut env = test_env(&program, &store, &host);
         let error = eval_std("clock", op, &[], span, &mut env).unwrap_err();
-        assert_eq!(error.code, RUN_TYPE);
+        assert_eq!(error.code(), RUN_TYPE);
         assert_eq!(
             error.message,
             format!("`std::clock::{op}` got the wrong number of arguments")

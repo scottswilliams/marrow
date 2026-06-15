@@ -757,7 +757,7 @@ fn a_conversion_rejects_a_value_of_the_wrong_type() {
     // `int(...)` validates; a string value is not an int.
     let program = checked_program("pub fn f(v: int): int\n    return int(v)\n");
     let error = rejected_entry_call(&program, "test::f", vec![Value::Str("x".into())]);
-    assert_eq!(error.code, RUN_TYPE);
+    assert_eq!(error.code(), RUN_TYPE);
 }
 
 #[test]
@@ -1049,7 +1049,7 @@ fn decimal_conversion_distinguishes_malformed_text_from_envelope_overflow() {
     ] {
         let error =
             run_expecting_error(checked_entry!(&program, "test::d", Value::Str(raw.into())));
-        assert_eq!(error.code, RUN_DECIMAL_OVERFLOW);
+        assert_eq!(error.code(), RUN_DECIMAL_OVERFLOW);
         assert_eq!(
             run(checked_entry!(
                 &program,
@@ -1086,7 +1086,7 @@ fn conversion_error_string_previews_are_bounded() {
     raw.push_str("-tail-marker");
     let error = run(checked_entry!(&program, "test::n", Value::Str(raw))).unwrap_err();
 
-    assert_eq!(error.code, RUN_TYPE);
+    assert_eq!(error.code(), RUN_TYPE);
     assert!(error.message.starts_with("cannot convert value \"prefix-"));
     assert!(
         !error.message.contains("tail-marker"),

@@ -81,7 +81,7 @@ fn integer_remainder_by_zero_reports_one_consistent_message() {
     let Err(error) = result else {
         panic!("expected an error, got {result:?}");
     };
-    assert_eq!(error.code, RUN_DIVIDE_BY_ZERO);
+    assert_eq!(error.code(), RUN_DIVIDE_BY_ZERO);
     assert_eq!(error.message, "integer remainder by zero");
 
     // std::math::modulo routes through the same integer-remainder path.
@@ -152,7 +152,7 @@ fn a_local_const_binds_a_runtime_computed_value() {
 fn rejects_an_argument_count_mismatch() {
     let program = checked_program("pub fn add(a: int, b: int): int\n    return a + b\n");
     let error = rejected_entry_call(&program, "test::add", vec![Value::Int(1)]);
-    assert_eq!(error.code, RUN_TYPE);
+    assert_eq!(error.code(), RUN_TYPE);
 }
 
 #[test]

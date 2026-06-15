@@ -49,14 +49,14 @@ fn std_assert_equal_passes_and_renders_scalar_mismatches() {
 
     let program = checked_program("pub fn bad_int()\n    std::assert::equal(1, 2)\n");
     let error = run_expecting_error(checked_entry!(&program, "test::bad_int"));
-    assert_eq!(error.code, RUN_ASSERT);
+    assert_eq!(error.code(), RUN_ASSERT);
     let (_code, message) = error_throw_fields(&error);
     assert_eq!(message, "expected 2, got 1");
 
     let program =
         checked_program("pub fn bad_str()\n    std::assert::equal(\"actual\", \"expected\")\n");
     let error = run_expecting_error(checked_entry!(&program, "test::bad_str"));
-    assert_eq!(error.code, RUN_ASSERT);
+    assert_eq!(error.code(), RUN_ASSERT);
     let (_code, message) = error_throw_fields(&error);
     assert_eq!(message, "expected \"expected\", got \"actual\"");
 }
@@ -65,7 +65,7 @@ fn std_assert_equal_passes_and_renders_scalar_mismatches() {
 fn std_assert_fail_raises_with_its_message() {
     let program = checked_program("pub fn bad()\n    std::assert::fail(\"boom\")\n");
     let error = run_expecting_error(checked_entry!(&program, "test::bad"));
-    assert_eq!(error.code, RUN_ASSERT);
+    assert_eq!(error.code(), RUN_ASSERT);
     let (code, message) = error_throw_fields(&error);
     assert_eq!(code, RUN_ASSERT);
     assert_eq!(message, "boom");

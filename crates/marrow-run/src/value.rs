@@ -742,7 +742,7 @@ mod tests {
             let error =
                 canonical_scalar_text(SavedValue::Bytes(bytes), SourceSpan::default()).unwrap_err();
 
-            assert_eq!(error.code, RUN_TYPE);
+            assert_eq!(error.code(), RUN_TYPE);
             assert!(error.catchable);
         }
     }

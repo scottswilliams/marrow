@@ -110,10 +110,10 @@ pub(crate) fn report_runtime_fault(
                 path.display(),
                 error.span.line,
                 error.span.column,
-                error.code,
+                error.code(),
                 error.message
             ),
-            None => report_simple_error(error.code, &error.message, CheckFormat::Text),
+            None => report_simple_error(error.code(), &error.message, CheckFormat::Text),
         },
         CheckFormat::Json | CheckFormat::Jsonl => {
             write_json_err(serde_json::Value::Object(runtime_fault_json(
@@ -132,6 +132,17 @@ pub(crate) fn runtime_fault_json(
     if let Some(code) = error.uncaught_throw_code() {
         data.insert("code".to_string(), serde_json::json!(code));
     }
+    if let Some(call_depth) = error.call_depth() {
+        data.insert(
+            "callee".to_string(),
+            serde_json::json!(call_depth.function_name),
+        );
+        data.insert("budget".to_string(), serde_json::json!(call_depth.budget));
+        data.insert(
+            "observed_depth".to_string(),
+            serde_json::json!(call_depth.observed_depth),
+        );
+    }
     let source_span = match path {
         Some(path) => serde_json::json!({
             "file": path.display().to_string(),
@@ -141,10 +152,10 @@ pub(crate) fn runtime_fault_json(
         None => serde_json::Value::Null,
     };
     serde_json::Map::from_iter([
-        ("code".to_string(), serde_json::json!(error.code)),
+        ("code".to_string(), serde_json::json!(error.code())),
         (
             "kind".to_string(),
-            serde_json::json!(marrow_syntax::kind_for_code(error.code)),
+            serde_json::json!(marrow_syntax::kind_for_code(error.code())),
         ),
         ("message".to_string(), serde_json::json!(error.message)),
         ("data".to_string(), serde_json::Value::Object(data)),

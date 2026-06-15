@@ -168,24 +168,25 @@ fn activation_completion(
             origin: here,
             transaction_escape,
         },
-        Err(RuntimeError {
-            throw: Some(error),
-            code: RUN_UNCAUGHT_THROW,
-            catchable: true,
-            span,
-            origin,
-            transaction_escape,
-            ..
-        }) => Completion::Threw {
-            error: *error,
-            span,
-            origin: origin.or(here),
-            transaction_escape,
-        },
+        Err(mut error)
+            if error.code() == RUN_UNCAUGHT_THROW
+                && error.is_catchable()
+                && error.throw.is_some() =>
+        {
+            let Some(thrown) = error.throw.take() else {
+                return Err(error.with_origin_from(env.program, module));
+            };
+            Completion::Threw {
+                error: *thrown,
+                span: error.span,
+                origin: error.origin.or(here),
+                transaction_escape: error.transaction_escape,
+            }
+        }
         Err(error) if error.is_catchable() => {
             let transaction_escape = error.is_transaction_escape();
             Completion::Faulted {
-                code: error.code,
+                code: error.code(),
                 message: error.message,
                 span: error.span,
                 origin: error.origin.or(here),

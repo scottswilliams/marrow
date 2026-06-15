@@ -47,15 +47,11 @@ impl StepHook for Recorder {
         locals.sort();
         self.steps.push((span.line, locals, frame.depth()));
         if self.abort_at_line == Some(span.line) {
-            return Err(RuntimeError {
-                code: marrow_run::RUN_UNSUPPORTED,
-                message: "debugger terminate".into(),
+            return Err(RuntimeError::fatal(
+                marrow_run::RUN_UNSUPPORTED,
+                "debugger terminate",
                 span,
-                throw: None,
-                catchable: false,
-                transaction_escape: false,
-                origin: None,
-            });
+            ));
         }
         Ok(())
     }
@@ -207,7 +203,7 @@ fn hook_error_aborts_the_run() {
         checked_entry!(&program, "test::compute"),
     )
     .expect_err("the hook aborts the run");
-    assert_eq!(error.code, marrow_run::RUN_UNSUPPORTED);
+    assert_eq!(error.code(), marrow_run::RUN_UNSUPPORTED);
     assert_eq!(error.message, "debugger terminate");
     // Only the statements up to and including the aborting one were offered.
     let lines: Vec<u32> = hook.steps.iter().map(|(line, _, _)| *line).collect();
@@ -231,11 +227,11 @@ fn fatal_hook_error_with_throw_is_not_caught_by_try() {
         ) -> Result<(), RuntimeError> {
             self.steps.push(span.line);
             if span.line == ABORT_LINE {
-                return Err(RuntimeError {
-                    code: marrow_run::RUN_UNSUPPORTED,
-                    message: "debugger fatal".into(),
+                return Err(RuntimeError::fatal_with_throw(
+                    marrow_run::RUN_UNSUPPORTED,
+                    "debugger fatal",
                     span,
-                    throw: Some(Box::new(Value::Resource(vec![
+                    Value::Resource(vec![
                         (
                             marrow_schema::error::CODE.to_string(),
                             Value::Str("debug.fatal".into()),
@@ -244,11 +240,8 @@ fn fatal_hook_error_with_throw_is_not_caught_by_try() {
                             marrow_schema::error::MESSAGE.to_string(),
                             Value::Str("debugger fatal".into()),
                         ),
-                    ]))),
-                    catchable: false,
-                    transaction_escape: false,
-                    origin: None,
-                });
+                    ]),
+                ));
             }
             Ok(())
         }
@@ -272,7 +265,7 @@ fn fatal_hook_error_with_throw_is_not_caught_by_try() {
     )
     .expect_err("fatal hook error escapes the try");
 
-    assert_eq!(error.code, marrow_run::RUN_UNSUPPORTED);
+    assert_eq!(error.code(), marrow_run::RUN_UNSUPPORTED);
     assert_eq!(error.message, "debugger fatal");
     assert!(!error.catchable);
     assert!(error.throw.is_some());
@@ -296,11 +289,11 @@ fn fatal_uncaught_throw_hook_error_in_callee_is_not_caught_by_caller_try() {
         ) -> Result<(), RuntimeError> {
             self.steps.push(span.line);
             if span.line == INNER_ABORT_LINE {
-                return Err(RuntimeError {
-                    code: marrow_run::RUN_UNCAUGHT_THROW,
-                    message: "debugger fatal throw".into(),
+                return Err(RuntimeError::fatal_with_throw(
+                    marrow_run::RUN_UNCAUGHT_THROW,
+                    "debugger fatal throw",
                     span,
-                    throw: Some(Box::new(Value::Resource(vec![
+                    Value::Resource(vec![
                         (
                             marrow_schema::error::CODE.to_string(),
                             Value::Str("debug.fatal".into()),
@@ -309,11 +302,8 @@ fn fatal_uncaught_throw_hook_error_in_callee_is_not_caught_by_caller_try() {
                             marrow_schema::error::MESSAGE.to_string(),
                             Value::Str("debugger fatal throw".into()),
                         ),
-                    ]))),
-                    catchable: false,
-                    transaction_escape: false,
-                    origin: None,
-                });
+                    ]),
+                ));
             }
             Ok(())
         }
@@ -341,7 +331,7 @@ fn fatal_uncaught_throw_hook_error_in_callee_is_not_caught_by_caller_try() {
     )
     .expect_err("fatal callee hook error escapes the caller try");
 
-    assert_eq!(error.code, marrow_run::RUN_UNCAUGHT_THROW);
+    assert_eq!(error.code(), marrow_run::RUN_UNCAUGHT_THROW);
     assert_eq!(error.message, "debugger fatal throw");
     assert!(!error.catchable);
     assert!(error.throw.is_some());

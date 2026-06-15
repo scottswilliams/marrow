@@ -539,7 +539,7 @@ pub fn assert_run_error<T: std::fmt::Debug>(
     code: &str,
 ) {
     match result {
-        Err(error) => assert_eq!(error.code, code, "{error:?}"),
+        Err(error) => assert_eq!(error.code(), code, "{error:?}"),
         Ok(value) => panic!("expected runtime error {code}, got {value:?}"),
     }
 }
