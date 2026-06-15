@@ -368,7 +368,7 @@ pub struct ModuleFile {
     pub module_name: Option<String>,
 }
 
-/// A source root that could not be read while discovering modules.
+/// A project path that could not be read or made relative to its discovery root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoverError {
     pub code: &'static str,
@@ -433,7 +433,7 @@ pub fn discover_test_modules(
             continue;
         };
         if file_type.is_file() && target.extension().and_then(|ext| ext.to_str()) == Some("mw") {
-            files.push(module_file(project_root, target));
+            files.push(module_file(project_root, target)?);
         } else if file_type.is_dir() {
             collect_mw_files(project_root, &target, &mut files, true)?;
         }
@@ -471,7 +471,7 @@ pub fn test_module_file(
             path.starts_with(&target)
         };
         if selected {
-            return Some(module_file(project_root, path.to_path_buf()));
+            return module_file(project_root, path.to_path_buf()).ok();
         }
     }
     None
@@ -510,7 +510,7 @@ fn collect_mw_files(
             }
         } else if file_type.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("mw")
         {
-            out.push(module_file(source_root, path));
+            out.push(module_file(source_root, path)?);
         }
     }
     Ok(())
@@ -518,18 +518,36 @@ fn collect_mw_files(
 
 /// Build a [`ModuleFile`] for `path`, deriving its path relative to `source_root`
 /// and the module name that relative path implies.
-fn module_file(source_root: &Path, path: PathBuf) -> ModuleFile {
-    // `path` is always discovered by walking down from `source_root`, so it is
-    // an under-root descendant and stripping the prefix cannot fail.
+fn module_file(source_root: &Path, path: PathBuf) -> Result<ModuleFile, DiscoverError> {
     let relative_path = path
         .strip_prefix(source_root)
-        .expect("discovered path is under its source root")
+        .map_err(|_| DiscoverError {
+            code: "project.source_root",
+            path: path.clone(),
+            message: "discovered module file is outside its discovery root".to_string(),
+        })?
         .to_path_buf();
     let module_name = expected_module_name(&relative_path);
-    ModuleFile {
+    Ok(ModuleFile {
         path,
         relative_path,
         module_name,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    #[test]
+    fn module_file_rejects_paths_outside_the_discovery_root() {
+        let error = super::module_file(
+            &PathBuf::from("project/src"),
+            PathBuf::from("project/tests/a.mw"),
+        )
+        .expect_err("outside-root file should fail closed");
+
+        assert_eq!(error.code, "project.source_root");
     }
 }
 
