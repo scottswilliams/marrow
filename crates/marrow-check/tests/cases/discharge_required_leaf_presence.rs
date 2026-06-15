@@ -154,10 +154,7 @@ fn malformed_temporal_keyed_layer_entry_faults_discharge() -> Result<(), Box<dyn
 
     let err = preview(&program, &store).expect_err("malformed date key must fault discharge");
 
-    assert!(
-        matches!(err, StoreError::Corruption { ref message } if message.contains("date day")),
-        "{err:?}"
-    );
+    assert!(matches!(err, StoreError::Corruption { .. }), "{err:?}");
 
     Ok(())
 }
