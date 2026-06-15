@@ -51,7 +51,7 @@ fn apply_publishes_snapshot_epoch_and_data_together_then_run_fences_clean() {
     assert_eq!(store_epoch(&root), Some(baseline_epoch + 1));
     assert_eq!(
         fs::read_to_string(root.join("marrow.catalog.json")).expect("read rendered catalog"),
-        published.to_json_pretty(),
+        published.to_json_pretty().expect("catalog renders"),
         "apply renders marrow.catalog.json from the committed store snapshot"
     );
 

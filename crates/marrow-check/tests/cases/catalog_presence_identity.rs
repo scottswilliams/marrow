@@ -274,7 +274,7 @@ fn committed_leaf_member_records_its_token_in_the_structural_signature_only() {
 
     let accepted = commit_baseline(&root);
 
-    let json = accepted.to_json_pretty();
+    let json = accepted.to_json_pretty().expect("catalog renders");
     assert!(
         !json.contains("acceptedLeaf"),
         "the committed catalog must not persist a redundant acceptedLeaf field: {json}"

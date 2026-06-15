@@ -164,7 +164,11 @@ pub mod catalog {
 
     /// Write `metadata` to the accepted-catalog file at the project root.
     pub fn write_catalog(root: &Path, metadata: &CatalogMetadata) {
-        std::fs::write(catalog_path(root), metadata.to_json_pretty()).expect("write catalog");
+        std::fs::write(
+            catalog_path(root),
+            metadata.to_json_pretty().expect("catalog renders"),
+        )
+        .expect("write catalog");
     }
 
     /// Read the accepted-catalog fixture file at the project root, if one was written. A
@@ -200,7 +204,7 @@ pub mod catalog {
     /// Wrap `entries` in a presence-suite catalog at a fixed schema digest, so a
     /// fixture lists only the entries it cares about and the digest never varies.
     pub fn catalog(entries: Vec<CatalogEntry>) -> CatalogMetadata {
-        CatalogMetadata::new(7, entries)
+        CatalogMetadata::new(7, entries).expect("catalog builds")
     }
 
     /// Mint a deterministic `cat_<32 hex>` stable id from a readable label, so a

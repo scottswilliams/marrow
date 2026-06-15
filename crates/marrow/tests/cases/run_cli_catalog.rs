@@ -90,7 +90,7 @@ fn run_commits_the_pending_catalog_into_the_store_and_renders_the_file() {
     );
     assert_eq!(
         rendered_catalog(&root),
-        snapshot.to_json_pretty(),
+        snapshot.to_json_pretty().expect("catalog renders"),
         "marrow.catalog.json is rendered from the committed store snapshot"
     );
 }
@@ -157,7 +157,7 @@ fn run_repairs_a_missing_catalog_file_from_the_committed_store_snapshot() {
 
     assert_eq!(
         rendered_catalog(&root),
-        snapshot.to_json_pretty(),
+        snapshot.to_json_pretty().expect("catalog renders"),
         "the repair renders the exact committed store snapshot"
     );
 }
@@ -179,7 +179,9 @@ fn run_recreates_the_store_catalog_from_the_committed_file_when_the_store_is_mis
     );
 
     assert_eq!(
-        store_snapshot(&root).to_json_pretty(),
+        store_snapshot(&root)
+            .to_json_pretty()
+            .expect("catalog renders"),
         committed_file,
         "the recreated store catalog matches the committed source-tree artifact"
     );

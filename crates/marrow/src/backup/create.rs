@@ -38,7 +38,7 @@ pub(crate) fn create_backup(
     let _snapshot = store.read_snapshot()?;
 
     let catalog = store.read_catalog_snapshot()?;
-    let catalog_section = catalog_section_bytes(catalog.as_ref());
+    let catalog_section = catalog_section_bytes(catalog.as_ref())?;
 
     let (record_count, state_digest) = scan_state(store)?;
 
@@ -221,7 +221,8 @@ mod tests {
         let (root, program) = committed_program("backup-commit-only-stamp", BOOK_SOURCE);
         let store = TreeStore::memory();
         let epoch = program.catalog.accepted_epoch.expect("accepted epoch");
-        let snapshot = CatalogMetadata::new(epoch, program.catalog.accepted_entries.clone());
+        let snapshot = CatalogMetadata::new(epoch, program.catalog.accepted_entries.clone())
+            .expect("catalog builds");
         store.begin().expect("begin catalog publish");
         store
             .replace_catalog_snapshot(&snapshot)
@@ -278,7 +279,8 @@ mod tests {
         let (root, program) = committed_program("backup-commit-snapshot-drift", BOOK_SOURCE);
         let store = TreeStore::memory();
         let epoch = program.catalog.accepted_epoch.expect("accepted epoch");
-        let snapshot = CatalogMetadata::new(epoch, program.catalog.accepted_entries.clone());
+        let snapshot = CatalogMetadata::new(epoch, program.catalog.accepted_entries.clone())
+            .expect("catalog builds");
         store
             .replace_catalog_snapshot(&snapshot)
             .expect("write accepted catalog snapshot");

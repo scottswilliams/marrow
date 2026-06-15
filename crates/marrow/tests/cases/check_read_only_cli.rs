@@ -127,7 +127,7 @@ fn run_freezes_the_catalog_into_the_store_and_renders_the_file() {
         .expect("run publishes the accepted catalog into the store");
     assert_eq!(
         rendered_catalog(&project),
-        snapshot.to_json_pretty(),
+        snapshot.to_json_pretty().expect("catalog renders"),
         "run renders marrow.catalog.json from the committed store snapshot"
     );
 }
@@ -332,7 +332,7 @@ fn check_preserves_a_valid_catalog_file_without_store_repair() {
 
     assert_eq!(
         rendered_catalog(&project_a),
-        snapshot_b.to_json_pretty(),
+        snapshot_b.to_json_pretty().expect("catalog renders"),
         "ordinary check preserves the source-tree catalog artifact"
     );
     assert_eq!(
@@ -359,9 +359,13 @@ fn check_preserves_a_valid_catalog_file_ahead_of_the_local_store() {
     let file_epoch_two = marrow_catalog::CatalogMetadata::new(
         store_epoch_one.epoch + 1,
         store_epoch_one.entries.clone(),
-    );
-    fs::write(catalog_path(&project), file_epoch_two.to_json_pretty())
-        .expect("write later committed catalog artifact");
+    )
+    .expect("catalog builds");
+    fs::write(
+        catalog_path(&project),
+        file_epoch_two.to_json_pretty().expect("catalog renders"),
+    )
+    .expect("write later committed catalog artifact");
 
     let check = marrow(&["check", dir]);
     assert_eq!(
@@ -371,7 +375,7 @@ fn check_preserves_a_valid_catalog_file_ahead_of_the_local_store() {
     );
     assert_eq!(
         rendered_catalog(&project),
-        file_epoch_two.to_json_pretty(),
+        file_epoch_two.to_json_pretty().expect("catalog renders"),
         "a valid file artifact ahead of the local store is not repaired backward"
     );
 
@@ -388,7 +392,7 @@ fn check_preserves_a_valid_catalog_file_ahead_of_the_local_store() {
     );
     assert_eq!(
         rendered_catalog(&project),
-        file_epoch_two.to_json_pretty(),
+        file_epoch_two.to_json_pretty().expect("catalog renders"),
         "the store-behind fence does not rewind the committed file artifact"
     );
 }

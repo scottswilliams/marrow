@@ -82,7 +82,7 @@ fn opening_a_store_behind_the_accepted_catalog_returns_the_typed_fence_code() {
         .expect("advanced source proposes the next catalog");
     fs::write(
         root.path().join("marrow.catalog.json"),
-        advanced_catalog.to_json_pretty(),
+        advanced_catalog.to_json_pretty().expect("catalog renders"),
     )
     .expect("write advanced accepted catalog");
 

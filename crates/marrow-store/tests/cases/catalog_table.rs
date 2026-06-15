@@ -42,6 +42,7 @@ fn sample_snapshot() -> CatalogMetadata {
             },
         ],
     )
+    .expect("catalog builds")
 }
 
 fn sample_commit_metadata() -> CommitMetadata {
@@ -258,7 +259,8 @@ fn redb_round_trips_a_catalog_digest_used_for_comparison() {
             accepted_index_shape: None,
             accepted_struct: None,
         }],
-    );
+    )
+    .expect("catalog builds");
     let digest = snapshot.digest.clone();
     {
         let store = TreeStore::open(&path).expect("open");

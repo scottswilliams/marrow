@@ -68,10 +68,15 @@ fn manifest_checksum_bytes(manifest: &BackupManifest) -> Vec<u8> {
 /// The catalog section bytes for `snapshot`: the empty section when there is no
 /// accepted catalog, else the canonical catalog JSON. The section is self-bracketing
 /// so the read side decodes it without consulting the manifest.
-pub(super) fn catalog_section_bytes(snapshot: Option<&CatalogMetadata>) -> Vec<u8> {
+pub(super) fn catalog_section_bytes(
+    snapshot: Option<&CatalogMetadata>,
+) -> Result<Vec<u8>, BackupError> {
     match snapshot {
-        None => Vec::new(),
-        Some(snapshot) => snapshot.to_json_pretty().into_bytes(),
+        None => Ok(Vec::new()),
+        Some(snapshot) => snapshot
+            .to_json_pretty()
+            .map(|json| json.into_bytes())
+            .map_err(BackupError::CatalogSerialization),
     }
 }
 

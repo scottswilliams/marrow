@@ -24,6 +24,23 @@ pub(crate) use source_digest::{
 };
 use stable_id::{CatalogIdEntropy, StableIdAllocator};
 
+enum CatalogProposalError {
+    Allocation(io::Error),
+    Catalog(marrow_catalog::CatalogError),
+}
+
+impl From<io::Error> for CatalogProposalError {
+    fn from(error: io::Error) -> Self {
+        Self::Allocation(error)
+    }
+}
+
+impl From<marrow_catalog::CatalogError> for CatalogProposalError {
+    fn from(error: marrow_catalog::CatalogError) -> Self {
+        Self::Catalog(error)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct CatalogKey {
     pub(crate) kind: CatalogEntryKind,
@@ -296,12 +313,19 @@ fn catalog_binding(
     };
     let proposal = match proposal {
         Ok(proposal) => proposal,
-        Err(error) => {
+        Err(CatalogProposalError::Allocation(error)) => {
             diagnostics.push(catalog_diagnostic(
                 first_source_file(&source_entries),
                 format!("failed to allocate catalog identity: {error}"),
             ));
             return allocation_failure_binding(accepted, &source_entries);
+        }
+        Err(CatalogProposalError::Catalog(error)) => {
+            diagnostics.push(catalog_diagnostic(
+                first_source_file(&source_entries),
+                format!("proposed catalog metadata is not valid: {}", error.message),
+            ));
+            None
         }
     };
 
@@ -379,7 +403,7 @@ fn bind_against_accepted(
     source_entries: &[SourceCatalogEntry],
     ids: &mut HashMap<CatalogKey, String>,
     diagnostics: &mut Vec<CheckDiagnostic>,
-) -> io::Result<Option<CatalogMetadata>> {
+) -> Result<Option<CatalogMetadata>, CatalogProposalError> {
     let accepted_index = AcceptedCatalog::new(catalog);
     let source_catalog = SourceCatalog::new(source_entries);
     let mut renames = resolve_renames(
@@ -415,7 +439,14 @@ fn bind_against_accepted(
     if record_signatures_into(program, &mut proposal_entries, Some(catalog)) {
         changed = true;
     }
-    Ok(changed.then(|| CatalogMetadata::new(catalog.epoch + 1, proposal_entries)))
+    if changed {
+        Ok(Some(CatalogMetadata::new(
+            catalog.epoch + 1,
+            proposal_entries,
+        )?))
+    } else {
+        Ok(None)
+    }
 }
 
 /// Resolve each current source entry to its identity — carry an accepted active entry's id
@@ -500,7 +531,7 @@ fn bind_first_run(
     evolve: &EvolveIntents,
     source_entries: &[SourceCatalogEntry],
     diagnostics: &mut Vec<CheckDiagnostic>,
-) -> io::Result<CatalogMetadata> {
+) -> Result<CatalogMetadata, CatalogProposalError> {
     for rename in &evolve.renames {
         report_unresolved_intent(&rename.file, rename.span, diagnostics);
     }
@@ -513,7 +544,7 @@ fn bind_first_run(
         .map(|source| proposed_catalog_entry(source, &mut allocator))
         .collect::<io::Result<_>>()?;
     record_signatures_into(program, &mut proposal_entries, None);
-    Ok(CatalogMetadata::new(1, proposal_entries))
+    Ok(CatalogMetadata::new(1, proposal_entries)?)
 }
 
 /// The `(kind, path) -> stable id` map of a proposal's active entries. Unlike the accepted-only
@@ -1714,7 +1745,7 @@ mod tests {
             path,
             stable_id,
         )];
-        let accepted = CatalogMetadata::new(1, entries.clone());
+        let accepted = CatalogMetadata::new(1, entries.clone()).expect("catalog builds");
         let source = vec![
             source_entry(CatalogEntryKind::Enum, "books::Color"),
             source_entry(CatalogEntryKind::EnumMember, path),
@@ -1761,7 +1792,8 @@ mod tests {
                 reserved_path,
                 "cat_000000000000000000000000000000aa",
             )],
-        );
+        )
+        .expect("catalog builds");
         let source = vec![
             source_entry(CatalogEntryKind::ResourceMember, reserved_path),
             source_entry(CatalogEntryKind::ResourceMember, "books::Book::pages"),

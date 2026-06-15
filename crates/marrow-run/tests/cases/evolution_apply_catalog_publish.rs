@@ -228,7 +228,8 @@ fn apply_fails_closed_when_the_store_catalog_drifts_from_the_witness() {
             .expect("snapshot")
             .expect("baseline snapshot")
             .entries,
-    );
+    )
+    .expect("catalog builds");
     store.begin().expect("begin");
     store
         .replace_catalog_snapshot(&drifted)

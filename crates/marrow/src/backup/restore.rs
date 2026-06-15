@@ -582,6 +582,7 @@ mod tests {
             program.catalog.accepted_epoch.expect("accepted epoch"),
             program.catalog.accepted_entries.clone(),
         )
+        .expect("catalog builds")
     }
 
     /// Seed one book through the managed tree-cell write path, write the accepted
@@ -1151,7 +1152,10 @@ mod tests {
             .first_mut()
             .expect("a catalog entry to tamper");
         entry.path.push_str("-tampered");
-        let catalog = section.to_json_pretty().into_bytes();
+        let catalog = section
+            .to_json_pretty()
+            .expect("catalog renders")
+            .into_bytes();
         reframe_with_matching_checksum(parts.manifest, catalog, parts.data)
     }
 

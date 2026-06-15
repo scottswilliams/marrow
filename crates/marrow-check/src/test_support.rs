@@ -65,8 +65,11 @@ pub fn commit_then_check(root: &Path) -> CheckedProgram {
         .proposal
         .clone()
         .expect("a catalog proposal to commit");
-    std::fs::write(root.join("marrow.catalog.json"), proposal.to_json_pretty())
-        .expect("freeze fixture catalog");
+    std::fs::write(
+        root.join("marrow.catalog.json"),
+        proposal.to_json_pretty().expect("catalog renders"),
+    )
+    .expect("freeze fixture catalog");
     let (report, committed) =
         check_project_with_catalog(root, &test_config(), Some(&proposal)).expect("re-check");
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);

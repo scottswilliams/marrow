@@ -379,6 +379,7 @@ mod tests {
                 },
             ],
         )
+        .expect("catalog builds")
     }
 
     #[test]
@@ -424,7 +425,8 @@ mod tests {
                 accepted_index_shape: None,
                 accepted_struct: None,
             }],
-        );
+        )
+        .expect("catalog builds");
         replace_catalog_snapshot(&mut backend, &smaller).expect("write second");
 
         let read = read_catalog_snapshot(&backend)
@@ -510,7 +512,8 @@ mod tests {
                 accepted_index_shape: None,
                 accepted_struct: None,
             }],
-        );
+        )
+        .expect("catalog builds");
         backend
             .write(&header_key(), encode_header(&snapshot).expect("header"))
             .expect("seed header");

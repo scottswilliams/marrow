@@ -16,8 +16,8 @@ use marrow_syntax::SourceSpan;
 
 use crate::entry::{CheckedEntryCall, run_entry_with_debugger, run_entry_with_host};
 use crate::evolution::{
-    AutoApplyOutcome, FenceError, RunObligation, commit_catalog_baseline, current_engine_profile,
-    fence, try_auto_apply,
+    AutoApplyOutcome, BaselineError, FenceError, RunObligation, commit_catalog_baseline,
+    current_engine_profile, fence, try_auto_apply,
 };
 use crate::host::{Host, Nondeterminism, StepHook, SystemNondeterminism};
 use crate::value::{RunOutput, RunOutputSink};
@@ -273,6 +273,18 @@ impl From<marrow_check::ProjectIoError> for ProjectSessionError {
 impl From<StoreError> for ProjectSessionError {
     fn from(error: StoreError) -> Self {
         Self::Store(error)
+    }
+}
+
+impl From<BaselineError> for ProjectSessionError {
+    fn from(error: BaselineError) -> Self {
+        match error {
+            BaselineError::Store(error) => Self::Store(error),
+            BaselineError::Catalog(error) => Self::Catalog {
+                code: error.code,
+                message: error.message,
+            },
+        }
     }
 }
 

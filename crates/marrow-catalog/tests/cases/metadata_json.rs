@@ -38,7 +38,7 @@ fn literal_entry(
 
 /// Wrap `entries` in a catalog at a fixed epoch so a fixture lists only what it cares about.
 fn catalog(entries: Vec<CatalogEntry>) -> CatalogMetadata {
-    CatalogMetadata::new(7, entries)
+    CatalogMetadata::new(7, entries).expect("catalog builds")
 }
 
 /// Mint a deterministic `cat_<32 hex>` stable id from a readable label.
@@ -69,7 +69,7 @@ fn rejects_alias_and_stable_id_collisions() {
             entry(CatalogEntryKind::Store, "books::^books", "res-book", &[]),
         ]),
     ] {
-        let json = metadata.to_json_pretty();
+        let json = metadata.to_json_pretty().expect("catalog renders");
         let error = CatalogMetadata::from_json(&json).expect_err("collision is rejected");
 
         assert_eq!(error.code, CATALOG_INVALID);
@@ -97,7 +97,7 @@ fn round_trips_stable_ids_aliases_lifecycle_epoch_and_digest() {
         },
     ]);
 
-    let json = metadata.to_json_pretty();
+    let json = metadata.to_json_pretty().expect("catalog renders");
     let parsed = CatalogMetadata::from_json(&json).expect("catalog parses");
 
     assert_eq!(parsed.epoch, 7);
@@ -137,6 +137,49 @@ fn digest_is_independent_of_entry_order() {
 }
 
 #[test]
+fn digest_golden_covers_ordering_and_optional_fields() {
+    let mut store = literal_entry(
+        CatalogEntryKind::Store,
+        "books::^books",
+        "cat_11111111111111111111111111111111",
+        &[],
+    );
+    store.accepted_key_shape = Some("int,string".to_string());
+    let mut index = literal_entry(
+        CatalogEntryKind::StoreIndex,
+        "books::^books::byTitle",
+        "cat_22222222222222222222222222222222",
+        &[],
+    );
+    index.accepted_index_shape =
+        Some("unique=false;keys=cat_33333333333333333333333333333333".to_string());
+    let mut member = literal_entry(
+        CatalogEntryKind::ResourceMember,
+        "books::Book::title",
+        "cat_33333333333333333333333333333333",
+        &["library::Book::name"],
+    );
+    member.accepted_struct = Some("leaf:string".to_string());
+    let reserved = CatalogEntry {
+        lifecycle: CatalogLifecycle::Reserved,
+        ..literal_entry(
+            CatalogEntryKind::EnumMember,
+            "books::Status::archived",
+            "cat_44444444444444444444444444444444",
+            &["books::Status::inactive"],
+        )
+    };
+
+    let metadata =
+        CatalogMetadata::new(11, vec![reserved, member, index, store]).expect("catalog builds");
+
+    assert_eq!(
+        metadata.digest,
+        "sha256:dba9bff05d704d6a311f0cdadb6e2a21c5240a5c8d48c19df281e1ad92e17b99"
+    );
+}
+
+#[test]
 fn round_trips_reserved_lifecycle() {
     let metadata = catalog(vec![CatalogEntry {
         lifecycle: CatalogLifecycle::Reserved,
@@ -148,7 +191,7 @@ fn round_trips_reserved_lifecycle() {
         )
     }]);
 
-    let json = metadata.to_json_pretty();
+    let json = metadata.to_json_pretty().expect("catalog renders");
     assert!(json.contains("\"lifecycle\": \"reserved\""), "{json}");
     let parsed = CatalogMetadata::from_json(&json).expect("catalog parses");
 
@@ -163,11 +206,14 @@ fn non_sha_digest_is_rejected() {
         "res-book",
         &[],
     )]);
-    let json = metadata.to_json_pretty().replacen(
-        &format!("\"digest\": \"{}\"", metadata.digest),
-        "\"digest\": \"weak:0000000000000000\"",
-        1,
-    );
+    let json = metadata
+        .to_json_pretty()
+        .expect("catalog renders")
+        .replacen(
+            &format!("\"digest\": \"{}\"", metadata.digest),
+            "\"digest\": \"weak:0000000000000000\"",
+            1,
+        );
 
     let error = CatalogMetadata::from_json(&json).expect_err("non-SHA digest rejected");
 
@@ -187,7 +233,7 @@ fn removed_lifecycle_is_rejected() {
         "res-book",
         &[],
     )]);
-    let json = metadata.to_json_pretty();
+    let json = metadata.to_json_pretty().expect("catalog renders");
     CatalogMetadata::from_json(&json).expect("active lifecycle parses clean");
 
     let field = "\"lifecycle\": \"active\"";
@@ -209,7 +255,7 @@ fn deprecated_lifecycle_is_rejected() {
         "res-book",
         &[],
     )]);
-    let json = metadata.to_json_pretty();
+    let json = metadata.to_json_pretty().expect("catalog renders");
     CatalogMetadata::from_json(&json).expect("active lifecycle parses clean");
 
     let deprecated = json.replacen(
@@ -232,8 +278,8 @@ fn git_conflict_markers_report_a_typed_merge_conflict() {
     )]);
     let conflicted = format!(
         "<<<<<<< HEAD\n{}\n=======\n{}\n>>>>>>> branch\n",
-        metadata.to_json_pretty(),
-        metadata.to_json_pretty()
+        metadata.to_json_pretty().expect("catalog renders"),
+        metadata.to_json_pretty().expect("catalog renders")
     );
 
     let error = CatalogMetadata::from_json(&conflicted).expect_err("conflict markers are rejected");
@@ -267,9 +313,11 @@ fn parallel_additions_merge_without_regenerating_ids() {
                 &[],
             ),
         ],
-    );
+    )
+    .expect("catalog builds");
 
-    let parsed = CatalogMetadata::from_json(&metadata.to_json_pretty()).expect("catalog parses");
+    let parsed = CatalogMetadata::from_json(&metadata.to_json_pretty().expect("catalog renders"))
+        .expect("catalog parses");
 
     assert_eq!(parsed.entries[0].stable_id, branch_a_id);
     assert_eq!(parsed.entries[1].stable_id, branch_b_id);
@@ -284,7 +332,7 @@ fn rejects_hostile_catalog_json_families() {
         "res-book",
         &[],
     )]);
-    let json = metadata.to_json_pretty();
+    let json = metadata.to_json_pretty().expect("catalog renders");
 
     let duplicate_digest = json.replacen(
         "\"entries\": [",
@@ -317,7 +365,7 @@ fn rejects_hostile_catalog_json_families() {
         "cat_33333333333333333333333333333333",
         &[],
     )]);
-    let error = CatalogMetadata::from_json(&null_path.to_json_pretty())
+    let error = CatalogMetadata::from_json(&null_path.to_json_pretty().expect("catalog renders"))
         .expect_err("null byte path must fail closed");
     assert_eq!(error.code, CATALOG_INVALID);
 
@@ -327,7 +375,7 @@ fn rejects_hostile_catalog_json_families() {
         "cat_44444444444444444444444444444444",
         &["books::Book\0Alias"],
     )]);
-    let error = CatalogMetadata::from_json(&null_alias.to_json_pretty())
+    let error = CatalogMetadata::from_json(&null_alias.to_json_pretty().expect("catalog renders"))
         .expect_err("null byte alias must fail closed");
     assert_eq!(error.code, CATALOG_INVALID);
 
@@ -338,8 +386,12 @@ fn rejects_hostile_catalog_json_families() {
         &[],
     );
     store_with_null_shape.accepted_key_shape = Some("int\0str".to_string());
-    let error = CatalogMetadata::from_json(&catalog(vec![store_with_null_shape]).to_json_pretty())
-        .expect_err("null byte accepted key shape must fail closed");
+    let error = CatalogMetadata::from_json(
+        &catalog(vec![store_with_null_shape])
+            .to_json_pretty()
+            .expect("catalog renders"),
+    )
+    .expect_err("null byte accepted key shape must fail closed");
     assert_eq!(error.code, CATALOG_INVALID);
 
     let mut index_with_null_shape = literal_entry(
@@ -349,8 +401,12 @@ fn rejects_hostile_catalog_json_families() {
         &[],
     );
     index_with_null_shape.accepted_index_shape = Some("unique=false\0".to_string());
-    let error = CatalogMetadata::from_json(&catalog(vec![index_with_null_shape]).to_json_pretty())
-        .expect_err("null byte accepted index shape must fail closed");
+    let error = CatalogMetadata::from_json(
+        &catalog(vec![index_with_null_shape])
+            .to_json_pretty()
+            .expect("catalog renders"),
+    )
+    .expect_err("null byte accepted index shape must fail closed");
     assert_eq!(error.code, CATALOG_INVALID);
 
     let index_without_shape = literal_entry(
@@ -359,8 +415,12 @@ fn rejects_hostile_catalog_json_families() {
         "cat_88888888888888888888888888888888",
         &[],
     );
-    let error = CatalogMetadata::from_json(&catalog(vec![index_without_shape]).to_json_pretty())
-        .expect_err("store index without accepted shape must fail closed");
+    let error = CatalogMetadata::from_json(
+        &catalog(vec![index_without_shape])
+            .to_json_pretty()
+            .expect("catalog renders"),
+    )
+    .expect_err("store index without accepted shape must fail closed");
     assert_eq!(error.code, CATALOG_INVALID);
 
     let mut member_with_null_struct = literal_entry(
@@ -370,8 +430,11 @@ fn rejects_hostile_catalog_json_families() {
         &[],
     );
     member_with_null_struct.accepted_struct = Some("leaf:str\0".to_string());
-    let error =
-        CatalogMetadata::from_json(&catalog(vec![member_with_null_struct]).to_json_pretty())
-            .expect_err("null byte accepted structural signature must fail closed");
+    let error = CatalogMetadata::from_json(
+        &catalog(vec![member_with_null_struct])
+            .to_json_pretty()
+            .expect("catalog renders"),
+    )
+    .expect_err("null byte accepted structural signature must fail closed");
     assert_eq!(error.code, CATALOG_INVALID);
 }

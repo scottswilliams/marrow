@@ -290,6 +290,8 @@ pub(crate) enum BackupError {
     Io(std::io::Error),
     /// A store read or write failed.
     Store(marrow_store::StoreError),
+    /// The accepted catalog section could not be serialized for backup.
+    CatalogSerialization(marrow_catalog::CatalogError),
     /// The backup header or manifest is not a Marrow backup this build understands.
     /// Production reports only `code()` and `message`; the typed `problem` is a
     /// test-observable discriminator (tests assert the precise framing fault and its
@@ -418,6 +420,7 @@ impl BackupError {
         match self {
             Self::Io(_) => "io.write",
             Self::Store(error) => error.code(),
+            Self::CatalogSerialization(_) => "backup.catalog_serialization",
             Self::FormatVersion { .. } => "restore.format_version",
             Self::CorruptChunk { .. } => "restore.corrupt_chunk",
             Self::NotEmpty(_) => "restore.not_empty",
@@ -439,6 +442,9 @@ impl std::fmt::Display for BackupError {
         match self {
             Self::Io(error) => write!(f, "backup i/o failed: {error}"),
             Self::Store(error) => write!(f, "{error}"),
+            Self::CatalogSerialization(error) => {
+                write!(f, "backup catalog serialization failed: {error}")
+            }
             Self::FormatVersion { problem, message } => {
                 let _ = problem;
                 write!(f, "{message}")
@@ -553,6 +559,17 @@ mod tests {
 
     fn catalog(text: &str) -> CatalogId {
         CatalogId::new(text.to_string()).expect("valid catalog id")
+    }
+
+    #[test]
+    fn catalog_serialization_has_a_stable_backup_code() {
+        let catalog_error =
+            marrow_catalog::CatalogMetadata::from_json("{").expect_err("invalid catalog");
+        let catalog_message = catalog_error.to_string();
+        let error = BackupError::CatalogSerialization(catalog_error);
+
+        assert_eq!(error.code(), "backup.catalog_serialization");
+        assert!(error.to_string().contains(&catalog_message));
     }
 
     #[test]

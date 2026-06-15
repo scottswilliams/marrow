@@ -156,7 +156,8 @@ fn evolve_rename_authorizes_a_saved_data_backed_member_rename() {
         report.diagnostics
     );
     let proposal = program.catalog.proposal.expect("proposal");
-    CatalogMetadata::from_json(&proposal.to_json_pretty()).expect("proposal validates");
+    CatalogMetadata::from_json(&proposal.to_json_pretty().expect("catalog renders"))
+        .expect("proposal validates");
     let renamed = proposal
         .entries
         .iter()
@@ -836,7 +837,7 @@ fn evolve_binding_that_would_collide_identity_is_reported_at_check() {
         report.diagnostics
     );
     if let Some(proposal) = program.catalog.proposal {
-        CatalogMetadata::from_json(&proposal.to_json_pretty())
+        CatalogMetadata::from_json(&proposal.to_json_pretty().expect("catalog renders"))
             .expect("a proposal a check produces must validate");
     }
 }

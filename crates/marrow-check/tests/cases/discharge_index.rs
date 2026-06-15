@@ -308,7 +308,8 @@ fn populated_drop_ignores_same_type_addition_in_another_resource_for_rename_hint
                 store_entry("library::^authors", &hex_id(5), "int"),
                 member_entry("library::Book::subtitle", &subtitle_id, "string"),
             ],
-        );
+        )
+        .expect("catalog builds");
         write_catalog(root, &accepted);
     });
     let program = checked(&root);
@@ -449,7 +450,8 @@ fn dropped_populated_store_fails_closed() {
                     &book_member_id,
                 ),
             ],
-        );
+        )
+        .expect("catalog builds");
         write_catalog(root, &accepted);
     });
     let (_report, program) = check_with_accepted(&root);
@@ -527,7 +529,8 @@ fn dropped_populated_singleton_store_fails_closed() {
                     &settings_member_id,
                 ),
             ],
-        );
+        )
+        .expect("catalog builds");
         write_catalog(root, &accepted);
     });
     let (_report, program) = check_with_accepted(&root);
@@ -585,7 +588,8 @@ fn retired_populated_singleton_store_requires_scoped_approval() {
                     &settings_member_id,
                 ),
             ],
-        );
+        )
+        .expect("catalog builds");
         write_catalog(root, &accepted);
     });
     let (_report, program) = check_with_accepted(&root);
@@ -648,7 +652,8 @@ fn dropped_populated_store_without_accepted_key_shape_fails_closed() {
                     &settings_member_id,
                 ),
             ],
-        );
+        )
+        .expect("catalog builds");
         write_catalog(root, &accepted);
     });
     let (_report, program) = check_with_accepted(&root);
@@ -701,7 +706,8 @@ fn dropped_empty_store_is_a_free_no_op() {
                     &book_member_id,
                 ),
             ],
-        );
+        )
+        .expect("catalog builds");
         write_catalog(root, &accepted);
     });
     let (_report, program) = check_with_accepted(&root);

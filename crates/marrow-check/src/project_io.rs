@@ -189,7 +189,12 @@ pub fn render_accepted_catalog_file(
     snapshot: &marrow_catalog::CatalogMetadata,
 ) -> Result<(), ProjectIoError> {
     let path = root.join(marrow_project::CATALOG_FILE_NAME);
-    let desired = snapshot.to_json_pretty();
+    let desired = snapshot
+        .to_json_pretty()
+        .map_err(|error| ProjectIoError::Catalog {
+            code: error.code,
+            message: error.message,
+        })?;
     match fs::read_to_string(&path) {
         Ok(current) if current == desired => return Ok(()),
         Ok(_) => {}

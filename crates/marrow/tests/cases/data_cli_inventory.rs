@@ -208,9 +208,13 @@ fn data_backup_dump_ignores_live_catalog_artifact_while_live_store_is_locked() {
                 let accepted = marrow_catalog::CatalogMetadata::from_json(&accepted)
                     .expect("parse catalog artifact");
                 let drifted =
-                    marrow_catalog::CatalogMetadata::new(accepted.epoch + 1, accepted.entries);
-                fs::write(&catalog_path, drifted.to_json_pretty())
-                    .expect("write drifted catalog artifact");
+                    marrow_catalog::CatalogMetadata::new(accepted.epoch + 1, accepted.entries)
+                        .expect("catalog builds");
+                fs::write(
+                    &catalog_path,
+                    drifted.to_json_pretty().expect("catalog renders"),
+                )
+                .expect("write drifted catalog artifact");
             }
             "absent" => fs::remove_file(&catalog_path).expect("remove catalog artifact"),
             other => panic!("unknown catalog state {other}"),

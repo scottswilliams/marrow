@@ -26,13 +26,13 @@ pub struct CatalogMetadata {
 }
 
 impl CatalogMetadata {
-    pub fn new(epoch: u64, entries: Vec<CatalogEntry>) -> Self {
-        let digest = catalog_digest(epoch, &entries);
-        Self {
+    pub fn new(epoch: u64, entries: Vec<CatalogEntry>) -> Result<Self, CatalogError> {
+        let digest = catalog_digest(epoch, &entries)?;
+        Ok(Self {
             epoch,
             digest,
             entries,
-        }
+        })
     }
 
     pub fn from_stored_parts(
@@ -40,7 +40,7 @@ impl CatalogMetadata {
         stored_digest: String,
         entries: Vec<CatalogEntry>,
     ) -> Result<Self, CatalogError> {
-        let digest = catalog_digest(epoch, &entries);
+        let digest = catalog_digest(epoch, &entries)?;
         if stored_digest != digest {
             return Err(CatalogError::new(format!(
                 "catalog digest `{stored_digest}` does not match computed digest `{digest}`"
@@ -64,8 +64,8 @@ impl CatalogMetadata {
         Self::from_stored_parts(catalog.epoch, catalog.digest, catalog.entries)
     }
 
-    pub fn to_json_pretty(&self) -> String {
-        serde_json::to_string_pretty(self).expect("catalog metadata serializes")
+    pub fn to_json_pretty(&self) -> Result<String, CatalogError> {
+        serde_json::to_string_pretty(self).map_err(|error| CatalogError::new(error.to_string()))
     }
 
     /// Check the identity invariants a committed catalog must hold: non-empty
@@ -477,7 +477,7 @@ struct DigestPayload<'a> {
     entries: Vec<&'a CatalogEntry>,
 }
 
-fn catalog_digest(epoch: u64, entries: &[CatalogEntry]) -> String {
+fn catalog_digest(epoch: u64, entries: &[CatalogEntry]) -> Result<String, CatalogError> {
     let mut canonical_entries: Vec<&CatalogEntry> = entries.iter().collect();
     canonical_entries
         .sort_by(|left, right| digest_entry_order(left).cmp(&digest_entry_order(right)));
@@ -485,8 +485,8 @@ fn catalog_digest(epoch: u64, entries: &[CatalogEntry]) -> String {
         epoch,
         entries: canonical_entries,
     })
-    .expect("catalog digest payload serializes");
-    digest_json(&json)
+    .map_err(|error| CatalogError::new(error.to_string()))?;
+    Ok(digest_json(&json))
 }
 
 type DigestEntryOrder<'a> = (

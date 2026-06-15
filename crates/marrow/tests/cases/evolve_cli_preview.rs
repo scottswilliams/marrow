@@ -103,9 +103,13 @@ fn evolve_preview_from_backup_rejects_current_catalog_drift_with_restore_code() 
     let archive = support::backup_artifact(&root, "baseline.mwbackup");
     let archive_arg = archive.to_str().expect("backup path utf8");
     let accepted = accepted_catalog(&root);
-    let drifted = marrow_catalog::CatalogMetadata::new(accepted.epoch + 1, accepted.entries);
-    fs::write(root.join("marrow.catalog.json"), drifted.to_json_pretty())
-        .expect("write drifted catalog artifact");
+    let drifted = marrow_catalog::CatalogMetadata::new(accepted.epoch + 1, accepted.entries)
+        .expect("catalog builds");
+    fs::write(
+        root.join("marrow.catalog.json"),
+        drifted.to_json_pretty().expect("catalog renders"),
+    )
+    .expect("write drifted catalog artifact");
 
     let output = marrow(&[
         "evolve",

@@ -309,8 +309,11 @@ pub(crate) fn commit_catalog_if_clean(root: impl AsRef<Path>) {
     marrow_run::evolution::commit_catalog_baseline(&store, &program)
         .expect("commit fixture catalog baseline");
     if let Some(snapshot) = store.read_catalog_snapshot().expect("read fixture catalog") {
-        fs::write(root.join("marrow.catalog.json"), snapshot.to_json_pretty())
-            .expect("render fixture catalog");
+        fs::write(
+            root.join("marrow.catalog.json"),
+            snapshot.to_json_pretty().expect("catalog renders"),
+        )
+        .expect("render fixture catalog");
     }
 }
 

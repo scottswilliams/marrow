@@ -2550,6 +2550,7 @@ mod tests {
                 accepted_struct: None,
             }],
         )
+        .expect("catalog builds")
     }
 
     /// A rollback covers the catalog table and data together: a transaction that
@@ -2637,7 +2638,8 @@ mod tests {
                 accepted_index_shape: None,
                 accepted_struct: None,
             }],
-        );
+        )
+        .expect("catalog builds");
         store.begin().expect("begin");
         store
             .replace_catalog_snapshot(&second)

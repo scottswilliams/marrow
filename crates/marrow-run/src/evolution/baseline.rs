@@ -18,6 +18,44 @@ use crate::write_plan::CommitIdAllocation;
 
 use super::window::{StampFacts, metadata_stamp};
 
+#[derive(Debug)]
+pub enum BaselineError {
+    Store(StoreError),
+    Catalog(marrow_catalog::CatalogError),
+}
+
+impl BaselineError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Store(error) => error.code(),
+            Self::Catalog(error) => error.code,
+        }
+    }
+}
+
+impl std::fmt::Display for BaselineError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Store(error) => write!(formatter, "{error}"),
+            Self::Catalog(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for BaselineError {}
+
+impl From<StoreError> for BaselineError {
+    fn from(error: StoreError) -> Self {
+        Self::Store(error)
+    }
+}
+
+impl From<marrow_catalog::CatalogError> for BaselineError {
+    fn from(error: marrow_catalog::CatalogError) -> Self {
+        Self::Catalog(error)
+    }
+}
+
 /// Commit the program's baseline accepted catalog, stamping the activation context in the
 /// same transaction. A first run freezes the pending proposal; a fresh checkout whose
 /// committed `marrow.catalog.json` already bound the program republishes that accepted
@@ -35,8 +73,8 @@ use super::window::{StampFacts, metadata_stamp};
 pub fn commit_catalog_baseline(
     store: &TreeStore,
     program: &CheckedProgram,
-) -> Result<bool, StoreError> {
-    let Some(snapshot) = baseline_snapshot(program) else {
+) -> Result<bool, BaselineError> {
+    let Some(snapshot) = baseline_snapshot(program)? else {
         return Ok(false);
     };
     if snapshot.entries.is_empty()
@@ -58,14 +96,20 @@ pub fn commit_catalog_baseline(
     WritePlan { steps: vec![stamp] }
         .commit(store, false)
         .map(|()| true)
+        .map_err(BaselineError::from)
 }
 
-fn baseline_snapshot(program: &CheckedProgram) -> Option<marrow_catalog::CatalogMetadata> {
-    program.catalog.proposal.clone().or_else(|| {
+fn baseline_snapshot(
+    program: &CheckedProgram,
+) -> Result<Option<marrow_catalog::CatalogMetadata>, marrow_catalog::CatalogError> {
+    if let Some(proposal) = program.catalog.proposal.clone() {
+        return Ok(Some(proposal));
+    }
+    let snapshot = (|| {
         let epoch = program.catalog.accepted_epoch?;
-        Some(marrow_catalog::CatalogMetadata::new(
-            epoch,
-            program.catalog.accepted_entries.clone(),
-        ))
-    })
+        Some((epoch, program.catalog.accepted_entries.clone()))
+    })();
+    snapshot
+        .map(|(epoch, entries)| marrow_catalog::CatalogMetadata::new(epoch, entries))
+        .transpose()
 }

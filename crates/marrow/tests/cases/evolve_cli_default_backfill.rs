@@ -224,7 +224,9 @@ fn evolve_apply_activates_a_local_store_behind_the_committed_catalog_file() {
     assert_eq!(second_record["catalog_epoch"], serde_json::json!(2));
     assert_eq!(store_epoch(&root), Some(2));
     assert_eq!(
-        accepted_catalog(&root).to_json_pretty(),
+        accepted_catalog(&root)
+            .to_json_pretty()
+            .expect("catalog renders"),
         committed_file,
         "apply republishes the committed file catalog into the local store"
     );

@@ -120,7 +120,7 @@ pub fn accepted_catalog(
         store,
     ];
     entries.extend(members);
-    CatalogMetadata::new(epoch, entries)
+    CatalogMetadata::new(epoch, entries).expect("catalog builds")
 }
 
 /// A minimal seeded store rooted at one single-key-identity saved place. Each

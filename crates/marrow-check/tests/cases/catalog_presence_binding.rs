@@ -147,7 +147,8 @@ fn non_active_catalog_entries_and_aliases_do_not_bind_live_source_facts() {
     let resource = program.facts.resource_id(module, "Book").expect("resource");
     assert_eq!(program.facts.resource(resource).catalog_id, None);
     let proposal = program.catalog.proposal.expect("proposal");
-    CatalogMetadata::from_json(&proposal.to_json_pretty()).expect("proposal validates");
+    CatalogMetadata::from_json(&proposal.to_json_pretty().expect("catalog renders"))
+        .expect("proposal validates");
 }
 
 #[test]
@@ -281,7 +282,8 @@ fn catalog_proposal_ids_do_not_collide_with_accepted_stable_ids() {
         report.diagnostics
     );
     let proposal = program.catalog.proposal.expect("proposal");
-    CatalogMetadata::from_json(&proposal.to_json_pretty()).expect("proposal validates");
+    CatalogMetadata::from_json(&proposal.to_json_pretty().expect("catalog renders"))
+        .expect("proposal validates");
 }
 
 #[test]

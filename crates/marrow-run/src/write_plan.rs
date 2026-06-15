@@ -278,7 +278,7 @@ mod tests {
             changed_root_catalog_ids: Vec::new(),
             changed_index_catalog_ids: Vec::new(),
         };
-        let snapshot = marrow_catalog::CatalogMetadata::new(5, Vec::new());
+        let snapshot = marrow_catalog::CatalogMetadata::new(5, Vec::new()).expect("catalog builds");
         let plan = WritePlan {
             steps: vec![PlanStep::StampMetadata {
                 catalog_snapshot: Some(Box::new(snapshot)),
@@ -355,7 +355,8 @@ mod tests {
                 accepted_index_shape: None,
                 accepted_struct: None,
             }],
-        );
+        )
+        .expect("catalog builds");
         store
             .replace_catalog_snapshot(&accepted)
             .expect("publish the accepted catalog");

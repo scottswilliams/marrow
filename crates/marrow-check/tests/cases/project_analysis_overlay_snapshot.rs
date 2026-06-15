@@ -353,7 +353,7 @@ fn analysis_content_identity_tracks_analyzed_sources_and_config() {
     assert_eq!(baseline_identity, content_identity(&repeated));
     assert!(baseline_identity.starts_with("sha256:"));
 
-    let accepted = marrow_catalog::CatalogMetadata::new(99, Vec::new());
+    let accepted = marrow_catalog::CatalogMetadata::new(99, Vec::new()).expect("catalog builds");
     let with_accepted = analyze_project(&root, &cfg, &ProjectSources::new(), Some(&accepted))
         .expect("accepted analyze");
     assert_eq!(baseline_identity, content_identity(&with_accepted));

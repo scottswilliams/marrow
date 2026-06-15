@@ -39,8 +39,11 @@ pub(crate) fn commit_catalog(root: impl AsRef<Path>) -> CheckedProgram {
     marrow_run::evolution::commit_catalog_baseline(&store, &program)
         .expect("commit catalog baseline");
     if let Some(snapshot) = store.read_catalog_snapshot().expect("read store catalog") {
-        fs::write(root.join("marrow.catalog.json"), snapshot.to_json_pretty())
-            .expect("render catalog file");
+        fs::write(
+            root.join("marrow.catalog.json"),
+            snapshot.to_json_pretty().expect("catalog renders"),
+        )
+        .expect("render catalog file");
     }
 
     let accepted = store
