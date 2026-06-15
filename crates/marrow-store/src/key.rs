@@ -32,15 +32,44 @@ impl SavedKey {
         }
     }
 
-    fn order_tag(&self) -> u8 {
+    fn kind(&self) -> KeyKind {
         match self {
-            SavedKey::Bool(_) => KEY_BOOL,
-            SavedKey::Int(_) => KEY_INT,
-            SavedKey::Date(_) => KEY_DATE,
-            SavedKey::Instant(_) => KEY_INSTANT,
-            SavedKey::Duration(_) => KEY_DURATION,
-            SavedKey::Str(_) => KEY_STR,
-            SavedKey::Bytes(_) => KEY_BYTES,
+            SavedKey::Bool(_) => KeyKind::Bool,
+            SavedKey::Int(_) => KeyKind::Int,
+            SavedKey::Date(_) => KeyKind::Date,
+            SavedKey::Instant(_) => KeyKind::Instant,
+            SavedKey::Duration(_) => KeyKind::Duration,
+            SavedKey::Str(_) => KeyKind::Str,
+            SavedKey::Bytes(_) => KeyKind::Bytes,
+        }
+    }
+
+    fn order_tag(&self) -> u8 {
+        self.kind().tag()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum KeyKind {
+    Bool,
+    Int,
+    Date,
+    Instant,
+    Duration,
+    Str,
+    Bytes,
+}
+
+impl KeyKind {
+    fn tag(self) -> u8 {
+        match self {
+            Self::Bool => KEY_BOOL,
+            Self::Int => KEY_INT,
+            Self::Date => KEY_DATE,
+            Self::Instant => KEY_INSTANT,
+            Self::Duration => KEY_DURATION,
+            Self::Str => KEY_STR,
+            Self::Bytes => KEY_BYTES,
         }
     }
 }
@@ -53,10 +82,6 @@ impl PartialOrd for SavedKey {
 
 impl Ord for SavedKey {
     fn cmp(&self, other: &Self) -> Ordering {
-        match self.order_tag().cmp(&other.order_tag()) {
-            Ordering::Equal => {}
-            ordering => return ordering,
-        }
         match (self, other) {
             (SavedKey::Bool(left), SavedKey::Bool(right)) => left.cmp(right),
             (SavedKey::Int(left), SavedKey::Int(right)) => left.cmp(right),
@@ -65,7 +90,7 @@ impl Ord for SavedKey {
             (SavedKey::Duration(left), SavedKey::Duration(right)) => left.cmp(right),
             (SavedKey::Str(left), SavedKey::Str(right)) => left.cmp(right),
             (SavedKey::Bytes(left), SavedKey::Bytes(right)) => left.cmp(right),
-            _ => unreachable!(),
+            _ => self.kind().cmp(&other.kind()),
         }
     }
 }
@@ -188,33 +213,27 @@ pub fn decode_identity_index_key(
 }
 
 pub(crate) fn encode_key_into(key: &SavedKey, out: &mut Vec<u8>) {
+    out.push(key.order_tag());
     match key {
         SavedKey::Bool(value) => {
-            out.push(KEY_BOOL);
             out.push(u8::from(*value));
         }
         SavedKey::Int(value) => {
-            out.push(KEY_INT);
             out.extend_from_slice(&((*value as u64) ^ (1u64 << 63)).to_be_bytes());
         }
         SavedKey::Date(value) => {
-            out.push(KEY_DATE);
             out.extend_from_slice(&((*value as u32) ^ (1u32 << 31)).to_be_bytes());
         }
         SavedKey::Duration(value) => {
-            out.push(KEY_DURATION);
             out.extend_from_slice(&((*value as u128) ^ (1u128 << 127)).to_be_bytes());
         }
         SavedKey::Instant(value) => {
-            out.push(KEY_INSTANT);
             out.extend_from_slice(&((*value as u128) ^ (1u128 << 127)).to_be_bytes());
         }
         SavedKey::Str(value) => {
-            out.push(KEY_STR);
             encode_escaped_bytes(value.as_bytes(), out);
         }
         SavedKey::Bytes(value) => {
-            out.push(KEY_BYTES);
             encode_escaped_bytes(value, out);
         }
     }
@@ -307,6 +326,20 @@ mod tests {
             by_bytes, by_type,
             "encoded key bytes must sort like SavedKey"
         );
+    }
+
+    #[test]
+    fn saved_key_order_matches_encoded_byte_order_pairwise() {
+        let keys = representative_keys();
+        for left in &keys {
+            for right in &keys {
+                assert_eq!(
+                    left.cmp(right),
+                    encode_key_value(left).cmp(&encode_key_value(right)),
+                    "ordering mismatch for {left:?} and {right:?}"
+                );
+            }
+        }
     }
 
     #[test]
