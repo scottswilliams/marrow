@@ -706,19 +706,13 @@ fn diagnostic_record(file: &str, diagnostic: &marrow_syntax::Diagnostic) -> serd
 }
 
 pub(crate) fn write_json(value: serde_json::Value) {
-    println!(
-        "{}",
-        serde_json::to_string(&value).expect("JSON value should serialize")
-    );
+    println!("{value}");
 }
 
 /// Emit one JSON record on standard error. Tooling reports (the trace and dry-run
 /// plan) use this so they never interleave with the program's own stdout output.
 pub(crate) fn write_json_err(value: serde_json::Value) {
-    eprintln!(
-        "{}",
-        serde_json::to_string(&value).expect("JSON value should serialize")
-    );
+    eprintln!("{value}");
 }
 
 const LOWER_HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
