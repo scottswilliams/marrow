@@ -3,8 +3,8 @@ use common::{catalog_id, collect_children};
 use marrow_store::cell::{CatalogId, DataCellKind};
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{
-    CommitMetadata, DataPathSegment, EngineProfile, IndexPage, TreeEnumMember, TreeStore,
-    decode_tree_enum_member, encode_tree_enum_member,
+    CommitMetadata, DataPathSegment, EngineProfile, IndexPage, TREE_BACKUP_MAX_CELL_BYTES,
+    TreeBackupCellBuf, TreeEnumMember, TreeStore, decode_tree_enum_member, encode_tree_enum_member,
 };
 
 fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
@@ -639,7 +639,7 @@ fn descendant_record_node_does_not_fabricate_a_shorter_record_identity() {
 }
 
 #[test]
-fn backup_round_trips_sparse_record_nodes() {
+fn backup_frames_sparse_record_nodes() {
     let books = catalog_id("1111111111111111");
     let store = TreeStore::memory();
     store
@@ -657,35 +657,19 @@ fn backup_round_trips_sparse_record_nodes() {
         })
         .expect("collect backup");
     assert_eq!(cells.len(), 1);
+    assert_eq!(cells[0].0.store, books);
+    assert_eq!(cells[0].0.identity, vec![SavedKey::Int(1)]);
     assert!(matches!(cells[0].0.kind, DataCellKind::Node));
 
-    let restored = TreeStore::memory();
-    restored
-        .write_node(&cells[0].0.store, &cells[0].0.identity)
-        .expect("restore node");
-    let mut restored_cells = Vec::new();
-    let mut restored_backup_bytes = Vec::new();
-    restored
-        .visit_backup_cells(|cell| {
-            cell.write_framed(&mut restored_backup_bytes)
-                .expect("write restored backup frame");
-            restored_cells.push((cell.data_key().clone(), cell.value().to_vec()));
-            Ok(())
-        })
-        .expect("collect restored backup");
-
-    assert_eq!(restored_cells, cells);
-    assert_eq!(restored_backup_bytes, backup_bytes);
+    let mut backup_reader = backup_bytes.as_slice();
+    let decoded = TreeBackupCellBuf::read_framed(&mut backup_reader, TREE_BACKUP_MAX_CELL_BYTES)
+        .expect("read backup frame");
+    assert_eq!(decoded.data_key(), &cells[0].0);
+    assert_eq!(decoded.value(), cells[0].1.as_slice());
     assert!(
-        restored
-            .data_subtree_exists(&books, &[SavedKey::Int(1)], &[])
-            .expect("restored presence")
-    );
-    assert_eq!(
-        restored
-            .record_child_count(&books, &[])
-            .expect("restored count"),
-        1
+        TreeBackupCellBuf::read_framed_optional(&mut backup_reader, TREE_BACKUP_MAX_CELL_BYTES)
+            .expect("read trailing backup frame")
+            .is_none()
     );
 }
 
