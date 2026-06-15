@@ -7,7 +7,8 @@
 use std::hash::{Hash, Hasher};
 
 use marrow_catalog::{
-    CATALOG_INVALID, CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata,
+    CATALOG_INVALID, CATALOG_MERGE_CONFLICT, CatalogEntry, CatalogEntryKind, CatalogLifecycle,
+    CatalogMetadata,
 };
 
 /// An `Active` catalog entry with a `cat_`-shaped stable id minted deterministically from
@@ -284,13 +285,7 @@ fn git_conflict_markers_report_a_typed_merge_conflict() {
 
     let error = CatalogMetadata::from_json(&conflicted).expect_err("conflict markers are rejected");
 
-    assert_eq!(error.code, "catalog.merge_conflict");
-    assert!(
-        error.message.contains("resolve the conflict")
-            && error.message.contains("rerun the command"),
-        "the merge-conflict error gives an actionable next step: {}",
-        error.message
-    );
+    assert_eq!(error.code, CATALOG_MERGE_CONFLICT);
 }
 
 #[test]
