@@ -153,12 +153,11 @@ fn integrity_record(problem: &IntegrityProblem) -> serde_json::Value {
         Some(problem.help),
     );
     if let Some(incomplete) = &problem.incomplete {
-        let object = record.as_object_mut().expect("integrity record object");
-        object.insert(
+        record.insert(
             "store_catalog_id".into(),
             json!(incomplete.store_catalog_id.as_str()),
         );
-        object.insert(
+        record.insert(
             "record_identity".into(),
             json!(
                 incomplete
@@ -168,7 +167,7 @@ fn integrity_record(problem: &IntegrityProblem) -> serde_json::Value {
                     .collect::<Vec<_>>()
             ),
         );
-        object.insert(
+        record.insert(
             "parent_path".into(),
             json!(
                 incomplete
@@ -178,14 +177,13 @@ fn integrity_record(problem: &IntegrityProblem) -> serde_json::Value {
                     .collect::<Vec<_>>()
             ),
         );
-        object.insert(
+        record.insert(
             "missing_member_catalog_id".into(),
             json!(incomplete.missing_member_catalog_id.as_str()),
         );
     }
     if let Some(dangling_ref) = &problem.dangling_ref {
-        let object = record.as_object_mut().expect("integrity record object");
-        object.insert(
+        record.insert(
             "containing_identity".into(),
             json!(
                 dangling_ref
@@ -195,15 +193,15 @@ fn integrity_record(problem: &IntegrityProblem) -> serde_json::Value {
                     .collect::<Vec<_>>()
             ),
         );
-        object.insert(
+        record.insert(
             "field_catalog_id".into(),
             json!(dangling_ref.field_catalog_id.as_str()),
         );
-        object.insert(
+        record.insert(
             "referenced_root".into(),
             json!(dangling_ref.referenced_root),
         );
-        object.insert(
+        record.insert(
             "referenced_identity".into(),
             json!(
                 dangling_ref
@@ -214,7 +212,7 @@ fn integrity_record(problem: &IntegrityProblem) -> serde_json::Value {
             ),
         );
     }
-    record
+    serde_json::Value::Object(record)
 }
 
 fn data_path_segment_json(segment: &DataPathSegment) -> serde_json::Value {

@@ -333,19 +333,18 @@ pub(crate) fn envelope(
     source_span: serde_json::Value,
     severity: Option<&str>,
     help: Option<Option<&str>>,
-) -> serde_json::Value {
-    let mut record = json!({
-        "code": diagnostic.code(),
-        "kind": diagnostic.kind(),
-        "message": diagnostic.message(),
-        "source_span": source_span,
-    });
-    let object = record.as_object_mut().expect("json! built an object");
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut record = serde_json::Map::from_iter([
+        ("code".into(), json!(diagnostic.code())),
+        ("kind".into(), json!(diagnostic.kind())),
+        ("message".into(), json!(diagnostic.message())),
+        ("source_span".into(), source_span),
+    ]);
     if let Some(severity) = severity {
-        object.insert("severity".into(), json!(severity));
+        record.insert("severity".into(), json!(severity));
     }
     if let Some(help) = help {
-        object.insert("help".into(), json!(help));
+        record.insert("help".into(), json!(help));
     }
     record
 }
@@ -353,7 +352,7 @@ pub(crate) fn envelope(
 /// Project diagnostics carry no `help` or byte offsets: they are reported at a
 /// declaration site rather than a byte span.
 fn check_diagnostic_record(diagnostic: &marrow_check::CheckDiagnostic) -> serde_json::Value {
-    envelope(
+    serde_json::Value::Object(envelope(
         diagnostic,
         json!({
             "file": diagnostic.file.display().to_string(),
@@ -362,7 +361,7 @@ fn check_diagnostic_record(diagnostic: &marrow_check::CheckDiagnostic) -> serde_
         }),
         Some(diagnostic.severity.as_str()),
         None,
-    )
+    ))
 }
 
 fn check_diagnostic_payload_text(diagnostic: &marrow_check::CheckDiagnostic) -> Option<String> {
@@ -691,7 +690,7 @@ pub(crate) fn report_io_error(file: &str, error: &std::io::Error, format: CheckF
 }
 
 fn diagnostic_record(file: &str, diagnostic: &marrow_syntax::Diagnostic) -> serde_json::Value {
-    envelope(
+    serde_json::Value::Object(envelope(
         diagnostic,
         json!({
             "file": file,
@@ -702,7 +701,7 @@ fn diagnostic_record(file: &str, diagnostic: &marrow_syntax::Diagnostic) -> serd
         }),
         Some(diagnostic.severity.as_str()),
         Some(diagnostic.help()),
-    )
+    ))
 }
 
 pub(crate) fn write_json(value: serde_json::Value) {
