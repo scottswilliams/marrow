@@ -376,10 +376,10 @@ fn reversed_iteration_supports_early_break() {
 }
 
 #[test]
-fn next_on_a_keyed_child_layer_position() {
+fn neighbors_on_a_keyed_child_layer_position() {
     // `next(^books(1).tags(1))` seeks among the layer's integer positions.
     let program = checked_program(&format!(
-        "{BOOK_TAGS_SCHEMA}pub fn seed()\n    ^books(1).title = \"a\"\n    const x: int = append(^books(1).tags, \"p\")\n    const y: int = append(^books(1).tags, \"q\")\n    const z: int = append(^books(1).tags, \"r\")\n\npub fn nextPos(p: int): int\n    return next(^books(1).tags(p)) ?? 0\n\npub fn firstPos(): int\n    return next(^books(1).tags) ?? 0\n"
+        "{BOOK_TAGS_SCHEMA}pub fn seed()\n    ^books(1).title = \"a\"\n    const x: int = append(^books(1).tags, \"p\")\n    const y: int = append(^books(1).tags, \"q\")\n    const z: int = append(^books(1).tags, \"r\")\n\npub fn nextPos(p: int): int\n    return next(^books(1).tags(p)) ?? 0\n\npub fn prevPos(p: int): int\n    return prev(^books(1).tags(p)) ?? 0\n\npub fn firstPos(): int\n    return next(^books(1).tags) ?? 0\n\npub fn lastPos(): int\n    return prev(^books(1).tags) ?? 0\n"
     ));
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
@@ -394,12 +394,28 @@ fn next_on_a_keyed_child_layer_position() {
         .value,
         Some(Value::Int(2))
     );
-    // `next(^books(1).tags)` (a bare layer) is the first stored position.
+    // The predecessor of 3 is 2.
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::prevPos", Value::Int(3))
+        )
+        .expect("prevPos")
+        .value,
+        Some(Value::Int(2))
+    );
+    // `next(^books(1).tags)` and `prev(^books(1).tags)` seek from bare layer edges.
     assert_eq!(
         run_entry(&store, checked_entry!(&program, "test::firstPos"))
             .expect("firstPos")
             .value,
         Some(Value::Int(1))
+    );
+    assert_eq!(
+        run_entry(&store, checked_entry!(&program, "test::lastPos"))
+            .expect("lastPos")
+            .value,
+        Some(Value::Int(3))
     );
 }
 

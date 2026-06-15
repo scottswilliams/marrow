@@ -78,12 +78,10 @@ fn neighbor_target(expr: &ExecExpr, env: &mut Env<'_>) -> Result<NeighborTarget,
             )),
         };
     }
-    let last_keys = path
-        .layers
-        .last()
-        .expect("non-empty checked above")
-        .1
-        .clone();
+    let Some((_, last_keys)) = path.layers.last() else {
+        return Err(unsupported("`next`/`prev` of this path", span));
+    };
+    let last_keys = last_keys.clone();
     let mut parent_layers = path.layer_addresses;
     if let Some(last) = parent_layers.last_mut() {
         last.keys.clear();
