@@ -164,36 +164,40 @@ pub(crate) fn eval_interpolation(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    let mut decoded_text = Vec::new();
+    enum PreparedInterpolationPart<'a> {
+        Text(String),
+        Expr(&'a ExecExpr),
+    }
+
+    let mut prepared = Vec::with_capacity(parts.len());
     for part in parts {
-        if let InterpolationPart::Text { text, .. } = part {
-            let text =
-                decode_string_escapes(text).map_err(|error| string_literal_fault(error, span))?;
-            // Literal text is validated before expression holes run, so malformed
-            // escapes cannot be hidden behind side effects or expression faults.
-            decoded_text.push(if text.contains(['{', '}']) {
-                text.replace("{{", "{").replace("}}", "}")
-            } else {
-                text
-            });
+        match part {
+            InterpolationPart::Text { text, .. } => {
+                let text = decode_string_escapes(text)
+                    .map_err(|error| string_literal_fault(error, span))?;
+                // Literal text is validated before expression holes run, so malformed
+                // escapes cannot be hidden behind side effects or expression faults.
+                prepared.push(PreparedInterpolationPart::Text(
+                    if text.contains(['{', '}']) {
+                        text.replace("{{", "{").replace("}}", "}")
+                    } else {
+                        text
+                    },
+                ));
+            }
+            InterpolationPart::Expr(expr) => prepared.push(PreparedInterpolationPart::Expr(expr)),
         }
     }
 
-    let mut decoded_text = decoded_text.into_iter();
     let mut result = String::new();
-    for part in parts {
+    for part in prepared {
         match part {
-            InterpolationPart::Text { .. } => {
-                result.push_str(
-                    &decoded_text
-                        .next()
-                        .expect("one decoded text segment per interpolation text part"),
-                );
+            PreparedInterpolationPart::Text(text) => result.push_str(&text),
+            PreparedInterpolationPart::Expr(expr) => {
+                result.push_str(&render(eval_expr(expr, env)?, span)?)
             }
-            InterpolationPart::Expr(expr) => result.push_str(&render(eval_expr(expr, env)?, span)?),
         }
     }
-    debug_assert!(decoded_text.next().is_none());
     Ok(Value::Str(result))
 }
 
