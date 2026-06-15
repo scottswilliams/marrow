@@ -62,7 +62,7 @@ PROBES = {
     "raw-store-test-hook": [
         (
             "crates/marrow/tests/support_data/probe.rs",
-            "fn t() { store.write_node(path); TreeStore::write_data_value(); }\n",
+            "fn t() { store.write_record_presence(path); store.delete_data_subtree(path); TreeStore::write_data_value(); }\n",
         )
     ],
 }
@@ -72,7 +72,7 @@ ABSENCE_PROBES = {
     "raw-store-test-hook": [
         (
             "crates/marrow-store/tests/cases/probe.rs",
-            "fn t() { store.write_node(path); TreeStore::write_data_value(); }\n",
+            "fn t() { store.write_record_presence(path); store.delete_data_subtree(path); TreeStore::write_data_value(); }\n",
         )
     ],
 }
@@ -267,7 +267,8 @@ def scan_raw_store_hook(path: str, text: str) -> list[Hit]:
         return []
     pattern = re.compile(
         r"\bwrite_raw_[A-Za-z0-9_]*\b|\braw_catalog\b|"
-        r"\bTreeStore::write_data_value\b|\bwrite_node\s*\(|\bdelete_data_subtree\s*\("
+        r"\bTreeStore::write_data_value\b|\bTreeStore::write_record_presence\b|"
+        r"\.\s*write_record_presence\s*\(|\bwrite_node\s*\(|\bdelete_data_subtree\s*\("
     )
     return [
         Hit("raw-store-test-hook", path, line_no(text, match.start()), matched_line(text, match.start()))

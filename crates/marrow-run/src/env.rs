@@ -545,7 +545,9 @@ impl<'p> Env<'p> {
     fn guard_plan_traversal(&self, plan: &WritePlan, span: SourceSpan) -> Result<(), RuntimeError> {
         for step in &plan.steps {
             match step {
-                PlanStep::WriteNode { address } => self.guard_record_node_write(address, span)?,
+                PlanStep::WriteRecordPresence { address } => {
+                    self.guard_record_presence_write(address, span)?
+                }
                 PlanStep::WriteDataNode { address } => self.guard_data_write(address, span)?,
                 PlanStep::WriteData { address, .. } => self.guard_data_write(address, span)?,
                 PlanStep::DeleteData { address } => self.guard_data_delete(address, span)?,
@@ -574,7 +576,7 @@ impl<'p> Env<'p> {
                 PlanStep::DeleteIndexSubtree { address } => {
                     self.guard_index_subtree_delete(address, span)?
                 }
-                PlanStep::WriteNode { .. }
+                PlanStep::WriteRecordPresence { .. }
                 | PlanStep::WriteDataNode { .. }
                 | PlanStep::WriteData { .. }
                 | PlanStep::DeleteData { .. }
@@ -616,7 +618,7 @@ impl<'p> Env<'p> {
         Ok(())
     }
 
-    fn guard_record_node_write(
+    fn guard_record_presence_write(
         &self,
         address: &DataAddress,
         span: SourceSpan,
@@ -827,7 +829,7 @@ fn changed_catalog_ids(steps: &[PlanStep]) -> (Vec<CatalogId>, Vec<CatalogId>) {
     let mut indexes = BTreeSet::new();
     for step in steps {
         match step {
-            PlanStep::WriteNode { address }
+            PlanStep::WriteRecordPresence { address }
             | PlanStep::WriteDataNode { address }
             | PlanStep::WriteData { address, .. }
             | PlanStep::DeleteData { address }

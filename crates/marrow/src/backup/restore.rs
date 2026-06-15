@@ -467,7 +467,7 @@ fn validate_stream_integrity(
 fn restore_cell(store: &TreeStore, cell: &TreeBackupCellBuf) -> Result<(), BackupError> {
     let target = cell.data_key();
     match &target.kind {
-        DataCellKind::Node => store.write_node(&target.store, &target.identity)?,
+        DataCellKind::Node => store.write_record_presence(&target.store, &target.identity)?,
         DataCellKind::PathNode { path } => {
             store.write_data_node(&target.store, &target.identity, path)?
         }

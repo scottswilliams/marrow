@@ -106,7 +106,7 @@ pub(crate) fn plan_resource_write(
     let mut steps = vec![PlanStep::DeleteData {
         address: data_address(place, identity, &[], &[], span)?,
     }];
-    steps.push(record_node_step(place, identity, span)?);
+    steps.push(record_presence_step(place, identity, span)?);
     for (path, bytes) in to_write {
         steps.push(PlanStep::WriteData {
             address: data_address(place, identity, &[], &path, span)?,
@@ -192,7 +192,7 @@ pub(crate) fn plan_field_write(
     check_type(field, leaf, value)?;
     reject_field_unique_conflicts(index_context, field, value)?;
     let mut steps = vec![
-        record_node_step(place, identity, span)?,
+        record_presence_step(place, identity, span)?,
         PlanStep::WriteData {
             address: data_address(place, identity, &[], &[field.to_string()], span)?,
             value: value.bytes()?,
@@ -219,7 +219,7 @@ pub(crate) fn plan_identity_field_write(
     })?;
     reject_identity_field_unique_conflicts(index_context, field, keys)?;
     let mut steps = vec![
-        record_node_step(place, identity, span)?,
+        record_presence_step(place, identity, span)?,
         PlanStep::WriteData {
             address: data_address(place, identity, &[], &[field.to_string()], span)?,
             value: staged_identity_value(field, leaf, keys, referenced_arity)?,
@@ -384,7 +384,7 @@ pub(crate) fn plan_layer_leaf_write(
     check_type(&layer.name, leaf, value)?;
     Ok(WritePlan {
         steps: vec![
-            record_node_step(place, identity, span)?,
+            record_presence_step(place, identity, span)?,
             PlanStep::WriteData {
                 address: DataAddress::layer_prefix(place, identity, layers, span)
                     .map_err(store_error)?,
@@ -411,7 +411,7 @@ pub(crate) fn plan_layer_identity_leaf_write(
     };
     Ok(WritePlan {
         steps: vec![
-            record_node_step(place, identity, span)?,
+            record_presence_step(place, identity, span)?,
             PlanStep::WriteData {
                 address: DataAddress::layer_prefix(place, identity, layers, span)
                     .map_err(store_error)?,
@@ -437,7 +437,7 @@ pub(crate) fn plan_nested_field_write(
     check_type(field, leaf, value)?;
     Ok(WritePlan {
         steps: vec![
-            record_node_step(place, identity, span)?,
+            record_presence_step(place, identity, span)?,
             PlanStep::WriteData {
                 address: data_address(place, identity, layers, &[field.to_string()], span)?,
                 value: value.bytes()?,
@@ -462,7 +462,7 @@ pub(crate) fn plan_nested_identity_field_write(
     })?;
     Ok(WritePlan {
         steps: vec![
-            record_node_step(place, identity, span)?,
+            record_presence_step(place, identity, span)?,
             PlanStep::WriteData {
                 address: data_address(place, identity, layers, &[field.to_string()], span)?,
                 value: staged_identity_value(field, leaf, keys, referenced_arity)?,
@@ -497,7 +497,7 @@ pub(crate) fn plan_layer_group_write(
     let mut steps = vec![PlanStep::DeleteData {
         address: entry.clone(),
     }];
-    steps.push(record_node_step(place, identity, span)?);
+    steps.push(record_presence_step(place, identity, span)?);
     steps.push(PlanStep::WriteDataNode { address: entry });
     for (path, bytes) in to_write {
         steps.push(PlanStep::WriteData {
@@ -570,12 +570,12 @@ fn next_after(highest: i64) -> Result<i64, WriteError> {
     })
 }
 
-fn record_node_step(
+fn record_presence_step(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
     span: SourceSpan,
 ) -> Result<PlanStep, WriteError> {
-    Ok(PlanStep::WriteNode {
+    Ok(PlanStep::WriteRecordPresence {
         address: DataAddress::record(place, identity, span).map_err(store_error)?,
     })
 }

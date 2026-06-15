@@ -443,8 +443,8 @@ fn record_and_index_child_navigation_use_catalog_roots() {
 
     for id in [2, 1, 3] {
         store
-            .write_node(&books, &[SavedKey::Int(id)])
-            .expect("write record node");
+            .write_record_presence(&books, &[SavedKey::Int(id)])
+            .expect("write record presence");
         store
             .write_index_entry(
                 &by_shelf,
@@ -542,14 +542,14 @@ fn record_navigation_requires_node_cells() {
         )
         .expect("write orphan leaf debris");
     store
-        .write_node(&books, &[SavedKey::Int(2)])
-        .expect("write record node");
+        .write_record_presence(&books, &[SavedKey::Int(2)])
+        .expect("write record presence");
 
     assert!(
         !store
             .data_subtree_exists(&books, &[SavedKey::Int(1)], &[])
             .expect("record presence"),
-        "a leaf without its record node is not record presence"
+        "a leaf without its record presence is not record presence"
     );
     assert_eq!(
         store.record_child_count(&books, &[]).expect("record count"),
@@ -573,11 +573,11 @@ fn record_navigation_cursors_do_not_require_existing_anchor_nodes() {
     let store = TreeStore::memory();
 
     store
-        .write_node(&books, &[SavedKey::Int(1)])
-        .expect("write first record node");
+        .write_record_presence(&books, &[SavedKey::Int(1)])
+        .expect("write first record presence");
     store
-        .write_node(&books, &[SavedKey::Int(3)])
-        .expect("write second record node");
+        .write_record_presence(&books, &[SavedKey::Int(3)])
+        .expect("write second record presence");
 
     assert_eq!(
         store
@@ -594,19 +594,19 @@ fn record_navigation_cursors_do_not_require_existing_anchor_nodes() {
 }
 
 #[test]
-fn descendant_record_node_does_not_fabricate_a_shorter_record_identity() {
+fn descendant_record_presence_does_not_fabricate_a_shorter_record_identity() {
     let books = catalog_id("1111111111111111");
     let store = TreeStore::memory();
 
     store
-        .write_node(&books, &[SavedKey::Int(1), SavedKey::Int(2)])
-        .expect("write composite record node");
+        .write_record_presence(&books, &[SavedKey::Int(1), SavedKey::Int(2)])
+        .expect("write composite record presence");
 
     assert!(
         !store
             .data_subtree_exists(&books, &[SavedKey::Int(1)], &[])
             .expect("short identity presence"),
-        "a descendant node is not the shorter identity's record node"
+        "a descendant node is not the shorter identity's record presence"
     );
     assert_eq!(
         store
@@ -639,12 +639,12 @@ fn descendant_record_node_does_not_fabricate_a_shorter_record_identity() {
 }
 
 #[test]
-fn backup_frames_sparse_record_nodes() {
+fn backup_frames_sparse_record_presences() {
     let books = catalog_id("1111111111111111");
     let store = TreeStore::memory();
     store
-        .write_node(&books, &[SavedKey::Int(1)])
-        .expect("write sparse record node");
+        .write_record_presence(&books, &[SavedKey::Int(1)])
+        .expect("write sparse record presence");
 
     let mut cells = Vec::new();
     let mut backup_bytes = Vec::new();
@@ -762,12 +762,12 @@ fn owned_backup_cell_frame_feed_matches_read_bytes() {
 }
 
 #[test]
-fn for_each_record_visits_singleton_record_node() {
+fn for_each_record_visits_singleton_record_presence() {
     let settings = catalog_id("1111111111111111");
     let store = TreeStore::memory();
     store
-        .write_node(&settings, &[])
-        .expect("write singleton record node");
+        .write_record_presence(&settings, &[])
+        .expect("write singleton record presence");
 
     let mut visited = Vec::new();
     store

@@ -20,7 +20,7 @@ use support::write;
 use support_data::{
     checked_place, checked_program, delete_tree_path, encode_identity_keys, field_path,
     integrity_problem, json, keyed_field_path, marrow, member_path_catalog_id, native_project,
-    seeded_project, write_orphan_cell, write_record_node, write_tree_node, write_tree_value,
+    seeded_project, write_orphan_cell, write_record_presence, write_tree_node, write_tree_value,
     write_tree_value_without_node,
 };
 use support_evolve::{
@@ -101,8 +101,8 @@ fn assert_store_error_corruption(error: marrow_store::StoreError) {
 #[test]
 fn tooling_rejects_malformed_temporal_root_keys() {
     let project = temporal_key_project("data-tooling-malformed-temporal-root");
-    write_record_node(&project, "events", &[SavedKey::Date(0)]);
-    write_record_node(
+    write_record_presence(&project, "events", &[SavedKey::Date(0)]);
+    write_record_presence(
         &project,
         "events",
         &[SavedKey::Date(SUPPORTED_DATE_MAX_DAYS + 1)],
@@ -298,7 +298,7 @@ fn data_integrity_reports_missing_required_child_per_keyed_entry() {
         DataPathSegment::Key(SavedKey::Int(7)),
         DataPathSegment::Member(mood_id),
     ];
-    write_record_node(&project, "logs", &[SavedKey::Int(1)]);
+    write_record_presence(&project, "logs", &[SavedKey::Int(1)]);
     write_tree_value(
         &project,
         "logs",
@@ -400,7 +400,7 @@ fn data_integrity_reports_path_nodes_outside_keyed_group_entries() {
         &["meta"],
     ))];
 
-    write_record_node(&project, "items", &[SavedKey::Int(1)]);
+    write_record_presence(&project, "items", &[SavedKey::Int(1)]);
     write_tree_node(&project, "items", &[SavedKey::Int(1)], &label_path);
     write_tree_node(&project, "items", &[SavedKey::Int(1)], &tag_path);
     write_tree_node(&project, "items", &[SavedKey::Int(1)], &meta_path);
@@ -434,7 +434,7 @@ fn data_integrity_does_not_require_missing_optional_fields() {
     );
     let dir = project.to_str().unwrap().to_string();
     let place = checked_place(&project, "counter");
-    write_record_node(&project, "counter", &[SavedKey::Int(1)]);
+    write_record_presence(&project, "counter", &[SavedKey::Int(1)]);
     write_tree_value(
         &project,
         "counter",
@@ -703,7 +703,7 @@ fn data_integrity_reports_an_undeclared_member_cell_as_data_orphan() {
 }
 
 #[test]
-fn data_integrity_reports_a_leaf_without_its_record_node_as_data_orphan() {
+fn data_integrity_reports_a_leaf_without_its_record_presence_as_data_orphan() {
     let project = native_project("data-integrity-leaf-without-node");
     let dir = project.to_str().unwrap().to_string();
     let place = checked_place(&project, "counter");
@@ -982,7 +982,7 @@ fn data_integrity_reports_a_dangling_identity_leaf_reference() {
         "{value}"
     );
 
-    write_record_node(&project, "authors", &[SavedKey::Int(7)]);
+    write_record_presence(&project, "authors", &[SavedKey::Int(7)]);
     let repaired = marrow(&["data", "integrity", "--format", "json", &dir]);
 
     assert_eq!(repaired.status.code(), Some(0), "{repaired:?}");

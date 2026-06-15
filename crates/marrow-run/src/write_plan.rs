@@ -45,7 +45,7 @@ impl CommitIdAllocation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PlanStep {
-    WriteNode {
+    WriteRecordPresence {
         address: DataAddress,
     },
     WriteDataNode {
@@ -140,7 +140,7 @@ impl WritePlan {
 
     pub fn steps(&self) -> impl Iterator<Item = (WriteOp, WriteTarget, Option<&[u8]>)> {
         self.steps.iter().map(|step| match step {
-            PlanStep::WriteNode { address } | PlanStep::WriteDataNode { address } => {
+            PlanStep::WriteRecordPresence { address } | PlanStep::WriteDataNode { address } => {
                 (WriteOp::Write, data_target(address), None)
             }
             PlanStep::WriteData { address, value } => {
@@ -178,8 +178,8 @@ impl WritePlan {
 fn apply_steps(steps: Vec<PlanStep>, store: &TreeStore) -> Result<(), StoreError> {
     for step in steps {
         match step {
-            PlanStep::WriteNode { address } => {
-                store.write_node(&address.store, &address.identity)?
+            PlanStep::WriteRecordPresence { address } => {
+                store.write_record_presence(&address.store, &address.identity)?
             }
             PlanStep::WriteDataNode { address } => {
                 store.write_data_node(&address.store, &address.identity, &address.path)?

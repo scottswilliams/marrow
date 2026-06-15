@@ -496,7 +496,7 @@ pub fn writeNote(day: date, note_day: date)
 fn malformed_date_keyed_root_faults_before_count_presence_or_iteration() {
     let program = checked_program(DATE_KEYED_EVENTS);
     let store = TreeStore::memory();
-    write_record_node(
+    write_record_presence(
         &program,
         &store,
         "events",
@@ -592,7 +592,7 @@ fn malformed_date_keyed_layer_presence_scans_past_valid_children() {
 fn wrong_scalar_temporal_keys_fault_before_traversal_results() {
     let program = checked_program(DATE_KEYED_EVENTS);
     let store = TreeStore::memory();
-    write_record_node(
+    write_record_presence(
         &program,
         &store,
         "events",

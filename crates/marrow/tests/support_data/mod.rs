@@ -140,7 +140,7 @@ pub(crate) fn write_tree_value(
     fs::create_dir_all(&store_dir).expect("create store dir");
     let store = TreeStore::open(&store_dir.join("marrow.redb")).expect("open native store");
     let store_id = checked_catalog_id(&place.store_catalog_id);
-    write_record_node_for_store(&store, &store_id, identity);
+    write_record_presence_for_store(&store, &store_id, identity);
     store
         .write_data_value(&store_id, identity, path, value)
         .expect("write tree-cell value");
@@ -158,7 +158,7 @@ pub(crate) fn write_tree_values(
     let store = TreeStore::open(&store_dir.join("marrow.redb")).expect("open native store");
     let store_id = checked_catalog_id(&place.store_catalog_id);
     for identity in identities {
-        write_record_node_for_store(&store, &store_id, &identity);
+        write_record_presence_for_store(&store, &store_id, &identity);
         store
             .write_data_value(&store_id, &identity, path, value.to_vec())
             .expect("write tree-cell value");
@@ -176,7 +176,7 @@ pub(crate) fn write_tree_node(
     fs::create_dir_all(&store_dir).expect("create store dir");
     let store = TreeStore::open(&store_dir.join("marrow.redb")).expect("open native store");
     let store_id = checked_catalog_id(&place.store_catalog_id);
-    write_record_node_for_store(&store, &store_id, identity);
+    write_record_presence_for_store(&store, &store_id, identity);
     store
         .write_data_node(&store_id, identity, path)
         .expect("write tree-cell path node");
@@ -196,19 +196,19 @@ pub(crate) fn delete_tree_path(
         .expect("delete tree-cell path");
 }
 
-pub(crate) fn write_record_node(project: &Path, root: &str, identity: &[SavedKey]) {
+pub(crate) fn write_record_presence(project: &Path, root: &str, identity: &[SavedKey]) {
     let place = checked_place(project, root);
     let store_dir = project.join(".data");
     fs::create_dir_all(&store_dir).expect("create store dir");
     let store = TreeStore::open(&store_dir.join("marrow.redb")).expect("open native store");
     let store_id = checked_catalog_id(&place.store_catalog_id);
-    write_record_node_for_store(&store, &store_id, identity);
+    write_record_presence_for_store(&store, &store_id, identity);
 }
 
-fn write_record_node_for_store(store: &TreeStore, store_id: &CatalogId, identity: &[SavedKey]) {
+fn write_record_presence_for_store(store: &TreeStore, store_id: &CatalogId, identity: &[SavedKey]) {
     store
-        .write_node(store_id, identity)
-        .expect("write tree-cell node");
+        .write_record_presence(store_id, identity)
+        .expect("write record presence");
 }
 
 pub(crate) fn write_tree_value_without_node(

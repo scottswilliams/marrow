@@ -597,7 +597,7 @@ fn stage_obligation(
         Verdict::Transform { reads } => {
             let mut count = 0usize;
             let mut stage = |address: DataAddress, value| {
-                store.write_node(&address.store, &address.identity)?;
+                store.write_record_presence(&address.store, &address.identity)?;
                 store.write_data_value(&address.store, &address.identity, &address.path, value)?;
                 count += 1;
                 Ok(())

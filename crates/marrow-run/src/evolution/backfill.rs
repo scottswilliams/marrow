@@ -72,7 +72,7 @@ pub(super) fn stage_default_backfill(
                     message: "default target presence changed during staging".to_string(),
                 })?;
         } else {
-            store.write_node(sid, identity)?;
+            store.write_record_presence(sid, identity)?;
             store.write_data_value(sid, identity, path, value.encoded.clone())?;
             count += 1;
         }

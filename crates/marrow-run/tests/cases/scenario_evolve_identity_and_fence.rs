@@ -71,7 +71,7 @@ fn adding_a_sparse_identity_field_by_evolution_preserves_old_records_and_admits_
     });
 
     // Commit the baseline schema and seed a book plus an author under it, exactly as the
-    // runtime write path would: a record node keyed by its id, then its member cells.
+    // runtime write path would: whole-record presence keyed by id, then member cells.
     let baseline = commit_then_check(&root).expect("committed fixture");
     let books = root_place(&baseline, "books")?;
     let authors = root_place(&baseline, "authors")?;

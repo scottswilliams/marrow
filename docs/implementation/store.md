@@ -19,7 +19,7 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
   transaction and invisible to data/index/meta access. A read verifies the stored
   header's canonical digest against the decoded rows and rejects any mismatch as
   corruption.
-- **Backup** — `backup` streams data-family record nodes, keyed group-entry path nodes, and value cells; index cells are rebuilt and commit metadata is restamped from the manifest on restore, never archived.
+- **Backup** — `backup` streams data-family record presence cells, keyed group-entry path nodes, and value cells; index cells are rebuilt and commit metadata is restamped from the manifest on restore, never archived.
 
 ## Modules
 
@@ -59,7 +59,7 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 
 ## Read next
 
-- `crates/marrow-store/src/tree.rs` — `TreeStore::memory` / `open` / `open_read_only` to construct; `write_data_node` / `write_data_value` / `read_data_value` / `delete_data_subtree` for the write/read primitives. A data path node is a hidden group-entry presence cell at the path prefix; payload reads only use the value-suffixed key.
+- `crates/marrow-store/src/tree.rs` — `TreeStore::memory` / `open` / `open_read_only` to construct; `write_record_presence` / `write_data_node` / `write_data_value` / `read_data_value` / `delete_data_subtree` for the write/read primitives. Record presence is the root cell for a saved identity; a data path node is a hidden group-entry presence cell at the path prefix. Payload reads only use the value-suffixed key.
 - `crates/marrow-store/src/tree.rs` — `scan_children_until` / `next_child_after` / `for_each_page_entry`: the one paged-scan-plus-decode engine all navigation routes through.
 - `crates/marrow-store/src/cell.rs` — `decode_data_cell_key` / `CellKey::data_path_prefix` / `CellKey::data_path_value` / `family`: the authoritative v0 key grammar.
 - `crates/marrow-store/src/key.rs` — `encode_key_into` / `encode_escaped_bytes`: why stored byte order equals typed key order.

@@ -9,7 +9,7 @@ use crate::support_data;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 use support_data::{
-    checked_place, field_path, json, marrow, native_project, seeded_project, write_record_node,
+    checked_place, field_path, json, marrow, native_project, seeded_project, write_record_presence,
     write_tree_values,
 };
 
@@ -43,7 +43,7 @@ fn data_stats_counts_roots_and_cells() {
 fn data_inventory_does_not_treat_an_overlong_node_as_a_shorter_record() {
     let project = native_project("data-overlong-node");
     let dir = project.to_str().unwrap().to_string();
-    write_record_node(&project, "counter", &[SavedKey::Int(1), SavedKey::Int(2)]);
+    write_record_presence(&project, "counter", &[SavedKey::Int(1), SavedKey::Int(2)]);
 
     let stats = marrow(&["data", "stats", "--format", "json", &dir]);
     let get = marrow(&["data", "get", "--format", "json", &dir, "^counter(1)"]);
@@ -74,7 +74,7 @@ fn data_inventory_ignores_overlong_nodes_under_composite_roots() {
         );
     });
     let dir = project.to_str().unwrap().to_string();
-    write_record_node(
+    write_record_presence(
         &project,
         "pairs",
         &[SavedKey::Int(1), SavedKey::Int(2), SavedKey::Int(3)],

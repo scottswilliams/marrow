@@ -232,7 +232,7 @@ fn sparse_whole_resource_assignment_creates_record_presence() {
 }
 
 #[test]
-fn overlong_record_node_does_not_create_root_presence() {
+fn overlong_record_presence_does_not_create_root_presence() {
     let program = checked_program(
         "resource Counter\n\
          \x20\x20\x20\x20value: int\nstore ^counter(id: int): Counter\n\n\
@@ -242,7 +242,7 @@ fn overlong_record_node_does_not_create_root_presence() {
          \x20\x20\x20\x20return count(^counter)\n",
     );
     let store = TreeStore::memory();
-    write_record_node(
+    write_record_presence(
         &program,
         &store,
         "counter",

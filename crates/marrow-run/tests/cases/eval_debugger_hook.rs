@@ -370,9 +370,8 @@ impl StepHook for WriteRecorder {
 
 #[test]
 fn hook_observes_each_managed_write_in_commit_order() {
-    // A field write, then a whole-record delete: the field write stages one
-    // The field write materializes the record node before the field cell. `delete
-    // ^books(1)` clears the record's subtree with one `Delete` of the identity path.
+    // The field write records the whole-record presence before the field cell.
+    // `delete ^books(1)` clears the record's subtree with one `Delete` of the identity path.
     // The hook sees each `PlanStep` as a `before_write` event, in commit order, at
     // the statement's activation depth.
     let program = checked_program(

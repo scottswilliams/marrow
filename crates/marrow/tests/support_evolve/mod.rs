@@ -65,10 +65,12 @@ pub(crate) fn open_native_store(root: impl AsRef<Path>) -> TreeStore {
 }
 pub(crate) fn seed_record(store: &TreeStore, place: &CheckedSavedPlace, id: i64) {
     let store_id = store_catalog_id(place).expect("store catalog id");
-    write_record_node(store, &store_id, &[SavedKey::Int(id)]);
+    write_record_presence(store, &store_id, &[SavedKey::Int(id)]);
 }
-fn write_record_node(store: &TreeStore, store_id: &CatalogId, identity: &[SavedKey]) {
-    store.write_node(store_id, identity).expect("write record");
+fn write_record_presence(store: &TreeStore, store_id: &CatalogId, identity: &[SavedKey]) {
+    store
+        .write_record_presence(store_id, identity)
+        .expect("write record");
 }
 pub(crate) fn seed_record_member_value(
     store: &TreeStore,
@@ -78,7 +80,7 @@ pub(crate) fn seed_record_member_value(
     value: Scalar,
 ) {
     let store_id = store_catalog_id(place).expect("store catalog id");
-    write_record_node(store, &store_id, identity);
+    write_record_presence(store, &store_id, identity);
     let member_id = CatalogId::new(member_catalog_id(place, member).expect("member catalog id"))
         .expect("member id");
     store

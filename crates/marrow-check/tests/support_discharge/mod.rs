@@ -144,7 +144,7 @@ impl<'a> Seed<'a> {
     }
 
     pub fn record(&self, id: i64) {
-        write_record_node(self.store, &self.store_id(), &[SavedKey::Int(id)]);
+        write_record_presence(self.store, &self.store_id(), &[SavedKey::Int(id)]);
     }
 
     pub fn member(&self, id: i64, member: &str, value: Scalar) {
@@ -338,13 +338,15 @@ impl<'a> Seed<'a> {
     }
 }
 
-fn write_record_node(store: &TreeStore, store_id: &CatalogId, identity: &[SavedKey]) {
-    store.write_node(store_id, identity).expect("write node");
+fn write_record_presence(store: &TreeStore, store_id: &CatalogId, identity: &[SavedKey]) {
+    store
+        .write_record_presence(store_id, identity)
+        .expect("write record presence");
 }
 
 pub fn seed_catalog_record(store: &TreeStore, store_id: &str, identity: &[SavedKey]) {
     let store_id = CatalogId::new(store_id).expect("accepted store catalog id");
-    write_record_node(store, &store_id, identity);
+    write_record_presence(store, &store_id, identity);
 }
 
 pub fn seed_catalog_member(
@@ -355,7 +357,7 @@ pub fn seed_catalog_member(
     value: Scalar,
 ) {
     let store_id = CatalogId::new(store_id).expect("accepted store catalog id");
-    write_record_node(store, &store_id, identity);
+    write_record_presence(store, &store_id, identity);
     store
         .write_data_value(
             &store_id,

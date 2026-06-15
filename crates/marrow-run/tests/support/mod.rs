@@ -426,26 +426,26 @@ pub fn write_data_bytes(
     bytes: Vec<u8>,
 ) {
     let store_id = store_catalog_id(program, root);
-    write_record_node_for_store(store, &store_id, identity);
+    write_record_presence_for_store(store, &store_id, identity);
     store
         .write_data_value(&store_id, identity, path, bytes)
         .expect("typed data write succeeds");
 }
 
-pub fn write_record_node(
+pub fn write_record_presence(
     program: &CheckedRuntimeProgram,
     store: &TreeStore,
     root: &str,
     identity: &[SavedKey],
 ) {
     let store_id = store_catalog_id(program, root);
-    write_record_node_for_store(store, &store_id, identity);
+    write_record_presence_for_store(store, &store_id, identity);
 }
 
-fn write_record_node_for_store(store: &TreeStore, store_id: &CatalogId, identity: &[SavedKey]) {
+fn write_record_presence_for_store(store: &TreeStore, store_id: &CatalogId, identity: &[SavedKey]) {
     store
-        .write_node(store_id, identity)
-        .expect("typed record node write succeeds");
+        .write_record_presence(store_id, identity)
+        .expect("typed record presence write succeeds");
 }
 
 pub fn read_data_value(

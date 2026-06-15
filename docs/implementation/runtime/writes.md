@@ -14,7 +14,7 @@ stamp fold into the same plan; the whole plan runs inside the active transaction
 
 `plan → commit`, never write-as-you-go. `write.rs` is the planning core for all write kinds; `write_plan.rs` defines the committable unit and the begin/apply/commit-or-rollback contract. The five per-kind modules under `write_dispatch/` plus `group_write.rs` are thin: lower the target, hand checked facts and a value to the planner, apply, defer the required-entry check. `transaction.rs` wraps multi-statement atomicity around that. `index_maintenance.rs` stages index steps into each plan. `store.rs` is the only place checked names become physical store keys.
 
-Step order is the correctness contract: within a plan, `DeleteData` (clear the old subtree) precedes `WriteNode` and per-field `WriteData`, and stale `DeleteIndex` precedes fresh `WriteIndex`, so a replace never leaves a stale field or index branch. Required-field enforcement is mode-split: outside a transaction the check rejects an incompletion before it lands; inside one it defers to the outermost commit, so an intermediate incomplete record is legal mid-transaction. The catalog-epoch stamp rides the same transaction as the data, and `WritePlan` resolves the stamp's commit ID against the predecessor metadata visible in that transaction.
+Step order is the correctness contract: within a plan, `DeleteData` (clear the old subtree) precedes `WriteRecordPresence` and per-field `WriteData`, and stale `DeleteIndex` precedes fresh `WriteIndex`, so a replace never leaves a stale field or index branch. Required-field enforcement is mode-split: outside a transaction the check rejects an incompletion before it lands; inside one it defers to the outermost commit, so an intermediate incomplete record is legal mid-transaction. The catalog-epoch stamp rides the same transaction as the data, and `WritePlan` resolves the stamp's commit ID against the predecessor metadata visible in that transaction.
 
 ## Modules
 
@@ -35,7 +35,7 @@ Step order is the correctness contract: within a plan, `DeleteData` (clear the o
 
 ## Key types
 
-- `WritePlan` / `PlanStep` (`write_plan.rs`) — ordered steps as the single committable unit. `PlanStep` covers `WriteNode`/`WriteData`/`DeleteData`/`DeleteRecordSubtree`, `WriteIndex`/`DeleteIndex`/`DeleteIndexSubtree`, and `StampMetadata`; it carries resolved addresses and commit-id allocation state, never source spelling.
+- `WritePlan` / `PlanStep` (`write_plan.rs`) — ordered steps as the single committable unit. `PlanStep` covers `WriteRecordPresence`/`WriteData`/`DeleteData`/`DeleteRecordSubtree`, `WriteIndex`/`DeleteIndex`/`DeleteIndexSubtree`, and `StampMetadata`; it carries resolved addresses and commit-id allocation state, never source spelling.
 - `ResourceValue` / `SuppliedIdentity` (`write.rs`) — flattened, type-resolved record value ready for planning.
 - `DataAddress` / `LayerAddress` / `IndexAddress` (`store.rs`) — the boundary between checked names and physical store keys.
 - `WriteError` (`write.rs`) — planning-stage failure with a stable `write.*` code; `env.apply_plan` turns it into a runtime fault. Codes are the contract, not the prose.

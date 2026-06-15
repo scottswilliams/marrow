@@ -110,7 +110,7 @@ impl Seed<'_> {
 
     pub fn record(&self, id: i64) {
         let store_id = self.store_id();
-        write_identity_node(self.store, &store_id, &[SavedKey::Int(id)]);
+        write_identity_presence(self.store, &store_id, &[SavedKey::Int(id)]);
     }
 
     pub fn member(&self, id: i64, member: &str, value: Scalar) {
@@ -131,7 +131,7 @@ impl Seed<'_> {
 
     pub fn singleton_member(&self, member: &str, value: Scalar) {
         let store_id = self.store_id();
-        write_identity_node(self.store, &store_id, &[]);
+        write_identity_presence(self.store, &store_id, &[]);
         let member_id =
             CatalogId::new(member_catalog_id(self.place, member).expect("member catalog id"))
                 .expect("member id");
@@ -180,8 +180,10 @@ impl Seed<'_> {
     }
 }
 
-fn write_identity_node(store: &TreeStore, store_id: &CatalogId, identity: &[SavedKey]) {
-    store.write_node(store_id, identity).expect("write node");
+fn write_identity_presence(store: &TreeStore, store_id: &CatalogId, identity: &[SavedKey]) {
+    store
+        .write_record_presence(store_id, identity)
+        .expect("write record presence");
 }
 
 pub const INT: marrow_store::value::ScalarType = marrow_store::value::ScalarType::Int;

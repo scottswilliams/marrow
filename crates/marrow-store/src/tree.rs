@@ -222,7 +222,11 @@ impl TreeStore {
         crate::catalog::read_catalog_snapshot_digest(&**self.backend.borrow())
     }
 
-    pub fn write_node(&self, store: &CatalogId, identity: &[SavedKey]) -> Result<(), StoreError> {
+    pub fn write_record_presence(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+    ) -> Result<(), StoreError> {
         self.write_cell(
             CellKey::node(store, identity).as_bytes(),
             NODE_MARKER.to_vec(),
@@ -2266,7 +2270,7 @@ mod tests {
         let store = TreeStore::memory();
         for id in [3, 1, 2] {
             store
-                .write_node(&store_id, &[SavedKey::Int(id)])
+                .write_record_presence(&store_id, &[SavedKey::Int(id)])
                 .expect("seed record");
         }
 
@@ -2301,7 +2305,9 @@ mod tests {
             vec![SavedKey::Str("history".into()), SavedKey::Int(5)],
         ];
         for identity in &identities {
-            store.write_node(&store_id, identity).expect("seed record");
+            store
+                .write_record_presence(&store_id, identity)
+                .expect("seed record");
         }
 
         let mut visited = Vec::new();
@@ -2332,7 +2338,7 @@ mod tests {
         )));
         for id in 0..257 {
             store
-                .write_node(&store_id, &[SavedKey::Int(id)])
+                .write_record_presence(&store_id, &[SavedKey::Int(id)])
                 .expect("seed record");
         }
 
@@ -2359,7 +2365,7 @@ mod tests {
         let record_count = 257usize;
         for id in 0..record_count {
             store
-                .write_node(&store_id, &[SavedKey::Int(id as i64)])
+                .write_record_presence(&store_id, &[SavedKey::Int(id as i64)])
                 .expect("seed record");
         }
 
@@ -2391,11 +2397,11 @@ mod tests {
         )));
         for id in 0..257 {
             store
-                .write_node(&store_id, &[SavedKey::Int(id)])
+                .write_record_presence(&store_id, &[SavedKey::Int(id)])
                 .expect("seed int record");
         }
         store
-            .write_node(&store_id, &[SavedKey::Str("later type band".into())])
+            .write_record_presence(&store_id, &[SavedKey::Str("later type band".into())])
             .expect("seed non-int record");
 
         counts.reset();
@@ -2471,7 +2477,7 @@ mod tests {
         let record_count = 4096usize;
         for id in 0..record_count {
             store
-                .write_node(&store_id, &[SavedKey::Int(id as i64)])
+                .write_record_presence(&store_id, &[SavedKey::Int(id as i64)])
                 .expect("seed scale record");
         }
 
@@ -2548,7 +2554,9 @@ mod tests {
             DataPathSegment::Key(SavedKey::Int(7)),
         ];
         let source = TreeStore::memory();
-        source.write_node(&store_id, &identity).expect("write node");
+        source
+            .write_record_presence(&store_id, &identity)
+            .expect("write record presence");
         source
             .write_data_node(&store_id, &identity, &entry_path)
             .expect("write data path node");
@@ -2609,8 +2617,8 @@ mod tests {
 
         let source = TreeStore::memory();
         source
-            .write_node(&store_id, &[SavedKey::Int(1)])
-            .expect("write node");
+            .write_record_presence(&store_id, &[SavedKey::Int(1)])
+            .expect("write record presence");
         source
             .write_data_value(&store_id, &[SavedKey::Int(1)], &path, b"Mort".to_vec())
             .expect("write leaf");
@@ -2865,7 +2873,7 @@ mod tests {
     fn replay_backup_cell(store: &TreeStore, cell: &TreeBackupCellBuf) -> Result<(), StoreError> {
         let target = cell.data_key();
         match &target.kind {
-            DataCellKind::Node => store.write_node(&target.store, &target.identity),
+            DataCellKind::Node => store.write_record_presence(&target.store, &target.identity),
             DataCellKind::PathNode { path } => {
                 store.write_data_node(&target.store, &target.identity, path)
             }

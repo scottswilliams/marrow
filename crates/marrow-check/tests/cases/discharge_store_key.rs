@@ -194,7 +194,7 @@ fn malformed_temporal_store_identity_faults_discharge() -> Result<(), Box<dyn st
     let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")?)
         .expect("store catalog id");
     store
-        .write_node(&store_id, &[SavedKey::Date(SUPPORTED_DATE_MIN_DAYS - 1)])
+        .write_record_presence(&store_id, &[SavedKey::Date(SUPPORTED_DATE_MIN_DAYS - 1)])
         .expect("write malformed record");
 
     let err = preview(&program, &store).expect_err("malformed date identity must fault discharge");
@@ -291,7 +291,7 @@ fn identity_leaf_with_malformed_temporal_payload_fails_closed()
     let parent_id = CatalogId::new(parent_raw.clone()).expect("parent catalog id");
     let identity = [SavedKey::Date(SUPPORTED_DATE_MIN_DAYS)];
     store
-        .write_node(&store_id, &identity)
+        .write_record_presence(&store_id, &identity)
         .expect("write valid record");
     store
         .write_data_value(
