@@ -4,7 +4,7 @@ use marrow_syntax::SourceSpan;
 use sha2::{Digest, Sha256};
 
 use crate::env::Env;
-use crate::error::{RuntimeError, std_arity, type_error};
+use crate::error::{RuntimeError, decimal_overflow, std_arity, type_error};
 use crate::expr::eval_int;
 use crate::stdlib::eval_text;
 use crate::value::Value;
@@ -47,9 +47,9 @@ pub(crate) fn eval_random(
             let step = step_value(step, env, span)?;
             let units =
                 (prf_u128("random.decimal", &seed, step, 0) % 1_000_000_000_000_000_000) as i128;
-            Ok(Value::Decimal(Decimal::from_parts(units, 18).expect(
-                "18 fractional digits are inside the decimal envelope",
-            )))
+            Decimal::from_parts(units, 18)
+                .map(Value::Decimal)
+                .ok_or_else(|| decimal_overflow(span))
         }
         _ => Err(crate::error::unsupported(
             &format!("std::random::{op}"),
@@ -69,16 +69,15 @@ fn step_value(arg: &ExecArg, env: &mut Env<'_>, span: SourceSpan) -> Result<i64,
 fn random_int(seed: &str, step: i64, min: i64, max: i64) -> i64 {
     let width = (i128::from(max) - i128::from(min) + 1) as u128;
     let threshold = u128::MAX - (u128::MAX % width);
-    for attempt in 0.. {
+    let mut attempt = 0u64;
+    loop {
         let candidate = prf_u128("random.int", seed, step, attempt);
         if candidate < threshold {
-            let offset =
-                i128::try_from(candidate % width).expect("int range width always fits inside i128");
-            let value = i128::from(min) + offset;
-            return i64::try_from(value).expect("sampled int stays inside requested range");
+            let offset = (candidate % width) as i128;
+            return (i128::from(min) + offset) as i64;
         }
+        attempt = attempt.wrapping_add(1);
     }
-    unreachable!("rejection sampling eventually accepts")
 }
 
 fn prf_u128(domain: &str, seed: &str, step: i64, attempt: u64) -> u128 {

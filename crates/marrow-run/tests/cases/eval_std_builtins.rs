@@ -491,13 +491,13 @@ fn std_random_helpers_are_deterministic_and_bounded() {
         r#"pub fn random_int_is_stable_and_bounded(): bool
     const first: int = std::random::int("seed", 2, 10, 20)
     const second: int = std::random::int("seed", 2, 10, 20)
-    return first == second and first >= 10 and first <= 20
+    return first == second and first == 13
 
 pub fn random_bool_is_stable(): bool
-    return std::random::bool("seed", 3) == std::random::bool("seed", 3)
+    return std::random::bool("seed", 3) == true
 
 pub fn random_decimal_is_stable(): bool
-    return string(std::random::decimal("seed", 4)) == string(std::random::decimal("seed", 4))
+    return string(std::random::decimal("seed", 4)) == "0.948032518685140799"
 
 pub fn random_cross_zero_range_is_bounded(): bool
     const value: int = std::random::int("seed", 5, -1, 9223372036854775807)
@@ -540,7 +540,7 @@ pub fn random_bad_step(): int
             &program,
             "test::random_full_int_range_returns"
         )),
-        Ok(Some(Value::Int(_)))
+        Ok(Some(Value::Int(2_273_323_704_890_406_012)))
     ));
     assert_run_error(
         run(checked_entry!(&program, "test::random_bad_step")),
