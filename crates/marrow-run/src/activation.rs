@@ -171,6 +171,7 @@ fn activation_completion(
         Err(RuntimeError {
             throw: Some(error),
             code: RUN_UNCAUGHT_THROW,
+            catchable: true,
             span,
             origin,
             transaction_escape,

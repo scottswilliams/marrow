@@ -80,18 +80,18 @@ impl RuntimeError {
     /// Return the `Error` value a catch would bind, materializing it lazily for
     /// runtime faults that have not crossed a catch site yet.
     pub fn error_value(&self) -> Option<Value> {
-        if let Some(error) = self.throw.as_deref() {
-            Some(error.clone())
-        } else if self.catchable {
-            Some(error_resource(self.code, &self.message))
-        } else {
+        if !self.catchable {
             None
+        } else if let Some(error) = self.throw.as_deref() {
+            Some(error.clone())
+        } else {
+            Some(error_resource(self.code, &self.message))
         }
     }
 
     /// The original `Error.code` carried by an uncaught language throw.
     pub fn uncaught_throw_code(&self) -> Option<String> {
-        if self.code != RUN_UNCAUGHT_THROW {
+        if !self.catchable || self.code != RUN_UNCAUGHT_THROW {
             return None;
         }
         self.throw
@@ -100,13 +100,13 @@ impl RuntimeError {
     }
 
     /// Consume the fault and return the `Error` value a catch should bind.
-    pub(crate) fn into_error_value(self) -> Option<Value> {
-        if let Some(error) = self.throw {
-            Some(*error)
-        } else if self.catchable {
-            Some(error_resource(self.code, &self.message))
-        } else {
-            None
+    pub(crate) fn into_catch_value(self) -> Result<Value, RuntimeError> {
+        if !self.catchable {
+            return Err(self);
+        }
+        match self.throw {
+            Some(error) => Ok(*error),
+            None => Ok(error_resource(self.code, &self.message)),
         }
     }
 
@@ -535,7 +535,10 @@ mod tests {
     use crate::host::Host;
     use crate::value::Value;
 
-    use super::{RUN_ABSENT, error_value_allocation_count, reset_error_value_allocation_count};
+    use super::{
+        RUN_ABSENT, RUN_UNCAUGHT_THROW, RuntimeError, error_value_allocation_count,
+        reset_error_value_allocation_count,
+    };
 
     static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -615,5 +618,50 @@ mod tests {
 
         assert_eq!(value, Some(Value::Str(RUN_ABSENT.into())));
         assert_eq!(error_value_allocation_count(), 1);
+    }
+
+    #[test]
+    fn fatal_error_with_throw_does_not_produce_catch_value() {
+        let fatal = RuntimeError {
+            code: "run.fatal",
+            message: "fatal".into(),
+            span: marrow_syntax::SourceSpan::default(),
+            throw: Some(Box::new(Value::Resource(Vec::new()))),
+            catchable: false,
+            transaction_escape: false,
+            origin: None,
+        };
+
+        assert!(fatal.error_value().is_none());
+        assert!(matches!(
+            fatal.into_catch_value(),
+            Err(error) if error.code == "run.fatal" && error.throw.is_some()
+        ));
+
+        let fatal_uncaught_throw = RuntimeError {
+            code: RUN_UNCAUGHT_THROW,
+            message: "fatal uncaught throw".into(),
+            span: marrow_syntax::SourceSpan::default(),
+            throw: Some(Box::new(Value::Resource(vec![
+                (
+                    marrow_schema::error::CODE.to_string(),
+                    Value::Str("debug.fatal".into()),
+                ),
+                (
+                    marrow_schema::error::MESSAGE.to_string(),
+                    Value::Str("debugger fatal throw".into()),
+                ),
+            ]))),
+            catchable: false,
+            transaction_escape: false,
+            origin: None,
+        };
+
+        assert!(fatal_uncaught_throw.error_value().is_none());
+        assert!(fatal_uncaught_throw.uncaught_throw_code().is_none());
+        assert!(matches!(
+            fatal_uncaught_throw.into_catch_value(),
+            Err(error) if error.code == RUN_UNCAUGHT_THROW && error.throw.is_some()
+        ));
     }
 }

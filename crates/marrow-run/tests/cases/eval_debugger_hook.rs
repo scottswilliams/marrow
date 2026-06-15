@@ -214,6 +214,140 @@ fn hook_error_aborts_the_run() {
     assert_eq!(lines, vec![4, 5]);
 }
 
+#[test]
+fn fatal_hook_error_with_throw_is_not_caught_by_try() {
+    const ABORT_LINE: u32 = 5;
+    const CATCH_RETURN_LINE: u32 = 7;
+
+    struct FatalThrowHook {
+        steps: Vec<u32>,
+    }
+
+    impl StepHook for FatalThrowHook {
+        fn before_statement(
+            &mut self,
+            span: SourceSpan,
+            _frame: Frame<'_, '_>,
+        ) -> Result<(), RuntimeError> {
+            self.steps.push(span.line);
+            if span.line == ABORT_LINE {
+                return Err(RuntimeError {
+                    code: marrow_run::RUN_UNSUPPORTED,
+                    message: "debugger fatal".into(),
+                    span,
+                    throw: Some(Box::new(Value::Resource(vec![
+                        (
+                            marrow_schema::error::CODE.to_string(),
+                            Value::Str("debug.fatal".into()),
+                        ),
+                        (
+                            marrow_schema::error::MESSAGE.to_string(),
+                            Value::Str("debugger fatal".into()),
+                        ),
+                    ]))),
+                    catchable: false,
+                    transaction_escape: false,
+                    origin: None,
+                });
+            }
+            Ok(())
+        }
+    }
+
+    let program = checked_program(
+        "pub fn compute(): int\n\
+         \x20\x20\x20\x20try\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20const a = 1\n\
+         \x20\x20\x20\x20catch err: Error\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20return 99\n\
+         \x20\x20\x20\x20return 1\n",
+    );
+    let store = TreeStore::memory();
+    let mut hook = FatalThrowHook { steps: Vec::new() };
+    let error = run_entry_with_debugger(
+        &store,
+        &Host::new(),
+        &mut hook,
+        checked_entry!(&program, "test::compute"),
+    )
+    .expect_err("fatal hook error escapes the try");
+
+    assert_eq!(error.code, marrow_run::RUN_UNSUPPORTED);
+    assert_eq!(error.message, "debugger fatal");
+    assert!(!error.catchable);
+    assert!(error.throw.is_some());
+    assert!(!hook.steps.contains(&CATCH_RETURN_LINE));
+}
+
+#[test]
+fn fatal_uncaught_throw_hook_error_in_callee_is_not_caught_by_caller_try() {
+    const INNER_ABORT_LINE: u32 = 4;
+    const CATCH_RETURN_LINE: u32 = 11;
+
+    struct FatalUncaughtThrowHook {
+        steps: Vec<u32>,
+    }
+
+    impl StepHook for FatalUncaughtThrowHook {
+        fn before_statement(
+            &mut self,
+            span: SourceSpan,
+            _frame: Frame<'_, '_>,
+        ) -> Result<(), RuntimeError> {
+            self.steps.push(span.line);
+            if span.line == INNER_ABORT_LINE {
+                return Err(RuntimeError {
+                    code: marrow_run::RUN_UNCAUGHT_THROW,
+                    message: "debugger fatal throw".into(),
+                    span,
+                    throw: Some(Box::new(Value::Resource(vec![
+                        (
+                            marrow_schema::error::CODE.to_string(),
+                            Value::Str("debug.fatal".into()),
+                        ),
+                        (
+                            marrow_schema::error::MESSAGE.to_string(),
+                            Value::Str("debugger fatal throw".into()),
+                        ),
+                    ]))),
+                    catchable: false,
+                    transaction_escape: false,
+                    origin: None,
+                });
+            }
+            Ok(())
+        }
+    }
+
+    let program = checked_program(
+        "pub fn inner(): int\n\
+         \x20\x20\x20\x20const a = 1\n\
+         \x20\x20\x20\x20return a\n\
+         \n\
+         pub fn outer(): int\n\
+         \x20\x20\x20\x20try\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20return inner()\n\
+         \x20\x20\x20\x20catch err: Error\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20return 99\n\
+         \x20\x20\x20\x20return 1\n",
+    );
+    let store = TreeStore::memory();
+    let mut hook = FatalUncaughtThrowHook { steps: Vec::new() };
+    let error = run_entry_with_debugger(
+        &store,
+        &Host::new(),
+        &mut hook,
+        checked_entry!(&program, "test::outer"),
+    )
+    .expect_err("fatal callee hook error escapes the caller try");
+
+    assert_eq!(error.code, marrow_run::RUN_UNCAUGHT_THROW);
+    assert_eq!(error.message, "debugger fatal throw");
+    assert!(!error.catchable);
+    assert!(error.throw.is_some());
+    assert!(!hook.steps.contains(&CATCH_RETURN_LINE));
+}
+
 /// A hook recording each managed write it is offered: its operation, the human
 /// path, whether a value was present, and the activation depth. Statement events
 /// are ignored, so the recorded sequence is exactly the run's managed writes in

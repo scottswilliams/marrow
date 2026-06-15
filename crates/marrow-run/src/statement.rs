@@ -32,21 +32,11 @@ pub(crate) fn eval_statement(
     env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
     before_statement_hook(statement, env)?;
-    if let Some(flow) = eval_binding_or_write_statement(statement, env)? {
-        return Ok(flow);
-    }
-    eval_control_statement(statement, env)
-}
-
-fn eval_binding_or_write_statement(
-    statement: &ExecStmt,
-    env: &mut Env<'_>,
-) -> Result<Option<Flow>, RuntimeError> {
     match statement {
         ExecStmt::Const { name, value, .. } => {
             let value = eval_expr(value, env)?;
             env.bind(name.clone(), value, false);
-            Ok(Some(Flow::Normal))
+            Ok(Flow::Normal)
         }
         ExecStmt::Var {
             name,
@@ -64,8 +54,7 @@ fn eval_binding_or_write_statement(
             value.as_ref(),
             *span,
             env,
-        )
-        .map(Some),
+        ),
         ExecStmt::Assign {
             target,
             value,
@@ -73,45 +62,21 @@ fn eval_binding_or_write_statement(
             ..
         } => {
             eval_assignment(target, value, *span, env)?;
-            Ok(Some(Flow::Normal))
+            Ok(Flow::Normal)
         }
         ExecStmt::Delete { path, span, .. } => {
             eval_delete(path, *span, env)?;
-            Ok(Some(Flow::Normal))
+            Ok(Flow::Normal)
         }
-        ExecStmt::Return { value, .. } => {
-            let value = match value.as_ref() {
-                Some(expr) if expr.saved_place().is_some() => {
-                    match read_saved_value_if_present(expr, expr.span(), env)? {
-                        Some(value) => Some(value),
-                        None => return Ok(Some(Flow::ReturnAbsent)),
-                    }
-                }
-                Some(expr) if expr_return_absence_can_propagate(expr) => match eval_expr(expr, env)
-                {
-                    Ok(value) => Some(value),
-                    Err(error) if expression_absent_at_resolution_site(expr, &error) => {
-                        return Ok(Some(Flow::ReturnAbsent));
-                    }
-                    Err(error) => return Err(error),
-                },
-                Some(expr) => Some(eval_expr(expr, env)?),
-                None => None,
-            };
-            Ok(Some(Flow::Return(value)))
-        }
-        ExecStmt::ReturnAbsent { .. } => Ok(Some(Flow::ReturnAbsent)),
+        ExecStmt::Return { value, .. } => eval_return(value.as_ref(), env),
+        ExecStmt::ReturnAbsent { .. } => Ok(Flow::ReturnAbsent),
+        ExecStmt::Break { .. } => Ok(Flow::Break),
+        ExecStmt::Continue { .. } => Ok(Flow::Continue),
+        ExecStmt::Throw { value, span } => eval_throw(value, *span, env),
         ExecStmt::Expr { value, .. } => {
             eval_expr_statement(value, env)?;
-            Ok(Some(Flow::Normal))
+            Ok(Flow::Normal)
         }
-        ExecStmt::Throw { value, span } => eval_throw(value, *span, env).map(Some),
-        _ => Ok(None),
-    }
-}
-
-fn eval_control_statement(statement: &ExecStmt, env: &mut Env<'_>) -> Result<Flow, RuntimeError> {
-    match statement {
         ExecStmt::If {
             condition,
             then_block,
@@ -149,8 +114,6 @@ fn eval_control_statement(statement: &ExecStmt, env: &mut Env<'_>) -> Result<Flo
             enum_ref,
             span,
         } => eval_match(scrutinee.as_ref(), arms, *enum_ref, *span, env),
-        ExecStmt::Break { .. } => Ok(Flow::Break),
-        ExecStmt::Continue { .. } => Ok(Flow::Continue),
         ExecStmt::While {
             condition,
             body,
@@ -165,7 +128,6 @@ fn eval_control_statement(statement: &ExecStmt, env: &mut Env<'_>) -> Result<Flo
         } => eval_for(binding, iterable, step.as_ref(), body, *span, env),
         ExecStmt::Transaction { body, span, .. } => eval_transaction(body, *span, env),
         ExecStmt::Try { body, catch, .. } => eval_try(body, catch.as_ref(), env),
-        _ => unreachable!("binding/write statements are handled before control dispatch"),
     }
 }
 
@@ -273,6 +235,27 @@ fn eval_expr_statement(value: &ExecExpr, env: &mut Env<'_>) -> Result<(), Runtim
     Ok(())
 }
 
+fn eval_return(value: Option<&ExecExpr>, env: &mut Env<'_>) -> Result<Flow, RuntimeError> {
+    let value = match value {
+        Some(expr) if expr.saved_place().is_some() => {
+            match read_saved_value_if_present(expr, expr.span(), env)? {
+                Some(value) => Some(value),
+                None => return Ok(Flow::ReturnAbsent),
+            }
+        }
+        Some(expr) if expr_return_absence_can_propagate(expr) => match eval_expr(expr, env) {
+            Ok(value) => Some(value),
+            Err(error) if expression_absent_at_resolution_site(expr, &error) => {
+                return Ok(Flow::ReturnAbsent);
+            }
+            Err(error) => return Err(error),
+        },
+        Some(expr) => Some(eval_expr(expr, env)?),
+        None => None,
+    };
+    Ok(Flow::Return(value))
+}
+
 fn eval_if(
     condition: Option<&ExecExpr>,
     then_block: &ExecBody,
@@ -378,11 +361,14 @@ fn eval_try(
             }),
             Some(clause),
         ) => eval_catch(clause, value, env),
-        (Err(error), Some(clause)) if !error.is_transaction_escape() && error.is_catchable() => {
-            let error = error
-                .into_error_value()
-                .expect("a catchable runtime fault materializes an Error value");
-            eval_catch(clause, error, env)
+        (Err(error), Some(clause)) => {
+            if error.is_transaction_escape() {
+                return Err(error);
+            }
+            match error.into_catch_value() {
+                Ok(error) => eval_catch(clause, error, env),
+                Err(error) => Err(error),
+            }
         }
         (outcome, _) => outcome,
     }
