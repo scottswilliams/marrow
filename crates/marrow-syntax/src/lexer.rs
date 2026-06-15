@@ -30,7 +30,7 @@ impl<'a> Lexer<'a> {
             lines: split_lines(source),
             tokens: Vec::new(),
             diagnostics: Vec::new(),
-            indents: vec![0],
+            indents: Vec::new(),
             open_delimiters: 0,
         }
     }
@@ -84,7 +84,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn apply_indent(&mut self, line: Line<'a>) {
-        let current = *self.indents.last().expect("root indent");
+        let current = self.current_indent();
         if line.indent > current {
             self.indents.push(line.indent);
             self.push(
@@ -103,12 +103,12 @@ impl<'a> Lexer<'a> {
             return;
         }
 
-        while self.indents.len() > 1 && line.indent < *self.indents.last().expect("indent stack") {
+        while line.indent < self.current_indent() {
             self.indents.pop();
             self.push(TokenKind::Dedent, self.empty_span(line, line.indent));
         }
 
-        if line.indent != *self.indents.last().expect("indent stack") {
+        if line.indent != self.current_indent() {
             self.error_at(
                 self.empty_span(line, line.indent),
                 LexerDiagnosticReason::IndentationMismatch,
@@ -118,10 +118,14 @@ impl<'a> Lexer<'a> {
     }
 
     fn apply_comment_indent(&mut self, line: Line<'a>, is_doc_comment: bool) {
-        let current = *self.indents.last().expect("root indent");
+        let current = self.current_indent();
         if is_doc_comment || line.indent >= current {
             self.apply_indent(line);
         }
+    }
+
+    fn current_indent(&self) -> usize {
+        self.indents.last().copied().unwrap_or(0)
     }
 
     fn lex_line(&mut self, line: Line<'a>) {
@@ -561,7 +565,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn close_indents(&mut self) {
-        while self.indents.len() > 1 {
+        while !self.indents.is_empty() {
             self.indents.pop();
             self.push(TokenKind::Dedent, self.eof_span());
         }
