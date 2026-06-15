@@ -294,6 +294,8 @@ pub(crate) enum BackupError {
     CatalogSerialization(marrow_catalog::CatalogError),
     /// The backup manifest could not be serialized for backup.
     ManifestSerialization(serde_json::Error),
+    /// A live store cell cannot be represented in the backup frame.
+    CellFrameTooLarge,
     /// The backup header or manifest is not a Marrow backup this build understands.
     /// Production reports only `code()` and `message`; the typed `problem` is a
     /// test-observable discriminator (tests assert the precise framing fault and its
@@ -417,6 +419,10 @@ impl BackupError {
         }
     }
 
+    fn cell_frame_too_large(_: marrow_store::tree::TreeBackupCellFrameError) -> Self {
+        Self::CellFrameTooLarge
+    }
+
     /// The stable dotted code a tool reports for this failure.
     pub(crate) fn code(&self) -> &'static str {
         match self {
@@ -424,6 +430,7 @@ impl BackupError {
             Self::Store(error) => error.code(),
             Self::CatalogSerialization(_) => "backup.catalog_serialization",
             Self::ManifestSerialization(_) => "backup.manifest_serialization",
+            Self::CellFrameTooLarge => "backup.cell_too_large",
             Self::FormatVersion { .. } => "restore.format_version",
             Self::CorruptChunk { .. } => "restore.corrupt_chunk",
             Self::NotEmpty(_) => "restore.not_empty",
@@ -451,6 +458,7 @@ impl std::fmt::Display for BackupError {
             Self::ManifestSerialization(error) => {
                 write!(f, "backup manifest serialization failed: {error}")
             }
+            Self::CellFrameTooLarge => write!(f, "backup cell is too large to frame"),
             Self::FormatVersion { problem, message } => {
                 let _ = problem;
                 write!(f, "{message}")

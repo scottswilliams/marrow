@@ -390,10 +390,9 @@ fn replay(
     let mut state_digest = Sha256Digest::new();
     for _ in 0..manifest.record_count {
         let cell = archive::read_cell(input)?;
-        checksum = checksum_cell(checksum, cell.as_ref());
-        cell.as_ref()
-            .write_framed(&mut DigestSink(&mut state_digest))
-            .expect("digest sink is infallible");
+        checksum = checksum_cell(checksum, cell.as_ref())?;
+        cell.visit_framed_bytes(|bytes| state_digest.update(bytes))
+            .map_err(BackupError::cell_frame_too_large)?;
         restore_cell(store, &cell)?;
     }
     validate_stream_integrity(manifest, state_digest.finish(), checksum, input)?;
@@ -431,10 +430,9 @@ fn validate_archive_stream(
     let mut state_digest = Sha256Digest::new();
     for _ in 0..manifest.record_count {
         let cell = archive::read_cell(input)?;
-        checksum = checksum_cell(checksum, cell.as_ref());
-        cell.as_ref()
-            .write_framed(&mut DigestSink(&mut state_digest))
-            .expect("digest sink is infallible");
+        checksum = checksum_cell(checksum, cell.as_ref())?;
+        cell.visit_framed_bytes(|bytes| state_digest.update(bytes))
+            .map_err(BackupError::cell_frame_too_large)?;
     }
     validate_stream_integrity(manifest, state_digest.finish(), checksum, input)
 }
@@ -464,19 +462,6 @@ fn validate_stream_integrity(
         ));
     }
     Ok(())
-}
-
-struct DigestSink<'a>(&'a mut Sha256Digest);
-
-impl std::io::Write for DigestSink<'_> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.update(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
 }
 
 fn restore_cell(store: &TreeStore, cell: &TreeBackupCellBuf) -> Result<(), BackupError> {

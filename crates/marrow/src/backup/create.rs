@@ -67,26 +67,21 @@ pub(crate) fn create_backup(
 fn scan_state(store: &TreeStore) -> Result<(u64, String), BackupError> {
     let mut record_count = 0u64;
     let mut digest = Sha256Digest::new();
+    let mut frame_error = None;
     store.visit_backup_cells(|cell| {
+        if frame_error.is_some() {
+            return Ok(());
+        }
         record_count += 1;
-        cell.write_framed(&mut DigestSink(&mut digest))
-            .expect("digest sink is infallible");
+        if let Err(error) = cell.visit_framed_bytes(|bytes| digest.update(bytes)) {
+            frame_error = Some(BackupError::cell_frame_too_large(error));
+        }
         Ok(())
     })?;
+    if let Some(error) = frame_error {
+        return Err(error);
+    }
     Ok((record_count, digest.finish()))
-}
-
-struct DigestSink<'a>(&'a mut Sha256Digest);
-
-impl Write for DigestSink<'_> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.update(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
 }
 
 /// Fold the manifest, the catalog section, and the data cells into one integrity
@@ -99,10 +94,20 @@ fn checksum_archive(
 ) -> Result<u64, BackupError> {
     let mut checksum = checksum_manifest(CHECKSUM_SEED, manifest)?;
     checksum = checksum_catalog_section(checksum, catalog_section);
+    let mut frame_error = None;
     store.visit_backup_cells(|cell| {
-        checksum = checksum_cell(checksum, cell);
+        if frame_error.is_some() {
+            return Ok(());
+        }
+        match checksum_cell(checksum, cell) {
+            Ok(next) => checksum = next,
+            Err(error) => frame_error = Some(error),
+        }
         Ok(())
     })?;
+    if let Some(error) = frame_error {
+        return Err(error);
+    }
     Ok(checksum)
 }
 

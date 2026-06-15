@@ -674,6 +674,94 @@ fn backup_frames_sparse_record_nodes() {
 }
 
 #[test]
+fn borrowed_backup_cell_frame_feed_matches_written_bytes() {
+    let books = catalog_id("1111111111111111");
+    let title = catalog_id("2222222222222222");
+    let store = TreeStore::memory();
+    store
+        .write_leaf(
+            &books,
+            &[SavedKey::Int(1)],
+            &title,
+            b"War and Peace".to_vec(),
+        )
+        .expect("write leaf");
+    store
+        .write_leaf(
+            &books,
+            &[SavedKey::Int(2)],
+            &title,
+            b"Anna Karenina".to_vec(),
+        )
+        .expect("write leaf");
+
+    let mut cell_count = 0;
+    store
+        .visit_backup_cells(|cell| {
+            cell_count += 1;
+            let mut written = Vec::new();
+            cell.write_framed(&mut written).expect("write frame");
+
+            let mut visited = Vec::new();
+            cell.visit_framed_bytes(|bytes| {
+                visited.extend_from_slice(bytes);
+            })
+            .expect("visit frame bytes");
+
+            assert_eq!(visited, written);
+            Ok(())
+        })
+        .expect("visit backup cells");
+    assert_eq!(cell_count, 2);
+}
+
+#[test]
+fn owned_backup_cell_frame_feed_matches_read_bytes() {
+    let books = catalog_id("1111111111111111");
+    let title = catalog_id("2222222222222222");
+    let store = TreeStore::memory();
+    store
+        .write_leaf(
+            &books,
+            &[SavedKey::Int(1)],
+            &title,
+            b"War and Peace".to_vec(),
+        )
+        .expect("write leaf");
+    store
+        .write_leaf(
+            &books,
+            &[SavedKey::Int(2)],
+            &title,
+            b"Anna Karenina".to_vec(),
+        )
+        .expect("write leaf");
+
+    let mut written = Vec::new();
+    store
+        .visit_backup_cells(|cell| {
+            cell.write_framed(&mut written).expect("write frame");
+            Ok(())
+        })
+        .expect("visit backup cells");
+
+    let mut reader = written.as_slice();
+    let mut visited = Vec::new();
+    while let Some(decoded) =
+        TreeBackupCellBuf::read_framed_optional(&mut reader, TREE_BACKUP_MAX_CELL_BYTES)
+            .expect("read frame")
+    {
+        decoded
+            .visit_framed_bytes(|bytes| {
+                visited.extend_from_slice(bytes);
+            })
+            .expect("visit frame bytes");
+    }
+
+    assert_eq!(visited, written);
+}
+
+#[test]
 fn for_each_record_visits_singleton_record_node() {
     let settings = catalog_id("1111111111111111");
     let store = TreeStore::memory();

@@ -24,8 +24,9 @@ const CHECKSUM_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// Fold one cell into the running checksum over its framed bytes; write and read
 /// sides must agree on exactly these bytes.
-pub(super) fn checksum_cell(hash: u64, cell: TreeBackupCell<'_>) -> u64 {
+pub(super) fn checksum_cell(hash: u64, cell: TreeBackupCell<'_>) -> Result<u64, BackupError> {
     cell.fold_checksum(hash)
+        .map_err(BackupError::cell_frame_too_large)
 }
 
 pub(super) const CHECKSUM_SEED: u64 = CHECKSUM_OFFSET;

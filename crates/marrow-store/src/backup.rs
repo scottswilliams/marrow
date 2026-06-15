@@ -115,6 +115,23 @@ pub struct TreeBackupCell<'a> {
     value: &'a [u8],
 }
 
+/// Why a typed backup cell could not be emitted as an archive frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeBackupCellFrameError {
+    /// A target or value chunk exceeds the backup frame's u32 length field.
+    CellTooLarge,
+}
+
+impl std::fmt::Display for TreeBackupCellFrameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CellTooLarge => f.write_str("backup cell chunk exceeds u32 length"),
+        }
+    }
+}
+
+impl std::error::Error for TreeBackupCellFrameError {}
+
 impl<'a> TreeBackupCell<'a> {
     pub(crate) fn from_raw(key: &'a [u8], value: &'a [u8]) -> Result<Self, StoreError> {
         let target = decode_and_validate(key, value)?;
@@ -132,17 +149,26 @@ impl<'a> TreeBackupCell<'a> {
     }
 
     /// Fold the exact framed cell bytes into the running checksum.
-    pub fn fold_checksum(&self, hash: u64) -> u64 {
-        let target = encode_target_frame(&self.target);
-        let hash = fold_chunk(hash, &target);
-        fold_chunk(hash, self.value)
+    pub fn fold_checksum(&self, hash: u64) -> Result<u64, TreeBackupCellFrameError> {
+        let mut hash = hash;
+        self.visit_framed_bytes(|bytes| {
+            hash = fold(hash, bytes);
+        })?;
+        Ok(hash)
     }
 
     /// Write the length-prefixed typed cell frame.
     pub fn write_framed(&self, out: &mut impl Write) -> std::io::Result<()> {
-        let target = encode_target_frame(&self.target);
-        write_chunk(out, &target)?;
-        write_chunk(out, self.value)
+        write_cell_frame(&self.target, self.value, out)
+    }
+
+    /// Visit the exact length-prefixed byte ranges that form this cell's archive
+    /// frame.
+    pub fn visit_framed_bytes(
+        &self,
+        visit: impl FnMut(&[u8]),
+    ) -> Result<(), TreeBackupCellFrameError> {
+        visit_cell_frame(&self.target, self.value, visit)
     }
 }
 
@@ -202,6 +228,15 @@ impl TreeBackupCellBuf {
             target: self.target.clone(),
             value: &self.value,
         }
+    }
+
+    /// Visit the exact length-prefixed byte ranges that form this cell's archive
+    /// frame.
+    pub fn visit_framed_bytes(
+        &self,
+        visit: impl FnMut(&[u8]),
+    ) -> Result<(), TreeBackupCellFrameError> {
+        visit_cell_frame(&self.target, &self.value, visit)
     }
 
     /// The typed data-cell target carried by this backup cell.
@@ -404,11 +439,6 @@ fn read_path(frame: &mut FrameReader<'_>) -> Result<Vec<DataPathSegment>, TreeBa
         .collect()
 }
 
-fn fold_chunk(hash: u64, bytes: &[u8]) -> u64 {
-    let hash = fold(hash, &(bytes.len() as u32).to_be_bytes());
-    fold(hash, bytes)
-}
-
 fn fold(mut hash: u64, bytes: &[u8]) -> u64 {
     for &byte in bytes {
         hash ^= u64::from(byte);
@@ -418,14 +448,65 @@ fn fold(mut hash: u64, bytes: &[u8]) -> u64 {
 }
 
 fn write_chunk(out: &mut impl Write, bytes: &[u8]) -> std::io::Result<()> {
-    let len = u32::try_from(bytes.len()).map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "backup cell chunk exceeds u32 length",
-        )
-    })?;
-    out.write_all(&len.to_be_bytes())?;
-    out.write_all(bytes)
+    FrameChunk::new(bytes)
+        .map_err(frame_error_to_io)?
+        .write(out)
+}
+
+fn write_cell_frame(
+    target: &DataCellKey,
+    value: &[u8],
+    out: &mut impl Write,
+) -> std::io::Result<()> {
+    let target = encode_target_frame(target);
+    write_chunk(out, &target)?;
+    write_chunk(out, value)
+}
+
+fn visit_cell_frame(
+    target: &DataCellKey,
+    value: &[u8],
+    mut visit: impl FnMut(&[u8]),
+) -> Result<(), TreeBackupCellFrameError> {
+    let target = encode_target_frame(target);
+    visit_frame_chunk(&target, &mut visit)?;
+    visit_frame_chunk(value, &mut visit)
+}
+
+fn visit_frame_chunk(
+    bytes: &[u8],
+    visit: &mut impl FnMut(&[u8]),
+) -> Result<(), TreeBackupCellFrameError> {
+    FrameChunk::new(bytes)?.visit(visit);
+    Ok(())
+}
+
+struct FrameChunk<'a> {
+    len: [u8; 4],
+    bytes: &'a [u8],
+}
+
+impl<'a> FrameChunk<'a> {
+    fn new(bytes: &'a [u8]) -> Result<Self, TreeBackupCellFrameError> {
+        let len = u32::try_from(bytes.len())
+            .map_err(|_| TreeBackupCellFrameError::CellTooLarge)?
+            .to_be_bytes();
+        Ok(Self { len, bytes })
+    }
+
+    fn visit(&self, visit: &mut impl FnMut(&[u8])) {
+        visit(&self.len);
+        visit(self.bytes);
+    }
+
+    fn write(&self, out: &mut impl Write) -> std::io::Result<()> {
+        out.write_all(&self.len)?;
+        out.write_all(self.bytes)
+    }
+}
+
+fn frame_error_to_io(error: TreeBackupCellFrameError) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidInput, error)
 }
 
 fn read_chunk(
