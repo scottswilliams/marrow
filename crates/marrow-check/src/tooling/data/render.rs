@@ -158,6 +158,27 @@ fn render_hex_value(bytes: &[u8]) -> String {
 }
 
 fn render_key_temporal(value: SavedValue) -> String {
-    String::from_utf8(encode_value(&value).expect("temporal key values encode"))
-        .expect("temporal key encodings are ascii")
+    match encode_value(&value) {
+        Ok(bytes) => String::from_utf8(bytes).unwrap_or_else(|_| format!("{value:?}")),
+        Err(_) => format!("{value:?}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use marrow_store::key::SavedKey;
+
+    use super::{DataQuerySegment, render_query_segments};
+
+    #[test]
+    fn out_of_range_temporal_keys_render_without_panicking() {
+        assert_eq!(
+            render_query_segments(&[DataQuerySegment::Key(SavedKey::Date(i32::MIN))]),
+            "(Date(-2147483648))"
+        );
+        assert_eq!(
+            render_query_segments(&[DataQuerySegment::Key(SavedKey::Instant(i128::MAX))]),
+            "(Instant(170141183460469231731687303715884105727))"
+        );
+    }
 }
