@@ -43,5 +43,5 @@ pub(crate) fn eval_audit(
 }
 
 fn json_string(text: &str) -> String {
-    serde_json::to_string(text).expect("serializing a string cannot fail")
+    serde_json::Value::String(text.to_owned()).to_string()
 }

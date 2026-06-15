@@ -554,8 +554,14 @@ fn std_audit_helpers_build_json_strings_without_writes() {
         r#"pub fn audit_event(): string
     return std::audit::event("create", "ada", "book")
 
+pub fn audit_event_args(action: string, actor: string, subject: string): string
+    return std::audit::event(action, actor, subject)
+
 pub fn audit_change(): string
     return std::audit::change("title", "old", "new")
+
+pub fn audit_change_args(field: string, before: string, after: string): string
+    return std::audit::change(field, before, after)
 "#,
     );
 
@@ -570,6 +576,47 @@ pub fn audit_change(): string
         Some(Value::Str(
             "{\"field\":\"title\",\"before\":\"old\",\"after\":\"new\"}".into()
         ))
+    );
+
+    let json = |text: &str| serde_json::Value::String(text.to_owned()).to_string();
+    let escaped_action = "create \"quoted\"";
+    let escaped_actor = "ada\\lovelace\nops";
+    let escaped_subject = "book\u{001f}";
+    assert_eq!(
+        run(checked_entry!(
+            &program,
+            "test::audit_event_args",
+            Value::Str(escaped_action.into()),
+            Value::Str(escaped_actor.into()),
+            Value::Str(escaped_subject.into())
+        ))
+        .unwrap(),
+        Some(Value::Str(format!(
+            "{{\"action\":{},\"actor\":{},\"subject\":{}}}",
+            json(escaped_action),
+            json(escaped_actor),
+            json(escaped_subject)
+        )))
+    );
+
+    let escaped_field = "title\"edition";
+    let escaped_before = "old\\draft";
+    let escaped_after = "new\nfinal";
+    assert_eq!(
+        run(checked_entry!(
+            &program,
+            "test::audit_change_args",
+            Value::Str(escaped_field.into()),
+            Value::Str(escaped_before.into()),
+            Value::Str(escaped_after.into())
+        ))
+        .unwrap(),
+        Some(Value::Str(format!(
+            "{{\"field\":{},\"before\":{},\"after\":{}}}",
+            json(escaped_field),
+            json(escaped_before),
+            json(escaped_after)
+        )))
     );
 }
 
