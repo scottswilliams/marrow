@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::io::Read;
+use std::io::{self, Read};
 
 use marrow_catalog::CatalogEntry;
 
@@ -37,41 +37,49 @@ impl StableIdAllocator<OsCatalogIdEntropy> {
     }
 }
 
+#[cfg(test)]
+impl<E> StableIdAllocator<E> {
+    pub(super) fn with_entropy(used: HashSet<String>, entropy: E) -> Self {
+        Self { used, entropy }
+    }
+}
+
 impl<E: CatalogIdEntropy> StableIdAllocator<E> {
-    pub(super) fn allocate(&mut self) -> String {
+    pub(super) fn allocate(&mut self) -> io::Result<String> {
         loop {
-            let id = catalog_id_from_bytes(self.entropy.next_id_bytes());
+            let id = catalog_id_from_bytes(self.entropy.next_id_bytes()?);
             if self.used.insert(id.clone()) {
-                return id;
+                return Ok(id);
             }
         }
     }
 }
 
 pub(super) trait CatalogIdEntropy {
-    fn next_id_bytes(&mut self) -> [u8; 16];
+    fn next_id_bytes(&mut self) -> io::Result<[u8; 16]>;
 }
 
 pub(super) struct OsCatalogIdEntropy;
 
 impl CatalogIdEntropy for OsCatalogIdEntropy {
-    fn next_id_bytes(&mut self) -> [u8; 16] {
+    fn next_id_bytes(&mut self) -> io::Result<[u8; 16]> {
         let mut bytes = [0; 16];
-        fill_os_entropy(&mut bytes);
-        bytes
+        fill_os_entropy(&mut bytes)?;
+        Ok(bytes)
     }
 }
 
 #[cfg(unix)]
-fn fill_os_entropy(bytes: &mut [u8; 16]) {
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut file| file.read_exact(bytes))
-        .expect("catalog id allocation requires OS entropy");
+fn fill_os_entropy(bytes: &mut [u8; 16]) -> io::Result<()> {
+    std::fs::File::open("/dev/urandom").and_then(|mut file| file.read_exact(bytes))
 }
 
 #[cfg(not(unix))]
-fn fill_os_entropy(_bytes: &mut [u8; 16]) {
-    panic!("catalog id allocation requires an approved OS entropy source on this platform");
+fn fill_os_entropy(_bytes: &mut [u8; 16]) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "catalog id allocation requires an approved OS entropy source on this platform",
+    ))
 }
 
 fn catalog_id_from_bytes(bytes: [u8; 16]) -> String {
@@ -84,6 +92,7 @@ fn catalog_id_from_bytes(bytes: [u8; 16]) -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::{HashSet, VecDeque};
+    use std::io;
 
     use super::{CatalogIdEntropy, StableIdAllocator, catalog_id_from_bytes};
 
@@ -100,16 +109,19 @@ mod tests {
     }
 
     impl CatalogIdEntropy for ScriptedEntropy {
-        fn next_id_bytes(&mut self) -> [u8; 16] {
-            self.ids.pop_front().expect("scripted entropy exhausted")
+        fn next_id_bytes(&mut self) -> io::Result<[u8; 16]> {
+            self.ids
+                .pop_front()
+                .ok_or_else(|| io::Error::other("scripted entropy exhausted"))
         }
     }
 
-    fn with_entropy<E: CatalogIdEntropy>(
-        used: HashSet<String>,
-        entropy: E,
-    ) -> StableIdAllocator<E> {
-        StableIdAllocator { used, entropy }
+    struct FailingEntropy;
+
+    impl CatalogIdEntropy for FailingEntropy {
+        fn next_id_bytes(&mut self) -> io::Result<[u8; 16]> {
+            Err(io::Error::other("entropy unavailable"))
+        }
     }
 
     #[test]
@@ -128,8 +140,22 @@ mod tests {
         let unique = [0x22; 16];
         let mut used = HashSet::new();
         used.insert(catalog_id_from_bytes(collision));
-        let mut allocator = with_entropy(used, ScriptedEntropy::new([collision, unique]));
+        let mut allocator =
+            StableIdAllocator::with_entropy(used, ScriptedEntropy::new([collision, unique]));
+        let expected = catalog_id_from_bytes(unique);
+        let allocated = allocator.allocate();
 
-        assert_eq!(catalog_id_from_bytes(unique), allocator.allocate());
+        assert!(matches!(allocated.as_deref(), Ok(id) if id == expected));
+    }
+
+    #[test]
+    fn stable_id_allocator_returns_entropy_errors() {
+        let mut allocator = StableIdAllocator::with_entropy(HashSet::new(), FailingEntropy);
+        let error = allocator.allocate();
+
+        assert_eq!(
+            error.as_ref().map_err(|error| error.kind()),
+            Err(io::ErrorKind::Other)
+        );
     }
 }

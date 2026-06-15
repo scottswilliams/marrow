@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::io;
 use std::path::Path;
 
 use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
@@ -21,7 +22,7 @@ pub(crate) use source_digest::{
     DurableRendering, analyzed_source_digest, durable_renderings_for_source, evolution_digest,
     source_and_evolution_digests,
 };
-use stable_id::StableIdAllocator;
+use stable_id::{CatalogIdEntropy, StableIdAllocator};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct CatalogKey {
@@ -291,12 +292,17 @@ fn catalog_binding(
             &mut ids,
             diagnostics,
         ),
-        None => Some(bind_first_run(
-            program,
-            evolve,
-            &source_entries,
-            diagnostics,
-        )),
+        None => bind_first_run(program, evolve, &source_entries, diagnostics).map(Some),
+    };
+    let proposal = match proposal {
+        Ok(proposal) => proposal,
+        Err(error) => {
+            diagnostics.push(catalog_diagnostic(
+                first_source_file(&source_entries),
+                format!("failed to allocate catalog identity: {error}"),
+            ));
+            return allocation_failure_binding(accepted, &source_entries);
+        }
     };
 
     // The proposal is the catalog the commit path freezes when the program runs or an
@@ -331,6 +337,37 @@ fn catalog_binding(
     }
 }
 
+fn allocation_failure_binding(
+    accepted: Option<&CatalogMetadata>,
+    source_entries: &[SourceCatalogEntry],
+) -> CatalogBinding {
+    let ids: HashMap<_, _> = accepted
+        .map(|catalog| {
+            let accepted_index = AcceptedCatalog::new(catalog);
+            source_entries
+                .iter()
+                .filter_map(|source| {
+                    accepted_index
+                        .active_entry(source.kind, &source.path)
+                        .map(|binding| {
+                            (
+                                CatalogKey::new(source.kind, source.path.clone()),
+                                binding.entry.stable_id.clone(),
+                            )
+                        })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    CatalogBinding {
+        accepted_epoch: accepted.map(|catalog| catalog.epoch),
+        accepted_digest: accepted.map(|catalog| catalog.digest.clone()),
+        leaf_token_ids: ids.clone(),
+        ids,
+        proposal: None,
+    }
+}
+
 /// Bind current source against an existing accepted catalog: carry accepted identity forward,
 /// apply renames and retires, mint identity for new entities, and record signatures, binding
 /// the resolved stable ids into `ids`. Returns the advanced proposal on any real change, or
@@ -342,7 +379,7 @@ fn bind_against_accepted(
     source_entries: &[SourceCatalogEntry],
     ids: &mut HashMap<CatalogKey, String>,
     diagnostics: &mut Vec<CheckDiagnostic>,
-) -> Option<CatalogMetadata> {
+) -> io::Result<Option<CatalogMetadata>> {
     let accepted_index = AcceptedCatalog::new(catalog);
     let source_catalog = SourceCatalog::new(source_entries);
     let mut renames = resolve_renames(
@@ -352,14 +389,16 @@ fn bind_against_accepted(
         diagnostics,
     );
     let mut proposal_entries = catalog.entries.clone();
+    let mut allocator = StableIdAllocator::over(&proposal_entries);
     let mut changed = bind_source_entries(
         &accepted_index,
         source_entries,
         &mut renames,
         ids,
         &mut proposal_entries,
+        &mut allocator,
         diagnostics,
-    );
+    )?;
     report_unresolved_renames(&renames, diagnostics);
     if apply_retires(
         &mut proposal_entries,
@@ -376,7 +415,7 @@ fn bind_against_accepted(
     if record_signatures_into(program, &mut proposal_entries, Some(catalog)) {
         changed = true;
     }
-    changed.then(|| CatalogMetadata::new(catalog.epoch + 1, proposal_entries))
+    Ok(changed.then(|| CatalogMetadata::new(catalog.epoch + 1, proposal_entries)))
 }
 
 /// Resolve each current source entry to its identity — carry an accepted active entry's id
@@ -385,15 +424,15 @@ fn bind_against_accepted(
 /// declaration has disappeared but is neither renamed nor retired stays active with no source
 /// backing: dropping a sparse field is a legal no-op, so it is a discharge obligation rather
 /// than a binding error.
-fn bind_source_entries(
+fn bind_source_entries<E: CatalogIdEntropy>(
     accepted_index: &AcceptedCatalog<'_>,
     source_entries: &[SourceCatalogEntry],
     renames: &mut HashMap<String, ResolvedRename>,
     ids: &mut HashMap<CatalogKey, String>,
     proposal_entries: &mut Vec<CatalogEntry>,
+    allocator: &mut StableIdAllocator<E>,
     diagnostics: &mut Vec<CheckDiagnostic>,
-) -> bool {
-    let mut allocator = StableIdAllocator::over(proposal_entries);
+) -> io::Result<bool> {
     let mut changed = false;
     for source in source_entries {
         let rename = renames.remove(&source.path);
@@ -412,13 +451,14 @@ fn bind_source_entries(
             apply_rename(proposal_entries, source, &rename.from_path, ids);
             changed = true;
         } else {
+            let entry = proposed_catalog_entry(source, allocator)?;
             push_pending_identity(source, diagnostics);
             prepare_proposal_path(proposal_entries, source.kind, &source.path);
-            proposal_entries.push(proposed_catalog_entry(source, &mut allocator));
+            proposal_entries.push(entry);
             changed = true;
         }
     }
-    changed
+    Ok(changed)
 }
 
 /// Report every rename whose target the source never declares; it relocates nothing, so the
@@ -460,7 +500,7 @@ fn bind_first_run(
     evolve: &EvolveIntents,
     source_entries: &[SourceCatalogEntry],
     diagnostics: &mut Vec<CheckDiagnostic>,
-) -> CatalogMetadata {
+) -> io::Result<CatalogMetadata> {
     for rename in &evolve.renames {
         report_unresolved_intent(&rename.file, rename.span, diagnostics);
     }
@@ -471,9 +511,9 @@ fn bind_first_run(
     let mut proposal_entries: Vec<CatalogEntry> = source_entries
         .iter()
         .map(|source| proposed_catalog_entry(source, &mut allocator))
-        .collect();
+        .collect::<io::Result<_>>()?;
     record_signatures_into(program, &mut proposal_entries, None);
-    CatalogMetadata::new(1, proposal_entries)
+    Ok(CatalogMetadata::new(1, proposal_entries))
 }
 
 /// The `(kind, path) -> stable id` map of a proposal's active entries. Unlike the accepted-only
@@ -1596,14 +1636,14 @@ fn qualified(module: &str, item: &str) -> String {
     }
 }
 
-fn proposed_catalog_entry(
+fn proposed_catalog_entry<E: CatalogIdEntropy>(
     source: &SourceCatalogEntry,
-    allocator: &mut StableIdAllocator,
-) -> CatalogEntry {
-    CatalogEntry {
+    allocator: &mut StableIdAllocator<E>,
+) -> io::Result<CatalogEntry> {
+    Ok(CatalogEntry {
         kind: source.kind,
         path: source.path.clone(),
-        stable_id: allocator.allocate(),
+        stable_id: allocator.allocate()?,
         aliases: Vec::new(),
         lifecycle: CatalogLifecycle::Active,
         // Source-derived shape signatures are recorded in post-passes once every referent's id
@@ -1611,7 +1651,7 @@ fn proposed_catalog_entry(
         accepted_key_shape: None,
         accepted_index_shape: None,
         accepted_struct: None,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -1631,6 +1671,13 @@ mod tests {
         }
     }
 
+    fn reserved_entry(kind: CatalogEntryKind, path: &str, stable_id: &str) -> CatalogEntry {
+        CatalogEntry {
+            lifecycle: CatalogLifecycle::Reserved,
+            ..active_entry(kind, path, stable_id)
+        }
+    }
+
     fn source_entry(kind: CatalogEntryKind, path: &str) -> SourceCatalogEntry {
         SourceCatalogEntry {
             kind,
@@ -1639,6 +1686,14 @@ mod tests {
             span: SourceSpan::default(),
             leaf: None,
             key_params: Vec::new(),
+        }
+    }
+
+    struct FailingEntropy;
+
+    impl stable_id::CatalogIdEntropy for FailingEntropy {
+        fn next_id_bytes(&mut self) -> std::io::Result<[u8; 16]> {
+            Err(std::io::Error::other("entropy unavailable"))
         }
     }
 
@@ -1693,6 +1748,61 @@ mod tests {
                 }],
                 source: vec![CatalogEntryKind::EnumMember],
             })
+        );
+    }
+
+    #[test]
+    fn allocation_failure_preserves_prior_catalog_diagnostics() {
+        let reserved_path = "books::Book::title";
+        let accepted = CatalogMetadata::new(
+            1,
+            vec![reserved_entry(
+                CatalogEntryKind::ResourceMember,
+                reserved_path,
+                "cat_000000000000000000000000000000aa",
+            )],
+        );
+        let source = vec![
+            source_entry(CatalogEntryKind::ResourceMember, reserved_path),
+            source_entry(CatalogEntryKind::ResourceMember, "books::Book::pages"),
+        ];
+        let accepted_index = AcceptedCatalog::new(&accepted);
+        let mut proposal_entries = accepted.entries.clone();
+        let mut allocator = StableIdAllocator::with_entropy(
+            proposal_entries
+                .iter()
+                .map(|entry| entry.stable_id.clone())
+                .collect(),
+            FailingEntropy,
+        );
+        let mut ids = HashMap::new();
+        let mut renames = HashMap::new();
+        let mut diagnostics = Vec::new();
+
+        let result = bind_source_entries(
+            &accepted_index,
+            &source,
+            &mut renames,
+            &mut ids,
+            &mut proposal_entries,
+            &mut allocator,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result.as_ref().map_err(|error| error.kind()),
+            Err(std::io::ErrorKind::Other)
+        );
+        assert!(ids.is_empty());
+        assert_eq!(proposal_entries, accepted.entries);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(
+            diagnostics[0].payload,
+            DiagnosticPayload::ReservedCatalogPathReuse {
+                source_kind: CatalogEntryKind::ResourceMember,
+                source_path: reserved_path.to_string(),
+                reserved_stable_id: "cat_000000000000000000000000000000aa".to_string(),
+            }
         );
     }
 }
