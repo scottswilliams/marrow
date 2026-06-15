@@ -131,12 +131,26 @@ const WORKER_STACK_BYTES: usize = 256 * 1024 * 1024;
 /// A panic on the worker (a genuine bug, not a depth limit) is re-raised on the
 /// main thread so it surfaces the same way it would unthreaded.
 fn run_on_worker_stack(command: impl FnOnce() -> ExitCode + Send + 'static) -> ExitCode {
-    std::thread::Builder::new()
+    let worker = std::thread::Builder::new()
         .stack_size(WORKER_STACK_BYTES)
-        .spawn(command)
-        .expect("spawn the marrow worker thread")
-        .join()
-        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        .spawn(command);
+    run_worker_thread(worker)
+}
+
+fn run_worker_thread(worker: std::io::Result<std::thread::JoinHandle<ExitCode>>) -> ExitCode {
+    match worker {
+        Ok(worker) => worker
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+        Err(error) => {
+            report_simple_error(
+                "io.thread",
+                &format!("failed to spawn Marrow worker thread: {error}"),
+                CheckFormat::Text,
+            );
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Exit cleanly when a downstream reader closes our stdout, instead of panicking.
@@ -739,5 +753,26 @@ pub(crate) fn render_value_bytes(bytes: &[u8]) -> String {
             push_hex(&mut text, bytes);
             text
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::ExitCode;
+
+    use super::run_worker_thread;
+
+    #[test]
+    fn worker_thread_spawn_error_returns_failure() {
+        let result = run_worker_thread(Err(std::io::ErrorKind::WouldBlock.into()));
+
+        assert_eq!(result, ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn worker_thread_returns_worker_exit_code() {
+        let result = run_worker_thread(Ok(std::thread::spawn(|| ExitCode::from(7))));
+
+        assert_eq!(result, ExitCode::from(7));
     }
 }

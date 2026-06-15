@@ -334,13 +334,15 @@ directly.
 
 ### `io.*` — kind `io`
 
-Filesystem faults. The CLI reports `io.read` when it cannot read a project file
-(e.g. `marrow.json`). The `std::io` builtins raise `io.read`/`io.write` as
-catchable `Error` values inside a running program.
+I/O faults. The CLI reports `io.read` when it cannot read a project file
+(e.g. `marrow.json`) and `io.thread` when it cannot start its worker thread.
+The `std::io` builtins raise `io.read`/`io.write` as catchable `Error` values
+inside a running program.
 
 | Code | Meaning |
 |---|---|
 | `io.read` | A read failed: a project source file or `marrow.json` could not be read, or `std::io::readText`/`readBytes` failed. |
+| `io.thread` | The CLI could not spawn the worker thread it uses for parsing, checking, and running. |
 | `io.write` | `std::io::writeText`/`writeBytes` failed. |
 
 ### `config.*` and `project.*` — kind `tooling`
