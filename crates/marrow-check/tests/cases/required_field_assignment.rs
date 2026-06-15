@@ -1,4 +1,5 @@
 use crate::support;
+use marrow_check::DiagnosticPayload;
 use support::{assert_clean, check_module_report, with_code};
 
 #[test]
@@ -54,8 +55,14 @@ fn whole_unkeyed_group_assignment_keeps_unrelated_missing_fields() {
 
     let found = with_code(&report, "check.required_absent");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
-    assert!(
-        found[0].message.contains("`title`"),
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::RequiredAbsent {
+            local: "b".to_string(),
+            resource: "m::Book".to_string(),
+            store_root: "books".to_string(),
+            missing_field_paths: vec!["title".to_string()],
+        },
         "{:#?}",
         report.diagnostics
     );

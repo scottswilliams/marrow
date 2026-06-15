@@ -451,6 +451,7 @@ impl TestResolutionSuppression {
             | DiagnosticPayload::ReservedCatalogPathReuse { .. }
             | DiagnosticPayload::CatalogIntent(_)
             | DiagnosticPayload::SuggestedIndex { .. }
+            | DiagnosticPayload::RequiredAbsent { .. }
             | DiagnosticPayload::TypeMismatch { .. }
             | DiagnosticPayload::None => false,
         }

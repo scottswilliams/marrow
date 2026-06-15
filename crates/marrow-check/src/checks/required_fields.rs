@@ -5,8 +5,8 @@ use marrow_schema::{Node, NodeKind, ResourceSchema};
 
 use crate::resolve::StoreResource;
 use crate::{
-    CHECK_REQUIRED_ABSENT, CheckDiagnostic, CheckedProgram, MarrowType, resolve_resource_type,
-    resource_type_name,
+    CHECK_REQUIRED_ABSENT, CheckDiagnostic, CheckedProgram, DiagnosticPayload, MarrowType,
+    resolve_resource_type, resource_type_name,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,16 +121,24 @@ impl RequiredFieldAssignments {
         if resource != &target_resource {
             return;
         }
-        diagnostics.push(CheckDiagnostic::error(
-            CHECK_REQUIRED_ABSENT,
-            file,
-            value.span(),
-            format!(
-                "local resource `{local}` is missing required {} when written to `^{}`",
-                field_list(missing),
-                store.store.root
-            ),
-        ));
+        diagnostics.push(
+            CheckDiagnostic::error(
+                CHECK_REQUIRED_ABSENT,
+                file,
+                value.span(),
+                format!(
+                    "local resource `{local}` is missing required {} when written to `^{}`",
+                    field_list(missing),
+                    store.store.root
+                ),
+            )
+            .with_payload(DiagnosticPayload::RequiredAbsent {
+                local: local.to_string(),
+                resource: resource.clone(),
+                store_root: store.store.root.clone(),
+                missing_field_paths: missing.iter().cloned().collect(),
+            }),
+        );
     }
 
     fn lookup(&self, name: &str) -> Option<&LocalResourceState> {

@@ -394,7 +394,9 @@ pub enum EnumDiagnostic {
 /// catalog path reuse diagnostics carry the reused source identity and reserved
 /// stable id. Catalog-intent diagnostics carry structured intent facts.
 /// Suggested-index diagnostics carry the source declaration that admits a hidden
-/// lookup. Type mismatch diagnostics carry the expected and found types.
+/// lookup. Required-absent diagnostics carry the local, resource, root, and
+/// missing required field paths. Type mismatch diagnostics carry the expected and
+/// found types.
 /// Other diagnostics carry [`DiagnosticPayload::None`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DiagnosticPayload {
@@ -456,6 +458,13 @@ pub enum DiagnosticPayload {
     CatalogIntent(CatalogIntentDiagnostic),
     /// `check.collection_unsupported`: a lookup names no declared index.
     SuggestedIndex { declaration: String },
+    /// `check.required_absent`: a sparse local resource is written to a saved root.
+    RequiredAbsent {
+        local: String,
+        resource: String,
+        store_root: String,
+        missing_field_paths: Vec<String>,
+    },
     /// `check.return_type` or `check.assignment_type`: incompatible known types.
     TypeMismatch {
         expected: MarrowType,
