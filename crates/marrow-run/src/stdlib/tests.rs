@@ -121,6 +121,13 @@ fn every_table_row_reaches_a_live_handler() {
     let no_args: &[ExecArg] = &[];
 
     for entry in marrow_schema::stdlib::all() {
+        assert_ne!(
+            entry.requires_capability,
+            Some(Capability::Maintenance),
+            "std::{}::{} requires maintenance but has no test dispatch helper",
+            entry.module,
+            entry.op
+        );
         let mut env = test_env(&program, &store, &host);
         let result = match entry.requires_capability {
             Some(Capability::Clock) => {
@@ -130,9 +137,7 @@ fn every_table_row_reaches_a_live_handler() {
             Some(Capability::Environment) => eval_env(entry.op, no_args, span, &mut env).map(Some),
             Some(Capability::Log) => eval_log(entry.op, no_args, span, &mut env),
             Some(Capability::Filesystem) => eval_io(entry.op, no_args, span, &mut env),
-            Some(Capability::Maintenance) => {
-                unreachable!("the stdlib table has no maintenance helper")
-            }
+            Some(Capability::Maintenance) => continue,
             None if entry.module == "assert" => eval_assert(entry.op, no_args, span, &mut env),
             None => eval_std(entry.module, entry.op, no_args, span, &mut env).map(Some),
         };
