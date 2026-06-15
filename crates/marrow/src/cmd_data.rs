@@ -217,6 +217,73 @@ fn report_store_error(error: StoreError, format: CheckFormat) -> ExitCode {
     ExitCode::FAILURE
 }
 
+#[derive(Debug)]
+pub(super) enum DataOutputError {
+    Store(StoreError),
+    Io(io::Error),
+}
+
+impl From<StoreError> for DataOutputError {
+    fn from(error: StoreError) -> Self {
+        Self::Store(error)
+    }
+}
+
+impl From<io::Error> for DataOutputError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl DataOutputError {
+    fn from_json(error: serde_json::Error) -> Self {
+        let kind = error.io_error_kind().unwrap_or(io::ErrorKind::Other);
+        Self::Io(io::Error::new(kind, error.to_string()))
+    }
+}
+
+fn report_data_output_error(error: DataOutputError, format: CheckFormat) -> ExitCode {
+    match error {
+        DataOutputError::Store(error) => report_store_error(error, format),
+        DataOutputError::Io(error) if error.kind() == io::ErrorKind::BrokenPipe => {
+            ExitCode::SUCCESS
+        }
+        DataOutputError::Io(error) => {
+            eprintln!("io.write: failed to write data output: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn stop_after_output_error() -> StoreError {
+    StoreError::InvalidTransaction {
+        message: "data output stopped after stdout write failed".into(),
+    }
+}
+
+fn stop_on_output_error(
+    output_error: &mut Option<DataOutputError>,
+    result: Result<(), DataOutputError>,
+) -> Result<(), StoreError> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            *output_error = Some(error);
+            Err(stop_after_output_error())
+        }
+    }
+}
+
+fn finish_output_visit<T>(
+    result: Result<T, StoreError>,
+    output_error: Option<DataOutputError>,
+) -> Result<T, DataOutputError> {
+    match output_error {
+        Some(error) => Err(error),
+        None => result.map_err(Into::into),
+    }
+}
+
 /// Pin a read snapshot so every pass of an inspection command observes one version of
 /// saved data. The caller must hold the returned guard for the duration of its reads;
 /// an empty store has nothing to pin and yields `Ok(None)`. The shared coherent-read
@@ -439,13 +506,13 @@ fn data_dump(args: &[String]) -> ExitCode {
         None => 0,
     };
     let result = match format {
-        CheckFormat::Text => render_dump_text(&program, &store, records),
+        CheckFormat::Text => render_dump_text(&program, &store, records).map_err(Into::into),
         CheckFormat::Json => render_dump_json(&dir, &program, &store),
-        CheckFormat::Jsonl => render_dump_jsonl(&program, &store, records),
+        CheckFormat::Jsonl => render_dump_jsonl(&program, &store, records).map_err(Into::into),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => report_store_error(error, format),
+        Err(error) => report_data_output_error(error, format),
     }
 }
 
@@ -473,7 +540,7 @@ fn render_dump_json(
     dir: &str,
     program: &CheckedProgram,
     store: &Option<TreeStore>,
-) -> Result<(), StoreError> {
+) -> Result<(), DataOutputError> {
     match store {
         Some(store) => write_dump_json(dir, program, store),
         None => {
@@ -502,23 +569,26 @@ fn write_dump_json(
     dir: &str,
     program: &CheckedProgram,
     store: &TreeStore,
-) -> Result<(), StoreError> {
+) -> Result<(), DataOutputError> {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     write_json_array_envelope(
         &mut out,
         |out| {
-            write!(out, "\"project\":").expect("write dump JSON");
+            write!(out, "\"project\":")?;
             serde_json::to_writer(out, &crate::project_json_path(dir))
-                .expect("serialize project path");
+                .map_err(DataOutputError::from_json)
         },
         "records",
         |emit| {
-            visit_data_records(program, store, |record| {
-                emit(&dump_record(&record.path, record.payload.as_bytes()));
-                Ok(())
-            })
-            .map(|_| ())
+            let mut output_error = None;
+            let result = visit_data_records(program, store, |record| {
+                stop_on_output_error(
+                    &mut output_error,
+                    emit(&dump_record(&record.path, record.payload.as_bytes())),
+                )
+            });
+            finish_output_visit(result, output_error).map(|_| ())
         },
     )
 }
@@ -530,25 +600,27 @@ fn write_dump_json(
 /// `data integrity`.
 pub(super) fn write_json_array_envelope(
     out: &mut impl Write,
-    write_prefix: impl FnOnce(&mut dyn Write),
+    write_prefix: impl FnOnce(&mut dyn Write) -> Result<(), DataOutputError>,
     array_field: &str,
-    visit: impl FnOnce(&mut dyn FnMut(&serde_json::Value)) -> Result<(), StoreError>,
-) -> Result<(), StoreError> {
-    write!(out, "{{").expect("write JSON envelope");
-    write_prefix(out);
-    write!(out, ",\"{array_field}\":[").expect("write JSON envelope");
+    visit: impl FnOnce(
+        &mut dyn FnMut(&serde_json::Value) -> Result<(), DataOutputError>,
+    ) -> Result<(), DataOutputError>,
+) -> Result<(), DataOutputError> {
+    write!(out, "{{")?;
+    write_prefix(out)?;
+    write!(out, ",\"{array_field}\":[")?;
     {
         let mut first = true;
         let mut emit = |item: &serde_json::Value| {
             if !first {
-                write!(out, ",").expect("write JSON envelope separator");
+                write!(out, ",")?;
             }
             first = false;
-            serde_json::to_writer(&mut *out, item).expect("serialize JSON envelope item");
+            serde_json::to_writer(&mut *out, item).map_err(DataOutputError::from_json)
         };
         visit(&mut emit)?;
     }
-    writeln!(out, "]}}").expect("write JSON envelope");
+    writeln!(out, "]}}")?;
     Ok(())
 }
 
@@ -572,5 +644,92 @@ pub(crate) fn saved_key_json(key: &SavedKey) -> serde_json::Value {
         SavedKey::Bytes(value) => {
             json!({ "type": "bytes", "value_b64": marrow_run::base64::encode(value) })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{self, Write};
+
+    struct FailOnWrite {
+        writes: usize,
+        fail_on: usize,
+    }
+
+    impl FailOnWrite {
+        fn new(fail_on: usize) -> Self {
+            Self { writes: 0, fail_on }
+        }
+    }
+
+    impl Write for FailOnWrite {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            if self.writes == self.fail_on {
+                return Err(io::Error::other("writer failed"));
+            }
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn write_test_prefix(out: &mut dyn Write) -> Result<(), DataOutputError> {
+        write!(out, "\"project\":null")?;
+        Ok(())
+    }
+
+    fn assert_io_error(result: Result<(), DataOutputError>) {
+        assert!(matches!(result, Err(DataOutputError::Io(_))));
+    }
+
+    #[test]
+    fn json_envelope_reports_prefix_write_failure() {
+        let mut out = FailOnWrite::new(2);
+
+        let result = write_json_array_envelope(&mut out, write_test_prefix, "items", |_| Ok(()));
+
+        assert_io_error(result);
+    }
+
+    #[test]
+    fn json_envelope_reports_item_write_failure() {
+        let mut out = FailOnWrite::new(4);
+
+        let result = write_json_array_envelope(&mut out, write_test_prefix, "items", |emit| {
+            emit(&json!({ "item": 1 }))?;
+            Ok(())
+        });
+
+        assert_io_error(result);
+    }
+
+    #[test]
+    fn json_envelope_reports_closing_write_failure() {
+        let mut out = FailOnWrite::new(4);
+
+        let result = write_json_array_envelope(&mut out, write_test_prefix, "items", |_| Ok(()));
+
+        assert_io_error(result);
+    }
+
+    #[test]
+    fn json_envelope_preserves_store_traversal_errors() {
+        let mut out = Vec::new();
+
+        let result = write_json_array_envelope(&mut out, write_test_prefix, "items", |_| {
+            Err(DataOutputError::Store(StoreError::Corruption {
+                message: "bad cell".into(),
+            }))
+        });
+
+        assert!(matches!(
+            result,
+            Err(DataOutputError::Store(StoreError::Corruption { message }))
+                if message == "bad cell"
+        ));
     }
 }

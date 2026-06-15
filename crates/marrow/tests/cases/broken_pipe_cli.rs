@@ -1,7 +1,6 @@
 //! A downstream reader that closes the pipe early (`marrow ... | head -1`) must not
 //! make the CLI panic. Rust ignores `SIGPIPE`, so a stdout write to a closed pipe
-//! returns `EPIPE` and the `print!`/`write!` paths would panic; the CLI installs a
-//! panic hook that turns that one panic into a clean exit. This drives the real
+//! returns `EPIPE`; the CLI treats that as a clean exit. This drives the real
 //! binary end to end: seed a many-record store, dump it, read one line, drop the
 //! read end, and assert the child exited without panicking.
 
@@ -100,10 +99,8 @@ fn text_dump_into_an_early_closed_pipe_does_not_panic() {
 
 #[test]
 fn json_dump_into_an_early_closed_pipe_does_not_panic() {
-    // The streaming JSON path is a single long line written through
-    // `serde_json::to_writer(...).expect(...)`, whose EPIPE panic message also carries
-    // "Broken pipe"; one hook covers both paths. Read only a small byte prefix so the
-    // rest stays pending in the child when the pipe closes.
+    // The streaming JSON path is a single long line; read only a small byte prefix so
+    // the rest stays pending in the child when the pipe closes.
     let project = seeded_dump_project("bpipe-json");
     let dir = project.to_str().unwrap();
     let (status, stderr) = dump_then_close_pipe(dir, "json", |stdout| {

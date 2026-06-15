@@ -33,7 +33,7 @@ pub(super) fn data_integrity(args: &[String]) -> ExitCode {
 
     if let Some(store) = &store {
         if let Err(error) = report_integrity(&dir, records, problems, store, &program, format) {
-            return super::report_store_error(error, format);
+            return super::report_data_output_error(error, format);
         }
     } else {
         report_empty_integrity(&dir, format);
@@ -52,18 +52,19 @@ fn report_integrity(
     store: &TreeStore,
     program: &marrow_check::CheckedProgram,
     format: CheckFormat,
-) -> Result<(), StoreError> {
+) -> Result<(), super::DataOutputError> {
     match format {
         CheckFormat::Text => {
             if problems == 0 {
                 println!("ok: {dir} integrity verified ({records} records)");
             } else {
-                write_integrity_problems_text(store, program)?;
+                write_integrity_problems_text(store, program)
+                    .map_err(super::DataOutputError::from)?;
             }
         }
         CheckFormat::Json => write_integrity_json(dir, records, store, program)?,
         CheckFormat::Jsonl => {
-            write_integrity_problems_jsonl(store, program)?;
+            write_integrity_problems_jsonl(store, program).map_err(super::DataOutputError::from)?;
             write_json(json!({
                 "kind": "summary",
                 "records": records,
@@ -122,25 +123,31 @@ fn write_integrity_json(
     records: usize,
     store: &TreeStore,
     program: &marrow_check::CheckedProgram,
-) -> Result<(), StoreError> {
+) -> Result<(), super::DataOutputError> {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     super::write_json_array_envelope(
         &mut out,
         |out| {
-            write!(out, "\"project\":").expect("write integrity JSON");
+            write!(out, "\"project\":")?;
             serde_json::to_writer(&mut *out, &crate::project_json_path(dir))
-                .expect("serialize project path");
-            write!(out, ",\"records\":{records}").expect("write integrity JSON");
+                .map_err(super::DataOutputError::from_json)?;
+            write!(out, ",\"records\":{records}")?;
+            Ok(())
         },
         "problems",
         |emit| {
-            visit_integrity_problems(store, program, |outcome| {
+            let mut output_error = None;
+            let result = visit_integrity_problems(store, program, |outcome| {
                 if let Some(problem) = outcome.problem {
-                    emit(&integrity_record(&problem));
+                    super::stop_on_output_error(
+                        &mut output_error,
+                        emit(&integrity_record(&problem)),
+                    )?;
                 }
                 Ok(())
-            })
+            });
+            super::finish_output_visit(result, output_error)
         },
     )
 }
