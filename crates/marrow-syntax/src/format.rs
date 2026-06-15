@@ -403,11 +403,12 @@ fn format_body_lines(
     let items: Vec<FormattedBodyLine> = items.collect();
 
     for (index, item) in items.iter().enumerate() {
-        while let Some(comment) = comments.peek() {
+        while let Some(comment) = comments.peek().copied() {
             if comment.placement == CommentPlacement::OwnLine
                 && comment.span.start_byte < item.span.start_byte
             {
-                lines.push(format_comment(comments.next().expect("peeked")));
+                lines.push(format_comment(comment));
+                comments.next();
             } else {
                 break;
             }
@@ -417,16 +418,13 @@ fn format_body_lines(
         let next_start = items
             .get(index + 1)
             .map_or(usize::MAX, |next| next.span.start_byte);
-        if let Some(comment) = comments.peek()
+        if let Some(comment) = comments.peek().copied()
             && comment.placement == CommentPlacement::Trailing
             && comment.span.start_byte > item.span.start_byte
             && comment.span.start_byte < next_start
         {
-            append_trailing_comment(
-                &mut text,
-                comments.next().expect("peeked"),
-                item.trailing_comment_line,
-            );
+            append_trailing_comment(&mut text, comment, item.trailing_comment_line);
+            comments.next();
         }
         lines.push(text);
     }
@@ -570,14 +568,12 @@ pub(crate) fn format_block(source: &str, block: &Block, level: usize) -> String 
 
     for (i, statement) in block.statements.iter().enumerate() {
         let stmt_span = statement.span();
-        while let Some(comment) = comments.peek() {
+        while let Some(comment) = comments.peek().copied() {
             if comment.placement == CommentPlacement::OwnLine
                 && comment.span.start_byte < stmt_span.start_byte
             {
-                lines.push(format_block_comment(
-                    comments.next().expect("peeked"),
-                    level,
-                ));
+                lines.push(format_block_comment(comment, level));
+                comments.next();
             } else {
                 break;
             }
@@ -588,9 +584,10 @@ pub(crate) fn format_block(source: &str, block: &Block, level: usize) -> String 
             .get(i + 1)
             .map_or(usize::MAX, |next| next.span().start_byte);
         let mut statement_comments = Vec::new();
-        while let Some(comment) = comments.peek() {
+        while let Some(comment) = comments.peek().copied() {
             if comment_belongs_to_statement(comment, stmt_span, next_start) {
-                statement_comments.push(comments.next().expect("peeked"));
+                statement_comments.push(comment);
+                comments.next();
             } else {
                 break;
             }
@@ -1094,28 +1091,23 @@ fn format_match(
         .collect();
     let mut comments = arm_comments.into_iter().peekable();
     for arm in arms {
-        while let Some(comment) = comments.peek() {
+        while let Some(comment) = comments.peek().copied() {
             if comment.placement == CommentPlacement::OwnLine
                 && comment.span.start_byte < arm.span.start_byte
             {
                 out.push('\n');
-                out.push_str(&format_block_comment(
-                    comments.next().expect("peeked"),
-                    ctx.level + 1,
-                ));
+                out.push_str(&format_block_comment(comment, ctx.level + 1));
+                comments.next();
             } else {
                 break;
             }
         }
         let mut header = format!("{arm_pad}{}", arm.path.join("::"));
-        if let Some(comment) = comments.peek()
+        if let Some(comment) = comments.peek().copied()
             && trailing_comment_between(comment, arm.span.start_byte, arm.block.span.start_byte)
         {
-            append_trailing_comment(
-                &mut header,
-                comments.next().expect("peeked"),
-                TrailingCommentLine::Last,
-            );
+            append_trailing_comment(&mut header, comment, TrailingCommentLine::Last);
+            comments.next();
         }
         out.push('\n');
         out.push_str(&header);
