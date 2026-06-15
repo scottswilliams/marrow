@@ -197,11 +197,7 @@ impl<'e, 'p> Frame<'e, 'p> {
     /// The locals in scope, innermost scope last and, within a scope, in binding
     /// order, so a consumer keeping the last occurrence per name sees shadowing.
     pub fn locals(&self) -> impl Iterator<Item = (&str, &Value)> {
-        self.env
-            .scopes
-            .iter()
-            .flat_map(|scope| scope.iter())
-            .map(|(name, binding)| (name.as_str(), &binding.value))
+        self.env.locals()
     }
 
     /// The live saved-data store handle — the same one the run reads and writes,

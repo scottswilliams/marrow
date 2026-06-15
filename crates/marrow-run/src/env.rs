@@ -46,6 +46,60 @@ pub(crate) struct Binding {
     pub(crate) mutable: bool,
 }
 
+type Scope = Vec<(String, Binding)>;
+
+struct ScopeStack {
+    base: Scope,
+    nested: Vec<Scope>,
+}
+
+impl ScopeStack {
+    fn new() -> Self {
+        Self {
+            base: Vec::new(),
+            nested: Vec::new(),
+        }
+    }
+
+    fn current_mut(&mut self) -> &mut Scope {
+        match self.nested.last_mut() {
+            Some(scope) => scope,
+            None => &mut self.base,
+        }
+    }
+
+    fn push(&mut self) {
+        self.nested.push(Vec::new());
+    }
+
+    fn pop(&mut self) {
+        let popped = self.nested.pop();
+        debug_assert!(popped.is_some());
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &(String, Binding)> {
+        self.base
+            .iter()
+            .chain(self.nested.iter().flat_map(|scope| scope.iter()))
+    }
+
+    fn iter_rev(&self) -> impl Iterator<Item = &(String, Binding)> {
+        self.nested
+            .iter()
+            .rev()
+            .flat_map(|scope| scope.iter().rev())
+            .chain(self.base.iter().rev())
+    }
+
+    fn iter_rev_mut(&mut self) -> impl Iterator<Item = &mut (String, Binding)> {
+        self.nested
+            .iter_mut()
+            .rev()
+            .flat_map(|scope| scope.iter_mut().rev())
+            .chain(self.base.iter_mut().rev())
+    }
+}
+
 /// Transaction state shared by every activation in one run.
 #[derive(Default)]
 pub(crate) struct TransactionState {
@@ -150,7 +204,7 @@ pub(crate) struct Context<'p> {
 /// store, and host capabilities), and the shared output stream. A resource has
 /// few locals, so lookups are linear and innermost-first.
 pub(crate) struct Env<'p> {
-    pub(crate) scopes: Vec<Vec<(String, Binding)>>,
+    scopes: ScopeStack,
     pub(crate) program: &'p CheckedRuntimeProgram,
     pub(crate) store: &'p TreeStore,
     pub(crate) host: &'p Host,
@@ -190,7 +244,7 @@ impl<'p> Env<'p> {
         depth: usize,
     ) -> Self {
         Self {
-            scopes: Vec::new(),
+            scopes: ScopeStack::new(),
             output,
             program: ctx.program,
             store: ctx.store,
@@ -674,7 +728,7 @@ impl<'p> Env<'p> {
     }
 
     pub(crate) fn push_scope(&mut self) {
-        self.scopes.push(Vec::new());
+        self.scopes.push();
     }
 
     pub(crate) fn pop_scope(&mut self) {
@@ -684,25 +738,28 @@ impl<'p> Env<'p> {
     /// Bind `name` in the innermost scope, shadowing any binding further out.
     pub(crate) fn bind(&mut self, name: String, value: Value, mutable: bool) {
         self.scopes
-            .last_mut()
-            .expect("a scope is open")
+            .current_mut()
             .push((name, Binding { value, mutable }));
+    }
+
+    pub(crate) fn locals(&self) -> impl Iterator<Item = (&str, &Value)> {
+        self.scopes
+            .iter()
+            .map(|(name, binding)| (name.as_str(), &binding.value))
     }
 
     /// The value bound to `name`, searching innermost scope first.
     pub(crate) fn lookup(&self, name: &str) -> Option<&Value> {
         self.scopes
-            .iter()
-            .rev()
-            .flat_map(|scope| scope.iter().rev())
+            .iter_rev()
             .find(|(bound, _)| bound == name)
             .map(|(_, binding)| &binding.value)
     }
 
     /// Reassign an existing mutable binding.
     pub(crate) fn assign(&mut self, name: &str, value: Value) -> Result<(), AssignError> {
-        for scope in self.scopes.iter_mut().rev() {
-            if let Some((_, binding)) = scope.iter_mut().rev().find(|(bound, _)| bound == name) {
+        for (bound, binding) in self.scopes.iter_rev_mut() {
+            if bound == name {
                 if !binding.mutable {
                     return Err(AssignError::Immutable);
                 }
@@ -812,6 +869,9 @@ fn traversal_fault(span: SourceSpan) -> RuntimeError {
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error;
+    use std::io;
+
     use marrow_store::cell::CatalogId;
     use marrow_store::key::SavedKey;
     use marrow_store::tree::{DataPathSegment, TreeStore};
@@ -823,20 +883,24 @@ mod tests {
     const SOURCE_DIGEST: &str =
         "sha256:0000000000000000000000000000000000000000000000000000000000000001";
 
-    fn catalog(raw: &str) -> CatalogId {
-        CatalogId::new(raw.to_string()).expect("valid test catalog id")
+    fn catalog(raw: &str) -> Result<CatalogId, Box<dyn Error>> {
+        Ok(CatalogId::new(raw.to_string())?)
     }
 
-    fn plan_for(root: &CatalogId, member: &CatalogId, id: i64, value: &[u8]) -> WritePlan {
+    fn plan_for(
+        root: &CatalogId,
+        member: &CatalogId,
+        id: i64,
+        value: &[u8],
+    ) -> Result<WritePlan, Box<dyn Error>> {
         let address = DataAddress::from_resolved_parts(
             root.clone(),
             vec![SavedKey::Int(id)],
             vec![DataPathSegment::Member(member.clone())],
         );
-        let stamp = build_commit_metadata_stamp(1, SOURCE_DIGEST, vec![root.clone()], Vec::new())
-            .expect("build stamp")
-            .expect("changed root stamps metadata");
-        WritePlan {
+        let stamp = build_commit_metadata_stamp(1, SOURCE_DIGEST, vec![root.clone()], Vec::new())?
+            .ok_or_else(|| io::Error::other("changed root should stamp metadata"))?;
+        Ok(WritePlan {
             steps: vec![
                 PlanStep::WriteData {
                     address,
@@ -844,56 +908,53 @@ mod tests {
                 },
                 stamp,
             ],
-        }
+        })
     }
 
     #[test]
-    fn managed_commit_ids_are_dense_across_prebuilt_commits_and_rollbacks() {
+    fn managed_commit_ids_are_dense_across_prebuilt_commits_and_rollbacks()
+    -> Result<(), Box<dyn Error>> {
         let store = TreeStore::memory();
-        let root = catalog("cat_00000000000000000000000000000001");
-        let member = catalog("cat_00000000000000000000000000000002");
+        let root = catalog("cat_00000000000000000000000000000001")?;
+        let member = catalog("cat_00000000000000000000000000000002")?;
 
-        let first = plan_for(&root, &member, 1, b"first");
-        let second = plan_for(&root, &member, 2, b"second");
+        let first = plan_for(&root, &member, 1, b"first")?;
+        let second = plan_for(&root, &member, 2, b"second")?;
 
-        first.commit(&store, false).expect("first commit");
-        second.commit(&store, false).expect("second commit");
+        first.commit(&store, false)?;
+        second.commit(&store, false)?;
         assert_eq!(
             store
-                .read_commit_metadata()
-                .expect("read commit metadata")
-                .expect("commit metadata")
+                .read_commit_metadata()?
+                .ok_or_else(|| io::Error::other("commit metadata should exist"))?
                 .commit_id,
             2,
             "two committed write plans advance the commit high-water mark by two"
         );
 
-        let rolled_back = plan_for(&root, &member, 3, b"rolled-back");
-        store.begin().expect("begin rollback bracket");
-        rolled_back
-            .commit(&store, true)
-            .expect("apply inside rollback bracket");
-        store.rollback().expect("rollback bracket");
+        let rolled_back = plan_for(&root, &member, 3, b"rolled-back")?;
+        store.begin()?;
+        rolled_back.commit(&store, true)?;
+        store.rollback()?;
         assert_eq!(
             store
-                .read_commit_metadata()
-                .expect("read commit metadata")
-                .expect("commit metadata")
+                .read_commit_metadata()?
+                .ok_or_else(|| io::Error::other("commit metadata should exist"))?
                 .commit_id,
             2,
             "a rolled-back write does not consume a commit id"
         );
 
-        let third = plan_for(&root, &member, 4, b"third");
-        third.commit(&store, false).expect("third commit");
+        let third = plan_for(&root, &member, 4, b"third")?;
+        third.commit(&store, false)?;
         assert_eq!(
             store
-                .read_commit_metadata()
-                .expect("read commit metadata")
-                .expect("commit metadata")
+                .read_commit_metadata()?
+                .ok_or_else(|| io::Error::other("commit metadata should exist"))?
                 .commit_id,
             3,
             "the next committed write reuses the id the rollback did not consume"
         );
+        Ok(())
     }
 }
