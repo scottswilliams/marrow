@@ -53,6 +53,14 @@ const MAX_NAMED_RECORDS: usize = 16;
 pub struct RepairDiagnostic {
     pub catalog_id: CatalogId,
     pub message: String,
+    pub guidance: RepairGuidance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RepairGuidance {
+    None,
+    Retire { target: String },
+    RenameOrRetire { from: String, to: String },
 }
 
 /// The discharge result: per-obligation verdicts, accumulated counts, the touched
@@ -395,9 +403,19 @@ impl Accumulator {
     /// Record fail-closed prose keyed by catalog id, so a renderer matches it to the
     /// obligation's `RepairRequired` verdict by identity, not position.
     fn diagnostic(&mut self, id: CatalogId, message: String) {
+        self.diagnostic_with_guidance(id, message, RepairGuidance::None);
+    }
+
+    fn diagnostic_with_guidance(
+        &mut self,
+        id: CatalogId,
+        message: String,
+        guidance: RepairGuidance,
+    ) {
         self.diagnostics.push(RepairDiagnostic {
             catalog_id: id,
             message,
+            guidance,
         });
     }
 

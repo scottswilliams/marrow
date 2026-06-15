@@ -10,7 +10,7 @@ use crate::executable::{checked_activation_root_places, for_each_place_record};
 use crate::program::CheckedProgram;
 
 use super::{Accumulator, catalog_id, required_catalog_id};
-use crate::evolution::{RepairReason, Verdict};
+use crate::evolution::{RepairGuidance, RepairReason, Verdict};
 
 /// Classify the accepted catalog entries current source no longer declares. A retire intent
 /// makes dropping populated data a destructive decision naming the exact id and count; a
@@ -99,12 +99,11 @@ pub(super) fn classify_absent_source_entries(
                     // store subtree still holds every record. Fence the store entry once,
                     // naming the root; the orphaned member entries stay no-ops below, covered
                     // by this fence. An empty store has nothing to lose and stays a no-op.
-                    acc.diagnostic(
+                    let diagnostic = dropped_store_diagnostic(entry);
+                    acc.diagnostic_with_guidance(
                         entry_id.clone(),
-                        format!(
-                            "dropped store `{}` still holds records; retire it with `evolve retire {}` and apply with approval, or repair the data before activation",
-                            entry.path, entry.path
-                        ),
+                        diagnostic.message,
+                        diagnostic.guidance,
                     );
                     acc.push(
                         entry_id,
@@ -113,9 +112,12 @@ pub(super) fn classify_absent_source_entries(
                         },
                     )?;
                 } else if populated_member_records(program, store, entry)? > 0 {
-                    acc.diagnostic(
+                    let diagnostic =
+                        populated_member_drop_diagnostic(program, store, &source_paths, entry)?;
+                    acc.diagnostic_with_guidance(
                         entry_id.clone(),
-                        populated_member_drop_diagnostic(program, store, &source_paths, entry)?,
+                        diagnostic.message,
+                        diagnostic.guidance,
                     );
                     acc.push(
                         entry_id,
@@ -132,26 +134,54 @@ pub(super) fn classify_absent_source_entries(
     Ok(())
 }
 
+struct AbsentRepairDiagnostic {
+    message: String,
+    guidance: RepairGuidance,
+}
+
+fn dropped_store_diagnostic(entry: &CatalogEntry) -> AbsentRepairDiagnostic {
+    AbsentRepairDiagnostic {
+        message: format!(
+            "dropped store `{}` still holds records; retire it with `evolve retire {}` and apply with approval, or repair the data before activation",
+            entry.path, entry.path
+        ),
+        guidance: RepairGuidance::Retire {
+            target: entry.path.clone(),
+        },
+    }
+}
+
 fn populated_member_drop_diagnostic(
     program: &CheckedProgram,
     store: &TreeStore,
     source_paths: &[SourceCatalogEntry],
     entry: &CatalogEntry,
-) -> Result<String, StoreError> {
+) -> Result<AbsentRepairDiagnostic, StoreError> {
     let retire_guidance = format!(
         "retire it with `evolve retire {}` and apply with approval, or repair the data before activation",
         entry.path
     );
     if let Some(target) = plausible_bare_rename_target(program, store, source_paths, entry)? {
-        return Ok(format!(
-            "dropped `{}` still holds stored data; if this was a rename, declare `evolve rename` from `{}` to `{target}` before activation. Otherwise {retire_guidance}",
-            entry.path, entry.path
-        ));
+        return Ok(AbsentRepairDiagnostic {
+            message: format!(
+                "dropped `{}` still holds stored data; if this was a rename, declare `evolve rename` from `{}` to `{target}` before activation. Otherwise {retire_guidance}",
+                entry.path, entry.path
+            ),
+            guidance: RepairGuidance::RenameOrRetire {
+                from: entry.path.clone(),
+                to: target,
+            },
+        });
     }
-    Ok(format!(
-        "dropped `{}` still holds stored data; {retire_guidance}",
-        entry.path
-    ))
+    Ok(AbsentRepairDiagnostic {
+        message: format!(
+            "dropped `{}` still holds stored data; {retire_guidance}",
+            entry.path
+        ),
+        guidance: RepairGuidance::Retire {
+            target: entry.path.clone(),
+        },
+    })
 }
 
 fn plausible_bare_rename_target(

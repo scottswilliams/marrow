@@ -1,7 +1,7 @@
 use crate::support;
 use crate::support_discharge;
 use marrow_catalog::CatalogEntryKind;
-use marrow_check::evolution::{RepairReason, Verdict, preview};
+use marrow_check::evolution::{RepairGuidance, RepairReason, Verdict, preview};
 use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 use marrow_store::value::Scalar;
@@ -226,7 +226,13 @@ fn populated_drop_with_same_resource_same_type_addition_suggests_rename_before_r
         RepairReason::PopulatedDropRequiresRetire,
     );
     let diagnostic = diagnostic_for(&diagnostics, &subtitle_id);
-    assert_repair_guidance_order(&diagnostic.message, "evolve rename", "evolve retire");
+    assert_eq!(
+        diagnostic.guidance,
+        RepairGuidance::RenameOrRetire {
+            from: "books::Book::subtitle".into(),
+            to: "books::Book::summary".into()
+        }
+    );
 
     Ok(())
 }
@@ -279,11 +285,16 @@ fn populated_drop_with_ambiguous_same_type_dropped_members_does_not_suggest_rena
             dropped_id,
             RepairReason::PopulatedDropRequiresRetire,
         );
-        assert!(
-            !diagnostic_for(&diagnostics, dropped_id)
-                .message
-                .contains("evolve rename"),
-            "{diagnostics:#?}"
+        assert_eq!(
+            diagnostic_for(&diagnostics, dropped_id).guidance,
+            RepairGuidance::Retire {
+                target: if dropped_id == &subtitle_id {
+                    "books::Book::subtitle"
+                } else {
+                    "books::Book::summary"
+                }
+                .into()
+            }
         );
     }
 
@@ -339,11 +350,11 @@ fn populated_drop_ignores_same_type_addition_in_another_resource_for_rename_hint
         &subtitle_id,
         RepairReason::PopulatedDropRequiresRetire,
     );
-    assert!(
-        !diagnostic_for(&diagnostics, &subtitle_id)
-            .message
-            .contains("evolve rename"),
-        "{diagnostics:#?}"
+    assert_eq!(
+        diagnostic_for(&diagnostics, &subtitle_id).guidance,
+        RepairGuidance::Retire {
+            target: "library::Book::subtitle".into()
+        }
     );
 
     Ok(())
@@ -393,11 +404,11 @@ fn populated_drop_ignores_same_resource_different_type_addition_for_rename_hint(
         &subtitle_id,
         RepairReason::PopulatedDropRequiresRetire,
     );
-    assert!(
-        !diagnostic_for(&diagnostics, &subtitle_id)
-            .message
-            .contains("evolve rename"),
-        "{diagnostics:#?}"
+    assert_eq!(
+        diagnostic_for(&diagnostics, &subtitle_id).guidance,
+        RepairGuidance::Retire {
+            target: "books::Book::subtitle".into()
+        }
     );
 
     Ok(())
@@ -411,19 +422,6 @@ fn diagnostic_for<'a>(
         .iter()
         .find(|diagnostic| diagnostic.catalog_id.as_str() == catalog_id)
         .unwrap_or_else(|| panic!("diagnostic for `{catalog_id}` among {diagnostics:#?}"))
-}
-
-fn assert_repair_guidance_order(message: &str, first: &str, second: &str) {
-    let first_index = message
-        .find(first)
-        .unwrap_or_else(|| panic!("missing `{first}` in diagnostic: {message}"));
-    let second_index = message
-        .find(second)
-        .unwrap_or_else(|| panic!("missing `{second}` in diagnostic: {message}"));
-    assert!(
-        first_index < second_index,
-        "`{first}` must appear before `{second}` in diagnostic: {message}"
-    );
 }
 
 /// Dropping a whole resource (its `resource` block, its `store`, and its members) whose
@@ -505,10 +503,11 @@ fn dropped_populated_store_fails_closed() {
         .iter()
         .find(|diagnostic| diagnostic.catalog_id.as_str() == book_store_id)
         .expect("store diagnostic");
-    assert!(
-        diagnostic.message.contains("^books") && diagnostic.message.contains("evolve retire"),
-        "the fence names the dropped root and points at retire: {}",
-        diagnostic.message
+    assert_eq!(
+        diagnostic.guidance,
+        RepairGuidance::Retire {
+            target: "library::^books".into()
+        }
     );
 }
 
