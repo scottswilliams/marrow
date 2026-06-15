@@ -87,33 +87,14 @@ fn dry_run_rejects_populated_unstamped_pending_baseline_store() {
     fs::create_dir_all(store_path.parent().unwrap()).expect("create data dir");
     {
         let store = TreeStore::open(&store_path).expect("open native store");
-        let store_id = marrow_store::cell::CatalogId::new(
-            place.store_catalog_id.clone().expect("accepted store id"),
-        )
-        .expect("store catalog id");
-        let value_id = marrow_store::cell::CatalogId::new(
-            place
-                .root_members
-                .iter()
-                .find(|member| member.name == "value")
-                .expect("value member")
-                .catalog_id
-                .clone()
-                .expect("accepted value member id"),
-        )
-        .expect("value catalog id");
-        store
-            .write_node(&store_id, &[marrow_store::key::SavedKey::Int(1)])
-            .expect("write record");
-        store
-            .write_data_value(
-                &store_id,
-                &[marrow_store::key::SavedKey::Int(1)],
-                &[marrow_store::tree::DataPathSegment::Member(value_id)],
-                marrow_store::value::encode_value(&marrow_store::value::Scalar::Int(7))
-                    .expect("encode value"),
-            )
-            .expect("write value");
+        support_evolve::seed_record(&store, &place, 1);
+        support_evolve::seed_member(
+            &store,
+            &place,
+            1,
+            "value",
+            marrow_store::value::Scalar::Int(7),
+        );
     }
 
     let dry = marrow(&[
