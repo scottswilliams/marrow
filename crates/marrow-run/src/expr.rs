@@ -224,9 +224,9 @@ pub(crate) fn eval_literal(
     }
 }
 
-/// Decode a duration literal `NUMBER.UNIT` to its nanosecond span. The lexer
-/// guarantees the shape (digits, a dot, a known unit), so the runtime checks
-/// only an out-of-range magnitude.
+/// Decode a duration literal `NUMBER.UNIT` to its nanosecond span. Checked
+/// literals should already be parser-shaped; malformed checked text faults as a
+/// type error, while an out-of-range magnitude faults as overflow.
 fn eval_duration_literal(text: &str, span: SourceSpan) -> Result<Value, RuntimeError> {
     let overflow = || {
         raise_fault(
@@ -235,9 +235,16 @@ fn eval_duration_literal(text: &str, span: SourceSpan) -> Result<Value, RuntimeE
             span,
         )
     };
-    let (magnitude, unit) = text.split_once('.').expect("a duration literal has a dot");
+    let Some((magnitude, unit)) = text.split_once('.') else {
+        return Err(type_error("invalid duration literal", span));
+    };
+    if magnitude.is_empty() || !magnitude.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(type_error("invalid duration literal", span));
+    }
     let magnitude: i128 = magnitude.parse().map_err(|_| overflow())?;
-    let seconds = duration_unit_seconds(unit).expect("a duration literal names a known unit");
+    let Some(seconds) = duration_unit_seconds(unit) else {
+        return Err(type_error("invalid duration literal", span));
+    };
     let nanos = magnitude
         .checked_mul(seconds as i128)
         .and_then(|total_seconds| total_seconds.checked_mul(1_000_000_000))
@@ -623,5 +630,43 @@ pub(crate) fn eval_bool(expr: &ExecExpr, env: &mut Env<'_>) -> Result<bool, Runt
     match eval_expr(expr, env)? {
         Value::Bool(b) => Ok(b),
         _ => Err(type_error("expected a boolean", expr.span())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use marrow_syntax::SourceSpan;
+
+    use crate::error::{RUN_OVERFLOW, RUN_TYPE};
+    use crate::expr::eval_duration_literal;
+
+    #[test]
+    fn malformed_checked_duration_literals_fault_without_panicking() {
+        let span = SourceSpan::default();
+        assert_eq!(eval_duration_literal("1", span).unwrap_err().code, RUN_TYPE);
+        assert_eq!(
+            eval_duration_literal(".seconds", span).unwrap_err().code,
+            RUN_TYPE
+        );
+        assert_eq!(
+            eval_duration_literal("many.seconds", span)
+                .unwrap_err()
+                .code,
+            RUN_TYPE
+        );
+        assert_eq!(
+            eval_duration_literal("1.year", span).unwrap_err().code,
+            RUN_TYPE
+        );
+    }
+
+    #[test]
+    fn oversized_checked_duration_literals_keep_overflow_fault() {
+        let span = SourceSpan::default();
+        let literal = format!("{}.seconds", i128::MAX);
+        assert_eq!(
+            eval_duration_literal(&literal, span).unwrap_err().code,
+            RUN_OVERFLOW
+        );
     }
 }
