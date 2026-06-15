@@ -111,7 +111,10 @@ fn eval_saved_append(
     env.guard_traversed_layer(&TraversedLayer::data(traversed), span)?;
     let pos = next_append_position(place, &identity, &prefix_layers, span, env)?;
     let mut entry_layers = prefix_layers;
-    entry_layers.last_mut().expect("terminal layer").keys = vec![SavedKey::Int(pos)];
+    let Some(entry_layer) = entry_layers.last_mut() else {
+        return Err(unsupported("appending to this layer", span));
+    };
+    entry_layer.keys = vec![SavedKey::Int(pos)];
     let plan = plan_layer_leaf_write(place, &identity, &entry_layers, &saved, span);
     env.apply_plan(plan, span)?;
     Ok(Value::Int(pos))

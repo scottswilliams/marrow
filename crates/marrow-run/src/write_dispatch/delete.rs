@@ -230,7 +230,10 @@ fn eval_layer_entry_delete(
     let ExecExpr::Field { base: record, .. } = callee.as_ref() else {
         return Err(unsupported("deleting this layer entry", span));
     };
-    let Some(layer_facts) = target.saved_place().and_then(|place| place.layers.last()) else {
+    let Some(place) = target.saved_place() else {
+        return Err(unsupported("deleting this layer entry", span));
+    };
+    let Some(layer_facts) = place.layers.last() else {
         return Err(unsupported("deleting this layer entry", span));
     };
     let record_path = lower(record, env)?;
@@ -239,20 +242,13 @@ fn eval_layer_entry_delete(
     let entry_keys = lower_keys(keys, span, false, None, expected, env)?;
     let mut layer_addresses = record_path.layer_addresses;
     layer_addresses.push(LayerAddress::from_checked(layer_facts, Vec::new()));
-    let traversed = DataAddress::layer_prefix(
-        target.saved_place().expect("checked above"),
-        &identity,
-        &layer_addresses,
-        span,
-    )?;
+    let traversed = DataAddress::layer_prefix(place, &identity, &layer_addresses, span)?;
     env.guard_traversed_layer(&TraversedLayer::data(traversed), span)?;
-    layer_addresses.last_mut().expect("terminal layer").keys = entry_keys;
-    let address = DataAddress::layer_prefix(
-        target.saved_place().expect("checked above"),
-        &identity,
-        &layer_addresses,
-        span,
-    )?;
+    let Some(layer_address) = layer_addresses.last_mut() else {
+        return Err(unsupported("deleting this layer entry", span));
+    };
+    layer_address.keys = entry_keys;
+    let address = DataAddress::layer_prefix(place, &identity, &layer_addresses, span)?;
     env.apply_plan(plan_data_delete(address), span)?;
     Ok(())
 }
