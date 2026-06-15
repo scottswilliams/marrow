@@ -46,7 +46,7 @@ pub(crate) fn check_identity_key(
             span,
         ));
     } else if let Some(error) = key_type_error(
-        SchemaKeyTarget::IdentityKey {
+        SavedKeyTarget::IdentityKey {
             name: key.name.clone(),
         },
         &ty,
@@ -114,7 +114,7 @@ fn check_key_params(keys: &[KeyParam], span: SourceSpan, errors: &mut Vec<Schema
                 span,
             ));
         } else if let Some(error) = key_type_error(
-            SchemaKeyTarget::KeyParam {
+            SavedKeyTarget::KeyParam {
                 name: key.name.clone(),
             },
             &ty,
@@ -343,6 +343,33 @@ enum KeyTypeVerdict {
     NonScalar,
 }
 
+enum SavedKeyTarget {
+    IdentityKey { name: String },
+    KeyParam { name: String },
+}
+
+impl SavedKeyTarget {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::IdentityKey { .. } => "identity key",
+            Self::KeyParam { .. } => "key",
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Self::IdentityKey { name } | Self::KeyParam { name } => name,
+        }
+    }
+
+    fn into_schema_key_target(self) -> SchemaKeyTarget {
+        match self {
+            Self::IdentityKey { name } => SchemaKeyTarget::IdentityKey { name },
+            Self::KeyParam { name } => SchemaKeyTarget::KeyParam { name },
+        }
+    }
+}
+
 /// Classify a key type. `decimal` is the one scalar the store cannot encode as a
 /// key; every other scalar is orderable. A store identity, name, or sequence
 /// is a non-scalar key.
@@ -360,11 +387,10 @@ fn classify_key_type(ty: &Type) -> KeyTypeVerdict {
 /// or `None` if it is a valid key. `decimal` keeps its own "no key encoding"
 /// message and code; any other non-scalar is the orderable-scalar rule. `unknown`
 /// is reported separately by the caller, so it does not reach here.
-fn key_type_error(target: SchemaKeyTarget, ty: &Type, span: SourceSpan) -> Option<SchemaError> {
-    let what = target
-        .saved_key_name()
-        .expect("only saved key targets are checked here");
+fn key_type_error(target: SavedKeyTarget, ty: &Type, span: SourceSpan) -> Option<SchemaError> {
+    let what = target.label();
     let name = target.name().to_string();
+    let target = target.into_schema_key_target();
     match classify_key_type(ty) {
         KeyTypeVerdict::Ok => None,
         KeyTypeVerdict::Decimal => Some(SchemaError {

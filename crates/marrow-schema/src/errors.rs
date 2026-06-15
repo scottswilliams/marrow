@@ -120,23 +120,6 @@ pub enum SchemaKeyTarget {
     IndexArg { index: String, arg: String },
 }
 
-impl SchemaKeyTarget {
-    pub(crate) fn name(&self) -> &str {
-        match self {
-            Self::IdentityKey { name } | Self::KeyParam { name } => name,
-            Self::IndexArg { arg, .. } => arg,
-        }
-    }
-
-    pub(crate) fn saved_key_name(&self) -> Option<&'static str> {
-        match self {
-            Self::IdentityKey { .. } => Some("identity key"),
-            Self::KeyParam { .. } => Some("key"),
-            Self::IndexArg { .. } => None,
-        }
-    }
-}
-
 /// A resource member name collides with another member at the same level.
 pub const SCHEMA_DUPLICATE_MEMBER: &str = "schema.duplicate_member";
 
