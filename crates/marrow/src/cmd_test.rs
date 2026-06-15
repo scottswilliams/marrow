@@ -111,12 +111,18 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat, filter: Option<
         None => tests.iter().collect(),
     };
     if selected_tests.is_empty() {
-        let filter = filter.expect("selected tests are empty only after filtering");
-        report_simple_error(
-            "test.none",
-            &format!("no tests matched filter `{filter}`"),
-            format,
-        );
+        match filter {
+            Some(filter) => report_simple_error(
+                "test.none",
+                &format!("no tests matched filter `{filter}`"),
+                format,
+            ),
+            None => report_simple_error(
+                "test.none",
+                "no tests found; check the `tests` paths in marrow.json",
+                format,
+            ),
+        }
         return ExitCode::FAILURE;
     }
     let total = tests.len();
