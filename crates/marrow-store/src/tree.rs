@@ -1813,17 +1813,6 @@ fn corrupt_cell(bytes: &[u8]) -> StoreError {
 }
 
 #[cfg(test)]
-impl TreeStore {
-    /// Write raw bytes at a key inside the catalog family, so a corruption test can
-    /// seed a malformed catalog row without going through the codec.
-    pub(crate) fn write_raw_catalog_cell_for_test(&self, key_tail: &[u8], value: Vec<u8>) {
-        let mut key = CellKey::catalog_family().into_bytes();
-        key.extend_from_slice(key_tail);
-        self.write_cell(&key, value).expect("seed raw catalog cell");
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use std::cell::Cell;
 
@@ -2855,10 +2844,15 @@ mod tests {
         value.push(0); // CatalogLifecycle::Active tag
         value.push(0); // no accepted_key_shape
         value.push(0); // no accepted_struct
+        value.push(0); // no accepted_index_shape
 
         let mut key_tail = vec![0x10]; // entry-row tag
         key_tail.extend_from_slice(b"cat_00000000000000000000000000000009");
-        store.write_raw_catalog_cell_for_test(&key_tail, value);
+        let mut key = CellKey::catalog_family().into_bytes();
+        key.extend_from_slice(&key_tail);
+        store
+            .write_cell(&key, value)
+            .expect("seed headerless catalog entry row");
 
         assert_corruption(store.read_catalog_snapshot());
         assert_corruption(store.catalog_snapshot_digest());
