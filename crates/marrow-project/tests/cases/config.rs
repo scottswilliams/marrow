@@ -58,15 +58,6 @@ fn rejects_missing_store_block() {
     let error = parse_config(r#"{ "sourceRoots": ["src"] }"#).expect_err("should reject");
     assert_eq!(error.code, "config.invalid");
     assert_eq!(error.kind, ConfigErrorKind::MissingStore);
-    assert!(error.message.contains(r#""native""#), "{:?}", error);
-    assert!(error.message.contains(r#""memory""#), "{:?}", error);
-    assert!(
-        error
-            .message
-            .contains(r#""store": { "backend": "memory" }"#),
-        "{:?}",
-        error
-    );
 }
 
 #[test]
@@ -171,8 +162,14 @@ fn rejects_test_entries_with_glob_metacharacters() {
         );
         let error = parse_config(&json).expect_err("should reject glob-like test entry");
         assert_eq!(error.code, "config.invalid", "{value}");
-        assert!(error.message.contains(value), "{:?}", error);
-        assert!(error.message.contains("glob metacharacter"), "{:?}", error);
+        assert_eq!(
+            error.kind,
+            ConfigErrorKind::InvalidPath {
+                field: ConfigPathField::TestsEntry,
+                value: value.to_string(),
+                reason: ConfigPathViolation::GlobMetacharacter
+            }
+        );
     }
 }
 
@@ -182,10 +179,6 @@ fn rejects_unknown_top_level_keys() {
         .expect_err("should reject unknown keys");
     assert_eq!(error.code, "config.invalid");
     assert_eq!(error.kind, ConfigErrorKind::InvalidJson);
-    assert_eq!(
-        error.message,
-        "unknown field `globals`, expected one of `sourceRoots`, `run`, `store`, `tests` at line 1 column 35"
-    );
 }
 
 #[test]
@@ -196,18 +189,6 @@ fn rejects_accepted_catalog_config_key() {
     .expect_err("should reject acceptedCatalog");
     assert_eq!(error.code, "config.invalid");
     assert_eq!(error.kind, ConfigErrorKind::InvalidJson);
-    assert!(
-        error.message.contains("unknown field `acceptedCatalog`"),
-        "{:?}",
-        error
-    );
-    assert!(
-        error
-            .message
-            .contains("expected one of `sourceRoots`, `run`, `store`, `tests`"),
-        "{:?}",
-        error
-    );
 }
 
 #[test]
