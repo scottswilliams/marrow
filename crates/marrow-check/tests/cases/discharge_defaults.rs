@@ -11,7 +11,7 @@ use support_discharge::*;
 /// Adding an optional sparse field over existing records is a no-op. The store
 /// needs no rewrite and the witness records zero backfill.
 #[test]
-fn optional_sparse_add_needs_no_rewrite() {
+fn optional_sparse_add_needs_no_rewrite() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("discharge-optional-add", |root| {
         write(
             root,
@@ -26,7 +26,7 @@ fn optional_sparse_add_needs_no_rewrite() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -36,7 +36,7 @@ fn optional_sparse_add_needs_no_rewrite() {
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
-    let subtitle_id = member_catalog_id(&place, "subtitle");
+    let subtitle_id = member_catalog_id(&place, "subtitle")?;
     assert!(
         matches!(verdict_for(&result, &subtitle_id), Verdict::NoOp),
         "{:#?}",
@@ -46,12 +46,14 @@ fn optional_sparse_add_needs_no_rewrite() {
     assert_eq!(result.counts.records_lacking_member, 0);
     assert_eq!(result.counts.scanned_records, 2);
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+
+    Ok(())
 }
 
 /// A newly-required member with an `evolve default` discharges to a backfill plan:
 /// the witness counts the records lacking it.
 #[test]
-fn required_with_default_backfills_old_records() {
+fn required_with_default_backfills_old_records() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("discharge-required-default", |root| {
         write(
             root,
@@ -68,7 +70,7 @@ fn required_with_default_backfills_old_records() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     // Old records carry `title` but predate the new required `pages`.
@@ -79,7 +81,7 @@ fn required_with_default_backfills_old_records() {
 
     let result = witness(&program, &store);
 
-    let pages_id = member_catalog_id(&place, "pages");
+    let pages_id = member_catalog_id(&place, "pages")?;
     match verdict_for(&result, &pages_id) {
         // The constant evolve default `0` flows into the witness as the encoded
         // int the apply phase backfills with.
@@ -87,13 +89,15 @@ fn required_with_default_backfills_old_records() {
             assert_eq!(value.scalar_type, marrow_store::value::ScalarType::Int);
             assert_eq!(
                 value.encoded,
-                marrow_store::value::encode_value(&Scalar::Int(0)).unwrap()
+                marrow_store::value::encode_value(&Scalar::Int(0))?
             );
         }
         other => panic!("expected default, got {other:#?}"),
     }
     assert_eq!(result.counts.records_lacking_member, 2);
     assert_eq!(result.counts.records_to_backfill, 2);
+
+    Ok(())
 }
 
 /// A constant temporal or bytes default written through a validating constructor
@@ -101,7 +105,8 @@ fn required_with_default_backfills_old_records() {
 /// evaluates against the same canonical form a stored value must satisfy, so each
 /// discharges to a `Default` backfill rather than forcing a transform.
 #[test]
-fn constant_temporal_and_bytes_defaults_discharge_as_default() {
+fn constant_temporal_and_bytes_defaults_discharge_as_default()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("discharge-temporal-bytes-default", |root| {
         write(
             root,
@@ -122,7 +127,7 @@ fn constant_temporal_and_bytes_defaults_discharge_as_default() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "events");
+    let place = root_place(&program, "events")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     // Old records carry `title` but predate the three new required members.
@@ -131,24 +136,28 @@ fn constant_temporal_and_bytes_defaults_discharge_as_default() {
 
     let result = witness(&program, &store);
 
-    let expect_default = |member: &str, expected: Scalar| {
-        let member_id = member_catalog_id(&place, member);
-        match verdict_for(&result, &member_id) {
-            Verdict::Default { value } => {
-                assert_eq!(value.scalar_type, expected.ty(), "{member} type");
-                assert_eq!(
-                    value.encoded,
-                    encode_value(&expected).unwrap(),
-                    "{member} encoded value",
-                );
+    let expect_default =
+        |member: &str, expected: Scalar| -> Result<(), Box<dyn std::error::Error>> {
+            let member_id = member_catalog_id(&place, member)?;
+            match verdict_for(&result, &member_id) {
+                Verdict::Default { value } => {
+                    assert_eq!(value.scalar_type, expected.ty(), "{member} type");
+                    assert_eq!(
+                        value.encoded,
+                        encode_value(&expected)?,
+                        "{member} encoded value",
+                    );
+                }
+                other => panic!("expected default for `{member}`, got {other:#?}"),
             }
-            other => panic!("expected default for `{member}`, got {other:#?}"),
-        }
-    };
+            Ok(())
+        };
     // `2020-01-01` is 18262 days after the Unix epoch; one hour is 3.6e12 ns.
-    expect_default("day", Scalar::Date(18262));
-    expect_default("span", Scalar::Duration(3_600_000_000_000));
-    expect_default("payload", Scalar::Bytes(b"hi".to_vec()));
+    expect_default("day", Scalar::Date(18262))?;
+    expect_default("span", Scalar::Duration(3_600_000_000_000))?;
+    expect_default("payload", Scalar::Bytes(b"hi".to_vec()))?;
+
+    Ok(())
 }
 
 /// A `bytes` default takes the argument string's raw UTF-8 bytes, so every string is a
@@ -156,7 +165,7 @@ fn constant_temporal_and_bytes_defaults_discharge_as_default() {
 /// a backslash-x sequence contributes its literal characters, never a decoded byte. This
 /// pins the any-string contract `bytes(string)` carries at runtime.
 #[test]
-fn bytes_default_accepts_any_string_as_raw_utf8() {
+fn bytes_default_accepts_any_string_as_raw_utf8() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("discharge-bytes-default-any-string", |root| {
         write(
             root,
@@ -173,7 +182,7 @@ fn bytes_default_accepts_any_string_as_raw_utf8() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "events");
+    let place = root_place(&program, "events")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -181,7 +190,7 @@ fn bytes_default_accepts_any_string_as_raw_utf8() {
 
     let (result, _diagnostics) = preview(&program, &store).expect("preview");
 
-    let member_id = member_catalog_id(&place, "payload");
+    let member_id = member_catalog_id(&place, "payload")?;
     match verdict_for(&result, &member_id) {
         Verdict::Default { value } => {
             assert_eq!(value.scalar_type, marrow_store::value::ScalarType::Bytes);
@@ -193,6 +202,8 @@ fn bytes_default_accepts_any_string_as_raw_utf8() {
         }
         other => panic!("expected a bytes default, got {other:#?}"),
     }
+
+    Ok(())
 }
 
 /// A temporal constructor default whose string is not the canonical saved form is not
@@ -200,7 +211,7 @@ fn bytes_default_accepts_any_string_as_raw_utf8() {
 /// silently normalizing or accepting it. The validation is exactly the canonical-form
 /// boundary stored values pass.
 #[test]
-fn non_canonical_temporal_default_fails_closed() {
+fn non_canonical_temporal_default_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("discharge-noncanonical-temporal-default", |root| {
         write(
             root,
@@ -217,7 +228,7 @@ fn non_canonical_temporal_default_fails_closed() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "events");
+    let place = root_place(&program, "events")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -225,7 +236,7 @@ fn non_canonical_temporal_default_fails_closed() {
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
-    let day_id = member_catalog_id(&place, "day");
+    let day_id = member_catalog_id(&place, "day")?;
     // A declared default the checker cannot encode is not a missing member: the
     // developer named a fill, so the verdict names the rejected default by its typed
     // cause rather than collapsing into the no-default-at-all case.
@@ -247,13 +258,16 @@ fn non_canonical_temporal_default_fails_closed() {
             .any(|diagnostic| diagnostic.catalog_id.as_str() == day_id),
         "{diagnostics:#?}"
     );
+
+    Ok(())
 }
 
 /// An `evolve default` whose value is not a constant the checker can evaluate is not
 /// a default at all; it fails closed with a diagnostic steering the developer to a
 /// transform. A per-record-varying fill is a transform, not a default.
 #[test]
-fn non_constant_default_fails_closed_with_transform_hint() {
+fn non_constant_default_fails_closed_with_transform_hint() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = temp_project("discharge-nonconst-default", |root| {
         write(
             root,
@@ -270,7 +284,7 @@ fn non_constant_default_fails_closed_with_transform_hint() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -278,7 +292,7 @@ fn non_constant_default_fails_closed_with_transform_hint() {
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
-    let pages_id = member_catalog_id(&place, "pages");
+    let pages_id = member_catalog_id(&place, "pages")?;
     // A declared non-constant default is steered to a transform by a typed cause, not by
     // the missing-member verdict a member with no default carries.
     assert!(
@@ -299,6 +313,8 @@ fn non_constant_default_fails_closed_with_transform_hint() {
             .any(|diagnostic| diagnostic.catalog_id.as_str() == pages_id),
         "{diagnostics:#?}"
     );
+
+    Ok(())
 }
 
 #[test]
@@ -325,7 +341,7 @@ fn entries_default_value_is_rejected_as_loop_head_only() {
 /// A newly-required member with no default and records missing it cannot attach
 /// data. Activation fails and the diagnostic names the exact records.
 #[test]
-fn required_without_default_fails_naming_records() {
+fn required_without_default_fails_naming_records() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("discharge-required-no-default", |root| {
         write(
             root,
@@ -340,7 +356,7 @@ fn required_without_default_fails_naming_records() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -350,7 +366,7 @@ fn required_without_default_fails_naming_records() {
 
     let (witness, diagnostics) = preview(&program, &store).expect("preview");
 
-    let pages_id = member_catalog_id(&place, "pages");
+    let pages_id = member_catalog_id(&place, "pages")?;
     assert!(!witness.is_activatable(), "{witness:#?}");
     // Both seeded records lack the new required member: the typed count proves the
     // record total and the diagnostic names the member by its catalog id; the
@@ -362,13 +378,16 @@ fn required_without_default_fails_naming_records() {
             .any(|diagnostic| diagnostic.catalog_id.as_str() == pages_id),
         "{diagnostics:#?}"
     );
+
+    Ok(())
 }
 
 /// A present required member is not proven unless its bytes decode under the
 /// current leaf type. Presence alone would let an old scalar type's bytes activate
 /// as the new type and fault later at read time.
 #[test]
-fn required_present_member_with_incompatible_bytes_repairs() {
+fn required_present_member_with_incompatible_bytes_repairs()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("discharge-required-invalid-bytes", |root| {
         write(
             root,
@@ -382,7 +401,7 @@ fn required_present_member_with_incompatible_bytes_repairs() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -390,7 +409,7 @@ fn required_present_member_with_incompatible_bytes_repairs() {
 
     let (witness, diagnostics) = preview(&program, &store).expect("preview");
 
-    let title_id = member_catalog_id(&place, "title");
+    let title_id = member_catalog_id(&place, "title")?;
     assert!(!witness.is_activatable(), "{witness:#?}");
     assert!(
         matches!(
@@ -408,4 +427,6 @@ fn required_present_member_with_incompatible_bytes_repairs() {
             .any(|diagnostic| diagnostic.catalog_id.as_str() == title_id),
         "{diagnostics:#?}"
     );
+
+    Ok(())
 }

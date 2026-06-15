@@ -505,13 +505,14 @@ fn data_integrity_skips_defaulted_required_members_without_accepted_ids() {
 }
 
 #[test]
-fn data_integrity_reports_deleted_defaulted_required_field_after_apply() {
+fn data_integrity_reports_deleted_defaulted_required_field_after_apply()
+-> Result<(), Box<dyn std::error::Error>> {
     let project = native_books_project(
         "data-integrity-defaulted-required-after-apply",
         REQUIRED_BASELINE_SOURCE,
     );
     let baseline = commit_catalog(&project);
-    let baseline_place = root_place(&baseline, "books");
+    let baseline_place = root_place(&baseline, "books")?;
     {
         let store = open_native_store(&project);
         seed_title_only(&store, &baseline_place, 1, "Dune");
@@ -548,6 +549,8 @@ fn data_integrity_reports_deleted_defaulted_required_field_after_apply() {
         "{value}"
     );
     assert_eq!(problem["parent_path"], serde_json::json!([]), "{value}");
+
+    Ok(())
 }
 
 #[test]

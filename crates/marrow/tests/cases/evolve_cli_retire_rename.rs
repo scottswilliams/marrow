@@ -31,8 +31,8 @@ fn populated_retire_backup_fixture_with_config(name: &str, config: &str) -> Reti
     let root = native_books_project(name, RETIRE_BASELINE_SOURCE);
     write(&root, "marrow.json", config);
     let accepted = commit_catalog(&root);
-    let accepted_place = root_place(&accepted, "books");
-    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    let accepted_place = root_place(&accepted, "books").expect("books root place");
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle").expect("subtitle catalog id");
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &accepted_place, 1, "Dune");
@@ -69,7 +69,7 @@ fn assert_retire_backup_path_refused(fixture: &RetireBackupFixture, backup_path:
         backup_path.to_str().expect("backup path utf8"),
         "--format",
         "json",
-        fixture.root.to_str().unwrap(),
+        fixture.root.to_str().expect("project path utf-8"),
     ]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -120,7 +120,8 @@ fn assert_retire_fixture_unchanged(fixture: &RetireBackupFixture) {
 }
 
 #[test]
-fn evolve_apply_accepts_two_repeated_approve_retire_flags() {
+fn evolve_apply_accepts_two_repeated_approve_retire_flags() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = native_books_project(
         "evolve-apply-multi-retire",
         "module books\n\
@@ -133,9 +134,9 @@ fn evolve_apply_accepts_two_repeated_approve_retire_flags() {
          \x20   return nextId(^books)\n",
     );
     let accepted = commit_catalog(&root);
-    let accepted_place = root_place(&accepted, "books");
-    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
-    let notes_id = member_catalog_id(&accepted_place, "notes");
+    let accepted_place = root_place(&accepted, "books")?;
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle")?;
+    let notes_id = member_catalog_id(&accepted_place, "notes")?;
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &accepted_place, 1, "Dune");
@@ -179,7 +180,7 @@ fn evolve_apply_accepts_two_repeated_approve_retire_flags() {
         "--no-backup",
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
     let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
     let subtitle_present = read_scalar(&store, &accepted_place, 1, "subtitle", ScalarType::Str);
@@ -194,10 +195,13 @@ fn evolve_apply_accepts_two_repeated_approve_retire_flags() {
     assert_eq!(record["records_retired"], serde_json::json!(2));
     assert_eq!(subtitle_present, None, "subtitle was retired");
     assert_eq!(notes_present, None, "notes was retired");
+
+    Ok(())
 }
 
 #[test]
-fn evolve_apply_counts_and_deletes_a_retired_member_in_each_owning_root() {
+fn evolve_apply_counts_and_deletes_a_retired_member_in_each_owning_root()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project(
         "evolve-apply-retire-second-root",
         "module books\n\
@@ -210,9 +214,9 @@ fn evolve_apply_counts_and_deletes_a_retired_member_in_each_owning_root() {
          \x20   return nextId(^books)\n",
     );
     let accepted = commit_catalog(&root);
-    let books_place = root_place(&accepted, "books");
-    let library_place = root_place(&accepted, "library");
-    let subtitle_id = member_catalog_id(&library_place, "subtitle");
+    let books_place = root_place(&accepted, "books")?;
+    let library_place = root_place(&accepted, "library")?;
+    let subtitle_id = member_catalog_id(&library_place, "subtitle")?;
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &books_place, 1, "Dune");
@@ -244,7 +248,7 @@ fn evolve_apply_counts_and_deletes_a_retired_member_in_each_owning_root() {
         "preview",
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
     assert_eq!(preview.status.code(), Some(1), "{preview:?}");
     let preview_record = support::json(preview.stdout);
@@ -265,7 +269,7 @@ fn evolve_apply_counts_and_deletes_a_retired_member_in_each_owning_root() {
         "--no-backup",
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
     assert_eq!(apply.status.code(), Some(0), "{apply:?}");
     let apply_record = support::json(apply.stdout);
@@ -276,17 +280,20 @@ fn evolve_apply_counts_and_deletes_a_retired_member_in_each_owning_root() {
         None,
         "the retired cell in the second owning root was deleted"
     );
+
+    Ok(())
 }
 
 #[test]
-fn retire_apply_requires_backup_or_explicit_opt_out_before_mutation() {
+fn retire_apply_requires_backup_or_explicit_opt_out_before_mutation()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project(
         "evolve-apply-retire-requires-backup",
         RETIRE_BASELINE_SOURCE,
     );
     let accepted = commit_catalog(&root);
-    let accepted_place = root_place(&accepted, "books");
-    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    let accepted_place = root_place(&accepted, "books")?;
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle")?;
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &accepted_place, 1, "Dune");
@@ -311,7 +318,7 @@ fn retire_apply_requires_backup_or_explicit_opt_out_before_mutation() {
         &format!("{subtitle_id}:1"),
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -333,17 +340,20 @@ fn retire_apply_requires_backup_or_explicit_opt_out_before_mutation() {
         Some(Scalar::Str("sub".into())),
         "retired data survives the fail-closed refusal"
     );
+
+    Ok(())
 }
 
 #[test]
-fn retire_apply_requires_recovery_choice_for_zero_count_retire() {
+fn retire_apply_requires_recovery_choice_for_zero_count_retire()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project(
         "evolve-apply-retire-zero-count-requires-backup",
         RETIRE_BASELINE_SOURCE,
     );
     let accepted = commit_catalog(&root);
-    let accepted_place = root_place(&accepted, "books");
-    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    let accepted_place = root_place(&accepted, "books")?;
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle")?;
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &accepted_place, 1, "Dune");
@@ -361,7 +371,7 @@ fn retire_apply_requires_recovery_choice_for_zero_count_retire() {
         &format!("{subtitle_id}:0"),
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -391,7 +401,7 @@ fn retire_apply_requires_recovery_choice_for_zero_count_retire() {
         "--no-backup",
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
 
     assert_eq!(apply.status.code(), Some(0), "{apply:?}");
@@ -402,14 +412,17 @@ fn retire_apply_requires_recovery_choice_for_zero_count_retire() {
         serde_json::json!({ "kind": "no_backup" }),
         "the zero-count retire still records the explicit recovery opt-out: {receipt}"
     );
+
+    Ok(())
 }
 
 #[test]
-fn retire_apply_no_backup_opt_out_is_recorded_in_json_receipt() {
+fn retire_apply_no_backup_opt_out_is_recorded_in_json_receipt()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project("evolve-apply-retire-no-backup", RETIRE_BASELINE_SOURCE);
     let accepted = commit_catalog(&root);
-    let accepted_place = root_place(&accepted, "books");
-    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    let accepted_place = root_place(&accepted, "books")?;
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle")?;
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &accepted_place, 1, "Dune");
@@ -432,7 +445,7 @@ fn retire_apply_no_backup_opt_out_is_recorded_in_json_receipt() {
         "--no-backup",
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -449,17 +462,20 @@ fn retire_apply_no_backup_opt_out_is_recorded_in_json_receipt() {
         None,
         "explicit opt-out permits the approved retire"
     );
+
+    Ok(())
 }
 
 #[test]
-fn retire_apply_refuses_backup_path_that_is_live_store_file_before_mutation() {
+fn retire_apply_refuses_backup_path_that_is_live_store_file_before_mutation()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project(
         "evolve-apply-retire-backup-live-store-refused",
         RETIRE_BASELINE_SOURCE,
     );
     let accepted = commit_catalog(&root);
-    let accepted_place = root_place(&accepted, "books");
-    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    let accepted_place = root_place(&accepted, "books")?;
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle")?;
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &accepted_place, 1, "Dune");
@@ -487,7 +503,7 @@ fn retire_apply_refuses_backup_path_that_is_live_store_file_before_mutation() {
         backup_path.to_str().expect("backup path utf8"),
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -517,17 +533,20 @@ fn retire_apply_refuses_backup_path_that_is_live_store_file_before_mutation() {
         Some(Scalar::Str("sub".into())),
         "retired data survives the managed-path refusal"
     );
+
+    Ok(())
 }
 
 #[test]
-fn retire_apply_refuses_backup_path_that_is_committed_catalog_artifact_before_mutation() {
+fn retire_apply_refuses_backup_path_that_is_committed_catalog_artifact_before_mutation()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project(
         "evolve-apply-retire-backup-catalog-refused",
         RETIRE_BASELINE_SOURCE,
     );
     let accepted = commit_catalog(&root);
-    let accepted_place = root_place(&accepted, "books");
-    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    let accepted_place = root_place(&accepted, "books")?;
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle")?;
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &accepted_place, 1, "Dune");
@@ -554,7 +573,7 @@ fn retire_apply_refuses_backup_path_that_is_committed_catalog_artifact_before_mu
         catalog_path.to_str().expect("backup path utf8"),
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -579,6 +598,8 @@ fn retire_apply_refuses_backup_path_that_is_committed_catalog_artifact_before_mu
         Some(Scalar::Str("sub".into())),
         "retired data survives the managed-path refusal"
     );
+
+    Ok(())
 }
 
 #[test]
@@ -663,11 +684,12 @@ fn retire_apply_refuses_backup_path_under_native_data_dir_before_mutation() {
 }
 
 #[test]
-fn retire_apply_backup_writes_valid_archive_then_applies() {
+fn retire_apply_backup_writes_valid_archive_then_applies() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = native_books_project("evolve-apply-retire-with-backup", RETIRE_BASELINE_SOURCE);
     let accepted = commit_catalog(&root);
-    let accepted_place = root_place(&accepted, "books");
-    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    let accepted_place = root_place(&accepted, "books")?;
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle")?;
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &accepted_place, 1, "Dune");
@@ -695,7 +717,7 @@ fn retire_apply_backup_writes_valid_archive_then_applies() {
         backup_arg,
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -720,7 +742,11 @@ fn retire_apply_backup_writes_valid_archive_then_applies() {
     );
     write(&restore_root, "marrow.catalog.json", &catalog_before);
 
-    let restore = marrow(&["restore", restore_root.to_str().unwrap(), backup_arg]);
+    let restore = marrow(&[
+        "restore",
+        restore_root.to_str().expect("project path utf-8"),
+        backup_arg,
+    ]);
 
     assert_eq!(restore.status.code(), Some(0), "restore: {restore:?}");
     let restored = TreeStore::open(&native_store_path(&restore_root)).expect("open restored store");
@@ -729,14 +755,17 @@ fn retire_apply_backup_writes_valid_archive_then_applies() {
         Some(Scalar::Str("sub".into())),
         "the recovery archive preserves the pre-retire data"
     );
+
+    Ok(())
 }
 
 #[test]
-fn retire_apply_backup_failure_exits_before_mutating_store() {
+fn retire_apply_backup_failure_exits_before_mutating_store()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project("evolve-apply-retire-backup-fails", RETIRE_BASELINE_SOURCE);
     let accepted = commit_catalog(&root);
-    let accepted_place = root_place(&accepted, "books");
-    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    let accepted_place = root_place(&accepted, "books")?;
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle")?;
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &accepted_place, 1, "Dune");
@@ -764,7 +793,7 @@ fn retire_apply_backup_failure_exits_before_mutating_store() {
             backup_path.to_str().expect("backup path utf8"),
             "--format",
             "json",
-            root.to_str().unwrap(),
+            root.to_str().expect("project path utf-8"),
         ])
         .output()
         .expect("run marrow");
@@ -787,6 +816,8 @@ fn retire_apply_backup_failure_exits_before_mutating_store() {
         Some(Scalar::Str("sub".into())),
         "retired cell survives backup failure"
     );
+
+    Ok(())
 }
 
 /// A bare source rename of a populated member — `subtitle` renamed to `blurb` in source
@@ -796,10 +827,11 @@ fn retire_apply_backup_failure_exits_before_mutating_store() {
 /// fence catches it: the run fails closed naming the required repair rather than dropping
 /// the data, and the epoch does not advance.
 #[test]
-fn a_bare_rename_of_a_populated_member_does_not_silently_auto_apply() {
+fn a_bare_rename_of_a_populated_member_does_not_silently_auto_apply()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project("bare-rename-fences", RETIRE_BASELINE_SOURCE);
     let accepted = commit_catalog(&root);
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books")?;
     let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
     {
         let store = open_native_store(&root);
@@ -852,14 +884,17 @@ fn a_bare_rename_of_a_populated_member_does_not_silently_auto_apply() {
         Some(Scalar::Str("Appendix".into())),
         "the populated member's cell survives the fenced run"
     );
+
+    Ok(())
 }
 
 #[test]
-fn evolve_apply_advances_accepted_catalog_in_lockstep_for_retire() {
+fn evolve_apply_advances_accepted_catalog_in_lockstep_for_retire()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project("evolve-apply-retire-lockstep", RETIRE_BASELINE_SOURCE);
     let accepted = commit_catalog(&root);
-    let accepted_place = root_place(&accepted, "books");
-    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    let accepted_place = root_place(&accepted, "books")?;
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle")?;
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &accepted_place, 1, "Dune");
@@ -881,7 +916,7 @@ fn evolve_apply_advances_accepted_catalog_in_lockstep_for_retire() {
         "--approve-retire",
         &format!("{subtitle_id}:1"),
         "--no-backup",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
 
@@ -907,14 +942,17 @@ fn evolve_apply_advances_accepted_catalog_in_lockstep_for_retire() {
         !stderr.contains("run.store_evolved"),
         "epoch fence no longer rejects after lockstep advance: {stderr}"
     );
+
+    Ok(())
 }
 
 #[test]
-fn evolve_apply_advances_accepted_catalog_in_lockstep_for_rename() {
+fn evolve_apply_advances_accepted_catalog_in_lockstep_for_rename()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project("evolve-apply-rename-lockstep", RETIRE_BASELINE_SOURCE);
     let accepted = commit_catalog(&root);
-    let accepted_place = root_place(&accepted, "books");
-    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    let accepted_place = root_place(&accepted, "books")?;
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle")?;
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &accepted_place, 1, "Dune");
@@ -972,6 +1010,8 @@ fn evolve_apply_advances_accepted_catalog_in_lockstep_for_rename() {
         !stderr.contains("run.store_evolved"),
         "epoch fence no longer rejects after lockstep advance: {stderr}"
     );
+
+    Ok(())
 }
 
 // After a rename apply, the rename is recorded in the accepted catalog. The evolve
@@ -979,10 +1019,11 @@ fn evolve_apply_advances_accepted_catalog_in_lockstep_for_rename() {
 // break `marrow run`. The store fences on the durable shape, which a consumed rename
 // block does not change, and the consumed rename is treated as satisfied at check.
 #[test]
-fn run_succeeds_after_rename_apply_with_block_present_or_deleted() {
+fn run_succeeds_after_rename_apply_with_block_present_or_deleted()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project("run-after-rename-block", BLOCK_BASELINE_SOURCE);
     let accepted = commit_catalog(&root);
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books")?;
 
     // The baseline run stamps the store and writes record 2; a subtitle cell on that
     // stamped record gives the later rename real data to carry forward.
@@ -1021,16 +1062,19 @@ fn run_succeeds_after_rename_apply_with_block_present_or_deleted() {
         Some(0),
         "run after deleting the consumed rename block: {deleted:?}"
     );
+
+    Ok(())
 }
 
 // After a retire apply, the retire is recorded in the accepted catalog. The evolve
 // block is transient; keeping or deleting it must not break `marrow run`.
 #[test]
-fn run_succeeds_after_retire_apply_with_block_present_or_deleted() {
+fn run_succeeds_after_retire_apply_with_block_present_or_deleted()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project("run-after-retire-block", BLOCK_BASELINE_SOURCE);
     let accepted = commit_catalog(&root);
-    let accepted_place = root_place(&accepted, "books");
-    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    let accepted_place = root_place(&accepted, "books")?;
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle")?;
 
     // The baseline run stamps the store and writes record 2; a subtitle cell on that
     // stamped record gives the later retire one populated cell to approve.
@@ -1059,7 +1103,7 @@ fn run_succeeds_after_retire_apply_with_block_present_or_deleted() {
         "--approve-retire",
         &format!("{subtitle_id}:1"),
         "--no-backup",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
     assert_eq!(apply.status.code(), Some(0), "retire apply: {apply:?}");
 
@@ -1077,4 +1121,6 @@ fn run_succeeds_after_retire_apply_with_block_present_or_deleted() {
         Some(0),
         "run after deleting the consumed retire block: {deleted:?}"
     );
+
+    Ok(())
 }

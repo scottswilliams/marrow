@@ -64,7 +64,7 @@ pub(crate) fn open_native_store(root: impl AsRef<Path>) -> TreeStore {
     TreeStore::open(&path).expect("open native store")
 }
 pub(crate) fn seed_record(store: &TreeStore, place: &CheckedSavedPlace, id: i64) {
-    let store_id = store_catalog_id(place);
+    let store_id = store_catalog_id(place).expect("store catalog id");
     write_record_node(store, &store_id, &[SavedKey::Int(id)]);
 }
 fn write_record_node(store: &TreeStore, store_id: &CatalogId, identity: &[SavedKey]) {
@@ -77,9 +77,10 @@ pub(crate) fn seed_record_member_value(
     member: &str,
     value: Scalar,
 ) {
-    let store_id = store_catalog_id(place);
+    let store_id = store_catalog_id(place).expect("store catalog id");
     write_record_node(store, &store_id, identity);
-    let member_id = CatalogId::new(member_catalog_id(place, member)).expect("member id");
+    let member_id = CatalogId::new(member_catalog_id(place, member).expect("member catalog id"))
+        .expect("member id");
     store
         .write_data_value(
             &store_id,
@@ -105,8 +106,9 @@ pub(crate) fn seed_member(
     member: &str,
     value: Scalar,
 ) {
-    let store_id = store_catalog_id(place);
-    let member_id = CatalogId::new(member_catalog_id(place, member)).expect("member id");
+    let store_id = store_catalog_id(place).expect("store catalog id");
+    let member_id = CatalogId::new(member_catalog_id(place, member).expect("member catalog id"))
+        .expect("member id");
     store
         .write_data_value(
             &store_id,
@@ -123,8 +125,9 @@ pub(crate) fn read_scalar(
     member: &str,
     ty: ScalarType,
 ) -> Option<Scalar> {
-    let store_id = store_catalog_id(place);
-    let member_id = CatalogId::new(member_catalog_id(place, member)).expect("member id");
+    let store_id = store_catalog_id(place).expect("store catalog id");
+    let member_id = CatalogId::new(member_catalog_id(place, member).expect("member catalog id"))
+        .expect("member id");
     store
         .read_data_value(
             &store_id,
@@ -141,7 +144,7 @@ pub(crate) fn read_scalar_by_catalog_id(
     member_id: &str,
     ty: ScalarType,
 ) -> Option<Scalar> {
-    let store_id = store_catalog_id(place);
+    let store_id = store_catalog_id(place).expect("store catalog id");
     store
         .read_data_value(
             &store_id,

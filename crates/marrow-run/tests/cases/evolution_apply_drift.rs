@@ -14,7 +14,7 @@ use marrow_store::value::Scalar;
 /// An optional sparse add is a no-op: apply stamps the proposal epoch with no data
 /// step. The store is stamped but carries no new member cell.
 #[test]
-fn optional_add_stamps_epoch_without_data_step() {
+fn optional_add_stamps_epoch_without_data_step() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-optional-add", |root| {
         write(
             root,
@@ -29,7 +29,7 @@ fn optional_add_stamps_epoch_without_data_step() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -52,8 +52,8 @@ fn optional_add_stamps_epoch_without_data_step() {
     assert_eq!(outcome.receipt.records_retired, 0);
     assert_eq!(outcome.receipt.proposal_catalog_digest, proposal_digest);
 
-    let store_id = store_id_of(&place);
-    let subtitle_id = member_catalog_id(&place, "subtitle");
+    let store_id = store_id_of(&place)?;
+    let subtitle_id = member_catalog_id(&place, "subtitle")?;
     assert_eq!(
         read_scalar(
             &store,
@@ -75,12 +75,14 @@ fn optional_add_stamps_epoch_without_data_step() {
             Some(epoch)
         );
     }
+
+    Ok(())
 }
 
 /// Source-digest drift: the witness no longer matches what the source now discharges.
 /// Apply aborts with a typed drift error before staging a write.
 #[test]
-fn source_digest_drift_aborts() {
+fn source_digest_drift_aborts() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-source-drift", |root| {
         write(
             root,
@@ -97,7 +99,7 @@ fn source_digest_drift_aborts() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -115,13 +117,15 @@ fn source_digest_drift_aborts() {
         "expected Drift, got {result:#?}"
     );
     assert_eq!(store.read_commit_metadata().expect("read"), None);
+
+    Ok(())
 }
 
 /// Count drift: the witness backfill count no longer matches the live store, so apply
 /// aborts before staging a write. Witness equality catches the count change because a
 /// re-preview produces a different count.
 #[test]
-fn count_drift_aborts() {
+fn count_drift_aborts() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-count-drift", |root| {
         write(
             root,
@@ -138,7 +142,7 @@ fn count_drift_aborts() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -160,13 +164,15 @@ fn count_drift_aborts() {
         "expected Drift, got {result:#?}"
     );
     assert_eq!(store.read_commit_metadata().expect("read"), None);
+
+    Ok(())
 }
 
 /// Store-commit drift: a concurrent writer advanced the store commit id after the
 /// witness pinned it, so apply aborts. The witness pins `store_commit_id`; tampering
 /// it to a stale value models the store moving under the apply.
 #[test]
-fn store_commit_drift_aborts() {
+fn store_commit_drift_aborts() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-commit-drift", |root| {
         write(
             root,
@@ -180,7 +186,7 @@ fn store_commit_drift_aborts() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -199,10 +205,13 @@ fn store_commit_drift_aborts() {
         "expected StoreCommitDrift, got {result:#?}"
     );
     assert_eq!(store.read_commit_metadata().expect("read"), None);
+
+    Ok(())
 }
 
 #[test]
-fn commit_id_overflow_aborts_without_staging_apply_writes() {
+fn commit_id_overflow_aborts_without_staging_apply_writes() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = temp_project("apply-commit-overflow", |root| {
         write(
             root,
@@ -219,7 +228,7 @@ fn commit_id_overflow_aborts_without_staging_apply_writes() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -246,8 +255,8 @@ fn commit_id_overflow_aborts_without_staging_apply_writes() {
         "expected checked commit-id overflow, got {result:#?}"
     );
 
-    let store_id = store_id_of(&place);
-    let pages_id = member_catalog_id(&place, "pages");
+    let store_id = store_id_of(&place)?;
+    let pages_id = member_catalog_id(&place, "pages")?;
     assert_eq!(
         read_scalar(&store, &store_id, 1, &pages_id, INT),
         None,
@@ -261,6 +270,8 @@ fn commit_id_overflow_aborts_without_staging_apply_writes() {
             .commit_id,
         u64::MAX
     );
+
+    Ok(())
 }
 
 /// A failed apply leaves no stamp and a resumed apply re-previews and succeeds
@@ -271,7 +282,7 @@ fn commit_id_overflow_aborts_without_staging_apply_writes() {
 /// staged writes is proven by the store's transaction-bracket test, which owns that
 /// invariant; here the read-only handle aborts before the first write.
 #[test]
-fn failed_apply_rolls_back_and_resumes_idempotently() {
+fn failed_apply_rolls_back_and_resumes_idempotently() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-rollback", |root| {
         write(
             root,
@@ -288,7 +299,7 @@ fn failed_apply_rolls_back_and_resumes_idempotently() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
 
     let store_path = root.join("data.marrow");
     {
@@ -303,8 +314,8 @@ fn failed_apply_rolls_back_and_resumes_idempotently() {
         seed.member(2, "title", Scalar::Str("Hyperion".into()));
     }
 
-    let store_id = store_id_of(&place);
-    let pages_id = member_catalog_id(&place, "pages");
+    let store_id = store_id_of(&place)?;
+    let pages_id = member_catalog_id(&place, "pages")?;
 
     // A read-only handle fails the apply commit; nothing must land.
     {
@@ -337,13 +348,15 @@ fn failed_apply_rolls_back_and_resumes_idempotently() {
         );
         assert!(rw.read_commit_metadata().expect("read").is_some());
     }
+
+    Ok(())
 }
 
 /// A no-op evolution — the store already sits at the program's accepted epoch with no
 /// data work to do — must not restamp metadata or advance the commit id on a repeat
 /// apply. Re-applying is genuinely idempotent: the commit id is unchanged.
 #[test]
-fn no_op_apply_does_not_churn_the_commit_id() {
+fn no_op_apply_does_not_churn_the_commit_id() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-noop", |root| {
         write(
             root,
@@ -360,7 +373,7 @@ fn no_op_apply_does_not_churn_the_commit_id() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -398,6 +411,8 @@ fn no_op_apply_does_not_churn_the_commit_id() {
     let third =
         apply(&witness(&program, &store), &program, &store, false, None).expect("third apply");
     assert_eq!(third.receipt.commit_id, stamped_commit);
+
+    Ok(())
 }
 
 fn commit_metadata(commit_id: u64, source_digest: String) -> CommitMetadata {

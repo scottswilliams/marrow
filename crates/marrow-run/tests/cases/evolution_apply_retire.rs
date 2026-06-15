@@ -18,7 +18,7 @@ use marrow_store::value::{Scalar, encode_value};
 /// leave the real index cells orphaned. Apply needs no destructive approval because no
 /// source data moves; only derived cells are cleared, and the base records survive.
 #[test]
-fn explicit_index_retire_deletes_index_cells() {
+fn explicit_index_retire_deletes_index_cells() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-index-retire", |root| {
         write(
             root,
@@ -33,9 +33,9 @@ fn explicit_index_retire_deletes_index_cells() {
         );
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books");
-    let index_id = CatalogId::new(index_catalog_id(&accepted_place, "byIsbn")).unwrap();
-    let store_id = store_id_of(&accepted_place);
+    let accepted_place = root_place(&accepted, "books")?;
+    let index_id = CatalogId::new(index_catalog_id(&accepted_place, "byIsbn")?)?;
+    let store_id = store_id_of(&accepted_place)?;
 
     let store = TreeStore::memory();
     let seed = Seed {
@@ -95,14 +95,17 @@ fn explicit_index_retire_deletes_index_cells() {
             .read_data_value(
                 &store_id,
                 &[SavedKey::Int(id)],
-                &[DataPathSegment::Member(
-                    CatalogId::new(member_catalog_id(&accepted_place, "isbn")).unwrap(),
-                )],
+                &[DataPathSegment::Member(CatalogId::new(member_catalog_id(
+                    &accepted_place,
+                    "isbn",
+                )?)?)],
             )
             .expect("read isbn")
             .expect("isbn present");
         assert_eq!(bytes, encode_value(&Scalar::Str(isbn.into())).unwrap());
     }
+
+    Ok(())
 }
 
 /// A retire over populated data needs maintenance plus a scoped approval. With no
@@ -110,18 +113,19 @@ fn explicit_index_retire_deletes_index_cells() {
 /// place; with maintenance and a matching scoped approval it drops the retired member
 /// subtree from every record and stamps the retire receipt.
 #[test]
-fn destructive_retire_aborts_without_approval_and_deletes_with_matching_approval() {
+fn destructive_retire_aborts_without_approval_and_deletes_with_matching_approval()
+-> Result<(), Box<dyn std::error::Error>> {
     let (_root, program, place, store, subtitle_id) =
         destructive_retire_fixture("apply-retire-approval");
     let witness = witness(&program, &store);
-    let store_id = store_id_of(&place);
+    let store_id = store_id_of(&place)?;
     let subtitle_present = |id: i64| {
         store
             .data_subtree_exists(
                 &store_id,
                 &[SavedKey::Int(id)],
                 &[DataPathSegment::Member(
-                    CatalogId::new(subtitle_id.clone()).unwrap(),
+                    CatalogId::new(subtitle_id.clone()).expect("subtitle catalog id"),
                 )],
             )
             .expect("exists")
@@ -143,7 +147,7 @@ fn destructive_retire_aborts_without_approval_and_deletes_with_matching_approval
     // Maintenance plus a matching scoped approval drops the member subtree from both
     // records and stamps the retire receipt.
     let approval = Approval {
-        retires: vec![(CatalogId::new(subtitle_id.clone()).unwrap(), 2)],
+        retires: vec![(CatalogId::new(subtitle_id.clone())?, 2)],
     };
     let outcome = apply(&witness, &program, &store, true, Some(&approval)).expect("apply");
     assert_eq!(outcome.receipt.records_retired, 2);
@@ -153,10 +157,12 @@ fn destructive_retire_aborts_without_approval_and_deletes_with_matching_approval
             "approved retire drops the member subtree"
         );
     }
+
+    Ok(())
 }
 
 #[test]
-fn explicit_store_retire_deletes_store_data() {
+fn explicit_store_retire_deletes_store_data() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-store-retire", |root| {
         write(
             root,
@@ -173,9 +179,9 @@ fn explicit_store_retire_deletes_store_data() {
         );
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let settings_place = root_place(&accepted, "settings");
-    let settings_store_id = store_id_of(&settings_place);
-    let theme_id = CatalogId::new(member_catalog_id(&settings_place, "theme")).unwrap();
+    let settings_place = root_place(&accepted, "settings")?;
+    let settings_store_id = store_id_of(&settings_place)?;
+    let theme_id = CatalogId::new(member_catalog_id(&settings_place, "theme")?)?;
 
     let store = TreeStore::memory();
     let seed = Seed {
@@ -238,6 +244,8 @@ fn explicit_store_retire_deletes_store_data() {
             .is_none(),
         "approved store retire drops member cells below the store"
     );
+
+    Ok(())
 }
 
 /// A multi-retire approval is matched per id: each approved count must equal the
@@ -247,7 +255,7 @@ fn explicit_store_retire_deletes_store_data() {
 /// must still refuse. A merely summed check would bless the swap and drop data the
 /// developer did not approve at that scope.
 #[test]
-fn destructive_multi_retire_approval_is_matched_per_id() {
+fn destructive_multi_retire_approval_is_matched_per_id() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-retire-multi-count", |root| {
         write(
             root,
@@ -263,9 +271,9 @@ fn destructive_multi_retire_approval_is_matched_per_id() {
         );
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books");
-    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
-    let notes_id = member_catalog_id(&accepted_place, "notes");
+    let accepted_place = root_place(&accepted, "books")?;
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle")?;
+    let notes_id = member_catalog_id(&accepted_place, "notes")?;
 
     let store = TreeStore::memory();
     let seed = Seed {
@@ -297,7 +305,7 @@ fn destructive_multi_retire_approval_is_matched_per_id() {
     );
     let program = checked(&root).expect("checked fixture");
     let witness = witness(&program, &store);
-    let store_id = store_id_of(&accepted_place);
+    let store_id = store_id_of(&accepted_place)?;
     let both_present = |label: &str| {
         for member_id in [&subtitle_id, &notes_id] {
             assert!(
@@ -306,7 +314,7 @@ fn destructive_multi_retire_approval_is_matched_per_id() {
                         &store_id,
                         &[SavedKey::Int(1)],
                         &[DataPathSegment::Member(
-                            CatalogId::new(member_id.clone()).unwrap(),
+                            CatalogId::new(member_id.clone()).expect("member catalog id"),
                         )],
                     )
                     .expect("exists"),
@@ -319,8 +327,8 @@ fn destructive_multi_retire_approval_is_matched_per_id() {
     // as 1 where the witness recorded 2, notes correct) is refused without dropping data.
     let single_drift = Approval {
         retires: vec![
-            (CatalogId::new(subtitle_id.clone()).unwrap(), 1),
-            (CatalogId::new(notes_id.clone()).unwrap(), 1),
+            (CatalogId::new(subtitle_id.clone())?, 1),
+            (CatalogId::new(notes_id.clone())?, 1),
         ],
     };
     let result = apply(&witness, &program, &store, true, Some(&single_drift));
@@ -334,8 +342,8 @@ fn destructive_multi_retire_approval_is_matched_per_id() {
     // must refuse rather than bless the sum and drop unapproved data.
     let swapped = Approval {
         retires: vec![
-            (CatalogId::new(subtitle_id.clone()).unwrap(), 1),
-            (CatalogId::new(notes_id.clone()).unwrap(), 2),
+            (CatalogId::new(subtitle_id.clone())?, 1),
+            (CatalogId::new(notes_id.clone())?, 2),
         ],
     };
     let result = apply(&witness, &program, &store, true, Some(&swapped));
@@ -348,43 +356,45 @@ fn destructive_multi_retire_approval_is_matched_per_id() {
     // The correctly scoped per-id approval activates and drops both members.
     let scoped = Approval {
         retires: vec![
-            (CatalogId::new(subtitle_id.clone()).unwrap(), 2),
-            (CatalogId::new(notes_id.clone()).unwrap(), 1),
+            (CatalogId::new(subtitle_id.clone())?, 2),
+            (CatalogId::new(notes_id.clone())?, 1),
         ],
     };
     let outcome = apply(&witness, &program, &store, true, Some(&scoped)).expect("apply");
     assert_eq!(outcome.receipt.records_retired, 3);
+
+    Ok(())
 }
 
 /// Maintenance off blocks a destructive retire even with a matching approval: a hard
 /// drop requires the maintenance gate.
 #[test]
-fn destructive_retire_requires_maintenance() {
+fn destructive_retire_requires_maintenance() -> Result<(), Box<dyn std::error::Error>> {
     let (root, _program, _place, store, subtitle_id) =
         destructive_retire_fixture("apply-retire-no-maint");
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let witness = witness(&program, &store);
     let approval = Approval {
-        retires: vec![(CatalogId::new(subtitle_id.clone()).unwrap(), 2)],
+        retires: vec![(CatalogId::new(subtitle_id.clone())?, 2)],
     };
     let result = apply(&witness, &program, &store, false, Some(&approval));
     assert!(
         matches!(result, Err(ApplyError::MaintenanceRequired)),
         "expected MaintenanceRequired, got {result:#?}"
     );
-    let store_id = store_id_of(&place);
+    let store_id = store_id_of(&place)?;
     assert!(
         store
             .data_subtree_exists(
                 &store_id,
                 &[SavedKey::Int(1)],
-                &[DataPathSegment::Member(
-                    CatalogId::new(subtitle_id).unwrap()
-                )]
+                &[DataPathSegment::Member(CatalogId::new(subtitle_id)?)]
             )
             .expect("exists")
     );
+
+    Ok(())
 }
 
 /// Retiring a member nested under an unkeyed group fails closed: apply does not yet
@@ -392,7 +402,7 @@ fn destructive_retire_requires_maintenance() {
 /// rather than counting zero populated cells and silently dropping nothing. The records
 /// carry `meta.note` cells that a top-level retire path would never reach.
 #[test]
-fn nested_group_retire_fails_closed() {
+fn nested_group_retire_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-nested-retire", |root| {
         write(
             root,
@@ -409,12 +419,12 @@ fn nested_group_retire_fails_closed() {
     });
     // Commit the schema that declares `meta.note`, so the nested leaf binds a stable id.
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books");
-    let meta_id = group_member_catalog_id(&accepted_place, "meta");
-    let note_id = nested_member_catalog_id(&accepted_place, "meta", "note");
+    let accepted_place = root_place(&accepted, "books")?;
+    let meta_id = group_member_catalog_id(&accepted_place, "meta")?;
+    let note_id = nested_member_catalog_id(&accepted_place, "meta", "note")?;
 
     let store = TreeStore::memory();
-    let store_id = store_id_of(&accepted_place);
+    let store_id = store_id_of(&accepted_place)?;
     let seed = Seed {
         store: &store,
         place: &accepted_place,
@@ -449,7 +459,7 @@ fn nested_group_retire_fails_closed() {
     // Even under the maintenance gate with an approval, apply must refuse rather than
     // stamp success while the nested cells survive.
     let approval = Approval {
-        retires: vec![(CatalogId::new(note_id.clone()).unwrap(), 0)],
+        retires: vec![(CatalogId::new(note_id.clone())?, 0)],
     };
     let result = apply(&w, &program, &store, true, Some(&approval));
     assert!(
@@ -478,4 +488,6 @@ fn nested_group_retire_fails_closed() {
         None,
         "no stamp"
     );
+
+    Ok(())
 }

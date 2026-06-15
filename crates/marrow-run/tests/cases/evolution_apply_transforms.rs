@@ -13,7 +13,8 @@ use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_store::value::{Scalar, ScalarType};
 
 #[test]
-fn proposal_transform_writes_target_before_catalog_acceptance() {
+fn proposal_transform_writes_target_before_catalog_acceptance()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-proposal-transform", |root| {
         write(
             root,
@@ -27,7 +28,7 @@ fn proposal_transform_writes_target_before_catalog_acceptance() {
         );
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -53,7 +54,7 @@ fn proposal_transform_writes_target_before_catalog_acceptance() {
          \x20   return nextId(^books)\n",
     );
     let program = checked(&root).expect("checked fixture");
-    let cents_id = proposal_catalog_id(&program, "books::Book::priceCents");
+    let cents_id = proposal_catalog_id(&program, "books::Book::priceCents")?;
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");
     assert_eq!(w.counts.records_to_transform, 2);
@@ -61,7 +62,7 @@ fn proposal_transform_writes_target_before_catalog_acceptance() {
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
     assert_eq!(outcome.receipt.records_transformed, 2);
 
-    let store_id = store_id_of(&accepted_place);
+    let store_id = store_id_of(&accepted_place)?;
     assert_eq!(
         read_scalar(&store, &store_id, 1, &cents_id, INT),
         Some(Scalar::Int(300))
@@ -70,10 +71,13 @@ fn proposal_transform_writes_target_before_catalog_acceptance() {
         read_scalar(&store, &store_id, 2, &cents_id, INT),
         Some(Scalar::Int(700))
     );
+
+    Ok(())
 }
 
 #[test]
-fn proposal_transform_updates_every_store_using_the_resource() {
+fn proposal_transform_updates_every_store_using_the_resource()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-proposal-transform-multi-store", |root| {
         write(
             root,
@@ -88,8 +92,8 @@ fn proposal_transform_updates_every_store_using_the_resource() {
         );
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let books_place = root_place(&accepted, "books");
-    let archives_place = root_place(&accepted, "archives");
+    let books_place = root_place(&accepted, "books")?;
+    let archives_place = root_place(&accepted, "archives")?;
     let store = TreeStore::memory();
     let books_seed = Seed {
         store: &store,
@@ -120,7 +124,7 @@ fn proposal_transform_updates_every_store_using_the_resource() {
          \x20   return nextId(^books)\n",
     );
     let program = checked(&root).expect("checked fixture");
-    let cents_id = proposal_catalog_id(&program, "books::Book::priceCents");
+    let cents_id = proposal_catalog_id(&program, "books::Book::priceCents")?;
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");
     assert_eq!(w.counts.records_to_transform, 2);
@@ -128,8 +132,8 @@ fn proposal_transform_updates_every_store_using_the_resource() {
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
     assert_eq!(outcome.receipt.records_transformed, 2);
 
-    let books_store_id = store_id_of(&books_place);
-    let archives_store_id = store_id_of(&archives_place);
+    let books_store_id = store_id_of(&books_place)?;
+    let archives_store_id = store_id_of(&archives_place)?;
     assert_eq!(
         read_scalar(&store, &books_store_id, 1, &cents_id, INT),
         Some(Scalar::Int(300))
@@ -138,10 +142,12 @@ fn proposal_transform_updates_every_store_using_the_resource() {
         read_scalar(&store, &archives_store_id, 2, &cents_id, INT),
         Some(Scalar::Int(700))
     );
+
+    Ok(())
 }
 
 #[test]
-fn transform_if_const_over_sparse_old_member_applies() {
+fn transform_if_const_over_sparse_old_member_applies() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-transform-if-const-old", |root| {
         write(
             root,
@@ -156,7 +162,7 @@ fn transform_if_const_over_sparse_old_member_applies() {
         );
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -186,7 +192,7 @@ fn transform_if_const_over_sparse_old_member_applies() {
          \x20   return nextId(^books)\n",
     );
     let program = checked(&root).expect("checked fixture");
-    let summary_id = proposal_catalog_id(&program, "books::Book::summary");
+    let summary_id = proposal_catalog_id(&program, "books::Book::summary")?;
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");
     assert_eq!(w.counts.records_to_transform, 2);
@@ -194,7 +200,7 @@ fn transform_if_const_over_sparse_old_member_applies() {
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
     assert_eq!(outcome.receipt.records_transformed, 2);
 
-    let store_id = store_id_of(&accepted_place);
+    let store_id = store_id_of(&accepted_place)?;
     assert_eq!(
         read_scalar(&store, &store_id, 1, &summary_id, ScalarType::Str),
         Some(Scalar::Str("present".into()))
@@ -203,10 +209,12 @@ fn transform_if_const_over_sparse_old_member_applies() {
         read_scalar(&store, &store_id, 2, &summary_id, ScalarType::Str),
         Some(Scalar::Str("two".into()))
     );
+
+    Ok(())
 }
 
 #[test]
-fn transform_exists_over_sparse_old_member_applies() {
+fn transform_exists_over_sparse_old_member_applies() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-transform-exists-old", |root| {
         write(
             root,
@@ -221,7 +229,7 @@ fn transform_exists_over_sparse_old_member_applies() {
         );
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -251,7 +259,7 @@ fn transform_exists_over_sparse_old_member_applies() {
          \x20   return nextId(^books)\n",
     );
     let program = checked(&root).expect("checked fixture");
-    let summary_id = proposal_catalog_id(&program, "books::Book::summary");
+    let summary_id = proposal_catalog_id(&program, "books::Book::summary")?;
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");
     assert_eq!(w.counts.records_to_transform, 2);
@@ -259,7 +267,7 @@ fn transform_exists_over_sparse_old_member_applies() {
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
     assert_eq!(outcome.receipt.records_transformed, 2);
 
-    let store_id = store_id_of(&accepted_place);
+    let store_id = store_id_of(&accepted_place)?;
     assert_eq!(
         read_scalar(&store, &store_id, 1, &summary_id, ScalarType::Str),
         Some(Scalar::Str("present".into()))
@@ -268,6 +276,8 @@ fn transform_exists_over_sparse_old_member_applies() {
         read_scalar(&store, &store_id, 2, &summary_id, ScalarType::Str),
         Some(Scalar::Str("two".into()))
     );
+
+    Ok(())
 }
 
 /// A checked transform computes a new member from a sibling and apply writes the
@@ -275,7 +285,7 @@ fn transform_exists_over_sparse_old_member_applies() {
 /// becomes `price * 100`, derived from its own decodable `price`, and re-previewing
 /// after the apply yields the same value (idempotent over unchanged reads).
 #[test]
-fn transform_computes_new_member_per_record_and_stamps() {
+fn transform_computes_new_member_per_record_and_stamps() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-transform-compute", |root| {
         write(
             root,
@@ -293,7 +303,7 @@ fn transform_computes_new_member_per_record_and_stamps() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -312,8 +322,8 @@ fn transform_computes_new_member_per_record_and_stamps() {
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
     assert_eq!(outcome.receipt.records_transformed, 2);
 
-    let store_id = store_id_of(&place);
-    let cents_id = member_catalog_id(&place, "priceCents");
+    let store_id = store_id_of(&place)?;
+    let cents_id = member_catalog_id(&place, "priceCents")?;
     assert_eq!(
         read_scalar(&store, &store_id, 1, &cents_id, INT),
         Some(Scalar::Int(300))
@@ -339,13 +349,15 @@ fn transform_computes_new_member_per_record_and_stamps() {
         read_scalar(&store, &store_id, 2, &cents_id, INT),
         Some(Scalar::Int(700))
     );
+
+    Ok(())
 }
 
 /// The activatable->applyable invariant for a transform: a witness whose read members
 /// all decode under their current type and whose body does not fault over the data
 /// applies successfully, writing the recomputed value and stamping the store.
 #[test]
-fn activatable_transform_with_total_body_applies() {
+fn activatable_transform_with_total_body_applies() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-transform-total", |root| {
         write(
             root,
@@ -363,7 +375,7 @@ fn activatable_transform_with_total_body_applies() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -378,20 +390,22 @@ fn activatable_transform_with_total_body_applies() {
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
     assert_eq!(outcome.receipt.records_transformed, 1);
 
-    let store_id = store_id_of(&place);
-    let cents_id = member_catalog_id(&place, "priceCents");
+    let store_id = store_id_of(&place)?;
+    let cents_id = member_catalog_id(&place, "priceCents")?;
     assert_eq!(
         read_scalar(&store, &store_id, 1, &cents_id, INT),
         Some(Scalar::Int(500))
     );
     assert!(store.read_commit_metadata().expect("read").is_some());
+
+    Ok(())
 }
 
 /// A transform composes with a default and a retire in one evolve block: apply
 /// computes the transform target, backfills the defaulted member, drops the retired
 /// member, and stamps once. The transform reads a sibling the retire does not touch.
 #[test]
-fn transform_composes_with_default_and_retire() {
+fn transform_composes_with_default_and_retire() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-transform-compose", |root| {
         write(
             root,
@@ -412,8 +426,8 @@ fn transform_composes_with_default_and_retire() {
     // the retire drops the committed `subtitle` source no longer declares, and the
     // transform recomputes the committed `priceCents`.
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books");
-    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    let accepted_place = root_place(&accepted, "books")?;
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle")?;
 
     let store = TreeStore::memory();
     let seed = Seed {
@@ -446,23 +460,23 @@ fn transform_composes_with_default_and_retire() {
          \x20   return nextId(^books)\n",
     );
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
 
     // The retire makes the witness non-activatable on its own; the transform and the
     // default are activatable, and the retire applies under maintenance with a scoped
     // approval. Apply composes all three in one stamped transaction.
     let w = witness(&program, &store);
     let approval = Approval {
-        retires: vec![(CatalogId::new(subtitle_id.clone()).unwrap(), 1)],
+        retires: vec![(CatalogId::new(subtitle_id.clone())?, 1)],
     };
     let outcome = apply(&w, &program, &store, true, Some(&approval)).expect("apply");
     assert_eq!(outcome.receipt.records_transformed, 1);
     assert_eq!(outcome.receipt.records_backfilled, 1);
     assert_eq!(outcome.receipt.records_retired, 1);
 
-    let store_id = store_id_of(&place);
-    let cents_id = member_catalog_id(&place, "priceCents");
-    let currency_id = member_catalog_id(&place, "currency");
+    let store_id = store_id_of(&place)?;
+    let cents_id = member_catalog_id(&place, "priceCents")?;
+    let currency_id = member_catalog_id(&place, "currency")?;
     let str_ty = marrow_store::value::ScalarType::Str;
     assert_eq!(
         read_scalar(&store, &store_id, 1, &cents_id, INT),
@@ -479,11 +493,11 @@ fn transform_composes_with_default_and_retire() {
             .data_subtree_exists(
                 &store_id,
                 &[SavedKey::Int(1)],
-                &[DataPathSegment::Member(
-                    CatalogId::new(subtitle_id).unwrap()
-                )]
+                &[DataPathSegment::Member(CatalogId::new(subtitle_id)?)]
             )
             .expect("exists"),
         "the retired member is dropped"
     );
+
+    Ok(())
 }

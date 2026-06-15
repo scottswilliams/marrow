@@ -15,7 +15,8 @@ use marrow_store::value::Scalar;
 /// Add a sparse field over a populated store: discharging it writes no record, so the run
 /// auto-applies it. The store advances to the proposal epoch and stamps the new shape.
 #[test]
-fn a_sparse_add_over_a_populated_store_auto_applies_and_advances_the_epoch() {
+fn a_sparse_add_over_a_populated_store_auto_applies_and_advances_the_epoch()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("autoapply-sparse-populated", |root| {
         write(
             root,
@@ -29,7 +30,7 @@ fn a_sparse_add_over_a_populated_store_auto_applies_and_advances_the_epoch() {
         );
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -73,13 +74,15 @@ fn a_sparse_add_over_a_populated_store_auto_applies_and_advances_the_epoch() {
         Some(target_epoch),
         "auto-apply advanced the store to the proposal epoch",
     );
+
+    Ok(())
 }
 
 /// A required field added over a populated store has records to backfill, so the run must
 /// not auto-apply it: it returns the backfill obligation to fence, and the store keeps no
 /// stamp.
 #[test]
-fn a_required_add_over_a_populated_store_must_fence() {
+fn a_required_add_over_a_populated_store_must_fence() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("autoapply-required-populated", |root| {
         write(
             root,
@@ -93,7 +96,7 @@ fn a_required_add_over_a_populated_store_must_fence() {
         );
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -128,6 +131,8 @@ fn a_required_add_over_a_populated_store_must_fence() {
         None,
         "a fenced obligation stamps nothing",
     );
+
+    Ok(())
 }
 
 /// A destructive drop over populated data is the approval-gated case: it never
@@ -158,12 +163,13 @@ fn a_populated_destructive_drop_never_auto_applies() {
 /// cell under the stale zero-count approval. Losing data is never a silent side effect of
 /// an auto-apply.
 #[test]
-fn an_empty_drop_that_becomes_populated_before_the_stamp_fails_closed() {
+fn an_empty_drop_that_becomes_populated_before_the_stamp_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     let (_root, program, place, store, subtitle_id) =
         destructive_retire_fixture("autoapply-empty-drop-race");
     // The fixture seeds two subtitle cells; clear them so the retire targets an empty
     // member and classifies as zero-mutation, exactly the auto-apply case.
-    let store_id = store_id_of(&place);
+    let store_id = store_id_of(&place)?;
     let seed = Seed {
         store: &store,
         place: &place,
@@ -204,6 +210,8 @@ fn an_empty_drop_that_becomes_populated_before_the_stamp_fails_closed() {
         ),
         "the concurrently-written cell survives the failed auto-apply",
     );
+
+    Ok(())
 }
 
 /// The TOCTOU invariant, encoded deterministically: the auto-apply decision is bound to
@@ -215,7 +223,7 @@ fn an_empty_drop_that_becomes_populated_before_the_stamp_fails_closed() {
 /// from the unsafe one, proving the probe and the stamp serialize on the same committed
 /// state.
 #[test]
-fn a_stale_commit_pin_fails_the_auto_apply_closed() {
+fn a_stale_commit_pin_fails_the_auto_apply_closed() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("autoapply-toctou-pin", |root| {
         write(
             root,
@@ -229,7 +237,7 @@ fn a_stale_commit_pin_fails_the_auto_apply_closed() {
         );
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -271,4 +279,6 @@ fn a_stale_commit_pin_fails_the_auto_apply_closed() {
         None,
         "the failed auto-apply stamps nothing",
     );
+
+    Ok(())
 }

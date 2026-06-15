@@ -13,7 +13,7 @@ use support_discharge::*;
 /// Retiring a member whose source is gone, with populated records, is a destructive
 /// decision. The verdict names the exact catalog id and the populated count.
 #[test]
-fn retire_of_populated_member_requires_scoped_approval() {
+fn retire_of_populated_member_requires_scoped_approval() -> Result<(), Box<dyn std::error::Error>> {
     let subtitle_id = hex_id(4);
     let root = temp_project("discharge-retire", |root| {
         write(
@@ -49,7 +49,7 @@ fn retire_of_populated_member_requires_scoped_approval() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     for (id, value) in [(1, "A"), (2, "B")] {
@@ -63,6 +63,8 @@ fn retire_of_populated_member_requires_scoped_approval() {
         Verdict::DestructiveDecisionRequired { populated } => assert_eq!(*populated, 2),
         other => panic!("expected destructive decision, got {other:#?}"),
     }
+
+    Ok(())
 }
 
 /// Dropping a sparse source field that nothing else depends on is a legal no-op. The
@@ -126,7 +128,7 @@ fn dropped_sparse_field_is_no_op_not_error() {
 /// accepted entry lingers, but its cells are populated, so the bare drop is repair-required
 /// and names `evolve retire`; this is the only difference from the empty-store no-op above.
 #[test]
-fn dropped_field_with_populated_data_fails_closed() {
+fn dropped_field_with_populated_data_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let subtitle_id = hex_id(4);
     let root = temp_project("discharge-dropped-field-populated", |root| {
         write(
@@ -160,7 +162,7 @@ fn dropped_field_with_populated_data_fails_closed() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     // Seed `subtitle` so the dropped member has stored data to orphan.
     let seed = Seed::new(&store, &place);
@@ -175,10 +177,13 @@ fn dropped_field_with_populated_data_fails_closed() {
         &subtitle_id,
         RepairReason::PopulatedDropRequiresRetire,
     );
+
+    Ok(())
 }
 
 #[test]
-fn populated_drop_with_same_resource_same_type_addition_suggests_rename_before_retire() {
+fn populated_drop_with_same_resource_same_type_addition_suggests_rename_before_retire()
+-> Result<(), Box<dyn std::error::Error>> {
     let subtitle_id = hex_id(4);
     let root = temp_project("discharge-dropped-field-rename-plausible", |root| {
         write(
@@ -205,7 +210,7 @@ fn populated_drop_with_same_resource_same_type_addition_suggests_rename_before_r
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -222,10 +227,13 @@ fn populated_drop_with_same_resource_same_type_addition_suggests_rename_before_r
     );
     let diagnostic = diagnostic_for(&diagnostics, &subtitle_id);
     assert_repair_guidance_order(&diagnostic.message, "evolve rename", "evolve retire");
+
+    Ok(())
 }
 
 #[test]
-fn populated_drop_with_ambiguous_same_type_dropped_members_does_not_suggest_rename() {
+fn populated_drop_with_ambiguous_same_type_dropped_members_does_not_suggest_rename()
+-> Result<(), Box<dyn std::error::Error>> {
     let subtitle_id = hex_id(4);
     let summary_id = hex_id(5);
     let root = temp_project("discharge-dropped-field-ambiguous-dropped-side", |root| {
@@ -254,7 +262,7 @@ fn populated_drop_with_ambiguous_same_type_dropped_members_does_not_suggest_rena
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -278,10 +286,13 @@ fn populated_drop_with_ambiguous_same_type_dropped_members_does_not_suggest_rena
             "{diagnostics:#?}"
         );
     }
+
+    Ok(())
 }
 
 #[test]
-fn populated_drop_ignores_same_type_addition_in_another_resource_for_rename_hint() {
+fn populated_drop_ignores_same_type_addition_in_another_resource_for_rename_hint()
+-> Result<(), Box<dyn std::error::Error>> {
     let subtitle_id = hex_id(6);
     let root = temp_project("discharge-dropped-field-cross-resource-addition", |root| {
         write(
@@ -313,7 +324,7 @@ fn populated_drop_ignores_same_type_addition_in_another_resource_for_rename_hint
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -334,10 +345,13 @@ fn populated_drop_ignores_same_type_addition_in_another_resource_for_rename_hint
             .contains("evolve rename"),
         "{diagnostics:#?}"
     );
+
+    Ok(())
 }
 
 #[test]
-fn populated_drop_ignores_same_resource_different_type_addition_for_rename_hint() {
+fn populated_drop_ignores_same_resource_different_type_addition_for_rename_hint()
+-> Result<(), Box<dyn std::error::Error>> {
     let subtitle_id = hex_id(4);
     let root = temp_project("discharge-dropped-field-different-type-addition", |root| {
         write(
@@ -364,7 +378,7 @@ fn populated_drop_ignores_same_resource_different_type_addition_for_rename_hint(
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -385,6 +399,8 @@ fn populated_drop_ignores_same_resource_different_type_addition_for_rename_hint(
             .contains("evolve rename"),
         "{diagnostics:#?}"
     );
+
+    Ok(())
 }
 
 fn diagnostic_for<'a>(

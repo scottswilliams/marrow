@@ -101,61 +101,68 @@ fn ensure_clean_report(report: &CheckReport) -> TestSupportResult<()> {
 }
 
 /// The checked saved place rooted at `root`, ready to resolve member and index ids.
-pub fn root_place(program: &CheckedProgram, root: &str) -> CheckedSavedPlace {
+pub fn root_place(program: &CheckedProgram, root: &str) -> TestSupportResult<CheckedSavedPlace> {
     checked_saved_root_place(program, root, marrow_syntax::SourceSpan::default())
-        .expect("checked saved root place")
+        .ok_or_else(|| io::Error::other(format!("checked saved root place `{root}`")).into())
 }
 
 /// Unwrap the bound stable catalog id of a checked fact, naming `label` on absence.
-pub fn accepted_catalog_id(id: &Option<String>, label: &str) -> String {
+pub fn accepted_catalog_id(id: &Option<String>, label: &str) -> TestSupportResult<String> {
     id.clone()
-        .unwrap_or_else(|| panic!("accepted catalog id for `{label}`"))
+        .ok_or_else(|| io::Error::other(format!("accepted catalog id for `{label}`")).into())
 }
 
 /// The bound store catalog id of a committed place, ready to address store cells.
-pub fn store_id_of(place: &CheckedSavedPlace) -> CatalogId {
-    CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")).expect("store catalog id")
+pub fn store_id_of(place: &CheckedSavedPlace) -> TestSupportResult<CatalogId> {
+    CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")?)
+        .map_err(|error| io::Error::other(format!("store catalog id: {error}")).into())
 }
 
 /// The bound stable catalog id of a top-level scalar field member named `name`.
-pub fn member_catalog_id(place: &CheckedSavedPlace, name: &str) -> String {
+pub fn member_catalog_id(place: &CheckedSavedPlace, name: &str) -> TestSupportResult<String> {
     let member = place
         .root_members
         .iter()
         .find(|member| {
             member.name == name && matches!(member.kind, CheckedSavedMemberKind::Field { .. })
         })
-        .unwrap_or_else(|| panic!("checked member `{name}`"));
+        .ok_or_else(|| io::Error::other(format!("checked member `{name}`")))?;
     accepted_catalog_id(&member.catalog_id, name)
 }
 
 /// The bound stable catalog id of an index named `name` on the place.
-pub fn index_catalog_id(place: &CheckedSavedPlace, name: &str) -> String {
+pub fn index_catalog_id(place: &CheckedSavedPlace, name: &str) -> TestSupportResult<String> {
     let index = place
         .indexes
         .iter()
         .find(|index| index.name == name)
-        .unwrap_or_else(|| panic!("checked index `{name}`"));
+        .ok_or_else(|| io::Error::other(format!("checked index `{name}`")))?;
     accepted_catalog_id(&index.catalog_id, name)
 }
 
 /// A top-level group member named `group`, borrowed for its sub-members.
-fn group_member<'a>(place: &'a CheckedSavedPlace, group: &str) -> &'a CheckedSavedMember {
+fn group_member<'a>(
+    place: &'a CheckedSavedPlace,
+    group: &str,
+) -> TestSupportResult<&'a CheckedSavedMember> {
     place
         .root_members
         .iter()
         .find(|member| member.name == group && matches!(member.kind, CheckedSavedMemberKind::Group))
-        .unwrap_or_else(|| panic!("checked group member `{group}`"))
+        .ok_or_else(|| io::Error::other(format!("checked group member `{group}`")).into())
 }
 
 /// The bound stable catalog id of a top-level group member named `group`.
-pub fn group_member_catalog_id(place: &CheckedSavedPlace, group: &str) -> String {
-    accepted_catalog_id(&group_member(place, group).catalog_id, group)
+pub fn group_member_catalog_id(
+    place: &CheckedSavedPlace,
+    group: &str,
+) -> TestSupportResult<String> {
+    accepted_catalog_id(&group_member(place, group)?.catalog_id, group)
 }
 
 /// The catalog id of a top-level keyed-leaf member: a `Field` that
 /// carries key params, so it is the leaf its entries' values are stored under.
-pub fn keyed_leaf_catalog_id(place: &CheckedSavedPlace, map: &str) -> String {
+pub fn keyed_leaf_catalog_id(place: &CheckedSavedPlace, map: &str) -> TestSupportResult<String> {
     let member = place
         .root_members
         .iter()
@@ -164,101 +171,113 @@ pub fn keyed_leaf_catalog_id(place: &CheckedSavedPlace, map: &str) -> String {
                 && !member.key_params.is_empty()
                 && matches!(member.kind, CheckedSavedMemberKind::Field { .. })
         })
-        .unwrap_or_else(|| panic!("checked keyed-leaf member `{map}`"));
+        .ok_or_else(|| io::Error::other(format!("checked keyed-leaf member `{map}`")))?;
     accepted_catalog_id(&member.catalog_id, map)
 }
 
 /// The bound stable catalog id of a leaf named `leaf` one level inside `group`.
-pub fn nested_member_catalog_id(place: &CheckedSavedPlace, group: &str, leaf: &str) -> String {
-    let member = group_member(place, group)
+pub fn nested_member_catalog_id(
+    place: &CheckedSavedPlace,
+    group: &str,
+    leaf: &str,
+) -> TestSupportResult<String> {
+    let member = group_member(place, group)?
         .group_members
         .iter()
         .find(|member| member.name == leaf)
-        .unwrap_or_else(|| panic!("checked nested member `{group}.{leaf}`"));
+        .ok_or_else(|| io::Error::other(format!("checked nested member `{group}.{leaf}`")))?;
     accepted_catalog_id(&member.catalog_id, leaf)
 }
 
 /// The catalog id of a member reached by an arbitrary name chain from the record root, each
 /// segment a layer or group whose sub-members hold the next. Resolves members nested through
 /// more than one keyed layer, which the single-level [`nested_member_catalog_id`] cannot reach.
-pub fn deep_member_catalog_id(place: &CheckedSavedPlace, chain: &[&str]) -> String {
+pub fn deep_member_catalog_id(
+    place: &CheckedSavedPlace,
+    chain: &[&str],
+) -> TestSupportResult<String> {
     let mut members = &place.root_members;
     let mut found = None;
+    let path = chain.join(".");
     for segment in chain {
         let member = members
             .iter()
             .find(|member| member.name == *segment)
-            .unwrap_or_else(|| panic!("checked nested member `{}`", chain.join(".")));
+            .ok_or_else(|| io::Error::other(format!("checked nested member `{path}`")))?;
         found = Some(member);
         members = &member.group_members;
     }
-    let member = found.unwrap_or_else(|| panic!("empty member chain"));
-    accepted_catalog_id(&member.catalog_id, &chain.join("."))
+    let member = found.ok_or_else(|| io::Error::other("empty member chain"))?;
+    accepted_catalog_id(&member.catalog_id, &path)
 }
 
 /// The proposal-minted stable id of a brand-new resource member at the given module-qualified
 /// catalog path. A member current source adds but the accepted catalog does not yet carry has
 /// no bound facts id, so its identity lives only in the catalog proposal; the proposal-aware
 /// presence scan keys its verdict by this id.
-pub fn new_member_proposal_id(program: &CheckedProgram, path: &str) -> String {
-    program
+pub fn new_member_proposal_id(program: &CheckedProgram, path: &str) -> TestSupportResult<String> {
+    Ok(program
         .catalog
         .proposal
         .as_ref()
-        .expect("a catalog proposal")
+        .ok_or_else(|| io::Error::other(format!("catalog proposal for `{path}`")))?
         .entries
         .iter()
         .find(|entry| entry.kind == CatalogEntryKind::ResourceMember && entry.path == path)
-        .unwrap_or_else(|| panic!("proposal entry for `{path}`"))
+        .ok_or_else(|| io::Error::other(format!("proposal entry for `{path}`")))?
         .stable_id
-        .clone()
+        .clone())
 }
 
 /// The proposal-minted stable id of the catalog entry at `path`, for any entry kind.
-pub fn proposal_catalog_id(program: &CheckedProgram, path: &str) -> String {
-    program
+pub fn proposal_catalog_id(program: &CheckedProgram, path: &str) -> TestSupportResult<String> {
+    Ok(program
         .catalog
         .proposal
         .as_ref()
-        .expect("catalog proposal")
+        .ok_or_else(|| io::Error::other(format!("catalog proposal for `{path}`")))?
         .entries
         .iter()
         .find(|entry| entry.path == path)
-        .unwrap_or_else(|| panic!("proposal catalog entry `{path}`"))
+        .ok_or_else(|| io::Error::other(format!("proposal catalog entry `{path}`")))?
         .stable_id
-        .clone()
+        .clone())
 }
 
 /// The stable catalog id the checked program bound to the enum named `name`, so a
 /// hand-built accepted catalog records the identity-aware leaf token (`enum:<id>`) the
 /// discharge compares against, not a source spelling.
-pub fn enum_catalog_id(program: &CheckedProgram, name: &str) -> String {
+pub fn enum_catalog_id(program: &CheckedProgram, name: &str) -> TestSupportResult<String> {
     let enum_fact = program
         .facts
         .enums()
         .iter()
         .find(|enum_fact| enum_fact.name == name)
-        .unwrap_or_else(|| panic!("checked enum `{name}`"));
+        .ok_or_else(|| io::Error::other(format!("checked enum `{name}`")))?;
     accepted_catalog_id(&enum_fact.catalog_id, name)
 }
 
 /// The stable catalog id of the enum member `enum_name::member`, so a test can seed a
 /// stored enum value (its enum id plus the selected member id) the way the runtime
 /// write path does.
-pub fn enum_member_catalog_id(program: &CheckedProgram, enum_name: &str, member: &str) -> String {
+pub fn enum_member_catalog_id(
+    program: &CheckedProgram,
+    enum_name: &str,
+    member: &str,
+) -> TestSupportResult<String> {
     let enum_id = program
         .facts
         .enums()
         .iter()
         .find(|enum_fact| enum_fact.name == enum_name)
-        .unwrap_or_else(|| panic!("checked enum `{enum_name}`"))
+        .ok_or_else(|| io::Error::other(format!("checked enum `{enum_name}`")))?
         .id;
     let member_fact = program
         .facts
         .enum_members()
         .iter()
         .find(|member_fact| member_fact.enum_id == enum_id && member_fact.name == member)
-        .unwrap_or_else(|| panic!("checked enum member `{enum_name}::{member}`"));
+        .ok_or_else(|| io::Error::other(format!("checked enum member `{enum_name}::{member}`")))?;
     accepted_catalog_id(&member_fact.catalog_id, member)
 }
 

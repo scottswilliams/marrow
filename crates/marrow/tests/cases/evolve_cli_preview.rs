@@ -12,10 +12,10 @@ use support_evolve::{
 };
 
 #[test]
-fn evolve_preview_reports_the_exact_witness_counts() {
+fn evolve_preview_reports_the_exact_witness_counts() -> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project("evolve-preview-default", REQUIRED_DEFAULT_SOURCE);
     let program = commit_catalog(&root);
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &place, 1, "Dune");
@@ -26,7 +26,7 @@ fn evolve_preview_reports_the_exact_witness_counts() {
         "preview",
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -48,13 +48,16 @@ fn evolve_preview_reports_the_exact_witness_counts() {
         "{witness}"
     );
     assert!(witness["accepted_epoch"].is_number(), "{witness}");
+
+    Ok(())
 }
 
 #[test]
-fn evolve_preview_from_backup_uses_backup_state_while_live_store_is_locked() {
+fn evolve_preview_from_backup_uses_backup_state_while_live_store_is_locked()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project("evolve-preview-from-backup", REQUIRED_BASELINE_SOURCE);
     let program = commit_catalog(&root);
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &place, 1, "Dune");
@@ -75,7 +78,7 @@ fn evolve_preview_from_backup_uses_backup_state_while_live_store_is_locked() {
         archive_arg,
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -86,16 +89,19 @@ fn evolve_preview_from_backup_uses_backup_state_while_live_store_is_locked() {
         serde_json::json!(1),
         "preview must count the one backed-up record, not the two-record live store: {witness}"
     );
+
+    Ok(())
 }
 
 #[test]
-fn evolve_preview_from_backup_rejects_current_catalog_drift_with_restore_code() {
+fn evolve_preview_from_backup_rejects_current_catalog_drift_with_restore_code()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project(
         "evolve-preview-backup-catalog-drift",
         REQUIRED_BASELINE_SOURCE,
     );
     let program = commit_catalog(&root);
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &place, 1, "Dune");
@@ -118,12 +124,14 @@ fn evolve_preview_from_backup_rejects_current_catalog_drift_with_restore_code() 
         archive_arg,
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let error = support::json(output.stdout);
     assert_eq!(error["code"], serde_json::json!("restore.catalog_mismatch"));
+
+    Ok(())
 }
 
 #[test]
@@ -167,10 +175,11 @@ fn evolve_preview_from_backup_flag_usage_is_tight() {
 }
 
 #[test]
-fn evolve_preview_reports_repair_required_from_attached_store() {
+fn evolve_preview_reports_repair_required_from_attached_store()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project("evolve-preview-repair", REQUIRED_NO_DEFAULT_SOURCE);
     let program = commit_catalog(&root);
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &place, 1, "Dune");
@@ -181,14 +190,14 @@ fn evolve_preview_reports_repair_required_from_attached_store() {
         "preview",
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let value = support::json(output.stdout);
     assert_eq!(value["kind"], serde_json::json!("evolve_preview"));
     assert_eq!(value["status"], serde_json::json!("blocked"));
-    let pages_id = member_catalog_id(&place, "pages");
+    let pages_id = member_catalog_id(&place, "pages")?;
     let blocking = value["blocking"].as_array().expect("blocking reports");
     assert!(
         blocking.iter().any(|report| {
@@ -197,6 +206,8 @@ fn evolve_preview_reports_repair_required_from_attached_store() {
         }),
         "preview should report repair required for the attached store: {value:#?}"
     );
+
+    Ok(())
 }
 
 #[test]
@@ -217,7 +228,7 @@ fn evolve_preview_reports_when_there_is_nothing_to_discharge() {
         "preview",
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
     assert_eq!(json.status.code(), Some(0), "{json:?}");
     let value = support::json(json.stdout);
@@ -249,7 +260,7 @@ fn evolve_preview_renders_a_store_open_failure_through_the_selected_format() {
         "preview",
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
 
@@ -270,7 +281,8 @@ fn evolve_preview_renders_a_store_open_failure_through_the_selected_format() {
 }
 
 #[test]
-fn evolve_preview_reports_destructive_approval_requirement() {
+fn evolve_preview_reports_destructive_approval_requirement()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project(
         "evolve-preview-retire",
         "module books\n\
@@ -282,7 +294,7 @@ fn evolve_preview_reports_destructive_approval_requirement() {
          \x20   return nextId(^books)\n",
     );
     let accepted = commit_catalog(&root);
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books")?;
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &accepted_place, 1, "Dune");
@@ -316,7 +328,7 @@ fn evolve_preview_reports_destructive_approval_requirement() {
     let text = marrow(&["evolve", "preview", root.to_str().unwrap()]);
     assert_eq!(text.status.code(), Some(1), "{text:?}");
     let stderr = String::from_utf8(text.stderr).expect("stderr");
-    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle")?;
     // A blocked text-format preview renders the typed code on the blocking-obligation
     // stream (stderr); the preview body itself stays on stdout.
     assert!(stderr.contains("evolve.approval_required"), "{stderr}");
@@ -349,7 +361,7 @@ fn evolve_preview_reports_destructive_approval_requirement() {
         "preview",
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
 
     assert_eq!(json.status.code(), Some(1), "{json:?}");
@@ -368,10 +380,13 @@ fn evolve_preview_reports_destructive_approval_requirement() {
         "{report:#?}"
     );
     assert_eq!(report["data"]["populated"], serde_json::json!(1));
+
+    Ok(())
 }
 
 #[test]
-fn evolve_preview_scaffold_emits_parseable_formatted_evolve_blocks() {
+fn evolve_preview_scaffold_emits_parseable_formatted_evolve_blocks()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project(
         "evolve-preview-scaffold",
         "module books\n\
@@ -384,8 +399,8 @@ fn evolve_preview_scaffold_emits_parseable_formatted_evolve_blocks() {
          \x20   return nextId(^books)\n",
     );
     let accepted = commit_catalog(&root);
-    let accepted_place = root_place(&accepted, "books");
-    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    let accepted_place = root_place(&accepted, "books")?;
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle")?;
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &accepted_place, 1, "Dune");
@@ -460,4 +475,6 @@ fn evolve_preview_scaffold_emits_parseable_formatted_evolve_blocks() {
          \x20   return nextId(^books)\n",
         "--scaffold must not edit source"
     );
+
+    Ok(())
 }

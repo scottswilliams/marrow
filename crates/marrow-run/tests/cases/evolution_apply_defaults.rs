@@ -18,7 +18,8 @@ use marrow_store::value::{Scalar, encode_value};
 /// only through the proposal, never the accepted snapshot, so backfilling against a member
 /// the accepted catalog does not yet carry is exactly the soundness path under test.
 #[test]
-fn proposal_required_default_backfills_before_catalog_acceptance() {
+fn proposal_required_default_backfills_before_catalog_acceptance()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-proposal-required-default", |root| {
         write(
             root,
@@ -32,7 +33,7 @@ fn proposal_required_default_backfills_before_catalog_acceptance() {
         );
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -58,7 +59,7 @@ fn proposal_required_default_backfills_before_catalog_acceptance() {
     );
     let program = checked(&root).expect("checked fixture");
     let proposal_epoch = program.catalog.proposal.as_ref().expect("proposal").epoch;
-    let pages_id = proposal_catalog_id(&program, "books::Book::pages");
+    let pages_id = proposal_catalog_id(&program, "books::Book::pages")?;
     assert!(
         accepted_place
             .root_members
@@ -100,7 +101,7 @@ fn proposal_required_default_backfills_before_catalog_acceptance() {
     );
     assert_eq!(outcome.receipt.records_backfilled, 2);
 
-    let store_id = store_id_of(&accepted_place);
+    let store_id = store_id_of(&accepted_place)?;
     assert_eq!(
         read_scalar(&store, &store_id, 1, &pages_id, INT),
         Some(Scalar::Int(0))
@@ -116,6 +117,8 @@ fn proposal_required_default_backfills_before_catalog_acceptance() {
             .map(|commit| commit.catalog_epoch),
         Some(proposal_epoch)
     );
+
+    Ok(())
 }
 
 #[test]
@@ -132,7 +135,8 @@ fn apply_receipt_counts_many_defaulted_records_without_persisting_evidence() {
 }
 
 #[test]
-fn proposal_required_default_rejects_preexisting_target_data() {
+fn proposal_required_default_rejects_preexisting_target_data()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-proposal-required-default-existing-target", |root| {
         write(
             root,
@@ -146,7 +150,7 @@ fn proposal_required_default_rejects_preexisting_target_data() {
         );
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -171,8 +175,8 @@ fn proposal_required_default_rejects_preexisting_target_data() {
          \x20   return nextId(^books)\n",
     );
     let program = checked(&root).expect("checked fixture");
-    let pages_id = proposal_catalog_id(&program, "books::Book::pages");
-    let store_id = store_id_of(&accepted_place);
+    let pages_id = proposal_catalog_id(&program, "books::Book::pages")?;
+    let store_id = store_id_of(&accepted_place)?;
     store
         .write_data_value(
             &store_id,
@@ -196,10 +200,13 @@ fn proposal_required_default_rejects_preexisting_target_data() {
     );
     assert_eq!(read_scalar(&store, &store_id, 2, &pages_id, INT), None);
     assert!(store.read_commit_metadata().expect("read commit").is_none());
+
+    Ok(())
 }
 
 #[test]
-fn proposal_default_backfills_every_store_using_the_resource() {
+fn proposal_default_backfills_every_store_using_the_resource()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-proposal-default-multi-store", |root| {
         write(
             root,
@@ -214,8 +221,8 @@ fn proposal_default_backfills_every_store_using_the_resource() {
         );
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let books_place = root_place(&accepted, "books");
-    let archives_place = root_place(&accepted, "archives");
+    let books_place = root_place(&accepted, "books")?;
+    let archives_place = root_place(&accepted, "archives")?;
     let store = TreeStore::memory();
     let books_seed = Seed {
         store: &store,
@@ -245,7 +252,7 @@ fn proposal_default_backfills_every_store_using_the_resource() {
          \x20   return nextId(^books)\n",
     );
     let program = checked(&root).expect("checked fixture");
-    let pages_id = proposal_catalog_id(&program, "books::Book::pages");
+    let pages_id = proposal_catalog_id(&program, "books::Book::pages")?;
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");
     assert_eq!(w.counts.records_to_backfill, 2);
@@ -253,8 +260,8 @@ fn proposal_default_backfills_every_store_using_the_resource() {
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
     assert_eq!(outcome.receipt.records_backfilled, 2);
 
-    let books_store_id = store_id_of(&books_place);
-    let archives_store_id = store_id_of(&archives_place);
+    let books_store_id = store_id_of(&books_place)?;
+    let archives_store_id = store_id_of(&archives_place)?;
     assert_eq!(
         read_scalar(&store, &books_store_id, 1, &pages_id, INT),
         Some(Scalar::Int(0))
@@ -263,13 +270,16 @@ fn proposal_default_backfills_every_store_using_the_resource() {
         read_scalar(&store, &archives_store_id, 2, &pages_id, INT),
         Some(Scalar::Int(0))
     );
+
+    Ok(())
 }
 
 /// A required-with-default change backfills exactly the records lacking the member
 /// and stamps the proposal epoch. The applied store carries the encoded default at
 /// each old record and a commit stamp at the proposal epoch.
 #[test]
-fn required_with_default_backfills_exactly_k_and_stamps_epoch() {
+fn required_with_default_backfills_exactly_k_and_stamps_epoch()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-required-default", |root| {
         write(
             root,
@@ -286,7 +296,7 @@ fn required_with_default_backfills_exactly_k_and_stamps_epoch() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -313,8 +323,8 @@ fn required_with_default_backfills_exactly_k_and_stamps_epoch() {
     assert_eq!(outcome.receipt.records_backfilled, 2);
     assert_eq!(outcome.receipt.catalog_epoch, target_epoch);
 
-    let store_id = store_id_of(&place);
-    let pages_id = member_catalog_id(&place, "pages");
+    let store_id = store_id_of(&place)?;
+    let pages_id = member_catalog_id(&place, "pages")?;
     assert_eq!(
         read_scalar(&store, &store_id, 1, &pages_id, INT),
         Some(Scalar::Int(0))
@@ -344,4 +354,6 @@ fn required_with_default_backfills_exactly_k_and_stamps_epoch() {
         read_scalar(&store, &store_id, 1, &pages_id, INT),
         Some(Scalar::Int(0))
     );
+
+    Ok(())
 }

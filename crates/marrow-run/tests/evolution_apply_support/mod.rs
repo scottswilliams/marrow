@@ -105,7 +105,7 @@ pub struct Seed<'a> {
 
 impl Seed<'_> {
     pub fn store_id(&self) -> CatalogId {
-        store_id_of(self.place)
+        store_id_of(self.place).expect("store catalog id")
     }
 
     pub fn record(&self, id: i64) {
@@ -114,7 +114,11 @@ impl Seed<'_> {
     }
 
     pub fn member(&self, id: i64, member: &str, value: Scalar) {
-        self.member_by_id(id, &member_catalog_id(self.place, member), value);
+        self.member_by_id(
+            id,
+            &member_catalog_id(self.place, member).expect("member catalog id"),
+            value,
+        );
     }
 
     pub fn member_by_id(&self, id: i64, member_catalog_id: &str, value: Scalar) {
@@ -128,7 +132,9 @@ impl Seed<'_> {
     pub fn singleton_member(&self, member: &str, value: Scalar) {
         let store_id = self.store_id();
         write_identity_node(self.store, &store_id, &[]);
-        let member_id = CatalogId::new(member_catalog_id(self.place, member)).expect("member id");
+        let member_id =
+            CatalogId::new(member_catalog_id(self.place, member).expect("member catalog id"))
+                .expect("member id");
         let path = [DataPathSegment::Member(member_id)];
         self.write_value(&store_id, &[], &path, value);
     }
@@ -199,7 +205,7 @@ pub fn applied_proposal_default_fixture(
         write(root, "src/books.mw", BOOKS_BASELINE);
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books").expect("accepted books place");
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -211,7 +217,7 @@ pub fn applied_proposal_default_fixture(
     }
     write(&root, "src/books.mw", BOOKS_REQUIRED_DEFAULT);
     let program = checked(&root).expect("checked fixture");
-    let pages_id = proposal_catalog_id(&program, "books::Book::pages");
+    let pages_id = proposal_catalog_id(&program, "books::Book::pages").expect("pages proposal id");
     let w = witness(&program, &store);
     let outcome = apply(&w, &program, &store, false, None).expect("apply proposal default");
     (root, program, accepted_place, store, pages_id, outcome)
@@ -256,8 +262,8 @@ pub fn destructive_retire_fixture(
     });
     // Commit the schema that still declares `subtitle`, so the member binds a stable id.
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books");
-    let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
+    let accepted_place = root_place(&accepted, "books").expect("accepted books place");
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle").expect("subtitle catalog id");
 
     let store = TreeStore::memory();
     let seed = Seed {
@@ -276,6 +282,6 @@ pub fn destructive_retire_fixture(
     // names it, so discharge classifies a destructive decision over the two records.
     write(&root, "src/books.mw", BOOKS_RETIRE_SUBTITLE);
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books").expect("checked books place");
     (root, program, place, store, subtitle_id)
 }

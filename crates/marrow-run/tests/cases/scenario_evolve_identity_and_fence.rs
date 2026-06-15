@@ -56,7 +56,8 @@ fn write_source(root: &Path, source: &str) {
 }
 
 #[test]
-fn adding_a_sparse_identity_field_by_evolution_preserves_old_records_and_admits_the_reference() {
+fn adding_a_sparse_identity_field_by_evolution_preserves_old_records_and_admits_the_reference()
+-> Result<(), Box<dyn std::error::Error>> {
     // A populated `Book` store evolves to gain a sparse `Id(^authors)` reference. The
     // evolution backfills nothing (a sparse add carries no data obligation), the old
     // record keeps its `title`, and the new reference field is absent on it — the sparse
@@ -72,8 +73,8 @@ fn adding_a_sparse_identity_field_by_evolution_preserves_old_records_and_admits_
     // Commit the baseline schema and seed a book plus an author under it, exactly as the
     // runtime write path would: a record node keyed by its id, then its member cells.
     let baseline = commit_then_check(&root).expect("committed fixture");
-    let books = root_place(&baseline, "books");
-    let authors = root_place(&baseline, "authors");
+    let books = root_place(&baseline, "books")?;
+    let authors = root_place(&baseline, "authors")?;
     let store = TreeStore::memory();
     let books_seed = Seed {
         store: &store,
@@ -102,16 +103,16 @@ fn adding_a_sparse_identity_field_by_evolution_preserves_old_records_and_admits_
     // The old record is untouched: `title` is still readable under its bound member id.
     // `title` predates the evolution, so its id is bound in the accepted place; `authorId`
     // was minted in this proposal, so its store id comes from the proposal apply consumed.
-    let books_evolved = root_place(&evolved, "books");
-    let store_id = store_id_of(&books_evolved);
-    let title_id = member_catalog_id(&books_evolved, "title");
+    let books_evolved = root_place(&evolved, "books")?;
+    let store_id = store_id_of(&books_evolved)?;
+    let title_id = member_catalog_id(&books_evolved, "title")?;
     assert_eq!(
         read_scalar(&store, &store_id, 1, &title_id, ScalarType::Str),
         Some(Scalar::Str("Mort".into())),
         "the pre-evolution record keeps its title across the evolution",
     );
     // The new reference field reads as absent (the sparse contract), not a zero identity.
-    let author_ref_id = proposal_catalog_id(&evolved, "lib::Book::authorId");
+    let author_ref_id = proposal_catalog_id(&evolved, "lib::Book::authorId")?;
     assert_eq!(
         read_scalar(&store, &store_id, 1, &author_ref_id, ScalarType::Str),
         None,
@@ -145,10 +146,13 @@ fn adding_a_sparse_identity_field_by_evolution_preserves_old_records_and_admits_
         Some(reference),
         "the reference round-trips as the referenced identity's canonical key encoding",
     );
+
+    Ok(())
 }
 
 #[test]
-fn an_evolve_apply_advances_the_epoch_and_fences_the_pre_evolution_program_before_any_write() {
+fn an_evolve_apply_advances_the_epoch_and_fences_the_pre_evolution_program_before_any_write()
+-> Result<(), Box<dyn std::error::Error>> {
     // A real write-then-evolve sequence: a program is committed and its store seeded,
     // then a sparse-field evolution applies and advances the store epoch. The original
     // program — still pinned to its pre-evolution accepted epoch, a genuine stale
@@ -162,7 +166,7 @@ fn an_evolve_apply_advances_the_epoch_and_fences_the_pre_evolution_program_befor
         .catalog
         .accepted_epoch
         .expect("baseline accepted epoch");
-    let books = root_place(&baseline, "books");
+    let books = root_place(&baseline, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -210,4 +214,6 @@ fn an_evolve_apply_advances_the_epoch_and_fences_the_pre_evolution_program_befor
         &store,
     )
     .expect("the evolved program is not fenced by the store it just advanced");
+
+    Ok(())
 }

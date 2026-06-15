@@ -60,7 +60,7 @@ fn check_on_an_uncommitted_project_writes_no_catalog_and_no_store() {
         write(root, "marrow.json", native_config());
         write(root, "src/app.mw", COUNTER_SOURCE);
     });
-    let dir = project.to_str().unwrap();
+    let dir = project.to_str().expect("project path utf-8");
 
     assert!(!catalog_path(&project).exists(), "no catalog before check");
     assert!(!store_path(&project).exists(), "no store before check");
@@ -85,7 +85,7 @@ fn check_does_not_open_a_hostile_native_store_file() {
         write(root, "src/app.mw", COUNTER_SOURCE);
         write(root, ".data/marrow.redb", "not a redb store");
     });
-    let dir = project.to_str().unwrap();
+    let dir = project.to_str().expect("project path utf-8");
     let store_before = fs::read(store_path(&project)).expect("read hostile store");
 
     let check = marrow(&["check", dir]);
@@ -111,7 +111,7 @@ fn run_freezes_the_catalog_into_the_store_and_renders_the_file() {
         write(root, "marrow.json", native_config());
         write(root, "src/app.mw", COUNTER_SOURCE);
     });
-    let dir = project.to_str().unwrap();
+    let dir = project.to_str().expect("project path utf-8");
 
     let run = marrow(&["run", "--entry", "app::seed", dir]);
     assert_eq!(run.status.code(), Some(0), "{run:?}");
@@ -142,7 +142,7 @@ fn hostile_config_rejection_creates_no_native_store() {
         );
         write(root, "src/app.mw", COUNTER_SOURCE);
     });
-    let dir = project.to_str().unwrap();
+    let dir = project.to_str().expect("project path utf-8");
 
     let run = marrow(&["run", dir]);
     assert_eq!(run.status.code(), Some(1), "{run:?}");
@@ -168,7 +168,7 @@ fn check_rejects_catalog_file_conflict_markers_without_creating_a_store() {
             "<<<<<<< HEAD\n{}\n=======\n{}\n>>>>>>> branch\n",
         );
     });
-    let dir = project.to_str().unwrap();
+    let dir = project.to_str().expect("project path utf-8");
 
     let check = marrow(&["check", dir]);
     assert_eq!(
@@ -195,7 +195,7 @@ fn check_rejects_a_torn_catalog_file_without_opening_the_store_snapshot() {
         write(root, "marrow.json", native_config());
         write(root, "src/app.mw", COUNTER_SOURCE);
     });
-    let dir = project.to_str().unwrap();
+    let dir = project.to_str().expect("project path utf-8");
     assert_eq!(
         marrow(&["run", "--entry", "app::seed", dir]).status.code(),
         Some(0)
@@ -228,7 +228,7 @@ fn check_rejects_catalog_file_conflict_markers_even_when_a_store_snapshot_exists
         write(root, "marrow.json", native_config());
         write(root, "src/app.mw", COUNTER_SOURCE);
     });
-    let dir = project.to_str().unwrap();
+    let dir = project.to_str().expect("project path utf-8");
     assert_eq!(
         marrow(&["run", "--entry", "app::seed", dir]).status.code(),
         Some(0)
@@ -260,7 +260,7 @@ fn check_on_a_committed_project_does_not_repair_a_missing_catalog_file() {
         write(root, "marrow.json", native_config());
         write(root, "src/app.mw", COUNTER_SOURCE);
     });
-    let dir = project.to_str().unwrap();
+    let dir = project.to_str().expect("project path utf-8");
     assert_eq!(
         marrow(&["run", "--entry", "app::seed", dir]).status.code(),
         Some(0)
@@ -297,8 +297,8 @@ fn check_preserves_a_valid_catalog_file_without_store_repair() {
         write(root, "src/app.mw", COUNTER_SOURCE);
     });
 
-    let dir_a = project_a.to_str().unwrap();
-    let dir_b = project_b.to_str().unwrap();
+    let dir_a = project_a.to_str().expect("project path utf-8");
+    let dir_b = project_b.to_str().expect("project path utf-8");
     assert_eq!(
         marrow(&["run", "--entry", "app::seed", dir_a])
             .status
@@ -348,7 +348,7 @@ fn check_preserves_a_valid_catalog_file_ahead_of_the_local_store() {
         write(root, "marrow.json", native_config());
         write(root, "src/app.mw", COUNTER_SOURCE);
     });
-    let dir = project.to_str().unwrap();
+    let dir = project.to_str().expect("project path utf-8");
     assert_eq!(
         marrow(&["run", "--entry", "app::seed", dir]).status.code(),
         Some(0)
@@ -398,13 +398,14 @@ fn check_preserves_a_valid_catalog_file_ahead_of_the_local_store() {
 }
 
 #[test]
-fn evolve_apply_advances_the_committed_catalog_and_store() {
+fn evolve_apply_advances_the_committed_catalog_and_store() -> Result<(), Box<dyn std::error::Error>>
+{
     // The contrast for the committed case: `evolve apply` is the durable write path that
     // a check must not be. It advances the accepted catalog epoch and stamps the store,
     // so the two surfaces are not interchangeable.
     let root = native_books_project("check-ro-evolve-apply", REQUIRED_BASELINE_SOURCE);
     let accepted = commit_catalog(&root);
-    let place = root_place(&accepted, "books");
+    let place = root_place(&accepted, "books")?;
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &place, 1, "Dune");
@@ -442,4 +443,6 @@ fn evolve_apply_advances_the_committed_catalog_and_store() {
         Some(baseline_epoch + 1),
         "apply stamped the store with the new epoch"
     );
+
+    Ok(())
 }

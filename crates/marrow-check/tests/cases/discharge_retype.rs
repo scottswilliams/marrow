@@ -20,11 +20,14 @@ fn retype_preview(
     accepted_leaf: &str,
     new_type: &str,
     old_value: Scalar,
-) -> (
-    String,
-    EvolutionWitness,
-    Vec<marrow_check::evolution::RepairDiagnostic>,
-) {
+) -> Result<
+    (
+        String,
+        EvolutionWitness,
+        Vec<marrow_check::evolution::RepairDiagnostic>,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let value_id = hex_id(3);
     let root = temp_project(name, |root| {
         write(
@@ -49,21 +52,21 @@ fn retype_preview(
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member_by_id(1, &value_id, old_value);
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    let value_id = member_catalog_id(&place, "value");
-    (value_id, result, diagnostics)
+    let value_id = member_catalog_id(&place, "value")?;
+    Ok((value_id, result, diagnostics))
 }
 
 /// A rename declared with an `evolve rename` intent moves catalog identity only. No
 /// record data moves and the verdict is catalog-only.
 #[test]
-fn rename_with_intent_is_catalog_only() {
+fn rename_with_intent_is_catalog_only() -> Result<(), Box<dyn std::error::Error>> {
     let title_id = hex_id(3);
     let root = temp_project("discharge-rename", |root| {
         write(
@@ -88,7 +91,7 @@ fn rename_with_intent_is_catalog_only() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     // The renamed member keeps its accepted stable id; seed data under it.
@@ -97,7 +100,7 @@ fn rename_with_intent_is_catalog_only() {
 
     let result = witness(&program, &store);
 
-    let heading_id = member_catalog_id(&place, "heading");
+    let heading_id = member_catalog_id(&place, "heading")?;
     assert_eq!(heading_id, title_id, "rename preserves the stable id");
     // The rename moves catalog identity only: the cells stay under the same stable id,
     // so the obligation is catalog-only, not a re-proof of the carried-over data.
@@ -107,6 +110,8 @@ fn rename_with_intent_is_catalog_only() {
         result.verdicts
     );
     assert_eq!(result.counts.records_to_backfill, 0);
+
+    Ok(())
 }
 
 /// A member that is BOTH renamed and retyped is transform-required, not a catalog-only
@@ -114,7 +119,7 @@ fn rename_with_intent_is_catalog_only() {
 /// transform is owed. Here `title: string` data (`Dune`) is renamed onto `count: int`.
 /// The type-change steer fires ahead of the rename classification.
 #[test]
-fn rename_and_retype_requires_transform() {
+fn rename_and_retype_requires_transform() -> Result<(), Box<dyn std::error::Error>> {
     let title_id = hex_id(3);
     let root = temp_project("discharge-rename-retype", |root| {
         write(
@@ -139,7 +144,7 @@ fn rename_and_retype_requires_transform() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     // The renamed member keeps the old stable id; seed a string under it.
@@ -148,7 +153,7 @@ fn rename_and_retype_requires_transform() {
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
-    let count_id = member_catalog_id(&place, "count");
+    let count_id = member_catalog_id(&place, "count")?;
     assert_eq!(count_id, title_id, "rename preserves the stable id");
     assert!(
         matches!(
@@ -167,43 +172,53 @@ fn rename_and_retype_requires_transform() {
             .any(|diagnostic| diagnostic.catalog_id.as_str() == count_id),
         "{diagnostics:#?}"
     );
+
+    Ok(())
 }
 
 /// An `int` member retyped to `bool` over a record stored as `1`. The new `bool` decoder
 /// would read those bytes as `true`, so a presence-only proof would silently coerce the
 /// value; the retype is steered to a transform instead.
 #[test]
-fn retype_int_to_bool_with_overlapping_byte_is_transform_required() {
+fn retype_int_to_bool_with_overlapping_byte_is_transform_required()
+-> Result<(), Box<dyn std::error::Error>> {
     let (value_id, result, diagnostics) =
-        retype_preview("discharge-retype-int-bool", "int", "bool", Scalar::Int(1));
+        retype_preview("discharge-retype-int-bool", "int", "bool", Scalar::Int(1))?;
     assert_retype_steered(&value_id, &result, &diagnostics);
+
+    Ok(())
 }
 
 /// A `string` member retyped to `bytes`. Every stored string is also valid bytes, so the
 /// new decoder accepts the old data; the reinterpret is steered to a transform.
 #[test]
-fn retype_string_to_bytes_is_transform_required() {
+fn retype_string_to_bytes_is_transform_required() -> Result<(), Box<dyn std::error::Error>> {
     let (value_id, result, diagnostics) = retype_preview(
         "discharge-retype-str-bytes",
         "string",
         "bytes",
         Scalar::Str("hi".into()),
-    );
+    )?;
     assert_retype_steered(&value_id, &result, &diagnostics);
+
+    Ok(())
 }
 
 /// An `int` member retyped to `decimal` over a record stored as `5`. The canonical
 /// decimal text overlaps the integer text, so the new decoder reads the old bytes; the
 /// retype is steered to a transform rather than blessed.
 #[test]
-fn retype_int_to_decimal_with_overlapping_text_is_transform_required() {
+fn retype_int_to_decimal_with_overlapping_text_is_transform_required()
+-> Result<(), Box<dyn std::error::Error>> {
     let (value_id, result, diagnostics) = retype_preview(
         "discharge-retype-int-decimal",
         "int",
         "decimal",
         Scalar::Int(5),
-    );
+    )?;
     assert_retype_steered(&value_id, &result, &diagnostics);
+
+    Ok(())
 }
 
 /// An OPTIONAL member retyped over populated data is steered to a transform too: the
@@ -211,7 +226,8 @@ fn retype_int_to_decimal_with_overlapping_text_is_transform_required() {
 /// retyped to `bool` would silently read `true`, so it fails closed with a transform
 /// steer rather than the no-op an optional add would otherwise be.
 #[test]
-fn retype_optional_member_with_data_is_transform_required() {
+fn retype_optional_member_with_data_is_transform_required() -> Result<(), Box<dyn std::error::Error>>
+{
     let value_id = hex_id(3);
     let root = temp_project("discharge-retype-optional", |root| {
         write(
@@ -234,7 +250,7 @@ fn retype_optional_member_with_data_is_transform_required() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -242,14 +258,16 @@ fn retype_optional_member_with_data_is_transform_required() {
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
-    let value_id = member_catalog_id(&place, "value");
+    let value_id = member_catalog_id(&place, "value")?;
     assert_retype_steered(&value_id, &result, &diagnostics);
+
+    Ok(())
 }
 
 /// An optional member retyped with NO stored data is harmless: there are no bytes to
 /// reinterpret, so it stays a no-op rather than forcing a transform.
 #[test]
-fn retype_optional_member_without_data_is_no_op() {
+fn retype_optional_member_without_data_is_no_op() -> Result<(), Box<dyn std::error::Error>> {
     let value_id = hex_id(3);
     let root = temp_project("discharge-retype-optional-empty", |root| {
         write(
@@ -276,7 +294,7 @@ fn retype_optional_member_without_data_is_no_op() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     // A record exists and carries the unchanged required `title`, but no `value` cell —
@@ -286,7 +304,7 @@ fn retype_optional_member_without_data_is_no_op() {
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
-    let value_id = member_catalog_id(&place, "value");
+    let value_id = member_catalog_id(&place, "value")?;
     assert!(
         matches!(verdict_for(&result, &value_id), Verdict::NoOp),
         "{:#?}",
@@ -294,13 +312,15 @@ fn retype_optional_member_without_data_is_no_op() {
     );
     assert!(result.is_activatable(), "{result:#?}");
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+
+    Ok(())
 }
 
 /// A member whose declared type is unchanged still proves cleanly: a populated required
 /// member whose accepted leaf matches the source leaf is a `DataProof`, with no false
 /// type-change positive.
 #[test]
-fn unchanged_type_still_proves_data() {
+fn unchanged_type_still_proves_data() -> Result<(), Box<dyn std::error::Error>> {
     let value_id = hex_id(3);
     let root = temp_project("discharge-unchanged-type", |root| {
         write(
@@ -323,7 +343,7 @@ fn unchanged_type_still_proves_data() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -331,7 +351,7 @@ fn unchanged_type_still_proves_data() {
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
-    let value_id = member_catalog_id(&place, "value");
+    let value_id = member_catalog_id(&place, "value")?;
     assert!(
         matches!(verdict_for(&result, &value_id), Verdict::DataProof),
         "{:#?}",
@@ -339,13 +359,15 @@ fn unchanged_type_still_proves_data() {
     );
     assert!(result.is_activatable(), "{result:#?}");
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+
+    Ok(())
 }
 
 /// A brand-new member — one the accepted catalog never recorded — is unaffected by the
 /// type-change check: it carries no accepted leaf, so its optional sparse addition stays
 /// a no-op rather than reading as a retype.
 #[test]
-fn brand_new_member_is_not_a_retype() {
+fn brand_new_member_is_not_a_retype() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("discharge-new-member", |root| {
         write(
             root,
@@ -361,7 +383,7 @@ fn brand_new_member_is_not_a_retype() {
     });
     // Commit the baseline so `title` is accepted, then a fresh check adds `rank`.
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -369,7 +391,7 @@ fn brand_new_member_is_not_a_retype() {
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
-    let rank_id = member_catalog_id(&place, "rank");
+    let rank_id = member_catalog_id(&place, "rank")?;
     assert!(
         matches!(verdict_for(&result, &rank_id), Verdict::NoOp),
         "{:#?}",
@@ -377,13 +399,15 @@ fn brand_new_member_is_not_a_retype() {
     );
     assert!(result.is_activatable(), "{result:#?}");
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+
+    Ok(())
 }
 
 /// A populated scalar member retyped to an enum is steered to a transform: the leaf
 /// kind changed (`int` -> `Status`), so the stored integer bytes must not be reread as an
 /// enum member. Retype detection is total over leaf kind, not scalar-only.
 #[test]
-fn retype_scalar_to_enum_is_transform_required() {
+fn retype_scalar_to_enum_is_transform_required() -> Result<(), Box<dyn std::error::Error>> {
     let value_id = hex_id(3);
     let root = temp_project("discharge-retype-scalar-enum", |root| {
         write(
@@ -409,7 +433,7 @@ fn retype_scalar_to_enum_is_transform_required() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     // Seed the integer bytes the old `int` schema wrote under the preserved member id.
@@ -418,15 +442,17 @@ fn retype_scalar_to_enum_is_transform_required() {
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
-    let value_id = member_catalog_id(&place, "value");
+    let value_id = member_catalog_id(&place, "value")?;
     assert_retype_steered(&value_id, &result, &diagnostics);
+
+    Ok(())
 }
 
 /// A populated scalar member retyped to a store identity is steered to a transform: the
 /// leaf kind changed (`int` -> `Id(^books)`), so the stored integer must not be reread as
 /// a reference payload.
 #[test]
-fn retype_scalar_to_identity_is_transform_required() {
+fn retype_scalar_to_identity_is_transform_required() -> Result<(), Box<dyn std::error::Error>> {
     let value_id = hex_id(3);
     let root = temp_project("discharge-retype-scalar-identity", |root| {
         write(
@@ -449,7 +475,7 @@ fn retype_scalar_to_identity_is_transform_required() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -457,15 +483,17 @@ fn retype_scalar_to_identity_is_transform_required() {
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
-    let value_id = member_catalog_id(&place, "value");
+    let value_id = member_catalog_id(&place, "value")?;
     assert_retype_steered(&value_id, &result, &diagnostics);
+
+    Ok(())
 }
 
 /// A populated enum member retyped to a store identity is steered to a transform: a change
 /// between two non-scalar leaf kinds (`Status` -> `Id(^books)`) is a retype like any other,
 /// so the stored enum-member payload must not be reread as a reference.
 #[test]
-fn retype_enum_to_identity_is_transform_required() {
+fn retype_enum_to_identity_is_transform_required() -> Result<(), Box<dyn std::error::Error>> {
     let value_id = hex_id(3);
     let enum_stable = hex_id(7);
     let root = temp_project("discharge-retype-enum-identity", |root| {
@@ -512,7 +540,7 @@ fn retype_enum_to_identity_is_transform_required() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     // Seed an identity payload — valid bytes for the NEW type — so the case turns on the
@@ -523,15 +551,18 @@ fn retype_enum_to_identity_is_transform_required() {
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
-    let value_id = member_catalog_id(&place, "value");
+    let value_id = member_catalog_id(&place, "value")?;
     assert_retype_steered(&value_id, &result, &diagnostics);
+
+    Ok(())
 }
 
 /// A populated leaf member with NO recorded accepted leaf type fails closed: the prior
 /// type is unknown, so the stored bytes cannot be proven safe to reread and the obligation
 /// is steered to a transform rather than silently coerced through a data proof.
 #[test]
-fn populated_member_with_unknown_accepted_leaf_fails_closed() {
+fn populated_member_with_unknown_accepted_leaf_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     let value_id = hex_id(3);
     let root = temp_project("discharge-unknown-accepted-leaf", |root| {
         write(
@@ -561,7 +592,7 @@ fn populated_member_with_unknown_accepted_leaf_fails_closed() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -569,8 +600,10 @@ fn populated_member_with_unknown_accepted_leaf_fails_closed() {
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
-    let value_id = member_catalog_id(&place, "value");
+    let value_id = member_catalog_id(&place, "value")?;
     assert_retype_steered(&value_id, &result, &diagnostics);
+
+    Ok(())
 }
 
 /// A leaf retyped from a tokenizable scalar to a non-tokenizable `sequence` over populated
@@ -579,7 +612,8 @@ fn populated_member_with_unknown_accepted_leaf_fails_closed() {
 /// be total over the new side, so a leaf whose new type yields no token still counts as a
 /// type change rather than dropping out of the leaf map undetected.
 #[test]
-fn retype_scalar_to_sequence_over_populated_data_fails_closed() {
+fn retype_scalar_to_sequence_over_populated_data_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     let value_id = hex_id(3);
     let root = temp_project("discharge-retype-scalar-sequence", |root| {
         // `value` was `string`; source now types it `sequence[string]`, a non-tokenizable
@@ -604,13 +638,13 @@ fn retype_scalar_to_sequence_over_populated_data_fails_closed() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member_by_id(1, &value_id, Scalar::Str("draft".into()));
 
-    let value_id = member_catalog_id(&place, "value");
+    let value_id = member_catalog_id(&place, "value")?;
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
     assert!(
@@ -634,4 +668,6 @@ fn retype_scalar_to_sequence_over_populated_data_fails_closed() {
             .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == value_id),
         "a fail-closed diagnostic must name the retyped leaf, got {diagnostics:#?}"
     );
+
+    Ok(())
 }

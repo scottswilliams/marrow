@@ -162,7 +162,8 @@ fn a_required_add_against_an_empty_store_auto_applies_on_run() {
 }
 
 #[test]
-fn the_same_required_add_against_a_populated_store_fences_and_evolve_apply_backfills() {
+fn the_same_required_add_against_a_populated_store_fences_and_evolve_apply_backfills()
+-> Result<(), Box<dyn std::error::Error>> {
     // The identical source edit over a populated `^books` has records to backfill, so the
     // run must fence with the actionable schema-drift diagnostic. The explicit
     // `evolve apply` then discharges the backfill and the constant default lands on the
@@ -211,13 +212,15 @@ fn the_same_required_add_against_a_populated_store_fences_and_evolve_apply_backf
         marrow_check::check_project_with_catalog(root.path(), &config, accepted.as_ref())
             .expect("re-check after apply");
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
     assert_eq!(
         read_scalar(&store, &place, 1, "pages", ScalarType::Int),
         Some(Scalar::Int(0)),
         "evolve apply backfilled the constant default onto the populated record",
     );
+
+    Ok(())
 }
 
 #[test]

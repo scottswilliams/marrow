@@ -17,7 +17,8 @@ use support_discharge::*;
 /// migrate a keyed-layer key shape, so the layer member fails closed rather than activating
 /// over entries the new key shape cannot reach.
 #[test]
-fn keyed_layer_key_type_change_over_populated_entries_fails_closed() {
+fn keyed_layer_key_type_change_over_populated_entries_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     let versions_id = hex_id(3);
     let body_id = hex_id(4);
     let root = temp_project("discharge-keyed-layer-keytype", |root| {
@@ -45,7 +46,7 @@ fn keyed_layer_key_type_change_over_populated_entries_fails_closed() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "policies");
+    let place = root_place(&program, "policies")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     // One existing keyed entry under the old `int` key shape.
@@ -58,7 +59,7 @@ fn keyed_layer_key_type_change_over_populated_entries_fails_closed() {
         Scalar::Str("draft".into()),
     );
 
-    let layer_id = group_member_catalog_id(&place, "versions");
+    let layer_id = group_member_catalog_id(&place, "versions")?;
     assert_eq!(
         layer_id, versions_id,
         "a re-keyed keyed layer keeps its accepted stable id"
@@ -86,6 +87,8 @@ fn keyed_layer_key_type_change_over_populated_entries_fails_closed() {
             .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == layer_id),
         "a fail-closed diagnostic must name the re-keyed layer, got {diagnostics:#?}"
     );
+
+    Ok(())
 }
 
 /// A plain unkeyed GROUP reshaped into a KEYED LAYER over populated data fails closed. The
@@ -95,7 +98,8 @@ fn keyed_layer_key_type_change_over_populated_entries_fails_closed() {
 /// reads none of them. The reshape is a structural divergence the snapshot cannot satisfy, so
 /// the layer member fails closed.
 #[test]
-fn plain_group_reshaped_to_keyed_layer_over_populated_data_fails_closed() {
+fn plain_group_reshaped_to_keyed_layer_over_populated_data_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     let versions_id = hex_id(3);
     let body_id = hex_id(4);
     let root = temp_project("discharge-group-to-keyed", |root| {
@@ -123,14 +127,14 @@ fn plain_group_reshaped_to_keyed_layer_over_populated_data_fails_closed() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "policies");
+    let place = root_place(&program, "policies")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     // The old record carries `versions.body` as an unkeyed-group sub-member cell.
     seed.record(1);
     seed.nested_member(1, "versions", "body", Scalar::Str("draft".into()));
 
-    let layer_id = group_member_catalog_id(&place, "versions");
+    let layer_id = group_member_catalog_id(&place, "versions")?;
     let (result, diagnostics) = preview(&program, &store).expect("preview");
     assert_fails_closed(
         &result,
@@ -138,6 +142,8 @@ fn plain_group_reshaped_to_keyed_layer_over_populated_data_fails_closed() {
         &layer_id,
         RepairReason::KeyedLayerKeyShapeChange,
     );
+
+    Ok(())
 }
 
 /// A KEYED LAYER reshaped into a plain unkeyed GROUP over populated data fails closed — the
@@ -145,7 +151,8 @@ fn plain_group_reshaped_to_keyed_layer_over_populated_data_fails_closed() {
 /// drops the key, making it a plain group. Every existing entry sits under an entry key the
 /// plain group shape never reads, so the reshape is a structural divergence that fails closed.
 #[test]
-fn keyed_layer_reshaped_to_plain_group_over_populated_data_fails_closed() {
+fn keyed_layer_reshaped_to_plain_group_over_populated_data_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     let versions_id = hex_id(3);
     let body_id = hex_id(4);
     let root = temp_project("discharge-keyed-to-group", |root| {
@@ -173,7 +180,7 @@ fn keyed_layer_reshaped_to_plain_group_over_populated_data_fails_closed() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "policies");
+    let place = root_place(&program, "policies")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     // One existing keyed entry under the old `int` key shape.
@@ -186,7 +193,7 @@ fn keyed_layer_reshaped_to_plain_group_over_populated_data_fails_closed() {
         Scalar::Str("draft".into()),
     );
 
-    let group_id = group_member_catalog_id(&place, "versions");
+    let group_id = group_member_catalog_id(&place, "versions")?;
     let (result, diagnostics) = preview(&program, &store).expect("preview");
     assert_fails_closed(
         &result,
@@ -194,6 +201,8 @@ fn keyed_layer_reshaped_to_plain_group_over_populated_data_fails_closed() {
         &group_id,
         RepairReason::KeyedLayerKeyShapeChange,
     );
+
+    Ok(())
 }
 
 /// The default-deny backstop catches a structural transition no targeted classifier addresses.
@@ -203,7 +212,7 @@ fn keyed_layer_reshaped_to_plain_group_over_populated_data_fails_closed() {
 /// leaf-token classifier fires (both shapes are non-leaf groups), so the structural signature
 /// backstop is what fails it closed.
 #[test]
-fn keyed_layer_arity_change_fails_closed_via_backstop() {
+fn keyed_layer_arity_change_fails_closed_via_backstop() -> Result<(), Box<dyn std::error::Error>> {
     let versions_id = hex_id(3);
     let body_id = hex_id(4);
     let root = temp_project("discharge-keyed-arity", |root| {
@@ -231,7 +240,7 @@ fn keyed_layer_arity_change_fails_closed_via_backstop() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "policies");
+    let place = root_place(&program, "policies")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     // One existing entry under the old one-column key shape.
@@ -244,7 +253,7 @@ fn keyed_layer_arity_change_fails_closed_via_backstop() {
         Scalar::Str("draft".into()),
     );
 
-    let layer_id = group_member_catalog_id(&place, "versions");
+    let layer_id = group_member_catalog_id(&place, "versions")?;
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
     assert!(
@@ -266,4 +275,6 @@ fn keyed_layer_arity_change_fails_closed_via_backstop() {
             .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == layer_id),
         "a fail-closed diagnostic must name the structurally-diverged member, got {diagnostics:#?}"
     );
+
+    Ok(())
 }

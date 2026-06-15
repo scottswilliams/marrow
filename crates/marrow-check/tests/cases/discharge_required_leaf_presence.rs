@@ -16,7 +16,7 @@ use support_discharge::*;
 /// the nested leaf's catalog id must appear among the affected ids so apply
 /// re-verifies it.
 #[test]
-fn required_nested_group_leaf_missing_fails_closed() {
+fn required_nested_group_leaf_missing_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("discharge-nested-required", |root| {
         write(
             root,
@@ -32,7 +32,7 @@ fn required_nested_group_leaf_missing_fails_closed() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "people");
+    let place = root_place(&program, "people")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     // The old record carries `name.first` but predates required `name.last`.
@@ -40,7 +40,7 @@ fn required_nested_group_leaf_missing_fails_closed() {
     seed.nested_member(1, "name", "first", Scalar::Str("Ada".into()));
 
     let result = witness(&program, &store);
-    let last_id = nested_member_catalog_id(&place, "name", "last");
+    let last_id = nested_member_catalog_id(&place, "name", "last")?;
 
     assert!(
         matches!(
@@ -58,6 +58,8 @@ fn required_nested_group_leaf_missing_fails_closed() {
         "{:#?}",
         result.changed_root_catalog_ids
     );
+
+    Ok(())
 }
 
 /// A required leaf inside a keyed layer is required for each entry that exists. An
@@ -65,7 +67,7 @@ fn required_nested_group_leaf_missing_fails_closed() {
 /// verdict, never an empty pass: the witness alone must be non-activatable, and the
 /// keyed leaf's catalog id must appear among the affected ids so apply re-verifies it.
 #[test]
-fn required_keyed_layer_leaf_missing_fails_closed() {
+fn required_keyed_layer_leaf_missing_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("discharge-keyed-required", |root| {
         write(
             root,
@@ -82,7 +84,7 @@ fn required_keyed_layer_leaf_missing_fails_closed() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "policies");
+    let place = root_place(&program, "policies")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     // The record exists with one keyed entry that predates required `body`: a sibling
@@ -96,7 +98,7 @@ fn required_keyed_layer_leaf_missing_fails_closed() {
         Scalar::Str("draft".into()),
     );
 
-    let body_id = nested_member_catalog_id(&place, "versions", "body");
+    let body_id = nested_member_catalog_id(&place, "versions", "body")?;
     let (result, _diagnostics) = preview(&program, &store).expect("preview");
 
     assert!(
@@ -117,10 +119,13 @@ fn required_keyed_layer_leaf_missing_fails_closed() {
         "{:#?}",
         result.changed_root_catalog_ids
     );
+
+    Ok(())
 }
 
 #[test]
-fn malformed_temporal_keyed_layer_entry_faults_discharge() {
+fn malformed_temporal_keyed_layer_entry_faults_discharge() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = temp_project("discharge-keyed-malformed-date", |root| {
         write(
             root,
@@ -135,7 +140,7 @@ fn malformed_temporal_keyed_layer_entry_faults_discharge() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "policies");
+    let place = root_place(&program, "policies")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -153,13 +158,15 @@ fn malformed_temporal_keyed_layer_entry_faults_discharge() {
         matches!(err, StoreError::Corruption { ref message } if message.contains("date day")),
         "{err:?}"
     );
+
+    Ok(())
 }
 
 /// A keyed layer whose every existing entry already carries its required leaf
 /// discharges to a proof, not a block: the per-entry scan must not fail open in
 /// either direction.
 #[test]
-fn keyed_layer_leaf_present_in_every_entry_proves() {
+fn keyed_layer_leaf_present_in_every_entry_proves() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("discharge-keyed-present", |root| {
         write(
             root,
@@ -175,7 +182,7 @@ fn keyed_layer_leaf_present_in_every_entry_proves() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "policies");
+    let place = root_place(&program, "policies")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -202,7 +209,7 @@ fn keyed_layer_leaf_present_in_every_entry_proves() {
         Scalar::Str("only".into()),
     );
 
-    let body_id = nested_member_catalog_id(&place, "versions", "body");
+    let body_id = nested_member_catalog_id(&place, "versions", "body")?;
     let result = witness(&program, &store);
 
     assert!(result.is_activatable(), "{:#?}", result.verdicts);
@@ -211,6 +218,8 @@ fn keyed_layer_leaf_present_in_every_entry_proves() {
         "{:#?}",
         result.verdicts
     );
+
+    Ok(())
 }
 
 /// A brand-new required scalar member added over a populated store with no `evolve default`
@@ -218,7 +227,8 @@ fn keyed_layer_leaf_present_in_every_entry_proves() {
 /// backfill them with, so the add-required-field obligation is unmet. The new member has no
 /// accepted catalog id yet, so the presence scan must be proposal-aware to reach it at all.
 #[test]
-fn brand_new_required_member_over_populated_store_fails_closed() {
+fn brand_new_required_member_over_populated_store_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     let title_stable = hex_id(3);
     let root = temp_project("discharge-new-required-no-default", |root| {
         // `pages` is brand-new in source and not in the accepted catalog.
@@ -243,7 +253,7 @@ fn brand_new_required_member_over_populated_store_fails_closed() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     // Old records carry `title` but predate the brand-new required `pages`.
@@ -252,7 +262,7 @@ fn brand_new_required_member_over_populated_store_fails_closed() {
     seed.record(2);
     seed.member_by_id(2, &title_stable, Scalar::Str("Hyperion".into()));
 
-    let pages_id = new_member_proposal_id(&program, "books::Book::pages");
+    let pages_id = new_member_proposal_id(&program, "books::Book::pages")?;
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
     assert!(
@@ -276,6 +286,8 @@ fn brand_new_required_member_over_populated_store_fails_closed() {
             .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == pages_id),
         "a fail-closed diagnostic must name the new required member, got {diagnostics:#?}"
     );
+
+    Ok(())
 }
 
 /// A brand-new required member added WITH an `evolve default` over a populated store is the
@@ -283,7 +295,7 @@ fn brand_new_required_member_over_populated_store_fails_closed() {
 /// This is the add-required-field-with-default path the proposal-aware scan must still reach
 /// for a not-yet-accepted member, not only for an already-accepted one.
 #[test]
-fn brand_new_required_member_with_default_backfills() {
+fn brand_new_required_member_with_default_backfills() -> Result<(), Box<dyn std::error::Error>> {
     let title_stable = hex_id(3);
     let root = temp_project("discharge-new-required-default", |root| {
         write(
@@ -309,13 +321,13 @@ fn brand_new_required_member_with_default_backfills() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
     seed.member_by_id(1, &title_stable, Scalar::Str("Dune".into()));
 
-    let pages_id = new_member_proposal_id(&program, "books::Book::pages");
+    let pages_id = new_member_proposal_id(&program, "books::Book::pages")?;
     let result = witness(&program, &store);
 
     match verdict_for(&result, &pages_id) {
@@ -323,12 +335,14 @@ fn brand_new_required_member_with_default_backfills() {
             assert_eq!(value.scalar_type, marrow_store::value::ScalarType::Int);
             assert_eq!(
                 value.encoded,
-                marrow_store::value::encode_value(&Scalar::Int(0)).unwrap()
+                marrow_store::value::encode_value(&Scalar::Int(0))?
             );
         }
         other => panic!("expected default for the brand-new required member, got {other:#?}"),
     }
     assert!(result.is_activatable(), "{result:#?}");
+
+    Ok(())
 }
 
 /// A brand-new required member added over an EMPTY store is activatable with no default:
@@ -376,7 +390,8 @@ fn brand_new_required_member_over_empty_store_activates() {
 /// leaf, so requiredness is unmet per existing entry. The new leaf has no bound facts id,
 /// only a proposal-minted one, so the keyed scan must thread the resolved id to reach it.
 #[test]
-fn brand_new_required_keyed_leaf_over_populated_layer_fails_closed() {
+fn brand_new_required_keyed_leaf_over_populated_layer_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("discharge-new-keyed-required-no-default", |root| {
         // `body` is brand-new required inside the existing `versions` keyed layer; the
         // accepted catalog carries the layer and a sibling `note`, but not `body`.
@@ -409,7 +424,7 @@ fn brand_new_required_keyed_leaf_over_populated_layer_fails_closed() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "policies");
+    let place = root_place(&program, "policies")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     // An existing keyed entry that predates required `body`: a sibling `note` marks the
@@ -423,7 +438,7 @@ fn brand_new_required_keyed_leaf_over_populated_layer_fails_closed() {
         Scalar::Str("draft".into()),
     );
 
-    let body_id = new_member_proposal_id(&program, "policies::Policy::versions::body");
+    let body_id = new_member_proposal_id(&program, "policies::Policy::versions::body")?;
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
     assert!(
@@ -447,6 +462,8 @@ fn brand_new_required_keyed_leaf_over_populated_layer_fails_closed() {
             .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == body_id),
         "a fail-closed diagnostic must name the new required keyed leaf, got {diagnostics:#?}"
     );
+
+    Ok(())
 }
 
 /// A brand-new required leaf added inside an existing keyed layer WITH an `evolve default`
@@ -454,7 +471,8 @@ fn brand_new_required_keyed_leaf_over_populated_layer_fails_closed() {
 /// reach the Default obligation for a not-yet-accepted keyed leaf the same way the unkeyed
 /// path does.
 #[test]
-fn brand_new_required_keyed_leaf_with_default_backfills() {
+fn brand_new_required_keyed_leaf_with_default_backfills() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = temp_project("discharge-new-keyed-required-default", |root| {
         write(
             root,
@@ -487,7 +505,7 @@ fn brand_new_required_keyed_leaf_with_default_backfills() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "policies");
+    let place = root_place(&program, "policies")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -499,7 +517,7 @@ fn brand_new_required_keyed_leaf_with_default_backfills() {
         Scalar::Str("draft".into()),
     );
 
-    let body_id = new_member_proposal_id(&program, "policies::Policy::versions::body");
+    let body_id = new_member_proposal_id(&program, "policies::Policy::versions::body")?;
     let result = witness(&program, &store);
 
     assert!(
@@ -508,4 +526,6 @@ fn brand_new_required_keyed_leaf_with_default_backfills() {
         verdict_for(&result, &body_id)
     );
     assert!(result.is_activatable(), "{result:#?}");
+
+    Ok(())
 }

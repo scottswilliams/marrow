@@ -13,7 +13,7 @@ use marrow_store::value::Scalar;
 /// is non-activatable: apply refuses with a typed not-activatable error, staging no
 /// write and leaving the store unstamped.
 #[test]
-fn transform_undecodable_read_is_refused() {
+fn transform_undecodable_read_is_refused() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-transform-undecodable", |root| {
         write(
             root,
@@ -31,7 +31,7 @@ fn transform_undecodable_read_is_refused() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -54,6 +54,8 @@ fn transform_undecodable_read_is_refused() {
         None,
         "no stamp"
     );
+
+    Ok(())
 }
 
 /// A pure transform body can still raise a genuine runtime fault over a record (here an
@@ -61,7 +63,7 @@ fn transform_undecodable_read_is_refused() {
 /// rolls the whole transaction back, and leaves the store byte-identical with no stamp:
 /// a body fault is the developer's logic faulting on real data, not store corruption.
 #[test]
-fn transform_body_fault_aborts_byte_identical() {
+fn transform_body_fault_aborts_byte_identical() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-transform-fault", |root| {
         write(
             root,
@@ -79,7 +81,7 @@ fn transform_body_fault_aborts_byte_identical() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -90,8 +92,8 @@ fn transform_body_fault_aborts_byte_identical() {
     seed.member(1, "price", Scalar::Int(9_000_000_000));
     seed.member(1, "priceCents", Scalar::Int(0));
 
-    let store_id = store_id_of(&place);
-    let cents_id = member_catalog_id(&place, "priceCents");
+    let store_id = store_id_of(&place)?;
+    let cents_id = member_catalog_id(&place, "priceCents")?;
     let before = read_scalar(&store, &store_id, 1, &cents_id, INT);
 
     let w = witness(&program, &store);
@@ -113,6 +115,8 @@ fn transform_body_fault_aborts_byte_identical() {
         None,
         "no stamp after a body fault"
     );
+
+    Ok(())
 }
 
 /// A transform that recomputes the first record cleanly but faults on the second must
@@ -121,7 +125,8 @@ fn transform_body_fault_aborts_byte_identical() {
 /// unstamped. Record 1's `price` is small enough to transform, while record 2's overflows,
 /// so apply stages record 1's write, then faults on record 2 before any commit.
 #[test]
-fn transform_body_fault_midscan_discards_earlier_staged_write() {
+fn transform_body_fault_midscan_discards_earlier_staged_write()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-transform-fault-midscan", |root| {
         write(
             root,
@@ -139,7 +144,7 @@ fn transform_body_fault_midscan_discards_earlier_staged_write() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -153,8 +158,8 @@ fn transform_body_fault_midscan_discards_earlier_staged_write() {
     seed.member(2, "price", Scalar::Int(9_000_000_000));
     seed.member(2, "priceCents", Scalar::Int(0));
 
-    let store_id = store_id_of(&place);
-    let cents_id = member_catalog_id(&place, "priceCents");
+    let store_id = store_id_of(&place)?;
+    let cents_id = member_catalog_id(&place, "priceCents")?;
     let before_one = read_scalar(&store, &store_id, 1, &cents_id, INT);
     let before_two = read_scalar(&store, &store_id, 2, &cents_id, INT);
 
@@ -181,12 +186,14 @@ fn transform_body_fault_midscan_discards_earlier_staged_write() {
         None,
         "a mid-scan transform fault leaves the store unstamped"
     );
+
+    Ok(())
 }
 
 /// A transform body can read module constants. Changing one after preview must drift
 /// the witness before apply evaluates the new constant and writes unauthorized data.
 #[test]
-fn transform_constant_drift_aborts_before_apply() {
+fn transform_constant_drift_aborts_before_apply() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-transform-const-drift", |root| {
         write(
             root,
@@ -205,7 +212,7 @@ fn transform_constant_drift_aborts_before_apply() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -234,8 +241,8 @@ fn transform_constant_drift_aborts_before_apply() {
     let changed_program = checked(&root).expect("checked fixture");
     let result = apply(&witness, &changed_program, &store, false, None);
 
-    let store_id = store_id_of(&place);
-    let cents_id = member_catalog_id(&place, "priceCents");
+    let store_id = store_id_of(&place)?;
+    let cents_id = member_catalog_id(&place, "priceCents")?;
     assert!(
         matches!(result, Err(ApplyError::Drift)),
         "expected Drift, got {result:#?}"
@@ -245,6 +252,8 @@ fn transform_constant_drift_aborts_before_apply() {
         Some(Scalar::Int(0)),
         "the target is unchanged when const drift is rejected"
     );
+
+    Ok(())
 }
 
 /// Editing a transform body after building the witness must abort apply with Drift,
@@ -255,7 +264,7 @@ fn transform_constant_drift_aborts_before_apply() {
 /// the read catalog ids, which a body edit leaves identical, so the change would slip
 /// past every other witness field.
 #[test]
-fn transform_body_drift_aborts_before_apply() {
+fn transform_body_drift_aborts_before_apply() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-transform-body-drift", |root| {
         write(
             root,
@@ -273,7 +282,7 @@ fn transform_body_drift_aborts_before_apply() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -319,8 +328,8 @@ fn transform_body_drift_aborts_before_apply() {
     );
     let result = apply(&witness, &changed_program, &store, false, None);
 
-    let store_id = store_id_of(&place);
-    let cents_id = member_catalog_id(&place, "priceCents");
+    let store_id = store_id_of(&place)?;
+    let cents_id = member_catalog_id(&place, "priceCents")?;
     assert!(
         matches!(result, Err(ApplyError::Drift)),
         "expected Drift, got {result:#?}"
@@ -330,4 +339,6 @@ fn transform_body_drift_aborts_before_apply() {
         Some(Scalar::Int(0)),
         "the target is unchanged when transform-body drift is rejected"
     );
+
+    Ok(())
 }

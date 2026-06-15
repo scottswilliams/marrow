@@ -21,10 +21,11 @@ use support_evolve::{
 /// activated store snapshot, so a later `run` fences clean even if it has to repair that
 /// render first.
 #[test]
-fn apply_publishes_snapshot_epoch_and_data_together_then_run_fences_clean() {
+fn apply_publishes_snapshot_epoch_and_data_together_then_run_fences_clean()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project("evolve-apply-atomic-default", REQUIRED_BASELINE_SOURCE);
     let accepted = commit_catalog(&root);
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books")?;
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &accepted_place, 1, "Dune");
@@ -87,4 +88,6 @@ fn apply_publishes_snapshot_epoch_and_data_together_then_run_fences_clean() {
             && !stderr.contains("run.store_behind"),
         "the post-apply run fences clean against the published snapshot: {stderr}"
     );
+
+    Ok(())
 }

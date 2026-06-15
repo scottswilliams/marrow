@@ -13,10 +13,10 @@ use support_evolve::{
 };
 
 #[test]
-fn evolve_apply_consumes_preview_witness_and_backfills() {
+fn evolve_apply_consumes_preview_witness_and_backfills() -> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project("evolve-apply-default", REQUIRED_DEFAULT_SOURCE);
     let program = commit_catalog(&root);
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &place, 1, "Dune");
@@ -27,7 +27,7 @@ fn evolve_apply_consumes_preview_witness_and_backfills() {
         "apply",
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
     let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
     let pages = read_scalar(&store, &place, 1, "pages", ScalarType::Int);
@@ -44,15 +44,18 @@ fn evolve_apply_consumes_preview_witness_and_backfills() {
     assert_eq!(pages, Some(Scalar::Int(0)));
     assert_eq!(
         commit.catalog_epoch,
-        program.catalog.accepted_epoch.unwrap()
+        program.catalog.accepted_epoch.expect("accepted epoch")
     );
+
+    Ok(())
 }
 
 #[test]
-fn evolve_apply_backfills_proposal_required_default_before_accepting_catalog() {
+fn evolve_apply_backfills_proposal_required_default_before_accepting_catalog()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project("evolve-apply-proposal-default", REQUIRED_BASELINE_SOURCE);
     let accepted = commit_catalog(&root);
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books")?;
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &accepted_place, 1, "Dune");
@@ -66,7 +69,7 @@ fn evolve_apply_backfills_proposal_required_default_before_accepting_catalog() {
         "apply",
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let record = support::json(output.stdout);
@@ -90,10 +93,13 @@ fn evolve_apply_backfills_proposal_required_default_before_accepting_catalog() {
 
     assert_eq!(catalog_epoch, baseline_epoch + 1);
     assert_eq!(commit.catalog_epoch, baseline_epoch + 1);
+
+    Ok(())
 }
 
 #[test]
-fn evolve_apply_does_not_rebuild_an_unchanged_existing_index() {
+fn evolve_apply_does_not_rebuild_an_unchanged_existing_index()
+-> Result<(), Box<dyn std::error::Error>> {
     const BASELINE_WITH_INDEX: &str = "module books\n\
          resource Book\n\
          \x20   required title: string\n\
@@ -114,7 +120,7 @@ fn evolve_apply_does_not_rebuild_an_unchanged_existing_index() {
 
     let root = native_books_project("evolve-apply-default-keeps-index", BASELINE_WITH_INDEX);
     let accepted = commit_catalog(&root);
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books")?;
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &accepted_place, 1, "Dune");
@@ -126,7 +132,7 @@ fn evolve_apply_does_not_rebuild_an_unchanged_existing_index() {
         "apply",
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -138,6 +144,8 @@ fn evolve_apply_does_not_rebuild_an_unchanged_existing_index() {
         serde_json::json!(0),
         "an unchanged accepted index must not be staged as derived rebuild work: {record}"
     );
+
+    Ok(())
 }
 
 #[test]
@@ -168,7 +176,7 @@ fn evolve_apply_activates_a_local_store_behind_the_committed_catalog_file() {
          \x20   print(\"ok\")\n";
 
     let root = native_books_project("evolve-apply-file-ahead-store-behind", BASELINE_WITH_SEED);
-    let dir = root.to_str().unwrap();
+    let dir = root.to_str().expect("project path utf-8");
 
     let baseline_run = marrow(&["run", "--entry", "books::seed", dir]);
     assert_eq!(baseline_run.status.code(), Some(0), "{baseline_run:?}");
@@ -249,10 +257,10 @@ fn evolve_apply_activates_a_local_store_behind_the_committed_catalog_file() {
 }
 
 #[test]
-fn evolve_apply_rejects_repair_required_witness() {
+fn evolve_apply_rejects_repair_required_witness() -> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project("evolve-apply-repair", REQUIRED_NO_DEFAULT_SOURCE);
     let program = commit_catalog(&root);
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &place, 1, "Dune");
@@ -263,7 +271,7 @@ fn evolve_apply_rejects_repair_required_witness() {
         "apply",
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
     let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
     let pages = read_scalar(&store, &place, 1, "pages", ScalarType::Int);
@@ -272,17 +280,19 @@ fn evolve_apply_rejects_repair_required_witness() {
     let record = support::json(output.stdout);
     assert_eq!(record["code"], serde_json::json!("evolve.repair_required"));
     assert_eq!(pages, None, "repair-required apply must not write data");
+
+    Ok(())
 }
 
 #[test]
-fn evolve_apply_noop_when_store_already_at_target() {
+fn evolve_apply_noop_when_store_already_at_target() -> Result<(), Box<dyn std::error::Error>> {
     // A defaulting evolution that backfills one record, then applies a second time with
     // the store already at the target: the catalog shape is unchanged by a backfill, so
     // the proposal is identity-stable and the second apply must touch neither the store's
     // accepted catalog snapshot nor the commit id.
     let root = native_books_project("evolve-apply-noop", REQUIRED_DEFAULT_SOURCE);
     let accepted = commit_catalog(&root);
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books")?;
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &accepted_place, 1, "Dune");
@@ -316,10 +326,13 @@ fn evolve_apply_noop_when_store_already_at_target() {
         commit_id(&root),
         "no-op apply does not bump the commit id"
     );
+
+    Ok(())
 }
 
 #[test]
-fn evolve_apply_does_not_rerun_an_already_applied_transform() {
+fn evolve_apply_does_not_rerun_an_already_applied_transform()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project(
         "evolve-apply-transform-stamped-noop",
         "module books\n\
@@ -330,7 +343,7 @@ fn evolve_apply_does_not_rerun_an_already_applied_transform() {
          \x20   return nextId(^books)\n",
     );
     let accepted = commit_catalog(&root);
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books")?;
     {
         let store = open_native_store(&root);
         seed_record(&store, &accepted_place, 1);
@@ -357,7 +370,7 @@ fn evolve_apply_does_not_rerun_an_already_applied_transform() {
         "apply",
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
     assert_eq!(first.status.code(), Some(0), "first apply: {first:?}");
     let first_record = support::json(first.stdout);
@@ -438,6 +451,8 @@ fn evolve_apply_does_not_rerun_an_already_applied_transform() {
         commit_metadata(&root),
         "the stale no-op preserves the slim commit stamp without re-running",
     );
+
+    Ok(())
 }
 
 /// The digest of the store's published accepted-catalog snapshot, the durable identity

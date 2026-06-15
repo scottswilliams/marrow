@@ -16,7 +16,7 @@ use support_discharge::*;
 /// v0.1 has no graceful store-key migration: re-keying would orphan every record addressed
 /// by the old key shape, so the store obligation is `RepairRequired`, never activatable.
 #[test]
-fn store_identity_key_type_change_fails_closed() {
+fn store_identity_key_type_change_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let store_id = hex_id(2);
     let root = temp_project("discharge-store-key-type", |root| {
         write(
@@ -39,7 +39,7 @@ fn store_identity_key_type_change_fails_closed() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     assert_eq!(
         place.store_catalog_id.as_deref(),
         Some(store_id.as_str()),
@@ -69,13 +69,15 @@ fn store_identity_key_type_change_fails_closed() {
             .any(|diagnostic| diagnostic.catalog_id.as_str() == store_id),
         "{diagnostics:#?}"
     );
+
+    Ok(())
 }
 
 /// A store whose identity-key arity changed (a single key becomes composite) fails closed
 /// the same way a key-type change does: the old records are addressed by a narrower key
 /// tuple the new schema cannot read, so the store obligation is `RepairRequired`.
 #[test]
-fn store_identity_key_arity_change_fails_closed() {
+fn store_identity_key_arity_change_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let store_id = hex_id(2);
     let root = temp_project("discharge-store-key-arity", |root| {
         write(
@@ -98,7 +100,7 @@ fn store_identity_key_arity_change_fails_closed() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     assert_eq!(
         place.store_catalog_id.as_deref(),
         Some(store_id.as_str()),
@@ -119,13 +121,16 @@ fn store_identity_key_arity_change_fails_closed() {
         result.verdicts
     );
     assert!(!result.is_activatable(), "{result:#?}");
+
+    Ok(())
 }
 
 /// An unchanged store identity-key shape places no store obligation: re-running over a
 /// store whose accepted key shape still matches source proceeds, so the store id carries
 /// no `RepairRequired` verdict.
 #[test]
-fn store_identity_key_shape_unchanged_is_no_store_repair() {
+fn store_identity_key_shape_unchanged_is_no_store_repair() -> Result<(), Box<dyn std::error::Error>>
+{
     let store_id = hex_id(2);
     let root = temp_project("discharge-store-key-unchanged", |root| {
         write(
@@ -148,7 +153,7 @@ fn store_identity_key_shape_unchanged_is_no_store_repair() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -165,10 +170,12 @@ fn store_identity_key_shape_unchanged_is_no_store_repair() {
         "an unchanged key shape places no store repair: {:#?}",
         result.verdicts
     );
+
+    Ok(())
 }
 
 #[test]
-fn malformed_temporal_store_identity_faults_discharge() {
+fn malformed_temporal_store_identity_faults_discharge() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("discharge-store-key-malformed-date", |root| {
         write(
             root,
@@ -182,9 +189,9 @@ fn malformed_temporal_store_identity_faults_discharge() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "events");
+    let place = root_place(&program, "events")?;
     let store = TreeStore::memory();
-    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store"))
+    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")?)
         .expect("store catalog id");
     store
         .write_node(&store_id, &[SavedKey::Date(SUPPORTED_DATE_MIN_DAYS - 1)])
@@ -196,6 +203,8 @@ fn malformed_temporal_store_identity_faults_discharge() {
         matches!(err, StoreError::Corruption { ref message } if message.contains("date day")),
         "{err:?}"
     );
+
+    Ok(())
 }
 
 /// A pure store rename behind an identity leaf (`Id(^books)` -> `Id(^library)`) is NOT a
@@ -203,7 +212,7 @@ fn malformed_temporal_store_identity_faults_discharge() {
 /// unchanged and a populated record discharges cleanly. The spelling-based comparison
 /// rendered `Id(^books)` and `Id(^library)` as different and falsely blocked the rename.
 #[test]
-fn store_rename_behind_identity_leaf_is_not_a_retype() {
+fn store_rename_behind_identity_leaf_is_not_a_retype() -> Result<(), Box<dyn std::error::Error>> {
     let value_id = hex_id(3);
     let store_stable = hex_id(2);
     let root = temp_project("discharge-store-rename", |root| {
@@ -235,7 +244,7 @@ fn store_rename_behind_identity_leaf_is_not_a_retype() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "library");
+    let place = root_place(&program, "library")?;
     assert_eq!(
         place.store_catalog_id.as_deref(),
         Some(store_stable.as_str()),
@@ -249,7 +258,7 @@ fn store_rename_behind_identity_leaf_is_not_a_retype() {
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
-    let value_id = member_catalog_id(&place, "parent");
+    let value_id = member_catalog_id(&place, "parent")?;
     assert!(
         matches!(verdict_for(&result, &value_id), Verdict::DataProof),
         "a pure store rename behind an identity leaf must not read as a retype: {:#?}",
@@ -257,10 +266,13 @@ fn store_rename_behind_identity_leaf_is_not_a_retype() {
     );
     assert!(result.is_activatable(), "{result:#?}");
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+
+    Ok(())
 }
 
 #[test]
-fn identity_leaf_with_malformed_temporal_payload_fails_closed() {
+fn identity_leaf_with_malformed_temporal_payload_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("discharge-identity-leaf-malformed-date", |root| {
         write(
             root,
@@ -274,11 +286,11 @@ fn identity_leaf_with_malformed_temporal_payload_fails_closed() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "events");
+    let place = root_place(&program, "events")?;
     let store = TreeStore::memory();
-    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store"))
+    let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store")?)
         .expect("store catalog id");
-    let parent_raw = member_catalog_id(&place, "parent");
+    let parent_raw = member_catalog_id(&place, "parent")?;
     let parent_id = CatalogId::new(parent_raw.clone()).expect("parent catalog id");
     let identity = [SavedKey::Date(SUPPORTED_DATE_MIN_DAYS)];
     store
@@ -306,4 +318,6 @@ fn identity_leaf_with_malformed_temporal_payload_fails_closed() {
         result.verdicts
     );
     assert!(!result.is_activatable(), "{result:#?}");
+
+    Ok(())
 }

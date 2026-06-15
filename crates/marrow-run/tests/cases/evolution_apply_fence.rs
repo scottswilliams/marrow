@@ -29,7 +29,8 @@ fn stamp_commit(store: &TreeStore, epoch: u64, source_digest: String, profile: E
 /// behind is locked out. This is the activation lockout the fence enforces without a
 /// generation server: stamp and fence agree by construction.
 #[test]
-fn applied_store_passes_same_binary_fence_and_locks_out_older() {
+fn applied_store_passes_same_binary_fence_and_locks_out_older()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("fence-lockout", |root| {
         write(
             root,
@@ -46,7 +47,7 @@ fn applied_store_passes_same_binary_fence_and_locks_out_older() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -85,13 +86,15 @@ fn applied_store_passes_same_binary_fence_and_locks_out_older() {
             accepted: accepted - 1,
         }
     );
+
+    Ok(())
 }
 
 /// A stale binary must not apply over a store a newer binary already evolved past its
 /// accepted epoch. Apply fences before staging any write, so the store is left
 /// unchanged: no data, no stamp advance.
 #[test]
-fn apply_is_fenced_when_store_evolved_past_the_binary() {
+fn apply_is_fenced_when_store_evolved_past_the_binary() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("fence-apply-stale", |root| {
         write(
             root,
@@ -109,7 +112,7 @@ fn apply_is_fenced_when_store_evolved_past_the_binary() {
     });
     let program = commit_then_check(&root).expect("committed fixture");
     let accepted = program.catalog.accepted_epoch.expect("accepted epoch");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -144,9 +147,11 @@ fn apply_is_fenced_when_store_evolved_past_the_binary() {
             .map(|commit| commit.catalog_epoch),
         Some(accepted + 1),
     );
-    let store_id = store_id_of(&place);
-    let pages_id = member_catalog_id(&place, "pages");
+    let store_id = store_id_of(&place)?;
+    let pages_id = member_catalog_id(&place, "pages")?;
     assert_eq!(read_scalar(&store, &store_id, 1, &pages_id, INT), None);
+
+    Ok(())
 }
 
 /// An engine-profile drift fences a run-capable open even when the catalog epoch
@@ -209,7 +214,8 @@ fn apply_without_accepted_catalog_refuses_and_leaves_store_unchanged() {
 /// cannot tell the two schemas apart; the schema-bearing source digest does. Without the
 /// digest fence, schema B would proceed past activation against bytes shaped for A.
 #[test]
-fn schema_drift_at_the_same_epoch_is_fenced_before_execution() {
+fn schema_drift_at_the_same_epoch_is_fenced_before_execution()
+-> Result<(), Box<dyn std::error::Error>> {
     let root_a = temp_project("fence-schema-a", |root| {
         write(
             root,
@@ -223,7 +229,7 @@ fn schema_drift_at_the_same_epoch_is_fenced_before_execution() {
         );
     });
     let program_a = commit_then_check(&root_a).expect("committed fixture");
-    let place_a = root_place(&program_a, "books");
+    let place_a = root_place(&program_a, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -276,4 +282,6 @@ fn schema_drift_at_the_same_epoch_is_fenced_before_execution() {
     .expect_err("schema B fenced against schema A's store");
     assert_eq!(error, FenceError::SchemaDrift);
     assert_eq!(error.code(), "run.schema_drift");
+
+    Ok(())
 }

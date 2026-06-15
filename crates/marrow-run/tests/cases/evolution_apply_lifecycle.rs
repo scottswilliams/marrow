@@ -126,12 +126,13 @@ fn catalog_entry<'a>(
 }
 
 #[test]
-fn two_chained_default_applies_advance_epochs_and_backfill_each_step() {
+fn two_chained_default_applies_advance_epochs_and_backfill_each_step()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-lifecycle-two-defaults", |_| {});
     let store = TreeStore::memory();
     let accepted = publish_baseline(&root, &store, BASELINE);
-    let place = root_place(&accepted, "books");
-    let store_id = store_id_of(&place);
+    let place = root_place(&accepted, "books")?;
+    let store_id = store_id_of(&place)?;
     let seed = Seed {
         store: &store,
         place: &place,
@@ -141,7 +142,7 @@ fn two_chained_default_applies_advance_epochs_and_backfill_each_step() {
 
     write(&root, "src/books.mw", ADD_PAGES);
     let with_pages = recheck_against_store_snapshot(&root, &store);
-    let pages_id = proposal_catalog_id(&with_pages, "books::Book::pages");
+    let pages_id = proposal_catalog_id(&with_pages, "books::Book::pages")?;
     let first = apply_program(&with_pages, &store);
     assert_eq!(first.receipt.catalog_epoch, 2);
     assert_eq!(
@@ -151,7 +152,7 @@ fn two_chained_default_applies_advance_epochs_and_backfill_each_step() {
 
     write(&root, "src/books.mw", ADD_RATING);
     let with_rating = recheck_against_store_snapshot(&root, &store);
-    let rating_id = proposal_catalog_id(&with_rating, "books::Book::rating");
+    let rating_id = proposal_catalog_id(&with_rating, "books::Book::rating")?;
     let second = apply_program(&with_rating, &store);
     assert_eq!(second.receipt.catalog_epoch, 3);
     assert_eq!(
@@ -163,15 +164,18 @@ fn two_chained_default_applies_advance_epochs_and_backfill_each_step() {
         read_scalar(&store, &store_id, 1, &rating_id, INT),
         Some(Scalar::Int(5))
     );
+
+    Ok(())
 }
 
 #[test]
-fn retired_member_path_stays_reserved_when_later_source_reuses_it() {
+fn retired_member_path_stays_reserved_when_later_source_reuses_it()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-lifecycle-retire-reuse", |_| {});
     let store = TreeStore::memory();
     let accepted = publish_baseline(&root, &store, WITH_SUBTITLE);
-    let place = root_place(&accepted, "books");
-    let subtitle_id = member_catalog_id(&place, "subtitle");
+    let place = root_place(&accepted, "books")?;
+    let subtitle_id = member_catalog_id(&place, "subtitle")?;
     let seed = Seed {
         store: &store,
         place: &place,
@@ -183,7 +187,7 @@ fn retired_member_path_stays_reserved_when_later_source_reuses_it() {
     write(&root, "src/books.mw", RETIRE_SUBTITLE);
     let retiring = recheck_against_store_snapshot(&root, &store);
     let approval = Approval {
-        retires: vec![(CatalogId::new(subtitle_id.clone()).unwrap(), 1)],
+        retires: vec![(CatalogId::new(subtitle_id.clone())?, 1)],
     };
     let w = witness(&retiring, &store);
     apply(&w, &retiring, &store, true, Some(&approval)).expect("retire apply");
@@ -212,15 +216,18 @@ fn retired_member_path_stays_reserved_when_later_source_reuses_it() {
         "reusing a retired path must fail closed: {:#?}",
         report.diagnostics
     );
+
+    Ok(())
 }
 
 #[test]
-fn rename_chain_preserves_one_stable_id_and_accumulates_aliases() {
+fn rename_chain_preserves_one_stable_id_and_accumulates_aliases()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-lifecycle-rename-chain", |_| {});
     let store = TreeStore::memory();
     let accepted = publish_baseline(&root, &store, BASELINE);
-    let place = root_place(&accepted, "books");
-    let title_id = member_catalog_id(&place, "title");
+    let place = root_place(&accepted, "books")?;
+    let title_id = member_catalog_id(&place, "title")?;
 
     write(&root, "src/books.mw", RENAME_TITLE_TO_NAME);
     let renamed_once = recheck_against_store_snapshot(&root, &store);
@@ -260,15 +267,18 @@ fn rename_chain_preserves_one_stable_id_and_accumulates_aliases() {
             .iter()
             .any(|alias| alias == "books::Book::name")
     );
+
+    Ok(())
 }
 
 #[test]
-fn second_epoch_witness_fails_closed_when_records_change_mid_chain() {
+fn second_epoch_witness_fails_closed_when_records_change_mid_chain()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-lifecycle-mid-chain-drift", |_| {});
     let store = TreeStore::memory();
     let accepted = publish_baseline(&root, &store, BASELINE);
-    let place = root_place(&accepted, "books");
-    let store_id = store_id_of(&place);
+    let place = root_place(&accepted, "books")?;
+    let store_id = store_id_of(&place)?;
     let seed = Seed {
         store: &store,
         place: &place,
@@ -278,12 +288,12 @@ fn second_epoch_witness_fails_closed_when_records_change_mid_chain() {
 
     write(&root, "src/books.mw", ADD_PAGES);
     let with_pages = recheck_against_store_snapshot(&root, &store);
-    let pages_id = proposal_catalog_id(&with_pages, "books::Book::pages");
+    let pages_id = proposal_catalog_id(&with_pages, "books::Book::pages")?;
     apply_program(&with_pages, &store);
 
     write(&root, "src/books.mw", ADD_RATING);
     let with_rating = recheck_against_store_snapshot(&root, &store);
-    let rating_id = proposal_catalog_id(&with_rating, "books::Book::rating");
+    let rating_id = proposal_catalog_id(&with_rating, "books::Book::rating")?;
     let stale_witness = witness(&with_rating, &store);
 
     seed.record(2);
@@ -305,4 +315,6 @@ fn second_epoch_witness_fails_closed_when_records_change_mid_chain() {
         None,
         "the stale apply does not backfill the new record"
     );
+
+    Ok(())
 }

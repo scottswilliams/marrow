@@ -38,8 +38,8 @@ pub fn add(title: string): Id(^books)\n\
 fn project_with_orphaned_subtitle(name: &str) -> (support::TempProject, CheckedSavedPlace, String) {
     let root = native_books_project(name, RETIRE_BASELINE_SOURCE);
     let program = commit_catalog(&root);
-    let place = root_place(&program, "books");
-    let subtitle_id = member_catalog_id(&place, "subtitle");
+    let place = root_place(&program, "books").expect("books root place");
+    let subtitle_id = member_catalog_id(&place, "subtitle").expect("subtitle catalog id");
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &place, 1, "Dune");
@@ -96,7 +96,7 @@ pub fn show(): string\n\
 fn project_with_orphaned_book_resource(name: &str) -> (support::TempProject, CheckedSavedPlace) {
     let root = native_books_project(name, TWO_RESOURCE_BASELINE_SOURCE);
     let program = commit_catalog(&root);
-    let place = root_place(&program, "bookstore");
+    let place = root_place(&program, "bookstore").expect("bookstore root place");
     {
         let store = open_native_store(&root);
         seed_title_only(&store, &place, 1, "Dune");
@@ -135,7 +135,7 @@ fn data_integrity_reports_a_dropped_member_orphan() {
         "integrity",
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -159,7 +159,7 @@ fn evolve_preview_fences_a_populated_bare_drop() {
         "preview",
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
     assert_eq!(preview.status.code(), Some(1), "{preview:?}");
     let preview_value = support::json(preview.stdout);
@@ -194,7 +194,7 @@ fn an_empty_member_drop_is_a_free_no_op() {
         "preview",
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
     assert_eq!(preview.status.code(), Some(0), "{preview:?}");
     let preview_value = support::json(preview.stdout);
@@ -223,7 +223,7 @@ fn a_populated_bare_drop_does_not_apply_without_a_retire_intent() {
         "apply",
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
     assert_eq!(apply.status.code(), Some(1), "{apply:?}");
     assert_eq!(
@@ -248,7 +248,7 @@ fn a_populated_bare_drop_does_not_apply_without_a_retire_intent() {
         "integrity",
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
     assert_eq!(integrity.status.code(), Some(1), "{integrity:?}");
     assert!(
@@ -269,7 +269,7 @@ fn evolve_preview_fences_a_populated_whole_resource_drop() {
         "preview",
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
     assert_eq!(preview.status.code(), Some(1), "{preview:?}");
     let preview_value = support::json(preview.stdout);
@@ -309,7 +309,7 @@ fn an_empty_whole_resource_drop_is_a_free_no_op() {
         "preview",
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
     assert_eq!(preview.status.code(), Some(0), "{preview:?}");
     let preview_value = support::json(preview.stdout);
@@ -338,7 +338,7 @@ fn a_populated_whole_resource_drop_does_not_apply_or_run_without_a_retire_intent
         "apply",
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
     assert_eq!(apply.status.code(), Some(1), "{apply:?}");
     assert_eq!(
@@ -380,7 +380,7 @@ fn a_populated_whole_resource_drop_does_not_apply_or_run_without_a_retire_intent
         "integrity",
         "--format",
         "json",
-        root.to_str().unwrap(),
+        root.to_str().expect("project path utf-8"),
     ]);
     assert_eq!(integrity.status.code(), Some(1), "{integrity:?}");
     assert!(

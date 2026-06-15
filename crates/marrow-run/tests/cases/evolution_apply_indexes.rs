@@ -29,7 +29,8 @@ fn stamp_clean_commit(store: &TreeStore, program: &marrow_check::CheckedProgram)
 }
 
 #[test]
-fn proposal_index_rebuild_writes_entries_before_catalog_acceptance() {
+fn proposal_index_rebuild_writes_entries_before_catalog_acceptance()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-proposal-index-rebuild", |root| {
         write(
             root,
@@ -43,7 +44,7 @@ fn proposal_index_rebuild_writes_entries_before_catalog_acceptance() {
         );
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -66,7 +67,7 @@ fn proposal_index_rebuild_writes_entries_before_catalog_acceptance() {
          \x20   return nextId(^books)\n",
     );
     let program = checked(&root).expect("checked fixture");
-    let index_id = CatalogId::new(proposal_catalog_id(&program, "books::^books::byIsbn")).unwrap();
+    let index_id = CatalogId::new(proposal_catalog_id(&program, "books::^books::byIsbn")?)?;
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");
 
@@ -80,10 +81,13 @@ fn proposal_index_rebuild_writes_entries_before_catalog_acceptance() {
         assert_eq!(scan.entries.len(), 1, "index entry for {isbn}");
         assert_eq!(scan.entries[0].identity, vec![SavedKey::Int(id)]);
     }
+
+    Ok(())
 }
 
 #[test]
-fn proposal_index_rebuild_writes_identity_field_components() {
+fn proposal_index_rebuild_writes_identity_field_components()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-proposal-index-identity-field", |root| {
         write(
             root,
@@ -99,8 +103,8 @@ fn proposal_index_rebuild_writes_identity_field_components() {
         );
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let authors = root_place(&accepted, "authors");
-    let books = root_place(&accepted, "books");
+    let authors = root_place(&accepted, "authors")?;
+    let books = root_place(&accepted, "books")?;
     let store = TreeStore::memory();
     let author_seed = Seed {
         store: &store,
@@ -115,7 +119,7 @@ fn proposal_index_rebuild_writes_identity_field_components() {
         store: &store,
         place: &books,
     };
-    let author_member = CatalogId::new(member_catalog_id(&books, "authorId")).unwrap();
+    let author_member = CatalogId::new(member_catalog_id(&books, "authorId")?)?;
     for (book, title, author) in [(1, "A", 1), (2, "B", 2), (3, "C", 1)] {
         book_seed.record(book);
         book_seed.member(book, "title", Scalar::Str(title.into()));
@@ -143,15 +147,14 @@ fn proposal_index_rebuild_writes_identity_field_components() {
          \x20   index byAuthor(authorId, id)\n",
     );
     let program = checked(&root).expect("checked fixture");
-    let index_id =
-        CatalogId::new(proposal_catalog_id(&program, "books::^books::byAuthor")).unwrap();
+    let index_id = CatalogId::new(proposal_catalog_id(&program, "books::^books::byAuthor")?)?;
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");
 
     let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
     assert_eq!(outcome.receipt.indexes_rebuilt, 1);
 
-    let authors_id = store_id_of(&authors);
+    let authors_id = store_id_of(&authors)?;
     let ann_key = SavedKey::Bytes(encode_identity_index_key(
         authors_id.as_str(),
         &[SavedKey::Int(1)],
@@ -163,10 +166,13 @@ fn proposal_index_rebuild_writes_identity_field_components() {
         assert_eq!(scan.entries.len(), 1, "index entry for book {id}");
         assert_eq!(scan.entries[0].identity, vec![SavedKey::Int(id)]);
     }
+
+    Ok(())
 }
 
 #[test]
-fn unique_index_over_identity_field_collision_fails_closed() {
+fn unique_index_over_identity_field_collision_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-proposal-index-identity-field-unique", |root| {
         write(
             root,
@@ -182,8 +188,8 @@ fn unique_index_over_identity_field_collision_fails_closed() {
         );
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let authors = root_place(&accepted, "authors");
-    let books = root_place(&accepted, "books");
+    let authors = root_place(&accepted, "authors")?;
+    let books = root_place(&accepted, "books")?;
     let store = TreeStore::memory();
     let author_seed = Seed {
         store: &store,
@@ -196,7 +202,7 @@ fn unique_index_over_identity_field_collision_fails_closed() {
         store: &store,
         place: &books,
     };
-    let author_member = CatalogId::new(member_catalog_id(&books, "authorId")).unwrap();
+    let author_member = CatalogId::new(member_catalog_id(&books, "authorId")?)?;
     for (book, title) in [(1, "A"), (2, "B")] {
         book_seed.record(book);
         book_seed.member(book, "title", Scalar::Str(title.into()));
@@ -230,10 +236,13 @@ fn unique_index_over_identity_field_collision_fails_closed() {
     assert_eq!(w.counts.index_collisions, 1, "{w:#?}");
     let error = apply(&w, &program, &store, false, None).expect_err("apply refuses");
     assert_eq!(error, ApplyError::NotActivatable);
+
+    Ok(())
 }
 
 #[test]
-fn unique_index_over_malformed_identity_field_fails_closed() {
+fn unique_index_over_malformed_identity_field_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-proposal-index-identity-field-malformed", |root| {
         write(
             root,
@@ -249,13 +258,13 @@ fn unique_index_over_malformed_identity_field_fails_closed() {
         );
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let books = root_place(&accepted, "books");
+    let books = root_place(&accepted, "books")?;
     let store = TreeStore::memory();
     let book_seed = Seed {
         store: &store,
         place: &books,
     };
-    let author_member = CatalogId::new(member_catalog_id(&books, "authorId")).unwrap();
+    let author_member = CatalogId::new(member_catalog_id(&books, "authorId")?)?;
     book_seed.record(1);
     book_seed.member(1, "title", Scalar::Str("A".into()));
     store
@@ -295,10 +304,13 @@ fn unique_index_over_malformed_identity_field_fails_closed() {
     );
     let error = apply(&w, &program, &store, false, None).expect_err("apply refuses");
     assert_eq!(error, ApplyError::NotActivatable);
+
+    Ok(())
 }
 
 #[test]
-fn proposal_index_rebuild_reads_defaulted_member_before_catalog_acceptance() {
+fn proposal_index_rebuild_reads_defaulted_member_before_catalog_acceptance()
+-> Result<(), Box<dyn std::error::Error>> {
     let record_count = 1_024usize;
     let root = temp_project("apply-proposal-index-default", |root| {
         write(
@@ -313,7 +325,7 @@ fn proposal_index_rebuild_reads_defaulted_member_before_catalog_acceptance() {
         );
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -340,7 +352,7 @@ fn proposal_index_rebuild_reads_defaulted_member_before_catalog_acceptance() {
          \x20   return nextId(^books)\n",
     );
     let program = checked(&root).expect("checked fixture");
-    let index_id = CatalogId::new(proposal_catalog_id(&program, "books::^books::byPages")).unwrap();
+    let index_id = CatalogId::new(proposal_catalog_id(&program, "books::^books::byPages")?)?;
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");
 
@@ -364,10 +376,13 @@ fn proposal_index_rebuild_reads_defaulted_member_before_catalog_acceptance() {
         assert_eq!(scan.entries.len(), 1, "index entry for {id}");
         assert_eq!(scan.entries[0].identity, vec![SavedKey::Int(id)]);
     }
+
+    Ok(())
 }
 
 #[test]
-fn unique_index_over_defaulted_member_collision_fails_closed() {
+fn unique_index_over_defaulted_member_collision_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-proposal-index-default-unique", |root| {
         write(
             root,
@@ -381,7 +396,7 @@ fn unique_index_over_defaulted_member_collision_fails_closed() {
         );
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -412,10 +427,13 @@ fn unique_index_over_defaulted_member_collision_fails_closed() {
     assert_eq!(w.counts.index_collisions, 1, "{w:#?}");
     let error = apply(&w, &program, &store, false, None).expect_err("apply refuses");
     assert_eq!(error, ApplyError::NotActivatable);
+
+    Ok(())
 }
 
 #[test]
-fn proposal_index_rebuild_reads_transform_target_before_catalog_acceptance() {
+fn proposal_index_rebuild_reads_transform_target_before_catalog_acceptance()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-proposal-index-transform", |root| {
         write(
             root,
@@ -429,7 +447,7 @@ fn proposal_index_rebuild_reads_transform_target_before_catalog_acceptance() {
         );
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -456,7 +474,7 @@ fn proposal_index_rebuild_reads_transform_target_before_catalog_acceptance() {
          \x20   return nextId(^books)\n",
     );
     let program = checked(&root).expect("checked fixture");
-    let index_id = CatalogId::new(proposal_catalog_id(&program, "books::^books::byCents")).unwrap();
+    let index_id = CatalogId::new(proposal_catalog_id(&program, "books::^books::byCents")?)?;
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");
 
@@ -471,10 +489,12 @@ fn proposal_index_rebuild_reads_transform_target_before_catalog_acceptance() {
         assert_eq!(scan.entries.len(), 1, "index entry for {cents}");
         assert_eq!(scan.entries[0].identity, vec![SavedKey::Int(id)]);
     }
+
+    Ok(())
 }
 
 #[test]
-fn unique_index_over_transform_target_fails_closed() {
+fn unique_index_over_transform_target_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-proposal-index-transform-unique", |root| {
         write(
             root,
@@ -488,7 +508,7 @@ fn unique_index_over_transform_target_fails_closed() {
         );
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books")?;
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -519,10 +539,13 @@ fn unique_index_over_transform_target_fails_closed() {
     assert!(!w.is_activatable(), "{w:#?}");
     let error = apply(&w, &program, &store, false, None).expect_err("apply refuses");
     assert_eq!(error, ApplyError::NotActivatable);
+
+    Ok(())
 }
 
 #[test]
-fn same_name_index_key_change_rebuilds_under_existing_catalog_id() {
+fn same_name_index_key_change_rebuilds_under_existing_catalog_id()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-index-same-name-key-change", |root| {
         write(
             root,
@@ -538,8 +561,8 @@ fn same_name_index_key_change_rebuilds_under_existing_catalog_id() {
         );
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books");
-    let index_id = CatalogId::new(index_catalog_id(&accepted_place, "byLookup")).unwrap();
+    let accepted_place = root_place(&accepted, "books")?;
+    let index_id = CatalogId::new(index_catalog_id(&accepted_place, "byLookup")?)?;
 
     let store = TreeStore::memory();
     let seed = Seed {
@@ -608,10 +631,13 @@ fn same_name_index_key_change_rebuilds_under_existing_catalog_id() {
         stale.entries.is_empty(),
         "old key-shape entries must be removed by the rebuild"
     );
+
+    Ok(())
 }
 
 #[test]
-fn same_name_unique_index_key_change_fails_closed_on_collisions() {
+fn same_name_unique_index_key_change_fails_closed_on_collisions()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-index-same-name-unique-key-change", |root| {
         write(
             root,
@@ -627,8 +653,8 @@ fn same_name_unique_index_key_change_fails_closed_on_collisions() {
         );
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books");
-    let index_id = CatalogId::new(index_catalog_id(&accepted_place, "byLookup")).unwrap();
+    let accepted_place = root_place(&accepted, "books")?;
+    let index_id = CatalogId::new(index_catalog_id(&accepted_place, "byLookup")?)?;
 
     let store = TreeStore::memory();
     let seed = Seed {
@@ -669,10 +695,13 @@ fn same_name_unique_index_key_change_fails_closed_on_collisions() {
     assert_eq!(w.counts.index_collisions, 1, "{w:#?}");
     let error = apply(&w, &program, &store, false, None).expect_err("apply refuses");
     assert_eq!(error, ApplyError::NotActivatable);
+
+    Ok(())
 }
 
 #[test]
-fn same_name_index_uniqueness_change_fails_closed_on_collisions() {
+fn same_name_index_uniqueness_change_fails_closed_on_collisions()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-index-same-name-uniqueness-change", |root| {
         write(
             root,
@@ -688,8 +717,8 @@ fn same_name_index_uniqueness_change_fails_closed_on_collisions() {
         );
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books");
-    let index_id = CatalogId::new(index_catalog_id(&accepted_place, "byLookup")).unwrap();
+    let accepted_place = root_place(&accepted, "books")?;
+    let index_id = CatalogId::new(index_catalog_id(&accepted_place, "byLookup")?)?;
 
     let store = TreeStore::memory();
     let seed = Seed {
@@ -730,6 +759,8 @@ fn same_name_index_uniqueness_change_fails_closed_on_collisions() {
     assert_eq!(w.counts.index_collisions, 1, "{w:#?}");
     let error = apply(&w, &program, &store, false, None).expect_err("apply refuses");
     assert_eq!(error, ApplyError::NotActivatable);
+
+    Ok(())
 }
 
 /// Dropping a source index discharges: apply deletes its derived cells, advances the
@@ -738,7 +769,7 @@ fn same_name_index_uniqueness_change_fails_closed_on_collisions() {
 /// index, so discharge classifies `IndexDropped` and apply clears the whole index subtree.
 /// The base records and their members are untouched, and re-previewing finds nothing left.
 #[test]
-fn dropped_index_apply_deletes_index_cells() {
+fn dropped_index_apply_deletes_index_cells() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-index-drop", |root| {
         write(
             root,
@@ -754,9 +785,9 @@ fn dropped_index_apply_deletes_index_cells() {
     });
     // Commit the schema that declares the index, so the index binds a stable id.
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books");
-    let index_id = CatalogId::new(index_catalog_id(&accepted_place, "byIsbn")).unwrap();
-    let store_id = store_id_of(&accepted_place);
+    let accepted_place = root_place(&accepted, "books")?;
+    let index_id = CatalogId::new(index_catalog_id(&accepted_place, "byIsbn")?)?;
+    let store_id = store_id_of(&accepted_place)?;
 
     let store = TreeStore::memory();
     let seed = Seed {
@@ -818,9 +849,10 @@ fn dropped_index_apply_deletes_index_cells() {
             .read_data_value(
                 &store_id,
                 &[SavedKey::Int(id)],
-                &[DataPathSegment::Member(
-                    CatalogId::new(member_catalog_id(&accepted_place, "isbn")).unwrap(),
-                )],
+                &[DataPathSegment::Member(CatalogId::new(member_catalog_id(
+                    &accepted_place,
+                    "isbn",
+                )?)?)],
             )
             .expect("read isbn")
             .expect("isbn present");
@@ -842,6 +874,8 @@ fn dropped_index_apply_deletes_index_cells() {
         "the dropped index entry is gone from the committed catalog: {:#?}",
         accepted.entries
     );
+
+    Ok(())
 }
 
 /// Dropping a unique index from source stamps its catalog id in the commit metadata's
@@ -849,7 +883,7 @@ fn dropped_index_apply_deletes_index_cells() {
 /// store index by its catalog entry kind, so apply must not re-derive the index set
 /// from current source (which no longer declares the index).
 #[test]
-fn dropped_index_id_stamped_as_index_not_root() {
+fn dropped_index_id_stamped_as_index_not_root() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-drop-index", |root| {
         write(
             root,
@@ -865,8 +899,8 @@ fn dropped_index_id_stamped_as_index_not_root() {
     });
     // Commit the schema that declares the index, so the index binds a stable id.
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books");
-    let index_id = index_catalog_id(&accepted_place, "byIsbn");
+    let accepted_place = root_place(&accepted, "books")?;
+    let index_id = index_catalog_id(&accepted_place, "byIsbn")?;
 
     let store = TreeStore::memory();
     let seed = Seed {
@@ -912,4 +946,6 @@ fn dropped_index_id_stamped_as_index_not_root() {
             .any(|id| id.as_str() == index_id),
         "dropped index id must not be stamped as a data root: {commit:#?}"
     );
+
+    Ok(())
 }

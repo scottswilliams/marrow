@@ -15,7 +15,8 @@ use support_discharge::*;
 /// not a structural divergence. A keyed leaf carries the rename cleanly: its stable id and
 /// `[int]string` signature are preserved, so the backstop sees no divergence.
 #[test]
-fn renamed_keyed_layer_with_unchanged_shape_does_not_overfire() {
+fn renamed_keyed_layer_with_unchanged_shape_does_not_overfire()
+-> Result<(), Box<dyn std::error::Error>> {
     let tags_id = hex_id(3);
     let root = temp_project("discharge-keyed-rename", |root| {
         write(
@@ -44,7 +45,7 @@ fn renamed_keyed_layer_with_unchanged_shape_does_not_overfire() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "policies");
+    let place = root_place(&program, "policies")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -52,10 +53,10 @@ fn renamed_keyed_layer_with_unchanged_shape_does_not_overfire() {
         1,
         "labels",
         SavedKey::Int(7),
-        encode_value(&Scalar::Str("draft".into())).unwrap(),
+        encode_value(&Scalar::Str("draft".into()))?,
     );
 
-    let layer_id = keyed_leaf_catalog_id(&place, "labels");
+    let layer_id = keyed_leaf_catalog_id(&place, "labels")?;
     let (result, _diagnostics) = preview(&program, &store).expect("preview");
 
     assert!(
@@ -68,13 +69,15 @@ fn renamed_keyed_layer_with_unchanged_shape_does_not_overfire() {
         "a renamed keyed leaf with an unchanged shape is a catalog-only move, got {:#?}",
         verdict_for(&result, &layer_id)
     );
+
+    Ok(())
 }
 
 /// NEGATIVE GUARD: reordering keyed-layer sub-members keeps every member's structural signature
 /// unchanged, so the backstop stays silent and the change activates. The signature is identity-
 /// aware and per member, not order-sensitive.
 #[test]
-fn reordered_keyed_layer_members_do_not_overfire() {
+fn reordered_keyed_layer_members_do_not_overfire() -> Result<(), Box<dyn std::error::Error>> {
     let versions_id = hex_id(3);
     let body_id = hex_id(4);
     let note_id = hex_id(5);
@@ -105,7 +108,7 @@ fn reordered_keyed_layer_members_do_not_overfire() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "policies");
+    let place = root_place(&program, "policies")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -124,7 +127,7 @@ fn reordered_keyed_layer_members_do_not_overfire() {
         Scalar::Str("seen".into()),
     );
 
-    let layer_id = group_member_catalog_id(&place, "versions");
+    let layer_id = group_member_catalog_id(&place, "versions")?;
     let (result, _diagnostics) = preview(&program, &store).expect("preview");
 
     assert!(
@@ -141,13 +144,16 @@ fn reordered_keyed_layer_members_do_not_overfire() {
         "reordering places no structural repair on the layer: {:#?}",
         result.verdicts
     );
+
+    Ok(())
 }
 
 /// NEGATIVE GUARD: adding an optional member alongside an unchanged keyed layer activates. A
 /// brand-new optional member is not present in the accepted snapshot, so the backstop never
 /// considers it, and the unchanged keyed layer keeps its signature.
 #[test]
-fn optional_add_beside_unchanged_keyed_layer_does_not_overfire() {
+fn optional_add_beside_unchanged_keyed_layer_does_not_overfire()
+-> Result<(), Box<dyn std::error::Error>> {
     let versions_id = hex_id(3);
     let body_id = hex_id(4);
     let root = temp_project("discharge-keyed-optional-add", |root| {
@@ -176,7 +182,7 @@ fn optional_add_beside_unchanged_keyed_layer_does_not_overfire() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "policies");
+    let place = root_place(&program, "policies")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -188,7 +194,7 @@ fn optional_add_beside_unchanged_keyed_layer_does_not_overfire() {
         Scalar::Str("draft".into()),
     );
 
-    let layer_id = group_member_catalog_id(&place, "versions");
+    let layer_id = group_member_catalog_id(&place, "versions")?;
     let (result, _diagnostics) = preview(&program, &store).expect("preview");
 
     assert!(
@@ -205,6 +211,8 @@ fn optional_add_beside_unchanged_keyed_layer_does_not_overfire() {
         "an unchanged keyed layer places no structural repair: {:#?}",
         result.verdicts
     );
+
+    Ok(())
 }
 
 /// A keyed layer nested BELOW another keyed layer, re-keyed by KEY TYPE over
@@ -216,7 +224,8 @@ fn optional_add_beside_unchanged_keyed_layer_does_not_overfire() {
 /// it closed. Without depth-total descent the divergence below a keyed ancestor activates
 /// silently over entries the new inner key shape addresses none of.
 #[test]
-fn nested_keyed_layer_rekey_below_keyed_ancestor_fails_closed() {
+fn nested_keyed_layer_rekey_below_keyed_ancestor_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     let versions_id = hex_id(3);
     let revisions_id = hex_id(4);
     let body_id = hex_id(5);
@@ -255,7 +264,7 @@ fn nested_keyed_layer_rekey_below_keyed_ancestor_fails_closed() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "policies");
+    let place = root_place(&program, "policies")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     // One existing inner entry under the old `int` rev key, two layers deep.
@@ -270,12 +279,12 @@ fn nested_keyed_layer_rekey_below_keyed_ancestor_fails_closed() {
         Scalar::Str("draft".into()),
     );
 
-    let revisions_layer_id = deep_member_catalog_id(&place, &["versions", "revisions"]);
+    let revisions_layer_id = deep_member_catalog_id(&place, &["versions", "revisions"])?;
     assert_eq!(
         revisions_layer_id, revisions_id,
         "the re-keyed nested layer keeps its accepted stable id"
     );
-    let body_member_id = deep_member_catalog_id(&place, &["versions", "revisions", "body"]);
+    let body_member_id = deep_member_catalog_id(&place, &["versions", "revisions", "body"])?;
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
     assert!(
@@ -309,6 +318,8 @@ fn nested_keyed_layer_rekey_below_keyed_ancestor_fails_closed() {
             .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == revisions_layer_id),
         "a fail-closed diagnostic must name the re-keyed nested layer, got {diagnostics:#?}"
     );
+
+    Ok(())
 }
 
 /// A keyed-layer ARITY change two levels deep fails closed. The accepted
@@ -318,7 +329,8 @@ fn nested_keyed_layer_rekey_below_keyed_ancestor_fails_closed() {
 /// existing inner entry is addressed by the old one-column key the new composite shape cannot
 /// reach.
 #[test]
-fn nested_keyed_layer_arity_change_two_levels_deep_fails_closed() {
+fn nested_keyed_layer_arity_change_two_levels_deep_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     let versions_id = hex_id(3);
     let revisions_id = hex_id(4);
     let body_id = hex_id(5);
@@ -357,7 +369,7 @@ fn nested_keyed_layer_arity_change_two_levels_deep_fails_closed() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "policies");
+    let place = root_place(&program, "policies")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -371,7 +383,7 @@ fn nested_keyed_layer_arity_change_two_levels_deep_fails_closed() {
         Scalar::Str("draft".into()),
     );
 
-    let revisions_layer_id = deep_member_catalog_id(&place, &["versions", "revisions"]);
+    let revisions_layer_id = deep_member_catalog_id(&place, &["versions", "revisions"])?;
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
     assert!(
@@ -393,6 +405,8 @@ fn nested_keyed_layer_arity_change_two_levels_deep_fails_closed() {
             .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == revisions_layer_id),
         "a fail-closed diagnostic must name the structurally-diverged nested layer, got {diagnostics:#?}"
     );
+
+    Ok(())
 }
 
 /// A structurally-diverged INTERIOR member arbitrarily deep fails closed. A
@@ -403,7 +417,8 @@ fn nested_keyed_layer_arity_change_two_levels_deep_fails_closed() {
 /// directly under the group node with no entry key, so the new keyed shape reads none of them;
 /// the member fails closed over the populated entry rather than activating.
 #[test]
-fn deep_interior_member_structural_divergence_fails_closed() {
+fn deep_interior_member_structural_divergence_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     let versions_id = hex_id(3);
     let revisions_id = hex_id(4);
     let meta_id = hex_id(5);
@@ -445,7 +460,7 @@ fn deep_interior_member_structural_divergence_fails_closed() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "policies");
+    let place = root_place(&program, "policies")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     // The old `meta.body` cell sits as an unkeyed-group sub-member two keyed layers deep, with
@@ -462,7 +477,7 @@ fn deep_interior_member_structural_divergence_fails_closed() {
         Scalar::Str("draft".into()),
     );
 
-    let meta_member_id = deep_member_catalog_id(&place, &["versions", "revisions", "meta"]);
+    let meta_member_id = deep_member_catalog_id(&place, &["versions", "revisions", "meta"])?;
     assert_eq!(
         meta_member_id, meta_id,
         "the reshaped deep interior member keeps its accepted stable id"
@@ -488,6 +503,8 @@ fn deep_interior_member_structural_divergence_fails_closed() {
             .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == meta_member_id),
         "a fail-closed diagnostic must name the deep diverged member, got {diagnostics:#?}"
     );
+
+    Ok(())
 }
 
 /// NEGATIVE GUARD: an UNCHANGED nested keyed layer must still activate. With depth-total descent
@@ -495,7 +512,7 @@ fn deep_interior_member_structural_divergence_fails_closed() {
 /// a nested layer whose signature is unchanged: every member keeps its identity and shape, so
 /// the deep required leaf proves per entry and nothing fails closed.
 #[test]
-fn unchanged_nested_keyed_layer_does_not_overfire() {
+fn unchanged_nested_keyed_layer_does_not_overfire() -> Result<(), Box<dyn std::error::Error>> {
     let versions_id = hex_id(3);
     let revisions_id = hex_id(4);
     let body_id = hex_id(5);
@@ -534,7 +551,7 @@ fn unchanged_nested_keyed_layer_does_not_overfire() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "policies");
+    let place = root_place(&program, "policies")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -548,8 +565,8 @@ fn unchanged_nested_keyed_layer_does_not_overfire() {
         Scalar::Str("draft".into()),
     );
 
-    let revisions_layer_id = deep_member_catalog_id(&place, &["versions", "revisions"]);
-    let body_member_id = deep_member_catalog_id(&place, &["versions", "revisions", "body"]);
+    let revisions_layer_id = deep_member_catalog_id(&place, &["versions", "revisions"])?;
+    let body_member_id = deep_member_catalog_id(&place, &["versions", "revisions", "body"])?;
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
     assert!(
@@ -574,4 +591,6 @@ fn unchanged_nested_keyed_layer_does_not_overfire() {
         result.verdicts
     );
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+
+    Ok(())
 }

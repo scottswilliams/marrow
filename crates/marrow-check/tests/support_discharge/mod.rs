@@ -137,8 +137,10 @@ impl<'a> Seed<'a> {
     }
 
     pub fn store_id(&self) -> CatalogId {
-        CatalogId::new(accepted_catalog_id(&self.place.store_catalog_id, "store"))
-            .expect("store catalog id")
+        CatalogId::new(
+            accepted_catalog_id(&self.place.store_catalog_id, "store").expect("store catalog id"),
+        )
+        .expect("store catalog id")
     }
 
     pub fn record(&self, id: i64) {
@@ -146,7 +148,9 @@ impl<'a> Seed<'a> {
     }
 
     pub fn member(&self, id: i64, member: &str, value: Scalar) {
-        let member_id = CatalogId::new(member_catalog_id(self.place, member)).expect("member id");
+        let member_id =
+            CatalogId::new(member_catalog_id(self.place, member).expect("member catalog id"))
+                .expect("member id");
         let bytes = encode_value(&value).expect("encode value");
         self.store
             .write_data_value(
@@ -183,9 +187,12 @@ impl<'a> Seed<'a> {
     /// identity. The presence of any leaf marks the keyed entry as existing.
     pub fn keyed_member(&self, id: i64, layer: &str, entry: SavedKey, leaf: &str, value: Scalar) {
         let layer_id =
-            CatalogId::new(group_member_catalog_id(self.place, layer)).expect("layer id");
-        let leaf_id = CatalogId::new(nested_member_catalog_id(self.place, layer, leaf))
-            .expect("keyed leaf id");
+            CatalogId::new(group_member_catalog_id(self.place, layer).expect("layer catalog id"))
+                .expect("layer id");
+        let leaf_id = CatalogId::new(
+            nested_member_catalog_id(self.place, layer, leaf).expect("keyed leaf catalog id"),
+        )
+        .expect("keyed leaf id");
         let bytes = encode_value(&value).expect("encode value");
         self.store
             .write_data_value(
@@ -207,7 +214,9 @@ impl<'a> Seed<'a> {
     /// sub-member. The bytes are written exactly as the prior schema's writes did, so a
     /// retype case can seed a value of the old V type regardless of the current one.
     pub fn keyed_leaf(&self, id: i64, leaf: &str, entry: SavedKey, bytes: Vec<u8>) {
-        let leaf_id = CatalogId::new(keyed_leaf_catalog_id(self.place, leaf)).expect("leaf id");
+        let leaf_id =
+            CatalogId::new(keyed_leaf_catalog_id(self.place, leaf).expect("leaf catalog id"))
+                .expect("leaf id");
         self.store
             .write_data_value(
                 &self.store_id(),
@@ -225,9 +234,12 @@ impl<'a> Seed<'a> {
     /// writes: `[Member(group_id), Member(leaf_id)]` under the record identity.
     pub fn nested_member(&self, id: i64, group: &str, leaf: &str, value: Scalar) {
         let group_id =
-            CatalogId::new(group_member_catalog_id(self.place, group)).expect("group id");
-        let leaf_id = CatalogId::new(nested_member_catalog_id(self.place, group, leaf))
-            .expect("nested leaf id");
+            CatalogId::new(group_member_catalog_id(self.place, group).expect("group catalog id"))
+                .expect("group id");
+        let leaf_id = CatalogId::new(
+            nested_member_catalog_id(self.place, group, leaf).expect("nested leaf catalog id"),
+        )
+        .expect("nested leaf id");
         let bytes = encode_value(&value).expect("encode value");
         self.store
             .write_data_value(
@@ -256,11 +268,17 @@ impl<'a> Seed<'a> {
     ) {
         let [(outer, outer_key), (inner, inner_key)] = layers;
         let outer_id =
-            CatalogId::new(group_member_catalog_id(self.place, outer)).expect("outer layer id");
-        let inner_id = CatalogId::new(deep_member_catalog_id(self.place, &[outer, inner]))
-            .expect("inner layer id");
-        let leaf_id = CatalogId::new(deep_member_catalog_id(self.place, &[outer, inner, leaf]))
-            .expect("deep leaf id");
+            CatalogId::new(group_member_catalog_id(self.place, outer).expect("outer catalog id"))
+                .expect("outer layer id");
+        let inner_id = CatalogId::new(
+            deep_member_catalog_id(self.place, &[outer, inner]).expect("inner catalog id"),
+        )
+        .expect("inner layer id");
+        let leaf_id = CatalogId::new(
+            deep_member_catalog_id(self.place, &[outer, inner, leaf])
+                .expect("deep leaf catalog id"),
+        )
+        .expect("deep leaf id");
         let bytes = encode_value(&value).expect("encode value");
         self.store
             .write_data_value(
@@ -294,18 +312,24 @@ impl<'a> Seed<'a> {
         let mut path = Vec::new();
         for (layer, key) in layers {
             chain.push(layer);
-            let layer_id =
-                CatalogId::new(deep_member_catalog_id(self.place, &chain)).expect("deep layer id");
+            let layer_id = CatalogId::new(
+                deep_member_catalog_id(self.place, &chain).expect("deep layer catalog id"),
+            )
+            .expect("deep layer id");
             path.push(DataPathSegment::Member(layer_id));
             path.push(DataPathSegment::Key(key.clone()));
         }
         chain.push(group);
-        let group_id =
-            CatalogId::new(deep_member_catalog_id(self.place, &chain)).expect("deep group id");
+        let group_id = CatalogId::new(
+            deep_member_catalog_id(self.place, &chain).expect("deep group catalog id"),
+        )
+        .expect("deep group id");
         path.push(DataPathSegment::Member(group_id));
         chain.push(leaf);
-        let leaf_id =
-            CatalogId::new(deep_member_catalog_id(self.place, &chain)).expect("deep leaf id");
+        let leaf_id = CatalogId::new(
+            deep_member_catalog_id(self.place, &chain).expect("deep leaf catalog id"),
+        )
+        .expect("deep leaf id");
         path.push(DataPathSegment::Member(leaf_id));
         let bytes = encode_value(&value).expect("encode value");
         self.store

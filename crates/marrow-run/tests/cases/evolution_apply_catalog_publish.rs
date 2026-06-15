@@ -79,13 +79,14 @@ const TRANSFORM_BASELINE: &str = "module books\n\
 /// digest, and backfilled data in one transaction. Reading them back proves they moved
 /// together: the published snapshot is the activated proposal, not the baseline.
 #[test]
-fn committed_activation_advances_snapshot_epoch_digest_and_data_together() {
+fn committed_activation_advances_snapshot_epoch_digest_and_data_together()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-publishes-snapshot", |_| {});
     let store = TreeStore::memory();
     // Establish the baseline accepted catalog in the store, exactly as a state-establishing
     // run does, so the apply advances from a real published snapshot rather than from none.
     let accepted = publish_baseline(&root, BASELINE, &store);
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books")?;
     let seed = Seed {
         store: &store,
         place: &accepted_place,
@@ -135,14 +136,16 @@ fn committed_activation_advances_snapshot_epoch_digest_and_data_together() {
         .expect("activation commit");
     assert_eq!(commit.source_digest, w.source_digest);
     assert_eq!(commit.catalog_epoch, proposal.epoch);
-    let store_id = store_id_of(&accepted_place);
-    let pages_id = proposal_catalog_id(&program, "books::Book::pages");
+    let store_id = store_id_of(&accepted_place)?;
+    let pages_id = proposal_catalog_id(&program, "books::Book::pages")?;
     assert_eq!(
         read_scalar(&store, &store_id, 1, &pages_id, INT),
         Some(Scalar::Int(0)),
         "the backfill committed with the snapshot"
     );
     assert_eq!(outcome.receipt.catalog_epoch, proposal.epoch);
+
+    Ok(())
 }
 
 /// A failure before the outer commit rolls the whole apply back: the catalog snapshot,
@@ -150,11 +153,12 @@ fn committed_activation_advances_snapshot_epoch_digest_and_data_together() {
 /// overflows faults inside the transaction, so the activated snapshot is never published
 /// over the baseline.
 #[test]
-fn apply_rollback_leaves_snapshot_epoch_and_data_at_pre_apply_state() {
+fn apply_rollback_leaves_snapshot_epoch_and_data_at_pre_apply_state()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-rollback-no-publish", |_| {});
     let store = TreeStore::memory();
     let accepted = publish_baseline(&root, TRANSFORM_BASELINE, &store);
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books")?;
     let seed = Seed {
         store: &store,
         place: &accepted_place,
@@ -165,11 +169,11 @@ fn apply_rollback_leaves_snapshot_epoch_and_data_at_pre_apply_state() {
 
     let snapshot_before = store.read_catalog_snapshot().expect("snapshot");
     let commit_before = store.read_commit_metadata().expect("commit");
-    let store_id = store_id_of(&accepted_place);
+    let store_id = store_id_of(&accepted_place)?;
 
     write(&root, "src/books.mw", TRANSFORM_OVERFLOW);
     let program = recheck_against_snapshot(&root, &store);
-    let cents_id = proposal_catalog_id(&program, "books::Book::priceCents");
+    let cents_id = proposal_catalog_id(&program, "books::Book::priceCents")?;
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");
     assert!(
@@ -195,6 +199,8 @@ fn apply_rollback_leaves_snapshot_epoch_and_data_at_pre_apply_state() {
         None,
         "the faulting transform wrote no target cell"
     );
+
+    Ok(())
 }
 
 /// Apply re-reads the store's published catalog snapshot and fails closed when it drifted
@@ -202,11 +208,12 @@ fn apply_rollback_leaves_snapshot_epoch_and_data_at_pre_apply_state() {
 /// the baseline catalog; republishing a different catalog out from under it makes apply
 /// refuse before staging rather than write a shape the store no longer accepts.
 #[test]
-fn apply_fails_closed_when_the_store_catalog_drifts_from_the_witness() {
+fn apply_fails_closed_when_the_store_catalog_drifts_from_the_witness()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-catalog-fence", |_| {});
     let store = TreeStore::memory();
     let accepted = publish_baseline(&root, BASELINE, &store);
-    let accepted_place = root_place(&accepted, "books");
+    let accepted_place = root_place(&accepted, "books")?;
     let seed = Seed {
         store: &store,
         place: &accepted_place,
@@ -247,4 +254,6 @@ fn apply_fails_closed_when_the_store_catalog_drifts_from_the_witness() {
         store.catalog_snapshot_digest().expect("digest"),
         Some(drifted.digest)
     );
+
+    Ok(())
 }

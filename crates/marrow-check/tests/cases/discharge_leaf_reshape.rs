@@ -17,7 +17,11 @@ use support_discharge::*;
 /// lives under the member position the new shape now occupies. The reshaped member keeps its
 /// accepted stable id, so the populated bytes the new shape cannot address steer the change to
 /// a transform rather than a silent activation.
-fn assert_leaf_reshape_fails_closed(name: &str, value_decl: &str, expected_reason: RepairReason) {
+fn assert_leaf_reshape_fails_closed(
+    name: &str,
+    value_decl: &str,
+    expected_reason: RepairReason,
+) -> Result<(), Box<dyn std::error::Error>> {
     let value_id = hex_id(3);
     let root = temp_project(name, |root| {
         write(
@@ -42,23 +46,20 @@ fn assert_leaf_reshape_fails_closed(name: &str, value_decl: &str, expected_reaso
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
-    seed.member_bytes_by_id(
-        1,
-        &value_id,
-        encode_value(&Scalar::Str("draft".into())).unwrap(),
-    );
+    seed.member_bytes_by_id(1, &value_id, encode_value(&Scalar::Str("draft".into()))?);
 
-    let reshaped_id = group_member_catalog_id(&place, "value");
+    let reshaped_id = group_member_catalog_id(&place, "value")?;
     assert_eq!(
         reshaped_id, value_id,
         "a reshaped leaf keeps the member's accepted stable id"
     );
     let (result, diagnostics) = preview(&program, &store).expect("preview");
     assert_fails_closed(&result, &diagnostics, &reshaped_id, expected_reason);
+    Ok(())
 }
 
 /// A keyed-leaf value type change over populated entries fails closed, exactly as a
@@ -67,7 +68,8 @@ fn assert_leaf_reshape_fails_closed(name: &str, value_decl: &str, expected_reaso
 /// identity-aware accepted leaf token the discharge compares against; a populated retyped
 /// value is steered to a transform rather than activated.
 #[test]
-fn keyed_leaf_value_retype_over_populated_entries_fails_closed() {
+fn keyed_leaf_value_retype_over_populated_entries_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     let leaf_stable = hex_id(3);
     let root = temp_project("discharge-keyed-leaf-value-retype", |root| {
         // The keyed-leaf value type changes `string` -> `int`; its entries were written as strings.
@@ -95,7 +97,7 @@ fn keyed_leaf_value_retype_over_populated_entries_fails_closed() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     // One record with a keyed-leaf entry whose value was stored as a `string`.
@@ -104,10 +106,10 @@ fn keyed_leaf_value_retype_over_populated_entries_fails_closed() {
         1,
         "tags",
         SavedKey::Int(0),
-        encode_value(&Scalar::Str("draft".into())).unwrap(),
+        encode_value(&Scalar::Str("draft".into()))?,
     );
 
-    let leaf_id = keyed_leaf_catalog_id(&place, "tags");
+    let leaf_id = keyed_leaf_catalog_id(&place, "tags")?;
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
     assert!(
@@ -131,6 +133,8 @@ fn keyed_leaf_value_retype_over_populated_entries_fails_closed() {
             .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == leaf_id),
         "a fail-closed diagnostic must name the keyed leaf, got {diagnostics:#?}"
     );
+
+    Ok(())
 }
 
 /// A keyed leaf whose value type is unchanged proves cleanly over populated entries: the
@@ -138,7 +142,7 @@ fn keyed_leaf_value_retype_over_populated_entries_fails_closed() {
 /// hazard and the change is activatable. This pins that recording an accepted leaf token
 /// for keyed leaves does not block an honest no-change case.
 #[test]
-fn keyed_leaf_value_unchanged_proves() {
+fn keyed_leaf_value_unchanged_proves() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("discharge-keyed-leaf-value-unchanged", |root| {
         write(
             root,
@@ -154,7 +158,7 @@ fn keyed_leaf_value_unchanged_proves() {
     // Commit the schema so the map's catalog id addresses the store; then exercise an
     // unchanged re-preview over a populated map.
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -162,7 +166,7 @@ fn keyed_leaf_value_unchanged_proves() {
         1,
         "tags",
         SavedKey::Int(0),
-        encode_value(&Scalar::Str("draft".into())).unwrap(),
+        encode_value(&Scalar::Str("draft".into()))?,
     );
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
@@ -173,29 +177,37 @@ fn keyed_leaf_value_unchanged_proves() {
         result.verdicts
     );
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+
+    Ok(())
 }
 
 /// A member that WAS a plain leaf becoming a GROUP over populated data fails closed: the new
 /// group shape would orphan the old single-cell bytes, so it is steered to a transform.
 #[test]
-fn leaf_member_becoming_a_group_over_populated_data_fails_closed() {
+fn leaf_member_becoming_a_group_over_populated_data_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     assert_leaf_reshape_fails_closed(
         "discharge-leaf-to-group",
         "\x20   value\n\x20       required first: string\n",
         RepairReason::TypeChangeRequiresTransform,
-    );
+    )?;
+
+    Ok(())
 }
 
 /// A member that WAS a plain leaf becoming a KEYED LAYER over populated data fails closed: the
 /// new keyed shape addresses entries by a key the old bytes were never written at, so it is
 /// steered to a transform.
 #[test]
-fn leaf_member_becoming_a_keyed_layer_over_populated_data_fails_closed() {
+fn leaf_member_becoming_a_keyed_layer_over_populated_data_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     assert_leaf_reshape_fails_closed(
         "discharge-leaf-to-keyed",
         "\x20   value(version: int)\n\x20       required body: string\n",
         RepairReason::TypeChangeRequiresTransform,
-    );
+    )?;
+
+    Ok(())
 }
 
 /// A leaf nested inside a populated KEYED GROUP, retyped, fails closed PER ENTRY. The accepted
@@ -205,7 +217,8 @@ fn leaf_member_becoming_a_keyed_layer_over_populated_data_fails_closed() {
 /// key), so it must be probed through the per-entry keyed descent, not a flat subtree check,
 /// or the old per-entry bytes are missed and it fails open.
 #[test]
-fn retype_of_leaf_nested_in_populated_keyed_group_fails_closed() {
+fn retype_of_leaf_nested_in_populated_keyed_group_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     let body_stable = hex_id(4);
     let root = temp_project("discharge-keyed-nested-retype", |root| {
         write(
@@ -236,7 +249,7 @@ fn retype_of_leaf_nested_in_populated_keyed_group_fails_closed() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "policies");
+    let place = root_place(&program, "policies")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     // One keyed entry whose `body` cell was written under the old `string` type.
@@ -249,7 +262,7 @@ fn retype_of_leaf_nested_in_populated_keyed_group_fails_closed() {
         Scalar::Str("draft".into()),
     );
 
-    let body_id = nested_member_catalog_id(&place, "versions", "body");
+    let body_id = nested_member_catalog_id(&place, "versions", "body")?;
     assert_eq!(
         body_id, body_stable,
         "a retyped keyed-nested leaf keeps its accepted stable id"
@@ -277,6 +290,8 @@ fn retype_of_leaf_nested_in_populated_keyed_group_fails_closed() {
             .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == body_id),
         "a fail-closed diagnostic must name the retyped keyed-nested leaf, got {diagnostics:#?}"
     );
+
+    Ok(())
 }
 
 /// A keyed-nested retype whose old bytes happen to DECODE under the new type is the sharp
@@ -285,7 +300,8 @@ fn retype_of_leaf_nested_in_populated_keyed_group_fails_closed() {
 /// `true`; the per-entry retype probe counts the entry as populated regardless of validity and
 /// fails the change closed, so the overlapping bytes are never reinterpreted.
 #[test]
-fn retype_of_keyed_nested_leaf_with_overlapping_byte_fails_closed() {
+fn retype_of_keyed_nested_leaf_with_overlapping_byte_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     let body_stable = hex_id(4);
     let root = temp_project("discharge-keyed-nested-overlap", |root| {
         write(
@@ -316,14 +332,14 @@ fn retype_of_keyed_nested_leaf_with_overlapping_byte_fails_closed() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "policies");
+    let place = root_place(&program, "policies")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     // The entry's `body` cell was written as `int` `1`, a byte the new `bool` decoder accepts.
     seed.record(1);
     seed.keyed_member(1, "versions", SavedKey::Int(7), "body", Scalar::Int(1));
 
-    let body_id = nested_member_catalog_id(&place, "versions", "body");
+    let body_id = nested_member_catalog_id(&place, "versions", "body")?;
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
     assert!(
@@ -347,12 +363,15 @@ fn retype_of_keyed_nested_leaf_with_overlapping_byte_fails_closed() {
             .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == body_id),
         "a fail-closed diagnostic must name the retyped keyed-nested leaf, got {diagnostics:#?}"
     );
+
+    Ok(())
 }
 
 /// A leaf nested inside a populated keyed group whose type is UNCHANGED proves cleanly: the
 /// per-entry retype probe must not fail closed on an honest no-change keyed-nested leaf.
 #[test]
-fn unchanged_leaf_nested_in_populated_keyed_group_proves() {
+fn unchanged_leaf_nested_in_populated_keyed_group_proves() -> Result<(), Box<dyn std::error::Error>>
+{
     let body_stable = hex_id(4);
     let root = temp_project("discharge-keyed-nested-unchanged", |root| {
         write(
@@ -383,7 +402,7 @@ fn unchanged_leaf_nested_in_populated_keyed_group_proves() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "policies");
+    let place = root_place(&program, "policies")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -395,7 +414,7 @@ fn unchanged_leaf_nested_in_populated_keyed_group_proves() {
         Scalar::Str("draft".into()),
     );
 
-    let body_id = nested_member_catalog_id(&place, "versions", "body");
+    let body_id = nested_member_catalog_id(&place, "versions", "body")?;
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
     assert!(result.is_activatable(), "{:#?}", result.verdicts);
@@ -405,6 +424,8 @@ fn unchanged_leaf_nested_in_populated_keyed_group_proves() {
         verdict_for(&result, &body_id)
     );
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+
+    Ok(())
 }
 
 /// A leaf becoming a group that adds a brand-new REQUIRED sub-member fails closed over a record
@@ -414,7 +435,8 @@ fn unchanged_leaf_nested_in_populated_keyed_group_proves() {
 /// but has no value at the old leaf position is caught for the missing required sub-member
 /// rather than fixed up by the empty disappeared-leaf probe and silently activated.
 #[test]
-fn leaf_to_group_adding_required_submember_over_empty_cell_fails_closed() {
+fn leaf_to_group_adding_required_submember_over_empty_cell_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     let value_id = hex_id(3);
     let root = temp_project("discharge-leaf-to-group-required", |root| {
         write(
@@ -442,7 +464,7 @@ fn leaf_to_group_adding_required_submember_over_empty_cell_fails_closed() {
         write_catalog(root, &accepted);
     });
     let program = checked(&root).expect("checked fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     // The record exists (a sibling `marker` cell) but its old `value` leaf cell was never
@@ -453,7 +475,7 @@ fn leaf_to_group_adding_required_submember_over_empty_cell_fails_closed() {
 
     // `value.first` is a brand-new required sub-member of the new group; its identity lives
     // only in the proposal, so the descend reaches it by its proposal-minted id.
-    let first_id = new_member_proposal_id(&program, "books::Book::value::first");
+    let first_id = new_member_proposal_id(&program, "books::Book::value::first")?;
     let (result, _diagnostics) = preview(&program, &store).expect("preview");
 
     assert!(
@@ -471,4 +493,6 @@ fn leaf_to_group_adding_required_submember_over_empty_cell_fails_closed() {
         "the brand-new required sub-member must be scanned and fail closed, got {:#?}",
         verdict_for(&result, &first_id)
     );
+
+    Ok(())
 }

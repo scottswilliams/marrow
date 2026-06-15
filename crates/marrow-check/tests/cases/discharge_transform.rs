@@ -16,7 +16,7 @@ use support_discharge::*;
 /// `price` decodes under its current type, so the transform is activatable and the
 /// verdict names the ids apply reads to build the `old` binding.
 #[test]
-fn transform_from_decodable_sibling_is_applyable() {
+fn transform_from_decodable_sibling_is_applyable() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("discharge-transform-applyable", |root| {
         write(
             root,
@@ -34,7 +34,7 @@ fn transform_from_decodable_sibling_is_applyable() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -43,8 +43,8 @@ fn transform_from_decodable_sibling_is_applyable() {
 
     let result = witness(&program, &store);
 
-    let cents_id = member_catalog_id(&place, "priceCents");
-    let price_id = member_catalog_id(&place, "price");
+    let cents_id = member_catalog_id(&place, "priceCents")?;
+    let price_id = member_catalog_id(&place, "price")?;
 
     assert!(result.is_activatable(), "{result:#?}");
     match verdict_for(&result, &cents_id) {
@@ -54,6 +54,8 @@ fn transform_from_decodable_sibling_is_applyable() {
         ),
         other => panic!("expected transform, got {other:#?}"),
     }
+
+    Ok(())
 }
 
 /// A transform body whose read member does not decode under its current type fails
@@ -61,7 +63,7 @@ fn transform_from_decodable_sibling_is_applyable() {
 /// reading `old.<member>` is unsound. The transform target discharges to a blocking
 /// repair (it cannot be recomputed) and the witness is not activatable.
 #[test]
-fn transform_undecodable_read_member_fails_closed() {
+fn transform_undecodable_read_member_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("discharge-transform-undecodable", |root| {
         write(
             root,
@@ -79,7 +81,7 @@ fn transform_undecodable_read_member_fails_closed() {
         );
     });
     let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     // `price` was written as a string under its old type; it cannot decode as the
@@ -89,7 +91,7 @@ fn transform_undecodable_read_member_fails_closed() {
     seed.member(1, "priceCents", Scalar::Int(0));
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-    let cents_id = member_catalog_id(&place, "priceCents");
+    let cents_id = member_catalog_id(&place, "priceCents")?;
 
     assert!(!result.is_activatable(), "{result:#?}");
     assert!(
@@ -108,6 +110,8 @@ fn transform_undecodable_read_member_fails_closed() {
             .any(|diagnostic| diagnostic.catalog_id.as_str() == cents_id),
         "{diagnostics:#?}"
     );
+
+    Ok(())
 }
 
 /// A transform body that performs a saved write is impure and rejected at check time.
@@ -585,7 +589,7 @@ fn transform_of_nested_member_is_check_error() {
 /// catalog epoch/digest, the store engine profile + commit id, and the affected
 /// catalog ids.
 #[test]
-fn witness_composes_catalog_and_store_fingerprints() {
+fn witness_composes_catalog_and_store_fingerprints() -> Result<(), Box<dyn std::error::Error>> {
     // Commit a first schema, then add an optional member so the next check proposes
     // a changed catalog: the witness must carry both fingerprints.
     let root = temp_project("discharge-witness", |root| {
@@ -619,7 +623,7 @@ fn witness_composes_catalog_and_store_fingerprints() {
     // signal: the check reports a catalog-intent diagnostic, yet the proposal still
     // forms, so the witness must carry both the accepted and proposal fingerprints.
     let (_report, program) = check_with_accepted(&root);
-    let place = root_place(&program, "books");
+    let place = root_place(&program, "books")?;
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
     seed.record(1);
@@ -648,7 +652,7 @@ fn witness_composes_catalog_and_store_fingerprints() {
     // The subtitle member the proposal newly adds is among the affected ids. Its
     // bound place id is empty until the proposal is accepted, so read the minted
     // stable id from the proposal entries.
-    let subtitle_id = new_member_proposal_id(&program, "books::Book::subtitle");
+    let subtitle_id = new_member_proposal_id(&program, "books::Book::subtitle")?;
     assert!(
         witness
             .changed_root_catalog_ids
@@ -656,4 +660,6 @@ fn witness_composes_catalog_and_store_fingerprints() {
             .any(|id| id.as_str() == subtitle_id),
         "{witness:#?}"
     );
+
+    Ok(())
 }
