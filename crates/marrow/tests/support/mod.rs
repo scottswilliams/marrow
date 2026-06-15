@@ -321,16 +321,7 @@ pub(crate) fn native_store_path(
     root: &Path,
     config: &marrow_project::ProjectConfig,
 ) -> Option<PathBuf> {
-    match &config.store {
-        marrow_project::StoreConfig {
-            backend: marrow_project::StoreBackend::Native,
-            data_dir,
-        } => {
-            let data_dir = data_dir.as_deref().expect("native store has a dataDir");
-            Some(root.join(data_dir).join("marrow.redb"))
-        }
-        _ => None,
-    }
+    marrow_check::native_store_path(root, config).expect("valid fixture store config")
 }
 
 /// The accepted store catalog id of a checked root member, addressed by name. CLI

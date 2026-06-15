@@ -53,7 +53,7 @@ pub(crate) fn restore(args: &[String]) -> ExitCode {
     }
 
     // Restore needs a durable target. An in-memory project has nowhere to write to.
-    let target_files = match RestoreTargetFiles::capture(&dir, &config) {
+    let target_files = match RestoreTargetFiles::capture(&dir, &config, format) {
         Ok(files) => files,
         Err(code) => return code,
     };
@@ -339,8 +339,9 @@ impl RestoreTargetFiles {
     fn capture(
         dir: &str,
         config: &marrow_project::ProjectConfig,
+        format: CheckFormat,
     ) -> Result<RestoreTargetFiles, ExitCode> {
-        let Some(path) = native_store_path(dir, config)? else {
+        let Some(path) = native_store_path(dir, config, format)? else {
             return Ok(RestoreTargetFiles {
                 store_path: None,
                 parent_path: None,

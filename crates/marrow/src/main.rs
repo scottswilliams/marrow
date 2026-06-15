@@ -431,8 +431,10 @@ pub(crate) fn project_io_exit(
 pub(crate) fn native_store_path(
     dir: &str,
     config: &marrow_project::ProjectConfig,
+    format: CheckFormat,
 ) -> Result<Option<PathBuf>, ExitCode> {
-    Ok(marrow_check::native_store_path(Path::new(dir), config))
+    marrow_check::native_store_path(Path::new(dir), config)
+        .map_err(|error| project_io_exit(dir, error, format))
 }
 
 /// Like [`native_store_path`], but creates the data directory so the store can be
@@ -453,7 +455,7 @@ pub(crate) fn open_store_for_inspection(
     config: &marrow_project::ProjectConfig,
     format: CheckFormat,
 ) -> Result<Option<marrow_store::tree::TreeStore>, ExitCode> {
-    let Some(path) = native_store_path(dir, config)? else {
+    let Some(path) = native_store_path(dir, config, format)? else {
         return Ok(None);
     };
     if !path.exists() {

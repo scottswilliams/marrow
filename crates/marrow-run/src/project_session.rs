@@ -809,7 +809,7 @@ fn open_store_for_inspection(
     root: &Path,
     config: &ProjectConfig,
 ) -> Result<Option<TreeStore>, ProjectSessionError> {
-    let Some(path) = marrow_check::native_store_path(root, config) else {
+    let Some(path) = marrow_check::native_store_path(root, config)? else {
         return Ok(None);
     };
     if !path.exists() {

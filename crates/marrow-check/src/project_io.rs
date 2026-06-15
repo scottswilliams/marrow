@@ -76,21 +76,32 @@ pub fn load_config(root: &Path) -> Result<ProjectConfig, ProjectIoError> {
     })
 }
 
-pub fn native_store_path(root: &Path, config: &ProjectConfig) -> Option<PathBuf> {
+pub fn native_store_path(
+    root: &Path,
+    config: &ProjectConfig,
+) -> Result<Option<PathBuf>, ProjectIoError> {
     match &config.store {
         StoreConfig {
             backend: StoreBackend::Memory,
             ..
-        } => None,
+        } => Ok(None),
         StoreConfig {
             backend: StoreBackend::Native,
             data_dir,
         } => {
             let data_dir = data_dir
                 .as_deref()
-                .expect("parse_config guarantees a native store has a dataDir");
-            Some(root.join(data_dir).join("marrow.redb"))
+                .filter(|data_dir| !data_dir.is_empty())
+                .ok_or_else(native_store_data_dir_error)?;
+            Ok(Some(root.join(data_dir).join("marrow.redb")))
         }
+    }
+}
+
+fn native_store_data_dir_error() -> ProjectIoError {
+    ProjectIoError::Config {
+        code: marrow_project::CONFIG_INVALID,
+        message: "the `native` store backend requires a non-empty `dataDir`".to_string(),
     }
 }
 
@@ -98,7 +109,7 @@ pub fn resolve_store_path(
     root: &Path,
     config: &ProjectConfig,
 ) -> Result<Option<PathBuf>, ProjectIoError> {
-    let Some(path) = native_store_path(root, config) else {
+    let Some(path) = native_store_path(root, config)? else {
         return Ok(None);
     };
     if let Some(parent) = path.parent() {
@@ -245,5 +256,66 @@ fn store_snapshot_repairs_file(
         AcceptedCatalogFile::Snapshot(file) => {
             file != store_snapshot && store_snapshot.epoch >= file.epoch
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use marrow_project::{ProjectConfig, StoreBackend, StoreConfig};
+
+    use super::{ProjectIoError, native_store_path, resolve_store_path};
+
+    fn native_config(data_dir: Option<&str>) -> ProjectConfig {
+        ProjectConfig {
+            source_roots: vec!["src".to_string()],
+            default_entry: None,
+            store: StoreConfig {
+                backend: StoreBackend::Native,
+                data_dir: data_dir.map(str::to_string),
+            },
+            tests: Vec::new(),
+        }
+    }
+
+    fn assert_native_data_dir_error(error: ProjectIoError) {
+        let ProjectIoError::Config { code, message } = error else {
+            panic!("expected config error");
+        };
+        assert_eq!(code, marrow_project::CONFIG_INVALID);
+        assert_eq!(
+            message,
+            "the `native` store backend requires a non-empty `dataDir`"
+        );
+    }
+
+    #[test]
+    fn native_store_path_rejects_missing_native_data_dir() {
+        let error = native_store_path(Path::new("/project"), &native_config(None)).unwrap_err();
+
+        assert_native_data_dir_error(error);
+    }
+
+    #[test]
+    fn native_store_path_rejects_empty_native_data_dir() {
+        let error = native_store_path(Path::new("/project"), &native_config(Some(""))).unwrap_err();
+
+        assert_native_data_dir_error(error);
+    }
+
+    #[test]
+    fn native_store_path_returns_configured_redb_file() {
+        let path = native_store_path(Path::new("/project"), &native_config(Some(".data")))
+            .expect("valid native store path");
+
+        assert_eq!(path, Some(PathBuf::from("/project/.data/marrow.redb")));
+    }
+
+    #[test]
+    fn resolve_store_path_propagates_native_data_dir_errors() {
+        let error = resolve_store_path(Path::new("/project"), &native_config(None)).unwrap_err();
+
+        assert_native_data_dir_error(error);
     }
 }

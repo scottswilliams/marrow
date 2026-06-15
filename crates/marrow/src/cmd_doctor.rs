@@ -223,7 +223,20 @@ fn probe_store_open(
     config: &marrow_project::ProjectConfig,
     findings: &mut Vec<Finding>,
 ) -> Option<TreeStore> {
-    let path = marrow_check::native_store_path(root, config)?;
+    let path = match marrow_check::native_store_path(root, config) {
+        Ok(Some(path)) => path,
+        Ok(None) => return None,
+        Err(error) => {
+            findings.push(project_error_finding(
+                "doctor.config_invalid",
+                "project configuration is invalid",
+                "fix marrow.json, then rerun the next command",
+                doctor_command(dir),
+                error,
+            ));
+            return None;
+        }
+    };
     if !path.exists() {
         return None;
     }

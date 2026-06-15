@@ -8,7 +8,9 @@ use marrow_check::evolution::{EvolutionWitness, Verdict, preview};
 use marrow_run::SystemNondeterminism;
 use marrow_run::evolution::{ApplyError, apply};
 
-use crate::{load_checked_project_with_format, load_config_with_format, report_simple_error};
+use crate::{
+    load_checked_project_with_format, load_config_with_format, project_io_exit, report_simple_error,
+};
 
 mod args;
 mod render;
@@ -198,7 +200,9 @@ fn guard_recovery_backup_path(
         lexical_path(project_dir),
         resolved_or_lexical_path(project_dir),
     ] {
-        for managed_path in managed_recovery_backup_paths(&project_root, config) {
+        let managed_paths = managed_recovery_backup_paths(&project_root, config)
+            .map_err(|error| project_io_exit(&input.dir, error, input.format))?;
+        for managed_path in managed_paths {
             if backup_conflicts_with_managed_path(backup_path, &managed_path.path) {
                 report_simple_error(
                     "evolve.backup_path_managed",
@@ -224,7 +228,7 @@ struct ManagedRecoveryPath {
 fn managed_recovery_backup_paths(
     project_root: &Path,
     config: &marrow_project::ProjectConfig,
-) -> Vec<ManagedRecoveryPath> {
+) -> Result<Vec<ManagedRecoveryPath>, marrow_check::ProjectIoError> {
     let mut paths = vec![
         ManagedRecoveryPath {
             label: "project config file",
@@ -248,7 +252,7 @@ fn managed_recovery_backup_paths(
         });
     }
     if config.store.backend == marrow_project::StoreBackend::Native {
-        if let Some(store_path) = marrow_check::native_store_path(project_root, config) {
+        if let Some(store_path) = marrow_check::native_store_path(project_root, config)? {
             paths.push(ManagedRecoveryPath {
                 label: "configured native store file",
                 path: store_path,
@@ -261,7 +265,7 @@ fn managed_recovery_backup_paths(
             });
         }
     }
-    paths
+    Ok(paths)
 }
 
 fn backup_conflicts_with_managed_path(backup_path: &Path, managed_path: &Path) -> bool {

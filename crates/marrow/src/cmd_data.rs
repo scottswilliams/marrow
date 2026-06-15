@@ -283,7 +283,7 @@ fn data_recover(args: &[String]) -> ExitCode {
         Ok(config) => config,
         Err(code) => return code,
     };
-    let Some(path) = (match native_store_path(&dir, &config) {
+    let Some(path) = (match native_store_path(&dir, &config, format) {
         Ok(path) => path,
         Err(code) => return code,
     }) else {
