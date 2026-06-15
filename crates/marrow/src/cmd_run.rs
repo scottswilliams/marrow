@@ -322,10 +322,22 @@ impl RunOutputSink for ProgramOutputSink {
             return;
         }
         let mut stdout = std::io::stdout();
-        stdout
-            .write_all(text.as_bytes())
-            .expect("program stdout write failed");
-        stdout.flush().expect("program stdout flush failed");
+        if let Err(error) = stdout.write_all(text.as_bytes()) {
+            exit_after_program_stdout_error(error);
+        }
+        if let Err(error) = stdout.flush() {
+            exit_after_program_stdout_error(error);
+        }
+    }
+}
+
+fn exit_after_program_stdout_error(error: std::io::Error) -> ! {
+    match error.kind() {
+        std::io::ErrorKind::BrokenPipe => std::process::exit(0),
+        _ => {
+            eprintln!("io.write: failed to write program stdout: {error}");
+            std::process::exit(1);
+        }
     }
 }
 
