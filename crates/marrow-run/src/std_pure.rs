@@ -686,8 +686,36 @@ fn eval_clock_std(
         }
         "addDays" => eval_clock_add_days(args, span, env),
         "daysBetween" => eval_clock_days_between(args, span, env),
-        "year" | "month" | "day" => eval_clock_date_part(op, args, span, env),
-        other => Err(unsupported(&format!("std::clock::{other}"), span)),
+        other => match ClockDatePart::from_name(other) {
+            Some(part) => eval_clock_date_part(part, args, span, env),
+            None => Err(unsupported(&format!("std::clock::{other}"), span)),
+        },
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ClockDatePart {
+    Year,
+    Month,
+    Day,
+}
+
+impl ClockDatePart {
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "year" => Some(Self::Year),
+            "month" => Some(Self::Month),
+            "day" => Some(Self::Day),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Year => "year",
+            Self::Month => "month",
+            Self::Day => "day",
+        }
     }
 }
 
@@ -722,21 +750,20 @@ fn eval_clock_days_between(
 }
 
 fn eval_clock_date_part(
-    op: &str,
+    part: ClockDatePart,
     args: &[ExecArg],
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     let [date] = args else {
-        return Err(std_arity("clock", op, span));
+        return Err(std_arity("clock", part.name(), span));
     };
     let parts =
         date_parts(eval_date_arg(date, env, span)?).ok_or_else(|| temporal_overflow(span))?;
-    let value = match op {
-        "year" => i64::from(parts.year),
-        "month" => i64::from(parts.month),
-        "day" => i64::from(parts.day),
-        _ => unreachable!("date part helper dispatch only passes known ops"),
+    let value = match part {
+        ClockDatePart::Year => i64::from(parts.year),
+        ClockDatePart::Month => i64::from(parts.month),
+        ClockDatePart::Day => i64::from(parts.day),
     };
     Ok(Value::Int(value))
 }

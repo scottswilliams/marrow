@@ -12,7 +12,7 @@ use marrow_store::tree::TreeStore;
 use marrow_syntax::SourceSpan;
 
 use crate::env::{Context, Env, TransactionState};
-use crate::error::{RUN_UNSUPPORTED, RuntimeError};
+use crate::error::{RUN_TYPE, RUN_UNSUPPORTED, RuntimeError};
 use crate::host::{Host, RunContext};
 use crate::host_effects::{eval_clock_capability, eval_context, eval_env, eval_io, eval_log};
 use crate::std_json::eval_json;
@@ -209,5 +209,36 @@ fn json_handler_rejects_unknown_ops_before_args() {
 
     let mut env = test_env(&program, &store, &host);
     assert_unsupported(eval_json("missing", &log_arg, span, &mut env));
+    assert_eq!(log.borrow().as_str(), "");
+}
+
+#[test]
+fn clock_date_part_dispatch_keeps_error_surfaces() {
+    let program = CheckedRuntimeProgram::default();
+    let store = TreeStore::memory();
+    let span = SourceSpan::default();
+
+    for op in ["year", "month", "day"] {
+        let host = Host::new();
+        let mut env = test_env(&program, &store, &host);
+        let error = eval_std("clock", op, &[], span, &mut env).unwrap_err();
+        assert_eq!(error.code, RUN_TYPE);
+        assert_eq!(
+            error.message,
+            format!("`std::clock::{op}` got the wrong number of arguments")
+        );
+    }
+
+    let log = Rc::new(RefCell::new(String::new()));
+    let host = Host::new().with_log_sink(Rc::clone(&log));
+    let log_arg = vec![std_call_arg(
+        "log",
+        "info",
+        vec![string_arg("should not run")],
+        Capability::Log,
+    )];
+
+    let mut env = test_env(&program, &store, &host);
+    assert_unsupported(eval_std("clock", "missing", &log_arg, span, &mut env));
     assert_eq!(log.borrow().as_str(), "");
 }
