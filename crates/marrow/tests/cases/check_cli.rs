@@ -355,14 +355,18 @@ fn check_rejects_removed_inout_syntax_for_a_project_directory() {
     assert_eq!(output.status.code(), Some(1));
     let report = support::json(output.stdout);
     assert_has_code(&report, "parse.syntax");
+    let expected_file = dir.join("src/shelf.mw").display().to_string();
     assert!(
         report["diagnostics"]
             .as_array()
             .expect("diagnostics")
             .iter()
-            .any(|diagnostic| diagnostic["message"]
-                .as_str()
-                .is_some_and(|message| message.contains("parameter modes were removed"))),
+            .any(|diagnostic| diagnostic["code"] == "parse.syntax"
+                && diagnostic["kind"] == "parse"
+                && diagnostic["source_span"]["file"]
+                    .as_str()
+                    .is_some_and(|file| file == expected_file)
+                && diagnostic["source_span"]["line"] == 10),
         "{report:#?}"
     );
 }

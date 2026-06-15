@@ -5,7 +5,7 @@ use crate::common;
 use common::{has_reason, lexer_reason, parse_reason};
 use marrow_syntax::{
     BinaryOp, Declaration, Diagnose, Expression, InterpolationPart, LexerDiagnosticReason,
-    ParseDiagnosticReason, parse_source,
+    ParseDiagnosticReason, UnsupportedSyntax, parse_source,
 };
 
 #[test]
@@ -307,12 +307,10 @@ fn removed_call_argument_modes_are_rejected() {
         let parsed = parse_source(source);
         assert!(parsed.has_errors(), "expected removed mode rejection");
         assert!(
-            parsed.diagnostics.iter().any(|diagnostic| diagnostic
-                .message
-                .contains("parameter modes were removed")
-                && diagnostic.help.as_deref().is_some_and(|help| {
-                    help.contains("assign the returned value at the call site")
-                })),
+            parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Unsupported(
+                    UnsupportedSyntax::ParameterModes,
+                ))),
             "{:#?}",
             parsed.diagnostics
         );

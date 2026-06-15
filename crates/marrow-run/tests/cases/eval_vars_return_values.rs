@@ -5,7 +5,7 @@ use crate::support;
 use support::*;
 
 use marrow_run::Value;
-use marrow_syntax::parse_source;
+use marrow_syntax::{DiagnosticReason, ParseDiagnosticReason, UnsupportedSyntax, parse_source};
 
 #[test]
 fn an_uninitialized_scalar_var_starts_at_its_zero() {
@@ -180,10 +180,10 @@ fn inout_parameter_and_argument_syntax_is_rejected_before_runtime() {
             "expected parse rejection for:\n{source}"
         );
         assert!(
-            parsed
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.message.contains("parameter modes were removed")),
+            parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+                == DiagnosticReason::Parser(ParseDiagnosticReason::Unsupported(
+                    UnsupportedSyntax::ParameterModes,
+                ))),
             "{:#?}",
             parsed.diagnostics
         );

@@ -94,10 +94,10 @@ fn removed_parameter_modes_are_rejected() {
             "expected removed parameter mode rejection"
         );
         assert!(
-            parsed.diagnostics.iter().any(|diagnostic| diagnostic
-                .message
-                .contains("parameter modes were removed")
-                && diagnostic.message.contains("return the new value")),
+            parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Unsupported(
+                    UnsupportedSyntax::ParameterModes,
+                ))),
             "{:#?}",
             parsed.diagnostics
         );
