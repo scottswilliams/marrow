@@ -1079,23 +1079,6 @@ fn a_conversion_error_message_includes_the_rejected_string() {
 }
 
 #[test]
-fn conversion_error_string_previews_are_bounded() {
-    let program = checked_program("pub fn n(v: string): int\n    return int(v)\n");
-    let mut raw = "prefix-".to_string();
-    raw.push_str(&"x".repeat(96));
-    raw.push_str("-tail-marker");
-    let error = run(checked_entry!(&program, "test::n", Value::Str(raw))).unwrap_err();
-
-    assert_eq!(error.code(), RUN_TYPE);
-    assert!(error.message.starts_with("cannot convert value \"prefix-"));
-    assert!(
-        !error.message.contains("tail-marker"),
-        "message must not contain the unbounded tail: {}",
-        error.message
-    );
-}
-
-#[test]
 fn conversion_error_message_includes_a_bounded_bytes_preview() {
     let program = checked_program("pub fn s(v: bytes): string\n    return string(v)\n");
     assert_eq!(

@@ -694,11 +694,56 @@ fn render_identity(identity: &IdentityValue) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Value, canonical_scalar_text, saved_key_to_value};
+    use super::{
+        Value, canonical_scalar_text, diagnostic_saved_key_tuple_preview, diagnostic_text_preview,
+        diagnostic_value_preview, saved_key_to_value,
+    };
     use crate::error::RUN_TYPE;
     use marrow_store::key::SavedKey;
     use marrow_store::value::SavedValue;
     use marrow_syntax::SourceSpan;
+
+    const SIXTY_FOUR_CHAR_PREFIX: &str =
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!?";
+    const LONG_TEXT_PREVIEW: &str =
+        "\"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!?...\"";
+    const LONG_SAVED_KEY_TUPLE_PREVIEW: &str =
+        "(\"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!?...\")";
+
+    fn long_diagnostic_text() -> String {
+        format!("{SIXTY_FOUR_CHAR_PREFIX}-tail-marker")
+    }
+
+    #[test]
+    fn diagnostic_text_preview_truncates_after_sixty_four_chars() {
+        let text = long_diagnostic_text();
+        let preview = diagnostic_text_preview(&text);
+
+        assert_eq!(SIXTY_FOUR_CHAR_PREFIX.chars().count(), 64);
+        assert_eq!(preview, LONG_TEXT_PREVIEW);
+        assert!(!preview.contains("tail-marker"), "{preview}");
+    }
+
+    #[test]
+    fn diagnostic_value_preview_uses_bounded_string_preview() {
+        let text = long_diagnostic_text();
+        let preview = diagnostic_value_preview(&Value::Str(text));
+
+        assert_eq!(preview.as_deref(), Some(LONG_TEXT_PREVIEW));
+        assert!(
+            !matches!(preview.as_deref(), Some(preview) if preview.contains("tail-marker")),
+            "{preview:?}"
+        );
+    }
+
+    #[test]
+    fn diagnostic_saved_key_tuple_preview_uses_bounded_string_preview() {
+        let text = long_diagnostic_text();
+        let preview = diagnostic_saved_key_tuple_preview(&[SavedKey::Str(text)]);
+
+        assert_eq!(preview, LONG_SAVED_KEY_TUPLE_PREVIEW);
+        assert!(!preview.contains("tail-marker"), "{preview}");
+    }
 
     #[test]
     fn saved_key_to_value_carries_every_scalar_key_kind() {
