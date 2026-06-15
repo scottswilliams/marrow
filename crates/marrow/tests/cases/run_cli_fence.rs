@@ -2,6 +2,27 @@ use crate::support;
 use std::fs;
 use support::{marrow_sub, temp_project, temp_project_uncommitted, write};
 
+fn seed_unstamped_int_member(
+    store: &marrow_store::tree::TreeStore,
+    store_id: &marrow_store::cell::CatalogId,
+    identity: &[marrow_store::key::SavedKey],
+    member_id: &marrow_store::cell::CatalogId,
+    value: i64,
+) {
+    store.write_node(store_id, identity).expect("write record");
+    store
+        .write_data_value(
+            store_id,
+            identity,
+            &[marrow_store::tree::DataPathSegment::Member(
+                member_id.clone(),
+            )],
+            marrow_store::value::encode_value(&marrow_store::value::Scalar::Int(value))
+                .expect("encode value"),
+        )
+        .expect("write value");
+}
+
 /// A store stamped at a catalog epoch newer than the project's accepted epoch was
 /// evolved by a newer binary. `marrow run` fences itself before any execution: it
 /// reports `run.store_evolved` and never runs the entry, so no program output reaches
@@ -123,18 +144,13 @@ fn run_rejects_populated_unstamped_accepted_store() {
                 .expect("accepted value member id"),
         )
         .expect("value catalog id");
-        store
-            .write_node(&store_id, &[marrow_store::key::SavedKey::Int(1)])
-            .expect("write record");
-        store
-            .write_data_value(
-                &store_id,
-                &[marrow_store::key::SavedKey::Int(1)],
-                &[marrow_store::tree::DataPathSegment::Member(value_id)],
-                marrow_store::value::encode_value(&marrow_store::value::Scalar::Int(7))
-                    .expect("encode value"),
-            )
-            .expect("write value");
+        seed_unstamped_int_member(
+            &store,
+            &store_id,
+            &[marrow_store::key::SavedKey::Int(1)],
+            &value_id,
+            7,
+        );
     }
 
     let output = marrow_sub("run", &[root.to_str().unwrap()]);
@@ -211,18 +227,7 @@ fn run_rejects_composite_root_in_populated_unstamped_accepted_store() {
         store
             .replace_catalog_snapshot(&proposal)
             .expect("publish accepted catalog without epoch stamp");
-        store
-            .write_node(&store_id, &identity)
-            .expect("write record");
-        store
-            .write_data_value(
-                &store_id,
-                &identity,
-                &[marrow_store::tree::DataPathSegment::Member(value_id)],
-                marrow_store::value::encode_value(&marrow_store::value::Scalar::Int(9))
-                    .expect("encode value"),
-            )
-            .expect("write value");
+        seed_unstamped_int_member(&store, &store_id, &identity, &value_id, 9);
     }
     {
         let store =
