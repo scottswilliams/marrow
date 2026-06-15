@@ -28,7 +28,7 @@ fn optional_add_stamps_epoch_without_data_step() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -96,7 +96,7 @@ fn source_digest_drift_aborts() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -137,7 +137,7 @@ fn count_drift_aborts() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -179,7 +179,7 @@ fn store_commit_drift_aborts() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -218,7 +218,7 @@ fn commit_id_overflow_aborts_without_staging_apply_writes() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -287,7 +287,7 @@ fn failed_apply_rolls_back_and_resumes_idempotently() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
 
     let store_path = root.join("data.marrow");
@@ -359,7 +359,7 @@ fn no_op_apply_does_not_churn_the_commit_id() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {

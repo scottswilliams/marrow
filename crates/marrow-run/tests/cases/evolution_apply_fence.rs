@@ -45,7 +45,7 @@ fn applied_store_passes_same_binary_fence_and_locks_out_older() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -107,7 +107,7 @@ fn apply_is_fenced_when_store_evolved_past_the_binary() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let accepted = program.catalog.accepted_epoch.expect("accepted epoch");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
@@ -190,7 +190,7 @@ fn apply_without_accepted_catalog_refuses_and_leaves_store_unchanged() {
     // The program proposes a catalog but none has been committed. Without a committed
     // catalog the bound store catalog ids are unresolved, so there is nothing to seed;
     // apply must refuse before reaching any data work.
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     assert!(program.catalog.accepted_epoch.is_none());
     let store = TreeStore::memory();
 
@@ -222,7 +222,7 @@ fn schema_drift_at_the_same_epoch_is_fenced_before_execution() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program_a = commit_then_check(&root_a);
+    let program_a = commit_then_check(&root_a).expect("committed fixture");
     let place_a = root_place(&program_a, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -255,7 +255,7 @@ fn schema_drift_at_the_same_epoch_is_fenced_before_execution() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program_b = commit_then_check(&root_b);
+    let program_b = commit_then_check(&root_b).expect("committed fixture");
     assert_eq!(
         program_b.catalog.accepted_epoch.expect("accepted epoch"),
         accepted,

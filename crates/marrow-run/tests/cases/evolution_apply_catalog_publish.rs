@@ -18,7 +18,7 @@ use marrow_store::value::Scalar;
 /// the program re-checked against the published store snapshot, as production rebinds it.
 fn publish_baseline(root: &Path, source: &str, store: &TreeStore) -> CheckedProgram {
     write(root, "src/books.mw", source);
-    let pending = checked(root);
+    let pending = checked(root).expect("checked fixture");
     let wrote = commit_catalog_baseline(store, &pending).expect("commit baseline");
     assert!(wrote, "the baseline proposal is published");
     recheck_against_snapshot(root, store)

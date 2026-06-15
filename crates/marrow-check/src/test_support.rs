@@ -11,7 +11,7 @@
 //! that crate's pipeline and would drag filesystem setup into this fact-lookup
 //! helper.
 
-use std::path::Path;
+use std::{fs, io, path::Path};
 
 use marrow_catalog::CatalogEntryKind;
 use marrow_project::{ProjectConfig, StoreBackend, StoreConfig};
@@ -21,6 +21,8 @@ use crate::{
     CheckReport, CheckedProgram, CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace,
     check_project_with_catalog, checked_saved_root_place,
 };
+
+type TestSupportResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 /// The standard single-`src`-root project config the source-driven suites check under.
 pub fn test_config() -> ProjectConfig {
@@ -41,12 +43,11 @@ pub fn test_config() -> ProjectConfig {
 /// production; reading it through the migration parser lets a suite pin a hand-built
 /// accepted catalog the source has moved away from. The caller owns the project
 /// directory, so this helper carries no filesystem setup.
-pub fn checked(root: &Path) -> CheckedProgram {
-    let accepted = read_fixture_catalog(root);
-    let (report, program) =
-        check_project_with_catalog(root, &test_config(), accepted.as_ref()).expect("check project");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    program
+pub fn checked(root: &Path) -> TestSupportResult<CheckedProgram> {
+    let accepted = read_fixture_catalog(root)?;
+    let (report, program) = check_project_with_catalog(root, &test_config(), accepted.as_ref())?;
+    ensure_clean_report(&report)?;
+    Ok(program)
 }
 
 /// Check the source with no committed catalog, freeze the proposal it produced as the
@@ -56,32 +57,47 @@ pub fn checked(root: &Path) -> CheckedProgram {
 /// is also written to the fixture file so a later [`checked`] over a changed source binds
 /// it, mirroring the committed `marrow.catalog.json` artifact a real project would carry
 /// forward.
-pub fn commit_then_check(root: &Path) -> CheckedProgram {
-    let (report, program) =
-        check_project_with_catalog(root, &test_config(), None).expect("check for commit");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+pub fn commit_then_check(root: &Path) -> TestSupportResult<CheckedProgram> {
+    let (report, program) = check_project_with_catalog(root, &test_config(), None)?;
+    ensure_clean_report(&report)?;
     let proposal = program
         .catalog
         .proposal
         .clone()
-        .expect("a catalog proposal to commit");
-    std::fs::write(
-        root.join("marrow.catalog.json"),
-        proposal.to_json_pretty().expect("catalog renders"),
-    )
-    .expect("freeze fixture catalog");
-    let (report, committed) =
-        check_project_with_catalog(root, &test_config(), Some(&proposal)).expect("re-check");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    committed
+        .ok_or_else(|| io::Error::other("a catalog proposal to commit"))?;
+    fs::write(root.join("marrow.catalog.json"), proposal.to_json_pretty()?)?;
+    let (report, committed) = check_project_with_catalog(root, &test_config(), Some(&proposal))?;
+    ensure_clean_report(&report)?;
+    Ok(committed)
 }
 
 /// Read the accepted-catalog fixture file under `root`, if a suite wrote one. A missing
 /// file is a first-run project with no accepted catalog.
-fn read_fixture_catalog(root: &Path) -> Option<marrow_catalog::CatalogMetadata> {
+fn read_fixture_catalog(root: &Path) -> TestSupportResult<Option<marrow_catalog::CatalogMetadata>> {
     let path = root.join("marrow.catalog.json");
-    let json = std::fs::read_to_string(path).ok()?;
-    Some(marrow_catalog::CatalogMetadata::from_json(&json).expect("fixture catalog parses"))
+    let json = match fs::read_to_string(&path) {
+        Ok(json) => json,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let catalog = marrow_catalog::CatalogMetadata::from_json(&json).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("fixture catalog parses at {}: {error}", path.display()),
+        )
+    })?;
+    Ok(Some(catalog))
+}
+
+fn ensure_clean_report(report: &CheckReport) -> TestSupportResult<()> {
+    if report.has_errors() {
+        return Err(io::Error::other(format!(
+            "checker report has errors: {:#?}",
+            report.diagnostics
+        ))
+        .into());
+    }
+    Ok(())
 }
 
 /// The checked saved place rooted at `root`, ready to resolve member and index ids.

@@ -48,7 +48,7 @@ fn retire_of_populated_member_requires_scoped_approval() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -102,7 +102,7 @@ fn dropped_sparse_field_is_no_op_not_error() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let store = TreeStore::memory();
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
@@ -159,7 +159,7 @@ fn dropped_field_with_populated_data_fails_closed() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     // Seed `subtitle` so the dropped member has stored data to orphan.
@@ -204,7 +204,7 @@ fn populated_drop_with_same_resource_same_type_addition_suggests_rename_before_r
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -253,7 +253,7 @@ fn populated_drop_with_ambiguous_same_type_dropped_members_does_not_suggest_rena
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -312,7 +312,7 @@ fn populated_drop_ignores_same_type_addition_in_another_resource_for_rename_hint
         .expect("catalog builds");
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -363,7 +363,7 @@ fn populated_drop_ignores_same_resource_different_type_addition_for_rename_hint(
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -778,7 +778,7 @@ fn dropped_field_an_index_needs_requires_retire() {
     // The accepted catalog already matches source, so this first check is clean and
     // binds `isbn`. Now drop the `isbn` member from source while keeping the index,
     // so the index reads a member current source no longer declares.
-    checked(&root);
+    checked(&root).expect("checked fixture");
     write(
         &root,
         "src/books.mw",
@@ -867,7 +867,7 @@ fn dropped_field_ignores_same_named_index_on_another_resource() {
         );
         write_catalog(root, &accepted);
     });
-    checked(&root);
+    checked(&root).expect("checked fixture");
     write(
         &root,
         "src/media.mw",
@@ -947,7 +947,7 @@ fn dropped_index_is_index_dropped() {
     });
     // The accepted catalog matches source, so this first check is clean. Then drop the
     // index from source while keeping `isbn`, so only the index binding disappears.
-    checked(&root);
+    checked(&root).expect("checked fixture");
     write(
         &root,
         "src/books.mw",

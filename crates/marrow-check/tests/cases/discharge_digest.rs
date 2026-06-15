@@ -11,7 +11,7 @@ use support_discharge::*;
 /// enforces; the evolution digest is the one the witness records.
 fn digests(name: &str, source: &str) -> (String, String) {
     let root = temp_project(name, |root| write(root, "src/books.mw", source));
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let store = TreeStore::memory();
     let witness = witness(&program, &store);
     (witness.source_digest, witness.evolution_digest)

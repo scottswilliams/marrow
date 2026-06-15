@@ -25,7 +25,7 @@ fn optional_sparse_add_needs_no_rewrite() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -67,7 +67,7 @@ fn required_with_default_backfills_old_records() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -121,7 +121,7 @@ fn constant_temporal_and_bytes_defaults_discharge_as_default() {
              \x20   return nextId(^events)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "events");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -172,7 +172,7 @@ fn bytes_default_accepts_any_string_as_raw_utf8() {
              \x20   return nextId(^events)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "events");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -216,7 +216,7 @@ fn non_canonical_temporal_default_fails_closed() {
              \x20   return nextId(^events)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "events");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -269,7 +269,7 @@ fn non_constant_default_fails_closed_with_transform_hint() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -339,7 +339,7 @@ fn required_without_default_fails_naming_records() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -381,7 +381,7 @@ fn required_present_member_with_incompatible_bytes_repairs() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);

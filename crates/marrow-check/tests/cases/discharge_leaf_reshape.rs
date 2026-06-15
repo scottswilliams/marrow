@@ -41,7 +41,7 @@ fn assert_leaf_reshape_fails_closed(name: &str, value_decl: &str, expected_reaso
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -94,7 +94,7 @@ fn keyed_leaf_value_retype_over_populated_entries_fails_closed() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -153,7 +153,7 @@ fn keyed_leaf_value_unchanged_proves() {
     });
     // Commit the schema so the map's catalog id addresses the store; then exercise an
     // unchanged re-preview over a populated map.
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -235,7 +235,7 @@ fn retype_of_leaf_nested_in_populated_keyed_group_fails_closed() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -315,7 +315,7 @@ fn retype_of_keyed_nested_leaf_with_overlapping_byte_fails_closed() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -382,7 +382,7 @@ fn unchanged_leaf_nested_in_populated_keyed_group_proves() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -441,7 +441,7 @@ fn leaf_to_group_adding_required_submember_over_empty_cell_fails_closed() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);

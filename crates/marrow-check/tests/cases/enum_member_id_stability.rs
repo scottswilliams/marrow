@@ -53,7 +53,7 @@ fn enum_member_catalog_ids_are_stable_across_a_source_reorder() {
         );
     });
 
-    let committed = commit_then_check(&root);
+    let committed = commit_then_check(&root).expect("committed fixture");
     let before = member_catalog_ids(&committed, "m", "Status");
     assert_eq!(
         before.len(),
@@ -91,7 +91,7 @@ fn enum_member_catalog_ids_survive_an_unchanged_recheck() {
         );
     });
 
-    let committed = commit_then_check(&root);
+    let committed = commit_then_check(&root).expect("committed fixture");
     let before = member_catalog_ids(&committed, "m", "Status");
 
     let (recheck, rechecked) = check_with_accepted(&root);

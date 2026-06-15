@@ -48,7 +48,7 @@ fn retype_preview(
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -87,7 +87,7 @@ fn rename_with_intent_is_catalog_only() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -138,7 +138,7 @@ fn rename_and_retype_requires_transform() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -233,7 +233,7 @@ fn retype_optional_member_with_data_is_transform_required() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -275,7 +275,7 @@ fn retype_optional_member_without_data_is_no_op() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -322,7 +322,7 @@ fn unchanged_type_still_proves_data() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -360,7 +360,7 @@ fn brand_new_member_is_not_a_retype() {
         );
     });
     // Commit the baseline so `title` is accepted, then a fresh check adds `rank`.
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -408,7 +408,7 @@ fn retype_scalar_to_enum_is_transform_required() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -448,7 +448,7 @@ fn retype_scalar_to_identity_is_transform_required() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -511,7 +511,7 @@ fn retype_enum_to_identity_is_transform_required() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -560,7 +560,7 @@ fn populated_member_with_unknown_accepted_leaf_fails_closed() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -603,7 +603,7 @@ fn retype_scalar_to_sequence_over_populated_data_fails_closed() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);

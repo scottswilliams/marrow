@@ -198,7 +198,7 @@ pub fn applied_proposal_default_fixture(
     let root = temp_project(name, |root| {
         write(root, "src/books.mw", BOOKS_BASELINE);
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -210,7 +210,7 @@ pub fn applied_proposal_default_fixture(
         seed.member(id, "title", Scalar::Str(format!("Book {id}")));
     }
     write(&root, "src/books.mw", BOOKS_REQUIRED_DEFAULT);
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let pages_id = proposal_catalog_id(&program, "books::Book::pages");
     let w = witness(&program, &store);
     let outcome = apply(&w, &program, &store, false, None).expect("apply proposal default");
@@ -255,7 +255,7 @@ pub fn destructive_retire_fixture(
         write(root, "src/books.mw", BOOKS_SUBTITLE_BASELINE);
     });
     // Commit the schema that still declares `subtitle`, so the member binds a stable id.
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books");
     let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
 
@@ -275,7 +275,7 @@ pub fn destructive_retire_fixture(
     // Now drop `subtitle` from source with a retire intent; the accepted catalog still
     // names it, so discharge classifies a destructive decision over the two records.
     write(&root, "src/books.mw", BOOKS_RETIRE_SUBTITLE);
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     (root, program, place, store, subtitle_id)
 }

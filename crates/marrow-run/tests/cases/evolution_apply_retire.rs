@@ -32,7 +32,7 @@ fn explicit_index_retire_deletes_index_cells() {
              \x20   return nextId(^books)\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books");
     let index_id = CatalogId::new(index_catalog_id(&accepted_place, "byIsbn")).unwrap();
     let store_id = store_id_of(&accepted_place);
@@ -74,7 +74,7 @@ fn explicit_index_retire_deletes_index_cells() {
          pub fn add(isbn: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
 
     let w = witness(&program, &store);
     // The index retire clears derived cells only, so it stays activatable with no
@@ -172,7 +172,7 @@ fn explicit_store_retire_deletes_store_data() {
              \x20   return nextId(^authors)\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let settings_place = root_place(&accepted, "settings");
     let settings_store_id = store_id_of(&settings_place);
     let theme_id = CatalogId::new(member_catalog_id(&settings_place, "theme")).unwrap();
@@ -196,7 +196,7 @@ fn explicit_store_retire_deletes_store_data() {
          pub fn add(name: string): Id(^authors)\n\
          \x20   return nextId(^authors)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let witness = witness(&program, &store);
 
     assert!(!witness.is_activatable(), "{witness:#?}");
@@ -262,7 +262,7 @@ fn destructive_multi_retire_approval_is_matched_per_id() {
              \x20   return nextId(^books)\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books");
     let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
     let notes_id = member_catalog_id(&accepted_place, "notes");
@@ -295,7 +295,7 @@ fn destructive_multi_retire_approval_is_matched_per_id() {
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let witness = witness(&program, &store);
     let store_id = store_id_of(&accepted_place);
     let both_present = |label: &str| {
@@ -362,7 +362,7 @@ fn destructive_multi_retire_approval_is_matched_per_id() {
 fn destructive_retire_requires_maintenance() {
     let (root, _program, _place, store, subtitle_id) =
         destructive_retire_fixture("apply-retire-no-maint");
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let witness = witness(&program, &store);
     let approval = Approval {
@@ -408,7 +408,7 @@ fn nested_group_retire_fails_closed() {
         );
     });
     // Commit the schema that declares `meta.note`, so the nested leaf binds a stable id.
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books");
     let meta_id = group_member_catalog_id(&accepted_place, "meta");
     let note_id = nested_member_catalog_id(&accepted_place, "meta", "note");
@@ -438,7 +438,7 @@ fn nested_group_retire_fails_closed() {
          pub fn add(): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
 
     let w = witness(&program, &store);
     assert!(

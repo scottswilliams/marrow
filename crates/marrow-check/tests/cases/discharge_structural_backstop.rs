@@ -43,7 +43,7 @@ fn renamed_keyed_layer_with_unchanged_shape_does_not_overfire() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -104,7 +104,7 @@ fn reordered_keyed_layer_members_do_not_overfire() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -175,7 +175,7 @@ fn optional_add_beside_unchanged_keyed_layer_does_not_overfire() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -254,7 +254,7 @@ fn nested_keyed_layer_rekey_below_keyed_ancestor_fails_closed() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -356,7 +356,7 @@ fn nested_keyed_layer_arity_change_two_levels_deep_fails_closed() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -444,7 +444,7 @@ fn deep_interior_member_structural_divergence_fails_closed() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -533,7 +533,7 @@ fn unchanged_nested_keyed_layer_does_not_overfire() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);

@@ -31,7 +31,7 @@ fn required_nested_group_leaf_missing_fails_closed() {
              \x20   return nextId(^people)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "people");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -81,7 +81,7 @@ fn required_keyed_layer_leaf_missing_fails_closed() {
              \x20   return nextId(^policies)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -134,7 +134,7 @@ fn malformed_temporal_keyed_layer_entry_faults_discharge() {
              \x20   return nextId(^policies)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -174,7 +174,7 @@ fn keyed_layer_leaf_present_in_every_entry_proves() {
              \x20   return nextId(^policies)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -242,7 +242,7 @@ fn brand_new_required_member_over_populated_store_fails_closed() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -308,7 +308,7 @@ fn brand_new_required_member_with_default_backfills() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -358,7 +358,7 @@ fn brand_new_required_member_over_empty_store_activates() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     // No records seeded: the store is empty.
     let store = TreeStore::memory();
 
@@ -408,7 +408,7 @@ fn brand_new_required_keyed_leaf_over_populated_layer_fails_closed() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -486,7 +486,7 @@ fn brand_new_required_keyed_leaf_with_default_backfills() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);

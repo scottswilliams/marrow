@@ -83,7 +83,7 @@ const RENAME_NAME_TO_LABEL: &str = "module books\n\
 
 fn publish_baseline(root: &Path, store: &TreeStore, source: &str) -> marrow_check::CheckedProgram {
     write(root, "src/books.mw", source);
-    let pending = checked(root);
+    let pending = checked(root).expect("checked fixture");
     let wrote = commit_catalog_baseline(store, &pending).expect("commit baseline");
     assert!(wrote, "baseline catalog should publish once");
     recheck_against_store_snapshot(root, store)

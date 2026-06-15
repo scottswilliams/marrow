@@ -71,7 +71,7 @@ fn adding_a_sparse_identity_field_by_evolution_preserves_old_records_and_admits_
 
     // Commit the baseline schema and seed a book plus an author under it, exactly as the
     // runtime write path would: a record node keyed by its id, then its member cells.
-    let baseline = commit_then_check(&root);
+    let baseline = commit_then_check(&root).expect("committed fixture");
     let books = root_place(&baseline, "books");
     let authors = root_place(&baseline, "authors");
     let store = TreeStore::memory();
@@ -91,7 +91,7 @@ fn adding_a_sparse_identity_field_by_evolution_preserves_old_records_and_admits_
     // Evolve: add the sparse reference field, then discharge it through the production
     // preview/apply path against the live store.
     write_source(&root, REFERENCE_EVOLVED);
-    let evolved = checked(&root);
+    let evolved = checked(&root).expect("checked fixture");
     let outcome = apply(&witness(&evolved, &store), &evolved, &store, false, None)
         .expect("apply sparse identity-field evolution");
     assert_eq!(
@@ -157,7 +157,7 @@ fn an_evolve_apply_advances_the_epoch_and_fences_the_pre_evolution_program_befor
     let root = evolution_apply_support::temp_project("evolve-fence-drift", |root| {
         write_source(root, REFERENCE_BASELINE);
     });
-    let baseline = commit_then_check(&root);
+    let baseline = commit_then_check(&root).expect("committed fixture");
     let baseline_epoch = baseline
         .catalog
         .accepted_epoch
@@ -174,7 +174,7 @@ fn an_evolve_apply_advances_the_epoch_and_fences_the_pre_evolution_program_befor
     // Evolve and apply against a fresh re-check of the evolved source. Apply advances the
     // store to the proposal epoch and re-stamps the durable shape under it.
     write_source(&root, REFERENCE_EVOLVED);
-    let evolved = checked(&root);
+    let evolved = checked(&root).expect("checked fixture");
     let outcome = apply(&witness(&evolved, &store), &evolved, &store, false, None)
         .expect("apply advances the store epoch");
     assert_eq!(

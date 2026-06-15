@@ -33,7 +33,7 @@ fn transform_from_decodable_sibling_is_applyable() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -78,7 +78,7 @@ fn transform_undecodable_read_member_fails_closed() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -600,7 +600,7 @@ fn witness_composes_catalog_and_store_fingerprints() {
              \x20   return nextId(^books)\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_epoch = accepted.catalog.accepted_epoch.expect("accepted epoch");
     let accepted_digest = accepted.catalog.accepted_digest.clone().expect("digest");
 

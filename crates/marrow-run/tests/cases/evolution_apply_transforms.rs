@@ -26,7 +26,7 @@ fn proposal_transform_writes_target_before_catalog_acceptance() {
              \x20   return nextId(^books)\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -52,7 +52,7 @@ fn proposal_transform_writes_target_before_catalog_acceptance() {
          pub fn add(price: int): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let cents_id = proposal_catalog_id(&program, "books::Book::priceCents");
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");
@@ -87,7 +87,7 @@ fn proposal_transform_updates_every_store_using_the_resource() {
              \x20   return nextId(^books)\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let books_place = root_place(&accepted, "books");
     let archives_place = root_place(&accepted, "archives");
     let store = TreeStore::memory();
@@ -119,7 +119,7 @@ fn proposal_transform_updates_every_store_using_the_resource() {
          pub fn add(price: int): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let cents_id = proposal_catalog_id(&program, "books::Book::priceCents");
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");
@@ -155,7 +155,7 @@ fn transform_if_const_over_sparse_old_member_applies() {
              \x20   return nextId(^books)\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -185,7 +185,7 @@ fn transform_if_const_over_sparse_old_member_applies() {
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let summary_id = proposal_catalog_id(&program, "books::Book::summary");
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");
@@ -220,7 +220,7 @@ fn transform_exists_over_sparse_old_member_applies() {
              \x20   return nextId(^books)\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -250,7 +250,7 @@ fn transform_exists_over_sparse_old_member_applies() {
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let summary_id = proposal_catalog_id(&program, "books::Book::summary");
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");
@@ -292,7 +292,7 @@ fn transform_computes_new_member_per_record_and_stamps() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -362,7 +362,7 @@ fn activatable_transform_with_total_body_applies() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -411,7 +411,7 @@ fn transform_composes_with_default_and_retire() {
     // proposes no new catalog entry: the default backfills records missing `currency`,
     // the retire drops the committed `subtitle` source no longer declares, and the
     // transform recomputes the committed `priceCents`.
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books");
     let subtitle_id = member_catalog_id(&accepted_place, "subtitle");
 
@@ -445,7 +445,7 @@ fn transform_composes_with_default_and_retire() {
          pub fn add(price: int, currency: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
 
     // The retire makes the witness non-activatable on its own; the transform and the

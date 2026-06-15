@@ -42,7 +42,7 @@ fn proposal_index_rebuild_writes_entries_before_catalog_acceptance() {
              \x20   return nextId(^books)\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -65,7 +65,7 @@ fn proposal_index_rebuild_writes_entries_before_catalog_acceptance() {
          pub fn add(isbn: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let index_id = CatalogId::new(proposal_catalog_id(&program, "books::^books::byIsbn")).unwrap();
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");
@@ -98,7 +98,7 @@ fn proposal_index_rebuild_writes_identity_field_components() {
              store ^books(id: int): Book\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let authors = root_place(&accepted, "authors");
     let books = root_place(&accepted, "books");
     let store = TreeStore::memory();
@@ -142,7 +142,7 @@ fn proposal_index_rebuild_writes_identity_field_components() {
          store ^books(id: int): Book\n\
          \x20   index byAuthor(authorId, id)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let index_id =
         CatalogId::new(proposal_catalog_id(&program, "books::^books::byAuthor")).unwrap();
     let w = witness(&program, &store);
@@ -181,7 +181,7 @@ fn unique_index_over_identity_field_collision_fails_closed() {
              store ^books(id: int): Book\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let authors = root_place(&accepted, "authors");
     let books = root_place(&accepted, "books");
     let store = TreeStore::memory();
@@ -223,7 +223,7 @@ fn unique_index_over_identity_field_collision_fails_closed() {
          store ^books(id: int): Book\n\
          \x20   index oneBookByAuthor(authorId) unique\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let w = witness(&program, &store);
 
     assert!(!w.is_activatable(), "{w:#?}");
@@ -248,7 +248,7 @@ fn unique_index_over_malformed_identity_field_fails_closed() {
              store ^books(id: int): Book\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let books = root_place(&accepted, "books");
     let store = TreeStore::memory();
     let book_seed = Seed {
@@ -280,7 +280,7 @@ fn unique_index_over_malformed_identity_field_fails_closed() {
          store ^books(id: int): Book\n\
          \x20   index oneBookByAuthor(authorId) unique\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let w = witness(&program, &store);
 
     assert!(!w.is_activatable(), "{w:#?}");
@@ -312,7 +312,7 @@ fn proposal_index_rebuild_reads_defaulted_member_before_catalog_acceptance() {
              \x20   return nextId(^books)\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -339,7 +339,7 @@ fn proposal_index_rebuild_reads_defaulted_member_before_catalog_acceptance() {
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let index_id = CatalogId::new(proposal_catalog_id(&program, "books::^books::byPages")).unwrap();
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");
@@ -380,7 +380,7 @@ fn unique_index_over_defaulted_member_collision_fails_closed() {
              \x20   return nextId(^books)\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -406,7 +406,7 @@ fn unique_index_over_defaulted_member_collision_fails_closed() {
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let w = witness(&program, &store);
     assert!(!w.is_activatable(), "{w:#?}");
     assert_eq!(w.counts.index_collisions, 1, "{w:#?}");
@@ -428,7 +428,7 @@ fn proposal_index_rebuild_reads_transform_target_before_catalog_acceptance() {
              \x20   return nextId(^books)\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -455,7 +455,7 @@ fn proposal_index_rebuild_reads_transform_target_before_catalog_acceptance() {
          pub fn add(price: int): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let index_id = CatalogId::new(proposal_catalog_id(&program, "books::^books::byCents")).unwrap();
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");
@@ -487,7 +487,7 @@ fn unique_index_over_transform_target_fails_closed() {
              \x20   return nextId(^books)\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -514,7 +514,7 @@ fn unique_index_over_transform_target_fails_closed() {
          pub fn add(price: int): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let w = witness(&program, &store);
     assert!(!w.is_activatable(), "{w:#?}");
     let error = apply(&w, &program, &store, false, None).expect_err("apply refuses");
@@ -537,7 +537,7 @@ fn same_name_index_key_change_rebuilds_under_existing_catalog_id() {
              \x20   return nextId(^books)\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books");
     let index_id = CatalogId::new(index_catalog_id(&accepted_place, "byLookup")).unwrap();
 
@@ -573,7 +573,7 @@ fn same_name_index_key_change_rebuilds_under_existing_catalog_id() {
          pub fn add(title: string, shelf: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");
 
@@ -626,7 +626,7 @@ fn same_name_unique_index_key_change_fails_closed_on_collisions() {
              \x20   return nextId(^books)\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books");
     let index_id = CatalogId::new(index_catalog_id(&accepted_place, "byLookup")).unwrap();
 
@@ -662,7 +662,7 @@ fn same_name_unique_index_key_change_fails_closed_on_collisions() {
          pub fn add(title: string, shelf: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let w = witness(&program, &store);
 
     assert!(!w.is_activatable(), "{w:#?}");
@@ -687,7 +687,7 @@ fn same_name_index_uniqueness_change_fails_closed_on_collisions() {
              \x20   return nextId(^books)\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books");
     let index_id = CatalogId::new(index_catalog_id(&accepted_place, "byLookup")).unwrap();
 
@@ -723,7 +723,7 @@ fn same_name_index_uniqueness_change_fails_closed_on_collisions() {
          pub fn add(title: string, shelf: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let w = witness(&program, &store);
 
     assert!(!w.is_activatable(), "{w:#?}");
@@ -753,7 +753,7 @@ fn dropped_index_apply_deletes_index_cells() {
         );
     });
     // Commit the schema that declares the index, so the index binds a stable id.
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books");
     let index_id = CatalogId::new(index_catalog_id(&accepted_place, "byIsbn")).unwrap();
     let store_id = store_id_of(&accepted_place);
@@ -794,7 +794,7 @@ fn dropped_index_apply_deletes_index_cells() {
          pub fn add(isbn: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
 
     let w = witness(&program, &store);
     // Dropping an index discharges as its own evolution: it builds a proposal that advances
@@ -864,7 +864,7 @@ fn dropped_index_id_stamped_as_index_not_root() {
         );
     });
     // Commit the schema that declares the index, so the index binds a stable id.
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books");
     let index_id = index_catalog_id(&accepted_place, "byIsbn");
 
@@ -888,7 +888,7 @@ fn dropped_index_id_stamped_as_index_not_root() {
          pub fn add(isbn: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
 
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");

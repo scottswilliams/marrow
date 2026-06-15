@@ -30,7 +30,7 @@ fn transform_undecodable_read_is_refused() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -78,7 +78,7 @@ fn transform_body_fault_aborts_byte_identical() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -138,7 +138,7 @@ fn transform_body_fault_midscan_discards_earlier_staged_write() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -204,7 +204,7 @@ fn transform_constant_drift_aborts_before_apply() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -231,7 +231,7 @@ fn transform_constant_drift_aborts_before_apply() {
          pub fn add(price: int): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let changed_program = checked(&root);
+    let changed_program = checked(&root).expect("checked fixture");
     let result = apply(&witness, &changed_program, &store, false, None);
 
     let store_id = store_id_of(&place);
@@ -272,7 +272,7 @@ fn transform_body_drift_aborts_before_apply() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -306,7 +306,7 @@ fn transform_body_drift_aborts_before_apply() {
          pub fn add(price: int): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let changed_program = checked(&root);
+    let changed_program = checked(&root).expect("checked fixture");
     assert_eq!(
         changed_program.source_digest(),
         witness.source_digest,

@@ -38,7 +38,7 @@ fn store_identity_key_type_change_fails_closed() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     assert_eq!(
         place.store_catalog_id.as_deref(),
@@ -97,7 +97,7 @@ fn store_identity_key_arity_change_fails_closed() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     assert_eq!(
         place.store_catalog_id.as_deref(),
@@ -147,7 +147,7 @@ fn store_identity_key_shape_unchanged_is_no_store_repair() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -181,7 +181,7 @@ fn malformed_temporal_store_identity_faults_discharge() {
              \x20   ^events(day).name = name\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "events");
     let store = TreeStore::memory();
     let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store"))
@@ -234,7 +234,7 @@ fn store_rename_behind_identity_leaf_is_not_a_retype() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "library");
     assert_eq!(
         place.store_catalog_id.as_deref(),
@@ -273,7 +273,7 @@ fn identity_leaf_with_malformed_temporal_payload_fails_closed() {
              \x20   ^events(day).parent = parent\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "events");
     let store = TreeStore::memory();
     let store_id = CatalogId::new(accepted_catalog_id(&place.store_catalog_id, "store"))

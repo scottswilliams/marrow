@@ -575,13 +575,13 @@ mod tests {
     }
 
     #[test]
-    fn coalesced_absent_read_allocates_no_error_value() {
+    fn coalesced_absent_read_allocates_no_error_value() -> Result<(), Box<dyn std::error::Error>> {
         let project = TempProject::new(
             "coalesced-absent",
             "module test\n\nresource Book\n    title: string\nstore ^books(id: int): Book\n\n\
              pub fn read(): string\n    return ^books(1).title ?? \"missing\"\n",
         );
-        let program = marrow_check::test_support::commit_then_check(project.path()).runtime();
+        let program = marrow_check::test_support::commit_then_check(project.path())?.runtime();
         let store = TreeStore::memory();
         let call = CheckedEntryCall::new(&program, "test::read", vec![]).expect("entry");
         let mut output = String::new();
@@ -593,10 +593,12 @@ mod tests {
 
         assert_eq!(value, Some(Value::Str("missing".into())));
         assert_eq!(error_value_allocation_count(), 0);
+        Ok(())
     }
 
     #[test]
-    fn caught_absent_fault_allocates_one_error_value_at_the_catch_site() {
+    fn caught_absent_fault_allocates_one_error_value_at_the_catch_site()
+    -> Result<(), Box<dyn std::error::Error>> {
         let project = TempProject::new(
             "caught-absent",
             "module test\n\npub fn read(): string\n\
@@ -605,7 +607,7 @@ mod tests {
              \x20\x20\x20\x20catch err: Error\n\
              \x20\x20\x20\x20\x20\x20\x20\x20return err.code\n",
         );
-        let program = marrow_check::test_support::commit_then_check(project.path()).runtime();
+        let program = marrow_check::test_support::commit_then_check(project.path())?.runtime();
         let store = TreeStore::memory();
         let host = Host::new().with_environment(HashMap::new());
         let call = CheckedEntryCall::new(&program, "test::read", vec![]).expect("entry");
@@ -618,6 +620,7 @@ mod tests {
 
         assert_eq!(value, Some(Value::Str(RUN_ABSENT.into())));
         assert_eq!(error_value_allocation_count(), 1);
+        Ok(())
     }
 
     #[test]

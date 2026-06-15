@@ -44,7 +44,7 @@ fn keyed_layer_key_type_change_over_populated_entries_fails_closed() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -122,7 +122,7 @@ fn plain_group_reshaped_to_keyed_layer_over_populated_data_fails_closed() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -172,7 +172,7 @@ fn keyed_layer_reshaped_to_plain_group_over_populated_data_fails_closed() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -230,7 +230,7 @@ fn keyed_layer_arity_change_fails_closed_via_backstop() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "policies");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);

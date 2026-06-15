@@ -64,7 +64,7 @@ fn enum_rename_is_not_a_retype() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     // The rename preserves the enum's stable id, so the bound enum id matches the accepted.
     assert_eq!(
@@ -135,7 +135,7 @@ fn enum_member_removed_fails_closed() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -193,7 +193,7 @@ fn required_enum_leaf_missing_fails_closed() {
     });
     // Commit the baseline so the enum and member ids are accepted, then exercise an old
     // snapshot that predates the required enum member.
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -238,7 +238,7 @@ fn required_identity_leaf_missing_fails_closed() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -283,7 +283,7 @@ fn required_enum_leaf_present_proves_data() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -348,7 +348,7 @@ fn retype_enum_a_to_enum_b_is_transform_required() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -388,7 +388,7 @@ fn stored_enum_value_naming_now_category_member_fails_closed() {
              \x20   return nextId(^pets)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "pets");
     let kind_id = member_catalog_id(&place, "kind");
     let cat_enum_id = enum_catalog_id(&program, "Cat");
@@ -478,7 +478,7 @@ fn optional_enum_leaf_with_dropped_member_fails_closed() {
         );
         write_catalog(root, &accepted);
     });
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);
@@ -534,7 +534,7 @@ fn optional_enum_leaf_with_unchanged_enum_proves() {
     });
     // Commit the baseline so the enum and member ids are accepted, then re-preview the
     // unchanged enum over a populated optional leaf.
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed::new(&store, &place);

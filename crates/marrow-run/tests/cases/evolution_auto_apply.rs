@@ -28,7 +28,7 @@ fn a_sparse_add_over_a_populated_store_auto_applies_and_advances_the_epoch() {
              \x20   return nextId(^books)\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -49,7 +49,7 @@ fn a_sparse_add_over_a_populated_store_auto_applies_and_advances_the_epoch() {
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let w = witness(&program, &store);
     let target_epoch = w
         .proposal_catalog
@@ -92,7 +92,7 @@ fn a_required_add_over_a_populated_store_must_fence() {
              \x20   return nextId(^books)\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -115,7 +115,7 @@ fn a_required_add_over_a_populated_store_must_fence() {
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let w = witness(&program, &store);
 
     let outcome = try_auto_apply(&w, &program, &store).expect("classify without applying");
@@ -228,7 +228,7 @@ fn a_stale_commit_pin_fails_the_auto_apply_closed() {
              \x20   return nextId(^books)\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -249,7 +249,7 @@ fn a_stale_commit_pin_fails_the_auto_apply_closed() {
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let mut w = witness(&program, &store);
     // The witness is additive, so it classifies as zero-mutation and would auto-apply.
     assert_eq!(

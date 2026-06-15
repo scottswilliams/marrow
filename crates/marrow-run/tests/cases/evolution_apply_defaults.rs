@@ -31,7 +31,7 @@ fn proposal_required_default_backfills_before_catalog_acceptance() {
              \x20   return nextId(^books)\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -56,7 +56,7 @@ fn proposal_required_default_backfills_before_catalog_acceptance() {
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let proposal_epoch = program.catalog.proposal.as_ref().expect("proposal").epoch;
     let pages_id = proposal_catalog_id(&program, "books::Book::pages");
     assert!(
@@ -145,7 +145,7 @@ fn proposal_required_default_rejects_preexisting_target_data() {
              \x20   return nextId(^books)\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books");
     let store = TreeStore::memory();
     let seed = Seed {
@@ -170,7 +170,7 @@ fn proposal_required_default_rejects_preexisting_target_data() {
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let pages_id = proposal_catalog_id(&program, "books::Book::pages");
     let store_id = store_id_of(&accepted_place);
     store
@@ -213,7 +213,7 @@ fn proposal_default_backfills_every_store_using_the_resource() {
              \x20   return nextId(^books)\n",
         );
     });
-    let accepted = commit_then_check(&root);
+    let accepted = commit_then_check(&root).expect("committed fixture");
     let books_place = root_place(&accepted, "books");
     let archives_place = root_place(&accepted, "archives");
     let store = TreeStore::memory();
@@ -244,7 +244,7 @@ fn proposal_default_backfills_every_store_using_the_resource() {
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
     );
-    let program = checked(&root);
+    let program = checked(&root).expect("checked fixture");
     let pages_id = proposal_catalog_id(&program, "books::Book::pages");
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");
@@ -285,7 +285,7 @@ fn required_with_default_backfills_exactly_k_and_stamps_epoch() {
              \x20   return nextId(^books)\n",
         );
     });
-    let program = commit_then_check(&root);
+    let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books");
     let store = TreeStore::memory();
     let seed = Seed {
