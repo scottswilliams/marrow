@@ -49,8 +49,8 @@ fn fold(mut hash: u64, bytes: &[u8]) -> u64 {
 /// `archive_checksum` zeroed, so the field that records the checksum is excluded
 /// from the bytes it covers. The read side recomputes this from the parsed
 /// manifest, so a tampered manifest field changes the recomputed checksum.
-pub(super) fn checksum_manifest(hash: u64, manifest: &BackupManifest) -> u64 {
-    fold_chunk(hash, &manifest_checksum_bytes(manifest))
+pub(super) fn checksum_manifest(hash: u64, manifest: &BackupManifest) -> Result<u64, BackupError> {
+    Ok(fold_chunk(hash, &manifest_checksum_bytes(manifest)?))
 }
 
 /// The integrity-checksum contribution of the catalog section: its framed bytes,
@@ -59,10 +59,14 @@ pub(super) fn checksum_catalog_section(hash: u64, section: &[u8]) -> u64 {
     fold_chunk(hash, section)
 }
 
-fn manifest_checksum_bytes(manifest: &BackupManifest) -> Vec<u8> {
+fn manifest_checksum_bytes(manifest: &BackupManifest) -> Result<Vec<u8>, BackupError> {
     let mut value = manifest_to_json(manifest);
     value["archive_checksum"] = json!(0u64);
-    serde_json::to_vec(&value).expect("a manifest serializes")
+    manifest_json_bytes(&value)
+}
+
+fn manifest_json_bytes(value: &Value) -> Result<Vec<u8>, BackupError> {
+    serde_json::to_vec(value).map_err(BackupError::ManifestSerialization)
 }
 
 /// The catalog section bytes for `snapshot`: the empty section when there is no
@@ -84,7 +88,7 @@ pub(super) fn write_header(
     out: &mut impl Write,
     manifest: &BackupManifest,
 ) -> Result<(), BackupError> {
-    let manifest = serde_json::to_vec(&manifest_to_json(manifest)).expect("a manifest serializes");
+    let manifest = manifest_json_bytes(&manifest_to_json(manifest))?;
     write_tree_backup_archive_header(out)?;
     write_tree_backup_archive_chunk(out, &manifest)?;
     Ok(())

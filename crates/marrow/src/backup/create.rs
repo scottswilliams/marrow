@@ -97,7 +97,7 @@ fn checksum_archive(
     manifest: &BackupManifest,
     catalog_section: &[u8],
 ) -> Result<u64, BackupError> {
-    let mut checksum = checksum_manifest(CHECKSUM_SEED, manifest);
+    let mut checksum = checksum_manifest(CHECKSUM_SEED, manifest)?;
     checksum = checksum_catalog_section(checksum, catalog_section);
     store.visit_backup_cells(|cell| {
         checksum = checksum_cell(checksum, cell);

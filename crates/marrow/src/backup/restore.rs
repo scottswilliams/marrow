@@ -385,7 +385,7 @@ fn replay(
         store.replace_catalog_snapshot(snapshot)?;
     }
 
-    let mut checksum = checksum_manifest(CHECKSUM_SEED, manifest);
+    let mut checksum = checksum_manifest(CHECKSUM_SEED, manifest)?;
     checksum = checksum_catalog_section(checksum, &section.bytes);
     let mut state_digest = Sha256Digest::new();
     for _ in 0..manifest.record_count {
@@ -426,7 +426,7 @@ fn validate_archive_stream(
     section: &CatalogSection,
     input: &mut impl Read,
 ) -> Result<(), BackupError> {
-    let mut checksum = checksum_manifest(CHECKSUM_SEED, manifest);
+    let mut checksum = checksum_manifest(CHECKSUM_SEED, manifest)?;
     checksum = checksum_catalog_section(checksum, &section.bytes);
     let mut state_digest = Sha256Digest::new();
     for _ in 0..manifest.record_count {

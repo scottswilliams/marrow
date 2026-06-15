@@ -292,6 +292,8 @@ pub(crate) enum BackupError {
     Store(marrow_store::StoreError),
     /// The accepted catalog section could not be serialized for backup.
     CatalogSerialization(marrow_catalog::CatalogError),
+    /// The backup manifest could not be serialized for backup.
+    ManifestSerialization(serde_json::Error),
     /// The backup header or manifest is not a Marrow backup this build understands.
     /// Production reports only `code()` and `message`; the typed `problem` is a
     /// test-observable discriminator (tests assert the precise framing fault and its
@@ -421,6 +423,7 @@ impl BackupError {
             Self::Io(_) => "io.write",
             Self::Store(error) => error.code(),
             Self::CatalogSerialization(_) => "backup.catalog_serialization",
+            Self::ManifestSerialization(_) => "backup.manifest_serialization",
             Self::FormatVersion { .. } => "restore.format_version",
             Self::CorruptChunk { .. } => "restore.corrupt_chunk",
             Self::NotEmpty(_) => "restore.not_empty",
@@ -444,6 +447,9 @@ impl std::fmt::Display for BackupError {
             Self::Store(error) => write!(f, "{error}"),
             Self::CatalogSerialization(error) => {
                 write!(f, "backup catalog serialization failed: {error}")
+            }
+            Self::ManifestSerialization(error) => {
+                write!(f, "backup manifest serialization failed: {error}")
             }
             Self::FormatVersion { problem, message } => {
                 let _ = problem;
@@ -570,6 +576,19 @@ mod tests {
 
         assert_eq!(error.code(), "backup.catalog_serialization");
         assert!(error.to_string().contains(&catalog_message));
+    }
+
+    #[test]
+    fn manifest_serialization_has_a_stable_backup_code() {
+        let serde_error = serde_json::from_str::<serde_json::Value>("{").expect_err("invalid json");
+        let serde_message = serde_error.to_string();
+        let error = BackupError::ManifestSerialization(serde_error);
+
+        assert_eq!(error.code(), "backup.manifest_serialization");
+        assert_eq!(
+            error.to_string(),
+            format!("backup manifest serialization failed: {serde_message}")
+        );
     }
 
     #[test]
