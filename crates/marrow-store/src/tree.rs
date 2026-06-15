@@ -1018,7 +1018,9 @@ impl TreeStore {
                 .entries
                 .last()
                 .map(|(key, _)| key.clone())
-                .expect("a truncated page has a last entry");
+                .ok_or_else(|| StoreError::InvalidCursor {
+                    message: "backup scan page was truncated without a cursor".into(),
+                })?;
             page = self.scan_after(prefix, &resume, BACKUP_SCAN_PAGE)?;
         }
     }
@@ -1828,21 +1830,30 @@ mod tests {
     use crate::mem::MemStore;
     use crate::metadata::{decode_commit_metadata, encode_commit_metadata};
 
-    /// A backend that delegates to an in-memory store but fails the Nth write, after
-    /// the earlier writes have already mutated the transaction buffer. It models a
-    /// storage fault that strikes part-way through a staged plan, so a test can prove
-    /// the transaction bracket rolls the whole plan back rather than leaving a partial
-    /// write behind.
-    struct FailOnNthWrite {
-        inner: MemStore,
-        writes_until_fault: Cell<usize>,
+    enum BackendFault {
+        FailOnNthWrite { writes_until_fault: Cell<usize> },
+        EmptyTruncatedBackupScan,
     }
 
-    impl FailOnNthWrite {
-        fn new(writes_before_fault: usize) -> Self {
+    struct FaultingBackend {
+        inner: MemStore,
+        fault: BackendFault,
+    }
+
+    impl FaultingBackend {
+        fn fail_on_nth_write(writes_before_fault: usize) -> Self {
             Self {
                 inner: MemStore::default(),
-                writes_until_fault: Cell::new(writes_before_fault),
+                fault: BackendFault::FailOnNthWrite {
+                    writes_until_fault: Cell::new(writes_before_fault),
+                },
+            }
+        }
+
+        fn empty_truncated_backup_scan() -> Self {
+            Self {
+                inner: MemStore::default(),
+                fault: BackendFault::EmptyTruncatedBackupScan,
             }
         }
     }
@@ -1861,19 +1872,21 @@ mod tests {
         }
     }
 
-    impl Backend for FailOnNthWrite {
+    impl Backend for FaultingBackend {
         fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
             self.inner.read(key)
         }
 
         fn write(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
-            let remaining = self.writes_until_fault.get();
-            if remaining == 0 {
-                return Err(StoreError::Corruption {
-                    message: "injected write fault".into(),
-                });
+            if let BackendFault::FailOnNthWrite { writes_until_fault } = &self.fault {
+                let remaining = writes_until_fault.get();
+                if remaining == 0 {
+                    return Err(StoreError::Corruption {
+                        message: "injected write fault".into(),
+                    });
+                }
+                writes_until_fault.set(remaining - 1);
             }
-            self.writes_until_fault.set(remaining - 1);
             self.inner.write(key, value)
         }
 
@@ -1882,6 +1895,14 @@ mod tests {
         }
 
         fn scan(&self, prefix: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
+            if matches!(self.fault, BackendFault::EmptyTruncatedBackupScan)
+                && prefix == CellKey::data_family().as_bytes()
+            {
+                return Ok(ScanPage {
+                    entries: Vec::new(),
+                    truncated: true,
+                });
+            }
             self.inner.scan(prefix, limit)
         }
 
@@ -1958,6 +1979,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn visit_backup_cells_reports_empty_truncated_page_as_invalid_cursor() {
+        let store =
+            TreeStore::from_backend(Box::new(FaultingBackend::empty_truncated_backup_scan()));
+
+        let error = store
+            .visit_backup_cells(|_| Ok(()))
+            .expect_err("empty truncated backup scan should return an error");
+
+        assert!(matches!(error, StoreError::InvalidCursor { .. }));
+        assert_eq!(error.code(), "store.cursor");
+    }
+
     /// A storage fault part-way through a staged transaction rolls the whole bracket
     /// back: a write that succeeded before the fault must not survive, and no metadata
     /// stamp may land. This is the atomic guarantee evolution apply relies on when it
@@ -1970,7 +2004,7 @@ mod tests {
         let path = [DataPathSegment::Member(member)];
         // The fault strikes on the second write, so the first data write lands in the
         // buffer before the bracket aborts.
-        let store = TreeStore::from_backend(Box::new(FailOnNthWrite::new(1)));
+        let store = TreeStore::from_backend(Box::new(FaultingBackend::fail_on_nth_write(1)));
 
         let before = store.read_commit_metadata().expect("read commit");
         assert_eq!(before, None, "the store starts unstamped");
