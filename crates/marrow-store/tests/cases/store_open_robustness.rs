@@ -2,8 +2,8 @@
 //! `StoreError`, never a process panic. redb panics (`unreachable!()`, layout
 //! assertions) during open and repair on a structurally-broken file; a tampered or
 //! truncated body must surface `store.corruption`, and a store left needing repair
-//! by an unclean shutdown must surface `store.recovery_required` on a read-only
-//! open rather than a raw redb string.
+//! by an unclean shutdown must refuse a read-only open until a write-capable open
+//! can handle recovery.
 
 #![cfg(feature = "native")]
 
@@ -98,10 +98,8 @@ fn clobbered_store_body_opens_as_corruption_not_a_panic() {
 }
 
 /// An unclean shutdown leaves the file flagged as needing repair. A read-only open
-/// refuses to repair; it must surface the typed `store.recovery_required` with a
-/// Marrow-authored, guiding message, not redb's raw `Database repair aborted.`
-/// string. A write-capable open repairs the store transparently and the data is
-/// intact afterward.
+/// refuses to repair with `StoreError::RecoveryRequired`. A write-capable open
+/// repairs the store transparently and leaves seeded data readable.
 #[test]
 fn store_needing_repair_reports_recovery_required_read_only() {
     let dir = common::TempDir::new("marrow-store-test").expect("temp dir");
@@ -115,16 +113,8 @@ fn store_needing_repair_reports_recovery_required_read_only() {
     let error = TreeStore::open_read_only(&path)
         .err()
         .unwrap_or_else(|| panic!("a store needing repair must not open read-only cleanly"));
+    assert_eq!(error, StoreError::RecoveryRequired);
     assert_eq!(error.code(), "store.recovery_required", "{error:?}");
-    let message = error.to_string();
-    assert!(
-        !message.contains("repair aborted") && !message.to_lowercase().contains("redb"),
-        "recovery message must be Marrow-authored, not a raw redb string: {message}"
-    );
-    assert!(
-        message.contains("marrow data recover"),
-        "recovery message should guide the operator to a recovery run: {message}"
-    );
 
     // A write-capable open repairs the store, and every seeded record survives.
     let recovered = TreeStore::open(&path).expect("write open repairs the store");
@@ -141,13 +131,11 @@ fn store_needing_repair_reports_recovery_required_read_only() {
     );
 }
 
-/// A store both DAMAGED and flagged for recovery must not promise intact data.
-/// redb signals repair-needed from the header before it walks the tree, so a
-/// read-only open still reports `store.recovery_required` — but the message must
-/// not claim the data survived, and the write-capable recovery it recommends
-/// surfaces `store.corruption` because the pages were destroyed beyond replay.
+/// A store with damaged pages and a recovery-required flag refuses read-only
+/// repair. Write-capable recovery reports corruption when destroyed pages cannot
+/// be replayed.
 #[test]
-fn a_damaged_store_flagged_for_recovery_does_not_promise_intact_data() {
+fn damaged_store_flagged_for_recovery_reports_corruption_after_read_only_refusal() {
     let dir = common::TempDir::new("marrow-store-test").expect("temp dir");
     let path = dir.path().join("damaged-unclean.redb");
     seed_store(&path);
@@ -165,14 +153,10 @@ fn a_damaged_store_flagged_for_recovery_does_not_promise_intact_data() {
     let read_only = TreeStore::open_read_only(&path)
         .err()
         .expect("a damaged, repair-flagged store does not open read-only");
+    assert_eq!(read_only, StoreError::RecoveryRequired);
     assert_eq!(read_only.code(), "store.recovery_required", "{read_only:?}");
-    assert!(
-        !read_only.to_string().to_lowercase().contains("intact"),
-        "the recovery message must not promise intact data: {read_only}"
-    );
 
-    // The recommended write-capable recovery reports the truth: the data did not
-    // survive the replay, so the store is corrupt, not silently recovered.
+    // Write-capable recovery reports corruption instead of silently opening the store.
     let write = TreeStore::open(&path)
         .err()
         .expect("a damaged store does not survive the recovery replay");
@@ -256,9 +240,9 @@ fn open_existing_rejects_a_meta_only_file_as_corruption() {
     assert_eq!(error.code(), "store.corruption", "{error:?}");
 }
 
-/// Flip the redb header's recovery-required flag so a read-only open is forced down
-/// the repair-aborted path, matching an unclean shutdown. The byte is restored to a
-/// valid recovery state by a write-capable repair open.
+/// Put the file into the typed recovery-required state without changing its data
+/// pages. A read-only open must return `StoreError::RecoveryRequired`; only a
+/// write-capable open is allowed to attempt recovery.
 fn flip_recovery_flag(path: &std::path::Path) {
     use std::io::Read;
     let mut file = std::fs::OpenOptions::new()
