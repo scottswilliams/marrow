@@ -7,7 +7,7 @@ use marrow_syntax::SourceSpan;
 use crate::env::Env;
 use crate::error::{
     RUN_ABSENT, RUN_CAPABILITY, RuntimeError, error_field, io_error, raise, raise_fault, std_arity,
-    type_error,
+    type_error, unsupported,
 };
 use crate::expr::eval_expr;
 use crate::stdlib::eval_text;
@@ -27,6 +27,9 @@ pub(crate) fn eval_clock_capability(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
+    if !matches!(op, "now" | "today") {
+        return Err(unsupported(&format!("std::clock::{op}"), span));
+    }
     if !args.is_empty() {
         return Err(type_error(
             &format!("`std::clock::{op}` takes no arguments"),
@@ -37,10 +40,10 @@ pub(crate) fn eval_clock_capability(
         .host
         .clock
         .ok_or_else(|| no_capability("clock", "clock", op, span))?;
-    match op {
-        "now" => Ok(Value::Instant(nanos)),
-        "today" => Ok(Value::Date(nanos.div_euclid(NANOS_PER_DAY) as i32)),
-        _ => unreachable!("the stdlib table routes only `now`/`today` to the clock capability"),
+    if op == "now" {
+        Ok(Value::Instant(nanos))
+    } else {
+        Ok(Value::Date(nanos.div_euclid(NANOS_PER_DAY) as i32))
     }
 }
 
@@ -50,6 +53,9 @@ pub(crate) fn eval_env(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
+    if !matches!(op, "exists" | "get" | "require") {
+        return Err(unsupported(&format!("std::env::{op}"), span));
+    }
     let names: Vec<String> = args
         .iter()
         .map(|arg| eval_text(arg, env, span))
@@ -75,10 +81,7 @@ pub(crate) fn eval_env(
                 span,
             )),
         },
-        ("exists" | "get" | "require", _) => Err(std_arity("env", op, span)),
-        _ => unreachable!(
-            "the stdlib table routes only `exists`/`get`/`require` to the env capability"
-        ),
+        _ => Err(std_arity("env", op, span)),
     }
 }
 
@@ -88,6 +91,9 @@ pub(crate) fn eval_context(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
+    if !matches!(op, "actor" | "requestId" | "idempotencyKey") {
+        return Err(unsupported(&format!("std::context::{op}"), span));
+    }
     if !args.is_empty() {
         return Err(std_arity("context", op, span));
     }
@@ -96,11 +102,12 @@ pub(crate) fn eval_context(
         .context
         .as_ref()
         .ok_or_else(|| no_capability("context", "context", op, span))?;
-    let value = match op {
-        "actor" => context.actor(),
-        "requestId" => context.request_id(),
-        "idempotencyKey" => context.idempotency_key(),
-        _ => unreachable!("the stdlib table routes only context ops to eval_context"),
+    let value = if op == "actor" {
+        context.actor()
+    } else if op == "requestId" {
+        context.request_id()
+    } else {
+        context.idempotency_key()
     };
     value
         .map(|value| Value::Str(value.to_string()))
@@ -113,6 +120,9 @@ pub(crate) fn eval_log(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Option<Value>, RuntimeError> {
+    if !matches!(op, "info" | "warn" | "error") {
+        return Err(unsupported(&format!("std::log::{op}"), span));
+    }
     let values: Vec<Value> = args
         .iter()
         .map(|arg| eval_expr(&arg.value, env))
@@ -132,10 +142,7 @@ pub(crate) fn eval_log(
             let message = error_field(value, marrow_schema::error::MESSAGE).unwrap_or_default();
             format!("ERROR [{code}] {message}\n")
         }
-        ("info" | "warn" | "error", _) => return Err(std_arity("log", op, span)),
-        _ => {
-            unreachable!("the stdlib table routes only `info`/`warn`/`error` to the log capability")
-        }
+        _ => return Err(std_arity("log", op, span)),
     };
     env.guard_rollback_sensitive_host_effect(&format!("std::log::{op}"), span)?;
     sink.borrow_mut().write_log(&line);
@@ -168,6 +175,9 @@ pub(crate) fn eval_io(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Option<Value>, RuntimeError> {
+    if !matches!(op, "readText" | "readBytes" | "writeText" | "writeBytes") {
+        return Err(unsupported(&format!("std::io::{op}"), span));
+    }
     let values: Vec<Value> = args
         .iter()
         .map(|arg| eval_expr(&arg.value, env))
@@ -180,13 +190,12 @@ pub(crate) fn eval_io(
         ("readBytes", [Value::Str(path)]) => (path, IoOp::ReadBytes),
         ("writeText", [Value::Str(path), Value::Str(text)]) => (path, IoOp::Write(text.as_bytes())),
         ("writeBytes", [Value::Str(path), Value::Bytes(data)]) => (path, IoOp::Write(data)),
-        ("readText" | "readBytes" | "writeText" | "writeBytes", _) => {
+        _ => {
             return Err(type_error(
                 &format!("`std::io::{op}` got the wrong arguments"),
                 span,
             ));
         }
-        _ => unreachable!("the stdlib table routes only the four io ops to eval_io"),
     };
     // A read failure and a write failure are distinct, catchable categories; a
     // write is also a rollback-sensitive effect, rejected inside an open
