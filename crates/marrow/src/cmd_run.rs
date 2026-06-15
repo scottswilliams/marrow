@@ -399,11 +399,15 @@ fn execute(request: RunExecution<'_>, nondeterminism: &impl Nondeterminism) -> E
     // Log output is collected even on a failing run; it goes to stderr, off the
     // program's own stdout stream.
     eprint!("{}", log.borrow());
-    if let Err(ProjectInvokeError::Session(error)) = result {
-        return report_session_open_error(dir, error, format);
-    }
+    let invocation: Result<RunOutput, RuntimeError> = match result {
+        Ok(output) => Ok(output),
+        Err(ProjectInvokeError::Runtime(error)) => Err(error),
+        Err(ProjectInvokeError::Session(error)) => {
+            return report_session_open_error(dir, error, format);
+        }
+    };
     report.emit(format, program);
-    match result {
+    match invocation {
         Ok(output) => {
             if json_envelope {
                 let captured_output = &program_output.borrow().captured;
@@ -428,7 +432,7 @@ fn execute(request: RunExecution<'_>, nondeterminism: &impl Nondeterminism) -> E
             }
             ExitCode::SUCCESS
         }
-        Err(ProjectInvokeError::Runtime(error)) => {
+        Err(error) => {
             if json_envelope {
                 report_runtime_fault_with_run_state(
                     program,
@@ -441,9 +445,6 @@ fn execute(request: RunExecution<'_>, nondeterminism: &impl Nondeterminism) -> E
                 report_runtime_fault(program, &error, format);
             }
             ExitCode::FAILURE
-        }
-        Err(ProjectInvokeError::Session(_)) => {
-            unreachable!("session errors returned before report")
         }
     }
 }
