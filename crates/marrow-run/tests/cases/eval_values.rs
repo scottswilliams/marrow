@@ -324,6 +324,16 @@ fn iterates_a_sequence_counting_its_elements() {
 }
 
 #[test]
+fn two_name_loop_over_a_range_is_unsupported() {
+    let program = checked_program(
+        "pub fn f()\n\
+         \x20   for start, stop in 1..3\n\
+         \x20       print($\"{start}{stop}\")\n",
+    );
+    assert_run_error(run(checked_entry!(&program, "test::f")), RUN_UNSUPPORTED);
+}
+
+#[test]
 fn append_on_a_local_sequence_is_checker_rejected() {
     checker_rejects(
         "pub fn grow(): int\n\

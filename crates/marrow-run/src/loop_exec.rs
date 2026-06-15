@@ -62,8 +62,8 @@ pub(crate) fn eval_for(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
-    if binding.second.is_some() {
-        return eval_two_name_for(binding, iterable, body, span, env);
+    if let Some(second) = binding.second.as_deref() {
+        return eval_two_name_for(&binding.first, second, iterable, body, span, env);
     }
 
     if is_range_expr(iterable) {
@@ -74,16 +74,13 @@ pub(crate) fn eval_for(
 }
 
 fn eval_two_name_for(
-    binding: &ForBinding,
+    first: &str,
+    second: &str,
     iterable: &ExecExpr,
     body: &ExecBody,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
-    let second = binding
-        .second
-        .as_ref()
-        .expect("two-name loop helper only receives two-name bindings");
     if is_range_expr(iterable) {
         return Err(unsupported("a two-name binding over a range", span));
     }
@@ -95,19 +92,12 @@ fn eval_two_name_for(
                     span,
                 ));
             };
-            loop_step_flow(run_two_name_body(
-                &binding.first,
-                second,
-                key,
-                value,
-                body,
-                env,
-            )?)
+            loop_step_flow(run_two_name_body(first, second, key, value, body, env)?)
         });
     }
     let entries = eval_collection_entry_rows(iterable, span, env)?;
     for (key, value) in entries {
-        match run_two_name_body(&binding.first, second, key, value, body, env)? {
+        match run_two_name_body(first, second, key, value, body, env)? {
             LoopStep::Iterate => {}
             LoopStep::Stop => break,
             LoopStep::Propagate(flow) => return Ok(flow),
