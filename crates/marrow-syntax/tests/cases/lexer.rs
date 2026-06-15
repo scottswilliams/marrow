@@ -353,6 +353,64 @@ fn lexes_interpolation_with_expression_boundaries() {
 }
 
 #[test]
+fn lexes_utf8_strings_bytes_and_interpolation_boundaries() {
+    let source = "print(\"café\", b\"naïve\", $\"olá {name}: €\")\n";
+    let lexed = lex_source(source);
+
+    assert!(lexed.diagnostics.is_empty(), "{:#?}", lexed.diagnostics);
+    assert_eq!(
+        lexed
+            .tokens
+            .iter()
+            .map(|token| token.kind)
+            .collect::<Vec<_>>(),
+        vec![
+            TokenKind::Identifier,
+            TokenKind::LeftParen,
+            TokenKind::String,
+            TokenKind::Comma,
+            TokenKind::Bytes,
+            TokenKind::Comma,
+            TokenKind::InterpolationStart,
+            TokenKind::InterpolationText,
+            TokenKind::InterpolationExprStart,
+            TokenKind::Identifier,
+            TokenKind::InterpolationExprEnd,
+            TokenKind::InterpolationText,
+            TokenKind::InterpolationEnd,
+            TokenKind::RightParen,
+            TokenKind::Newline,
+            TokenKind::Eof,
+        ]
+    );
+    assert_eq!(
+        lexed
+            .tokens
+            .iter()
+            .map(|token| token.text(source))
+            .collect::<Vec<_>>(),
+        vec![
+            "print",
+            "(",
+            "\"café\"",
+            ",",
+            "b\"naïve\"",
+            ",",
+            "$\"",
+            "olá ",
+            "{",
+            "name",
+            "}",
+            ": €",
+            "\"",
+            ")",
+            "\n",
+            "",
+        ]
+    );
+}
+
+#[test]
 fn suppresses_layout_inside_open_delimiters() {
     let source = "throw Error(\n    code: \"book.absent\",\n    message: \"missing\",\n)\n";
 

@@ -135,10 +135,12 @@ impl<'a> Lexer<'a> {
     fn lex_range(&mut self, line: Line<'a>, start: usize, end: usize) {
         let mut index = start;
         while index < end {
-            let ch = self.source[index..line.end_byte]
-                .chars()
-                .next()
-                .expect("line byte index at char boundary");
+            let Some(tail) = self.source.get(index..line.end_byte) else {
+                break;
+            };
+            let Some(ch) = tail.chars().next() else {
+                break;
+            };
 
             if ch == ' ' || ch == '\t' {
                 index += ch.len_utf8();
@@ -146,7 +148,7 @@ impl<'a> Lexer<'a> {
             }
 
             if ch == ';' {
-                let kind = if self.source[index..line.end_byte].starts_with(";;") {
+                let kind = if tail.starts_with(";;") {
                     TokenKind::DocComment
                 } else {
                     TokenKind::Comment
@@ -160,12 +162,12 @@ impl<'a> Lexer<'a> {
                 continue;
             }
 
-            if self.source[index..line.end_byte].starts_with("b\"") {
+            if tail.starts_with("b\"") {
                 index = self.lex_string(line, index, 1, TokenKind::Bytes);
                 continue;
             }
 
-            if self.source[index..line.end_byte].starts_with("$\"") {
+            if tail.starts_with("$\"") {
                 index = self.lex_interpolation(line, index);
                 continue;
             }
@@ -265,20 +267,25 @@ impl<'a> Lexer<'a> {
         let mut index = start_end;
         let mut text_start = index;
         while index < line.end_byte {
-            let tail = &self.source[index..line.end_byte];
+            let Some(tail) = self.source.get(index..line.end_byte) else {
+                break;
+            };
             if tail.starts_with("{{") || tail.starts_with("}}") {
                 index += 2;
                 continue;
             }
 
-            let ch = tail
-                .chars()
-                .next()
-                .expect("interpolation byte index at char boundary");
+            let Some(ch) = tail.chars().next() else {
+                break;
+            };
 
             if ch == '\\' {
                 index += ch.len_utf8();
-                if let Some(escaped) = self.source[index..line.end_byte].chars().next() {
+                if let Some(escaped) = self
+                    .source
+                    .get(index..line.end_byte)
+                    .and_then(|tail| tail.chars().next())
+                {
                     index += escaped.len_utf8();
                 }
                 continue;
@@ -470,13 +477,19 @@ impl<'a> Lexer<'a> {
     ) -> usize {
         let mut index = start + quote_offset + 1;
         while index < line.end_byte {
-            let ch = self.source[index..line.end_byte]
-                .chars()
-                .next()
-                .expect("string byte index at char boundary");
+            let Some(tail) = self.source.get(index..line.end_byte) else {
+                break;
+            };
+            let Some(ch) = tail.chars().next() else {
+                break;
+            };
             index += ch.len_utf8();
             if ch == '\\' {
-                if let Some(next) = self.source[index..line.end_byte].chars().next() {
+                if let Some(next) = self
+                    .source
+                    .get(index..line.end_byte)
+                    .and_then(|tail| tail.chars().next())
+                {
                     index += next.len_utf8();
                 }
                 continue;
