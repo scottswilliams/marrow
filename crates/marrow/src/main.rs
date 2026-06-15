@@ -259,10 +259,10 @@ fn project_envelope(
 }
 
 pub(crate) fn project_json_path(dir: &str) -> String {
-    std::fs::canonicalize(dir)
-        .expect("loaded project directory has a canonical path")
-        .display()
-        .to_string()
+    match std::fs::canonicalize(dir).or_else(|_| std::path::absolute(dir)) {
+        Ok(path) => path.display().to_string(),
+        Err(_) => dir.to_string(),
+    }
 }
 
 fn entry_footprint_records(program: &marrow_check::CheckedProgram) -> Vec<serde_json::Value> {
@@ -759,7 +759,26 @@ pub(crate) fn render_value_bytes(bytes: &[u8]) -> String {
 mod tests {
     use std::process::ExitCode;
 
-    use super::run_worker_thread;
+    use super::{project_json_path, run_worker_thread};
+
+    #[test]
+    fn project_json_path_keeps_missing_absolute_path() {
+        let missing = std::env::temp_dir()
+            .join(format!(
+                "marrow-project-json-path-missing-{}",
+                std::process::id()
+            ))
+            .join("project")
+            .display()
+            .to_string();
+
+        assert_eq!(project_json_path(&missing), missing);
+    }
+
+    #[test]
+    fn project_json_path_keeps_empty_path_when_absolute_path_fails() {
+        assert_eq!(project_json_path(""), "");
+    }
 
     #[test]
     fn worker_thread_spawn_error_returns_failure() {
