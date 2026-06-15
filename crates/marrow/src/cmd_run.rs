@@ -226,14 +226,14 @@ fn run_project_dir(
         Ok(session) => session,
         Err(error) => return report_session_open_error(dir, error, format),
     };
+    let Some(entry) = session.run_entry() else {
+        return report_session_open_error(dir, ProjectSessionError::NoEntry, format);
+    };
     if !observe.isolates_writes() {
         for notice in session.notices() {
             eprintln!("{}", notice.message());
         }
     }
-    let entry = session
-        .run_entry()
-        .expect("run sessions carry the selected entry");
     let actions = preview_actions(session.notices());
     if let Some(report_style) = observe.dry_report_format()
         && actions.would_fence
