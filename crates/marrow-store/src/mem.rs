@@ -293,8 +293,8 @@ mod tests {
     use crate::conformance;
 
     #[test]
-    fn mem_store_passes_the_substrate_conformance_suite() {
-        conformance::run_all(MemStore::default);
+    fn mem_store_passes_the_substrate_conformance_suite() -> Result<(), StoreError> {
+        conformance::run_all(|| Ok(MemStore::default()))
     }
 
     #[test]

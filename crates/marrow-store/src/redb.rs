@@ -1021,16 +1021,19 @@ mod tests {
     /// The native store satisfies the same backend conformance suite as the
     /// in-memory store — one contract, two backends.
     #[test]
-    fn redb_store_passes_the_conformance_suite() {
-        let dir = TempDir::new("marrow-store-redb-test").expect("create a temp dir");
+    fn redb_store_passes_the_conformance_suite() -> Result<(), StoreError> {
+        let dir = TempDir::new("marrow-store-redb-test").map_err(|error| StoreError::Io {
+            op: "create temp dir",
+            message: error.to_string(),
+        })?;
         let mut counter = 0;
         conformance::run_all(|| {
             // Each law gets a fresh redb file in the shared temp dir; the dir (and
             // its files) outlives every store, dropping only when the test ends.
             counter += 1;
             let path = dir.path().join(format!("store-{counter}.redb"));
-            RedbStore::open(&path).expect("open a fresh redb store")
-        });
+            RedbStore::open(&path)
+        })
     }
 
     #[test]
