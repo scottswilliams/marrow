@@ -321,10 +321,12 @@ fn rejects_reserved_path_segment_in_test_module_name() {
         "{:?}",
         diagnostic.file
     );
-    assert!(
-        diagnostic.message.contains("reserved"),
-        "{:?}",
-        diagnostic.message
+    assert_eq!(
+        diagnostic.payload,
+        DiagnosticPayload::ReservedTestModulePathSegment {
+            module_name: "tests::journal".into(),
+            reserved_segment: "journal".into(),
+        }
     );
     assert!(test_modules.is_empty(), "{test_modules:#?}");
 }

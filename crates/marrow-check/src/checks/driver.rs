@@ -83,6 +83,7 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
                 | DiagnosticPayload::DuplicateDeclaration { .. }
                 | DiagnosticPayload::DuplicateModule { .. }
                 | DiagnosticPayload::ModulePath { .. }
+                | DiagnosticPayload::ReservedTestModulePathSegment { .. }
                 | DiagnosticPayload::DuplicateRootOwner { .. }
                 | DiagnosticPayload::RejectedSurface(_)
                 | DiagnosticPayload::Enum(_)

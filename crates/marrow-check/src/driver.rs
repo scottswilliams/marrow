@@ -439,6 +439,7 @@ impl TestResolutionSuppression {
             | DiagnosticPayload::DuplicateDeclaration { .. }
             | DiagnosticPayload::DuplicateModule { .. }
             | DiagnosticPayload::ModulePath { .. }
+            | DiagnosticPayload::ReservedTestModulePathSegment { .. }
             | DiagnosticPayload::DuplicateRootOwner { .. }
             | DiagnosticPayload::RejectedSurface(_)
             | DiagnosticPayload::Enum(_)
@@ -682,6 +683,10 @@ fn test_module_path_error(
             "test module path-derived name `{module_name}` contains reserved segment `{segment}`"
         ),
     )
+    .with_payload(DiagnosticPayload::ReservedTestModulePathSegment {
+        module_name: module_name.to_string(),
+        reserved_segment: segment.to_string(),
+    })
 }
 
 /// Hide the resource and enum types declared in test files that failed to parse,

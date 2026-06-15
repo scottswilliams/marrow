@@ -381,6 +381,8 @@ pub enum EnumDiagnostic {
 /// duplicated name and first declaration span. Duplicate modules carry the
 /// duplicated name and first source file. Module-path diagnostics carry the
 /// declared module name and expected path-derived name when one exists.
+/// Reserved test-module path diagnostics carry the path-derived module name and
+/// reserved segment.
 /// Duplicate root ownership names the saved root and first owning file.
 /// Rejected-source-surface diagnostics name the rejected surface. Enum diagnostics
 /// carry the member or coverage fact. Private enum diagnostics name the
@@ -421,6 +423,11 @@ pub enum DiagnosticPayload {
     ModulePath {
         declared: String,
         expected: Option<String>,
+    },
+    /// `check.module_path`: a path-derived test module name contains a reserved segment.
+    ReservedTestModulePathSegment {
+        module_name: String,
+        reserved_segment: String,
     },
     /// `schema.duplicate_root_owner`: saved root and first owning source file.
     DuplicateRootOwner { root: String, first_owner: PathBuf },
