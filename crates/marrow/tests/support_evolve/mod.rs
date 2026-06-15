@@ -62,22 +62,38 @@ pub(crate) fn open_native_store(root: impl AsRef<Path>) -> TreeStore {
 }
 pub(crate) fn seed_record(store: &TreeStore, place: &CheckedSavedPlace, id: i64) {
     let store_id = store_catalog_id(place);
-    store
-        .write_node(&store_id, &[SavedKey::Int(id)])
-        .expect("write record");
+    write_record_node(store, &store_id, &[SavedKey::Int(id)]);
 }
-pub(crate) fn seed_title_only(store: &TreeStore, place: &CheckedSavedPlace, id: i64, title: &str) {
-    seed_record(store, place, id);
+fn write_record_node(store: &TreeStore, store_id: &CatalogId, identity: &[SavedKey]) {
+    store.write_node(store_id, identity).expect("write record");
+}
+pub(crate) fn seed_record_member_value(
+    store: &TreeStore,
+    place: &CheckedSavedPlace,
+    identity: &[SavedKey],
+    member: &str,
+    value: Scalar,
+) {
     let store_id = store_catalog_id(place);
-    let title_id = CatalogId::new(member_catalog_id(place, "title")).expect("title id");
+    write_record_node(store, &store_id, identity);
+    let member_id = CatalogId::new(member_catalog_id(place, member)).expect("member id");
     store
         .write_data_value(
             &store_id,
-            &[SavedKey::Int(id)],
-            &[DataPathSegment::Member(title_id)],
-            encode_value(&Scalar::Str(title.to_string())).expect("encode title"),
+            identity,
+            &[DataPathSegment::Member(member_id)],
+            encode_value(&value).expect("encode member"),
         )
-        .expect("write title");
+        .expect("write member");
+}
+pub(crate) fn seed_title_only(store: &TreeStore, place: &CheckedSavedPlace, id: i64, title: &str) {
+    seed_record_member_value(
+        store,
+        place,
+        &[SavedKey::Int(id)],
+        "title",
+        Scalar::Str(title.to_string()),
+    );
 }
 pub(crate) fn seed_member(
     store: &TreeStore,

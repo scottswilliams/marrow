@@ -1,27 +1,11 @@
-use crate::support;
+use crate::{support, support_evolve};
 use std::fs;
-use support::{marrow_sub, temp_project, temp_project_uncommitted, write};
 
-fn seed_unstamped_int_member(
-    store: &marrow_store::tree::TreeStore,
-    store_id: &marrow_store::cell::CatalogId,
-    identity: &[marrow_store::key::SavedKey],
-    member_id: &marrow_store::cell::CatalogId,
-    value: i64,
-) {
-    store.write_node(store_id, identity).expect("write record");
-    store
-        .write_data_value(
-            store_id,
-            identity,
-            &[marrow_store::tree::DataPathSegment::Member(
-                member_id.clone(),
-            )],
-            marrow_store::value::encode_value(&marrow_store::value::Scalar::Int(value))
-                .expect("encode value"),
-        )
-        .expect("write value");
-}
+use marrow_store::cell::CatalogId;
+use marrow_store::key::SavedKey;
+use marrow_store::tree::TreeStore;
+use marrow_store::value::Scalar;
+use support::{marrow_sub, temp_project, temp_project_uncommitted, write};
 
 /// A store stamped at a catalog epoch newer than the project's accepted epoch was
 /// evolved by a newer binary. `marrow run` fences itself before any execution: it
@@ -53,7 +37,7 @@ fn run_is_fenced_when_store_evolved_past_the_project_epoch() {
     let store_path = root.join(".data").join("marrow.redb");
     fs::create_dir_all(store_path.parent().unwrap()).expect("create data dir");
     {
-        let store = marrow_store::tree::TreeStore::open(&store_path).expect("open native store");
+        let store = TreeStore::open(&store_path).expect("open native store");
         let profile = marrow_run::evolution::current_engine_profile();
         store
             .write_commit_metadata(&marrow_store::tree::CommitMetadata {
@@ -124,32 +108,35 @@ fn run_rejects_populated_unstamped_accepted_store() {
     .expect("checked place");
     let store_path = root.join(".data").join("marrow.redb");
     fs::create_dir_all(store_path.parent().unwrap()).expect("create data dir");
+    let store_id = CatalogId::new(place.store_catalog_id.clone().expect("accepted store id"))
+        .expect("store catalog id");
     {
-        let store = marrow_store::tree::TreeStore::open(&store_path).expect("open native store");
+        let store = TreeStore::open(&store_path).expect("open native store");
         store
             .replace_catalog_snapshot(&proposal)
             .expect("publish accepted catalog without epoch stamp");
-        let store_id = marrow_store::cell::CatalogId::new(
-            place.store_catalog_id.clone().expect("accepted store id"),
-        )
-        .expect("store catalog id");
-        let value_id = marrow_store::cell::CatalogId::new(
-            place
-                .root_members
-                .iter()
-                .find(|member| member.name == "value")
-                .expect("value member")
-                .catalog_id
-                .clone()
-                .expect("accepted value member id"),
-        )
-        .expect("value catalog id");
-        seed_unstamped_int_member(
+        support_evolve::seed_record_member_value(
             &store,
-            &store_id,
-            &[marrow_store::key::SavedKey::Int(1)],
-            &value_id,
-            7,
+            &place,
+            &[SavedKey::Int(1)],
+            "value",
+            Scalar::Int(7),
+        );
+    }
+    {
+        let store = TreeStore::open_read_only(&store_path).expect("reopen store");
+        assert!(
+            store
+                .read_catalog_snapshot()
+                .expect("read accepted catalog")
+                .is_some()
+        );
+        assert_eq!(store.read_commit_metadata().expect("read commit"), None);
+        assert_eq!(store.read_store_uid().expect("read store uid"), None);
+        assert!(
+            store
+                .record_identity_exists_under(&store_id, &[], place.identity_keys.len())
+                .expect("arity-aware presence")
         );
     }
 
@@ -203,35 +190,24 @@ fn run_rejects_composite_root_in_populated_unstamped_accepted_store() {
     .expect("checked place");
     let store_path = root.join(".data").join("marrow.redb");
     fs::create_dir_all(store_path.parent().unwrap()).expect("create data dir");
-    let store_id = marrow_store::cell::CatalogId::new(
-        place.store_catalog_id.clone().expect("accepted store id"),
-    )
-    .expect("store catalog id");
-    let value_id = marrow_store::cell::CatalogId::new(
-        place
-            .root_members
-            .iter()
-            .find(|member| member.name == "value")
-            .expect("value member")
-            .catalog_id
-            .clone()
-            .expect("accepted value member id"),
-    )
-    .expect("value catalog id");
-    let identity = [
-        marrow_store::key::SavedKey::Int(1),
-        marrow_store::key::SavedKey::Int(2),
-    ];
+    let store_id = CatalogId::new(place.store_catalog_id.clone().expect("accepted store id"))
+        .expect("store catalog id");
+    let identity = [SavedKey::Int(1), SavedKey::Int(2)];
     {
-        let store = marrow_store::tree::TreeStore::open(&store_path).expect("open native store");
+        let store = TreeStore::open(&store_path).expect("open native store");
         store
             .replace_catalog_snapshot(&proposal)
             .expect("publish accepted catalog without epoch stamp");
-        seed_unstamped_int_member(&store, &store_id, &identity, &value_id, 9);
+        support_evolve::seed_record_member_value(
+            &store,
+            &place,
+            &identity,
+            "value",
+            Scalar::Int(9),
+        );
     }
     {
-        let store =
-            marrow_store::tree::TreeStore::open_read_only(&store_path).expect("reopen store");
+        let store = TreeStore::open_read_only(&store_path).expect("reopen store");
         assert!(
             store
                 .read_catalog_snapshot()
@@ -239,6 +215,7 @@ fn run_rejects_composite_root_in_populated_unstamped_accepted_store() {
                 .is_some()
         );
         assert_eq!(store.read_commit_metadata().expect("read commit"), None);
+        assert_eq!(store.read_store_uid().expect("read store uid"), None);
         assert_eq!(
             store
                 .record_child_count(&store_id, &[])
