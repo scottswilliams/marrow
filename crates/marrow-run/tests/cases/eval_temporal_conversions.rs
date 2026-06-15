@@ -586,7 +586,9 @@ fn documented_conversions_reject_invalid_dynamic_values() {
     let program = checked_program(
         "pub fn intFromDecimal(v: decimal): int\n    return int(v)\n\
          pub fn stringFromBytes(v: bytes): string\n    return string(v)\n\
-         pub fn dateFromText(v: string): date\n    return date(v)\n",
+         pub fn dateFromText(v: string): date\n    return date(v)\n\
+         fn unknownInt(): unknown\n    return 9\n\
+         pub fn bytesFromUnknown(): bytes\n    return bytes(unknownInt())\n",
     );
     let cases: &[(&str, Value)] = &[
         (
@@ -606,6 +608,10 @@ fn documented_conversions_reject_invalid_dynamic_values() {
             RUN_TYPE,
         );
     }
+    assert_run_error(
+        run(checked_entry!(&program, "test::bytesFromUnknown")),
+        RUN_TYPE,
+    );
 }
 
 #[test]

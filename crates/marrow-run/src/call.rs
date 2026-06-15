@@ -6,8 +6,8 @@ use marrow_check::{
     CheckedArg as ExecArg, CheckedBuiltinCall, CheckedCallTarget, CheckedExpr as ExecExpr,
     CheckedFunctionRef, CheckedRuntimeFunction, CheckedRuntimeModule, CheckedRuntimeProgram,
 };
-use marrow_schema::ReturnPresence;
 use marrow_schema::stdlib::Capability;
+use marrow_schema::{ReturnPresence, ScalarType};
 use marrow_syntax::SourceSpan;
 
 use crate::activation::{Completion, Invocation, complete_call, executable_body, invoke};
@@ -26,8 +26,8 @@ use crate::local_collection::eval_local_collection_read;
 use crate::neighbor::eval_neighbor;
 use crate::std_pure::eval_std;
 use crate::stdlib::{
-    ConversionKind, eval_assert, eval_bytes_conversion, eval_conversion, eval_count,
-    eval_error_constructor, eval_exists, eval_output,
+    ConversionKind, eval_assert, eval_conversion, eval_count, eval_error_constructor, eval_exists,
+    eval_output,
 };
 use crate::value::Value;
 
@@ -214,7 +214,9 @@ fn eval_builtin_call(
         CheckedBuiltinCall::Exists => eval_exists(args, span, env).map(Some),
         CheckedBuiltinCall::NextId => eval_next_id(args, span, env).map(Some),
         CheckedBuiltinCall::Append => eval_append(args, span, env).map(Some),
-        CheckedBuiltinCall::Bytes => eval_bytes_conversion(args, span, env).map(Some),
+        CheckedBuiltinCall::Bytes => {
+            eval_conversion(ConversionKind::Scalar(ScalarType::Bytes), args, span, env).map(Some)
+        }
         CheckedBuiltinCall::ErrorCode => {
             eval_conversion(ConversionKind::ErrorCode, args, span, env).map(Some)
         }

@@ -28,17 +28,6 @@ impl ConversionKind {
     }
 }
 
-pub(crate) fn eval_bytes_conversion(
-    args: &[ExecArg],
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Value, RuntimeError> {
-    let [arg] = args else {
-        return Err(type_error("`bytes` takes one argument", span));
-    };
-    convert_to_bytes(eval_expr(&arg.value, env)?, span)
-}
-
 pub(crate) fn eval_conversion(
     kind: ConversionKind,
     args: &[ExecArg],
@@ -59,13 +48,7 @@ pub(crate) fn eval_conversion(
             ScalarType::Int => convert_to_int(value, span),
             ScalarType::Decimal => convert_to_decimal(value, span),
             ScalarType::Str => convert_to_string(value, span),
-            // The `bytes` builtin resolves to its own `CheckedBuiltinCall::Bytes`, never a
-            // `Conversion`, so the bytes target reaches the runtime only through
-            // `eval_bytes_conversion`. A `Conversion(ScalarType::Bytes)` would be a checker
-            // regression, not a value the runtime can be asked to produce.
-            ScalarType::Bytes => {
-                unreachable!("bytes conversions route through eval_bytes_conversion")
-            }
+            ScalarType::Bytes => convert_to_bytes(value, span),
             ScalarType::Date | ScalarType::Instant | ScalarType::Duration => {
                 convert_to_canonical_scalar(value, scalar, span)
             }
