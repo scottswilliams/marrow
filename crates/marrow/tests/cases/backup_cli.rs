@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use crate::support;
+use crate::support_evolve;
 use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 use marrow_check::checked_saved_root_place;
 use marrow_store::cell::CatalogId;
@@ -206,23 +207,7 @@ fn no_uid_project_with_data(name: &str) -> (TempProject, PathBuf) {
         marrow_syntax::SourceSpan::default(),
     )
     .expect("checked saved root place");
-    let store_id = CatalogId::new(place.store_catalog_id.expect("accepted store id"))
-        .expect("store catalog id");
-    let title_id = member_catalog_id(&place.root_members, "title");
-    store
-        .write_node(&store_id, &[SavedKey::Int(1)])
-        .expect("write record node");
-    store
-        .write_data_value(
-            &store_id,
-            &[SavedKey::Int(1)],
-            &[DataPathSegment::Member(title_id)],
-            marrow_store::value::encode_value(&marrow_store::value::SavedValue::Str(
-                "Mort".to_string(),
-            ))
-            .expect("encode title"),
-        )
-        .expect("write title");
+    support_evolve::seed_title_only(&store, &place, 1, "Mort");
     assert_eq!(
         store.read_store_uid().expect("read uid"),
         None,
