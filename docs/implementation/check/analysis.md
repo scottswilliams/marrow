@@ -8,7 +8,7 @@ and CLI views cannot drift from the checked program.
 Two halves live in `crates/marrow-check/src`:
 
 - **`analysis`** runs the IDE-grade pipeline (discover, overlay-or-disk read, parse, check source roots plus configured tests) into an `AnalysisSnapshot` that retains every parse, error files included, and answers cursor queries (`type_at`/`scope_at`) by reconstructing the checker's lexical scope without emitting diagnostics.
-- **`tooling`** turns a `CheckedProgram` plus a `TreeStore` into typed saved-data facts: schema-validated path queries, paged child/walk traversal, integrity verdicts, and catalog/store epoch metadata.
+- **`tooling`** turns a `CheckedProgram` plus a `TreeStore` into typed saved-data facts: schema-validated path queries, paged child/walk traversal, and integrity verdicts.
 
 `CheckedProgram` also exposes the static entry footprint surface built from
 checked facts: `effect_closure`, `entry_footprints`, `entry_cost_shapes`, and
@@ -72,10 +72,6 @@ or snapshot:
   With no backup it is schema-only and marks the live-store path deferred; with
   a backup path it streams archive cells to add bounded count and sample facts.
   It never opens a live store.
-- `ToolingCatalogMetadata` and `store_is_newer_than_program` are the
-  version/staleness facts for callers that already have a checked catalog and
-  explicit store handle. They compare program digest and catalog/store epochs;
-  they are not an ordinary-check store-open fallback.
 - Ordinary `marrow check` reads each source file through the analysis pipeline
   and reads the fixed `marrow.catalog.json` artifact when present. It does not
   open, repair, or create the native store.
@@ -94,7 +90,7 @@ Path resolution is the single chokepoint: `resolve_query_steps` validates source
 | `crates/marrow-check/src/program.rs` | Checked-program artifact plus analysis queries for effect closure, per-entry durable footprints, entry cost shape, entry store-open mode, and checked read-only expressions. |
 | `crates/marrow-check/src/analysis/cursor.rs` | Cursor `type_at`/`scope_at`: replay the checker's binding primitives to rebuild lexical scope, infer the tightest covering expression; records no diagnostics. |
 | `crates/marrow-check/src/evolution/preview.rs` | Schema-only and backup-backed `WitnessFactSet` preview facts for tooling. |
-| `crates/marrow-check/src/tooling/mod.rs` | Tooling facade: re-exports the data/integrity/metadata API; defines `ToolingError` (Query vs Store). |
+| `crates/marrow-check/src/tooling/mod.rs` | Tooling facade: re-exports the data/integrity API; defines `ToolingError` (Query vs Store). |
 | `crates/marrow-check/src/tooling/data/mod.rs` | Data tooling root and shared value types (`DataQuery`, `DataChild`, `DataEntry`, `DataWalkPage`, `DataRecord`, `KeyMismatch`, `MAX_PREVIEW_ITEMS`). |
 | `crates/marrow-check/src/tooling/data/query.rs` | Path resolution: walk wire/source segments into a `StorageDataQuery` with typed `QueryError`; `data_query_under_prefix` containment. |
 | `crates/marrow-check/src/tooling/data/query_error.rs` | The `QueryError` enum (client-facing request errors) and `MemberFlavor`, with render-only `Display`. |
@@ -106,7 +102,6 @@ Path resolution is the single chokepoint: `resolve_query_steps` validates source
 | `crates/marrow-check/src/tooling/data/traversal.rs` | Full saved-record traversal: recurse exact-arity identity nodes and member trees, emit a `DataRecord` per stored leaf or a record identity for declared-shape checks; backs counts, roots, and integrity. |
 | `crates/marrow-check/src/tooling/data/render.rs` | Path/key rendering helpers (catalog-id to source name, canonical `SavedKey` text). |
 | `crates/marrow-check/src/tooling/integrity.rs` | Integrity verdicts: per-value decode/key-type/enum-member checks, identity referent-existence verdicts, required-field completeness for existing records/keyed entries, and orphan classification as typed `IntegrityProblem` with stable codes. |
-| `crates/marrow-check/src/tooling/metadata.rs` | `ToolingCatalogMetadata` (program digest + catalog epoch vs store epochs) and `store_is_newer_than_program` staleness predicate. |
 | `crates/marrow-check/src/test_support.rs` | Feature-gated test support fact-lookup helpers; not in normal or release builds. |
 
 ## Key types
@@ -123,7 +118,6 @@ Path resolution is the single chokepoint: `resolve_query_steps` validates source
 - `QueryError` / `ToolingError` (`query_error.rs`, `tooling/mod.rs`) — typed request malformity vs store faults.
 - `DataRecord` / `DataPresence` / `DataWalkPage` / `DataChildrenPage` (`tooling/data/mod.rs`) — the paged data facts carrying truncation and resume cursors.
 - `IntegrityProblem` / `IntegrityOutcome` (`integrity.rs`) — a typed finding implementing `Diagnose`, tagged stored-value vs structure/orphan findings, with catalog/key identity attached to incomplete data and dangling identity references.
-- `ToolingCatalogMetadata` (`metadata.rs`) — the version snapshot read for staleness gating.
 
 ## Entry points
 

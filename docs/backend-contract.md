@@ -14,8 +14,8 @@ The public store crate surface is:
 - `marrow_store::key`: typed saved key values and the canonical identity
   payload codec;
 - `marrow_store::tree`: `TreeStore`, engine profile metadata, commit metadata,
-  exact index pages, opaque index cursors, opaque backup cells, typed
-  references, and enum-member codecs;
+  exact index pages, opaque index cursors, opaque backup cells, and
+  enum-member codecs;
 - `marrow_store::value`: canonical scalar value codecs;
 - `marrow_store::StoreError` and `marrow_store::Decimal`.
 
@@ -200,7 +200,7 @@ canonical digest only. A stale row-order header digest or a tampered catalog row
 `store.corruption`.
 
 Malformed tree-cell metadata, malformed node markers, malformed tree-cell
-reference/enum values, malformed index identity suffixes, and a catalog snapshot
+enum values, malformed index identity suffixes, and a catalog snapshot
 whose header digest does not match the decoded entries report `store.corruption`.
 
 ## Value Codecs
@@ -218,15 +218,14 @@ records. Index components derived from `Id(^store)` fields use the same
 order-preserving identity payload with the referenced store's stable catalog ID
 as a prefix, so same-shaped identities from different stores cannot collide.
 
-Tree-cell references and enum-member values use catalog-backed codecs:
+Tree-cell enum-member values use a catalog-backed codec:
 
 | Value | Bytes |
 |---|---|
-| Store reference | Version `00`, referenced store catalog ID, identity key count, then each identity key as a length-prefixed `SavedKey` byte run. |
 | Enum member | Version `00`, enum catalog ID, member catalog ID. |
 
-Reference bytes distinguish stores with identical key values. Enum bytes
-distinguish members by stable catalog identity instead of source order.
+Enum bytes distinguish members by stable catalog identity instead of source
+order.
 
 ## Transactions
 
@@ -350,8 +349,7 @@ The private substrate conformance suite keeps memory and redb aligned on:
 Public tree-cell tests assert the production contract: stable catalog-ID
 physical keys, typed leaves, sequence cells, exact index entries and scans,
 metadata round trips, read-only native behavior, the native reader/writer lock
-matrix, rollback, corruption handling, catalog-backed references, and
-catalog-backed enum member values.
+matrix, rollback, corruption handling, and catalog-backed enum member values.
 
 ## Adapters And Portability
 

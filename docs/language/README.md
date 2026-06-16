@@ -116,7 +116,7 @@ This shows the main shape:
   the `?.`/`??` presence operators, `keys`, `values`, `entries`, conversions,
   `append`, `nextId`, output, and errors.
 - [Standard Library](standard-library.md) defines the `std::` modules
-  for clock/instant, IO, env/config, strings, bytes, math, testing, and logging.
+  for clock/instant, IO, env/config, text, bytes, math, testing, and logging.
 - [Reference Sample](sample.md) gives one compact project that exercises
   resources, saved data, indexes, history, transactions, and traversal.
 - [Formal Grammar](grammar.md) gives an EBNF-style grammar for the language.

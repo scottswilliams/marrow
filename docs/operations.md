@@ -31,9 +31,11 @@ Use this choreography for a production catalog change:
 3. Deploy the new source and binary together.
 4. Run `marrow check <projectdir>`.
 5. Run `marrow evolve preview <projectdir>` and inspect the witness.
-6. Run `marrow evolve apply <projectdir>`, adding `--maintenance` and the
-   required `--approve-retire <catalog-id>:<count>` arguments only when preview
-   names destructive retire work.
+6. Run `marrow evolve apply <projectdir>`. When preview names destructive
+   retire work, add `--maintenance`, the required
+   `--approve-retire <catalog-id>:<count>` arguments, and an explicit
+   recovery-point decision (`--backup <archive>` or `--no-backup`); apply fails
+   closed without it.
 7. Start the new writer after apply succeeds.
 
 The apply transaction advances accepted catalog rows, data and index effects,

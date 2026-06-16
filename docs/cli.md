@@ -13,7 +13,7 @@ marrow evolve apply [--maintenance] [--approve-retire <catalog-id>:<count>] \
 marrow fmt [--check | --write] <file.mw | projectdir>
 marrow run [--entry <entry>] [--arg name=value]... [--maintenance] \
   [--trace] [--dry-run] [--format text|json] <projectdir>
-marrow test [--trace] [--format text|json|jsonl] <projectdir>
+marrow test [--trace] [--format text|json|jsonl] [--filter <substring>] <projectdir>
 marrow data <roots|stats|dump|integrity> [--backup <artifact>] [--format text|json|jsonl] <projectdir>
 marrow data recover [--format text|json|jsonl] <projectdir>
 marrow data get [--backup <artifact>] [--format text|json|jsonl] <projectdir> <path>
@@ -648,7 +648,7 @@ catalog section, and data cells — so a later restore
 can refuse data it cannot faithfully reproduce. The manifest fields are
 `source_digest`, `catalog_epoch`, `catalog_digest`, `state_digest`, `store_uid`,
 reserved-empty `parent_snapshot_digest`, `engine`, `commit`, `record_count`, and
-`archive_checksum`; this shape is backup `format_version` 5. The data stream
+`archive_checksum`; this shape is backup `format_version` 6. The data stream
 carries the store's data cells only; the generated indexes are derived, so a
 restore rebuilds them rather than replaying them. Commit descriptors carry only
 the slim commit stamp, not activation receipt counts or effect digests.

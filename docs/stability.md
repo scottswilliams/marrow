@@ -38,7 +38,7 @@ LayoutEpoch recompile, never an in-place edit of v0.1 store bytes.
 | Error envelope | Machine-readable error reports carry the stable fields documented in [error-codes.md](error-codes.md): `code`, `kind`, optional `message`, optional `help`, optional `source_span`, and optional `data`. |
 | `marrow.json` | The project configuration keys and validation rules in [project-config.md](project-config.md) are the v0.1 configuration ABI. There are no command-line storage overrides. |
 | Accepted catalog | `marrow.catalog.json` is a versioned ABI for durable identity: catalog epoch, digest, entries, stable IDs, aliases, lifecycle, and accepted shape fields. Future id-allocation policy uses catalog evolution, not ad hoc fields accepted by v0.1 readers. |
-| Backup format | Backup `format_version` 5 is the portable backup/restore format. It carries manifest facts, accepted catalog rows, and typed data cells; generated indexes are rebuilt on restore. |
+| Backup format | Backup `format_version` 6 is the portable backup/restore format. It carries manifest facts, accepted catalog rows, and typed data cells; generated indexes are rebuilt on restore. |
 | Backup lineage field | `parent_snapshot_digest` is reserved and semantics-undefined in v0.1. Writers emit the empty sentinel, and readers reject a non-empty value. |
 | Tree-cell interchange | The v0 tree-cell key/value codecs and backup cell stream are the single data interchange for v0.1. Raw store files, data dumps, traces, and dry-run reports are not sibling interchange formats. |
 
