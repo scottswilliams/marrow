@@ -63,24 +63,10 @@ fn eval_equal_assert(
     };
     let actual = eval_expr(&actual_arg.value, env)?;
     let expected = eval_expr(&expected_arg.value, env)?;
-    if !same_scalar_kind(&actual, &expected) {
-        return Err(type_error(
-            "`std::assert::equal` takes two scalar values of the same type",
-            span,
-        ));
-    }
-    let Some(actual_preview) = diagnostic_value_preview(&actual) else {
-        return Err(type_error(
-            "`std::assert::equal` takes two scalar values",
-            span,
-        ));
-    };
-    let Some(expected_preview) = diagnostic_value_preview(&expected) else {
-        return Err(type_error(
-            "`std::assert::equal` takes two scalar values",
-            span,
-        ));
-    };
+    // The checker constrains `equal` to two same-typed scalars, so both
+    // operands always render as previews here.
+    let actual_preview = diagnostic_value_preview(&actual).expect("equal operand is a scalar");
+    let expected_preview = diagnostic_value_preview(&expected).expect("equal operand is a scalar");
     if actual != expected {
         return Err(raise_fault(
             RUN_ASSERT,
@@ -89,20 +75,6 @@ fn eval_equal_assert(
         ));
     }
     Ok(None)
-}
-
-fn same_scalar_kind(actual: &Value, expected: &Value) -> bool {
-    matches!(
-        (actual, expected),
-        (Value::Int(_), Value::Int(_))
-            | (Value::Bool(_), Value::Bool(_))
-            | (Value::Str(_), Value::Str(_))
-            | (Value::Instant(_), Value::Instant(_))
-            | (Value::Date(_), Value::Date(_))
-            | (Value::Duration(_), Value::Duration(_))
-            | (Value::Decimal(_), Value::Decimal(_))
-            | (Value::Bytes(_), Value::Bytes(_))
-    )
 }
 
 fn eval_absent_assert(

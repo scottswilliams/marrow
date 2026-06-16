@@ -1,64 +1,61 @@
 use marrow_check::CheckedArg as ExecArg;
-use marrow_schema::Type;
 use marrow_syntax::SourceSpan;
 
 use crate::env::Env;
 use crate::error::{RuntimeError, type_error};
 use crate::expr::eval_expr;
-use crate::value::{Value, value_scalar_type};
+use crate::value::Value;
 
+/// Build an `Error` resource from a checked `Error(...)` call. The checker owns
+/// argument-shape, per-field type, and required-field validation, and rejects an
+/// invalid error code when it is a string literal. A code computed at runtime
+/// (for example a concatenation) cannot be checked statically, so the constructor
+/// validates the resolved `code` text here and faults with `run.type` when it is
+/// not a valid dotted lowercase error code.
 pub(crate) fn eval_error_constructor(
     args: &[ExecArg],
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    let mut fields: Vec<(String, Value)> = Vec::new();
+    let fields = marrow_schema::error::fields();
+    let mut slots: Vec<Option<Value>> = vec![None; fields.len()];
+
     for arg in args {
-        let Some(name) = &arg.name else {
-            return Err(type_error("`Error(...)` takes named arguments", span));
-        };
-        let Some(field) = marrow_schema::error::field(name) else {
-            return Err(type_error(&format!("`Error` has no field `{name}`"), span));
-        };
-        if fields.iter().any(|(existing, _)| existing == name) {
-            return Err(type_error(
-                &format!("`{name}` is supplied more than once"),
-                span,
-            ));
-        }
+        let index = arg
+            .name
+            .as_ref()
+            .and_then(|name| fields.iter().position(|field| field.name == name))
+            .expect("checked error constructor binds each argument to a field");
+        debug_assert!(
+            slots[index].is_none(),
+            "checked error constructor supplies each field at most once",
+        );
         let value = eval_expr(&arg.value, env)?;
-        if !value_matches_type(&value, &field.ty) {
-            return Err(type_error(
-                &format!("`Error.{name}` expects {}", field.ty),
-                span,
-            ));
-        }
-        if name == marrow_schema::error::CODE
-            && !matches!(&value, Value::Str(text) if marrow_schema::error::is_error_code_text(text))
+        if fields[index].name == marrow_schema::error::CODE
+            && let Value::Str(text) = &value
+            && !marrow_schema::error::is_error_code_text(text)
         {
             return Err(type_error(
                 "`Error.code` expects a dotted lowercase error code",
                 span,
             ));
         }
-        fields.push((name.clone(), value));
+        slots[index] = Some(value);
     }
-    for required in marrow_schema::error::fields()
-        .iter()
-        .filter(|field| field.required)
-    {
-        if !fields.iter().any(|(name, _)| name == required.name) {
-            let name = required.name;
-            return Err(type_error(&format!("`Error` requires `{name}`"), span));
-        }
-    }
-    Ok(Value::Resource(fields))
-}
 
-fn value_matches_type(value: &Value, ty: &Type) -> bool {
-    match ty {
-        Type::Unknown => true,
-        Type::Scalar(scalar) => value_scalar_type(value) == Some(*scalar),
-        Type::Sequence(_) | Type::Identity(_) | Type::Named(_) => false,
-    }
+    debug_assert!(
+        fields
+            .iter()
+            .zip(&slots)
+            .all(|(field, slot)| !field.required || slot.is_some()),
+        "checked error constructor supplies every required field",
+    );
+
+    Ok(Value::Resource(
+        fields
+            .iter()
+            .zip(slots)
+            .filter_map(|(field, value)| value.map(|value| (field.name.to_string(), value)))
+            .collect(),
+    ))
 }

@@ -82,12 +82,7 @@ fn write_scalar_saved_field(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
-    let saved = match saved_field_leaf(path) {
-        Some(leaf) => value_to_leaf(value, leaf, span)?,
-        None => crate::value::value_to_saved(value)
-            .map(LeafValue::Scalar)
-            .ok_or_else(|| unsupported("writing a resource value to a field", span))?,
-    };
+    let saved = field_leaf_value(path, value, span)?;
     let plan = plan_field_write(&path.place, &path.identity, field, &saved, env.store, span);
     let plan = validate_field_plan(path, &[], field, plan, env);
     env.apply_plan(plan, span)
@@ -164,12 +159,7 @@ pub(crate) fn write_nested_field(
             span,
         )
     } else {
-        let saved = match saved_field_leaf(&path) {
-            Some(leaf) => value_to_leaf(value, leaf, span)?,
-            None => crate::value::value_to_saved(value)
-                .map(LeafValue::Scalar)
-                .ok_or_else(|| unsupported("writing a resource value to a field", span))?,
-        };
+        let saved = field_leaf_value(&path, value, span)?;
         plan_nested_field_write(
             &path.place,
             identity,
@@ -181,6 +171,19 @@ pub(crate) fn write_nested_field(
     };
     let plan = validate_field_plan(&path, &path.layer_addresses, field, plan, env);
     finish_nested_field_write(&path, identity, created_required_path, plan, span, env)
+}
+
+fn field_leaf_value(
+    path: &SavedPath,
+    value: Value,
+    span: SourceSpan,
+) -> Result<LeafValue, RuntimeError> {
+    match saved_field_leaf(path) {
+        Some(leaf) => value_to_leaf(value, leaf, span),
+        None => crate::value::value_to_saved(value)
+            .map(LeafValue::Scalar)
+            .ok_or_else(|| unsupported("writing a resource value to a field", span)),
+    }
 }
 
 fn saved_field_leaf(path: &SavedPath) -> Option<&StoreLeafKind> {

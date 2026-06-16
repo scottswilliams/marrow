@@ -1,15 +1,16 @@
 use marrow_check::{CheckedArg as ExecArg, CheckedExpr as ExecExpr, CheckedSavedPlace};
 use marrow_store::key::SavedKey;
-use marrow_store::value::{ScalarType, scalar_key_matches_type, validate_scalar_key};
+use marrow_store::value::ScalarType;
 use marrow_syntax::SourceSpan;
 
 use crate::collection::Direction;
 use crate::env::Env;
-use crate::error::{
-    Located, RUN_ABSENT, RUN_TYPE, RuntimeError, raise_fault, type_error, unsupported,
-};
+use crate::error::{RUN_ABSENT, RUN_TYPE, RuntimeError, raise_fault, unsupported};
 use crate::path::{Terminal, direct_root_place, lower};
-use crate::read::{first_data_child, first_record_child, next_data_child, next_record_child};
+use crate::read::{
+    first_data_child, first_record_child, next_data_child, next_record_child,
+    validate_scanned_child_key,
+};
 use crate::store::{DataAddress, catalog_id};
 use crate::value::{Value, identity_value, saved_key_to_value, validate_place_identity_keys};
 
@@ -40,7 +41,7 @@ pub(crate) fn eval_neighbor(
                 Ok(identity_value(&place.root, vec![key]))
             }
             NeighborTarget::Data { expected_key, .. } => {
-                validate_data_key(*expected_key, &key, span)?;
+                validate_scanned_child_key(std::slice::from_ref(expected_key), 0, &key, span)?;
                 saved_key_to_value(key, span)
             }
         },
@@ -157,21 +158,4 @@ fn seek_neighbor(
             Some(key) => next_data_child(env.store, parent, key, dir, span),
         },
     }
-}
-
-fn validate_data_key(
-    expected: Option<ScalarType>,
-    key: &SavedKey,
-    span: SourceSpan,
-) -> Result<(), RuntimeError> {
-    validate_scalar_key(key).map_err(|error| error.located(span))?;
-    if let Some(expected) = expected
-        && !scalar_key_matches_type(key, expected)
-    {
-        return Err(type_error(
-            "stored layer keys do not match the layer key type",
-            span,
-        ));
-    }
-    Ok(())
 }

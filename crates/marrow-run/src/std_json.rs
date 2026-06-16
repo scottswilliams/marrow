@@ -268,10 +268,10 @@ fn reject_negative_zero_integer(text: &str) -> Result<(), ()> {
         }
         match byte {
             b'"' => in_string = true,
-            b'-' if bytes.get(index + 1) == Some(&b'0') => {
-                if !matches!(bytes.get(index + 2), Some(b'.' | b'e' | b'E' | b'0'..=b'9')) {
-                    return Err(());
-                }
+            b'-' if bytes.get(index + 1) == Some(&b'0')
+                && !matches!(bytes.get(index + 2), Some(b'.' | b'e' | b'E' | b'0'..=b'9')) =>
+            {
+                return Err(());
             }
             _ => {}
         }

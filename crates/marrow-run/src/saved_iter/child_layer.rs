@@ -17,7 +17,7 @@ use crate::read::{
 use crate::store::{DataAddress, LayerAddress};
 use crate::value::{Value, saved_key_to_value};
 
-use super::{LoopShape, SavedLoopRow, SavedLoopSpec};
+use super::{LoopShape, SavedLoopRow, SavedLoopSpec, shape_row};
 
 pub(super) struct ChildLayerScan {
     place: CheckedSavedPlace,
@@ -114,17 +114,8 @@ impl ChildLayerScan {
     ) -> Result<ControlFlow<Flow>, RuntimeError> {
         validate_scanned_child_key(&self.key_scalars, self.exact_prefix.len(), &key, self.span)?;
         let key_value = saved_key_to_value(key.clone(), self.span)?;
-        match self.shape {
-            LoopShape::Keys => visit(SavedLoopRow::Single(key_value), env),
-            LoopShape::Values => {
-                let value = self.read_entry(key, env)?;
-                visit(SavedLoopRow::Single(value), env)
-            }
-            LoopShape::Entries => {
-                let value = self.read_entry(key, env)?;
-                visit(SavedLoopRow::Pair(key_value, value), env)
-            }
-        }
+        let row = shape_row(self.shape, key_value, || self.read_entry(key, env))?;
+        visit(row, env)
     }
 
     fn read_entry(&self, key: SavedKey, env: &mut Env<'_>) -> Result<Value, RuntimeError> {

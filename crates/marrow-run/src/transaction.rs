@@ -84,9 +84,7 @@ fn commit_flow(
         return Ok(flow);
     }
 
-    if depth == 1
-        && let Err(error) = env.validate_required_entry_checks(span)
-    {
+    if let Err(error) = env.validate_required_entry_checks(span) {
         rollback_and_discard(depth, span, env)?;
         return Err(error);
     }

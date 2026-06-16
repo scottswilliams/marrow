@@ -1,7 +1,8 @@
 //! Whole keyed-group-entry and keyed-leaf writes.
 
 use marrow_check::{
-    CheckedArg as ExecArg, CheckedExpr as ExecExpr, CheckedSavedPlace, StoreLeafKind,
+    CheckedArg as ExecArg, CheckedExpr as ExecExpr, CheckedSavedLayer, CheckedSavedPlace,
+    StoreLeafKind,
 };
 use marrow_store::key::SavedKey;
 use marrow_syntax::SourceSpan;
@@ -51,6 +52,7 @@ pub(crate) fn eval_group_entry_write(
         place,
         identity: &identity,
         parent_addresses: &parent_addresses,
+        layer_facts,
         span,
     };
 
@@ -65,6 +67,7 @@ struct GroupEntryTarget<'a> {
     place: &'a CheckedSavedPlace,
     identity: &'a [SavedKey],
     parent_addresses: &'a [LayerAddress],
+    layer_facts: &'a CheckedSavedLayer,
     span: SourceSpan,
 }
 
@@ -76,17 +79,10 @@ fn write_layer_leaf(
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
     let value = eval_expr(value, env)?;
-    let expected = target
-        .place
-        .layers
-        .last()
-        .map_or(&[][..], |layer| layer.key_params.as_slice());
+    let expected = target.layer_facts.key_params.as_slice();
     let layer_keys = lower_keys(keys, target.span, false, None, expected, env)?;
     let mut layers = target.parent_addresses.to_vec();
-    let Some(layer_facts) = target.place.layers.last() else {
-        return Err(unsupported("assigning this saved path", target.span));
-    };
-    layers.push(LayerAddress::from_checked(layer_facts, layer_keys.clone()));
+    layers.push(LayerAddress::from_checked(target.layer_facts, layer_keys));
 
     let plan = match leaf {
         StoreLeafKind::Identity { store_root, arity } => {
@@ -120,20 +116,17 @@ fn write_direct_group_entry(
             target.span,
         ));
     };
-    let Some(layer_facts) = target.place.layers.last() else {
-        return Err(unsupported("assigning this saved path", target.span));
-    };
-    let expected = layer_facts.key_params.as_slice();
+    let expected = target.layer_facts.key_params.as_slice();
     let layer_keys = lower_keys(keys, target.span, false, None, expected, env)?;
-    let value = resource_value_of(&layer_facts.members, fields, target.span)?;
-    let layer_address = LayerAddress::from_checked(layer_facts, layer_keys.clone());
+    let value = resource_value_of(&target.layer_facts.members, fields, target.span)?;
+    let layer_address = LayerAddress::from_checked(target.layer_facts, layer_keys);
     let mut layers = target.parent_addresses.to_vec();
     layers.push(layer_address);
     let created_required_paths = created_required_paths_for_value(
         target.place,
         target.identity,
         &layers,
-        &layer_facts.members,
+        &target.layer_facts.members,
         &value,
         target.span,
         env,
