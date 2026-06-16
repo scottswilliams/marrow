@@ -112,20 +112,6 @@ pub enum ScalarType {
 }
 
 impl ScalarType {
-    pub fn from_scalar_name(name: &str) -> Option<ScalarType> {
-        Some(match name {
-            "bool" => ScalarType::Bool,
-            "int" => ScalarType::Int,
-            "string" | "ErrorCode" => ScalarType::Str,
-            "bytes" => ScalarType::Bytes,
-            "date" => ScalarType::Date,
-            "instant" => ScalarType::Instant,
-            "duration" => ScalarType::Duration,
-            "decimal" => ScalarType::Decimal,
-            _ => return None,
-        })
-    }
-
     /// The canonical language spelling of this scalar type.
     pub fn name(self) -> &'static str {
         match self {

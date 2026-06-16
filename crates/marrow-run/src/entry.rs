@@ -16,9 +16,9 @@ use crate::activation::{
 use crate::call::function_by_ref;
 use crate::env::{Context, Env, TransactionState};
 use crate::error::{
-    RuntimeError, ambiguous_function, entry_argument, private_function,
-    raise_with_transaction_escape, reraise_fault_with_transaction_escape, type_error,
-    unknown_function, unsupported,
+    RuntimeError, ambiguous_function, entry_argument, entry_type_error, private_function,
+    raise_with_transaction_escape, reraise_fault_with_transaction_escape, unknown_function,
+    unsupported,
 };
 use crate::expr::eval_expr;
 use crate::host::{Host, StepHook};
@@ -275,10 +275,7 @@ fn canonical_entry_value(
     if let Some(value) = canonical_entry_value_impl(program, ty, value) {
         return Ok(value);
     }
-    Err(type_error(
-        &format!("entry argument `{name}` has the wrong type"),
-        SourceSpan::default(),
-    ))
+    Err(entry_type_error(name, SourceSpan::default()))
 }
 
 fn canonical_entry_value_impl(

@@ -5,31 +5,12 @@
 //! silent on qualified names or keyed values it cannot judge locally.
 
 use crate::common;
-use common::{assert_kind, codes};
+use common::{assert_kind, codes, resource};
 use marrow_schema::{
     ResourceSchema, SCHEMA_NON_ENUM_NAMED_FIELD, ScalarType, SchemaError, SchemaErrorKind, Type,
     check_saved_member_rules, check_saved_named_member_fields, compile_resource, compile_store,
 };
-use marrow_syntax::{Declaration, ResourceDecl, parse_source};
-
-/// Parse `source` and return its single resource declaration.
-fn resource(source: &str) -> ResourceDecl {
-    let parsed = parse_source(source);
-    assert!(
-        !parsed.has_errors(),
-        "source should parse cleanly: {:?}",
-        parsed.diagnostics
-    );
-    parsed
-        .file
-        .declarations
-        .into_iter()
-        .find_map(|declaration| match declaration {
-            Declaration::Resource(resource) => Some(resource),
-            _ => None,
-        })
-        .expect("a resource declaration")
-}
+use marrow_syntax::{Declaration, parse_source};
 
 /// Compile `source`'s saved resource, asserting it produced no schema errors.
 fn compile_ok(source: &str) -> ResourceSchema {

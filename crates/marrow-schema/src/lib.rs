@@ -31,7 +31,9 @@ pub use errors::{
     SchemaSavedUnknownTarget,
 };
 pub use presence::ReturnPresence;
-pub use types::{IndexSchema, KeyDef, Node, NodeKind, ResourceSchema, StoreSchema, Type};
+pub use types::{
+    IndexSchema, KeyDef, Node, NodeKind, ResourceSchema, StoreSchema, Type, scalar_type_from_name,
+};
 pub use validate::{
     check_saved_member_rules, check_saved_named_member_fields, check_saved_named_member_fields_with,
 };

@@ -3,45 +3,8 @@
 //! every depth. Local (store-free) resources may still use `unknown`.
 
 use crate::common;
-use common::{assert_kind, codes};
-use marrow_schema::{
-    ResourceSchema, SCHEMA_UNKNOWN_IN_SAVED, SchemaError, SchemaErrorKind,
-    SchemaSavedUnknownTarget, check_saved_member_rules, compile_resource, compile_store,
-};
-use marrow_syntax::{Declaration, parse_source};
-
-fn compile_source(source: &str) -> (ResourceSchema, Vec<SchemaError>) {
-    let parsed = parse_source(source);
-    assert!(
-        !parsed.has_errors(),
-        "source should parse cleanly: {:?}",
-        parsed.diagnostics
-    );
-    let mut resource = None;
-    let mut store = None;
-    for declaration in parsed.file.declarations {
-        match declaration {
-            Declaration::Resource(decl) => resource = Some(decl),
-            Declaration::Store(decl) => store = Some(decl),
-            _ => {}
-        }
-    }
-    let resource = resource.expect("resource declaration");
-    if let Some(store) = store {
-        let (schema, mut errors) = compile_resource(&resource);
-        let (_, store_errors) = compile_store(&store, &schema);
-        errors.extend(store_errors);
-        errors.extend(check_saved_member_rules(&resource.members));
-        (schema, errors)
-    } else {
-        compile_resource(&resource)
-    }
-}
-
-fn compile_source_errors(source: &str) -> Vec<SchemaError> {
-    let (_, errors) = compile_source(source);
-    errors
-}
+use common::{assert_kind, codes, compile_source_errors};
+use marrow_schema::{SCHEMA_UNKNOWN_IN_SAVED, SchemaErrorKind, SchemaSavedUnknownTarget};
 
 fn unknown(target: SchemaSavedUnknownTarget, name: &str) -> SchemaErrorKind {
     SchemaErrorKind::UnknownInSaved {

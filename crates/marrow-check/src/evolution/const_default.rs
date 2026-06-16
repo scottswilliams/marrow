@@ -132,7 +132,7 @@ fn constructor_scalar(callee: &Expression, args: &[Argument]) -> Result<Scalar, 
 /// string's raw UTF-8 bytes, so every string is valid, matching the runtime `bytes(...)`
 /// conversion.
 fn string_constructor_type(name: &str) -> Option<ScalarType> {
-    let ty = ScalarType::from_scalar_name(name)?;
+    let ty = marrow_schema::scalar_type_from_name(name)?;
     matches!(
         ty,
         ScalarType::Date | ScalarType::Instant | ScalarType::Duration | ScalarType::Bytes

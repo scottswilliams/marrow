@@ -250,24 +250,22 @@ fn write_counts(planned: &[PlannedWrite], names: &WriteTargetNames) -> WriteCoun
     let mut counts = WriteCounts::default();
     for step in planned {
         match &step.target {
-            WriteTarget::Data { path, .. } => {
-                let target = write_target_json(&step.target, names);
-                let Some(root) = target["store"].as_str() else {
-                    continue;
-                };
-                let entry = counts.roots.entry(root.to_string()).or_default();
+            WriteTarget::Data { store, path, .. } => {
+                let entry = counts
+                    .roots
+                    .entry(names.root_display(store).to_string())
+                    .or_default();
                 match step.op {
                     WriteOp::Write if path.is_empty() => entry.creates += 1,
                     WriteOp::Write => entry.writes += 1,
                     WriteOp::Delete => entry.deletes += 1,
                 }
             }
-            WriteTarget::Index { .. } => {
-                let target = write_target_json(&step.target, names);
-                let Some(index) = target["index"].as_str() else {
-                    continue;
-                };
-                let entry = counts.indexes.entry(index.to_string()).or_default();
+            WriteTarget::Index { index, .. } => {
+                let entry = counts
+                    .indexes
+                    .entry(names.index_display(index))
+                    .or_default();
                 match step.op {
                     WriteOp::Write => entry.writes += 1,
                     WriteOp::Delete => entry.deletes += 1,

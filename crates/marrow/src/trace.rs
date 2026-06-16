@@ -230,6 +230,24 @@ impl WriteTargetNames {
             .cloned()
     }
 
+    /// The display name a managed write groups under for a data store: the store's
+    /// resolved root, or the raw catalog id when no root is known. This is the same
+    /// text [`render_write_target`] and the JSON view show, so dry-run counts group
+    /// by the rendered identity rather than re-deriving it from a JSON round-trip.
+    pub(crate) fn root_display<'a>(&'a self, store: &'a str) -> &'a str {
+        self.stores.get(store).map_or(store, String::as_str)
+    }
+
+    /// The display name a managed write groups under for a store index: `^root.name`
+    /// when the index is known, or the raw catalog id otherwise, matching the
+    /// rendered and JSON views.
+    pub(crate) fn index_display(&self, index: &str) -> String {
+        self.indexes
+            .get(index)
+            .map(|info| format!("^{}.{}", info.root, info.name))
+            .unwrap_or_else(|| index.to_string())
+    }
+
     fn leaf_meaning(&self, target: &WriteTarget) -> Option<&StoredValueMeaning> {
         let member = self.leaf_member(target)?;
         self.member_meanings.get(member)

@@ -53,6 +53,10 @@ pub struct RuntimeError {
     pub origin: Option<FileId>,
     /// Present only for `run.depth` faults.
     call_depth: Option<Box<CallDepthFault>>,
+    /// The entry parameter whose host/CLI value did not match its checked type.
+    /// Present only for the `run.type` fault a wrong-typed entry argument raises,
+    /// so callers identify the offending parameter without parsing the message.
+    entry_type_param: Option<String>,
 }
 
 impl RuntimeError {
@@ -76,6 +80,7 @@ impl RuntimeError {
             transaction_escape: false,
             origin: None,
             call_depth: None,
+            entry_type_param: None,
         }
     }
 
@@ -104,6 +109,7 @@ impl RuntimeError {
             transaction_escape: false,
             origin: None,
             call_depth: None,
+            entry_type_param: None,
         }
     }
 
@@ -117,6 +123,11 @@ impl RuntimeError {
 
     pub fn call_depth(&self) -> Option<&CallDepthFault> {
         self.call_depth.as_deref()
+    }
+
+    /// The entry parameter named by a wrong-typed entry-argument `run.type` fault.
+    pub fn entry_type_param(&self) -> Option<&str> {
+        self.entry_type_param.as_deref()
     }
 
     /// Whether this fault can be handled by a language `catch`.
@@ -327,6 +338,7 @@ pub(crate) fn raise_with_transaction_escape(
         // caller-frame re-span keeps it rather than re-deriving a shallower one.
         origin,
         call_depth: None,
+        entry_type_param: None,
     }
 }
 
@@ -338,6 +350,7 @@ pub(crate) fn unknown_function(name: &str, span: SourceSpan) -> RuntimeError {
         transaction_escape: false,
         origin: None,
         call_depth: None,
+        entry_type_param: None,
         code: RUN_UNKNOWN_FUNCTION,
         message: format!("the program has no function `{name}`"),
         span,
@@ -352,6 +365,7 @@ pub(crate) fn ambiguous_function(name: &str, span: SourceSpan) -> RuntimeError {
         transaction_escape: false,
         origin: None,
         call_depth: None,
+        entry_type_param: None,
         code: RUN_AMBIGUOUS_FUNCTION,
         message: format!("entry `{name}` is ambiguous; qualify it as `module::{name}`"),
         span,
@@ -366,6 +380,7 @@ pub(crate) fn private_function(name: &str, span: SourceSpan) -> RuntimeError {
         transaction_escape: false,
         origin: None,
         call_depth: None,
+        entry_type_param: None,
         code: RUN_PRIVATE_FUNCTION,
         message: format!("function `{name}` is private to its module"),
         span,
@@ -404,6 +419,7 @@ pub(crate) fn reraise_fault_with_transaction_escape(
         // this caller-frame re-span.
         origin,
         call_depth: None,
+        entry_type_param: None,
     }
 }
 
@@ -421,6 +437,7 @@ pub(crate) fn raise_fault(code: &'static str, message: String, span: SourceSpan)
         transaction_escape: false,
         origin: None,
         call_depth: None,
+        entry_type_param: None,
     }
 }
 
@@ -508,6 +525,7 @@ pub(crate) fn key_type_fault(
         transaction_escape: false,
         origin: None,
         call_depth: None,
+        entry_type_param: None,
         code: RUN_TYPE,
         message: format!(
             "a key of type `{}` was given where `{}` is declared",
@@ -568,6 +586,18 @@ pub(crate) fn entry_argument(message: impl Into<String>) -> RuntimeError {
 
 pub(crate) fn type_error(message: &str, span: SourceSpan) -> RuntimeError {
     raise_fault(RUN_TYPE, message.to_string(), span)
+}
+
+/// The `run.type` fault for an entry argument whose host/CLI value does not match
+/// its checked parameter type. It stamps the parameter name as a typed payload so
+/// callers identify the offending parameter without parsing the message.
+pub(crate) fn entry_type_error(param_name: &str, span: SourceSpan) -> RuntimeError {
+    let mut error = type_error(
+        &format!("entry argument `{param_name}` has the wrong type"),
+        span,
+    );
+    error.entry_type_param = Some(param_name.to_string());
+    error
 }
 
 pub(crate) fn overflow(span: SourceSpan) -> RuntimeError {

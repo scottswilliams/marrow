@@ -43,7 +43,7 @@ impl Type {
         if let Some(element) = crate::compile::sequence_element(text) {
             return Self::Sequence(Box::new(Self::resolve_text(element)));
         }
-        if let Some(scalar) = ScalarType::from_scalar_name(text) {
+        if let Some(scalar) = scalar_type_from_name(text) {
             return Self::Scalar(scalar);
         }
         if text == "unknown" {
@@ -94,6 +94,26 @@ impl fmt::Display for Type {
             Self::Unknown => f.write_str("unknown"),
         }
     }
+}
+
+/// Resolve a source surface spelling to the storable [`ScalarType`] it names, or
+/// `None` for a name that is not a scalar spelling. This is the language/schema
+/// inverse of [`ScalarType::name`]: it accepts the canonical spellings plus the
+/// `string` and `ErrorCode` aliases, which both store as [`ScalarType::Str`]. The
+/// store owns only the canonical [`ScalarType::name`]; spelling resolution is a
+/// language concern and lives here.
+pub fn scalar_type_from_name(name: &str) -> Option<ScalarType> {
+    Some(match name {
+        "bool" => ScalarType::Bool,
+        "int" => ScalarType::Int,
+        "string" | "ErrorCode" => ScalarType::Str,
+        "bytes" => ScalarType::Bytes,
+        "date" => ScalarType::Date,
+        "instant" => ScalarType::Instant,
+        "duration" => ScalarType::Duration,
+        "decimal" => ScalarType::Decimal,
+        _ => return None,
+    })
 }
 
 /// The compiled tree shape of a resource declaration.

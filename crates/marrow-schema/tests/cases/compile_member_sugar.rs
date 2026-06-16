@@ -1,60 +1,9 @@
 //! Member sugar: `sequence[T]` desugars to a keyed-leaf layer identical to its
 //! canonical spelling, top-level and nested.
 
-use marrow_schema::{
-    Node, NodeKind, ResourceSchema, ScalarType, SchemaError, Type, check_saved_member_rules,
-    compile_resource, compile_store,
-};
-use marrow_syntax::{Declaration, parse_source};
-
-/// Compile `source`'s resource, asserting it produced no schema errors.
-fn compile_ok(source: &str) -> ResourceSchema {
-    let (schema, errors) = compile_source(source);
-    assert!(errors.is_empty(), "unexpected schema errors: {errors:?}");
-    schema
-}
-
-fn compile_source(source: &str) -> (ResourceSchema, Vec<SchemaError>) {
-    let parsed = parse_source(source);
-    assert!(
-        !parsed.has_errors(),
-        "source should parse cleanly: {:?}",
-        parsed.diagnostics
-    );
-    let mut resource = None;
-    let mut store = None;
-    for declaration in parsed.file.declarations {
-        match declaration {
-            Declaration::Resource(decl) => resource = Some(decl),
-            Declaration::Store(decl) => store = Some(decl),
-            _ => {}
-        }
-    }
-    let resource = resource.expect("resource declaration");
-    if let Some(store) = store {
-        let (schema, mut errors) = compile_resource(&resource);
-        let (_, store_errors) = compile_store(&store, &schema);
-        errors.extend(store_errors);
-        errors.extend(check_saved_member_rules(&resource.members));
-        (schema, errors)
-    } else {
-        compile_resource(&resource)
-    }
-}
-
-/// The top-level node named `name` (a keyed leaf or a group).
-fn layer<'a>(schema: &'a ResourceSchema, name: &str) -> &'a Node {
-    schema
-        .members
-        .iter()
-        .find(|node| node.name == name)
-        .unwrap_or_else(|| panic!("layer `{name}` not found"))
-}
-
-/// The top-level nodes classified by the production schema API as plain fields.
-fn top_level_fields(schema: &ResourceSchema) -> impl Iterator<Item = &Node> {
-    schema.members.iter().filter(|node| node.is_plain_field())
-}
+use crate::common;
+use common::{compile_ok, layer, top_level_fields};
+use marrow_schema::{NodeKind, ScalarType, Type};
 
 #[test]
 fn sequence_member_desugars_to_a_pos_int_keyed_leaf() {

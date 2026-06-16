@@ -43,7 +43,7 @@ fn canonical_forms_match_the_docs() {
 }
 
 #[test]
-fn scalar_names_keep_canonical_spelling_separate_from_aliases() {
+fn scalar_names_are_the_canonical_store_spelling() {
     for (scalar, name) in [
         (ScalarType::Bool, "bool"),
         (ScalarType::Int, "int"),
@@ -55,14 +55,7 @@ fn scalar_names_keep_canonical_spelling_separate_from_aliases() {
         (ScalarType::Decimal, "decimal"),
     ] {
         assert_eq!(scalar.name(), name);
-        assert_eq!(ScalarType::from_scalar_name(name), Some(scalar));
     }
-
-    assert_eq!(
-        ScalarType::from_scalar_name("ErrorCode"),
-        Some(ScalarType::Str)
-    );
-    assert_eq!(ScalarType::from_scalar_name("unknown"), None);
 }
 
 #[test]

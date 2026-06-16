@@ -4,43 +4,11 @@
 //! scalar key compiles clean.
 
 use crate::common;
-use common::{assert_kind, codes};
+use common::{assert_kind, codes, compile_source_errors, resource_and_store};
 use marrow_schema::{
     SCHEMA_NONSCALAR_KEY, SCHEMA_UNORDERABLE_KEY, ScalarType, SchemaError, SchemaErrorKind,
-    SchemaKeyTarget, Type, check_saved_member_rules, compile_resource, compile_store,
+    SchemaKeyTarget, Type, compile_resource, compile_store,
 };
-use marrow_syntax::{Declaration, ResourceDecl, StoreDecl, parse_source};
-
-fn resource_and_store(source: &str) -> (ResourceDecl, StoreDecl) {
-    let parsed = parse_source(source);
-    assert!(
-        !parsed.has_errors(),
-        "source should parse cleanly: {:?}",
-        parsed.diagnostics
-    );
-    let mut resource = None;
-    let mut store = None;
-    for declaration in parsed.file.declarations {
-        match declaration {
-            Declaration::Resource(decl) => resource = Some(decl),
-            Declaration::Store(decl) => store = Some(decl),
-            _ => {}
-        }
-    }
-    (
-        resource.expect("resource declaration"),
-        store.expect("store declaration"),
-    )
-}
-
-fn compile_source_errors(source: &str) -> Vec<SchemaError> {
-    let (resource, store) = resource_and_store(source);
-    let (schema, mut errors) = compile_resource(&resource);
-    let (_, store_errors) = compile_store(&store, &schema);
-    errors.extend(store_errors);
-    errors.extend(check_saved_member_rules(&resource.members));
-    errors
-}
 
 fn compile_store_errors(source: &str) -> Vec<SchemaError> {
     let (resource, store) = resource_and_store(source);

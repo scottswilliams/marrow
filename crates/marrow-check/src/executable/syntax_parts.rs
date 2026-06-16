@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use marrow_syntax::{self as syntax, SourceSpan};
 
+use crate::checks::catch_frame;
 use crate::facts::EnumMemberId;
 use crate::program::MarrowType;
 
@@ -208,7 +209,7 @@ impl CheckedCatchClause {
         context: &CheckedExecutableContext<'_>,
         scope: &mut Vec<HashMap<String, MarrowType>>,
     ) -> Option<Self> {
-        scope.push(HashMap::from([(catch.name.clone(), MarrowType::Error)]));
+        scope.push(catch_frame(catch));
         let block = CheckedBody::lower_scoped(&catch.block, context, scope);
         scope.pop();
         Some(Self {

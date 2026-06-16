@@ -5,14 +5,13 @@
 //! unique index may omit them, and an index requires a keyed root.
 
 use crate::common;
-use common::{assert_kind, codes};
+use common::{assert_kind, codes, resource_and_store};
 use marrow_schema::{
     SCHEMA_DUPLICATE_MEMBER, SCHEMA_INDEX_MISSING_IDENTITY_KEYS, SCHEMA_INDEX_REQUIRES_KEYED_ROOT,
     SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_NESTED_INDEX_ARG, SCHEMA_UNKNOWN_INDEX_ARG,
     SchemaDuplicateTarget, SchemaError, SchemaErrorKind, SchemaNameCollision, compile_resource,
     compile_store,
 };
-use marrow_syntax::{Declaration, ResourceDecl, StoreDecl, parse_source};
 
 fn compile_store_errors(source: &str) -> Vec<SchemaError> {
     let (resource, store) = resource_and_store(source);
@@ -23,28 +22,6 @@ fn compile_store_errors(source: &str) -> Vec<SchemaError> {
     );
     let (_, store_errors) = compile_store(&store, &schema);
     store_errors
-}
-
-fn resource_and_store(source: &str) -> (ResourceDecl, StoreDecl) {
-    let parsed = parse_source(source);
-    assert!(
-        !parsed.has_errors(),
-        "source should parse cleanly: {:?}",
-        parsed.diagnostics
-    );
-    let mut resource = None;
-    let mut store = None;
-    for declaration in parsed.file.declarations {
-        match declaration {
-            Declaration::Resource(decl) => resource = Some(decl),
-            Declaration::Store(decl) => store = Some(decl),
-            _ => {}
-        }
-    }
-    (
-        resource.expect("resource declaration"),
-        store.expect("store declaration"),
-    )
 }
 
 #[test]

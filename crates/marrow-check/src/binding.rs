@@ -26,7 +26,7 @@ use marrow_syntax::{
 
 use crate::MarrowType;
 use crate::analysis::span_covers;
-use crate::checks::{file_prelude, for_frame};
+use crate::checks::{catch_frame, file_prelude, for_frame};
 use crate::enums::{enum_schema_in, resolve_enum_member_path, resolve_type};
 use crate::executable::{SavedMemberRefKind, SavedPlaceResolver, lower_expr_for_file};
 use crate::facts::{FunctionId, LocalId};
@@ -1200,11 +1200,10 @@ impl UseWalker<'_, '_> {
                 self.resolve_type_ref(ty);
             }
             let mut frame = HashMap::new();
-            let mut type_frame = HashMap::new();
+            let type_frame = catch_frame(clause);
             if let Some(span) = catch_binding_name_span(self.source, clause) {
                 frame.insert(clause.name.clone(), self.define_local(span));
             }
-            type_frame.insert(clause.name.clone(), MarrowType::Error);
             scope.push(frame);
             type_scope.push(type_frame);
             for inner in &clause.block.statements {
