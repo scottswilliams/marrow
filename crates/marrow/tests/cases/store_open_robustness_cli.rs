@@ -8,7 +8,7 @@ use crate::support;
 use crate::support_data;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
-use support::{find_code_segment, marrow, write};
+use support::{find_code_segment, last_fault, marrow, write};
 use support_data::{native_project, seeded_project};
 
 /// The native store file a seeded project writes its data into.
@@ -53,15 +53,10 @@ fn corrupt_primary_slot_selector(project: &Path) {
 }
 
 /// The dotted code a `marrow` command printed on stderr, located the same way the
-/// CLI's own fault grammar reports it. The fault is the last non-empty stderr line,
-/// so any preamble cannot displace the located code.
+/// CLI's own fault grammar reports it. The fault is the shared [`last_fault`] stderr
+/// line, so any preamble cannot displace the located code.
 fn stderr_code(output: &std::process::Output) -> String {
-    let stderr = String::from_utf8(output.stderr.clone()).expect("utf8 stderr");
-    let fault = stderr
-        .lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .expect("a fault line on stderr");
+    let fault = last_fault(&output.stderr);
     let segments: Vec<&str> = fault.split(": ").collect();
     let (_, code) = find_code_segment(&segments);
     code.to_string()

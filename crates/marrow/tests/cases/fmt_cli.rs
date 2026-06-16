@@ -2,7 +2,7 @@ use crate::support;
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Output};
 use support::temp_source;
 
@@ -17,25 +17,6 @@ fn run_fmt_with_env(args: &[&str], key: &str, value: &str) -> Output {
         .env(key, value)
         .output()
         .expect("run marrow fmt")
-}
-
-fn temp_artifacts_for(path: &Path) -> Vec<PathBuf> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .expect("source file name")
-        .to_string_lossy();
-    let prefix = format!(".{file_name}.");
-    fs::read_dir(parent)
-        .expect("read source parent")
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|entry| {
-            entry
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".tmp"))
-        })
-        .collect()
 }
 
 /// Human-rendered `fmt` message fragments with no typed code or JSON surface (`fmt` has
@@ -127,7 +108,7 @@ fn fmt_write_failure_preserves_original_and_removes_temp_file() {
         "8",
     );
     let written = fs::read_to_string(&path).expect("read back");
-    let temps = temp_artifacts_for(&path);
+    let temps = support::temp_artifacts_for(&path);
     fs::remove_file(&path).ok();
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");

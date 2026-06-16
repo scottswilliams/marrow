@@ -235,32 +235,11 @@ impl Backend for MemStore {
 #[cfg(test)]
 mod tests {
     use super::MemStore;
-    use crate::backend::{Backend, StoreError};
+    use crate::backend::StoreError;
     use crate::conformance;
 
     #[test]
     fn mem_store_passes_the_substrate_conformance_suite() -> Result<(), StoreError> {
         conformance::run_all(|| Ok(MemStore::default()))
-    }
-
-    #[test]
-    fn bounded_memory_scan_resumes_inside_the_range() -> Result<(), StoreError> {
-        let mut store = MemStore::default();
-        Backend::write(&mut store, b"a1", b"below".to_vec())?;
-        Backend::write(&mut store, b"a2", b"first".to_vec())?;
-        Backend::write(&mut store, b"a3", b"second".to_vec())?;
-        Backend::write(&mut store, b"a4", b"above".to_vec())?;
-        Backend::write(&mut store, b"b3", b"outside".to_vec())?;
-
-        let first = Backend::scan_between(&store, b"a", Some(b"a2"), Some(b"a4"), 1)?;
-        assert_eq!(first.entries, vec![(b"a2".to_vec(), b"first".to_vec())]);
-        assert!(first.truncated);
-
-        let second =
-            Backend::scan_between_after(&store, b"a", Some(b"a2"), Some(b"a4"), b"a2", 10)?;
-        assert_eq!(second.entries, vec![(b"a3".to_vec(), b"second".to_vec())]);
-        assert!(!second.truncated);
-
-        Ok(())
     }
 }

@@ -77,25 +77,6 @@ fn assert_owner_only_file(path: &Path) {
     assert_eq!(mode, 0o600, "{} mode is {mode:o}", path.display());
 }
 
-fn temp_artifacts_for(path: &Path) -> Vec<PathBuf> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .expect("artifact file name")
-        .to_string_lossy();
-    let prefix = format!(".{file_name}.");
-    fs::read_dir(parent)
-        .expect("read artifact parent")
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|entry| {
-            entry
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".tmp"))
-        })
-        .collect()
-}
-
 /// A native-store project whose `seed` entry writes one book, plus its committed
 /// catalog. Running `seed` populates the store; the data directory can then be
 /// removed to model an empty restore target with the same source and catalog.
@@ -752,7 +733,7 @@ fn backup_failure_preserves_prior_archive_and_removes_temp_file() {
         "a failed backup must preserve the previously published archive byte-for-byte"
     );
     assert_eq!(
-        temp_artifacts_for(&archive),
+        support::temp_artifacts_for(&archive),
         Vec::<PathBuf>::new(),
         "a failed backup must remove its adjacent temp artifact"
     );
@@ -844,7 +825,7 @@ fn backup_refuses_an_existing_store_without_a_uid_without_writing() {
         !archive.exists(),
         "failed backup does not publish an archive"
     );
-    assert!(temp_artifacts_for(&archive).is_empty());
+    assert!(support::temp_artifacts_for(&archive).is_empty());
     let store = TreeStore::open_read_only(&data_dir.join("marrow.redb")).expect("open store");
     assert_eq!(
         store.read_store_uid().expect("read uid"),

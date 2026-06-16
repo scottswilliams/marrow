@@ -4,106 +4,11 @@
 //! whether local or saved, and that two stores over one resource keep distinct
 //! identity types.
 
-use marrow_schema::{
-    Node, NodeKind, ResourceSchema, ScalarType, SchemaError, Type, check_saved_member_rules,
-    compile_resource, compile_store,
+use crate::common;
+use common::{
+    compile_ok, compile_source_errors, layer, resource, resource_and_store, top_level_fields,
 };
-use marrow_syntax::{Declaration, ResourceDecl, StoreDecl, parse_source};
-
-/// Parse `source` and return its single resource declaration.
-fn resource(source: &str) -> ResourceDecl {
-    let parsed = parse_source(source);
-    assert!(
-        !parsed.has_errors(),
-        "source should parse cleanly: {:?}",
-        parsed.diagnostics
-    );
-    parsed
-        .file
-        .declarations
-        .into_iter()
-        .find_map(|declaration| match declaration {
-            Declaration::Resource(resource) => Some(resource),
-            _ => None,
-        })
-        .expect("a resource declaration")
-}
-
-/// Compile `source`'s resource, asserting it produced no schema errors.
-fn compile_ok(source: &str) -> ResourceSchema {
-    let (schema, errors) = compile_source(source);
-    assert!(errors.is_empty(), "unexpected schema errors: {errors:?}");
-    schema
-}
-
-fn compile_source(source: &str) -> (ResourceSchema, Vec<SchemaError>) {
-    let parsed = parse_source(source);
-    assert!(
-        !parsed.has_errors(),
-        "source should parse cleanly: {:?}",
-        parsed.diagnostics
-    );
-    let mut resource = None;
-    let mut store = None;
-    for declaration in parsed.file.declarations {
-        match declaration {
-            Declaration::Resource(decl) => resource = Some(decl),
-            Declaration::Store(decl) => store = Some(decl),
-            _ => {}
-        }
-    }
-    let resource = resource.expect("resource declaration");
-    if let Some(store) = store {
-        let (schema, mut errors) = compile_resource(&resource);
-        let (_, store_errors) = compile_store(&store, &schema);
-        errors.extend(store_errors);
-        errors.extend(check_saved_member_rules(&resource.members));
-        (schema, errors)
-    } else {
-        compile_resource(&resource)
-    }
-}
-
-fn compile_source_errors(source: &str) -> Vec<SchemaError> {
-    let (_, errors) = compile_source(source);
-    errors
-}
-
-fn resource_and_store(source: &str) -> (ResourceDecl, StoreDecl) {
-    let parsed = parse_source(source);
-    assert!(
-        !parsed.has_errors(),
-        "source should parse cleanly: {:?}",
-        parsed.diagnostics
-    );
-    let mut resource = None;
-    let mut store = None;
-    for declaration in parsed.file.declarations {
-        match declaration {
-            Declaration::Resource(decl) => resource = Some(decl),
-            Declaration::Store(decl) => store = Some(decl),
-            _ => {}
-        }
-    }
-    (
-        resource.expect("resource declaration"),
-        store.expect("store declaration"),
-    )
-}
-
-/// The top-level node named `name` (a keyed leaf or a group).
-fn layer<'a>(schema: &'a ResourceSchema, name: &str) -> &'a Node {
-    schema
-        .members
-        .iter()
-        .find(|node| node.name == name)
-        .unwrap_or_else(|| panic!("layer `{name}` not found"))
-}
-
-/// The top-level nodes classified by the production schema API as plain fields.
-fn top_level_fields(schema: &ResourceSchema) -> impl Iterator<Item = &Node> {
-    schema.members.iter().filter(|node| node.is_plain_field())
-}
+use marrow_schema::{NodeKind, ScalarType, Type, compile_resource, compile_store};
 
 /// The canonical `Book` resource.
 const BOOK: &str = "\

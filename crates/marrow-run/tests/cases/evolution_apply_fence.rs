@@ -5,22 +5,8 @@ use crate::evolution_apply_support;
 use evolution_apply_support::*;
 
 use marrow_run::evolution::{ApplyError, FenceError, apply, current_engine_profile, fence};
-use marrow_store::tree::{CommitMetadata, EngineProfile, TreeStore};
+use marrow_store::tree::TreeStore;
 use marrow_store::value::Scalar;
-
-fn stamp_commit(store: &TreeStore, epoch: u64, source_digest: String, profile: EngineProfile) {
-    store
-        .write_commit_metadata(&CommitMetadata {
-            commit_id: 0,
-            catalog_epoch: epoch,
-            layout_epoch: profile.layout_epoch(),
-            source_digest,
-            engine_profile_digest: profile.digest_bytes(),
-            changed_root_catalog_ids: Vec::new(),
-            changed_index_catalog_ids: Vec::new(),
-        })
-        .expect("stamp commit metadata");
-}
 
 /// A store this binary applies is stamped at the binary's own engine profile, so the
 /// same binary that applied it passes the open fence, while a binary pinned one epoch
@@ -112,6 +98,7 @@ fn apply_is_fenced_when_store_evolved_past_the_binary() -> Result<(), Box<dyn st
     // accepted epoch, with this binary's engine profile so only the epoch fences.
     stamp_commit(
         &store,
+        0,
         accepted + 1,
         program.source_digest(),
         current_engine_profile(),

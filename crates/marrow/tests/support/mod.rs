@@ -21,6 +21,16 @@ pub(crate) fn json_records_in_stderr(stderr: Vec<u8>) -> Vec<serde_json::Value> 
         .map(|line| serde_json::from_str(line).expect("json stderr record"))
         .collect()
 }
+/// The diagnostic records of a `--format jsonl` run: every record except the trailing
+/// summary. Asserting against parsed records, not a rendered stderr blob, keeps the oracle
+/// on typed codes and payload fields. Shared by every CLI surface that reads diagnostics
+/// from the structured JSONL stream.
+pub(crate) fn diagnostic_records(stdout: Vec<u8>) -> Vec<serde_json::Value> {
+    jsonl(stdout)
+        .into_iter()
+        .filter(|record| record["kind"] != "summary")
+        .collect()
+}
 pub(crate) fn codes(records: &[serde_json::Value]) -> Vec<&str> {
     records
         .iter()
@@ -65,6 +75,28 @@ pub(crate) fn temp_source(name: &str, source: &str) -> PathBuf {
     ));
     fs::write(&path, source).expect("write source");
     path
+}
+
+/// The adjacent `.<file_name>.*.tmp` artifacts an atomic writer leaves beside `path`.
+/// Atomic `fmt --write` and `backup` publish through a sibling temp file, so this is the
+/// shared oracle for "did the failed write clean up after itself".
+pub(crate) fn temp_artifacts_for(path: &Path) -> Vec<PathBuf> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .expect("artifact file name")
+        .to_string_lossy();
+    let prefix = format!(".{file_name}.");
+    fs::read_dir(parent)
+        .expect("read artifact parent")
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|entry| {
+            entry
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".tmp"))
+        })
+        .collect()
 }
 
 /// Write `contents` to `root/relative`, creating parent directories.
@@ -161,6 +193,19 @@ pub(crate) fn parse_location(location: &str) -> (String, u32, u32) {
     let line: u32 = fields.next().expect("line field").parse().expect("line");
     let file = fields.next().expect("file field").to_string();
     (file, line, column)
+}
+
+/// The fault line a failed `marrow` command prints: its last non-empty stderr line. A
+/// leading `std::log` stream or other preamble, if any, precedes it, so the located code
+/// cannot be displaced. This is the single owner of "which stderr line is the fault" for
+/// every CLI surface that selects a code or typed slots from rendered stderr.
+pub(crate) fn last_fault(stderr: &[u8]) -> String {
+    let text = String::from_utf8(stderr.to_vec()).expect("stderr utf8");
+    text.lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .expect("a fault line")
+        .to_string()
 }
 
 /// One text-mode CLI fault line parsed into its typed slots. `marrow run` and the

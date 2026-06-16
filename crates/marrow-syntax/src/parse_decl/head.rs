@@ -124,7 +124,7 @@ pub(super) fn parse_resource_head(source: &str, tokens: &[Token]) -> ParseResult
         return Ok(name);
     }
     Err(ParseError::new(
-        ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceName),
+        ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceHeader),
         "a resource header is just `resource Name`",
     ))
 }

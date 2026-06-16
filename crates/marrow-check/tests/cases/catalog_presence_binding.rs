@@ -4,21 +4,11 @@ use std::fs;
 use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 use marrow_check::{CHECK_CATALOG_INTENT, DiagnosticPayload};
 
-use support::catalog::{catalog, catalog_path, derived_id, entry as literal_entry, write_catalog};
+use support::catalog::{
+    catalog, catalog_path, derived_id, entry as literal_entry, entry_for_label as entry,
+    write_catalog,
+};
 use support::{check_with_accepted, temp_project, write};
-
-/// A catalog entry whose stable id is minted deterministically from `label`, so a
-/// fixture refers to a member by a readable name and still gets a `cat_`-shaped id the
-/// catalog parser accepts. Tests that need a specific literal id call
-/// [`literal_entry`] (the shared builder) directly.
-fn entry(
-    kind: CatalogEntryKind,
-    canonical_path: &str,
-    label: &str,
-    aliases: &[&str],
-) -> CatalogEntry {
-    literal_entry(kind, canonical_path, &derived_id(label), aliases)
-}
 
 #[test]
 fn first_source_check_proposes_catalog_ids_without_writing_accepted_catalog() {

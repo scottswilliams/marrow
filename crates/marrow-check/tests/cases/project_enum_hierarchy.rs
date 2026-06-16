@@ -1,20 +1,13 @@
 use crate::support;
 use crate::support_enum;
-use marrow_check::{CheckDiagnostic, DiagnosticPayload, EnumDiagnostic, check_project};
+use marrow_check::{DiagnosticPayload, EnumDiagnostic, check_project};
 use marrow_schema::SchemaErrorKind;
 
 use support::{
-    assert_clean, check_module, check_module_report, config, temp_project, with_code, write,
+    assert_clean, assert_schema_payload, check_module, check_module_report, config, temp_project,
+    with_code, write,
 };
 use support_enum::assert_enum_payload;
-
-fn assert_schema_payload(diagnostic: &CheckDiagnostic, expected: SchemaErrorKind) {
-    assert_eq!(
-        diagnostic.payload,
-        DiagnosticPayload::Schema(expected),
-        "{diagnostic:#?}"
-    );
-}
 
 /// A nested enum used as a value, a `match` over its leaves, and `is` tests all
 /// over one declaration, used by the hierarchy checker tests.

@@ -10,10 +10,7 @@ use support::{marrow_sub, temp_project, write};
 /// on a rendered stderr blob.
 fn check_diagnostics(dir: &str) -> (std::process::Output, Vec<Value>) {
     let output = marrow_sub("check", &["--format", "jsonl", dir]);
-    let records = support::jsonl(output.stdout.clone())
-        .into_iter()
-        .filter(|record| record["kind"] != "summary")
-        .collect();
+    let records = support::diagnostic_records(output.stdout.clone());
     (output, records)
 }
 

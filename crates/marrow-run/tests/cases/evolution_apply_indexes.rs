@@ -7,26 +7,11 @@ use crate::evolution_apply_support;
 use evolution_apply_support::*;
 
 use marrow_check::evolution::{RepairReason, Verdict};
-use marrow_run::evolution::{ApplyError, apply, current_engine_profile};
+use marrow_run::evolution::{ApplyError, apply};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::{SavedKey, encode_identity_index_key, encode_identity_payload};
-use marrow_store::tree::{CommitMetadata, DataPathSegment, TreeStore};
+use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_store::value::{Scalar, encode_value};
-
-fn stamp_clean_commit(store: &TreeStore, program: &marrow_check::CheckedProgram) {
-    let profile = current_engine_profile();
-    store
-        .write_commit_metadata(&CommitMetadata {
-            commit_id: 1,
-            catalog_epoch: program.catalog.accepted_epoch.expect("accepted epoch"),
-            layout_epoch: profile.layout_epoch(),
-            source_digest: program.source_digest(),
-            engine_profile_digest: profile.digest_bytes(),
-            changed_root_catalog_ids: Vec::new(),
-            changed_index_catalog_ids: Vec::new(),
-        })
-        .expect("stamp clean commit");
-}
 
 #[test]
 fn proposal_index_rebuild_writes_entries_before_catalog_acceptance()

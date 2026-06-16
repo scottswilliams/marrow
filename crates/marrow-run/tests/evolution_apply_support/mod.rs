@@ -14,10 +14,10 @@ use std::path::{Path, PathBuf};
 
 use marrow_check::evolution::{EvolutionWitness, preview};
 use marrow_check::{CheckedProgram, CheckedSavedPlace};
-use marrow_run::evolution::{ApplyOutcome, apply};
+use marrow_run::evolution::{ApplyOutcome, apply, current_engine_profile};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::tree::{CommitMetadata, DataPathSegment, EngineProfile, TreeStore};
 use marrow_store::value::{Scalar, decode_value, encode_value};
 
 // The fact-lookup family and the check/commit factories are owned by marrow-check
@@ -190,6 +190,57 @@ pub const INT: marrow_store::value::ScalarType = marrow_store::value::ScalarType
 
 pub fn witness(program: &CheckedProgram, store: &TreeStore) -> EvolutionWitness {
     preview(program, store).expect("preview").0
+}
+
+/// Build a commit-metadata stamp with empty changed-id partitions, deriving the layout
+/// epoch and engine-profile digest from `profile`. The apply suites seed predecessor
+/// stamps that differ only in commit id, catalog epoch, source digest, and engine
+/// profile, so those are the only inputs the caller supplies.
+fn commit_metadata(
+    commit_id: u64,
+    catalog_epoch: u64,
+    source_digest: String,
+    profile: EngineProfile,
+) -> CommitMetadata {
+    CommitMetadata {
+        commit_id,
+        catalog_epoch,
+        layout_epoch: profile.layout_epoch(),
+        source_digest,
+        engine_profile_digest: profile.digest_bytes(),
+        changed_root_catalog_ids: Vec::new(),
+        changed_index_catalog_ids: Vec::new(),
+    }
+}
+
+/// Write a predecessor commit stamp the apply suites can fence or resume against.
+pub fn stamp_commit(
+    store: &TreeStore,
+    commit_id: u64,
+    catalog_epoch: u64,
+    source_digest: String,
+    profile: EngineProfile,
+) {
+    store
+        .write_commit_metadata(&commit_metadata(
+            commit_id,
+            catalog_epoch,
+            source_digest,
+            profile,
+        ))
+        .expect("stamp commit metadata");
+}
+
+/// Stamp a clean predecessor commit at the program's accepted epoch under this binary's
+/// engine profile, the steady state a same-name index change starts from.
+pub fn stamp_clean_commit(store: &TreeStore, program: &CheckedProgram) {
+    stamp_commit(
+        store,
+        1,
+        program.catalog.accepted_epoch.expect("accepted epoch"),
+        program.source_digest(),
+        current_engine_profile(),
+    );
 }
 
 pub fn applied_proposal_default_fixture(

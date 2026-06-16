@@ -1,18 +1,11 @@
 use crate::support;
-use marrow_check::{CheckDiagnostic, DiagnosticPayload, RejectedSurface, check_project};
+use marrow_check::{DiagnosticPayload, RejectedSurface, check_project};
 use marrow_schema::{NodeKind, ScalarType, SchemaErrorKind, SchemaKeyTarget, Type};
 
 use support::{
-    assert_clean, check_module, check_module_report, config, temp_project, with_code, write,
+    assert_clean, assert_schema_payload, check_module, check_module_report, config, temp_project,
+    with_code, write,
 };
-
-fn assert_schema_payload(diagnostic: &CheckDiagnostic, expected: SchemaErrorKind) {
-    assert_eq!(
-        diagnostic.payload,
-        DiagnosticPayload::Schema(expected),
-        "{diagnostic:#?}"
-    );
-}
 
 #[test]
 fn split_store_applies_saved_field_schema_rules() {

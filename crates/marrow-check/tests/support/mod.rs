@@ -14,10 +14,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use marrow_check::{
-    AnalysisSnapshot, CheckDiagnostic, CheckReport, ProjectSources, analyze_project, check_project,
-    check_project_with_catalog,
+    AnalysisSnapshot, CheckDiagnostic, CheckReport, DiagnosticPayload, ProjectSources,
+    analyze_project, check_project, check_project_with_catalog,
 };
 use marrow_project::{ProjectConfig, parse_config};
+use marrow_schema::SchemaErrorKind;
 
 static NEXT_PROJECT_SERIAL: AtomicU64 = AtomicU64::new(0);
 
@@ -85,6 +86,16 @@ pub fn config() -> ProjectConfig {
 /// Assert `report` carries no errors, dumping every diagnostic on failure.
 pub fn assert_clean(report: &CheckReport) {
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+/// Assert `diagnostic` carries the schema payload `expected`, dumping the diagnostic on
+/// failure.
+pub fn assert_schema_payload(diagnostic: &CheckDiagnostic, expected: SchemaErrorKind) {
+    assert_eq!(
+        diagnostic.payload,
+        DiagnosticPayload::Schema(expected),
+        "{diagnostic:#?}"
+    );
 }
 
 /// The diagnostics in `report` whose code is `code`, borrowed in report order.
@@ -218,6 +229,33 @@ pub mod catalog {
         (label, "catalog-presence-fixture").hash(&mut hasher);
         let second = hasher.finish();
         format!("cat_{first:016x}{second:016x}")
+    }
+
+    /// An `Active` catalog entry whose stable id is minted deterministically from
+    /// `label` via [`derived_id`], so a presence fixture names a member by a readable
+    /// label and the assertions that look the id back up agree without sharing a literal
+    /// constant. Tests that need a specific literal id call [`entry`] directly.
+    pub fn entry_for_label(
+        kind: CatalogEntryKind,
+        canonical_path: &str,
+        label: &str,
+        aliases: &[&str],
+    ) -> CatalogEntry {
+        entry(kind, canonical_path, &derived_id(label), aliases)
+    }
+
+    /// A store-index presence entry that records `accepted_index_shape` over a
+    /// label-derived stable id and no aliases, layering the shape onto
+    /// [`entry_for_label`].
+    pub fn store_index_entry_for_label(
+        canonical_path: &str,
+        label: &str,
+        accepted_index_shape: &str,
+    ) -> CatalogEntry {
+        CatalogEntry {
+            accepted_index_shape: Some(accepted_index_shape.to_string()),
+            ..entry_for_label(CatalogEntryKind::StoreIndex, canonical_path, label, &[])
+        }
     }
 }
 

@@ -94,6 +94,7 @@ pub enum ExpectedSyntax {
     ParameterName,
     ParameterType,
     ResourceBody,
+    ResourceHeader,
     ResourceMemberName,
     ResourceMemberSyntax,
     ResourceName,

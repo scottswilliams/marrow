@@ -1,10 +1,10 @@
 use crate::support;
 use std::path::Path;
 
-use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogMetadata};
+use marrow_catalog::{CatalogEntryKind, CatalogMetadata};
 use marrow_check::{CHECK_CATALOG_INTENT, check_project_with_catalog};
 
-use support::catalog::{catalog, derived_id, entry as literal_entry, write_catalog};
+use support::catalog::{catalog, entry as literal_entry, entry_for_label as entry, write_catalog};
 use support::{check_with_accepted, config, temp_project, write};
 
 /// The baseline accepted catalog a state-establishing flow freezes for the project under
@@ -19,18 +19,6 @@ fn commit_baseline(root: &Path) -> CatalogMetadata {
         .catalog
         .proposal
         .expect("a first-run check proposes a baseline catalog")
-}
-
-/// A catalog entry whose stable id is minted deterministically from `label`, so a
-/// fixture refers to a member by a readable name and still gets a `cat_`-shaped id the
-/// catalog parser accepts.
-fn entry(
-    kind: CatalogEntryKind,
-    canonical_path: &str,
-    label: &str,
-    aliases: &[&str],
-) -> CatalogEntry {
-    literal_entry(kind, canonical_path, &derived_id(label), aliases)
 }
 
 fn proposed_id_for_path(proposal: &CatalogMetadata, kind: CatalogEntryKind, path: &str) -> String {

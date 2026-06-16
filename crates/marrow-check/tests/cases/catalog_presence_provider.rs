@@ -3,23 +3,11 @@
 //! prove that identity binds against it: the accepted ids carry forward onto live facts, and
 //! a source-only check proposes a first epoch while writing nothing.
 use crate::support;
-use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogMetadata};
+use marrow_catalog::{CatalogEntryKind, CatalogMetadata};
 use marrow_check::{ProjectSources, analyze_project};
 
-use support::catalog::{catalog, derived_id, entry as literal_entry};
+use support::catalog::{catalog, derived_id, entry_for_label as entry};
 use support::{config, temp_root, write};
-
-/// An accepted catalog entry whose stable id is minted from a readable `label`, so a fixture
-/// names a member by label and the assertions that look the id back up agree without sharing
-/// a literal constant.
-fn entry(
-    kind: CatalogEntryKind,
-    canonical_path: &str,
-    label: &str,
-    aliases: &[&str],
-) -> CatalogEntry {
-    literal_entry(kind, canonical_path, &derived_id(label), aliases)
-}
 
 /// The `books::Book` source one accepted snapshot already carries identity for.
 fn books_source(root: &std::path::Path) {

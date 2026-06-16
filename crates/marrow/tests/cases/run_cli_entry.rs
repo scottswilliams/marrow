@@ -1,16 +1,10 @@
 use crate::support;
-use support::{marrow_sub, parse_result_line, temp_project, write};
+use support::{last_fault, marrow_sub, parse_result_line, temp_project, write};
 
-/// The diagnostic code of a run fault, selected from the last non-empty stderr line
+/// The diagnostic code of a run fault, selected from the shared [`last_fault`] stderr line
 /// and parsed by the shared [`parse_result_line`] grammar owner.
 fn fault_code(stderr: &[u8]) -> String {
-    let text = String::from_utf8(stderr.to_vec()).expect("stderr utf8");
-    let line = text
-        .lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .expect("a fault line");
-    parse_result_line(line).code
+    parse_result_line(&last_fault(stderr)).code
 }
 
 #[test]

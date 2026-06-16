@@ -25,16 +25,6 @@ fn assert_has_code(report: &Value, code: &str) {
     assert!(diagnostic_codes(report).contains(&code), "{report:#?}");
 }
 
-/// The diagnostic records of a `--format jsonl` run: every record except the
-/// trailing summary. Asserting against parsed records, not a stderr blob, keeps
-/// the oracle on typed codes and payload fields rather than rendered prose.
-fn diagnostic_records(output: std::process::Output) -> Vec<Value> {
-    support::jsonl(output.stdout)
-        .into_iter()
-        .filter(|record| record["kind"] != "summary")
-        .collect()
-}
-
 #[test]
 fn check_rejects_file_targets_as_usage_failures() {
     let path = support::temp_source(
@@ -176,7 +166,7 @@ fn check_allows_out_as_an_ordinary_binding_name() {
     let output = check_jsonl(dir.path());
 
     assert_eq!(output.status.code(), Some(0));
-    let records = diagnostic_records(output);
+    let records = support::diagnostic_records(output.stdout);
     assert!(records.is_empty(), "{records:#?}");
 }
 
@@ -191,7 +181,7 @@ fn check_reports_obsolete_operators_in_function_bodies() {
     let output = check_jsonl(dir.path());
 
     assert_eq!(output.status.code(), Some(1));
-    let records = diagnostic_records(output);
+    let records = support::diagnostic_records(output.stdout);
     records
         .iter()
         .find(|record| record["code"] == "parse.syntax" && record["source_span"]["line"] == 3)
@@ -287,7 +277,7 @@ fn check_reports_reserved_merge_and_lock_as_parse_errors() {
     let output = check_jsonl(dir.path());
 
     assert_eq!(output.status.code(), Some(1));
-    let records = diagnostic_records(output);
+    let records = support::diagnostic_records(output.stdout);
     // `lock` and `merge` are parse-rejected, not checker-rejected: the reserved
     // surface never reaches `check.rejected_surface`. Each reserved statement is
     // rejected exactly at its own line (the `lock` on line 7 and the `merge` on line

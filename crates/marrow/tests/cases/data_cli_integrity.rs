@@ -10,7 +10,7 @@ use crate::support;
 use crate::support_data;
 use crate::support_evolve;
 use marrow_check::tooling::{
-    DataQuerySegment, QueryError, ToolingError, count_activation_integrity_problems,
+    DataChild, DataQuerySegment, QueryError, ToolingError, count_activation_integrity_problems,
     count_integrity_problems, data_children, read_data_query, resolve_data_query, walk_data,
 };
 use marrow_store::key::SavedKey;
@@ -21,7 +21,7 @@ use support_data::{
     checked_place, checked_program, delete_tree_path, encode_identity_keys, field_path,
     integrity_problem, json, keyed_field_path, marrow, member_path_catalog_id, native_project,
     seeded_project, write_orphan_cell, write_record_presence, write_tree_node, write_tree_value,
-    write_tree_value_without_node,
+    write_tree_value_without_node, write_tree_values,
 };
 use support_evolve::{
     REQUIRED_BASELINE_SOURCE, REQUIRED_DEFAULT_SOURCE, commit_catalog, native_books_project,
@@ -68,6 +68,128 @@ fn shared_data_children_rejects_zero_limit() {
     assert!(
         matches!(error, ToolingError::Query(QueryError::ZeroLimit)),
         "expected a typed zero-limit query error, got {error:?}"
+    );
+}
+
+/// The shared saved-data walk must page across record identities and resume from its
+/// own cursor without dropping or repeating an entry. A small limit forces several
+/// pages over a multi-record root; the union of the pages must be every record's
+/// value leaf exactly once, in identity order.
+#[test]
+fn shared_data_walk_resumes_across_record_pages_exactly_once() {
+    let project = native_project("data-walk-resume-pages");
+    let place = checked_place(&project, "counter");
+    let identities = (1..=5).map(|id| vec![SavedKey::Int(id)]);
+    write_tree_values(
+        &project,
+        &place,
+        identities,
+        &field_path(&place, "value"),
+        b"42",
+    );
+    let program = checked_program(&project);
+    let store =
+        TreeStore::open(&project.join(".data").join("marrow.redb")).expect("open native store");
+    let root = [DataQuerySegment::Root("counter".into())];
+    let query = resolve_data_query(&program, &root)
+        .expect("resolve root query")
+        .expect("root query");
+
+    let expected: Vec<String> = (1..=5).map(|id| format!("^counter({id}).value")).collect();
+    let mut collected = Vec::new();
+    let mut cursor = None;
+    let mut pages = 0;
+    loop {
+        let resume = cursor.as_ref().map(|segments: &Vec<DataQuerySegment>| {
+            resolve_data_query(&program, segments)
+                .expect("resolve cursor query")
+                .expect("cursor query")
+        });
+        let page = walk_data(&program, &store, &query, resume.as_ref(), 2)
+            .expect("walk a saved-data page");
+        pages += 1;
+        collected.extend(page.entries.iter().map(|entry| entry.path.clone()));
+        match page.next_cursor_path {
+            Some(next) => {
+                assert!(
+                    page.truncated,
+                    "a page that yields a cursor must report truncation"
+                );
+                cursor = Some(next.segments().to_vec());
+            }
+            None => {
+                assert!(!page.truncated, "the final page must not report truncation");
+                break;
+            }
+        }
+    }
+
+    assert_eq!(
+        collected, expected,
+        "resumed walk must return every record value once"
+    );
+    assert!(
+        pages >= 3,
+        "a limit of two over five records must take several pages"
+    );
+}
+
+/// Record-children listing under a multi-record root is paged the same way: a small
+/// limit truncates the first page and hands back a key cursor, and resuming from it
+/// returns the remaining record keys with no gap or overlap.
+#[test]
+fn shared_data_children_resumes_across_key_pages_exactly_once() {
+    let project = native_project("data-children-resume-pages");
+    let place = checked_place(&project, "counter");
+    let identities = (1..=5).map(|id| vec![SavedKey::Int(id)]);
+    write_tree_values(
+        &project,
+        &place,
+        identities,
+        &field_path(&place, "value"),
+        b"42",
+    );
+    let program = checked_program(&project);
+    let store =
+        TreeStore::open(&project.join(".data").join("marrow.redb")).expect("open native store");
+    let root = [DataQuerySegment::Root("counter".into())];
+
+    let mut collected = Vec::new();
+    let mut resume: Option<SavedKey> = None;
+    let mut pages = 0;
+    loop {
+        let page = data_children(&program, &store, &root, 2, resume.as_ref())
+            .expect("list a record-children page");
+        pages += 1;
+        for child in &page.children {
+            match child {
+                DataChild::Key(key) => collected.push(key.clone()),
+                other => panic!("record children must be keys, got {other:?}"),
+            }
+        }
+        match page.cursor {
+            Some(cursor) => {
+                assert!(
+                    page.truncated,
+                    "a page that yields a cursor must report truncation"
+                );
+                resume = Some(cursor);
+            }
+            None => {
+                assert!(!page.truncated, "the final page must not report truncation");
+                break;
+            }
+        }
+    }
+
+    let expected: Vec<SavedKey> = (1..=5).map(SavedKey::Int).collect();
+    assert_eq!(
+        collected, expected,
+        "resumed children must return every record key once"
+    );
+    assert!(
+        pages >= 3,
+        "a limit of two over five records must take several pages"
     );
 }
 

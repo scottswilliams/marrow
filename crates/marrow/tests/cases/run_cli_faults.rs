@@ -1,22 +1,12 @@
 use crate::support;
-use support::{ParsedResult, TempProject, marrow_sub, parse_result_line, temp_project, write};
-
-/// The fault a failed run prints is its last non-empty stderr line; a leading
-/// `std::log` stream, if any, precedes it. This is the single owner of "which line is
-/// the fault" for both the typed-slot parse and the thrown-code payload read.
-fn last_fault_line(stderr: &[u8]) -> String {
-    let text = String::from_utf8(stderr.to_vec()).expect("stderr utf8");
-    text.lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .expect("a fault line")
-        .to_string()
-}
+use support::{
+    ParsedResult, TempProject, last_fault, marrow_sub, parse_result_line, temp_project, write,
+};
 
 /// Parse the fault line into its typed slots. The line's grammar (`file:line:col: code:
 /// message` located, `code: message` bare) is parsed by the shared [`parse_result_line`].
 fn parse_fault(stderr: &[u8]) -> ParsedResult {
-    parse_result_line(&last_fault_line(stderr))
+    parse_result_line(&last_fault(stderr))
 }
 
 /// The thrown user code an uncaught `throw Error(code: ...)` carries, read from the
@@ -24,7 +14,7 @@ fn parse_fault(stderr: &[u8]) -> ParsedResult {
 /// This payload shape is specific to `marrow run`, so it is read here rather than in the
 /// shared fault parser.
 fn thrown_code(stderr: &[u8]) -> Option<String> {
-    let line = last_fault_line(stderr);
+    let line = last_fault(stderr);
     let open = line.find('[')?;
     let close = line[open..].find(']')? + open;
     Some(line[open + 1..close].to_string())

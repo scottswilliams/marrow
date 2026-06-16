@@ -43,20 +43,15 @@ fn malformed_resource_header_reports_the_resource_rule() {
         ),
     ] {
         let parsed = parse_source(source);
-        let diagnostic = parsed
-            .diagnostics
-            .iter()
-            .find(|diagnostic| {
-                diagnostic.reason
-                    == parse_reason(ParseDiagnosticReason::Expected(
-                        ExpectedSyntax::ResourceName,
-                    ))
-            })
-            .expect("resource-head diagnostic");
-
         assert!(
-            diagnostic.message.contains("resource header"),
-            "{diagnostic:?}"
+            has_reason(
+                &parsed.diagnostics,
+                parse_reason(ParseDiagnosticReason::Expected(
+                    ExpectedSyntax::ResourceHeader
+                ))
+            ),
+            "{:#?}",
+            parsed.diagnostics
         );
     }
 }
@@ -178,18 +173,18 @@ fn header_helper_errors_report_specific_expected_parts() {
         ),
         (
             "module app\nresource Book where ^books\n    title: string\n",
-            ExpectedSyntax::ResourceName,
+            ExpectedSyntax::ResourceHeader,
         ),
         (
             concat!(
                 "module app\nresource Book ",
                 "extra books\n    title: string\n",
             ),
-            ExpectedSyntax::ResourceName,
+            ExpectedSyntax::ResourceHeader,
         ),
         (
             concat!("module app\nresource Book ", "^\n    title: string\n",),
-            ExpectedSyntax::ResourceName,
+            ExpectedSyntax::ResourceHeader,
         ),
         ("module app\nstore books: Book\n", ExpectedSyntax::StoreRoot),
         ("module app\nstore ^: Book\n", ExpectedSyntax::SavedRootName),

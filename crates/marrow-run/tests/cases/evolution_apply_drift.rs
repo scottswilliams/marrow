@@ -8,7 +8,7 @@ use evolution_apply_support::*;
 
 use marrow_run::evolution::{ApplyError, apply, current_engine_profile};
 use marrow_store::StoreError;
-use marrow_store::tree::{CommitMetadata, TreeStore};
+use marrow_store::tree::TreeStore;
 use marrow_store::value::Scalar;
 
 // The drift, overflow, rollback, and no-op cases all evolve the same canonical
@@ -208,11 +208,13 @@ fn commit_id_overflow_aborts_without_staging_apply_writes() -> Result<(), Box<dy
     };
     seed.record(1);
     seed.member(1, "title", Scalar::Str("Dune".into()));
-    let mut predecessor = commit_metadata(u64::MAX, program.source_digest());
-    predecessor.catalog_epoch = program.catalog.accepted_epoch.expect("accepted epoch");
-    store
-        .write_commit_metadata(&predecessor)
-        .expect("stamp predecessor at the commit-id limit");
+    stamp_commit(
+        &store,
+        u64::MAX,
+        program.catalog.accepted_epoch.expect("accepted epoch"),
+        program.source_digest(),
+        current_engine_profile(),
+    );
 
     let witness = witness(&program, &store);
     assert_eq!(witness.store_commit_id, Some(u64::MAX));
@@ -361,17 +363,4 @@ fn no_op_apply_does_not_churn_the_commit_id() -> Result<(), Box<dyn std::error::
     assert_eq!(third.receipt.commit_id, stamped_commit);
 
     Ok(())
-}
-
-fn commit_metadata(commit_id: u64, source_digest: String) -> CommitMetadata {
-    let profile = current_engine_profile();
-    CommitMetadata {
-        commit_id,
-        catalog_epoch: 0,
-        layout_epoch: profile.layout_epoch(),
-        source_digest,
-        engine_profile_digest: profile.digest_bytes(),
-        changed_root_catalog_ids: Vec::new(),
-        changed_index_catalog_ids: Vec::new(),
-    }
 }

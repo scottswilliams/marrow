@@ -1,32 +1,12 @@
 use crate::support;
-use marrow_catalog::{CatalogEntry, CatalogEntryKind};
+use marrow_catalog::CatalogEntryKind;
 use marrow_check::{ScalarType, StoreIndexKeySource, StoredValueMeaning};
 
-use support::catalog::{catalog, derived_id, entry as literal_entry, write_catalog};
+use support::catalog::{
+    catalog, derived_id, entry_for_label as entry,
+    store_index_entry_for_label as store_index_entry, write_catalog,
+};
 use support::{check_with_accepted, temp_project, write};
-
-/// A catalog entry whose stable id is minted deterministically from `label`, so a
-/// fixture refers to a member by a readable name and still gets a `cat_`-shaped id the
-/// catalog parser accepts.
-fn entry(
-    kind: CatalogEntryKind,
-    canonical_path: &str,
-    label: &str,
-    aliases: &[&str],
-) -> CatalogEntry {
-    literal_entry(kind, canonical_path, &derived_id(label), aliases)
-}
-
-fn store_index_entry(
-    canonical_path: &str,
-    label: &str,
-    accepted_index_shape: &str,
-) -> CatalogEntry {
-    CatalogEntry {
-        accepted_index_shape: Some(accepted_index_shape.to_string()),
-        ..entry(CatalogEntryKind::StoreIndex, canonical_path, label, &[])
-    }
-}
 
 fn sorted_enum_member_catalog_ids(
     facts: &marrow_check::CheckedFacts,
