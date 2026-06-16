@@ -225,7 +225,9 @@ fn report_project_with_footprints(
                     let warnings = report
                         .diagnostics
                         .iter()
-                        .filter(|diagnostic| diagnostic.severity.as_str() == "warning")
+                        .filter(|diagnostic| {
+                            diagnostic.severity == marrow_syntax::Severity::Warning
+                        })
                         .count();
                     let suffix = if warnings == 1 { "warning" } else { "warnings" };
                     println!("ok: checked ({warnings} {suffix})");

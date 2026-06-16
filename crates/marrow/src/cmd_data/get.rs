@@ -27,6 +27,12 @@ pub(super) fn data_get(args: &[String]) -> ExitCode {
             Ok(target) => target,
             Err(code) => return code,
         };
+    // read_data_query can follow an absent leaf with a children-existence scan, so pin a
+    // snapshot for the same coherent read the sibling data commands hold over their passes.
+    let _snapshot = match super::pin_snapshot(&store, format) {
+        Ok(snapshot) => snapshot,
+        Err(code) => return code,
+    };
     let query = match resolve_source_text_data_query(&program, &parsed_segments) {
         Ok(Some(query)) => query,
         // Durable identity that was never committed — a never-run project or a

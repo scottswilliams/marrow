@@ -9,14 +9,14 @@ use common::{assert_kind, codes};
 use marrow_schema::{
     SCHEMA_DUPLICATE_MEMBER, SCHEMA_INDEX_MISSING_IDENTITY_KEYS, SCHEMA_INDEX_REQUIRES_KEYED_ROOT,
     SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_NESTED_INDEX_ARG, SCHEMA_UNKNOWN_INDEX_ARG,
-    SchemaDuplicateTarget, SchemaError, SchemaErrorKind, SchemaNameCollision, compile_store,
-    compile_stored_resource,
+    SchemaDuplicateTarget, SchemaError, SchemaErrorKind, SchemaNameCollision, compile_resource,
+    compile_store,
 };
 use marrow_syntax::{Declaration, ResourceDecl, StoreDecl, parse_source};
 
 fn compile_store_errors(source: &str) -> Vec<SchemaError> {
     let (resource, store) = resource_and_store(source);
-    let (schema, resource_errors) = compile_stored_resource(&resource);
+    let (schema, resource_errors) = compile_resource(&resource);
     assert!(
         resource_errors.is_empty(),
         "unexpected resource errors: {resource_errors:?}"

@@ -158,14 +158,12 @@ fn common(args: &[String], command: Command) -> Result<CommonArgs, ParseStop> {
                 return Err(ParseStop::Help);
             }
             (_, value) if value.starts_with('-') => {
-                eprintln!("unknown {} option: {value}", command.name());
+                crate::unknown_option(command.name(), value);
                 return Err(ParseStop::Usage);
             }
             (_, value) => {
-                if dir.replace(value.to_string()).is_some() {
-                    eprintln!("{} accepts one project directory", command.name());
-                    return Err(ParseStop::Usage);
-                }
+                crate::take_single_target(&mut dir, value, command.name(), "project directory")
+                    .map_err(|_| ParseStop::Usage)?;
             }
         }
         index += 1;

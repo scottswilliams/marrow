@@ -962,11 +962,7 @@ fn checked_resources(
         })
         .map(|resource| {
             let has_store = module_stored_resources.contains(&resource.name);
-            let (schema, errors) = if has_store {
-                marrow_schema::compile_stored_resource(resource)
-            } else {
-                marrow_schema::compile_resource(resource)
-            };
+            let (schema, errors) = marrow_schema::compile_resource(resource);
             for error in errors {
                 push_schema_error(file_path, diagnostics, error);
             }

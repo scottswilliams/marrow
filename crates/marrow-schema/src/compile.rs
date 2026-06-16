@@ -29,15 +29,6 @@ use crate::{IndexSchema, KeyDef, Node, NodeKind, ResourceSchema, ScalarType, Sto
 ///
 /// Deferred: full type validation and one-owner-per-root.
 pub fn compile_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError>) {
-    compile_resource_shape(decl)
-}
-
-/// Compile a resource shape that is attached to at least one store declaration.
-pub fn compile_stored_resource(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError>) {
-    compile_resource_shape(decl)
-}
-
-fn compile_resource_shape(decl: &ResourceDecl) -> (ResourceSchema, Vec<SchemaError>) {
     let mut errors = Vec::new();
 
     let mut members = Vec::new();

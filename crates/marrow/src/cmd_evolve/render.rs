@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use marrow_catalog::CatalogEntryKind;
 use marrow_check::evolution::{
     EvolutionWitness, RejectedDefault, RepairDiagnostic, RepairReason, Verdict,
 };
@@ -28,16 +27,13 @@ impl SourceLabels {
     pub(super) fn from_program(program: &marrow_check::CheckedProgram) -> Self {
         let mut by_catalog_id = HashMap::new();
         for entry in &program.catalog.accepted_entries {
-            by_catalog_id.insert(
-                entry.stable_id.clone(),
-                SourceTarget::new(&entry.path, entry.kind),
-            );
+            by_catalog_id.insert(entry.stable_id.clone(), SourceTarget::new(&entry.path));
         }
         if let Some(proposal) = &program.catalog.proposal {
             for entry in &proposal.entries {
                 by_catalog_id
                     .entry(entry.stable_id.clone())
-                    .or_insert_with(|| SourceTarget::new(&entry.path, entry.kind));
+                    .or_insert_with(|| SourceTarget::new(&entry.path));
             }
         }
         Self { by_catalog_id }
@@ -58,10 +54,10 @@ impl SourceLabels {
 }
 
 impl SourceTarget {
-    fn new(path: &str, kind: CatalogEntryKind) -> Self {
+    fn new(path: &str) -> Self {
         Self {
             display: source_label(path),
-            scaffold: scaffold_target(path, kind),
+            scaffold: scaffold_target(path),
         }
     }
 }
@@ -70,13 +66,16 @@ fn source_label(path: &str) -> String {
     path.replace("::", ".")
 }
 
-fn scaffold_target(path: &str, kind: CatalogEntryKind) -> String {
+/// Source spelling for an evolve scaffold target, dropping the leading module segment so the
+/// target is the dotted member path the user writes. Store roots and indexes carry their caret
+/// inside the catalog path segment (`books::^books`, `books::^books::byShelf`), so joining the
+/// remaining segments already yields the correct `^books` / `^books.byShelf` spelling.
+fn scaffold_target(path: &str) -> String {
     let local: Vec<&str> = path.split("::").skip(1).collect();
-    match (kind, local.as_slice()) {
-        (CatalogEntryKind::Store, [root]) => format!("^{root}"),
-        (CatalogEntryKind::StoreIndex, [root, index]) => format!("^{root}.{index}"),
-        (_, []) => source_label(path),
-        (_, segments) => segments.join("."),
+    if local.is_empty() {
+        source_label(path)
+    } else {
+        local.join(".")
     }
 }
 

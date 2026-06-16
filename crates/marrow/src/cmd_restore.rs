@@ -16,8 +16,8 @@ use crate::backup::{
     read_backup_prologue, restore_backup_with_prologue,
 };
 use crate::{
-    CheckFormat, load_config_with_format, native_store_path, report_io_error, report_project,
-    report_simple_error, resolve_store_path,
+    CheckFormat, load_config_with_format, native_store_path, report_project, report_simple_error,
+    resolve_store_path,
 };
 
 pub(crate) fn restore(args: &[String]) -> ExitCode {
@@ -290,7 +290,7 @@ fn reject_current_catalog_mismatch(
     prologue: &BackupPrologue,
     format: CheckFormat,
 ) -> Result<(), ExitCode> {
-    let Some(current) = read_source_tree_catalog(dir, format)? else {
+    let Some(current) = crate::read_accepted_catalog_artifact(dir, format)? else {
         return Ok(());
     };
     let backup_catalog = CatalogFingerprintRef::from_catalog(prologue.catalog());
@@ -302,27 +302,6 @@ fn reject_current_catalog_mismatch(
         BackupError::catalog_mismatch(backup_catalog, project_catalog),
         format,
     ))
-}
-
-fn read_source_tree_catalog(
-    dir: &str,
-    format: CheckFormat,
-) -> Result<Option<marrow_catalog::CatalogMetadata>, ExitCode> {
-    let path = Path::new(dir).join(marrow_project::CATALOG_FILE_NAME);
-    let json = match fs::read_to_string(&path) {
-        Ok(json) => json,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            report_io_error(&path.display().to_string(), &error, format);
-            return Err(ExitCode::FAILURE);
-        }
-    };
-    marrow_catalog::CatalogMetadata::from_json(&json)
-        .map(Some)
-        .map_err(|error| {
-            report_simple_error(error.code, &error.message, format);
-            ExitCode::FAILURE
-        })
 }
 
 struct RestoreTargetFiles {

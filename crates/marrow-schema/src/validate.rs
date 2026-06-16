@@ -131,15 +131,11 @@ fn check_key_params(keys: &[KeyParam], span: SourceSpan, errors: &mut Vec<Schema
 fn check_member_unknown(member: &ResourceMember, errors: &mut Vec<SchemaError>) {
     match member {
         ResourceMember::Field(field) => {
-            // A keyed leaf carries its value type the same way a plain field
-            // does; both reject `unknown`.
-            let (target, ty) = if field.keys.is_empty() {
-                (SchemaSavedUnknownTarget::Field, Type::resolve(&field.ty))
+            let ty = Type::resolve(&field.ty);
+            let target = if field.keys.is_empty() {
+                SchemaSavedUnknownTarget::Field
             } else {
-                (
-                    SchemaSavedUnknownTarget::KeyedLeaf,
-                    Type::resolve(&field.ty),
-                )
+                SchemaSavedUnknownTarget::KeyedLeaf
             };
             if ty.embeds_unknown() {
                 errors.push(unknown_error(target, &field.name, field.span));

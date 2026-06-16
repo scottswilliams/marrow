@@ -43,7 +43,6 @@ pub enum Capability {
     Environment,
     Log,
     Filesystem,
-    Maintenance,
 }
 
 /// One `std::<module>::<op>` descriptor.

@@ -7,7 +7,6 @@ use common::{assert_kind, codes};
 use marrow_schema::{
     ResourceSchema, SCHEMA_UNKNOWN_IN_SAVED, SchemaError, SchemaErrorKind,
     SchemaSavedUnknownTarget, check_saved_member_rules, compile_resource, compile_store,
-    compile_stored_resource,
 };
 use marrow_syntax::{Declaration, parse_source};
 
@@ -29,7 +28,7 @@ fn compile_source(source: &str) -> (ResourceSchema, Vec<SchemaError>) {
     }
     let resource = resource.expect("resource declaration");
     if let Some(store) = store {
-        let (schema, mut errors) = compile_stored_resource(&resource);
+        let (schema, mut errors) = compile_resource(&resource);
         let (_, store_errors) = compile_store(&store, &schema);
         errors.extend(store_errors);
         errors.extend(check_saved_member_rules(&resource.members));

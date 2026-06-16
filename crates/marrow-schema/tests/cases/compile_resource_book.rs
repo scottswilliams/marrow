@@ -6,7 +6,7 @@
 
 use marrow_schema::{
     Node, NodeKind, ResourceSchema, ScalarType, SchemaError, Type, check_saved_member_rules,
-    compile_resource, compile_store, compile_stored_resource,
+    compile_resource, compile_store,
 };
 use marrow_syntax::{Declaration, ResourceDecl, StoreDecl, parse_source};
 
@@ -54,7 +54,7 @@ fn compile_source(source: &str) -> (ResourceSchema, Vec<SchemaError>) {
     }
     let resource = resource.expect("resource declaration");
     if let Some(store) = store {
-        let (schema, mut errors) = compile_stored_resource(&resource);
+        let (schema, mut errors) = compile_resource(&resource);
         let (_, store_errors) = compile_store(&store, &schema);
         errors.extend(store_errors);
         errors.extend(check_saved_member_rules(&resource.members));
@@ -130,7 +130,7 @@ store ^books(id: int): Book
 #[test]
 fn book_saved_root_has_one_identity_key() {
     let (resource, store) = resource_and_store(BOOK);
-    let (resource_schema, resource_errors) = compile_stored_resource(&resource);
+    let (resource_schema, resource_errors) = compile_resource(&resource);
     assert!(resource_errors.is_empty(), "{resource_errors:?}");
     let (store_schema, store_errors) = compile_store(&store, &resource_schema);
     assert!(store_errors.is_empty(), "{store_errors:?}");
@@ -241,7 +241,7 @@ fn book_versions_is_a_history_group() {
 #[test]
 fn book_byshelf_index() {
     let (resource, store) = resource_and_store(BOOK);
-    let (resource_schema, resource_errors) = compile_stored_resource(&resource);
+    let (resource_schema, resource_errors) = compile_resource(&resource);
     assert!(resource_errors.is_empty(), "{resource_errors:?}");
     let (store_schema, store_errors) = compile_store(&store, &resource_schema);
     assert!(store_errors.is_empty(), "{store_errors:?}");

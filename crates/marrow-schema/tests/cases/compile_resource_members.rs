@@ -9,7 +9,6 @@ use common::{assert_kind, codes};
 use marrow_schema::{
     ResourceSchema, SCHEMA_NON_ENUM_NAMED_FIELD, ScalarType, SchemaError, SchemaErrorKind, Type,
     check_saved_member_rules, check_saved_named_member_fields, compile_resource, compile_store,
-    compile_stored_resource,
 };
 use marrow_syntax::{Declaration, ResourceDecl, parse_source};
 
@@ -57,7 +56,7 @@ fn compile_source(source: &str) -> (ResourceSchema, Vec<SchemaError>) {
     }
     let resource = resource.expect("resource declaration");
     if let Some(store) = store {
-        let (schema, mut errors) = compile_stored_resource(&resource);
+        let (schema, mut errors) = compile_resource(&resource);
         let (_, store_errors) = compile_store(&store, &schema);
         errors.extend(store_errors);
         errors.extend(check_saved_member_rules(&resource.members));
@@ -107,7 +106,7 @@ fn compile_saved_resource_errors(source: &str) -> Vec<SchemaError> {
         let Some(store) = stores.iter().find(|store| store.resource == resource.name) else {
             continue;
         };
-        let (schema, resource_errors) = compile_stored_resource(resource);
+        let (schema, resource_errors) = compile_resource(resource);
         errors.extend(resource_errors);
         let (_, store_errors) = compile_store(store, &schema);
         errors.extend(store_errors);

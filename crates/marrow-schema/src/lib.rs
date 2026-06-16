@@ -20,7 +20,7 @@ pub mod stdlib;
 // and downstream crates share one import path for the storable scalars.
 pub use marrow_store::value::ScalarType;
 
-pub use compile::{compile_enum, compile_resource, compile_store, compile_stored_resource};
+pub use compile::{compile_enum, compile_resource, compile_store};
 pub use enums::{EnumMemberSchema, EnumSchema, MemberPathResolution};
 pub use errors::{
     SCHEMA_CATEGORY_LEAF, SCHEMA_DUPLICATE_MEMBER, SCHEMA_INDEX_MISSING_IDENTITY_KEYS,

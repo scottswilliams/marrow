@@ -400,7 +400,7 @@ pub fn discover_modules(
     let mut files = Vec::new();
     for source_root in &config.source_roots {
         let root = project_root.join(source_root);
-        collect_mw_files(&root, &root, &mut files, true)?;
+        collect_mw_files(&root, &root, &mut files)?;
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
     // Overlapping source roots (e.g. "src" and "src/sub") reach the same file
@@ -435,7 +435,7 @@ pub fn discover_test_modules(
         if file_type.is_file() && target.extension().and_then(|ext| ext.to_str()) == Some("mw") {
             files.push(module_file(project_root, target)?);
         } else if file_type.is_dir() {
-            collect_mw_files(project_root, &target, &mut files, true)?;
+            collect_mw_files(project_root, &target, &mut files)?;
         }
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -477,14 +477,12 @@ pub fn test_module_file(
     None
 }
 
-/// Collect the `.mw` files in `dir`, descending into subdirectories when
-/// `recursive`. Each file is paired with the module name its path relative to
-/// `source_root` implies.
+/// Collect the `.mw` files in `dir`, descending into subdirectories. Each file
+/// is paired with the module name its path relative to `source_root` implies.
 fn collect_mw_files(
     source_root: &Path,
     dir: &Path,
     out: &mut Vec<ModuleFile>,
-    recursive: bool,
 ) -> Result<(), DiscoverError> {
     let entries = std::fs::read_dir(dir).map_err(|error| DiscoverError {
         code: "project.source_root",
@@ -505,9 +503,7 @@ fn collect_mw_files(
         };
         let path = entry.path();
         if file_type.is_dir() {
-            if recursive {
-                collect_mw_files(source_root, &path, out, true)?;
-            }
+            collect_mw_files(source_root, &path, out)?;
         } else if file_type.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("mw")
         {
             out.push(module_file(source_root, path)?);

@@ -242,7 +242,6 @@ fn eval_std_call(
         Some(Capability::Environment) => eval_env(target.op, args, span, env).map(Some),
         Some(Capability::Log) => eval_log(target.op, args, span, env),
         Some(Capability::Filesystem) => eval_io(target.op, args, span, env),
-        Some(Capability::Maintenance) => Err(unsupported("a maintenance std call", span)),
         None if target.module == "assert" => eval_assert(target.op, args, span, env),
         None => eval_std(target.module, target.op, args, span, env).map(Some),
     };

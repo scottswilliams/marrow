@@ -108,9 +108,6 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
     // frozen into the store as its baseline before the witness is built; preview and apply
     // then run against the accepted identity exactly as for an already-accepted project.
     let program = if program.catalog.accepted_epoch.is_none() {
-        if let Err(code) = ensure_store_uid(&store, input.format) {
-            return code;
-        }
         match crate::establish_store_baseline(&input.dir, &config, &store, program, input.format) {
             Ok(program) => program,
             Err(code) => return code,
