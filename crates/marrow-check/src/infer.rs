@@ -212,8 +212,14 @@ pub(crate) fn infer_type_with_read_scope(
     match expr {
         Expression::Literal { kind, text, span } => {
             check_literal_range(*kind, text, *span, file, diagnostics);
-            if matches!(kind, marrow_syntax::LiteralKind::String) {
-                check_string_escapes(text, *span, file, diagnostics);
+            match kind {
+                marrow_syntax::LiteralKind::String => {
+                    check_string_escapes(text, *span, file, diagnostics);
+                }
+                marrow_syntax::LiteralKind::Bytes => {
+                    check_bytes_escapes(text, *span, file, diagnostics);
+                }
+                _ => {}
             }
             literal_type(*kind)
         }
@@ -772,6 +778,30 @@ fn string_escape_diagnostic(file: &Path, span: SourceSpan) -> CheckDiagnostic {
         file,
         span,
         "unsupported string escape; only `\\\\`, `\\\"`, `\\n`, `\\r`, and `\\t` are recognized",
+    )
+}
+
+/// Reject a bytes literal whose escape decoding fails — an escape outside the
+/// recognized set, a trailing lone backslash, or a malformed or truncated
+/// `\xNN`. The escape grammar is owned by `marrow_syntax`; decoding here through
+/// the same function keeps the checker and runtime in lockstep.
+fn check_bytes_escapes(
+    text: &str,
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if marrow_syntax::decode_bytes_literal(text).is_err() {
+        diagnostics.push(bytes_escape_diagnostic(file, span));
+    }
+}
+
+fn bytes_escape_diagnostic(file: &Path, span: SourceSpan) -> CheckDiagnostic {
+    CheckDiagnostic::error(
+        crate::CHECK_BYTES_ESCAPE,
+        file,
+        span,
+        "unsupported bytes escape; only `\\\\`, `\\\"`, `\\n`, `\\r`, `\\t`, and `\\xNN` are recognized",
     )
 }
 

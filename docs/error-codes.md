@@ -155,6 +155,7 @@ over every configured source and test file.
 | `check.bare_maybe_present_read` | A maybe-present saved read or call result appears in value position without a read-site resolution form such as `??`, `exists(...)`, `if const name = place`, optional chaining, or an attached-data traversal. A `required` declaration is a validity rule for populated records; it is not a proof that arbitrary saved data is present at this read site. |
 | `check.literal_range` | A numeric literal is provably outside its type's range (an integer beyond `i64`, or a decimal outside the 34-digit / 34-place envelope). The static counterpart of the runtime numeric range faults. |
 | `check.string_escape` | A string literal or interpolation text segment carries a backslash escape outside the recognized set (`\\`, `\"`, `\n`, `\r`, `\t`), or a trailing lone backslash. |
+| `check.bytes_escape` | A bytes literal carries a backslash escape outside the recognized set (`\\`, `\"`, `\n`, `\r`, `\t`, `\xNN`), a trailing lone backslash, or a malformed or truncated `\xNN` hex escape. |
 | `check.loop_control_flow` | A `break`/`continue` is outside any loop. |
 | `check.catch_type` | A `catch` annotation is not `Error`. |
 | `check.throw_type` | A `throw` operand is known not to be an `Error` value. |

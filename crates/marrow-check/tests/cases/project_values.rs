@@ -639,6 +639,36 @@ fn supported_string_escapes_check_clean() {
 }
 
 #[test]
+fn an_unsupported_bytes_escape_is_flagged_at_check_time() {
+    let found = check_script(
+        "bytes-escape-unsupported",
+        "fn f()\n    const b: bytes = b\"x\\q\"\n",
+        "check.bytes_escape",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_truncated_bytes_hex_escape_is_flagged_at_check_time() {
+    let found = check_script(
+        "bytes-escape-truncated-hex",
+        "fn f()\n    const b: bytes = b\"\\x1\"\n",
+        "check.bytes_escape",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn supported_bytes_escapes_check_clean() {
+    let found = check_script(
+        "bytes-escape-supported",
+        "fn f()\n    const b: bytes = b\"\\xff\\n\\\\\\\"\\r\\t\"\n",
+        "check.bytes_escape",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
 fn an_unsupported_escape_in_an_interpolation_text_segment_is_flagged() {
     let found = check_script(
         "string-escape-interpolation",

@@ -162,15 +162,15 @@ fn bytes_escapes_are_decoded() {
 }
 
 #[test]
-fn malformed_bytes_escapes_are_rejected() {
+fn malformed_bytes_escapes_are_rejected_at_check_time() {
+    // Bytes escapes are static, so the checker rejects a malformed one before a
+    // run rather than letting it fault at runtime.
     for source in [
         "pub fn f(): bytes\n    return b\"\\q\"\n",
         "pub fn f(): bytes\n    return b\"\\x0g\"\n",
         "pub fn f(): bytes\n    return b\"\\x0\"\n",
     ] {
-        let program = checked_program(source);
-        let result = run(checked_entry!(&program, "test::f"));
-        assert_run_error(result, RUN_UNSUPPORTED);
+        checker_rejects(source, "check.bytes_escape");
     }
 }
 

@@ -130,6 +130,11 @@ pub const CHECK_LITERAL_RANGE: &str = "check.literal_range";
 /// backslash. The escape text is static, so the checker rejects it before the
 /// runtime would.
 pub const CHECK_STRING_ESCAPE: &str = "check.string_escape";
+/// A bytes literal carries a backslash escape outside the recognized set (`\\`,
+/// `\"`, `\n`, `\r`, `\t`, `\xNN`), a trailing lone backslash, or a malformed or
+/// truncated `\xNN`. The escape text is static, so the checker rejects it before
+/// the runtime would.
+pub const CHECK_BYTES_ESCAPE: &str = "check.bytes_escape";
 /// A range-for header is malformed: its endpoints are not the same steppable type
 /// (int, date, instant), its `by` step does not match the endpoints (a number
 /// for int, a duration for date/instant), an instant range omits its required

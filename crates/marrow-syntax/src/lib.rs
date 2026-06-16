@@ -2,7 +2,7 @@
 //! plus the shared diagnostic surface the rest of the toolchain renders.
 //!
 //! The crate's surface is the AST (`ast`), the diagnostic types (`diagnostic`),
-//! the token model (`token`), the canonical string-literal decoder (`literal`),
+//! the token model (`token`), the canonical string- and bytes-literal decoders (`literal`),
 //! and the public entry points `lex_source`/`parse_source`/`parse_expression`.
 //! Everything else (the lexer and the expression/declaration parsers) is an
 //! internal carve of one pipeline.
@@ -31,7 +31,10 @@ pub use diagnostic::{
 };
 pub use format::{format_declaration, format_expression, format_preserves_comments, format_source};
 pub use lexer::lex_source;
-pub use literal::{StringLiteralError, decode_string_escapes, decode_string_literal};
+pub use literal::{
+    BytesLiteralError, StringLiteralError, decode_bytes_escapes, decode_bytes_literal,
+    decode_string_escapes, decode_string_literal,
+};
 pub use token::{Keyword, LexedSource, Token, TokenKind, duration_unit_seconds};
 
 use parse_decl::DeclParser;

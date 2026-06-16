@@ -10,8 +10,8 @@ use marrow_check::{
 use marrow_store::Decimal;
 use marrow_store::value::supported_instant_nanos;
 use marrow_syntax::{
-    SourceSpan, StringLiteralError, decode_string_escapes, decode_string_literal,
-    duration_unit_seconds,
+    BytesLiteralError, SourceSpan, StringLiteralError, decode_bytes_literal, decode_string_escapes,
+    decode_string_literal, duration_unit_seconds,
 };
 
 use crate::call::{call_target_maybe_present, eval_call, expression_absent_at_resolution_site};
@@ -277,51 +277,24 @@ fn string_literal_fault(error: StringLiteralError, span: SourceSpan) -> RuntimeE
     raise_fault(RUN_TYPE, format!("invalid string literal: {cause}"), span)
 }
 
-/// Decode a bytes literal `b"..."`: ordinary text contributes its UTF-8 bytes,
-/// while bytes escapes can emit arbitrary byte values.
+/// Decode a bytes literal `b"..."` through the `marrow_syntax` escape owner. The
+/// checker rejects a malformed bytes escape before a run, so a decode failure
+/// here is a checker/runtime disagreement, not the primary validation; it faults
+/// defensively rather than passing bad bytes through.
 pub(crate) fn eval_bytes_literal(text: &str, span: SourceSpan) -> Result<Value, RuntimeError> {
-    let inner = text
-        .strip_prefix("b\"")
-        .and_then(|rest| rest.strip_suffix('"'))
-        .ok_or_else(|| unsupported("this bytes literal", span))?;
-    Ok(Value::Bytes(decode_bytes_escapes(inner, span)?))
+    decode_bytes_literal(text)
+        .map(Value::Bytes)
+        .map_err(|error| bytes_literal_fault(error, span))
 }
 
-fn decode_bytes_escapes(text: &str, span: SourceSpan) -> Result<Vec<u8>, RuntimeError> {
-    let mut result = Vec::with_capacity(text.len());
-    let mut chars = text.chars();
-    while let Some(ch) = chars.next() {
-        if ch != '\\' {
-            let mut buffer = [0; 4];
-            result.extend_from_slice(ch.encode_utf8(&mut buffer).as_bytes());
-            continue;
+fn bytes_literal_fault(error: BytesLiteralError, span: SourceSpan) -> RuntimeError {
+    let cause = match error {
+        BytesLiteralError::Unquoted => "an unquoted bytes literal",
+        BytesLiteralError::BadEscape => {
+            "an unsupported bytes escape; only `\\\\`, `\\\"`, `\\n`, `\\r`, `\\t`, and `\\xNN` are recognized"
         }
-        let Some(escaped) = chars.next() else {
-            return Err(unsupported("bytes escape sequences", span));
-        };
-        match escaped {
-            '\\' => result.push(b'\\'),
-            '"' => result.push(b'"'),
-            'n' => result.push(b'\n'),
-            'r' => result.push(b'\r'),
-            't' => result.push(b'\t'),
-            'x' => {
-                let Some(high) = chars.next().and_then(hex_digit) else {
-                    return Err(unsupported("bytes escape sequences", span));
-                };
-                let Some(low) = chars.next().and_then(hex_digit) else {
-                    return Err(unsupported("bytes escape sequences", span));
-                };
-                result.push((high << 4) | low);
-            }
-            _ => return Err(unsupported("bytes escape sequences", span)),
-        }
-    }
-    Ok(result)
-}
-
-fn hex_digit(ch: char) -> Option<u8> {
-    ch.to_digit(16).and_then(|digit| u8::try_from(digit).ok())
+    };
+    raise_fault(RUN_TYPE, format!("invalid bytes literal: {cause}"), span)
 }
 
 pub(crate) fn eval_unary(
